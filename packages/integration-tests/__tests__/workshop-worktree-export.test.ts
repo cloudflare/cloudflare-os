@@ -16,10 +16,7 @@ beforeAll(async () => {
   harness = await startHarness({
     gatekeepers: [{binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR}],
     enableGadgetExecution: true,
-    patchWorkshop: config => {
-      config.vars = {...config.vars, AGENT_INTEGRATION_GRANTS:
-        JSON.stringify({[TEST_VENDOR_ID]: {worktreeReplica: true}})};
-    },
+
   });
 });
 afterAll(async () => {
@@ -29,7 +26,7 @@ afterAll(async () => {
   } finally { network.uninstall(); }
 });
 
-it("exports a worktree from code mode and returns changes without an agent-context callback", async () => {
+it("passes a worktree directly from code mode to a gatekeeper for Git hydration and OT writeback", async () => {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("export")[0]!);
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
@@ -50,12 +47,7 @@ it("exports a worktree from code mode and returns changes without an agent-conte
     }}},
     {toolCall: {id: "export", name: "executeCode", arguments: {code: `
       export default async function(self, env) {
-        const input = await env.REPO.exportTo("TEST_AMBIENT");
-        const response = await input.packs[0].fetch("https://export.invalid/");
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
-        await input.writeback.submitChanges("return", [{path: "returned.txt", change: {set: "from container"}}], true);
-        console.log(input.binding, "pack received");
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
       }`}}},
     {toolCall: {id: "read", name: "executeCode", arguments: {code: `
       export default async function(self, env) {
@@ -70,7 +62,7 @@ it("exports a worktree from code mode and returns changes without an agent-conte
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   const outputs = history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
     .filter(call => call.toolName === "executeCode").map(call => call.output);
-  expect(outputs).toEqual([expect.stringContaining("REPO pack received"),
+  expect(outputs).toEqual([expect.stringContaining("worktree pack received"),
     expect.stringContaining("from container")]);
   expect(model.remainingSteps()).toBe(0);
 });

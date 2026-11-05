@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { validateRpc } from "capnweb-validate";
+import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -15,7 +15,7 @@ import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
-  type AgentIntegrationOrigin, type AiChatAgentContext, type BindingRecord,
+  type AiChatAgentContext, type BindingRecord, type WorktreeSyncRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
@@ -29,7 +29,7 @@ import {
 } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToActiveWorktreeCommands, migrateToBlueprintUpstreams,
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToWorktreeSync, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -68,13 +68,11 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import { agentIntegrationReplicaGrant } from "./agent-integration";
-import type { CommandGitRepository, WorktreeExport, WorktreeWriteback, FileChangeByPath }
+import type { WorktreeSyncSession, WorktreeSubscription, WorktreeSubscriber, WorktreeIntegration, FileChangeByPath }
   from "@gadgets/workshop-shared/agent-integration";
-import type { WorktreeBase } from "./storage-schema/overseer-storage";
-import { ReplicaChangedError, WorktreeWritebackSession, requireReplicaPath, type WorktreeWritebackHost,
-  type WorktreeReplicaLease } from "./worktree-replica";
-import { replicaCommitPack } from "./replica-git";
+import type { Worktree } from "./worktree-binding";
+import { ReplicaChangedError, worktreeBatch } from "./worktree-replica";
+import { worktreeGitPull } from "./worktree-git";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import { gitObjectRequest } from "@gadgets/gatekeeper-kit/git-transport";
 
@@ -1034,6 +1032,9 @@ class OverseerImpl implements AgentHooks {
       times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
     }
 
+    for (const subscription of this.storage.worktreeSyncSubscriptions.list())
+      if (subscription.retryAt) times.push(subscription.retryAt);
+
     let next = times.length > 0 ? Math.max(notBefore, Math.min(...times)) : null;
     if (next === this.#scheduledAlarm) return;
     this.#scheduledAlarm = next;
@@ -1063,6 +1064,9 @@ class OverseerImpl implements AgentHooks {
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
+          ...[...this.storage.worktreeSyncSubscriptions.list()]
+            .filter(record => record.retryAt && record.retryAt <= Date.now())
+            .map(record => this.drainWorktreeSubscription(record.sessionId)),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1146,8 +1150,7 @@ class OverseerImpl implements AgentHooks {
     // Count before I/O, so an eviction during lookup cannot reset the budget. Successful
     // preparation clears it: this budget never retries inference or external effects.
     let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
-    record = {...record, resumeAttempts,
-      ...(record.integration && {integration: {...record.integration, segmentId: crypto.randomUUID()}})};
+    record = {...record, resumeAttempts};
     this.storage.activeAgents.put(record);
     let aiModel: UserAiModelRecord | undefined;
     let failure: unknown;
@@ -1280,8 +1283,8 @@ class OverseerImpl implements AgentHooks {
     // by UserDurableObject.deleteWorkspace(), which drops the whole workspace's entries.)
     this.storage.gadgets.subscribe({
       add: () => this.markOutputsDirty(),
-      update: () => this.markOutputsDirty(),
-      remove: () => this.markOutputsDirty(),
+      update: () => { this.markOutputsDirty(); this.#wakeWorktreeSubscribers(); },
+      remove: () => { this.markOutputsDirty(); this.#revokeGitTransfers(); this.#wakeWorktreeSubscribers(); },
     });
 
     this.ctx.blockConcurrencyWhile(async () => {
@@ -1290,7 +1293,7 @@ class OverseerImpl implements AgentHooks {
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
-      migrateToActiveWorktreeCommands(this);
+      migrateToWorktreeSync(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -2494,7 +2497,8 @@ class OverseerImpl implements AgentHooks {
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
-                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
+                       submission?: {clientId: string, seq: number},
+                       replica?: ChatChangeRecord["replica"]): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
@@ -2509,6 +2513,7 @@ class OverseerImpl implements AgentHooks {
       author,
       change,
       ...(submission !== undefined ? {submission} : {}),
+      ...(replica !== undefined ? {replica} : {}),
     };
     this.storage.chatChanges.put(row);
 
@@ -2536,6 +2541,7 @@ class OverseerImpl implements AgentHooks {
     meta.lastActive = row.timestamp;
     this.storage.chatMeta.put(meta);
     this.emitChatChangeApplied(row);
+    this.#wakeWorktreeSubscribers();
     return row;
   }
 
@@ -2560,10 +2566,17 @@ class OverseerImpl implements AgentHooks {
   #pruneRetiredChatChanges(chatId: number): void {
     let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
 
+    const cursors = new Map<number, number>();
+    for (const record of this.storage.worktreeSyncSubscriptions.list()) {
+      if (this.storage.worktreeSyncSessions.get(record.sessionId)?.chatId !== chatId) continue;
+      const cursor = record.revision ?? record.bootstrap?.revision;
+      if (!cursor) continue;
+      const [generation, revision] = cursor.split(":").map(Number);
+      cursors.set(generation, Math.min(cursors.get(generation) ?? Infinity, revision));
+    }
     for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
-      if (row.retired && row.timestamp.getTime() < cutoff) {
-        this.storage.chatChanges.deleteRecord(row);
-      }
+      if (row.retired && row.timestamp.getTime() < cutoff &&
+          (cursors.get(row.generation) ?? Infinity) >= row.revision) this.storage.chatChanges.deleteRecord(row);
     }
   }
 
@@ -2970,15 +2983,9 @@ class OverseerImpl implements AgentHooks {
           // Retry through that view instead of ACKing an edit it has never seen.
           if (!step.replicaAccess && this.#worktreeReplicaTurns.get(chatId)?.access.flushReplica)
             throw new ReplicaChangedError();
-          let lease: WorktreeReplicaLease;
-          try { lease = this.requireReplicaLease(step.replicaCommit.leaseId); }
-          catch { throw new ReplicaChangedError(); }
-          if (this.replicaVersion(lease) !== lease.version) {
-            throw new ReplicaChangedError();
-          }
-          if (this.storage.worktreeReplicaCommits.get(step.replicaCommit.id)) {
-            throw new ReplicaChangedError();
-          }
+          const session = this.requireWorktreeSync(step.replicaCommit.sessionId);
+          if (session.chatId !== chatId || this.replicaHistoryRevision(chatId) !== step.replicaCommit.revision ||
+              this.storage.worktreeSyncCommits.get(step.replicaCommit.id)) throw new ReplicaChangedError();
         }
         let fresh = this.storage.chatMeta.get(chatId);
         if (!fresh) {
@@ -3013,7 +3020,7 @@ class OverseerImpl implements AgentHooks {
           }
           let content = cached.content;
 
-          for (let {change, pin} of step.changes) {
+          for (let [index, {change, pin}] of step.changes.entries()) {
             let newPins: ChatGadgetPinState[] = [];
             if (pin !== undefined) {
               let pins = this.chatCodeBase(fresh).pins;
@@ -3044,7 +3051,10 @@ class OverseerImpl implements AgentHooks {
             content = seeded;
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
+            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content, undefined,
+                step.replicaCommit && index === step.changes.length - 1 ? {
+                  sessionId: step.replicaCommit.sessionId, batchId: step.replicaCommit.batchId,
+                } : undefined);
           }
         }
 
@@ -3059,16 +3069,11 @@ class OverseerImpl implements AgentHooks {
           blueprintMerges: step.blueprintMerges,
         }) !== undefined;
         if (step.replicaCommit !== undefined) {
-          const receipt = step.replicaCommit;
-          const lease = this.requireReplicaLease(receipt.leaseId);
-          this.storage.worktreeReplicaCommits.put(receipt);
-          this.storage.worktreeReplicaLeases.put({...lease, version: this.replicaVersion(lease),
-            released: receipt.final});
+          this.storage.worktreeSyncCommits.put({...step.replicaCommit,
+            revision: this.replicaHistoryRevision(chatId)});
         }
         return materialized;
       });
-      // Closure follows the durable receipt, not a later live-revision check in the agent.
-      if (step.replicaCommit?.final) this.#closeCommandGit(step.replicaCommit.leaseId);
       step.replicaAccess?.accept();
       return materialized;
     } catch (err) {
@@ -5022,8 +5027,13 @@ class OverseerImpl implements AgentHooks {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
       // binding that makes buildPack() serve exactly this action's pending-push closure.
-      await gatekeeper.applyAction(record.action,
-          new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
+      let applying = true;
+      try {
+        await gatekeeper.applyAction(record.action, new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id,
+          (url, request) => this.pullConnectedRepository(url, request, record.caller, () => {
+            if (!applying || !this.storage.gatekeepers.get(record.gatekeeperId)) throw new Error("Action access ended.");
+          })));
+      } finally { applying = false; this.#revokeGitTransfers(); }
     }
     record.state = "approved";
     record.appliedAt = new Date();
@@ -5228,6 +5238,7 @@ class OverseerImpl implements AgentHooks {
 
     this.ctx.facets.delete(`gatekeeper${id}`);
     this.storage.gatekeepers.delete(id);
+    this.#revokeGitTransfers();
     this.#rebroadcastChatMeta(affectedChats);
   }
 
@@ -5271,20 +5282,8 @@ class OverseerImpl implements AgentHooks {
         // attributed to the collaborator, matching how accepted commits use the acting user's
         // profile.
         let initiator = execution.initiator;
-        return Promise.resolve(
-            new WorktreeSessionImpl(this, target.id, execution.worktree, async () => initiator,
-              integration => {
-                const live = this.#activeExecutions.get(caller.chatId);
-                if (live?.executionId !== target.executionId) throw new Error("Worktree session expired.");
-                const recipient = this.#integrationBindings(caller.chatId).get(integration);
-                if (recipient?.type !== "workpiece" || !this.storage.gatekeepers.get(recipient.id))
-                  throw new Error("Integration binding is unavailable.");
-                const origin = this.captureIntegrationOrigin(caller, recipient.id);
-                if (!origin) throw new Error("Worktree export requires an explicit integration grant.");
-                const binding = origin.worktrees?.find(tree => tree.checkoutId === target.id)?.binding;
-                if (!binding) throw new Error("Worktree binding is unavailable.");
-                return this.exportWorktree(recipient.id, origin, binding);
-              }));
+        return this.ctx.restore({type: "worktree", worktreeId: target.id, chatId: caller.chatId,
+          executionId: target.executionId, author: initiator});
       }
 
       case "exports":
@@ -5339,6 +5338,13 @@ class OverseerImpl implements AgentHooks {
   // ObserverLedgerHost: whether `executionId` is the executeCode invocation running for `chatId`.
   isLiveExecution(chatId: number, executionId: string): boolean {
     return this.#activeExecutions.get(chatId)?.executionId === executionId;
+  }
+
+  getActiveWorktreeSession(chatId: number, worktreeId: number, executionId: string): WorktreeSessionImpl {
+    const active = this.#activeExecutions.get(chatId);
+    if (!active?.worktree || active.executionId !== executionId ||
+        this.getWorktreeRecord(worktreeId).chatId !== chatId) throw new Error("Worktree execution ended.");
+    return new WorktreeSessionImpl(this, worktreeId, active.worktree, async () => active.initiator);
   }
 
   #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo,
@@ -6417,7 +6423,6 @@ class OverseerImpl implements AgentHooks {
   // scheduled -- marking without one would brick the connection until some unrelated restart came
   // along.
   #gatekeepersPendingRestart = new Set<number>();
-  #commandGitRequests = new Map<string, Set<AbortController>>();
   // Keep at most one paused chat's replay; advancing history or changing its inputs invalidates it.
   #integrationBindingCache?: {key: string; bindings: Map<string, ChatBindingEntry>};
 
@@ -6456,9 +6461,7 @@ class OverseerImpl implements AgentHooks {
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
         ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId)
         : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
-    const session = caller.from === "agent" && this.replicaGrant(id)
-      ? facet.startSession(queue, {chatId: `${this.ctx.id.toString()}:${caller.chatId}`})
-      : facet.startSession(queue);
+    const session = facet.startSession(queue);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
     return session;
   }
@@ -6488,382 +6491,418 @@ class OverseerImpl implements AgentHooks {
     return new Map(bindings);
   }
 
-  replicaSelection(chatId: number): WorktreeBase[] {
-    const context = this.getChatAgentContext(chatId);
-    const active = this.#worktreeReplicaTurns.get(chatId);
-    const names = new Map<WorkpieceId, string>();
-    for (const [name, entry] of this.#integrationBindings(chatId))
-      if (entry.type === "workpiece" && !names.has(entry.id)) names.set(entry.id, name);
-    const meta = this.storage.chatMeta.get(chatId);
-    const pins = meta ? new Map(this.chatCodeBase(meta).pins.map(pin => [pin.gadgetId, pin.baseCommit])) : new Map<number, string>();
-    return [...names].flatMap(([id, binding]) => {
-      const piece = this.storage.gadgets.get(id);
-      if (!piece || (piece.type === "worktree" && piece.chatId !== chatId) ||
-          (piece.type === "gadget" && piece.pending && piece.pending.chatId !== chatId)) return [];
-      const source = piece.type === "gadget" ? "gadget" as const :
-        context.scratch?.worktreeId === id ? "attachments" as const : "repository" as const;
-      return [{ checkoutId: id, binding,
-        // Accepted auto-commits exist only in the DO. Git hydration must keep the original
-        // source commit as the immutable lower; captured local commits and pending changes
-        // are materialized above it during bootstrap.
-        baseCommit: piece.type === "worktree" ? piece.baseCommit :
-          active?.access.getBaseCommit(id) ?? pins.get(id) ??
-          piece.commitId ?? null,
-        baseTree: null, source }];
-    });
-  }
-
-  async exportWorktree(gatekeeperId: number, origin: AgentIntegrationOrigin,
-      binding: string): Promise<WorktreeExport> {
-    this.checkWorktreeExportOrigin(gatekeeperId, origin);
-    const selected = origin.worktrees?.find(tree => tree.binding === binding);
-    const current = this.replicaSelection(origin.chatId).find(tree => tree.binding === binding);
-    if (!selected || !current || current.checkoutId !== selected.checkoutId ||
-        current.baseCommit !== selected.baseCommit || !this.isWorktree(selected.checkoutId)) {
-      throw new Error("Worktree binding is unavailable or changed while awaiting approval.");
-    }
-    const active = this.#worktreeReplicaTurns.get(origin.chatId)?.access;
-    if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0))
-      throw new Error("Workspace changed during worktree capture; retry.");
-    this.checkWorktreeExportOrigin(gatekeeperId, origin);
-    const piece = this.storage.gadgets.get(selected.checkoutId);
-    if (piece?.type !== "worktree") throw new Error("Expected a worktree.");
-    const worktree = {...selected, acceptedCommit: piece.pinBase, headCommit: piece.headCommit};
-    const pendingChanges = (this.#replicaOverlay(origin.chatId)[selected.checkoutId] ?? [])
-      .map(([path, change]) => ({path, change}));
-    if (codeChangeSerializedSize({[selected.checkoutId]: pendingChanges.map(({path, change}) => [path, change])}) >
-        1024 * 1024) throw new Error("Worktree capture exceeds its transform budget.");
-    const remote = worktree.source === "repository" && worktree.baseCommit &&
-      this.storage.gitObjectMetadata.get(worktree.baseCommit);
-    const sourcePack = !!remote && [...remote.onRemote, ...remote.pullableFrom]
-      .some(id => this.storage.gatekeepers.get(id));
-    let lease: WorktreeReplicaLease = {id: crypto.randomUUID(), gatekeeperId, chatId: origin.chatId,
-      turnId: origin.turnId, segmentId: origin.segmentId, worktree, version: this.replicaHistoryRevision(origin.chatId),
-      gitSources: origin.gitSources, pendingChanges, sourcePack, captureId: crypto.randomUUID()};
-    const previousLeases = [...this.storage.worktreeReplicaLeases.activeByWorktree.get(`${lease.chatId}:${worktree.checkoutId}`)];
-    for (const previous of previousLeases) {
-      if (previous.turnId !== lease.turnId || previous.version !== lease.version) {
-        // An old command cannot write against this revision; never let its failed lease
-        // prevent a fresh command from capturing the now-canonical view.
-        this.storage.worktreeReplicaLeases.put({...previous, released: true});
-      } else if (previous.gatekeeperId === gatekeeperId && previous.segmentId === origin.segmentId &&
-          previous.version === lease.version &&
-          [...this.storage.worktreeReplicaCommits.byLease.get(previous.id, {limit: 1})].length === 0) {
-        // Only an identical frozen input can reuse the old pack readers. In-turn commits can
-        // change the head without advancing the change-stream revision. Retire an untouched
-        // older capture rather than changing what its already-issued readers would serve.
-        const frozen = (value: WorktreeReplicaLease) => JSON.stringify([
-          value.worktree, value.pendingChanges, value.sourcePack, value.gitSources,
-        ]);
-        if (frozen(previous) === frozen(lease)) lease = {...previous, captureId: lease.captureId};
-        else this.storage.worktreeReplicaLeases.put({...previous, released: true});
-      } else {
-        throw new Error("A worktree command is already active.");
-      }
-    }
-    this.storage.worktreeReplicaLeases.put(lease);
-    try {
-      const pack = (source: boolean) => this.ctx.exports.WorktreeExportEndpoint({props: {
-        overseerId: this.ctx.id.toString(), leaseId: lease.id, source,
-      }});
-      const packs = [...lease.sourcePack ? [pack(true)] : [], pack(false)];
-      const gitRepositories: CommandGitRepository[] = [];
-      for (const [binding, id] of Object.entries(lease.gitSources ?? {})) {
-        // Optional remotes must not make mounting a worktree depend on an unrelated connector
-        // being reachable. Omission grants no Git access; the provider still enforces its scope.
-        try {
-          this.assertGatekeeperUsable(id);
-          const url = (await (await this.getGatekeeperFacet(id)).describe()).gitRepositoryUrl;
-          if (url) gitRepositories.push({binding, url, source: piece.sourceGatekeeperId === id});
-        } catch { /* An unavailable optional remote is not advertised. */ }
-      }
-      this.requireReplicaLease(lease.id);
-      if (this.replicaVersion(lease) !== lease.version) throw new Error("Workspace changed during worktree capture; retry.");
-      return {id: lease.id, binding, head: worktree.acceptedCommit ?? null, packs, pendingChanges, gitRepositories,
-        shallowCommit: lease.sourcePack ? lease.worktree.baseCommit : null,
-        git: this.ctx.exports.CommandGitEndpoint({props: {overseerId: this.ctx.id.toString(), leaseId: lease.id}}),
-        writeback: this.ctx.exports.WorktreeWritebackEndpoint({
-          props: {overseerId: this.ctx.id.toString(), leaseId: lease.id},
-        })};
-    } catch (error) {
-      const current = this.storage.worktreeReplicaLeases.get(lease.id);
-      if (current && current.captureId === lease.captureId && current.version === lease.version &&
-          [...this.storage.worktreeReplicaCommits.byLease.get(lease.id, {limit: 1})].length === 0)
-        this.storage.worktreeReplicaLeases.put({...current, released: true});
-      throw error;
-    }
-  }
-
-  async exportWorktreePack(id: string, source: boolean): Promise<Response> {
-    const lease = this.requireReplicaLease(id);
-    const stream = source ? await this.#worktreeSourcePack(lease) : await replicaCommitPack(this.gitCache,
-      lease.sourcePack ? lease.worktree : {...lease.worktree, baseCommit: null},
-      () => { this.requireReplicaLease(id); }, lease.pendingChanges ?? []);
-    return new Response(source ? stream : this.#commandGitStream(id, stream),
-      {headers: {"content-type": "application/x-git-packed-objects"}});
-  }
-
-  requireReplicaLease(id: string, receiptOnly = false): WorktreeReplicaLease {
-    const lease = this.storage.worktreeReplicaLeases.get(id);
-    if (!lease) throw new Error("Unknown worktree command.");
-    if (receiptOnly) return lease;
-    if (lease.released || !this.replicaGrant(lease.gatekeeperId))
-      throw new Error("Worktree command access ended.");
-    this.assertGatekeeperUsable(lease.gatekeeperId);
-    const execution = this.storage.activeAgents.get(lease.chatId)?.integration;
-    // A resumed DO invocation gets a new ephemeral segment, not a new command. The
-    // persisted return capability remains scoped to its original logical execution.
-    if (execution?.turnId !== lease.turnId)
-      throw new Error("Worktree command access ended.");
-    const current = this.replicaSelection(lease.chatId).find(tree => tree.checkoutId === lease.worktree.checkoutId);
-    if (!current || current.baseCommit !== lease.worktree.baseCommit)
-      throw new Error("Worktree binding changed.");
-    const piece = this.storage.gadgets.get(current.checkoutId);
-    if (piece?.type === "worktree" && piece.sourceGatekeeperId !== undefined) {
-      if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId))
-        throw new Error("Worktree source connection was removed.");
-      this.assertGatekeeperUsable(piece.sourceGatekeeperId);
-    }
-    return lease;
-  }
-
-  replicaVersion(lease: WorktreeReplicaLease): string {
-    return this.replicaHistoryRevision(lease.chatId);
-  }
-
-  #replicaOverlay(chatId: number): CodeChange {
-    const history = this.loadChatHistory(chatId);
-    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
-    const meta = this.storage.chatMeta.get(chatId)!;
-    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))
-      result = composeCodeChange(result, row.change);
-    return result;
-  }
-
-  async #worktreeSourcePack(lease: WorktreeReplicaLease): Promise<ReadableStream<Uint8Array>> {
-    const commit = lease.worktree.baseCommit!;
-    const metadata = this.storage.gitObjectMetadata.get(commit);
-    let cause: unknown;
-    for (const source of new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])) {
-      if (!this.storage.gatekeepers.get(source)) continue;
-      const request = this.#commandGitRequest(lease.id);
-      const requireLive = () => {
-        this.requireReplicaLease(lease.id);
-        request.signal.throwIfAborted();
-        if (!this.storage.gatekeepers.get(source)) throw new Error("Worktree source connection was removed.");
+  async pullConnectedRepository(url: string, request: Request, caller: GatekeeperCaller, check: () => void): Promise<Response> {
+    const normalize = (value: string) => {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash)
+        throw new Error("Git repository URLs must be credential-free HTTPS URLs.");
+      return parsed.origin + parsed.pathname.replace(/\/$/, "").replace(/\.git$/, "");
+    };
+    const target = normalize(url);
+    const gadget = caller.from === "gadget" && caller.gadgetId !== undefined
+      ? this.storage.gadgets.get(caller.gadgetId) : undefined;
+    const bindings = caller.from === "agent" ? this.#integrationBindings(caller.chatId)
+      : new Map(Object.entries(gadget?.type === "gadget" ? gadget.bindings : {})
+        .map(([name, edge]) => [name, {type: "workpiece" as const, id: edge.target}]));
+    for (const entry of bindings.values()) {
+      if (entry.type !== "workpiece" || !this.storage.gatekeepers.get(entry.id)) continue;
+      check();
+      const source = entry.id;
+      const live = () => {
+        check();
+        if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
         this.assertGatekeeperUsable(source);
       };
-      try {
-        requireLive();
-        const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "gitPull">>>;
-        requireLive();
-        const transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)),
-          [commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
-        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-        try {
-          requireLive();
-          reader = (await transfer.stream()).getReader();
-          requireLive();
-        } catch (error) {
-          await reader?.cancel(error).catch(() => {});
-          transfer[Symbol.dispose]();
-          throw error;
-        }
-        const pack = reader;
-        const cancel = () => { void pack.cancel().catch(() => {}); };
-        request.signal.addEventListener("abort", cancel, {once: true});
-        const done = () => {
-          request.signal.removeEventListener("abort", cancel);
-          request.forget();
-          transfer[Symbol.dispose]();
-        };
-        return new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              requireLive();
-              const {done: ended, value} = await pack.read();
-              requireLive();
-              if (!ended) { controller.enqueue(value); return; }
-              const status = await transfer.status();
-              requireLive();
-              if (status.state !== "complete") throw new Error(status.state === "failed"
-                ? status.message : "Git transfer did not complete.");
-              done();
-              controller.close();
-            } catch (error) {
-              done(); controller.error(error);
-              await pack.cancel(error).catch(() => {});
-            }
-          },
-          async cancel(reason) { done(); await pack.cancel(reason); },
-        }, {highWaterMark: 0});
-      } catch (error) {
-        request.forget();
-        this.requireReplicaLease(lease.id);
-        cause = error;
-      }
+      live();
+      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
+      const description = await facet.describe();
+      live();
+      if (!description.gitRepositoryUrl || normalize(description.gitRepositoryUrl) !== target) continue;
+      using observer = new NativeRpcStub<ObservationAuthorizer>(new SlashCommandAuthorizerImpl(this, source, caller, live));
+      const response = await facet.gitPull(request, observer);
+      try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
+      return new Response(response.body && this.#checkedGitStream(response.body, live), {
+        status: response.status, statusText: response.statusText,
+        headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
+      });
     }
-    throw new Error("No authorized source can hydrate this Git commit.", {cause});
+    throw new Error("No authorized repository connection for this Git URL. Connect it before running the command.");
   }
 
-  getWorktreeWritebackSession(id: string): WorktreeWritebackSession {
-    const host: WorktreeWritebackHost = {
-      lease: (id, receiptOnly) => this.requireReplicaLease(id, receiptOnly),
-      receipt: id => this.storage.worktreeReplicaCommits.get(id),
-      version: lease => this.replicaVersion(lease),
-      flush: async lease => {
-        const active = this.#worktreeReplicaTurns.get(lease.chatId)?.access;
-        return active?.flushReplica ? active.flushReplica({}, active.getRevision?.() ?? 0) : true;
-      },
-      assertPathWritable: async (lease, path) => {
-        requireReplicaPath(path);
-        const commit = lease.worktree.acceptedCommit ?? lease.worktree.baseCommit;
-        if (commit) await this.gitCache.assertWorktreePathWritable(commit, path);
-      },
-      commit: async (lease, version, change, receipt) => {
-        this.requireReplicaLease(lease.id);
-        if (this.replicaVersion(lease) !== version) return false;
-        const active = this.#worktreeReplicaTurns.get(lease.chatId);
-        try {
-          if (active?.access.flushReplica) {
-            await active.access.flushReplica(change,
-            active.access.getRevision?.() ?? 0, receipt, () => {
-              this.requireReplicaLease(lease.id);
-              return this.replicaVersion(lease) === version && !this.storage.worktreeReplicaCommits.get(receipt.id);
-            });
-            return this.storage.worktreeReplicaCommits.get(receipt.id)?.digest === receipt.digest;
-          }
-          await this.commitAgentStep(lease.chatId,
-            {type: "agent", id: lease.gatekeeperId.toString(), name: "Worktree command"}, [], {
-              changes: Object.keys(change).length ? [{change}] : [], createdGadgets: [], createdWorktrees: [],
-              addedBindings: [], worktreeCommits: [], blueprintMerges: [], replicaCommit: receipt,
-            });
-          // An empty final batch has no transcript changes, but still commits its closure receipt.
-          const accepted = this.storage.worktreeReplicaCommits.get(receipt.id)?.digest === receipt.digest;
-          return accepted;
-        } catch (error) {
-          if (!(error instanceof ReplicaChangedError)) throw error;
-          if (!active && this.#worktreeReplicaTurns.get(lease.chatId)?.access.flushReplica)
-            return host.commit(lease, version, change, receipt);
-          return false;
-        }
-      },
+  async worktreeGitPull(chatId: number, worktreeId: number, request: Request): Promise<Response> {
+    const check = () => {
+      if (this.getWorktreeRecord(worktreeId).chatId !== chatId || !this.storage.chatMeta.get(chatId))
+        throw new Error("Worktree access ended.");
+      const source = this.getWorktreeRecord(worktreeId).sourceGatekeeperId;
+      if (source !== undefined) {
+        if (!this.storage.gatekeepers.get(source)) throw new Error("Worktree source removed.");
+        this.assertGatekeeperUsable(source);
+      }
     };
-    return new WorktreeWritebackSession(host, id);
+    check();
+    const piece = this.getWorktreeRecord(worktreeId);
+    const metadata = this.storage.gitObjectMetadata.get(piece.baseCommit);
+    const sources = [...new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])]
+      .filter(id => this.storage.gatekeepers.get(id));
+    const pending = (this.#replicaOverlay(chatId)[worktreeId] ?? []).map(([path, change]) => ({path, change}));
+    const localHeads = [piece.pinBase];
+    const subscriptions = Array.from(this.storage.worktreeSyncSubscriptions.list());
+    for (const record of subscriptions) {
+      const session = this.storage.worktreeSyncSessions.get(record.sessionId);
+      if (session?.worktreeId !== worktreeId) continue;
+      for (const head of [record.head, record.bootstrap?.head]) if (head) localHeads.push(head);
+      // A slow receiver may still be fetching an older binary event after a newer edit has
+      // replaced it in the current overlay. Keep unacknowledged object references pullable.
+      pending.push(...record.bootstrap?.changes ?? []);
+      if (record.revision) for (const row of this.#syncRows(session, record.revision) ?? [])
+        pending.push(...(row.change[worktreeId] ?? []).map(([path, change]) => ({path, change})));
+    }
+    return worktreeGitPull(this.gitCache, {head: piece.headCommit, localHeads, shallowCommit: sources.length ? piece.baseCommit : null,
+      pending, check,
+      remotePull: async request => {
+        const source = piece.sourceGatekeeperId ?? sources[0];
+        if (source === undefined) throw new Error("This worktree has no upstream repository.");
+        const live = () => {
+          check();
+          if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
+          this.assertGatekeeperUsable(source);
+        };
+        live();
+        const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
+        live();
+        using observer = new NativeRpcStub<ObservationAuthorizer>(new SlashCommandAuthorizerImpl(
+          this, source, {from: "agent", chatId}, live));
+        const response = await facet.gitPull(request, observer);
+        try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
+        return new Response(response.body && this.#checkedGitStream(response.body, live), {
+          status: response.status, headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
+        });
+      }, upstream: async () => {
+        let cause: unknown;
+        for (const source of sources) {
+          const requireLive = () => {
+            check();
+            if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
+            this.assertGatekeeperUsable(source);
+          };
+          let transfer: Awaited<ReturnType<typeof startGitPull>> | undefined;
+          try {
+            requireLive();
+            const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
+            requireLive();
+            transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)), [piece.baseCommit],
+              {type: "commit", commitHistory: {kind: "depth", depth: 1}});
+            const pack = await transfer.stream();
+            requireLive();
+            const active = transfer;
+            return this.#checkedGitStream(pack, requireLive, async () => {
+              const status = await active.status();
+              if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
+            }, () => active[Symbol.dispose]());
+          } catch (error) { transfer?.[Symbol.dispose](); cause = error; }
+        }
+        throw new Error("No authorized Git source could supply the worktree base.", {cause});
+      }}, request);
   }
 
-  #closeCommandGit(id: string): void {
-    for (const request of this.#commandGitRequests.get(id) ?? []) request.abort();
-    this.#commandGitRequests.delete(id);
+  #gitTransfers = new Set<{check(): void; abort: AbortController}>();
+
+  #revokeGitTransfers(): void {
+    for (const transfer of this.#gitTransfers) {
+      try { transfer.check(); } catch (error) { transfer.abort.abort(error); }
+    }
   }
 
-  #commandGitRequest(id: string): {signal: AbortSignal; forget(): void} {
-    const abort = new AbortController();
-    const requests = this.#commandGitRequests.get(id) ?? new Set<AbortController>();
-    this.#commandGitRequests.set(id, requests);
-    requests.add(abort);
-    return {signal: abort.signal, forget: () => {
-      requests.delete(abort);
-      if (!requests.size && this.#commandGitRequests.get(id) === requests) this.#commandGitRequests.delete(id);
-    }};
-  }
-
-  // Fence every chunk, including headers/payloads emitted separately by the local pack builder.
-  #commandGitStream(id: string, body: ReadableStream<Uint8Array>,
-      check: () => void = () => { this.requireReplicaLease(id); },
-      request = this.#commandGitRequest(id)): ReadableStream<Uint8Array> {
-    const {signal, forget} = request;
-    const reader = body.getReader();
-    const cancel = () => { void reader.cancel().catch(() => {}); };
-    const done = () => { signal.removeEventListener("abort", cancel); forget(); };
-    try { check(); signal.throwIfAborted(); }
-    catch (error) { done(); void reader.cancel(error).catch(() => {}); throw error; }
-    signal.addEventListener("abort", cancel, {once: true});
-    return new ReadableStream<Uint8Array>({
+  #checkedGitStream(stream: ReadableStream<Uint8Array>, check: () => void,
+      complete?: () => Promise<void>, release?: () => void): ReadableStream<Uint8Array> {
+    const reader = stream.getReader();
+    const entry = {check, abort: new AbortController()};
+    this.#gitTransfers.add(entry);
+    const cancel = () => { void reader.cancel(entry.abort.signal.reason).catch(() => {}); };
+    entry.abort.signal.addEventListener("abort", cancel, {once: true});
+    let released = false;
+    const done = () => {
+      if (released) return;
+      released = true;
+      entry.abort.signal.removeEventListener("abort", cancel);
+      this.#gitTransfers.delete(entry);
+      release?.();
+    };
+    return new ReadableStream({
       async pull(controller) {
         try {
-          check(); signal.throwIfAborted();
-          const chunk = await reader.read();
-          check(); signal.throwIfAborted();
-          if (chunk.done) { done(); controller.close(); }
-          else controller.enqueue(chunk.value);
-        } catch (error) {
-          done(); controller.error(error); await reader.cancel(error).catch(() => {});
-        }
+          check(); entry.abort.signal.throwIfAborted();
+          const item = await reader.read();
+          check(); entry.abort.signal.throwIfAborted();
+          if (item.done) {
+            await complete?.(); check(); done(); controller.close();
+          } else controller.enqueue(item.value);
+        } catch (error) { done(); controller.error(error); await reader.cancel(error).catch(() => {}); }
       },
       async cancel(reason) { done(); await reader.cancel(reason); },
     }, {highWaterMark: 0});
   }
 
-  async commandGitPull(id: string, binding: string, request: Request): Promise<Response> {
-    const check = () => {
-      const lease = this.requireReplicaLease(id);
-      const source = lease.gitSources?.[binding];
-      const current = this.#integrationBindings(lease.chatId).get(binding);
-      if (source === undefined || current?.type !== "workpiece" || current.id !== source ||
-          !this.storage.gatekeepers.get(source))
-        throw new Error("Git repository binding is unavailable to this command.");
-      this.assertGatekeeperUsable(source);
-      return {lease, source};
+  requireWorktreeSync(id: string) {
+    const session = this.storage.worktreeSyncSessions.get(id);
+    if (!session) throw new Error("Unknown worktree sync session.");
+    const piece = this.getWorktreeRecord(session.worktreeId);
+    if (piece.chatId !== session.chatId || !this.storage.chatMeta.get(session.chatId))
+      throw new Error("Worktree access ended.");
+    if (piece.sourceGatekeeperId !== undefined) {
+      if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId)) throw new Error("Worktree source removed.");
+      this.assertGatekeeperUsable(piece.sourceGatekeeperId);
+    }
+    return session;
+  }
+
+  async openWorktreeSync(chatId: number, worktreeId: number, author: AiChatAuthorInfo) {
+    const piece = this.getWorktreeRecord(worktreeId);
+    if (piece.chatId !== chatId) throw new Error("Worktree belongs to another chat.");
+    const session = {id: crypto.randomUUID(), chatId, worktreeId, author};
+    this.storage.worktreeSyncSessions.put(session);
+    this.requireWorktreeSync(session.id);
+    await this.#flushWorktreeTurn(chatId);
+    return this.ctx.restore({type: "worktree-sync", sessionId: session.id});
+  }
+
+  async #flushWorktreeTurn(chatId: number): Promise<void> {
+    const active = this.#worktreeReplicaTurns.get(chatId)?.access;
+    if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0))
+      throw new ReplicaChangedError("Workspace changed while flushing the live turn; retry.");
+  }
+
+  #replicaOverlay(chatId: number): CodeChange {
+    const history = this.loadChatHistory(chatId);
+    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
+    const meta = this.getChatMetaOrThrow(chatId);
+    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))
+      result = composeCodeChange(result, row.change);
+    return result;
+  }
+
+  #syncBase(session: WorktreeSyncRecord) {
+    const piece = this.getWorktreeRecord(session.worktreeId);
+    const source = this.storage.gitObjectMetadata.get(piece.baseCommit);
+    return {revision: this.replicaHistoryRevision(session.chatId), head: piece.pinBase,
+      shallowCommit: source && [...source.onRemote, ...source.pullableFrom]
+        .some(id => this.storage.gatekeepers.get(id)) ? piece.baseCommit : null};
+  }
+
+  #syncBoundary(session: WorktreeSyncRecord, generation: number) {
+    const meta = this.getChatMetaOrThrow(session.chatId);
+    const base = this.chatCodeBase(meta);
+    const boundary = this.storage.chatChangeBoundaries.get(session.chatId);
+    if (base.prior?.generation !== generation || boundary?.generation !== generation ||
+        !boundary.boundaries.some(item => item.gadgetId === session.worktreeId &&
+          item.commitId === this.getWorktreeRecord(session.worktreeId).pinBase)) return;
+    return boundary;
+  }
+
+  #syncRows(session: WorktreeSyncRecord, after: string, through = this.replicaHistoryRevision(session.chatId)) {
+    const parse = (value: string) => {
+      if (!/^\d+:\d+$/.test(value)) throw new Error("Invalid worktree revision.");
+      const result = value.split(":").map(Number);
+      if (result.some(n => !Number.isSafeInteger(n))) throw new Error("Invalid worktree revision.");
+      return result;
     };
-    const {lease, source} = check();
-    const {signal, forget} = this.#commandGitRequest(id);
-    try {
-      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
-        Required<Pick<Gatekeeper<any>, "gitPull">>>;
-      check();
-      using observer = new NativeRpcStub<ObservationAuthorizer>(new SlashCommandAuthorizerImpl(
-        this, source, {from: "agent", chatId: lease.chatId}, () => { check(); }));
-      // An AbortSignal attached to a Request is not serializable on the supported RPC runtime.
-      // Fence response delivery locally, including cancelling an already-open upstream stream.
-      const response = await facet.gitPull(new Request(request.url, {
-        method: request.method, headers: request.headers, body: request.body,
-      }), observer);
-      try { check(); signal.throwIfAborted(); }
-      catch (error) { await response.body?.cancel(error); throw error; }
-      // Only Git protocol metadata leaves the credentialed provider. In particular, never
-      // forward upstream cookies or authentication/proxy headers into the guest.
-      const init = {status: response.status, statusText: response.statusText,
-        headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"}};
-      if (!response.body) { forget(); return new Response(null, init); }
-      return new Response(this.#commandGitStream(id, response.body, check, {signal, forget}), init);
-    } catch (error) { forget(); throw error; }
+    const [generation, revision] = parse(after), [currentGeneration, currentRevision] = parse(through);
+    if (generation === currentGeneration)
+      return revision > currentRevision ? undefined : this.listChatChangesSince(session.chatId, generation, revision, currentRevision);
+    // Reuse the existing content-preserving accept boundary. Destructive reverts require a
+    // fresh bootstrap after the guest reconciles its outstanding batch receipts.
+    const boundary = this.#syncBoundary(session, generation);
+    if (!boundary || revision > boundary.finalRevision) return;
+    const old = this.listChatChangesSince(session.chatId, generation, revision, boundary.finalRevision);
+    const current = this.listChatChangesSince(session.chatId, currentGeneration, 0, currentRevision);
+    return old && current ? [...old, ...current] : undefined;
   }
 
-  replicaGrant(gatekeeperId: number): boolean {
-    const record = this.storage.gatekeepers.get(gatekeeperId);
-    const vendor = record && gatekeeperVendorId(record);
-    return !!vendor && agentIntegrationReplicaGrant(this.env.AGENT_INTEGRATION_GRANTS, vendor);
-  }
-
-  // Identity lives on the existing execution row: pauses/resets keep it, new prompts replace it.
-  captureAgentTurn(chatId: number): AgentIntegrationOrigin | undefined {
-    const row = this.storage.activeAgents.get(chatId);
-    if (!row || !this.storage.chatMeta.get(chatId)?.activeAgent) return;
-    if (!row.integration) {
-      row.integration = {turnId: crypto.randomUUID(), segmentId: crypto.randomUUID()};
-      this.storage.activeAgents.put(row);
+  async subscribeWorktree(sessionId: string, subscriber: NativeRpcStub<WorktreeSubscriber>, after?: string) {
+    await this.#flushWorktreeTurn(this.requireWorktreeSync(sessionId).chatId);
+    const session = this.requireWorktreeSync(sessionId);
+    const state = this.#syncBase(session);
+    const old = this.storage.worktreeSyncSubscriptions.get(sessionId);
+    const id = crypto.randomUUID();
+    const replay = after !== undefined && this.#syncRows(session, after) !== undefined;
+    const changes = (this.#replicaOverlay(session.chatId)[session.worktreeId] ?? [])
+      .map(([path, change]) => ({path, change}));
+    if (codeChangeSerializedSize({[session.worktreeId]: changes.map(({path, change}) => [path, change])}) > 1024 * 1024)
+      throw new Error("Worktree bootstrap exceeds its transform budget; commit the pending changes first.");
+    // Registration and the captured canonical state are synchronous: there is no initial
+    // capture/subscription gap, even when a callback or its Git hydration takes a long time.
+    this.storage.worktreeSyncSubscriptions.put({sessionId, id, subscriber, retryAt: Date.now(),
+      ...(replay ? {revision: after} : {bootstrap: {...state, changes}})});
+    old?.subscriber[Symbol.dispose]();
+    this.#updateAlarm();
+    // Replacement may have joined an older in-flight drain. Do not report ready until this
+    // registration's own initial state has actually been applied and durably ACKed.
+    for (;;) {
+      await this.drainWorktreeSubscription(sessionId);
+      const current = this.storage.worktreeSyncSubscriptions.get(sessionId);
+      if (current?.id !== id) throw new Error("Worktree subscription replaced during initialization.");
+      if (!current.bootstrap && current.revision === this.replicaHistoryRevision(session.chatId)) break;
     }
-    return {chatId, ...row.integration};
+    return this.ctx.restore({type: "worktree-subscription", sessionId, subscriptionId: id});
   }
 
-  captureIntegrationOrigin(caller: GatekeeperCaller, gatekeeperId: number): AgentIntegrationOrigin | undefined {
-    if (caller.from !== "agent" || !this.replicaGrant(gatekeeperId)) return;
-    const origin = this.captureAgentTurn(caller.chatId);
-    return origin && {...origin, worktrees: this.replicaSelection(caller.chatId),
-      gitSources: Object.fromEntries([...this.#integrationBindings(caller.chatId)].flatMap(([name, entry]) =>
-        entry.type === "workpiece" && this.storage.gatekeepers.get(entry.id) ? [[name, entry.id]] : []))};
+  unsubscribeWorktree(sessionId: string, subscriptionId: string): void {
+    const current = this.storage.worktreeSyncSubscriptions.get(sessionId);
+    if (current?.id !== subscriptionId) return;
+    this.storage.worktreeSyncSubscriptions.delete(sessionId);
+    current.subscriber[Symbol.dispose]();
+    this.#updateAlarm();
   }
 
-  checkWorktreeExportOrigin(gatekeeperId: number, origin: AgentIntegrationOrigin): void {
-    this.assertGatekeeperUsable(gatekeeperId);
-    if (!this.replicaGrant(gatekeeperId)) throw new Error("Agent integration grant revoked.");
-    const row = this.storage.activeAgents.get(origin.chatId);
-    if (row?.integration?.turnId !== origin.turnId || row.integration.segmentId !== origin.segmentId ||
-        !this.storage.chatMeta.get(origin.chatId)?.activeAgent) {
-      throw new Error("Agent integration context expired.");
+  #worktreeDrains = new Map<string, Promise<void>>();
+
+  drainWorktreeSubscription(sessionId: string): Promise<void> {
+    const running = this.#worktreeDrains.get(sessionId);
+    if (running) return running;
+    const drain = this.#drainWorktreeSubscription(sessionId).finally(() => {
+      if (this.#worktreeDrains.get(sessionId) === drain) this.#worktreeDrains.delete(sessionId);
+      this.#updateAlarm();
+    });
+    this.#worktreeDrains.set(sessionId, drain);
+    return drain;
+  }
+
+  async #drainWorktreeSubscription(sessionId: string): Promise<void> {
+    for (;;) {
+      const record = this.storage.worktreeSyncSubscriptions.get(sessionId);
+      if (!record) return;
+      let session: WorktreeSyncRecord;
+      try { session = this.requireWorktreeSync(sessionId); }
+      catch (error) { this.unsubscribeWorktree(sessionId, record.id); throw error; }
+      // Never queue callbacks in memory. Read one canonical row after the last durable ACK.
+      const current = () => this.storage.worktreeSyncSubscriptions.get(sessionId)?.id === record.id;
+      try {
+        if (record.bootstrap) {
+          const {changes, baseApplied, ...state} = record.bootstrap;
+          if (!baseApplied) {
+            await record.subscriber.setBaseCommit(state);
+            this.requireWorktreeSync(sessionId);
+            if (!current()) return;
+            record.bootstrap.baseApplied = true;
+            this.storage.worktreeSyncSubscriptions.put(record);
+          }
+          await record.subscriber.change(state.revision, `bootstrap:${record.id}`, changes);
+          this.requireWorktreeSync(sessionId);
+          if (!current()) return;
+          record.revision = state.revision;
+          record.head = state.head;
+          delete record.bootstrap;
+          this.storage.worktreeSyncSubscriptions.put(record);
+          continue;
+        }
+        const state = this.#syncBase(session);
+        const rows = this.#syncRows(session, record.revision!);
+        if (!rows) {
+          // A destructive generation change cannot be represented as an OT from the old
+          // base. Stop rather than resetting a potentially dirty guest behind its back.
+          throw new Error("Worktree cursor expired; reconcile submissions and resubscribe.");
+        }
+        const generation = Number(record.revision!.split(":")[0]);
+        const currentGeneration = Number(state.revision.split(":")[0]);
+        const row = rows[0];
+        if (generation !== currentGeneration && (!row || row.generation !== generation)) {
+          const checkpoint = {...state, revision: `${currentGeneration}:0`};
+          await record.subscriber.setBaseCommit(checkpoint);
+          this.requireWorktreeSync(sessionId);
+          if (!current()) return;
+          record.revision = checkpoint.revision;
+          record.head = checkpoint.head;
+          this.storage.worktreeSyncSubscriptions.put(record);
+          continue;
+        }
+        if (row) {
+          await record.subscriber.change(`${row.generation}:${row.revision}`,
+            row.replica?.sessionId === sessionId ? row.replica.batchId : `do:${row.generation}:${row.revision}`,
+            (row.change[session.worktreeId] ?? []).map(([path, change]) => ({path, change})));
+          this.requireWorktreeSync(sessionId);
+          if (!current()) return;
+          record.revision = `${row.generation}:${row.revision}`;
+          this.storage.worktreeSyncSubscriptions.put(record);
+          continue;
+        }
+        if (record.head !== state.head) {
+          await record.subscriber.setBaseCommit(state);
+          this.requireWorktreeSync(sessionId);
+          if (!current()) return;
+          record.head = state.head;
+        }
+        record.retryAt = 0;
+        this.storage.worktreeSyncSubscriptions.put(record);
+        return;
+      } catch (error) {
+        if (current()) this.storage.worktreeSyncSubscriptions.put({...record, retryAt: Date.now() + 1000});
+        throw error;
+      }
     }
+  }
+
+  #wakeWorktreeSubscribers(): void {
+    for (const record of this.storage.worktreeSyncSubscriptions.list()) {
+      this.storage.worktreeSyncSubscriptions.put({...record, retryAt: Date.now()});
+      this.ctx.waitUntil(Promise.resolve().then(() => this.drainWorktreeSubscription(record.sessionId)).catch(error => {
+        this.logger.warn("worktree subscription delivery interrupted", {
+          event: "worktree.subscription.retry", error,
+        });
+      }));
+    }
+    this.#updateAlarm();
+  }
+
+  async submitWorktreeChanges(sessionId: string, batchId: string, baseRevision: string,
+      changes: FileChangeByPath[]): Promise<{revision: string}> {
+    const session = this.requireWorktreeSync(sessionId);
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(batchId)) throw new Error("Invalid worktree batch ID.");
+    const change = worktreeBatch(session.worktreeId, changes);
+    this.#validateByteChanges(change);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify({baseRevision, changes})))).toHex();
+    const id = `${sessionId}:${batchId}`;
+    const accepted = () => {
+      const receipt = this.storage.worktreeSyncCommits.get(id);
+      if (!receipt) return;
+      if (receipt.digest !== digest) throw new Error("Worktree batch ID reused with different content.");
+      return {revision: receipt.revision};
+    };
+    for (let attempt = 0; attempt < 8; ++attempt) {
+      this.requireWorktreeSync(sessionId);
+      const prior = accepted();
+      if (prior) return prior;
+      try {
+        await this.#flushWorktreeTurn(session.chatId);
+        const version = this.replicaHistoryRevision(session.chatId);
+        const rows = this.#syncRows(session, baseRevision, version);
+        if (!rows) throw new Error("Worktree cursor expired; reconcile submissions and resubscribe.");
+        let transformed = change;
+        for (const row of rows) transformed = transformCodeChange(row.change, transformed).b;
+        const base = this.getWorktreeRecord(session.worktreeId).pinBase;
+        for (const [path] of transformed[session.worktreeId] ?? [])
+          await this.gitCache.assertWorktreePathWritable(base, path);
+        const receipt = {id, sessionId, batchId, digest, revision: version};
+        const active = this.#worktreeReplicaTurns.get(session.chatId);
+        if (active?.access.flushReplica) {
+          await active.access.flushReplica(transformed, active.access.getRevision?.() ?? 0, receipt,
+            () => this.replicaHistoryRevision(session.chatId) === version && !accepted());
+        } else {
+          await this.commitAgentStep(session.chatId, session.author, [], {
+            changes: Object.keys(transformed).length ? [{change: transformed}] : [],
+            createdGadgets: [], createdWorktrees: [], addedBindings: [], worktreeCommits: [],
+            blueprintMerges: [], replicaCommit: receipt,
+          });
+        }
+        const result = accepted();
+        if (result) return result;
+      } catch (error) {
+        const result = accepted();
+        if (result) return result;
+        if (!(error instanceof ReplicaChangedError)) throw error;
+      }
+    }
+    throw new Error("Worktree changed too quickly; retry the identical batch.");
   }
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
@@ -10800,8 +10839,18 @@ class OverseerImpl implements AgentHooks {
   }
 
   restore(params: OverseerRestoreParams)
-      : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> {
+      : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> |
+        WorktreeEndpoint | WorktreeSyncEndpoint | WorktreeSubscriptionEndpoint {
     switch (params.type) {
+      case "worktree":
+        if (this.getWorktreeRecord(params.worktreeId).chatId !== params.chatId) throw new Error("Worktree access ended.");
+        return new WorktreeEndpoint(this, params);
+      case "worktree-sync":
+        this.requireWorktreeSync(params.sessionId);
+        return new WorktreeSyncEndpoint(this, params.sessionId);
+      case "worktree-subscription":
+        return new WorktreeSubscriptionEndpoint(this, params.sessionId, params.subscriptionId);
+
       case "gadget": {
         if (params.codeId) {
           // The forger worker being loaded through ctx.restore() by forgeRestoreStubForBinding().
@@ -10835,6 +10884,9 @@ class OverseerImpl implements AgentHooks {
 }
 
 type OverseerRestoreParams = {
+  type: "worktree"; worktreeId: number; chatId: number; executionId: string; author: AiChatAuthorInfo;
+} | {type: "worktree-sync"; sessionId: string}
+  | {type: "worktree-subscription"; sessionId: string; subscriptionId: string} | {
   // This is a stub pointing at the gadget. [restore]() will return the facet stub.
   type: "gadget";
 
@@ -10895,20 +10947,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async alarm(info?: AlarmInvocationInfo) {
     await this.impl.runAlarmTasks(info?.retryCount);
-  }
-
-  /** Only the lease ID is accepted; the returned session never exposes the overseer or Git KV. */
-  getWorktreeWritebackSession(leaseId: string): WorktreeWritebackSession {
-    return this.impl.getWorktreeWritebackSession(leaseId);
-  }
-
-  /** Re-enter the original command's authority for each read, including after a DO reset. */
-  exportWorktreePack(leaseId: string, source: boolean): Promise<Response> {
-    return this.impl.exportWorktreePack(leaseId, source);
-  }
-
-  commandGitPull(leaseId: string, binding: string, request: Request): Promise<Response> {
-    return this.impl.commandGitPull(leaseId, binding, request);
   }
 
   // Initialize a brand-new workspace's storage. (Before git-backed code storage this also wrote
@@ -13936,7 +13974,11 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
 
   async getGitCache(): Promise<GitCache> {
     this.check?.();
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
+      (url, request) => this.impl.pullConnectedRepository(url, request, this.caller, () => {
+        this.check?.();
+        if (!this.impl.storage.gatekeepers.get(this.gatekeeperId)) throw new Error("Connection removed.");
+      }));
   }
 }
 
@@ -13997,45 +14039,77 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   }));
 }
 
-/** Persistable raw pack reader for a frozen export; never exposes chat or turn APIs. */
+/** Persistent Worktree facade; file tools retain their original execution guard. */
 @validateRpc()
-export class WorktreeExportEndpoint extends WorkerEntrypoint<Cloudflare.Env,
-    {overseerId: string; leaseId: string; source: boolean}> {
-  async fetch(request: Request): Promise<Response> {
-    if (request.method !== "GET") return new Response(null, {status: 405});
-    return this.ctx.exports.OverseerDurableObject.get(
-      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
-      .exportWorktreePack(this.ctx.props.leaseId, this.ctx.props.source);
+class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeIntegration {
+  constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
+  // The returned persistent stub already targets a validated RpcTarget. The validator's
+  // additional server-side Proxy around a native stub loses its RPC methods on serialization.
+  @skipRpcValidation()
+  async getSyncSession(): Promise<NativeRpcStub<WorktreeSyncSession>> {
+    if (arguments.length) throw new Error("getSyncSession takes no arguments.");
+    return this.impl.openWorktreeSync(this.props.chatId, this.props.worktreeId, this.props.author);
+  }
+  async gitPull(request: Request): Promise<Response> {
+    return this.impl.worktreeGitPull(this.props.chatId, this.props.worktreeId, request);
+  }
+  async listFiles(...args: Parameters<Worktree["listFiles"]>): ReturnType<Worktree["listFiles"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).listFiles(...args);
+  }
+  async readFile(...args: Parameters<Worktree["readFile"]>): ReturnType<Worktree["readFile"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).readFile(...args);
+  }
+  async writeFile(...args: Parameters<Worktree["writeFile"]>): ReturnType<Worktree["writeFile"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).writeFile(...args);
+  }
+  async readBytes(...args: Parameters<Worktree["readBytes"]>): ReturnType<Worktree["readBytes"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).readBytes(...args);
+  }
+  async writeBytes(...args: Parameters<Worktree["writeBytes"]>): ReturnType<Worktree["writeBytes"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).writeBytes(...args);
+  }
+  async deleteFile(...args: Parameters<Worktree["deleteFile"]>): ReturnType<Worktree["deleteFile"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).deleteFile(...args);
+  }
+  async grep(...args: Parameters<Worktree["grep"]>): ReturnType<Worktree["grep"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).grep(...args);
+  }
+  async structuredGrep(...args: Parameters<Worktree["structuredGrep"]>): ReturnType<Worktree["structuredGrep"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).structuredGrep(...args);
+  }
+  async commit(...args: Parameters<Worktree["commit"]>): ReturnType<Worktree["commit"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).commit(...args);
+  }
+  async diff(...args: Parameters<Worktree["diff"]>): ReturnType<Worktree["diff"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).diff(...args);
+  }
+  async structuredDiff(...args: Parameters<Worktree["structuredDiff"]>): ReturnType<Worktree["structuredDiff"]> {
+    return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).structuredDiff(...args);
   }
 }
 
-/** Persistent, command-scoped write-only capability. Each call re-enters its owning DO. */
+/** Persisted batch receipts and callback positions outlive an individual DO invocation. */
 @validateRpc()
-export class WorktreeWritebackEndpoint extends WorkerEntrypoint<Cloudflare.Env,
-    {overseerId: string; leaseId: string}> implements WorktreeWriteback {
-  async submitChanges(batchId: string, changes: FileChangeByPath[], final: boolean): Promise<void> {
-    using session = await this.ctx.exports.OverseerDurableObject.get(
-      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
-      .getWorktreeWritebackSession(this.ctx.props.leaseId);
-    await session.submitChanges(batchId, changes, final);
+class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSession {
+  constructor(private impl: OverseerImpl, private sessionId: string) { super(); }
+  // Preserve the native persistent return stub; validate the two inputs before storing them.
+  @skipRpcValidation()
+  async subscribe(subscriber: NativeRpcStub<WorktreeSubscriber>, after?: string): Promise<NativeRpcStub<WorktreeSubscription>> {
+    if (arguments.length > 2 || !(subscriber instanceof NativeRpcStub) ||
+        (after !== undefined && typeof after !== "string")) throw new Error("Invalid worktree subscription.");
+    return this.impl.subscribeWorktree(this.sessionId, subscriber, after);
+  }
+  async submitChanges(batchId: string, revision: string, changes: FileChangeByPath[]) {
+    return this.impl.submitWorktreeChanges(this.sessionId, batchId, revision, changes);
   }
 }
 
-/** Persistable Git reader, fenced by the same durable command closure as writeback. */
+/** A stale handle can never unsubscribe a replacement registration. */
 @validateRpc()
-export class CommandGitEndpoint extends WorkerEntrypoint<Cloudflare.Env,
-    {overseerId: string; leaseId: string}> {
-  async fetch(request: Request): Promise<Response> {
-    const binding = request.headers.get("x-workshop-git-binding");
-    if (!binding) throw new Error("Git repository binding is required.");
-    return this.ctx.exports.OverseerDurableObject.get(
-      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
-      .commandGitPull(this.ctx.props.leaseId, binding, new Request(request.url, {
-        method: request.method, headers: request.headers, body: request.body,
-      }));
-  }
+class WorktreeSubscriptionEndpoint extends NativeRpcTarget implements WorktreeSubscription {
+  constructor(private impl: OverseerImpl, private sessionId: string, private subscriptionId: string) { super(); }
+  async unsubscribe(): Promise<void> { this.impl.unsubscribeWorktree(this.sessionId, this.subscriptionId); }
 }
-
 
 @validateRpc()
 class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
@@ -14063,7 +14137,14 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   async getGitCache(): Promise<GitCache> {
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
+    this.#checkAuthority();
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
+      (url, request) => this.impl.pullConnectedRepository(url, request, this.caller, () => {
+        this.#checkAuthority();
+        if (!this.impl.storage.gatekeepers.get(this.gatekeeperId)) throw new Error("Connection removed.");
+        if (this.caller.from === "agent" && this.executionId !== undefined &&
+            !this.impl.isLiveExecution(this.caller.chatId, this.executionId)) throw new Error("Execution ended.");
+      }));
   }
 
   submitAction(action: number, description: ActionDescription): Promise<void> {

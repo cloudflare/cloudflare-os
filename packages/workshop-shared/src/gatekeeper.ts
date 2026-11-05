@@ -1031,11 +1031,8 @@ export interface Gatekeeper<Session> extends DurableObject {
    * dependent actions. That said, there is no strict requirement that a gatekeeper does such
    * simulation -- it is really up to the gatekeeper author to decide what is appropriate for the
    * particular API.
-   *
-   * The kernel supplies context only for agent sessions of explicitly granted worktree
-   * integrations. It is caller metadata, not a turn API or continuing execution authority.
    */
-  startSession(approvalQueue: RpcStub<ApprovalQueue>, context?: GatekeeperSessionContext): Promise<Session>;
+  startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
 
   /**
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
@@ -1332,12 +1329,6 @@ export interface SlashCommandProvider extends RpcTarget {
     args: string,
     authorizer: RpcStub<ObservationAuthorizer>,
   ): Promise<SlashCommandResult>;
-}
-
-/** Trusted caller metadata supplied when the kernel opens an agent session. */
-export interface GatekeeperSessionContext {
-  /** Stable opaque chat identity, namespaced by workspace. */
-  chatId: string;
 }
 
 /**
@@ -1882,6 +1873,14 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  * for simulation purposes.
  */
 export interface GitCache extends RpcTarget {
+  /**
+   * Read-only Git smart HTTP for an already-connected repository URL. Resolves the source
+   * through workspace authorization at request time; credentials remain in its gatekeeper.
+   * Does not create a Worktree or import the returned pack into the workspace object cache.
+   * A missing connection rejects; connecting a new repository requires a separate user flow.
+   */
+  gitPull(repositoryUrl: string, request: Request): Promise<Response>;
+
   /**
    * Read the given git object from the cache. Returns null if the object is not in this
    * gatekeeper's view (see the interface doc for the view rules).

@@ -45,7 +45,7 @@ import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
-import { ReplicaChangedError, type WorktreeReplicaCommit } from "./worktree-replica";
+import { ReplicaChangedError, type WorktreeSyncCommit } from "./worktree-replica";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -158,7 +158,7 @@ export interface WorktreeTurnAccess {
 
   /** Durably accept a replica batch; validate its receipt/version inside the serialized barrier. */
   flushReplica?(change: CodeChange, revision: number,
-    commit?: WorktreeReplicaCommit, validate?: () => boolean): Promise<boolean>;
+    commit?: WorktreeSyncCommit, validate?: () => boolean): Promise<boolean>;
 
   /**
    * Buffer a commit() head advancement for the step barrier, which validates the previousHead
@@ -386,7 +386,7 @@ export interface AgentHooks {
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
         /** Idempotent receipt for changes accepted from a gatekeeper's replica. */
-        replicaCommit?: WorktreeReplicaCommit,
+        replicaCommit?: WorktreeSyncCommit,
         /** Publish prepared replica edits only after their transaction commits in this live pass. */
         replicaAccess?: {current: WorktreeTurnAccess, revision: number, accept(): void},
       },

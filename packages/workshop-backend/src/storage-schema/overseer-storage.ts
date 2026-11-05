@@ -27,7 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { FileChangeByPath } from "@gadgets/workshop-shared/agent-integration";
+import type { FileChangeByPath, WorktreeSubscriber } from "@gadgets/workshop-shared/agent-integration";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
@@ -36,31 +36,26 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
 
-/** Private bootstrap identities, not a workspace-wide public replica interface. */
-export type WorktreeBase = {
-  checkoutId: number; binding: string; baseCommit: string | null; baseTree: string | null;
-  acceptedCommit?: string | null; headCommit?: string | null;
-  source: "repository" | "attachments" | "gadget";
+/** One explicitly delegated Worktree capability; independent of agent turns and recipients. */
+export type WorktreeSyncRecord = {
+  id: string; chatId: number; worktreeId: WorkpieceId; author: AiChatAuthorInfo;
 };
 
-/** One command's frozen worktree and expected canonical version. */
-export type WorktreeReplicaLease = {
-  id: string; gatekeeperId: number; chatId: number; turnId: string; segmentId: string;
-  worktree: WorktreeBase; version: string;
-  /** Fences failed export cleanup from a newer retry of an untouched command. */
-  captureId?: string;
-  /** Frozen binding IDs; later connections cannot widen a running command. */
-  gitSources?: Record<string, number>;
-  /** Frozen transforms needed when the pack reader is opened after approval. */
-  pendingChanges?: FileChangeByPath[];
-  /** Whether the frozen export includes a separate remote-source pack. */
-  sourcePack?: boolean;
-  released?: boolean;
+/** Payload-bound retry receipt, committed atomically with canonical OTs. */
+export type WorktreeSyncCommit = {
+  id: string; sessionId: string; batchId: string; digest: string;
+  /** Canonical version checked before persistence and replaced by the accepted revision. */
+  revision: string;
 };
 
-/** Atomically stored with the OTs and final write-authority closure. */
-export type WorktreeReplicaCommit = {
-  id: string; leaseId: string; digest: string; final: boolean;
+/** One ordered, flow-controlled subscriber per sync session, including reset recovery. */
+export type WorktreeSyncSubscriptionRecord = {
+  sessionId: string; id: string; subscriber: NativeRpcStub<WorktreeSubscriber>;
+  revision?: string;
+  head?: string | null;
+  bootstrap?: {revision: string; head: string | null; shallowCommit: string | null;
+    changes: FileChangeByPath[]; baseApplied?: boolean};
+  retryAt: number;
 };
 
 // =======================================================================================
@@ -833,16 +828,6 @@ export type ActiveAgentRecord = {
   callbackInitiated: boolean;
   /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
   resumeAttempts?: number;
-  /** Lazy identity for command-scoped integrations, retained across decision pauses/resets. */
-  integration?: {turnId: string; segmentId: string};
-};
-
-/** Original session and selected immutable worktrees; never inferred from a later prompt. */
-export type AgentIntegrationOrigin = {chatId: number; turnId: string; segmentId: string;
-  /** Captured when the session binding is minted, not when a delayed command starts. */
-  worktrees?: WorktreeBase[];
-  /** Visible connections at session creation, not a later prompt's authority. */
-  gitSources?: Record<string, number>;
 };
 
 /**
@@ -979,6 +964,8 @@ export type ChatChangeRecord = {
 
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
+  /** Replica origin retained on the canonical row for optimistic echo reconciliation. */
+  replica?: {sessionId: string; batchId: string};
 
   /**
    * Set when the row is no longer live: a "changes" message has materialized it (its change is part
@@ -1397,18 +1384,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
-      worktreeReplicaLeases: collection<WorktreeReplicaLease>()({
-        primaryKey: "id",
-        nonUniqueIndexes: {
-          // Retain command history without scanning completed commands on each mount.
-          activeByWorktree(record: WorktreeReplicaLease) {
-            return record.released ? null : `${record.chatId}:${record.worktree.checkoutId}`;
-          },
-        },
-      }),
-      worktreeReplicaCommits: collection<WorktreeReplicaCommit>()({
-        primaryKey: "id",
-        nonUniqueIndexes: {byLease: (record: WorktreeReplicaCommit) => record.leaseId},
+      worktreeSyncSessions: collection<WorktreeSyncRecord>()({primaryKey: "id"}),
+      worktreeSyncCommits: collection<WorktreeSyncCommit>()({primaryKey: "id"}),
+      worktreeSyncSubscriptions: collection<WorktreeSyncSubscriptionRecord>()({
+        primaryKey: "sessionId",
       }),
 
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1

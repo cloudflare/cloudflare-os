@@ -1,11 +1,10 @@
-import type { WorktreeBase } from "./storage-schema/overseer-storage";
 import type { FileChangeByPath } from "@gadgets/workshop-shared/agent-integration";
 import type { GitObjectType } from "@gadgets/workshop-shared/gatekeeper";
 import type { WorkspaceGitCache } from "./git-cache";
 import { buildPackStream, parseGitCommitRefs, parseGitTree } from "./git-codec";
 
 /** Export captured heads, excluding objects already present in the fully materialized base. */
-export async function replicaCommitPack(cache: WorkspaceGitCache, tree: WorktreeBase,
+export async function replicaCommitPack(cache: Pick<WorkspaceGitCache, "ensureObject">, tree: {baseCommit: string | null; acceptedCommit?: string | null; headCommit?: string | null},
     requireLive: () => void, pending: FileChangeByPath[] = []): Promise<ReadableStream<Uint8Array>> {
   const objects = new Map<string, {type: GitObjectType; referencedBy?: string}>();
   const add = (oid: string, type: GitObjectType, referencedBy?: string) => {
@@ -42,9 +41,19 @@ export async function replicaCommitPack(cache: WorkspaceGitCache, tree: Worktree
     await trees(commit.tree, baseTree);
     commits.push(...commit.parents);
   }
-  // Include the source header in the local-object pack too, without retransmitting base blobs.
-  if (tree.baseCommit) add(tree.baseCommit, "commit");
   for (const {change} of pending) if ("setBytes" in change) add(change.setBytes.oid, "blob");
+  // The upstream pack already supplies the complete shallow base. A rename/copy can reuse a
+  // base blob at another path: same-path comparisons above alone cannot prevent duplicate
+  // objects, which native Git rejects in a single combined pack. Inspect tree metadata only;
+  // never fault a base blob into DO storage or retain the base's file contents in memory.
+  const excludeBase = async (oid: string) => {
+    objects.delete(oid);
+    for (const entry of parseGitTree((await read(oid, "tree")).payload)) {
+      objects.delete(entry.oid);
+      if (entry.mode === "40000") await excludeBase(entry.oid);
+    }
+  };
+  if (baseTree && [...objects.values()].some(object => object.type !== "commit")) await excludeBase(baseTree);
   async function* contents() {
     for (const [oid, hint] of objects) yield await read(oid, hint.type, hint.referencedBy);
     requireLive();

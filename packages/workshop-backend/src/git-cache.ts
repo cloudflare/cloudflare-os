@@ -1350,8 +1350,14 @@ export class WorkspaceGitCache {
 @validateRpc()
 export class GitCacheImpl extends RpcTarget implements GitCache {
   constructor(private cache: WorkspaceGitCache, private gatekeeperId: WorkpieceId,
-              private actionId?: number) {
+              private actionId?: number,
+              private pullRepository?: (url: string, request: Request) => Promise<Response>) {
     super();
+  }
+
+  async gitPull(repositoryUrl: string, request: Request): Promise<Response> {
+    if (!this.pullRepository) throw new Error("Repository fetching is not available in this context.");
+    return this.pullRepository(repositoryUrl, request);
   }
 
   async get(id: GitOid, hints?: GitPullHints)

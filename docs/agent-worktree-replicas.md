@@ -1,180 +1,147 @@
-# Single-worktree command mounts
+# Mounted worktree integrations
 
-The DO owns canonical worktrees and their existing `FileChange` transforms. A trusted
-integration can pull one frozen worktree, run a command, and stream edits back. Filesystem
-capture, diff calculation, containers, paths, snapshots, command receipts, idle timers and
-network policy belong to the integration.
+A gatekeeper receives the Worktree capability directly. The kernel knows the selected worktree,
+its Git provenance and canonical change history; it knows nothing about containers, guest paths,
+mount names, or command lifetimes. The container gatekeeper owns `mountWorktree(worktree, mountName)`
+and synchronous `exec(command, options)`. The mount lives at `/workspace/<mountName>` in the guest.
 
-## API
+## Scenarios
+
+- Materialize a remote repository with DO-created commits and pending edits, without loading its
+  remote file contents into DO memory or importing the upstream pack into the DO object cache.
+- Materialize a scratch worktree containing supported uploaded text and binary attachments.
+- Stream DO edits into a running guest, and return guest edits through the existing canonical OT
+  engine. Concurrent text edits are transformed into canonical order, rather than replaced with
+  whole-file text snapshots.
+- Let a build run `git fetch --depth=1 origin <UPGRADE_BASE>` after mounting. The Cloudflare OS
+  integration harness does this in `packages/integration-tests/scripts/build-upgrade-base.ts`.
+- Restore a warm snapshot and replay missed canonical changes before running another command.
+
+## Integration API
+
+These methods are on the actual Worktree capability, but omitted from the agent's file-tool type
+text. Hiding the declarations is for discoverability, not authorization.
 
 ```ts
-// Agent code: container operations belong to the integration session.
-await env.CONTAINER.mountWorktree(await env.REPO.exportTo("CONTAINER"));
-const executionId = await env.CONTAINER.executePosix("pnpm test");
-// Return from executeCode for approval, then read CONTAINER.getExecution(executionId).
-
-// Kernel: one frozen input, and one write-only callback.
-Worktree.exportTo(integration: string): Promise<unknown>; // opaque WorktreeExport
-interface WorktreeExport {
-  id: string;
-  binding: string;
-  head: string | null;
-  shallowCommit: string | null;
-  packs: Fetcher[]; // GET returns raw binary Git packs, consumed in order
-  pendingChanges: FileChangeByPath[];
-  writeback: Fetcher<WorktreeWriteback>;
-  git?: Fetcher;
-  gitRepositories?: {binding: string; url: string; source: boolean}[];
+interface WorktreeIntegration {
+  getSyncSession(): Promise<WorktreeSyncSession>;
+  gitPull(request: Request): Promise<Response>;
 }
-WorktreeWriteback.submitChanges(
-  batchId: string, changes: FileChangeByPath[], final: boolean
-): Promise<void>;
+interface WorktreeSyncSession {
+  subscribe(receiver: WorktreeSubscriber, after?: string): Promise<WorktreeSubscription>;
+  submitChanges(batchId: string, baseRevision: string,
+    changes: FileChangeByPath[]): Promise<{revision: string}>;
+}
+interface WorktreeSubscriber {
+  setBaseCommit(state: {revision: string; head: string | null;
+    shallowCommit: string | null}): Promise<void>;
+  change(revision: string, batchId: string, changes: FileChangeByPath[]): Promise<void>;
+}
+interface WorktreeSubscription {
+  unsubscribe(): Promise<void>;
+}
 ```
 
-There are no cursors, reads after mounting, polling, renewal, release calls, corrections or
-multi-master reconciliation. A mount selects one named worktree, never gadget code or the
-entire workspace. It is a command-scoped capability, not an arbitrary Git-object reader.
+All capabilities, including receiver callbacks, must be persistable native RPC stubs. Mint them
+inside their owning Durable Object with `ctx.restore()`. The kernel's regular file methods retain
+the original agent-execution guard; mounted synchronization is an explicitly delegated,
+worktree-scoped capability. It does not depend on an agent turn, recipient lookup, deployment
+integration grant, or lifecycle subscription. Removing the worktree/chat or its source connection
+ends access. The receiving gatekeeper controls its own mount lifetime and command approvals.
 
-## Scenarios and why these functions exist
+## Initial capture and continuous delivery
 
-- **Run tests against current DO edits:** the agent exports its selected worktree to an explicitly
-  granted integration binding, then passes the opaque export to that container's `mountWorktree`.
-  The gatekeeper stores the input for one command; ordinary approval still gates guest launch and
-  shell dispatch. It materializes the supplied Git objects, DO-only commits and pending OTs before
-  running. It never calls back to discover a turn or select a worktree.
-- **Work on an uploaded CSV/image:** mount the shared scratch worktree instead. Raw Git packs
-  preserve attachment bytes, including non-UTF-8 blobs. Export does not require a remote repo.
-- **Fetch fixtures/history during a test:** the mount includes captured whole-repository bindings
-  and a command-scoped HTTP `git` capability. The integration routes Git smart HTTP to it with
-  `x-workshop-git-binding` selecting the original binding. It is not an arbitrary URL proxy.
-- **Edit/build, then read back with normal DO tools:** `submitChanges(batchId, changes, false)`
-  streams small existing text OTs while the command runs. `final: true` atomically accepts the
-  last batch and closes command authority. Do not report command completion until that ACK.
-- **Run several commands without throwing away installed dependencies:** the gatekeeper keeps
-  the sealed guest warm, imports a fresh mount for the next command, and owns idle snapshots.
-  This needs no kernel turn-end hook or cross-command write lease.
+The kernel flushes buffered agent edits, then atomically records the subscriber and captures the
+accepted commit plus pending transforms at a canonical revision. It sends `setBaseCommit` followed
+by the pending transforms, then any changes accepted while hydration was running. `subscribe`
+resolves only after this registration has caught up and its callbacks have acknowledged applying
+the updates. Capturing first and registering later would lose edits during hydration.
+
+The receiver materializes the base completely and applies pending OTs to its mutable overlay. No
+copy-on-read guest filesystem is required. Pending transforms are not synthesized into Git commits.
+A subsequent accepted-commit checkpoint changes Git metadata after preceding edits have been
+applied; it must not reset the guest filesystem or apply those edits again.
+
+Delivery reads one existing canonical row after the last durable acknowledgment. A slow receiver
+applies backpressure without creating an in-memory event queue. Callback failures retain the cursor
+and retry through the existing DO alarm. Receiver application must be idempotent: a lost ACK may
+redeliver the same event. The receiver records its applied revision before returning.
+
+`subscribe(receiver, after)` replaces the session's previous registration and replays retained
+history. An old unsubscribe handle cannot stop its replacement. A content-preserving accept can
+bridge the previous canonical generation. A destructive reset or an expired history position
+requires reconciling outstanding batch receipts and resubscribing for a fresh base; the kernel
+never resets a dirty guest silently. This is not an unlimited historical replay service.
+
+## Returning edits
+
+A batch contains existing `FileChange` transforms: text OTs, deletion, or a whole-file `setBytes`
+Git-blob reference. Upload a new binary blob through the existing Git cache `put("blob", bytes)` before
+referencing it. Binary differences, chunked uploads and large-file support are outside this API.
+
+The DO transforms the batch over canonical changes since `baseRevision`, then persists the changes
+and a payload-bound receipt atomically. An identical retry returns the original accepted revision,
+even after intervening edits. Reusing the ID with different content rejects. Receipts are retained
+for diagnosis and delayed reconciliation; retrying a batch must never rerun a shell command.
+
+The submitting session sees its accepted batch under the same ID. The receiver reconciles this
+canonical echo with its optimistic edits rather than applying it twice, and rebases still-pending
+local edits over incoming changes. Applying an inbound event must not create another outbound edit.
+Foreign events have kernel-generated IDs in a separate namespace.
+
+Only normalized worktree-relative paths are accepted; `.git` metadata and filesystem aliases are
+excluded. Batches are limited to 128 paths and 1 MiB of serialized transforms. Fresh bootstrap has
+the same 1 MiB transform budget; commit a larger pending overlay before mounting. Binary content
+travels separately as raw Git objects and retains the existing object-size limits.
 
 ## Unified Git transport
 
-```ts
-Gatekeeper.gitPull(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response>;
-```
+`gitPull` accepts read-only Git protocol v2 smart-HTTP requests and streams raw binary responses.
+The gatekeeper invents a guest-local origin URL and maps it to the passed Worktree; the kernel does
+not register URLs or expose a guest filesystem layout. Normal ref discovery reports the worktree's
+Git HEAD and ancestry, including explicit commits that have not yet been accepted in the UI. The
+subscription's commit is the base for its canonical file transforms; it may differ from Git HEAD,
+just as a checkout can have working changes. The guest materializes that file base and its OTs
+without replacing HEAD with the base. No private DO refs or source-selection rules are exposed.
+Workspace-created commits are real Git objects, not approximated by text changes. The original
+remote base remains the shallow boundary.
 
-This is one provider-owned authenticated smart-HTTP transport for both cache hydration and
-native Git. Only protocol-v2 GET `/info/refs?service=git-upload-pack` and POST `/git-upload-pack`
-are supported. The provider always selects its own bound repository and credentials; request
-URLs and guest headers cannot redirect authenticated access.
+For a remote-backed mount, the source Git gatekeeper streams the shallow base pack directly.
+The kernel appends the additional DO-local objects and recomputes the pack framing/checksum without
+repository-sized buffering. Base tree metadata excludes duplicate OIDs, including blobs reused by
+renames; base file blobs are not read into the DO. Scratch worktrees use their locally stored Git
+objects through the same protocol. A later exact-revision request can pass through to the recorded
+source without populating DO storage.
 
-The kernel omits `observer` only for pulls of objects already observed from that source. It
-composes its usual exact-OID/depth/filter request and demultiplexes the raw pack. A command's
-native Git request always receives a fresh observation authorizer and requires whole-repository
-access. Issue/PR-only bindings remain valid sources for their previously observed objects,
-but do not become arbitrary repository readers. Missing/unreachable optional remotes are not
-advertised and do not block an otherwise valid mount.
+Separately discovered remote URLs use `ApprovalQueue.getGitCache().gitPull(repositoryUrl, request)`.
+The kernel resolves caller-visible, already-connected repository gatekeepers and applies normal
+observation/revocation checks. URLs must be credential-free HTTPS repository identifiers, not
+arbitrary network destinations. Source credentials stay in the Git gatekeeper. Responses retain
+only their content type, not cookies or redirect headers, and source removal cancels active streams.
 
-The repository binding IDs are frozen when the agent exports the worktree; connections added later
-cannot widen the command. Every request and response-stream read rechecks its original command,
-integration grant and source connection. Final writeback closes Git access as well as writes
-and cancels open streams. A pending provider RPC cannot be force-aborted on this runtime, but
-its response is checked and discarded/cancelled after expiry. New requests fail closed.
+Requesting approval for a previously unconnected repository while holding the same native fetch
+pending is deferred. Connect that repository before executing the command. This does not block the
+Cloudflare OS integration test: its upgrade-base fetch uses the same already-connected repository.
+Push and general network access are outside this interface.
 
-Pack responses stream as raw binary, without insertion into the DO Git cache. Only Git content
-type is forwarded; provider cookies/authentication headers are not exposed. Guest fetches do
-not create DO worktrees, import guest refs/commits into the DO, or move the DO HEAD. Checked-out
-file edits still use ordinary writeback. Updating GitHub/GitLab and the kernel together is
-required: the former OID/hints provider signature is replaced, not kept as a second API.
+## Container responsibilities and completion
 
-## Bootstrap
+The kernel does not execute commands. The gatekeeper must catch up before starting a shell, stream
+edits continuously while it runs, and stop tracked background writers before completing it. Before
+resolving `exec`, it must drain captured outbound batches, await their durable ACKs, and persist
+canonical application through the latest acknowledged revision. There is no separate fence call
+or public execution-polling handle. Concurrent DO edits accepted after that revision may arrive later.
+A command that produced no changes needs no artificial empty batch.
 
-1. Capture the selected worktree's accepted commit and pending transforms.
-2. Import the raw Git packs in order. Before checking out `head`, record a non-null
-   `shallowCommit` in `.git/shallow`; null means the exported ancestry is complete. The
-   boundary is the remote source commit, not a newer DO-local `head`. Null `head` means an empty base.
-3. Apply `pendingChanges` above that base. Only then admit shell execution.
+Between approved commands the gatekeeper seals tracked writers while keeping the guest warm. Its
+idle timer can drain, snapshot and unsubscribe after five minutes. Snapshot restoration reattaches
+and catches up before another command runs. Private ignored dependencies/caches remain in the
+snapshot and do not become workspace edits. The kernel cannot infer which guest paths are ignored;
+filtering, filesystem event capture, optimistic reconciliation and snapshot durability belong to
+the container implementation.
 
-For a remote repository, the kernel obtains the complete depth-one pack through its authorized
-source gatekeeper. Repository blobs stream directly to the caller, not through the DO's Git
-cache. A subsequent pack supplies actual DO-local commits/objects above that source plus blobs
-referenced by pending binary changes. Commit identities are preserved, not replaced with
-synthetic OTs. Local/scratch worktrees export their Git objects directly. Pack generation
-buffers at most one object; transfers use raw bytes, not base64.
-
-Raw packs do not carry Git's shallow-info protocol framing, so consumers must preserve the
-exported boundary separately. Marking `head` shallow would hide DO-local parents; omitting
-the boundary would leave history traversal looking for remote parents the packs do not contain.
-
-This v0 exposes one accepted head, not a separate explicit-head/history navigation interface.
-It does not import guest commits/branches back. Binary bootstrap preserves exact bytes; binary
-writeback is a separate extension.
-
-## Authority and completion
-
-Trusted deployment configuration `AGENT_INTEGRATION_GRANTS` grants a vendor
-`worktreeReplica: true`; absence denies access. Ambient provisioning remains independently
-controlled by the user/admin. The agent chooses the integration recipient by binding name;
-export verifies that binding and captures the original authority internally. When opening an
-explicitly granted integration's agent session, the kernel supplies a stable opaque chat identifier
-as `startSession(queue, {chatId})` metadata. It carries no turn ID or execution authority. The
-container uses it for its own per-chat instance ownership. No `AgentContext`, `getTurn`, lifecycle
-subscriptions, contextual redelivery or end-of-turn cleanup barriers are added.
-
-Every transfer/write rechecks the grant, connection, original execution and selected worktree.
-The gatekeeper cannot inspect the agent turn. Persisted command writeback survives DO reset
-only within its original active execution; a later prompt cannot adopt it.
-
-Stream ordered batches while the command runs. Each batch is at most 128 paths/1 MiB and uses
-the existing lightweight text OT format. The kernel checks the captured revision and ordinary
-path permissions, then atomically persists edits and a payload-bound receipt. Concurrent DO
-edits may be rejected by this best-effort revision check, but are unsupported: an edit buffered
-during writeback validation can be overwritten by the container. This API does not merge
-concurrent edits or send them to the container. Avoid editing the same worktree while a command runs.
-
-After process exit, the integration drains and seals its filesystem and submits a final batch
-(possibly empty) with `final: true`. Its durable ACK closes write authority atomically.
-Only then may command success be exposed. Retry a lost ACK with the identical ID/payload;
-overlapping retries deduplicate too. The final receipt remains retryable after revocation
-without creating effects or reviving authority.
-
-Command records and all batch receipts remain in SQLite storage without a time-based expiry,
-for diagnosis and delayed lost-ACK recovery. Mounting indexes only unreleased commands for the
-selected chat/worktree; retaining completed history does not add a full-history scan to each
-mount. Retention does not extend write authority or permit replaying a shell command.
-
-## Warm reuse and failures
-
-The container remains warm but sealed between commands. Every new authorized command obtains a
-new frozen mount, replaces DO-backed contents before execution, and preserves ignored private
-tools/caches. There is no background synchronization while idle. A gatekeeper-owned configurable
-five-minute idle timer snapshots/stops the guest; a later command transparently restores it and
-imports its fresh mount.
-
-The export contains persistent pack readers, not live in-memory streams. They can be stored by
-the receiving gatekeeper across an approval pause or DO reset; opening them later streams the
-captured immutable Git objects without materializing the repository in the kernel cache. Each
-reader and writeback call rechecks original authority. Pack transfer is retryable before dispatch.
-A retry reuses an untouched export only while its frozen input is identical. Changed input gets
-a new identity and closes the unused old capture; a command that has started writeback must seal first.
-A lost shell reply is never permission to execute again. The gatekeeper durably assigns each
-export to one command and rejects reusing it for a later command. Rejection seals its unused
-writeback. Command journals distinguish dispatched, finished and synchronized outcomes.
-
-Symlink/mode mutations, submodules and binary writeback must fail rather than be described as
-synchronized. Concurrent writers have no preservation guarantee. This does not change general DO OT semantics.
-
-## Deliberate v0 tradeoffs
-
-- One worktree per mount; no entire-workspace mount or multi-worktree command transaction.
-- One complete initial capture per command, including warm reuse/restore. No incremental
-  bootstrap negotiation, live DO-to-container updates, polling, or multi-master reconciliation.
-- Concurrent canonical DO edits are unsupported and may be overwritten; revision checks are
-  best-effort, not a conflict-resolution or preservation guarantee.
-- The command's text edits stream during execution, but its result waits for final drain/seal/ACK.
-- Only command-duration authority. No #798 lifecycle hooks, #833 contextual-action redelivery,
-  cross-turn write leases, or background workspace access while the guest is idle.
-- Warm ignored tools/caches survive in the integration. Additional fetched refs/history are
-  guest-private and need not survive the next fresh mount; snapshots are not canonical backups.
-- Binary attachments/bootstrap work; binary mutation submission, chmod, symlink/gitlink changes,
-  large-file support, guest Git ref publication, and submodules are separate work.
-- The agent explicitly exports and mounts before every command. It must return from code mode
-  for approval, then poll the durable receipt. An expired export needs a fresh request; approval
-  never revives an old command's authority.
+A synchronization failure rejects completion instead of returning a supposedly synchronized
+command result. Persist execution identity and receipts before effects, reconcile lost replies,
+and surface an indeterminate shell outcome if it cannot be established. See
+[`container-do-reset-recovery.md`](container-do-reset-recovery.md) for the broader reset discipline;
+older command-lease implementation details there are not this API's authority model.

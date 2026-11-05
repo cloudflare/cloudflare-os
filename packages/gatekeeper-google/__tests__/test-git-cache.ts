@@ -8,6 +8,7 @@ import type { GitCache, GitObjectType, GitOid } from "@gadgets/workshop-shared/g
  * unexpectedly reaches git fails loudly rather than silently passing.
  */
 export class TestGitCache extends RpcTarget implements GitCache {
+  async gitPull(_url: string, _request: Request): Promise<Response> { throw new Error("Unexpected Git transport"); }
   async get(_id: GitOid): Promise<{type: GitObjectType, content: Uint8Array} | null> {
     throw new Error("not implemented");
   }

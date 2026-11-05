@@ -20,7 +20,6 @@ import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import type { WorktreeReplicaLease } from "../src/storage-schema/overseer-storage";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
 import {
   OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
@@ -184,36 +183,30 @@ describe("git-storage migration via the Overseer constructor", () => {
   });
 });
 
-describe("worktree replica storage initialization", () => {
-  it("backfills active commands on wake without discarding closed commands or their receipts", async () => {
-    const name = "replica-index-" + crypto.randomUUID();
-    const lease: WorktreeReplicaLease = {id: "open", gatekeeperId: 31, chatId: 1,
-      turnId: "turn", segmentId: "segment", version: "0",
-      worktree: {checkoutId: 7, binding: "REPO", baseCommit: null, baseTree: null, source: "attachments"}};
-    const receipt = {id: "closed:final", leaseId: "closed", digest: "retained", final: true};
+describe("mounted worktree storage initialization", () => {
+  it.each([6, 7])("preserves version %s prototype records without restoring obsolete command authority", async version => {
+    const name = "replica-retention-" + crypto.randomUUID();
+    const old = {id: "old-command", worktreeId: 7, closed: true};
     await inOverseer(name, async impl => {
       const legacy = createTypedStorage(impl.ctx.storage, {collections: {
-        worktreeReplicaLeases: collection<WorktreeReplicaLease>()({primaryKey: "id"}),
+        worktreeReplicaLeases: collection<typeof old>()({primaryKey: "id"}),
       }});
-      legacy.worktreeReplicaLeases.put(lease);
-      legacy.worktreeReplicaLeases.put({...lease, id: "closed", released: true});
-      impl.storage.worktreeReplicaCommits.put(receipt);
-      impl.storage.version.put(6);
+      legacy.worktreeReplicaLeases.put(old);
+      impl.storage.version.put(version);
     });
     await abortAllDurableObjects();
     await inOverseer(name, async impl => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
-      expect([...impl.storage.worktreeReplicaLeases.activeByWorktree.get("1:7")]).toEqual([lease]);
-      expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(2);
-      expect(impl.storage.worktreeReplicaCommits.get(receipt.id)).toEqual(receipt);
-      // Updating a backfilled row must remove only its index entry, not its diagnostic record.
-      impl.storage.worktreeReplicaLeases.put({...lease, released: true});
-      expect([...impl.storage.worktreeReplicaLeases.activeByWorktree.get("1:7")]).toEqual([]);
-      expect([...impl.storage.worktreeReplicaLeases.list()]).toHaveLength(2);
+      const legacy = createTypedStorage(impl.ctx.storage, {collections: {
+        worktreeReplicaLeases: collection<typeof old>()({primaryKey: "id"}),
+      }});
+      expect(legacy.worktreeReplicaLeases.get(old.id)).toEqual(old);
+      expect([...impl.storage.worktreeSyncSessions.list()]).toEqual([]);
+      expect([...impl.storage.worktreeSyncCommits.list()]).toEqual([]);
     });
   });
 
-  it("opens empty replica collections on wake without eagerly loading workspace files", async () => {
+  it("opens empty sync collections on wake without eagerly loading workspace files", async () => {
     const name = "replica-initialization-" + crypto.randomUUID();
     await inOverseer(name, async impl => {
       impl.storage.chatContext.put({chatId: 1, bindings: {REPO: 7}});
@@ -223,8 +216,9 @@ describe("worktree replica storage initialization", () => {
     await inOverseer(name, async impl => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.chatContext.get(1)).toEqual({chatId: 1, bindings: {REPO: 7}});
-      expect([...impl.storage.worktreeReplicaLeases.list()]).toEqual([]);
-      expect([...impl.storage.worktreeReplicaCommits.list()]).toEqual([]);
+      expect([...impl.storage.worktreeSyncSessions.list()]).toEqual([]);
+      expect([...impl.storage.worktreeSyncCommits.list()]).toEqual([]);
+      expect([...impl.storage.worktreeSyncSubscriptions.list()]).toEqual([]);
       expect([...impl.storage.gitObjects.list()]).toEqual([]);
     });
   });

@@ -48,16 +48,7 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
     return super[restore](params);
   }
-  /** Transfer a real endpoint over RPC, rather than leaking a DO-owned stub out of a test callback. */
-  testReplicaEndpoint(leaseId: string) {
-    return this.ctx.exports.WorktreeWritebackEndpoint({ props: {
-      overseerId: this.ctx.id.toString(), leaseId,
-    } });
-  }
-  testMountWorktree(gatekeeperId: number,
-      origin: Parameters<RealOverseerDurableObject["impl"]["exportWorktree"]>[1], binding: string) {
-    return this.impl.exportWorktree(gatekeeperId, origin, binding);
-  }
+
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -68,7 +59,6 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
-export { WorktreeWritebackEndpoint, WorktreeExportEndpoint, CommandGitEndpoint } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather

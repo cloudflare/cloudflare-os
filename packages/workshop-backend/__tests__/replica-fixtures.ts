@@ -11,7 +11,7 @@ export function beginReplicaTurn(impl: Impl, chatId: number) {
   impl.storage.chatMeta.put({...meta, activeAgent: AGENT});
   if (!row) impl.storage.activeAgents.put({chatId, initiatorUserId: "unused",
     modelId: AGENT.id, initiator: USER, callbackInitiated: false});
-  return impl.captureAgentTurn(chatId)!;
+  return {chatId};
 }
 
 /** A real pending decision prevents a synthetic model execution from resuming on eviction. */

@@ -1333,6 +1333,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      miniflare:
+        specifier: 'catalog:'
+        version: 5.20261001.0-alpha(@types/node@26.1.0)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

@@ -34,6 +34,10 @@ import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
 
+import type {WorktreeIntegration, WorktreeSubscriber, FileChangeByPath}
+  from "@gadgets/workshop-shared/agent-integration";
+import {buildGitFetchRequest, demuxGitFetchResponse} from "@gadgets/gatekeeper-kit/git-transport";
+
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
 const VENDOR_HOST = "gadgets-test.example";
@@ -51,6 +55,8 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Mounts a passed worktree and returns a deterministic test edit. */
+  mountWorktree(worktree: unknown): Promise<string>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
 }
@@ -423,9 +429,41 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         { ...input, chatGatewayRpcTarget });
   }
 
-  [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
-    return new GadgetResponseRecorder(this, messageKey);
+  async mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string> {
+    const key = crypto.randomUUID();
+    using session = await worktree.getSyncSession();
+    using subscriber = await this.ctx.restore<RpcStub<WorktreeSubscriber>>({worktree: key});
+    using subscription = await session.subscribe(subscriber);
+    const state = this.ctx.storage.kv.get<{revision: string; head: string}>(`worktree:${key}`)!;
+    const response = await worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
+      method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
+      body: buildGitFetchRequest([state.head], {type: "commit", commitHistory: {kind: "full"}}),
+    }));
+    const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
+    if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
+    await session.submitChanges("return", state.revision, [{path: "returned.txt", change: {set: "from container"}}]);
+    await subscription.unsubscribe();
+    return "worktree pack received";
   }
+
+  worktreeBase(key: string, state: {revision: string; head: string | null; shallowCommit: string | null}): void {
+    this.ctx.storage.kv.put(`worktree:${key}`, state);
+  }
+
+  [restore](params: {messageKey: string} | {worktree: string}): GadgetResponseRecorder | TestWorktreeSubscriber {
+    return "messageKey" in params ? new GadgetResponseRecorder(this, params.messageKey)
+      : new TestWorktreeSubscriber(this, params.worktree);
+  }
+}
+
+/** The mount callback is persistent and minted in the receiving DO, not code-mode memory. */
+@validateRpc()
+class TestWorktreeSubscriber extends RpcTarget implements WorktreeSubscriber {
+  constructor(private readonly owner: TestControl, private readonly key: string) { super(); }
+  async setBaseCommit(state: {revision: string; head: string | null; shallowCommit: string | null}): Promise<void> {
+    this.owner.worktreeBase(this.key, state);
+  }
+  async change(_revision: string, _batchId: string, _changes: FileChangeByPath[]): Promise<void> {}
 }
 
 /** Records each delivery rather than the latest, since delivery is at-least-once. */
@@ -644,6 +682,8 @@ export interface TestSession {
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Exercises worktree capability delegation through the real code-mode bridge. */
+  mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
@@ -713,6 +753,10 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async writeValues(values: number[]): Promise<number[]> {
     return Promise.all(values.map(value => this.writeValue(value)));
+  }
+
+  async mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string> {
+    return this.state.mountWorktree(worktree);
   }
 
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {

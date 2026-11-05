@@ -97,7 +97,7 @@ export default defineConfig({
           modules: true,
           script: replicaTransferWorker,
           compatibilityDate: COMPATIBILITY_DATE,
-          compatibilityFlags: ['experimental', 'nodejs_compat'],
+          compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
           durableObjects: { TRANSFER: { className: 'TestReplicaTransfer', useSQLite: true } },
         }],
         bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },

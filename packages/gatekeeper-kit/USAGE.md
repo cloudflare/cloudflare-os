@@ -948,18 +948,26 @@ draining; query `status()` on failure for the adapter's demultiplexing error, pr
 consumer's own error otherwise. RPC may still replace an upstream transport failure with a
 generic disconnect. Cancel unfinished streams and dispose the transfer when done.
 
-Container hydration consumes the kernel's frozen `WorktreeExport`, explicitly passed from
-`Worktree.exportTo(integration)` to the integration's mount method. Import its raw `packs` into
-native Git in the supplied order, check out `head` (or start empty when null), then apply
-`pendingChanges` before executing. The export supplies the shallow remote base and DO-local
-objects; consumers do not mint or close a separate bootstrap capability. The command's final
-writeback ACK closes export authority, not the end of hydration. See the
-[mount contract](../../docs/agent-worktree-replicas.md) for bootstrap and recovery details.
+Container integrations receive the Worktree capability directly. Open its persistable
+`getSyncSession()` and subscribe with a native persistent callback; hydrate the subscription's
+file-base commit through `worktree.gitPull(request)`, then apply its canonical OTs before running.
+The integration invents its own guest-local Git URL. The workspace serves upstream and locally
+created commits through the same smart-HTTP endpoint, including ordinary Git ref discovery; the
+container does not select sources or install private DO refs. Never buffer a whole pack or use
+base64. See the [mount contract](../../docs/agent-worktree-replicas.md) for initialization,
+backpressure, durable ACKs, optimistic OT reconciliation and reconnect behavior.
 
-Subsequent native Git fetches use the separate command-scoped smart-HTTP capability described in
-[`agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md). They always require an
-observer and whole-repository scope. They do not populate the DO cache or inherit the
-known-object bootstrap exception, and they end with the command's final writeback.
+Changes stream in both directions while a command runs. `submitChanges(batchId, baseRevision,
+changes)` transforms against canonical history and durably deduplicates retries. The integration
+owns command approvals and mount lifetime, and does not resolve its synchronous command result
+until outbound changes are acknowledged and inbound canonical application has caught up through
+those ACKs. There is no kernel command lease or end-of-turn cleanup hook.
+
+Native Git fetches for a separately discovered, already-connected repository use
+`ApprovalQueue.getGitCache().gitPull(repositoryUrl, request)` during approved execution. They
+require an observer and whole-repository scope, stream directly without populating the DO cache,
+and retain the original caller's authority. Connecting a previously unknown repository and
+resuming the same blocked fetch is a separate flow, outside this API.
 
 ## Other module boundaries
 

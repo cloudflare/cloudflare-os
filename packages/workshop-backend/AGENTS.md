@@ -3,11 +3,12 @@
 The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the bar in the root
 `AGENTS.md` (The kernel).
 
-## Command-scoped worktree mounts
+## Mounted worktree integrations
 
 See [`../../docs/agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md) before changing
-container capture/writeback. Authority belongs to one command; its final durable batch seals both
-writeback and Git access. There is no ongoing two-way synchronization or turn-lifecycle lease.
+worktree Git transport or replica synchronization. Delegate the Worktree capability directly;
+reuse canonical OT rows and durable receipts. Guest paths, command completion and mount lifetimes
+belong to the integration, without kernel turn hooks or recipient-environment lookups.
 
 ## Bundled blueprints
 
