@@ -64,6 +64,7 @@ function PasswordField({
           type={show ? 'text' : 'password'}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          aria-label={label}
           placeholder={placeholder}
           autoComplete={autoComplete}
           className={`${INPUT} pr-10 ${error ? 'border-kumo-danger focus:border-kumo-danger' : ''}`}
@@ -71,7 +72,7 @@ function PasswordField({
         <button
           type="button"
           onClick={() => setShow((s) => !s)}
-          aria-label={show ? 'Hide password' : 'Show password'}
+          aria-label={`${show ? 'Hide' : 'Show'} ${label.toLowerCase()}`}
           className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-kumo-inactive transition-colors hover:text-kumo-default"
         >
           {show ? <EyeSlash size={15} /> : <Eye size={15} />}
@@ -375,6 +376,7 @@ export default function SettingsPage() {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={avatarUploading}
+                aria-label="Change profile photo"
                 className="press group relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-kumo-fill disabled:cursor-wait"
               >
                 {displayAvatarUrl ? (
@@ -425,6 +427,7 @@ export default function SettingsPage() {
                       if (e.key === 'Enter') handleSaveName()
                       if (e.key === 'Escape') handleCancelEdit()
                     }}
+                    aria-label="Display name"
                     placeholder="Enter display name"
                     autoFocus
                     className={`mt-1.5 ${INPUT}`}

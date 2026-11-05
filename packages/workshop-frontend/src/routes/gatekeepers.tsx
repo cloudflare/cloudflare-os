@@ -752,6 +752,7 @@ function ConnectorsPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search gatekeepers"
               placeholder="Search gatekeepers…"
               className="h-10 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
