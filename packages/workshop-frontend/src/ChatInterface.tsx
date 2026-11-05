@@ -54,6 +54,7 @@ import {
   ArrowUpRight,
   Blueprint,
   GitBranch,
+  FolderSimplePlus,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -123,6 +124,11 @@ import {
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
+import { organizeChats } from "./features/chat-organizer/chatOrganization";
+import { chatOrganizerStorageKey } from "./features/chat-organizer/chatOrganizerStore";
+import { useChatOrganizer } from "./features/chat-organizer/useChatOrganizer";
+import { ChatListSections } from "./features/chat-organizer/ChatListSections";
+import { ChatOrganizerMenuItems } from "./features/chat-organizer/ChatOrganizerMenuItems";
 
 /**
  * The selected chat's live (accepted but not yet materialized) change row stream, delivered via
@@ -2597,6 +2603,30 @@ function formatChatRowTime(date: Date, bucket: ChatTimeBucket, now: Date): strin
   );
 }
 
+// A row outside the time groups (pinned or in a folder) has no header to say "Yesterday".
+function formatUngroupedChatRowTime(date: Date, now: Date): string {
+  const bucket = getChatTimeBucket(date, now);
+  return bucket === "yesterday" ? "Yesterday" : formatChatRowTime(date, bucket, now);
+}
+
+function bucketChats(chats: readonly AiChatMetadata[], now: Date) {
+  const buckets = new Map<ChatTimeBucket, AiChatMetadata[]>();
+  for (const chat of chats) {
+    const bucket = getChatTimeBucket(chat.lastActive, now);
+    let arr = buckets.get(bucket);
+    if (!arr) {
+      arr = [];
+      buckets.set(bucket, arr);
+    }
+    arr.push(chat);
+  }
+  return CHAT_TIME_BUCKET_ORDER.flatMap((bucket) => {
+    const items = buckets.get(bucket);
+    if (!items || items.length === 0) return [];
+    return [{ bucket, items }];
+  });
+}
+
 /** A compaction checkpoint reported with a history page. */
 export type CompactionBoundary = NonNullable<AiChatHistoryPage["compacted"]>;
 
@@ -3021,25 +3051,11 @@ function ChatInterface({
       return true;
     });
     const now = new Date();
-    const buckets = new Map<ChatTimeBucket, AiChatMetadata[]>();
-    for (const chat of visible) {
-      const bucket = getChatTimeBucket(chat.lastActive, now);
-      let arr = buckets.get(bucket);
-      if (!arr) {
-        arr = [];
-        buckets.set(bucket, arr);
-      }
-      arr.push(chat);
-    }
 
     return {
       visibleChatList: visible,
       chatListNow: now,
-      bucketedVisibleChats: CHAT_TIME_BUCKET_ORDER.flatMap((bucket) => {
-        const items = buckets.get(bucket);
-        if (!items || items.length === 0) return [];
-        return [{ bucket, items }];
-      }),
+      bucketedVisibleChats: bucketChats(visible, now),
       chatListScopes: [
         { value: "all" as const, count: chatList.length },
         { value: "direct" as const, count: directCount },
@@ -3047,6 +3063,10 @@ function ChatInterface({
       ],
     };
   }, [chatList, chatListScope]);
+  const chatOrganizer = useChatOrganizer(
+    currentUser && workspaceId ? chatOrganizerStorageKey(currentUser.id, workspaceId) : null,
+  );
+  const organizedChats = organizeChats(visibleChatList, chatOrganizer.organization);
 
   // Notify parent when chat list changes. Gated on chatListReady so that we
   // don't report 0 from the empty initial cache before listChats() has completed.
@@ -5305,11 +5325,157 @@ function ChatInterface({
     );
   };
 
+  // ─── chat list rows ───────────────────────────────────────────────────────
+  // `timeLabel` is the chat's last activity, worded for where its row sits.
+  const renderChatRow = (chat: AiChatMetadata, timeLabel: string) => {
+    const isRenaming = renamingChatId === chat.id;
+    return (
+      <div key={chat.id} className="relative">
+        <div
+          onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
+          className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-[background-color] duration-150 ease-out ${
+            isRenaming
+              ? "cursor-default bg-kumo-base ring-1 ring-kumo-ring/40"
+              : sidebarMode && chat.id === selectedChatId
+                ? "cursor-pointer bg-kumo-recessed"
+                : "cursor-pointer hover:bg-kumo-tint"
+          }`}
+        >
+          <div className="flex-1 min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              {isRenaming ? (
+                <input
+                  type="text"
+                  value={renamingInput}
+                  onChange={(e) => setRenamingInput(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (isImeComposing(e)) return;
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleSaveListRename(chat.id);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelListRename();
+                    }
+                  }}
+                  onBlur={() => handleSaveListRename(chat.id)}
+                  autoFocus
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  aria-label={`Rename ${chat.title}`}
+                  className="min-w-0 flex-1 bg-transparent text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
+                />
+              ) : (
+                // The row's click handler serves pointer users; this button is the keyboard entry point.
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNavigateToChat(chat.id);
+                  }}
+                  aria-current={sidebarMode && chat.id === selectedChatId ? "true" : undefined}
+                  className="-my-1 min-w-0 cursor-pointer truncate rounded-sm py-1 text-left text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
+                >
+                  {chat.title}
+                </button>
+              )}
+              {!isRenaming && chat.activeAgent ? (
+                <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
+                  <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" />
+                  Working
+                </span>
+              ) : !isRenaming && chatHasProposedChanges(chat) ? (
+                <Tooltip content="This conversation has pending changes" asChild>
+                  <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-warning">
+                    <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
+                    Pending changes
+                  </span>
+                </Tooltip>
+              ) : null}
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-kumo-inactive">
+              {chat.spawnerName && (
+                <>
+                  <span className="truncate">Agent · {chat.spawnerName}</span>
+                  <span className="flex-shrink-0" aria-hidden="true">·</span>
+                </>
+              )}
+              <span className="flex-shrink-0">
+                {timeLabel}
+              </span>
+              {chat.totalCost != null && (
+                <>
+                  <span className="flex-shrink-0" aria-hidden="true">·</span>
+                  <span className="flex-shrink-0 font-mono">
+                    ${chat.totalCost.toFixed(4)}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+          {!isRenaming && (
+            <DropdownMenu>
+              <DropdownMenu.Trigger
+                render={
+                  <WorkshopIconButton
+                    aria-label={`Actions for ${chat.title}`}
+                    data-chat-actions={chat.id}
+                    onClick={(e) => e.stopPropagation()}
+                    className="!h-9 !w-9 flex-shrink-0 text-kumo-inactive opacity-100 focus:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100 sm:!h-7 sm:!w-7 sm:opacity-0"
+                  >
+                    <DotsThreeVertical size={14} />
+                  </WorkshopIconButton>
+                }
+              />
+              <DropdownMenu.Content
+                onClick={(event) => event.stopPropagation()}
+                className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
+              >
+                <ChatOrganizerMenuItems chatId={chat.id} organizer={chatOrganizer} />
+                <DropdownMenu.Item
+                  icon={<Pencil className="size-3" />}
+                  onClick={() => startListRename(chat.id, chat.title)}
+                  className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
+                >
+                  Rename
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  icon={<Trash className="size-3" />}
+                  variant="danger"
+                  onClick={() => handleDeleteChat(chat.id, chat.title)}
+                  className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"
+                >
+                  Delete
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderTimeGroupedChats = (groups: ReturnType<typeof bucketChats>) => (
+    <div className="flex flex-col gap-4">
+      {groups.map(({ bucket, items }) => (
+        <section key={bucket} className="flex flex-col gap-0.5">
+          <p className="mb-1 px-1 text-[11px] font-medium uppercase tracking-[0.08em] text-kumo-inactive">
+            {CHAT_TIME_BUCKET_LABELS[bucket]}
+          </p>
+          {items.map((chat) =>
+            renderChatRow(chat, formatChatRowTime(chat.lastActive, bucket, chatListNow)))}
+        </section>
+      ))}
+    </div>
+  );
+
   // ─── sidebar list content (reused in both modes) ──────────────────────────
   const chatListPanel = (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Chat list header — title doubles as the scope switcher */}
-      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-4">
+      <div className="flex h-12 flex-shrink-0 items-center justify-between border-b border-kumo-line px-4">
         <DropdownMenu>
           <DropdownMenu.Trigger
             render={
@@ -5350,6 +5516,17 @@ function ChatInterface({
             })}
           </DropdownMenu.Content>
         </DropdownMenu>
+        {/* Folders only show beside conversations; offered elsewhere, a new one would be invisible. */}
+        {chatListReady && visibleChatList.length > 0 && (
+          <WorkshopIconButton
+            onClick={() => chatOrganizer.createFolder()}
+            aria-label="New folder"
+            title="New folder"
+            className="-mr-1.5 !h-7 !w-7 text-kumo-inactive"
+          >
+            <FolderSimplePlus size={15} />
+          </WorkshopIconButton>
+        )}
       </div>
       {/* Chat list */}
       <div className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3">
@@ -5378,145 +5555,17 @@ function ChatInterface({
                   Show all
                 </button>
               </div>
+            ) : organizedChats ? (
+              <ChatListSections
+                sections={organizedChats}
+                organizer={chatOrganizer}
+                filtered={chatListScope !== "all"}
+                renderChat={(chat) =>
+                  renderChatRow(chat, formatUngroupedChatRowTime(chat.lastActive, chatListNow))}
+                renderOther={(chats) => renderTimeGroupedChats(bucketChats(chats, chatListNow))}
+              />
             ) : (
-              <div className="flex flex-col gap-4">
-                {bucketedVisibleChats.map(({ bucket, items }) => (
-                  <section key={bucket} className="flex flex-col gap-0.5">
-                    <p className="mb-1 px-1 text-[11px] font-medium uppercase tracking-[0.08em] text-kumo-inactive">
-                      {CHAT_TIME_BUCKET_LABELS[bucket]}
-                    </p>
-                    {items.map((chat) => (
-              <div key={chat.id} className="relative">
-                {(() => {
-                  const isRenaming = renamingChatId === chat.id;
-                  return (
-                  <div
-                    onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
-                    className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-[background-color] duration-150 ease-out ${
-                      isRenaming
-                        ? "cursor-default bg-kumo-base ring-1 ring-kumo-ring/40"
-                        : sidebarMode && chat.id === selectedChatId
-                          ? "cursor-pointer bg-kumo-recessed"
-                          : "cursor-pointer hover:bg-kumo-tint"
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {isRenaming ? (
-                          <input
-                            type="text"
-                            value={renamingInput}
-                            onChange={(e) => setRenamingInput(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => {
-                              if (isImeComposing(e)) return;
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                handleSaveListRename(chat.id);
-                              } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                cancelListRename();
-                              }
-                            }}
-                            onBlur={() => handleSaveListRename(chat.id)}
-                            autoFocus
-                            spellCheck={false}
-                            autoCapitalize="off"
-                            autoCorrect="off"
-                            aria-label={`Rename ${chat.title}`}
-                            className="min-w-0 flex-1 bg-transparent text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
-                          />
-                        ) : (
-                          // The row's click handler serves pointer users; this button is the keyboard entry point.
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onNavigateToChat(chat.id);
-                            }}
-                            aria-current={sidebarMode && chat.id === selectedChatId ? "true" : undefined}
-                            className="-my-1 min-w-0 cursor-pointer truncate rounded-sm py-1 text-left text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
-                          >
-                            {chat.title}
-                          </button>
-                        )}
-                        {!isRenaming && chat.activeAgent ? (
-                          <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
-                            <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" />
-                            Working
-                          </span>
-                        ) : !isRenaming && chatHasProposedChanges(chat) ? (
-                          <Tooltip content="This conversation has pending changes" asChild>
-                            <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-warning">
-                              <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
-                              Pending changes
-                            </span>
-                          </Tooltip>
-                        ) : null}
-                      </div>
-                      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-kumo-inactive">
-                        {chat.spawnerName && (
-                          <>
-                            <span className="truncate">Agent · {chat.spawnerName}</span>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                          </>
-                        )}
-                        <span className="flex-shrink-0">
-                          {formatChatRowTime(chat.lastActive, bucket, chatListNow)}
-                        </span>
-                        {chat.totalCost != null && (
-                          <>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                            <span className="flex-shrink-0 font-mono">
-                              ${chat.totalCost.toFixed(4)}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    {!isRenaming && (
-                      <DropdownMenu>
-                        <DropdownMenu.Trigger
-                          render={
-                            <WorkshopIconButton
-                              aria-label={`Actions for ${chat.title}`}
-                              onClick={(e) => e.stopPropagation()}
-                              className="!h-9 !w-9 flex-shrink-0 text-kumo-inactive opacity-100 focus:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100 sm:!h-7 sm:!w-7 sm:opacity-0"
-                            >
-                              <DotsThreeVertical size={14} />
-                            </WorkshopIconButton>
-                          }
-                        />
-                        <DropdownMenu.Content
-                          onClick={(event) => event.stopPropagation()}
-                          className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
-                        >
-                          <DropdownMenu.Item
-                            icon={<Pencil className="size-3" />}
-                            onClick={() => startListRename(chat.id, chat.title)}
-                            className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
-                          >
-                            Rename
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Item
-                            icon={<Trash className="size-3" />}
-                            variant="danger"
-                            onClick={() => handleDeleteChat(chat.id, chat.title)}
-                            className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"
-                          >
-                            Delete
-                          </DropdownMenu.Item>
-                        </DropdownMenu.Content>
-                      </DropdownMenu>
-                    )}
-                  </div>
-                  );
-                })()}
-              </div>
-                    ))}
-                  </section>
-                ))}
-              </div>
+              renderTimeGroupedChats(bucketedVisibleChats)
             )}
           </div>
         )}
