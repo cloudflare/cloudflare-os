@@ -1,87 +1,65 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
-import { Autocomplete, Button, Combobox } from '@cloudflare/kumo'
+import { useRef } from 'react'
+import { Button, Combobox, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
-import { AUDIT_METHOD_GROUPS, type AuditFilter, type AuditMethod } from './auditFilter'
+import {
+  AUDIT_METHOD_GROUPS,
+  AUDIT_SENSITIVITIES,
+  isFiltered,
+  type AuditFilter,
+  type AuditMethod,
+  type AuditSensitivity,
+} from './auditFilter'
+import { SENSITIVITY_NAMES } from './SensitivityBadge'
+import { TypedFilterField } from './TypedFilterField'
 
 // The Action filter's choices: each group's methods, in alphabetical order, as Base UI groups them.
 type ActionGroup = { value: string; items: AuditMethod[] }
 const ACTION_GROUPS: ActionGroup[] =
   AUDIT_METHOD_GROUPS.map(({ label, methods }) => ({ value: label, items: methods.toSorted() }))
 
+const ANY_SENSITIVITY = 'any'
+type SensitivityChoice = AuditSensitivity | typeof ANY_SENSITIVITY
+
 /**
- * The Audit tab's filters. The admin is typed (the deployment's admins are listed nowhere), with
- * `adminSuggestions` offered as the field is typed in, and applies on Enter or once a suggestion is
- * picked. The action is searched by typing, and applies as soon as it is chosen; clearing it shows
- * every action.
+ * The Audit tab's filters. The admin and the workspace owner are typed (with `adminSuggestions`
+ * offered for the admin), and apply on Enter or once a suggestion is picked. The action is
+ * searched by typing, and the sensitivity chosen; both apply at once. The workspace filter is set
+ * from the log or Most inspected workspaces, and shows as a chip named `workspaceLabel` that removes
+ * it.
  */
-export const AuditFilters = ({ filter, adminSuggestions, onFilterChange }: {
+export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilterChange }: {
   filter: AuditFilter
   adminSuggestions: string[]
+  /** What to call the filtered workspace: its title, or its id when no title is known. */
+  workspaceLabel: string | undefined
   onFilterChange: (filter: AuditFilter) => void
 }) => {
-  // What is typed in the admin field, for the admin filter it was typed over. Dropped as soon as the
-  // filter changes from elsewhere (an admin's name picked in the log), during that render, so the
-  // field shows the new filter and coming back to the old one does not bring back what was typed.
-  const [typed, setTyped] = useState({ over: filter.admin, text: filter.admin ?? '' })
-  if (typed.over !== filter.admin) setTyped({ over: filter.admin, text: filter.admin ?? '' })
-  const adminText = typed.over === filter.admin ? typed.text : (filter.admin ?? '')
-
-  const applyAdmin = (text: string) => {
-    const admin = text.trim()
-    setTyped({ over: admin || undefined, text: admin })
-    onFilterChange({ ...filter, admin: admin || undefined })
-  }
-  // Enter applies what is typed. Base UI gives the Autocomplete and the Combobox hidden text inputs
-  // of their own, and a form of several text inputs and no submit button is never submitted by Enter,
-  // so the key is handled here. While a suggestion is highlighted, Enter picks it instead.
-  const applyOnEnter = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
-    if (event.target instanceof HTMLElement && event.target.getAttribute('aria-activedescendant')) return
-    event.preventDefault()
-    applyAdmin(adminText)
-  }
-  const filtered = filter.admin !== undefined || filter.method !== undefined
-  // Kumo's Autocomplete hands out no ref to its input, so it is found through this wrapper: Clear
-  // filters removes itself, and gives focus to the admin field rather than drop it.
+  // Kumo's Autocomplete hands out no ref to its input, so it is found through this wrapper: the
+  // workspace chip and Clear filters remove themselves, and give focus to the admin field rather
+  // than drop it.
   const adminField = useRef<HTMLDivElement>(null)
+  const focusAdminField = () =>
+    adminField.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus()
 
   return (
-    <div className="flex flex-wrap items-end gap-3" role="search" aria-label="Filter admin activity">
-      <div ref={adminField} className="w-full sm:w-72" onKeyDown={applyOnEnter}>
-        <Autocomplete<string>
-          label="Admin"
-          items={adminSuggestions}
-          value={adminText}
-          onValueChange={(text, { reason }) => {
-            // Escape, with the list closed, asks to empty the field: it abandons what was typed
-            // instead, showing the admin filter applied, so the field never says "any admin" while
-            // the log is filtered by one.
-            if (reason === 'escape-key') {
-              setTyped({ over: filter.admin, text: filter.admin ?? '' })
-              return
-            }
-            setTyped({ over: filter.admin, text })
-            if (reason === 'item-press') applyAdmin(text)
-          }}
-        >
-          <Autocomplete.InputGroup placeholder="Any admin (press Enter to filter)" />
-          <Autocomplete.Content>
-            <Autocomplete.List>
-              {(admin: string) => (
-                <Autocomplete.Item key={admin} value={admin}>{admin}</Autocomplete.Item>
-              )}
-            </Autocomplete.List>
-          </Autocomplete.Content>
-        </Autocomplete>
-      </div>
-      <div className="w-full sm:w-80">
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="search" aria-label="Filter admin activity">
+        <div ref={adminField}>
+          <TypedFilterField
+            label="Admin"
+            placeholder="Any admin (press Enter)"
+            value={filter.admin}
+            suggestions={adminSuggestions}
+            onApply={(admin) => onFilterChange({ ...filter, admin })}
+          />
+        </div>
         <Combobox
           label="Action"
           items={ACTION_GROUPS}
           value={filter.method ?? null}
           onValueChange={(method) => onFilterChange({ ...filter, method: (method as AuditMethod | null) ?? undefined })}
         >
-          <Combobox.TriggerInput placeholder="Any action (type to search)" clearLabel="Any action" />
+          <Combobox.TriggerInput placeholder="Search actions…" clearLabel="Any action" />
           <Combobox.Content>
             <Combobox.Empty>No action matches.</Combobox.Empty>
             <Combobox.List>
@@ -100,19 +78,57 @@ export const AuditFilters = ({ filter, adminSuggestions, onFilterChange }: {
             </Combobox.List>
           </Combobox.Content>
         </Combobox>
-      </div>
-      {filtered && (
-        <Button
-          variant="ghost"
-          icon={X}
-          onClick={() => {
-            setTyped({ over: undefined, text: '' })
-            onFilterChange({})
-            adminField.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus()
+        <Select<SensitivityChoice>
+          label="Sensitivity"
+          className="w-full"
+          value={filter.sensitivity ?? ANY_SENSITIVITY}
+          onValueChange={(sensitivity) => {
+            if (sensitivity === null) return
+            onFilterChange({ ...filter, sensitivity: sensitivity === ANY_SENSITIVITY ? undefined : sensitivity })
           }}
+          renderValue={(sensitivity) => sensitivity === ANY_SENSITIVITY ? 'Any sensitivity' : SENSITIVITY_NAMES[sensitivity]}
         >
-          Clear filters
-        </Button>
+          <Select.Option value={ANY_SENSITIVITY}>Any sensitivity</Select.Option>
+          {AUDIT_SENSITIVITIES.map((sensitivity) => (
+            <Select.Option key={sensitivity} value={sensitivity}>{SENSITIVITY_NAMES[sensitivity]}</Select.Option>
+          ))}
+        </Select>
+        <TypedFilterField
+          label="Workspace owner"
+          placeholder="Any owner (press Enter)"
+          value={filter.owner}
+          suggestions={[]}
+          onApply={(owner) => onFilterChange({ ...filter, owner })}
+        />
+      </div>
+      {isFiltered(filter) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {filter.workspace !== undefined && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={X}
+              aria-label={`Show every workspace, not only ${workspaceLabel ?? filter.workspace}`}
+              onClick={() => {
+                onFilterChange({ ...filter, workspace: undefined })
+                focusAdminField()
+              }}
+            >
+              <span className="max-w-64 truncate">Workspace: {workspaceLabel ?? filter.workspace}</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={X}
+            onClick={() => {
+              onFilterChange({})
+              focusAdminField()
+            }}
+          >
+            Clear filters
+          </Button>
+        </div>
       )}
     </div>
   )
