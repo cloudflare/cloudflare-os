@@ -126,27 +126,23 @@ describe("assertBindingSubresources", () => {
   const workspace = { kind: "workspace" } as const;
 
   it("accepts what each binding reports", () => {
-    expect(() => assertBindingSubresources(item, WORKSPACE, [pageId])).not.toThrow();
-    expect(() => assertBindingSubresources(workspace, WORKSPACE, [workspaceId, pageId, childId]))
-      .not.toThrow();
+    expect(() => assertBindingSubresources(item, [pageId])).not.toThrow();
+    expect(() => assertBindingSubresources(workspace, [workspaceId, pageId, childId])).not.toThrow();
   });
 
   it("refuses anything but the bound item on an item binding", () => {
-    expect(() => assertBindingSubresources(item, WORKSPACE, [pageId, workspaceId])).toThrow();
-    expect(() => assertBindingSubresources(item, WORKSPACE, [childId])).toThrow();
+    expect(() => assertBindingSubresources(item, [pageId, workspaceId])).toThrow();
+    expect(() => assertBindingSubresources(item, [childId])).toThrow();
   });
 
-  it("refuses another workspace's IDs", () => {
-    expect(() => assertBindingSubresources(workspace, WORKSPACE, [workspaceSubresourceId(OTHER_WORKSPACE)]))
-      .toThrow();
-    expect(() => assertBindingSubresources(item, WORKSPACE, [itemSubresourceId(OTHER_WORKSPACE, PAGE)]))
-      .toThrow();
+  it("accepts IDs recorded under a workspace the owner's connection has since left", () => {
+    expect(() => assertBindingSubresources(workspace,
+      [workspaceSubresourceId(OTHER_WORKSPACE), itemSubresourceId(OTHER_WORKSPACE, CHILD)])).not.toThrow();
+    expect(() => assertBindingSubresources(item, [itemSubresourceId(OTHER_WORKSPACE, PAGE)])).not.toThrow();
   });
 
-  it("refuses unknown IDs and an owner without a workspace id", () => {
-    expect(() => assertBindingSubresources(workspace, WORKSPACE, ["repo/1"])).toThrow();
-    expect(() => assertBindingSubresources(workspace, undefined, [workspaceId]))
-      .toThrow(MISSING_WORKSPACE_ID_MESSAGE);
+  it("refuses unknown IDs", () => {
+    expect(() => assertBindingSubresources(workspace, ["repo/1"])).toThrow();
   });
 });
 

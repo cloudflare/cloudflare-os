@@ -63,13 +63,16 @@ Workshop checks through each gatekeeper's `verifyObserverAccess()`:
 
 `workspaceId` is the binding owner's stored workspace id; a connection made before it was stored
 fails reads closed until the owner reconnects. Item ids are normalized (no dashes, lowercase), and
-provisional pages are never reported. `verifyObserverAccess()` refuses any ID of another workspace,
-and on an item binding anything but the bound item. Each observer's own `UserAccount` answers
-through `checkSubresourceAccess()`: membership compares its stored workspace id; an item is
+provisional pages are never reported, though a pending row's properties report its database, whose
+columns they show. `verifyObserverAccess()` refuses any ID of another kind, and on an item binding
+anything but the bound item; it accepts whichever workspace an ID was recorded under, so a reconnect
+into another workspace doesn't invalidate recorded requirements. Each observer's own `UserAccount`
+answers through `checkSubresourceAccess()`: membership compares its stored workspace id; an item is
 retrieved with its own token, answers cached under `cache:@access:` for 15 minutes when allowed and
 15 seconds when denied, partitioned by `credentialsId` (a UUID named on every credential install,
 including a committed reconnect, but not on a token refresh). Errors other than a definite
-404/403/`restricted_resource`/`validation_error` throw and are not cached.
+404/403/`restricted_resource`/`validation_error` throw and are not cached, and a check a reconnect
+lands in fails rather than combining two connections' answers.
 
 `addObserver()` keeps enforcing legacy history: an item binding checks the bound item; a workspace
 binding checks membership and every item recorded under `observedItem:<id>` before subresources were

@@ -316,6 +316,30 @@ describe("UserAccount.checkSubresourceAccess", () => {
     expect(storage.kv.get<{ accessToken: string }>("grant")?.accessToken).toBe("token-3");
   });
 
+  it("fails a check a reconnect lands in rather than combining two accounts' answers", async () => {
+    const { storage, account: observer } = account();
+    answer(PAGE_1, { id: "1", title: "Page" });
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([true]);
+
+    // The space lookup is still in flight, under the first account, when the reconnect lands.
+    const started = Promise.withResolvers<void>();
+    const space = Promise.withResolvers<Response>();
+    routes.unshift(url => {
+      if (url !== SPACE_ENG) return undefined;
+      started.resolve();
+      return space.promise as unknown as Response;
+    });
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: CLOUD }]);
+    answer("https://api.atlassian.com/me", { account_id: "other" });
+    const checking = observer.checkSubresourceAccess(["site/cloud-1/content/1", "site/cloud-1/space/ENG"]);
+    await started.promise;
+    await observer.commitReconnect(stageCredentials(storage.kv,
+      { accessToken: "token-3", refreshToken: "refresh-3", expiresAt: Date.now() + 3600_000 }, Date.now()));
+    space.resolve(Response.json({ results: [{ id: "10", key: "ENG", name: "Eng" }] }));
+
+    await expect(checking).rejects.toThrow(/changed while their access was being checked/);
+  });
+
   it("throws, and reuses nothing, when Atlassian fails to answer", async () => {
     const { account: observer } = account();
     answer(PAGE_1, 500);

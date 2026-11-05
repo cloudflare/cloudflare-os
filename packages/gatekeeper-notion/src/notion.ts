@@ -528,11 +528,14 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * Whether this account can read each Notion subresource, in order (see
    * checkNotionSubresourceAccess). An item answer is reused for up to ITEM_ACCESS_ALLOWED_TTL_MS if
-   * allowed and ITEM_ACCESS_DENIED_TTL_MS if denied, until credentials are next installed. Throws
-   * for an ID it can't check, or when access can't be determined, which is never reused.
+   * allowed and ITEM_ACCESS_DENIED_TTL_MS if denied, until credentials are next installed. Every
+   * answer comes from the credentials installed when the check began: a reconnect partway through
+   * could otherwise combine one Notion account's answers with another's, so it fails the check.
+   * Throws for an ID it can't check, or when access can't be determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
-    return await checkNotionSubresourceAccess({
+    const installed = credentialsId(this.ctx.storage.kv);
+    const answers = await checkNotionSubresourceAccess({
       access: this.#access,
       workspaceId: this.ctx.storage.kv.get<StoredAccountInfo>("accountInfo")?.workspaceId,
       api: new NotionApi(
@@ -540,6 +543,10 @@ export class UserAccount extends DurableObject<Env> {
         async () => await this.refreshCredentials(),
       ),
     }, subresources);
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Notion connection changed while their access was being checked.");
+    }
+    return answers;
   }
 
   async alarm() {
@@ -865,18 +872,16 @@ export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatek
   async removeObserver(_id: string): Promise<void> {}
 
   /**
-   * Checks the subresource this binding's reads report — the bound page or database, in the owner's
-   * workspace — failing the whole call for any other ID. An observer is allowed when their own
-   * connection can retrieve it, as their UserAccount last learned (see
-   * UserAccount.checkSubresourceAccess).
+   * Checks the subresource this binding's reads report — the bound page or database, under
+   * whichever workspace the owner's connection belonged to when it was read — failing the whole call
+   * for any other ID. An observer is allowed when their own connection can retrieve it, as their
+   * UserAccount last learned (see UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    assertBindingSubresources(
-      { kind: "item", itemId: this.ctx.props.itemId }, (await this.#ownerInfo()).workspaceId,
-      subresources);
+    assertBindingSubresources({ kind: "item", itemId: this.ctx.props.itemId }, subresources);
     return await verifyNotionAccess(observers, subresources);
   }
 
@@ -1004,17 +1009,17 @@ export class NotionWorkspaceGatekeeperImpl
   }
 
   /**
-   * Checks the subresources this binding's reads report — membership of the owner's workspace and
-   * pages/databases in it — failing the whole call for any other ID. An observer is allowed when
-   * their own connection belongs to that workspace and can retrieve each item, as their UserAccount
-   * last learned (see UserAccount.checkSubresourceAccess).
+   * Checks the subresources this binding's reads report — membership of the workspace the owner's
+   * connection belonged to when each was read, and pages/databases in it — failing the whole call
+   * for any other kind of ID. An observer is allowed when their own connection belongs to that
+   * workspace and can retrieve each item, as their UserAccount last learned (see
+   * UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    assertBindingSubresources(
-      { kind: "workspace" }, (await this.#ownerInfo()).workspaceId, subresources);
+    assertBindingSubresources({ kind: "workspace" }, subresources);
     return await verifyNotionAccess(observers, subresources);
   }
 
@@ -1176,14 +1181,20 @@ class NotionPageSessionImpl extends RpcTarget implements NotionPageSession {
     // For a provisional row, seed the full parent-database column set (with defaults) so an
     // unapproved row has the same shape as it will after approval.
     let seed: Record<string, NotionPropertyValue> | undefined;
+    let itemIds = this.#itemIds();
     if (this.#isProvisional()) {
       const dbId = await this.#parentDatabaseId();
-      if (dbId) seed = defaultPropertiesFromSchema(await this.#store.getDatabaseSchema(dbId));
+      if (dbId) {
+        seed = defaultPropertiesFromSchema(await this.#store.getDatabaseSchema(dbId));
+        // The columns are the database's, read now for whoever reads the row, which may not be the
+        // chat or gadget that queued its creation, so the read reports the database itself.
+        itemIds = [dbId];
+      }
     }
     const props = simulatePageProperties(await this.#baseProperties(), records, seed);
     const titleVal = Object.values(props).find(v => v.type === "title");
     const label = titleVal?.type === "title" && titleVal.text ? `“${titleVal.text}”` : this.#ref();
-    await this.#scope.authorize(this.#approvalQueue, this.#itemIds(),
+    await this.#scope.authorize(this.#approvalQueue, itemIds,
       observation("Read Notion page properties", `Read the property values of Notion page ${label}.`));
     return props;
   }

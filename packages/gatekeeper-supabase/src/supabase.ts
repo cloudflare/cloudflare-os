@@ -630,13 +630,16 @@ export class UserAccount extends DurableObject<Env> {
    * ID asks only whether the account can reach that project (its organization in the ID is
    * identity, since projects move between organizations); an organization ID asks for membership.
    * An allowed answer is reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
-   * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Throws for an ID it
-   * can't check, or when access can't be determined (missing or expired credentials, a rate limit,
-   * an outage), which is never reused.
+   * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Every answer comes from
+   * the credentials installed when the check began: a reconnect partway through could otherwise
+   * combine one Supabase account's answers with another's, so it fails the check. Throws for an ID
+   * it can't check, or when access can't be determined (missing or expired credentials, a rate
+   * limit, an outage), which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     const parsed = subresources.map(parseSupabaseSubresource);
+    const installed = this.#credentialsId();
     const projectRefs = new Map<string, string>();
     const organizationSlugs = new Map<string, string>();
     parsed.forEach((resource, index) => {
@@ -668,6 +671,9 @@ export class UserAccount extends DurableObject<Env> {
         return missing.map(subresource => memberships.has(organizationSlugs.get(subresource)!));
       });
       organizationIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Supabase connection changed while their access was being checked.");
     }
     return subresources.map(subresource => access.get(subresource)!);
   }

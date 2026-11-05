@@ -727,11 +727,14 @@ export class UserAccount extends DurableObject<Env> {
    * reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
    * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Throws for an ID it
    * can't check, or when access can't be determined (no or expired credentials, a rate limit, an
-   * outage), which is never reused.
+   * outage), which is never reused. Every answer comes from the credentials installed when the
+   * check began: a reconnect partway through could otherwise combine one Linear account's answers
+   * with another's, so it fails the check.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     const resources = subresources.map(parseLinearSubresource);
+    const installed = this.#credentialsId();
     const api = new LinearApi(() => this.getAccessToken());
     // The url key of the workspace this account's token belongs to (a Linear grant is for one
     // workspace), asked at most once per call and credential installation, and only when some
@@ -771,6 +774,9 @@ export class UserAccount extends DurableObject<Env> {
             throw error;
           }
         }));
+    }
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Linear connection changed while their access was being checked.");
     }
     return answers;
   }
@@ -1066,11 +1072,18 @@ type IssueOverlayPatch = {
   assignee?: RawUser | null;
   project?: RawProject | null;
   parent?: RawIssue["parent"];
+  /**
+   * The team of `parent`, which a read showing it reports (see LinearGatekeeperImpl.issueTeamIds).
+   * Absent on actions stored before it was recorded, whose pre-read the legacy tracker recorded.
+   */
+  parentTeamId?: string;
 };
 
 type StoredAction = (
   | { id: number; status: ActionStatus; kind: "createIssue"; input: IssueCreateInput;
-      provisionalId: string; createdIssueId?: string; synthetic: RawIssue; title: string }
+      provisionalId: string; createdIssueId?: string; synthetic: RawIssue; title: string;
+      /** The team of `synthetic.parent`, as for IssueOverlayPatch.parentTeamId. */
+      parentTeamId?: string }
   | { id: number; status: ActionStatus; kind: "updateIssue"; issueRef: string;
       input: IssueUpdateInput; previous: IssueUpdateInput; patch: IssueOverlayPatch; title: string }
   | { id: number; status: ActionStatus; kind: "addLabels"; issueRef: string;
@@ -1380,6 +1393,26 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
       out.push(this.#overlayIssue(action.synthetic));
     }
     return out;
+  }
+
+  /**
+   * The teams a read showing `issue`, as issueRaw returned it, reveals data of: its own, plus the
+   * team of a parent a pending setParent or sub-issue create put there. That parent's title and URL
+   * were read under the authorization of whichever chat or gadget queued the action, which doesn't
+   * carry over to the one reading it now, so the read reports the parent's team itself. A parent
+   * Linear returns is attributed to the issue's team alone, as before.
+   */
+  issueTeamIds(issue: RawIssue): string[] {
+    let parentTeamId: string | undefined;
+    for (const action of this.#pendingActions()) {
+      if (action.kind === "createIssue" && action.provisionalId === issue.id) {
+        parentTeamId = action.parentTeamId;
+      } else if (action.kind === "updateIssue" && action.patch.parent !== undefined &&
+          this.#actionTargetsIssue(action.issueRef, issue)) {
+        parentTeamId = action.patch.parent === null ? undefined : action.patch.parentTeamId;
+      }
+    }
+    return parentTeamId === undefined ? [issue.team.id] : [issue.team.id, parentTeamId];
   }
 
   // Match pending comments to an issue by the exact ref used, by the resolved real id (so a
@@ -2267,7 +2300,7 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
 
   async getDetails(): Promise<LinearIssueDetails> {
     const issue = await this.#requireIssue();
-    await this.#gk.authorizeRead(this.#queue, [issue.team.id], {
+    await this.#gk.authorizeRead(this.#queue, this.#gk.issueTeamIds(issue), {
       title: `Read issue ${issue.identifier}`,
       description: `Read details of issue ${issueLabel(issue)}.`,
     });
@@ -2467,7 +2500,8 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
     await this.#gk.enqueue(
       this.#queue,
       { kind: "updateIssue", issueRef: issue.id, input: { parentId: resolvedParentId },
-        previous: { parentId: issue.parent?.id ?? null }, patch: { parent: parentOverlay },
+        previous: { parentId: issue.parent?.id ?? null },
+        patch: { parent: parentOverlay, ...(parentTeamIds.length > 0 ? { parentTeamId: parentTeamIds[0] } : {}) },
         title: `Set parent of ${issue.identifier}` },
       { title: `${parentId ? "Set" : "Clear"} parent of ${issue.identifier}`,
         ...(parentOverlay
@@ -2754,7 +2788,8 @@ async function createIssueViaQueue(
 
   await gk.enqueue(
     queue,
-    { kind: "createIssue", input, provisionalId, synthetic, title: `Create issue "${options.title}"` },
+    { kind: "createIssue", input, provisionalId, synthetic, title: `Create issue "${options.title}"`,
+      ...(parentTeamId !== undefined ? { parentTeamId } : {}) },
     { title: `Create issue "${options.title}"`,
       ...describeCreateIssue(team, options, provisionalId, { stateObj, assigneeObj, labelObjs, parentObj }),
       implementsRevert: true },
