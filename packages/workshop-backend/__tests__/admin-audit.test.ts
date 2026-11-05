@@ -1,7 +1,10 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { type AdminAuditRecord, type AdminSettingRecord } from "@gadgets/workshop-shared/api";
+import {
+  MAX_ADMIN_AUDIT_ARG_LENGTH,
+  type AdminAccessRecord, type AdminAuditRecord, type AdminSettingRecord,
+} from "@gadgets/workshop-shared/api";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { utcDayKey } from "../src/ai-gateway-billing/limits/config.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
@@ -24,6 +27,15 @@ function auditLog() {
 
 function daysAgo(days: number): Date {
   return new Date(Date.now() - days * DAY_MS);
+}
+
+function access(overrides: Partial<AdminAccessRecord> = {}): AdminAccessRecord {
+  return {
+    kind: "workspace", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
+    workspaceId: "w1", workspaceOwner: "owner-1", workspaceTitle: "Plans", method: "describe",
+    args: {}, reason: "ticket 1",
+    requested: "metadata", access: "metadata", exposed: "metadata", ...overrides,
+  };
 }
 
 function setting(overrides: Partial<AdminSettingRecord> = {}): AdminSettingRecord {
@@ -52,14 +64,6 @@ function sql<T extends Record<string, SqlStorageValue>>(stub: Stub, query: strin
       state.storage.sql.exec<T>(query, ...params).toArray());
 }
 
-// A workspace access row written as of now, as the stacked inspection change appends them, so that
-// a kind filter has another kind to leave out.
-function insertAccessRow(stub: Stub, admin: string): Promise<unknown[]> {
-  return sql(stub, `INSERT INTO admin_audit
-      (at, kind, admin, workspace_id, workspace_title, exposed, record)
-      VALUES (?, 'workspace', ?, 'w1', 'Plans', 'metadata', '{}')`, Date.now(), admin);
-}
-
 // A raw row, past append()'s shaping, to test the table's own CHECKs.
 function insertRow(stub: Stub, kind: string, workspaceId: string | null, title: string | null,
     exposed: string | null): Promise<unknown[]> {
@@ -71,14 +75,12 @@ function insertRow(stub: Stub, kind: string, workspaceId: string | null, title: 
 describe("AdminAuditDurableObject.list", () => {
   it("lists newest first, and returns each record as appended", async () => {
     let log = auditLog();
-    let first = setting({ at: daysAgo(2) });
-    let second = setting({ at: daysAgo(1), method: "setSignupsEnabled",
-      changes: [{ setting: "signupsEnabled", before: "true", after: "false" }] });
-    let third = setting({ method: "setBanner", changes: [
-      { setting: "banner", key: "message", after: "Maintenance tonight" },
-      { setting: "banner", key: "color", before: "blue", after: "red" },
-    ] });
-    let fourth = setting({ via: "api", sessionId: "session-2" });
+    let first = access({ at: daysAgo(2), args: { chatId: 4 }, refused: "ADMIN_CONTENT_WITHHELD" });
+    let second = setting({ at: daysAgo(1) });
+    let third = access({ workspaceId: "w2", method: "inspectWorkspace" });
+    let fourth = access({
+      method: "getChat", args: { chatId: 4 }, requested: "full", access: "full", exposed: "content",
+    });
     for (let record of [first, second, third, fourth]) await log.append(record, RETENTION);
 
     let page = await log.list({ limit: 10 }, RETENTION);
@@ -88,38 +90,69 @@ describe("AdminAuditDurableObject.list", () => {
 
   it("stores each field once", async () => {
     let log = auditLog();
+    await log.append(access(), RETENTION);
     await log.append(setting(), RETENTION);
     let rows = await sql<
         { kind: string; workspace_id: string | null; exposed: string | null; record: string }>(log,
         "SELECT kind, workspace_id, exposed, record FROM admin_audit ORDER BY seq");
     expect(rows.map(row => [row.kind, row.workspace_id, row.exposed]))
-        .toEqual([["setting", null, null]]);
-    let json = JSON.parse(rows[0].record);
-    for (let field of ["kind", "at", "admin"]) expect(json, field).not.toHaveProperty(field);
+        .toEqual([["workspace", "w1", "metadata"], ["setting", null, null]]);
+    for (let row of rows) {
+      let json = JSON.parse(row.record);
+      for (let field of ["kind", "at", "admin", "workspaceId", "workspaceTitle", "exposed"]) {
+        expect(json, field).not.toHaveProperty(field);
+      }
+    }
   });
 
-  it("combines the kind, admin and since filters", async () => {
+  it("combines the kind, admin, workspace and since filters", async () => {
     let log = auditLog();
     let records: AdminAuditRecord[] = [
-      setting({ admin: "ada", at: daysAgo(3) }),
-      setting({ admin: "grace", at: daysAgo(1) }),
+      access({ admin: "ada", workspaceId: "w1", at: daysAgo(3) }),
+      access({ admin: "ada", workspaceId: "w2", at: daysAgo(1) }),
+      access({ admin: "grace", workspaceId: "w1", at: daysAgo(1) }),
       setting({ admin: "ada", at: daysAgo(1) }),
     ];
     for (let record of records) await log.append(record, RETENTION);
 
     let list = async (query: object) =>
         (await log.list({ limit: 50, ...query }, RETENTION)).records;
-    await insertAccessRow(log, "ada");
-    expect(await list({ kind: "setting", admin: "ada" })).toEqual([records[2], records[0]]);
-    expect((await list({ admin: "ada", since: daysAgo(2) })).map(record => record.kind))
-        .toEqual(["workspace", "setting"]);
-    expect(await list({ admin: "linus" })).toEqual([]);
+    expect(await list({ kind: "setting" })).toEqual([records[3]]);
+    expect(await list({ kind: "workspace", admin: "ada" })).toEqual([records[1], records[0]]);
+    expect(await list({ workspace: "w1" })).toEqual([records[2], records[0]]);
+    expect(await list({ workspace: "w1", admin: "ada", since: daysAgo(2) })).toEqual([]);
+    expect(await list({ admin: "ada", since: daysAgo(2) })).toEqual([records[3], records[1]]);
+  });
+
+  it("filters on what a call exposed, alone and with the other filters", async () => {
+    let log = auditLog();
+    let records: AdminAuditRecord[] = [
+      access({ admin: "ada", workspaceId: "w1", exposed: "content", at: daysAgo(3) }),
+      access({ admin: "ada", workspaceId: "w2", exposed: "content", at: daysAgo(1) }),
+      access({ admin: "grace", workspaceId: "w1", exposed: "content", at: daysAgo(1) }),
+      access({ admin: "ada", workspaceId: "w1", at: daysAgo(1) }),
+      setting({ admin: "ada", at: daysAgo(1) }),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    expect(await list({ exposed: "content" })).toEqual([records[2], records[1], records[0]]);
+    expect(await list({ exposed: "content", kind: "workspace", admin: "ada" }))
+        .toEqual([records[1], records[0]]);
+    expect(await list({ exposed: "content", workspace: "w1" })).toEqual([records[2], records[0]]);
+    expect(await list({ exposed: "content", admin: "ada", workspace: "w1", since: daysAgo(2) }))
+        .toEqual([]);
+    expect(await list({ exposed: "content", since: daysAgo(2) }))
+        .toEqual([records[2], records[1]]);
+    expect(await list({ exposed: "metadata" })).toEqual([records[3]]);
+    expect(await list({ kind: "setting", exposed: "metadata" })).toEqual([]);
+    expect(await list({ kind: "setting", exposed: "content" })).toEqual([]);
   });
 
   it("pages with a cursor, and rejects a malformed cursor or an over-long filter", async () => {
     let log = auditLog();
-    let records = Array.from({ length: 5 },
-        (_, i) => setting({ changes: [{ setting: "siteName", after: `Site ${i}` }] }));
+    let records = Array.from({ length: 5 }, (_, i) => access({ args: { i } }));
     for (let record of records) await log.append(record, RETENTION);
 
     let first = await log.list({ limit: 2 }, RETENTION);
@@ -134,6 +167,8 @@ describe("AdminAuditDurableObject.list", () => {
       await expectRejection(log.list({ limit: 2, cursor }, RETENTION), "Invalid cursor.");
     }
     await expectRejection(log.list({ limit: 2, admin: "a".repeat(1001) }, RETENTION),
+        "Audit filters must be at most 1000 characters.");
+    await expectRejection(log.list({ limit: 2, workspace: "w".repeat(1001) }, RETENTION),
         "Audit filters must be at most 1000 characters.");
   });
 
@@ -161,22 +196,51 @@ describe("AdminAuditDurableObject.list", () => {
         WHERE json_extract(record, '$.method') = 'setSiteName' ORDER BY seq DESC`);
     expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_method");
   });
+
+  it("filters by workspace owner through its index", async () => {
+    let log = auditLog();
+    let adas = access({ workspaceOwner: "ada" });
+    let graces = [access({ workspaceOwner: "grace", workspaceId: "w2" }),
+      access({ workspaceOwner: "grace", workspaceId: "w3", exposed: "content" })];
+    for (let record of [adas, ...graces, setting()]) await log.append(record, RETENTION);
+
+    expect((await log.list({ limit: 50, owner: "grace" }, RETENTION)).records)
+        .toEqual([graces[1], graces[0]]);
+    expect((await log.list({ limit: 50, owner: "grace", exposed: "content" }, RETENTION)).records)
+        .toEqual([graces[1]]);
+    expect((await log.list({ limit: 50, owner: "linus" }, RETENTION)).records).toEqual([]);
+    await expectRejection(log.list({ limit: 2, owner: "a".repeat(1001) }, RETENTION),
+        "Audit filters must be at most 1000 characters.");
+
+    let plan = await sql<{ detail: string }>(log, `EXPLAIN QUERY PLAN SELECT seq FROM admin_audit
+        WHERE json_extract(record, '$.workspaceOwner') = 'grace' ORDER BY seq DESC`);
+    expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_owner");
+  });
 });
 
 describe("AdminAuditDurableObject retention", () => {
   it("hides and deletes records older than the retention", async () => {
     let log = auditLog();
-    await log.append(setting({ at: daysAgo(RETENTION + 10) }), RETENTION);
-    let kept = setting({ at: daysAgo(RETENTION - 10) });
+    await log.append(access({ at: daysAgo(RETENTION + 10) }), RETENTION);
+    let kept = access({ at: daysAgo(RETENTION - 10) });
     await log.append(kept, RETENTION);
 
     expect((await log.list({ limit: 10 }, RETENTION)).records).toEqual([kept]);
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(1);
   });
 
+  it("stores a record given no retention without pruning", async () => {
+    let log = auditLog();
+    let old = access({ at: daysAgo(RETENTION + 10) });
+    await log.append(old, RETENTION + 30);
+    await log.append(access(), undefined);
+    expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(2);
+    expect((await log.list({ limit: 10 }, RETENTION + 30)).records).toHaveLength(2);
+  });
+
   it("keeps records inside the deployment's floor whatever retention it is passed", async () => {
     let log = auditLog();
-    let record = setting({ at: daysAgo(30) });
+    let record = access({ at: daysAgo(30) });
     await log.append(record, 1);
     expect((await log.list({ limit: 10 }, 1)).records).toEqual([record]);
     await expectRejection(log.list({ limit: 10 }, 0), "at least 1");
@@ -223,16 +287,34 @@ describe("AdminAuditDurableObject schema", () => {
         "CHECK constraint failed");
     await expectRejection(insertRow(log, "workspace", "w1", "t", "bogus"),
         "CHECK constraint failed");
+    let { exposed: _exposed, ...unexposed } = access();
+    await expectRejection(log.append(unexposed as AdminAccessRecord, RETENTION),
+        "CHECK constraint failed");
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(0);
   });
 
+  it("stores an over-long title cut, once, whatever the caller sent", async () => {
+    let log = auditLog();
+    let title = "t".repeat(3 * 2 ** 20);
+    await log.append(access({ workspaceTitle: title }), RETENTION);
+
+    let [record] = (await log.list({ limit: 1 }, RETENTION)).records as AdminAccessRecord[];
+    expect(record.workspaceTitle).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(record.workspaceTitle.endsWith("…")).toBe(true);
+    let stats = await log.stats({ days: 1 }, RETENTION);
+    expect(stats.topWorkspaces).toEqual(
+        [{ workspaceId: "w1", title: record.workspaceTitle, count: 1, contentReads: 0 }]);
+    let [{ size }] = await sql<{ size: number }>(log,
+        "SELECT length(record) + length(workspace_title) AS size FROM admin_audit");
+    expect(size).toBeLessThan(10_000);
+  });
 });
 
 describe("AdminAuditDurableObject.stats", () => {
   it("counts every UTC day of the window, oldest first, empty days included", async () => {
     let log = auditLog();
     let recent = [new Date(), new Date(), daysAgo(2)];
-    for (let at of recent) await log.append(setting({ at }), RETENTION);
+    for (let at of recent) await log.append(access({ at }), RETENTION);
     await log.append(setting({ at: daysAgo(20) }), RETENTION);
 
     let stats = await log.stats({ days: 7 }, RETENTION);
@@ -251,13 +333,13 @@ describe("AdminAuditDurableObject.stats", () => {
     expect((await log.stats({ days: 30 }, RETENTION)).totalEvents).toBe(4);
   });
 
-  it("orders the top admins by count, then by id", async () => {
+  it("orders the top lists by count, then by id", async () => {
     let log = auditLog();
     let records: AdminAuditRecord[] = [
-      setting({ admin: "grace" }),
-      setting({ admin: "grace" }),
-      setting({ admin: "ada" }),
-      setting({ admin: "linus" }),
+      access({ admin: "grace", workspaceId: "w2" }),
+      access({ admin: "grace", workspaceId: "w2" }),
+      access({ admin: "ada", workspaceId: "w3" }),
+      access({ admin: "linus", workspaceId: "w1" }),
       setting({ admin: "ada" }),
     ];
     for (let record of records) await log.append(record, RETENTION);
@@ -265,30 +347,136 @@ describe("AdminAuditDurableObject.stats", () => {
     let stats = await log.stats({ days: 7 }, RETENTION);
     expect(stats.totalEvents).toBe(5);
     expect(stats.topAdmins).toEqual([
-      { admin: "ada", count: 2 }, { admin: "grace", count: 2 }, { admin: "linus", count: 1 },
+      { admin: "ada", count: 2, contentReads: 0 }, { admin: "grace", count: 2, contentReads: 0 },
+      { admin: "linus", count: 1, contentReads: 0 },
+    ]);
+    expect(stats.topWorkspaces.map(w => [w.workspaceId, w.count]))
+        .toEqual([["w2", 2], ["w1", 1], ["w3", 1]]);
+  });
+
+  it("titles a workspace with its newest non-empty title", async () => {
+    let log = auditLog();
+    await log.append(access({ workspaceTitle: "First", at: daysAgo(1) }), RETENTION);
+    await log.append(access({ workspaceTitle: "Renamed" }), RETENTION);
+    await log.append(access({ workspaceTitle: "" }), RETENTION);
+    await log.append(access({ workspaceId: "w2", workspaceTitle: "" }), RETENTION);
+
+    let stats = await log.stats({ days: 7 }, RETENTION);
+    expect(stats.topWorkspaces).toEqual([
+      { workspaceId: "w1", title: "Renamed", count: 3, contentReads: 0 },
+      { workspaceId: "w2", title: "", count: 1, contentReads: 0 },
     ]);
   });
 
   it("filters by kind", async () => {
     let log = auditLog();
+    await log.append(access({ admin: "ada" }), RETENTION);
     await log.append(setting({ admin: "grace" }), RETENTION);
     await log.append(setting({ admin: "grace" }), RETENTION);
-    await insertAccessRow(log, "ada");
 
     let settings = await log.stats({ days: 7, kind: "setting" }, RETENTION);
     expect(settings.totalEvents).toBe(2);
-    expect(settings.topAdmins).toEqual([{ admin: "grace", count: 2 }]);
-    expect((await log.stats({ days: 7 }, RETENTION)).totalEvents).toBe(3);
+    expect(settings.topAdmins).toEqual([{ admin: "grace", count: 2, contentReads: 0 }]);
+    expect(settings.topWorkspaces).toEqual([]);
+
+    let workspaces = await log.stats({ days: 7, kind: "workspace" }, RETENTION);
+    expect(workspaces.totalEvents).toBe(1);
+    expect(workspaces.topAdmins).toEqual([{ admin: "ada", count: 1, contentReads: 0 }]);
+    expect(workspaces.topWorkspaces)
+        .toEqual([{ workspaceId: "w1", title: "Plans", count: 1, contentReads: 0 }]);
   });
 
   it("counts nothing past the retention, however long the window", async () => {
     let log = auditLog();
-    await log.append(setting({ at: daysAgo(RETENTION + 5) }), RETENTION);
-    await log.append(setting({ at: daysAgo(5) }), RETENTION);
-    await log.append(setting({ at: daysAgo(5), admin: "grace" }), RETENTION);
+    await log.append(access({ at: daysAgo(RETENTION + 5), exposed: "content" }), RETENTION);
+    await log.append(access({ at: daysAgo(5) }), RETENTION);
+    await log.append(access({ at: daysAgo(5), admin: "grace", exposed: "content" }), RETENTION);
     let stats = await log.stats({ days: 366 }, RETENTION);
     expect(stats.totalEvents).toBe(2);
     expect(stats.byDay).toHaveLength(366);
+    expect(stats.contentReads).toBe(1);
+    expect(stats.topAdmins).toEqual([
+      { admin: "ada", count: 1, contentReads: 0 }, { admin: "grace", count: 1, contentReads: 1 },
+    ]);
+    expect(stats.topWorkspaces)
+        .toEqual([{ workspaceId: "w1", title: "Plans", count: 2, contentReads: 1 }]);
   });
 
+  it("counts the content reads in the window", async () => {
+    let log = auditLog();
+    await log.append(access({ exposed: "content" }), RETENTION);
+    await log.append(access({ exposed: "content", at: daysAgo(2) }), RETENTION);
+    await log.append(access({ exposed: "content", at: daysAgo(20) }), RETENTION);
+    await log.append(access(), RETENTION);
+    // A day holding only a setting record counts no content read.
+    await log.append(setting({ at: daysAgo(4) }), RETENTION);
+
+    let stats = await log.stats({ days: 7 }, RETENTION);
+    expect(stats.totalEvents).toBe(4);
+    expect(stats.contentReads).toBe(2);
+    expect((await log.stats({ days: 30 }, RETENTION)).contentReads).toBe(3);
+  });
+
+  it("counts each top admin's and workspace's content reads, ranking by every record", async () => {
+    let log = auditLog();
+    let records: AdminAuditRecord[] = [
+      access({ admin: "grace", workspaceId: "w2", exposed: "content" }),
+      access({ admin: "grace", workspaceId: "w2", exposed: "content" }),
+      access({ admin: "ada", workspaceId: "w3", exposed: "content" }),
+      access({ admin: "linus", workspaceId: "w1", exposed: "content" }),
+      // Many calls exposing nothing rank first, with no content read.
+      ...Array.from({ length: 5 }, () => access({ admin: "zed", workspaceId: "w9" })),
+      setting({ admin: "ada" }),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let stats = await log.stats({ days: 7 }, RETENTION);
+    expect(stats.contentReads).toBe(4);
+    expect(stats.topAdmins).toEqual([
+      { admin: "zed", count: 5, contentReads: 0 }, { admin: "ada", count: 2, contentReads: 1 },
+      { admin: "grace", count: 2, contentReads: 2 }, { admin: "linus", count: 1, contentReads: 1 },
+    ]);
+    expect(stats.topWorkspaces).toEqual([
+      { workspaceId: "w9", title: "Plans", count: 5, contentReads: 0 },
+      { workspaceId: "w2", title: "Plans", count: 2, contentReads: 2 },
+      { workspaceId: "w1", title: "Plans", count: 1, contentReads: 1 },
+      { workspaceId: "w3", title: "Plans", count: 1, contentReads: 1 },
+    ]);
+
+    let many = auditLog();
+    for (let i = 0; i < 12; i++) {
+      let id = String(i).padStart(2, "0");
+      await many.append(
+          access({ admin: `a${id}`, workspaceId: `w${id}`, exposed: "content" }), RETENTION);
+    }
+    let capped = await many.stats({ days: 7 }, RETENTION);
+    expect(capped.contentReads).toBe(12);
+    expect(capped.topAdmins.map(a => a.admin))
+        .toEqual(Array.from({ length: 10 }, (_, i) => `a${String(i).padStart(2, "0")}`));
+    expect(capped.topWorkspaces.map(w => w.workspaceId))
+        .toEqual(Array.from({ length: 10 }, (_, i) => `w${String(i).padStart(2, "0")}`));
+  });
+
+  it("filters the content reads by kind", async () => {
+    let log = auditLog();
+    await log.append(access({ admin: "ada", exposed: "content" }), RETENTION);
+    await log.append(access({ admin: "grace", workspaceId: "w2" }), RETENTION);
+    await log.append(setting({ admin: "grace" }), RETENTION);
+
+    let settings = await log.stats({ days: 7, kind: "setting" }, RETENTION);
+    expect(settings.contentReads).toBe(0);
+    expect(settings.topAdmins).toEqual([{ admin: "grace", count: 1, contentReads: 0 }]);
+
+    let all = await log.stats({ days: 7 }, RETENTION);
+    let workspaces = await log.stats({ days: 7, kind: "workspace" }, RETENTION);
+    expect(all.contentReads).toBe(1);
+    expect(all.topAdmins).toEqual([
+      { admin: "grace", count: 2, contentReads: 0 }, { admin: "ada", count: 1, contentReads: 1 },
+    ]);
+    expect(workspaces.contentReads).toBe(all.contentReads);
+    expect(workspaces.topAdmins).toEqual([
+      { admin: "ada", count: 1, contentReads: 1 }, { admin: "grace", count: 1, contentReads: 0 },
+    ]);
+    expect(workspaces.topWorkspaces).toEqual(all.topWorkspaces);
+  });
 });

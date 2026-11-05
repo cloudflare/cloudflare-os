@@ -2173,3 +2173,80 @@ describe("chunked blob storage", () => {
     await (got.content as ReadableStream<Uint8Array>).cancel();
   });
 });
+
+describe("local-only reads", () => {
+  // The fixture repo stored whole, every object attributed to G1, which could serve them again.
+  async function fixtureStoredLocally(): Promise<TestCache> {
+    let t = makeCache();
+    t.sources.set(G1, fixtureSource(t, G1));
+    for (let object of FIXTURE_OBJECTS) {
+      if (PACKED_OIDS.includes(object.oid)) {
+        await t.cache.putFromGatekeeper(G1, object.type, b64Bytes(object.payload));
+      }
+    }
+    return t;
+  }
+
+  it("give what the pulling reads give, without pulling", async () => {
+    let t = await fixtureStoredLocally();
+    expect(t.cache.readLocalCommitTree(COMMIT_1))
+        .toStrictEqual(await t.cache.readCommitTree(COMMIT_1));
+
+    let paths = ["README.md", "src/util.js", "nope.txt", "no/such/file.txt", "README.md/child",
+                 "src", "link.md", "vendored"];
+    let expected = new Map(await t.cache.readFilesAtCommit(COMMIT_1, paths));
+    for (let path of paths) {
+      expect(t.cache.readLocalFileAtCommit(COMMIT_1, path)).toStrictEqual(expected.get(path));
+    }
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("throw naming a missing object, rather than pulling it from a source that has it",
+      async () => {
+    // Only the commit is stored, its tree pullable from G1.
+    let t = makeCache();
+    t.sources.set(G1, fixtureSource(t, G1));
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    expect(() => t.cache.readLocalCommitTree(COMMIT_1))
+        .toThrow(`git object ${TREE_1} is not stored in this workspace`);
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "README.md"))
+        .toThrow(`git object ${TREE_1} is not stored in this workspace`);
+
+    // The trees stored, every blob still pullable from G1.
+    for (let object of FIXTURE_OBJECTS.filter(o => o.type === "tree")) {
+      if (PACKED_OIDS.includes(object.oid)) {
+        await t.cache.putFromGatekeeper(G1, object.type, b64Bytes(object.payload));
+      }
+    }
+    expect(t.cache.readLocalCommitTree(COMMIT_1).map(node => node.name))
+        .toStrictEqual(["README.md", "docs", "link.md", "run.sh", "src", "vendored"]);
+    let readmeBlob = "ca69e6d08b5b8bb4f11a74f9695e329c203cbfd8";
+    let linkBlob = "42061c01a1c70097d1e4579f29a5adf40abdec95";  // link.md -> "README.md"
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "README.md"))
+        .toThrow(`git object ${readmeBlob} is not stored in this workspace`);
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "link.md"))
+        .toThrow(`git object ${linkBlob} is not stored in this workspace`);
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("reject an invalid path", async () => {
+    let t = await fixtureStoredLocally();
+    for (let path of ["../escape", "src//util.js", "", "./README.md"]) {
+      expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, path)).toThrow(/invalid file path/);
+    }
+  });
+
+  it("report content that is not text as unreadable", async () => {
+    let t = makeCache();
+    let binary = await storeLocal(t.storage,
+        { type: "blob", payload: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]) });
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([{ mode: "100644", name: "image.png", oid: binary }]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "binary") });
+    expect(t.cache.readLocalFileAtCommit(commit, "image.png"))
+        .toStrictEqual({ kind: "unreadable", message: "image.png is not a text file" });
+  });
+});

@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
-  MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH,
+  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
+  MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
+  type ActionLogEntry, type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo,
+  type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AUDIT_EXCERPT_CONTEXT, adminAccessPolicy, adminAuditStatsDays, adminAuditValue,
-  adminListLimit, adminSettingChange, cutAdminAuditText, minAdminAuditRetentionDays,
+  ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
+  adminAuditValue, adminListLimit, adminSettingChange, adminViewCallAccess, adminViewLifetimeMs,
+  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, cutAdminAuditText,
+  fileHoldsContent, hookHoldsContent,
+  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays,
+  redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent, withholdChatContent,
+  withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -13,6 +21,49 @@ import {
 function envWith(vars: Record<string, unknown>): Cloudflare.Env {
   return vars as unknown as Cloudflare.Env;
 }
+
+function codeOf(call: () => unknown): string | undefined {
+  try {
+    call();
+  } catch (err) {
+    return getAdminAccessErrorCode(err);
+  }
+  throw new Error("expected a refusal");
+}
+
+const ADMIN = "admin@example.test";
+const adminEnv = envWith({ ADMINS: [ADMIN] });
+
+function terms(overrides: Partial<AdminViewTerms> = {}): AdminViewTerms {
+  return {
+    via: "api", requested: "full", access: "full", expiresAt: new Date(Date.now() + 60_000),
+    ...overrides,
+  };
+}
+
+describe("maxAdminWorkspaceAccess", () => {
+  it("is metadata while unset or blank", () => {
+    expect(maxAdminWorkspaceAccess(envWith({}))).toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "" }))).toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "  " }))).toBe("metadata");
+  });
+
+  it("reads each level in any case, trimmed", () => {
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: " Off " }))).toBe("off");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "METADATA" })))
+        .toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "\tFull\n" })))
+        .toBe("full");
+  });
+
+  // A value meant to turn inspection off must never grant the default.
+  it("fails closed to off for anything that is not a level", () => {
+    for (let value of ["none", "false", "of", "disabled", "1"]) {
+      expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: value })), value)
+          .toBe("off");
+    }
+  });
+});
 
 describe("minAdminAuditRetentionDays", () => {
   it("defaults while unset or blank, and reads a positive whole number", () => {
@@ -35,18 +86,44 @@ describe("minAdminAuditRetentionDays", () => {
 });
 
 describe("adminAccessPolicy", () => {
-  it("holds the admins' choice within the environment's bound", () => {
-    let chosen = { adminAuditRetentionDays: 30 };
-    expect(adminAccessPolicy(chosen, envWith({})))
-        .toEqual({ retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS });
-    expect(adminAccessPolicy(chosen, envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "7" })))
-        .toEqual({ retentionDays: 30 });
-    expect(adminAccessPolicy({ adminAuditRetentionDays: 400 }, envWith({})))
-        .toEqual({ retentionDays: 400 });
+  it("orders the levels", () => {
+    expect(lowerAdminWorkspaceAccess("full", "metadata")).toBe("metadata");
+    expect(lowerAdminWorkspaceAccess("off", "full")).toBe("off");
+    expect(lowerAdminWorkspaceAccess("metadata", "metadata")).toBe("metadata");
+  });
+
+  it("holds the admins' choices within the environment's bounds", () => {
+    let full = { adminWorkspaceAccess: "full", adminAuditRetentionDays: 30 } as const;
+    expect(adminAccessPolicy(full, envWith({})))
+        .toEqual({ access: "metadata", retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS });
+    expect(adminAccessPolicy(full, envWith({
+      ADMIN_WORKSPACE_ACCESS_MAX: "full", ADMIN_AUDIT_RETENTION_MIN_DAYS: "7",
+    }))).toEqual({ access: "full", retentionDays: 30 });
+    expect(adminAccessPolicy(full, envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "nope" })).access)
+        .toBe("off");
+    expect(adminAccessPolicy({ adminWorkspaceAccess: "off", adminAuditRetentionDays: 400 },
+        envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "full" })))
+        .toEqual({ access: "off", retentionDays: 400 });
   });
 });
 
 describe("validators", () => {
+  it("validates the reason", () => {
+    expect(validateAdminAccessReason("  ticket 42  ")).toBe("ticket 42");
+    expect(validateAdminAccessReason("x".repeat(500))).toHaveLength(500);
+    expect(() => validateAdminAccessReason("   ")).toThrow("at most 500 characters");
+    expect(() => validateAdminAccessReason("x".repeat(501))).toThrow(TypeError);
+  });
+
+  it("validates the view's lifetime", () => {
+    expect(adminViewLifetimeMs(undefined)).toBe(900_000);
+    expect(adminViewLifetimeMs(1)).toBe(1000);
+    expect(adminViewLifetimeMs(3600)).toBe(3_600_000);
+    for (let bad of [0, 3601, 1.5, Number.NaN]) {
+      expect(() => adminViewLifetimeMs(bad), String(bad)).toThrow("from 1 to 3600");
+    }
+  });
+
   it("validates the page size", () => {
     expect(adminListLimit(undefined)).toBe(50);
     expect(adminListLimit(200)).toBe(200);
@@ -59,6 +136,31 @@ describe("validators", () => {
     expect(adminAuditStatsDays(undefined)).toBe(7);
     expect(adminAuditStatsDays(366)).toBe(366);
     for (let bad of [0, 367, 0.5]) expect(() => adminAuditStatsDays(bad)).toThrow("from 1 to 366");
+  });
+});
+
+describe("view calls", () => {
+  it("refuses an expired view before checking the admin", () => {
+    let expired = terms({ expiresAt: new Date(1000) });
+    expect(codeOf(() => assertAdminViewLive(expired, "someone-else", adminEnv, 1000)))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
+    expect(codeOf(() => assertAdminViewLive(terms(), "someone-else", adminEnv)))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    expect(() => assertAdminViewLive(terms(), ADMIN, adminEnv)).not.toThrow();
+  });
+
+  it("runs each call at the view's level lowered to the policy's", () => {
+    let metadata = { access: "metadata", retentionDays: 90 } as const;
+    expect(adminViewCallAccess(terms(), "describe", metadata)).toEqual({ access: "metadata" });
+    expect(adminViewCallAccess(terms(), "getChat", metadata))
+        .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+    expect(adminViewCallAccess(terms({ access: "metadata" }), "readFile",
+        { access: "full", retentionDays: 90 }))
+        .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+    expect(adminViewCallAccess(terms(), "getChat", { access: "full", retentionDays: 90 }))
+        .toEqual({ access: "full" });
+    expect(adminViewCallAccess(terms(), "describe", { access: "off", retentionDays: 90 }))
+        .toEqual({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff });
   });
 });
 
@@ -85,6 +187,142 @@ describe("cutAdminAuditText", () => {
     let cut = cutAdminAuditText("x".repeat(3 * 2 ** 20), MAX_ADMIN_AUDIT_ARG_LENGTH);
     expect(cut).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
     expect(cut.endsWith("…")).toBe(true);
+  });
+
+  it("is the cut redactAdminAuditArgs() applies", () => {
+    let long = "p".repeat(1000);
+    expect(redactAdminAuditArgs({ path: long, chatId: 3, beforeSequence: undefined })).toEqual({
+      path: cutAdminAuditText(long, MAX_ADMIN_AUDIT_ARG_LENGTH),
+      chatId: 3,
+    });
+  });
+});
+
+describe("withholding content", () => {
+  it("drops queued steers from a copy", () => {
+    let meta = {
+      id: 1, title: "t", started: new Date(0), lastActive: new Date(0),
+      queuedSteers: [{ text: "secret", author: { id: "u", name: "U" } }],
+    } as AiChatMetadata;
+    let withheld = withholdChatContent(meta);
+    expect(withheld).not.toHaveProperty("queuedSteers");
+    expect(withheld.title).toBe("t");
+    expect(meta.queuedSteers).toHaveLength(1);
+  });
+
+  it("empties descriptions and drops fields from a copy", () => {
+    let fields = [{ label: "To", value: "x@example.com" }];
+    let action = {
+      id: 1, resourceTitle: "r", createdAt: new Date(0), state: "pending", type: "action",
+      description: { title: "Send", description: "body", fields },
+    } as unknown as ActionLogEntry;
+    let observation = {
+      id: 2, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "observation",
+      description: { title: "Read", description: "content", fields },
+    } as unknown as ActionLogEntry;
+    let hookEntry = {
+      id: 3, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "bindHook",
+      enabled: true, description: { title: "Hook", description: "what it does" },
+    } as unknown as ActionLogEntry;
+
+    for (let entry of [action, observation, hookEntry]) {
+      let before = structuredClone(entry);
+      let withheld = withholdActionContent(entry);
+      expect(withheld.description.title).toBe(entry.description.title);
+      expect(withheld.description.description).toBe("");
+      expect(withheld.description).not.toHaveProperty("fields");
+      expect(entry).toEqual(before);
+    }
+
+    let hook = {
+      id: 1, gatekeeperId: 2, gadgetId: 3, enabled: true,
+      description: { title: "Hook", description: "what it does" },
+    } as unknown as BoundHookInfo;
+    expect(withholdHookContent(hook).description).toEqual({ title: "Hook", description: "" });
+    expect(hook.description.description).toBe("what it does");
+  });
+});
+
+// Answers as a view returns them, for the *HoldsContent() predicates.
+function chatMeta(extra: Partial<AiChatMetadata> = {}): AiChatMetadata {
+  return { id: 1, title: "t", started: new Date(0), lastActive: new Date(0), ...extra } as
+      AiChatMetadata;
+}
+function logEntry(type: ActionLogEntry["type"], description: object): ActionLogEntry {
+  return {
+    id: 1, resourceTitle: "r", createdAt: new Date(0), state: "approved", type,
+    ...(type === "bindHook" ? { enabled: true } : {}), description,
+  } as unknown as ActionLogEntry;
+}
+function boundHook(description: string): BoundHookInfo {
+  return {
+    id: 1, gatekeeperId: 2, gadgetId: 3, enabled: true,
+    description: { title: "Hook", description },
+  } as unknown as BoundHookInfo;
+}
+function gadgetSummary(extra: Partial<WorkpieceSummary> = {}): WorkpieceSummary {
+  return { id: "g", type: "gadget", title: "G", ...extra } as WorkpieceSummary;
+}
+const STEERS = [{ text: "secret", author: { id: "u", name: "U" } }];
+const FIELDS = [{ label: "To", value: "x@example.com" }];
+
+describe("whether an answer holds content", () => {
+  it("finds a queued steer in a chat", () => {
+    let full = chatMeta({ queuedSteers: STEERS } as Partial<AiChatMetadata>);
+    expect(chatHoldsContent(full)).toBe(true);
+    expect(chatHoldsContent(chatMeta({ queuedSteers: [] }))).toBe(false);
+    expect(chatHoldsContent(chatMeta())).toBe(false);
+    expect(chatHoldsContent(withholdChatContent(full))).toBe(false);
+  });
+
+  it("finds a description or a field in an action log entry", () => {
+    for (let type of ["action", "observation"] as const) {
+      let full = logEntry(type, { title: "T", description: "body", fields: FIELDS });
+      expect(actionHoldsContent(full)).toBe(true);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "", fields: FIELDS })))
+          .toBe(true);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "" }))).toBe(false);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "", fields: [] })))
+          .toBe(false);
+      expect(actionHoldsContent(withholdActionContent(full))).toBe(false);
+    }
+    let bound = logEntry("bindHook", { title: "Hook", description: "what it does" });
+    expect(actionHoldsContent(bound)).toBe(true);
+    expect(actionHoldsContent(logEntry("bindHook", { title: "Hook", description: "" })))
+        .toBe(false);
+    expect(actionHoldsContent(withholdActionContent(bound))).toBe(false);
+  });
+
+  it("finds a hook's description", () => {
+    expect(hookHoldsContent(boundHook("what it does"))).toBe(true);
+    expect(hookHoldsContent(boundHook(""))).toBe(false);
+    expect(hookHoldsContent(withholdHookContent(boundHook("what it does")))).toBe(false);
+  });
+
+  it("finds the blueprint a gadget follows", () => {
+    let upstream = { blueprintId: "bp-1", commitId: "c" };
+    expect(workpieceHoldsContent(gadgetSummary({ upstream }))).toBe(true);
+    expect(workpieceHoldsContent(gadgetSummary({ upstream: {} }))).toBe(false);
+    expect(workpieceHoldsContent(gadgetSummary())).toBe(false);
+    expect(workpieceHoldsContent({ id: "w", type: "worktree", title: "W" } as WorkpieceSummary))
+        .toBe(false);
+  });
+
+  it("finds messages or a compaction summary in a chat page", () => {
+    let message = { sequence: 1 } as unknown as AiChatHistoryPage["messages"][number];
+    let compacted = { to: 1, summary: "s" } as AiChatHistoryPage["compacted"];
+    expect(chatPageHoldsContent({ messages: [message] })).toBe(true);
+    expect(chatPageHoldsContent({ messages: [], compacted })).toBe(true);
+    expect(chatPageHoldsContent({ messages: [] })).toBe(false);
+    expect(chatPageHoldsContent({ messages: [], compacted: undefined })).toBe(false);
+  });
+
+  it("finds any file at the path, an unreadable one too", () => {
+    let files: FileAtCommit[] = [
+      { kind: "text", text: "x" }, { kind: "unreadable", message: "a is a symlink to b" },
+      { kind: "absent" },
+    ];
+    expect(files.map(fileHoldsContent)).toEqual([true, true, false]);
   });
 });
 
