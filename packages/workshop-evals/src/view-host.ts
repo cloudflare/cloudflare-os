@@ -284,10 +284,30 @@ const FRAME_SCRIPT = String.raw`(() => {
     }));
     const own = labels.map((_, index) => [...pieces, ...segments].filter(piece => piece.names.length === 1 && piece.names[0] === index));
     // Where each label is drawn: the box of the text nodes or controls that show it, when what they
-    // show names no other label.
+    // show names no other label, and the point it marks on an axis. An SVG label marks the x and y it
+    // is placed at, since a rotated or end-anchored label's box is not centered on its tick: the
+    // innermost x and y its <tspan> and <text> set, as SVG places its first character, so a <tspan>
+    // that sets only x takes its <text>'s y. Not dx or dy, which move the text off its tick, as an
+    // axis's dy=".35em" centers a label on its row. Any other label marks the center of its box.
+    const markedAt = (spanned, box) => {
+      const node = spanned[0].node;
+      const start = node instanceof Element ? node : node.parentElement;
+      const label = start?.closest("text");
+      const ctm = label instanceof SVGTextElement ? label.getScreenCTM() : null;
+      if (ctm === null) return center(box);
+      const first = list => list.baseVal.numberOfItems > 0 ? list.baseVal.getItem(0).value : undefined;
+      let x, y;
+      for (let el = start; el instanceof SVGTextPositioningElement; el = el === label ? null : el.parentElement) {
+        x ??= first(el.x);
+        y ??= first(el.y);
+      }
+      return new DOMPoint(x ?? 0, y ?? 0).matrixTransform(ctm);
+    };
     const anchors = matchers.map(matcher => runs.flatMap(({ text, parts }) => [...text.matchAll(new RegExp(matcher.source, "giu"))].flatMap(match => {
       const spanned = parts.filter(({ start, end }) => start < match.index + match[0].length && end > match.index);
-      return namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length === 1 ? [{ box: boxAround(spanned) }] : [];
+      if (namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length !== 1) return [];
+      const box = boxAround(spanned);
+      return [{ box, at: markedAt(spanned, box) }];
     })));
     // The label whose text is nearest box in its column or row, if no other label is as near, as
     // when a line runs under every label.
@@ -326,7 +346,7 @@ const FRAME_SCRIPT = String.raw`(() => {
     const plot = (kind, points) => {
       for (const [index, found] of anchors.entries()) {
         if (found[0] === undefined) continue;
-        const at = center(found[0].box);
+        const at = found[0].at;
         const ys = points.flatMap(line => crossings(line, "x", at.x));
         if (ys.length > 0) add(index, kind, "y", Math.min(...ys));
         const xs = points.flatMap(line => crossings(line, "y", at.y));

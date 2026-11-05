@@ -246,6 +246,27 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
       expect(await failed(verifyChart, ACROSS_LINE)).toEqual([]);
     });
 
+    it("reads an SVG label's tick from its anchor, rotated or anchored at its end", async ({ expect }) => {
+      const turned = (chart: string) => chart.replaceAll(/<text x="(\d+)" y="215" font-size="8" text-anchor="middle">/g,
+        '<text x="$1" y="215" font-size="8" text-anchor="end" transform="rotate(-45 $1 215)">');
+      const charts = [turned(LINE_CHART), turned(SEGMENTS), turned(UNLABELLED_BARS),
+        LINE_CHART.replaceAll('text-anchor="middle"', 'text-anchor="end"')];
+      expect(await Promise.all(charts.map(chart => failed(verifyChart, chart)))).toEqual(charts.map(() => []));
+    });
+
+    it("places an SVG label at its x and y, a <tspan> taking its <text>'s y, and not at its dx or dy", async ({ expect }) => {
+      const rows = (label: (month: string, y: number) => string) => ACROSS_LINE.replaceAll(
+        /<text x="10" y="(\d+)" font-size="8" dominant-baseline="central">(\w+)<\/text>/g,
+        (_, y: string, month: string) => label(month, Number(y)));
+      const charts = [
+        rows((month, y) => `<text x="10" y="${y}" font-size="8"><tspan x="10">${month}</tspan></text>`),
+        rows((month, y) => `<text x="10" y="${y}" dy=".35em" font-size="8">${month}</text>`),
+        LINE_CHART.replaceAll(/<text x="(\d+)" y="215" font-size="8" text-anchor="middle">/g,
+          '<text x="$1" y="215" dx="-.8em" dy=".15em" font-size="8" text-anchor="end" transform="rotate(-45 $1 215)">'),
+      ];
+      expect(await Promise.all(charts.map(chart => failed(verifyChart, chart)))).toEqual(charts.map(() => []));
+    });
+
     it("passes a line, an area or bars painted by a style or a gradient", async ({ expect }) => {
       const painted = [
         `<style>polyline { stroke: currentColor }</style>${LINE_CHART.replace(' stroke="#f60"', "")}`,
