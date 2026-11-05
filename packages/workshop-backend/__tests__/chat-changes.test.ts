@@ -263,6 +263,18 @@ describe("submitCodeChange", () => {
     })).rejects.toThrow(/length mismatch/);
   }));
 
+  it("rejects a change that would put a NUL into a gadget file", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await expect(submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "c1", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "o\0ne\n" }),
+    })).rejects.toThrow(/a\.txt would contain a NUL character/);
+  }));
+
   it("transforms a late submission over retired rows (materialization stales nobody)",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "middle\n" });
@@ -1291,6 +1303,29 @@ describe("updateChatFromMainline", () => {
     expect(impl.storage.chatMeta.get(1)).toEqual(before.meta);
     expect(chatMessages(impl, 1)).toEqual(before.messages);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "server.js": big });
+  }));
+
+  it("refuses an accept of a NUL stored before ingestion refused one, changing nothing",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "oXne\n" }),
+    });
+    // Stand in for a row stored before ingestion refused NUL.
+    for (let row of Array.from(impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` }))) {
+      row.change = editChange(1, { "a.txt": "one\n" }, { "a.txt": "o\0ne\n" });
+      impl.storage.chatChanges.put(row);
+    }
+    impl.invalidateChatContent(1);
+
+    await expect(impl.mergeChanges(1, USER_META, "user-do-id")).rejects.toThrow(
+        /^Cannot accept changes to APP: a\.txt would contain a NUL character/);
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(c1);
+    expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "o\0ne\n" });
   }));
 });
 

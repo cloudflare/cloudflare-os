@@ -62,7 +62,7 @@ import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
 import type { GitObjectRecord } from "./storage-schema/overseer-storage";
 import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
-import type { BytesRef, FileContent } from "@gadgets/workshop-shared/code-change";
+import type { BytesRef, FileChange, FileContent } from "@gadgets/workshop-shared/code-change";
 import {
   decodeLooseObject,
   encodeGitCommit,
@@ -605,6 +605,19 @@ export function filesEqual(
     if (b.get(name) !== content) return false;
   }
   return true;
+}
+
+/**
+ * Throws if `change` would write a NUL (U+0000) as text into the file at `path`. Reads from Git
+ * treat a NUL as binary (see decodeBlobText): once committed, the file stops reading back as text,
+ * and a gadget's readCommitFiles() fails on the whole commit. Binary content uses `setBytes`.
+ */
+export function assertNoNul(path: string, change: FileChange): void {
+  let inserted = "set" in change ? [change.set] : "edit" in change ? change.edit.flat() : [];
+  if (inserted.some(text => typeof text === "string" && text.includes("\0"))) {
+    throw new Error(`${path} would contain a NUL character (U+0000), which a text file can't ` +
+        `hold. Write an escape sequence such as \\u0000 instead of the character itself.`);
+  }
 }
 
 // =======================================================================================
