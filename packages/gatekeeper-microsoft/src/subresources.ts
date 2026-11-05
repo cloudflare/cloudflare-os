@@ -50,7 +50,7 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A SharePoint ID as a Graph path segment takes it: none of `/`, `:`, `?` and `#`, which would change what the path names. */
 const SEGMENT = /^[^/:?#]+$/;
 const VERSION = /^[0-9]{1,6}\.[0-9]{1,6}$/;
-const ADDRESS = /^[^\s@:<>()",;/]+@[^\s@:<>()",;/]+$/;
+const ADDRESS = /^[^\s@:<>()",;]+@[^\s@:<>()",;]+$/;
 
 /** Whether `id` is an Entra object or tenant ID. */
 export function isObjectId(id: string | undefined): id is string {
@@ -62,7 +62,7 @@ export function isVersionLabel(version: string | undefined): version is string {
   return version !== undefined && VERSION.test(version);
 }
 
-/** Whether `address` is an email address a schedule can be asked about. */
+/** Whether `address` is an email address a schedule can be asked about: every one parseRecipient accepts, `/` included. */
 export function isScheduleAddress(address: string | undefined): address is string {
   return address !== undefined && ADDRESS.test(address);
 }

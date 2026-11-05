@@ -44,6 +44,8 @@ const every: [MicrosoftSubresource, string][] = [
   [{ kind: "calendar", unit: { kind: "calendar", ownerId: USER, calendarId: CALENDAR, level: "full" } }, `calendar/user/${USER}/calendar/AAMkCal%3D`],
   [{ kind: "calendar", unit: { kind: "calendar", ownerId: USER, calendarId: CALENDAR, level: "private" } }, `calendar/user/${USER}/privateCalendar/AAMkCal%3D`],
   [{ kind: "calendar", unit: { kind: "availability", address: "sarah@contoso.com" } }, "calendar/availability/sarah%40contoso.com"],
+  // An address may hold a `/`, which the ID escapes.
+  [{ kind: "calendar", unit: { kind: "availability", address: "sales/eu@contoso.com" } }, "calendar/availability/sales%2Feu%40contoso.com"],
 ];
 
 function spell(resource: MicrosoftSubresource): string {

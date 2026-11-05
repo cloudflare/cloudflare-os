@@ -341,6 +341,8 @@ describe("legacy observer units", () => {
       { kind: "calendars", ownerId: OWNER },
       { kind: "availability", address: "sarah@contoso.com" },
     ]);
+    // An address may hold a `/`, which an agent may ask about, so a legacy record of one still reads.
+    expect(decodeCalendarUnit(units.availability("sales/eu@contoso.com"))).toEqual({ kind: "availability", address: "sales/eu@contoso.com" });
     for (const bad of ["calendar:not-a-guid:x:full", `calendar:${OWNER}:${CAL_ID}:everything`, `calendars:${OWNER}:extra`, "availability:no-at-sign", "mail:x"]) {
       expect(decodeCalendarUnit(bad)).toBeNull();
     }
