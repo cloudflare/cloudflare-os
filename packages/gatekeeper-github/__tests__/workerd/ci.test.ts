@@ -396,6 +396,11 @@ class TestGitCache extends RpcTarget {
     return this.#objects.get(id) ?? null;
   }
 
+  async stat(id: GitOid): Promise<{ type: GitObjectType; size: number } | null> {
+    const object = this.#objects.get(id);
+    return object === undefined ? null : { type: object.type, size: object.content.length };
+  }
+
   async isAncestor(): Promise<boolean> {
     return true;
   }

@@ -1376,15 +1376,9 @@ importers:
       diff3:
         specifier: 0.0.3
         version: 0.0.3
-      isomorphic-git:
-        specifier: ^1.44.5
-        version: 1.44.5
       jose:
         specifier: ^6.2.13
         version: 6.2.13
-      pako:
-        specifier: ^3.0.3
-        version: 3.0.3
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -1401,9 +1395,6 @@ importers:
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts
-      '@types/pako':
-        specifier: ^3.0.0
-        version: 3.0.0
       dompurify:
         specifier: ^3.4.17
         version: 3.4.17
@@ -3254,10 +3245,6 @@ packages:
   '@types/node@26.1.0':
     resolution: {integrity: sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==}
 
-  '@types/pako@3.0.0':
-    resolution: {integrity: sha512-MtIzg1Ul1GxhHZLq6oSKvWQENKqmfK1fdaW+SDcPJe7+YcJVo6AbmkW0BvGFH6+559+hEuCwdXZZe8F85lBPkA==}
-    deprecated: This is a stub types definition. pako provides its own type definitions, so you do not need this installed.
-
   '@types/react-dom@19.3.0':
     resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
     peerDependencies:
@@ -4949,9 +4936,6 @@ packages:
 
   pako@1.0.11:
     resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
-
-  pako@3.0.3:
-    resolution: {integrity: sha512-tmrebBBYI5FOw8QICGwJNqE8fotC8R+gwcxOvoFNv+GKehOI6Lc6YBolNcQNnC4v96l1wt7rh102ifD4kVeZAQ==}
 
   parse-entities@4.0.2:
     resolution: {integrity: sha512-GG2AQYWoLgL877gQIKeRPGO1xF9+eG1ujIb5soS5gPvLQ1y2o8FL90w2QWNdf9I361Mpp7726c+lj3U0qK1uGw==}
@@ -7405,10 +7389,6 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  '@types/pako@3.0.0':
-    dependencies:
-      pako: 3.0.3
-
   '@types/react-dom@19.3.0(@types/react@19.3.0)':
     dependencies:
       '@types/react': 19.3.0
@@ -9172,8 +9152,6 @@ snapshots:
       netmask: 2.1.1
 
   pako@1.0.11: {}
-
-  pako@3.0.3: {}
 
   parse-entities@4.0.2:
     dependencies:

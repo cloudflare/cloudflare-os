@@ -53,7 +53,7 @@ Blueprints support three types of bindings, matching the three types of gatekeep
 
 ## Releases
 
-Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-store.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
+Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-cache.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
 
 ### Lineage
 
@@ -133,7 +133,7 @@ A pack arrives from an upload, or from storage that any uploader can write, so i
 - The pack is at most 32 MiB, no object inflates to more than that, and no delta refers to an object outside the pack. Object IDs are computed from content, never taken from the pack.
 - The commit that `metadata.commitId` names is present, and so is every ancestor of it, up to 10,000 commits. Each is in the canonical form the encoder writes.
 - The release's tree is complete. Any other commit's tree is either complete or absent.
-- Trees hold only subtrees and mode `100644` blobs, under names `GitStore` can read back. Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
+- Trees hold only subtrees and mode `100644` blobs, under names the workspace's git store would write (none that `isReservedTreeEntryName()` refuses). Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
 - Nothing else is in the pack.
 
 Publishing runs the same check on what it is about to pack, so a blueprint that publishes always instantiates. Imported objects are stored with no record of any gatekeeper remote possessing them (`WorkspaceGitCache.importObjects`), so they grant no gatekeeper a read.

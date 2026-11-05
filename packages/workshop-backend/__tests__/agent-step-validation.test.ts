@@ -61,7 +61,7 @@ describe("agent transform validation boundaries", () => {
     {name: "an unmatched edit", toolName: "editFile", args: {filename: "server.js", textToReplace: "missing", replacement: "wrong"}, error: /No matching text/},
     {name: "a no-op edit", toolName: "editFile", args: {filename: "server.js", textToReplace: "original", replacement: "original"}, error: undefined},
   ])("preserves committed read knowledge after $name", ({toolName, args, error}) => inKernel(async impl => {
-    const commitId = await impl.gitStore.writeFilesAsCommit(new Map([
+    const commitId = await impl.gitCache.writeFilesAsCommit(new Map([
       ["server.js", "original\n"], ["other.js", "untouched\n"],
     ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
     const gadget = impl.createGadget("Board", "BOARD", undefined, undefined, commitId);
@@ -92,7 +92,7 @@ describe("agent transform validation boundaries", () => {
   }));
 
   it("refuses a NUL in text from the file tools as a tool error, so accepting the turn leaves a readable head", () => inKernel(async impl => {
-    const commitId = await impl.gitStore.writeFilesAsCommit(new Map([["client.js", "const SEP = ',';\n"]]),
+    const commitId = await impl.gitCache.writeFilesAsCommit(new Map([["client.js", "const SEP = ',';\n"]]),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
     const gadget = impl.createGadget("Board", "BOARD", undefined, undefined, commitId);
     const faux = createFauxCore({models: [{id: "faux-model"}]});
@@ -116,7 +116,7 @@ describe("agent transform validation boundaries", () => {
       expect.stringMatching(/client\.js would contain a NUL character/), undefined, undefined,
       expect.stringMatching(/client\.js would contain a NUL character/)]);
     expect(await impl.mergeChanges(1, {profile: USER}, "user-do-id")).toEqual({outcome: "merged"});
-    expect(await impl.gitStore.readCommitFiles(impl.getGadgetHead(gadget.id)!))
+    expect(impl.gitCache.readCommitFiles(impl.getGadgetHead(gadget.id)!))
       .toEqual(new Map([["client.js", "const SEP = '\\0';\n"]]));
   }));
 

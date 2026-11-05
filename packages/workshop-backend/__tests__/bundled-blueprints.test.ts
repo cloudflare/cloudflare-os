@@ -104,7 +104,7 @@ async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
     let [gadget, ...others] = [...impl.storage.gadgets.list()];
     expect(others).toEqual([]);
     expect(gadget.output).toEqual(metadata.output);
-    return await impl.gitStore.readCommitFiles(gadget.commitId);
+    return impl.gitCache.readCommitFiles(gadget.commitId);
   });
 }
 

@@ -5,8 +5,9 @@ superseded by [the chat scratch worktree](../docs/chat-scratch-worktree.md): eac
 shared `SCRATCH` worktree containing uploads of any MIME type. Binary mutations use whole-file
 `setBytes: {oid, byteLength}` references to ordinary Git blobs; text reads/grep remain text-only,
 and validated text transforms are unchanged. `readBytes`/`writeBytes` provide raw-byte access.
-Raw-byte ingress is bounded to 8,000,000 bytes; attachments retain their 4 MiB/file limit.
-Chunked/large-file storage and binary diffs are not implemented.
+Raw-byte ingress has no size limit: a blob over 1 MiB is stored chunked and large files are
+streamed (see [chunked git storage](chunked-git.md)); attachments retain their 4 MiB/file limit.
+Binary diffs are not implemented.
 
 ## Goal
 
@@ -1326,20 +1327,17 @@ to keep dependents compiling. PR boundaries to be decided later.
 
 ## Punted / future work (deliberately kept open)
 
-- Eliminate `GitStore` by moving its callers to the new `WorkspaceGitCache`.
-  This will require reproducing isomorphic-git's functions for encoding objects
-  (commits, trees, blobs), but this would not be very hard and it would even let
-  us fix some bugs (isomorphic-git's parsing of trees is lossy when names contain
-  invalid UTF-8; we'd rather error).
+- ~~Eliminate `GitStore` by moving its callers to the new `WorkspaceGitCache`.~~
+  Done: `GitStore` and isomorphic-git are gone from workshop-backend, and every
+  object is encoded and parsed by git-codec.ts.
 - Worktree UI (changes view, diffs) — the OT stream + pins already carry everything
   a future subscription needs.
 - Eviction/GC — `gitObjectMetadata` is the re-pull index; the GC-roots enumeration
-  in git-store.ts gains "worktree `headCommit`/`pinBase`/`baseCommit`" when it
-  happens.
-- Binary and >1MB file editing; `putStream()` for large blobs; cross-remote push
-  of trees referencing oversized blobs (the apply-time pull-through hits
-  `put()`'s size rejection and fails with a clear error until then — same-origin
-  pushes are unaffected, the marking walk excludes them as remote-known).
+  in git-cache.ts lists worktree `headCommit`/`pinBase`/`baseCommit`.
+- ~~>1MB file editing; cross-remote push of trees referencing oversized blobs.~~
+  Done: no object is refused for size (see [chunked git storage](chunked-git.md)).
+  Binary files are still changed only whole (`setBytes`), and `GitCache.put()` still
+  takes a whole buffer (a `putStream()` is a TODO in gatekeeper.ts).
 - Repo initialization / exporting local-root histories to a fresh remote — an
   explicit, human-initiated (likely UI-mediated) act, deliberately unavailable to
   agents and gatekeepers (root commits get no vacuous ancestry pass; see the

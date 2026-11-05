@@ -506,7 +506,7 @@ function diffTextChange(before: string, after: string): TextChange {
   }
   // The explicit "\n" line separator matters: ChangeSet.of's default splits inserted strings on
   // /\r\n?|\n/ and Text rejoins lines with "\n", which would corrupt content containing bare
-  // "\r". Only "\n" is a line boundary here, matching splitLines' invariants in git-store.
+  // "\r". Only "\n" is a line boundary here, matching splitLines' invariants in three-way-merge.ts.
   return ChangeSet.of(specs, before.length, "\n").toJSON();
 }
 
