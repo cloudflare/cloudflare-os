@@ -62,17 +62,20 @@ describe('ResourcePicker', () => {
   const renderPicker = async (
     vendor: GatekeeperVendorInfo,
     searchText: string,
-    { accounts = [], onSelectAccount = () => {}, onItems, onRefine }: {
+    { accounts = [], accountResources, onSelectAccount = () => {}, onItems, onRefine, activateRef }: {
       accounts?: AccountDescription[]
+      accountResources?: SupportedResource[][]
       onSelectAccount?: () => void
       onItems?: ComponentProps<typeof ResourcePicker>['onItems']
       onRefine?: ComponentProps<typeof ResourcePicker>['onRefine']
+      activateRef?: ComponentProps<typeof ResourcePicker>['activateRef']
     } = {},
   ) => {
     const authenticatedApi = {
       subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
         for (const [i, account] of accounts.entries()) {
-          subscriber.add(i + 1, account, vendor.description, vendor.supportedResources, true, vendor.id)
+          subscriber.add(i + 1, account, vendor.description,
+            accountResources?.[i] ?? vendor.supportedResources, true, vendor.id)
         }
         subscriber.ready()
         return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
@@ -83,7 +86,7 @@ describe('ResourcePicker', () => {
     document.body.append(container)
     root = createRoot(container)
     await act(async () => root!.render(
-      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} onItems={onItems} onRefine={onRefine} />,
+      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} onItems={onItems} onRefine={onRefine} activateRef={activateRef} />,
     ))
     return container
   }
@@ -102,6 +105,38 @@ describe('ResourcePicker', () => {
 
       expect(picker.textContent).toContain('No matching resources.')
       expect(onItems).toHaveBeenLastCalledWith([])
+    },
+  )
+
+  it.each(['', 'Environment', 'https://example.com/environments/123'])(
+    'offers only accounts supporting connection to the matched type for %j', async searchText => {
+      const resource: SupportedResource = {
+        urlPattern: 'https://example.com/environments/:id', title: 'Environment', description: '',
+      }
+      const vendor = { id: 'example', description: { displayName: 'Example', url: 'https://example.com' }, supportedResources: [resource] }
+      const accounts = ['creation-only', 'unavailable-type', 'connectable']
+        .map(displayName => ({ displayName, avatar: { url: '' } }))
+      const onItems = vi.fn<NonNullable<ComponentProps<typeof ResourcePicker>['onItems']>>()
+      const onSelectAccount = vi.fn<() => void>()
+      const activateRef = { current: null } as NonNullable<ComponentProps<typeof ResourcePicker>['activateRef']>
+      const picker = await renderPicker(vendor, searchText, {
+        accounts,
+        accountResources: [[{ ...resource, connectable: false, creatable: true }], [], [resource]],
+        onItems, onSelectAccount, activateRef,
+      })
+
+      expect(onItems.mock.lastCall?.[0].filter(item => item.type === 'account')
+        .map(item => item.accountId)).toEqual([3])
+      expect(picker.textContent).not.toContain('creation-only')
+      expect(picker.textContent).not.toContain('unavailable-type')
+      expect(picker.textContent).toContain('connectable')
+
+      act(() => activateRef.current!(0))
+      const row = [...picker.querySelectorAll('div')]
+        .findLast(div => div.textContent?.includes('connectable'))!
+      act(() => row.click())
+      expect(onSelectAccount).toHaveBeenCalledTimes(2)
+      expect(onSelectAccount).toHaveBeenLastCalledWith(3, vendor.id, resource, accounts[2], vendor.description)
     },
   )
 

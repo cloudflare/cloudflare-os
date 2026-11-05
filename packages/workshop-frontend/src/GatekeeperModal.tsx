@@ -215,8 +215,8 @@ function resourceForUrl(connection: ConnectionType, url: string): SupportedResou
 function accountSupportsConnection(account: AccountOption, connection: ConnectionType): boolean {
   return account.vendorId === connection.vendorId &&
     (!connection.resourceUrlPattern ||
-      connection.resourceUrlPattern === 'https://*' ||
-      account.supportedResources.some(resource => resource.urlPattern === connection.resourceUrlPattern))
+      account.supportedResources.some(resource =>
+        resource.urlPattern === connection.resourceUrlPattern && resource.connectable !== false))
 }
 
 export default function GatekeeperModal({

@@ -130,10 +130,11 @@ const api = vi.hoisted(() => ({
   ensureAccountResources: vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>(),
 }))
 
-function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted }: {
+function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], accountResources, granted }: {
   resource?: SupportedResource | null
   otherResources?: SupportedResource[]
   accountIds?: number[]
+  accountResources?: Record<number, SupportedResource[]>
   granted?: string[]
 } = {}): RpcStub<AuthenticatedApi> {
   const resources = [...(resource ? [resource] : []), ...otherResources]
@@ -151,7 +152,8 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       api.subscriber = subscriber
       for (const id of accountIds) {
-        subscriber.add(id, accountDescription(id, granted), VENDOR, resources, true, 'catalog')
+        subscriber.add(id, accountDescription(id, granted), VENDOR,
+          accountResources?.[id] ?? resources, true, 'catalog')
       }
       subscriber.ready()
       return subscription()
@@ -525,6 +527,19 @@ describe('GatekeeperModal configurator access requests', () => {
 })
 
 describe('GatekeeperModal initial account', () => {
+  it.each([RESOURCE.urlPattern, 'https://*'])(
+    'skips creation-only accounts, including a preselected account, for %s', async urlPattern => {
+      const resource = { ...RESOURCE, urlPattern }
+      await renderConfigurator({ initialAccountId: 1 }, {
+        resource, accountIds: [1, 2],
+        accountResources: { 1: [{ ...resource, connectable: false, creatable: true }] },
+      })
+
+      expect(document.body.textContent).not.toContain('Catalog account 1')
+      expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(2, urlPattern)
+    },
+  )
+
   it('selects the first valid account when none is given', async () => {
     await renderConfigurator({}, { accountIds: [1, 2] })
 
