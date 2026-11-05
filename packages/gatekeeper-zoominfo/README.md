@@ -144,6 +144,14 @@ If an older grant has no recorded scopes, refresh still omits `scope` rather tha
 and confirm ZoomInfo returns a granted scope list. If the error persists, check the OAuth app's scope
 configuration with ZoomInfo; reconnecting alone does not fix provider-side scope defaults.
 
+Worker logs with `component: "gatekeeper.zoominfo"` emit `zoominfo.token.scopes` after authorization-code
+exchanges and refreshes. They distinguish requested scopes, scopes returned by ZoomInfo, and scopes
+retained when a refresh returns no list, with separate request/response `scope` presence flags.
+`zoominfo.token.refresh.failed` records the HTTP status and OAuth error code when available, whether
+the request included `scope`, and its scope count, including refreshes before an API call. Failure
+logs include only the error kind, not exception messages or stacks that could echo credentials.
+Tokens, raw response bodies, and provider error descriptions are never logged by these events.
+
 ### "ZoomInfo did not return a refresh token"
 
 The OAuth app isn't issuing refresh tokens. Enable the refresh-token grant for the app in the

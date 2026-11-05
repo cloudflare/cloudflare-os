@@ -1,4 +1,5 @@
 import "cloudflare:workers";
+import { createLogger } from "@gadgets/observability/logger";
 import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,21 @@ const DEFAULT_API_BASE_URL = "https://api.zoominfo.com/gtm";
 const DEFAULT_AUTHORIZE_URL = "https://api.zoominfo.com/gtm/oauth/v1/authorize";
 const DEFAULT_TOKEN_URL = "https://api.zoominfo.com/gtm/oauth/v1/token";
 const REQUEST_TIMEOUT_MS = 30_000;
+
+type ZoomInfoTokenLogFields = {
+  vendorId: string;
+  grantType: string;
+  requestScopePresent: boolean;
+  requestedScopeCount: number;
+  requestedScopes: string[];
+  responseScopePresent: boolean;
+  grantedScopes: string[];
+  retainedScopes: string[];
+  status: number;
+  oauthError: string;
+};
+
+const logger = createLogger<ZoomInfoTokenLogFields>({ component: "gatekeeper.zoominfo", vendorId: "zoominfo" });
 
 /** OAuth endpoints, overridable via env in case ZoomInfo changes hosts for a deployment. */
 export type ZoomInfoOAuthConfig = {
@@ -157,11 +173,25 @@ async function tokenRequest(
     throw new ZoomInfoApiError(400, "ZoomInfo token exchange did not return an access token.", parsed);
   }
 
+  const scopes = result.scope ? result.scope.split(" ").filter(Boolean) : [];
+  const requestedScopes = body.get("scope")?.split(" ").filter(Boolean) ?? [];
+  const grantType = body.get("grant_type") ?? undefined;
+  logger.info("ZoomInfo token scopes received", {
+    event: "zoominfo.token.scopes",
+    grantType,
+    requestScopePresent: body.has("scope"),
+    requestedScopeCount: requestedScopes.length,
+    requestedScopes,
+    responseScopePresent: result.scope !== undefined,
+    grantedScopes: scopes,
+    retainedScopes: grantType === "refresh_token" && scopes.length === 0 ? requestedScopes : undefined,
+  });
+
   return {
     accessToken: result.access_token,
     refreshToken: result.refresh_token ?? null,
     expiresIn: result.expires_in ?? 3600,
-    scopes: result.scope ? result.scope.split(" ").filter(Boolean) : [],
+    scopes,
     idToken: result.id_token ?? null,
   };
 }
@@ -202,12 +232,22 @@ export async function refreshAccessToken(
   });
   // An unknown scope list stays omitted; connect-time defaults could exceed an older grant.
   if (scopes.length > 0) body.set("scope", scopes.join(" "));
-  return await tokenRequest(
-    body,
-    tokenUrl,
-    clientId,
-    clientSecret,
-  );
+  try {
+    return await tokenRequest(body, tokenUrl, clientId, clientSecret);
+  } catch (error) {
+    const oauthError = error instanceof ZoomInfoApiError
+      ? (error.details as { error?: unknown } | null | undefined)?.error : undefined;
+    logger.error("ZoomInfo token refresh failed", {
+      event: "zoominfo.token.refresh.failed",
+      // Provider descriptions and transport messages may echo secrets; log only the error kind.
+      error: error instanceof Error ? error.name : typeof error,
+      status: error instanceof ZoomInfoApiError ? error.status : undefined,
+      oauthError: typeof oauthError === "string" ? oauthError : undefined,
+      requestScopePresent: body.has("scope"),
+      requestedScopeCount: scopes.length,
+    });
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
