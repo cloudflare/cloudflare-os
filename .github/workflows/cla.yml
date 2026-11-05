@@ -16,6 +16,34 @@ jobs:
   CLAssistant:
     runs-on: ubuntu-latest
     steps:
+      # Committers with write access to this repository are Cloudflare maintainers, covered without
+      # signing, so they join the allowlist and only the others are asked to sign. Write access
+      # stands in for organization membership, which this token cannot see when it is private (as
+      # most Cloudflare members' is); see the `author_association` note in bonk.yml. A committer
+      # is the commit's GitHub author, else its committer, as the action counts them. A failed
+      # lookup leaves the committer off, so they are asked to sign.
+      - name: Allowlist committers who are maintainers
+        id: allowlist
+        if: (github.event.issue.pull_request && (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          STATIC_ALLOWLIST: dependabot[bot],workers-devprod,github-actions[bot]
+        run: |
+          allowlist="$STATIC_ALLOWLIST"
+          logins=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/commits" \
+            --jq '.[] | (.author.login // .committer.login // empty)' | sort -u)
+          while read -r login; do
+            [[ -n "$login" ]] || continue
+            permission=$(gh api "repos/$GH_REPO/collaborators/$login/permission" --jq '.permission' 2>/dev/null || true)
+            if [[ "$permission" =~ ^(admin|maintain|write)$ ]]; then
+              echo "$login has '$permission' on $GH_REPO: no CLA signature needed."
+              allowlist="$allowlist,$login"
+            fi
+          done <<< "$logins"
+          echo "allowlist=$allowlist" >> "$GITHUB_OUTPUT"
+
       - name: "CLA Assistant"
         if: (github.event.issue.pull_request && (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         uses: contributor-assistant/github-action@v2.6.1
@@ -26,5 +54,5 @@ jobs:
           path-to-document: 'https://www.cloudflare.com/cla/'
           # branch should not be protected
           branch: 'cla-signatures'
-          allowlist: dependabot[bot],workers-devprod,github-actions[bot]
+          allowlist: ${{ steps.allowlist.outputs.allowlist }}
           lock-pullrequest-aftermerge: false
