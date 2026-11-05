@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ADMIN_USERNAME, startTestGatekeeperHarness, type Harness } from "../src/harness.js";
-import { connect, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
+import { connect, nextUsernames, signUp } from "../src/rpc-client.js";
 
 const CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../../api-cli/src/main.ts");
 const PASSWORD = "integration-test-password";
@@ -58,10 +58,6 @@ describe("on a deployment", () => {
     await harness.redeployWorkshop(config => {
       delete config.vars!.WORKSHOP_ENVIRONMENT;
     });
-    // The redeploy resolves at the first reload, which may still be the Workshop's earlier build.
-    await waitFor("the Workshop to run as a deployment", async () =>
-      (await harness.server.getWorker("workshop-backend").getEnv()).WORKSHOP_ENVIRONMENT === undefined
-        ? true : null);
   });
 
   it("lets the CLI sign in as a deployment admin", async () => {

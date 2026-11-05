@@ -14,7 +14,7 @@ import type { RpcStub } from "capnweb";
 import { parse } from "jsonc-parser";
 import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import { UPGRADE_BASE_DIR } from "../scripts/build-upgrade-base.js";
-import type { GatekeeperSpec, Harness, WorkerConfig } from "../src/harness.js";
+import { deploy, type GatekeeperSpec, type Harness, type WorkerConfig } from "../src/harness.js";
 import type { Handler } from "../src/network-interceptor.js";
 import { listConnectedAccounts, waitFor } from "../src/rpc-client.js";
 
@@ -78,42 +78,11 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   const google = parse(readFileSync(join(GOOGLE_DIR, "wrangler.jsonc"), "utf8")) as WorkerConfig;
   configure(google);
   google.main = main;
-  // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so
-  // that reload can still be running either one's earlier build, with another to come. Every
-  // Worker carries this upgrade's mark, and it is done once each reports it. Reading the env asks
-  // the runtime again after each reload, so a read that meets a later reload loses its
-  // connection: that Worker has not reported yet.
-  const upgrade = randomUUID();
-  const workers: string[] = [];
-  await harness.server.update(current => ({
+  await deploy(harness.server, current => ({
     ...current,
-    workers: current.workers.map(worker => {
-      if (!("config" in worker)) throw new Error("The harness boots inline configs only");
-      const config = worker.config.name === GOOGLE_WORKER ? google : worker.config;
-      workers.push(config.name!);
-      return { config: { ...config, vars: { ...config.vars, TEST_UPGRADE: upgrade } } };
-    }),
+    workers: current.workers.map(worker =>
+      "config" in worker && worker.config.name === GOOGLE_WORKER ? { config: google } : worker),
   }));
-  await waitFor("every Worker to run the upgrade", async () => {
-    for (const name of workers) {
-      try {
-        if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
-      } catch (error) {
-        if (isReloadDisconnect(error)) return null;
-        throw error;
-      }
-    }
-    return true;
-  });
-}
-
-/**
- * Miniflare reads the env with a synchronous fetch on a worker thread and rethrows its failure
- * here, which drops the cause's `code`, so the cause is matched by its message.
- */
-function isReloadDisconnect(error: unknown): boolean {
-  return error instanceof TypeError && error.message === "fetch failed" &&
-    error.cause instanceof Error && /\bECONN(RESET|REFUSED)\b/.test(error.cause.message);
 }
 
 type Row = Record<string, unknown>;
