@@ -100,8 +100,8 @@ afterEach(() => {
 });
 
 describe("Google Calendar auto-approval", () => {
-  it("reports only the kind that can be auto-approved", async () => {
-    expect(await hooks().autoApprovable("kinds")).toEqual([OWN_EVENT]);
+  it("reports both kinds, which a user enables separately", async () => {
+    expect(await hooks().autoApprovable("kinds")).toEqual([OWN_EVENT, INVITATION]);
   });
 
   it("lets creating an event with nobody on it be auto-approved", async () => {
@@ -114,9 +114,18 @@ describe("Google Calendar auto-approval", () => {
     expect(call.action).toMatchObject({ actionKind: OWN_EVENT, autoApprovable: false });
   });
 
-  it("never auto-approves creating a meeting", async () => {
+  it("lets creating a meeting be auto-approved as an invitation, whatever sendUpdates is", async () => {
     let call = await hooks().createEvent(
       "create-meeting", { ...draft, attendees: [{ email: "guest@example.com" }] });
+    expect(call.action).toMatchObject({ actionKind: INVITATION, autoApprovable: true });
+    let quiet = await hooks().createEvent(
+      "create-meeting-quiet", { ...draft, attendees: [{ email: "guest@example.com" }] }, { sendUpdates: "none" });
+    expect(quiet.action).toMatchObject({ actionKind: INVITATION, autoApprovable: true });
+  });
+
+  it("holds creating a public meeting", async () => {
+    let call = await hooks().createEvent(
+      "create-public-meeting", { ...draft, attendees: [{ email: "guest@example.com" }], visibility: "public" });
     expect(call.action).toMatchObject({ actionKind: INVITATION, autoApprovable: false });
   });
 
@@ -159,9 +168,11 @@ describe("Google Calendar auto-approval", () => {
     expect((await hooks().updateEvent("update", "own", { title: "Deep work" })).action)
       .toMatchObject({ actionKind: OWN_EVENT, autoApprovable: true });
     expect((await hooks().updateEvent("update", "meeting", { title: "Moved" })).action)
-      .toMatchObject({ actionKind: INVITATION, autoApprovable: false });
+      .toMatchObject({ actionKind: INVITATION, autoApprovable: true });
     expect((await hooks().updateEvent(
       "update", "own", { attendees: [{ email: "guest@example.com" }] })).action)
+      .toMatchObject({ actionKind: INVITATION, autoApprovable: true });
+    expect((await hooks().updateEvent("update", "meeting", { visibility: "public" })).action)
       .toMatchObject({ actionKind: INVITATION, autoApprovable: false });
     expect((await hooks().updateEvent("update", "away", { title: "Away" })).action)
       .toMatchObject({ actionKind: OWN_EVENT, autoApprovable: false });
@@ -176,9 +187,9 @@ describe("Google Calendar auto-approval", () => {
 
     let invite = await hooks().updateEvent(
       "queued", "own", { attendees: [{ email: "guest@example.com" }] });
-    expect(invite.action).toMatchObject({ autoApprovable: false });
+    expect(invite.action).toMatchObject({ actionKind: INVITATION });
     let move = await hooks().updateEvent("queued", "own", { title: "Moved" });
-    expect(move.action).toMatchObject({ actionKind: INVITATION, autoApprovable: false });
+    expect(move.action).toMatchObject({ actionKind: INVITATION });
   });
 
   it("refuses an auto-approvable update once the event has gained guests", async () => {
@@ -191,7 +202,7 @@ describe("Google Calendar auto-approval", () => {
     calendar.events.get("own")!.attendees = [{ email: "guest@example.com" }];
 
     expect(await hooks().applyAction("recheck", call.actionId!))
-      .toMatch(/now has other people on it.*This attempt changed nothing/);
+      .toMatch(/who is on it has changed.*This attempt changed nothing/);
     expect(calendar.patches).toEqual([]);
   });
 
@@ -233,8 +244,34 @@ describe("Google Calendar auto-approval", () => {
     calendar.afterRead = () => calendar.edit("own", { attendees: [{ email: "guest@example.com" }] });
 
     expect(await hooks().applyAction("race", call.actionId!))
-      .toMatch(/now has other people on it.*This attempt changed nothing/);
+      .toMatch(/who is on it has changed.*This attempt changed nothing/);
     expect(calendar.patches).toEqual([]);
+  });
+
+  it("refuses an auto-approvable invitation once the event has no other guests", async () => {
+    let calendar = new CalendarModel();
+    calendar.add("meeting", { attendees: [{ email: "guest@example.com" }] });
+    calendar.install();
+
+    let call = await hooks().updateEvent("recheck-invitation", "meeting", { title: "Moved" });
+    expect(call.action).toMatchObject({ actionKind: INVITATION, autoApprovable: true });
+    calendar.edit("meeting", { attendees: [] });
+
+    expect(await hooks().applyAction("recheck-invitation", call.actionId!))
+      .toMatch(/who is on it has changed.*This attempt changed nothing/);
+    expect(calendar.patches).toEqual([]);
+  });
+
+  it("applies an auto-approvable invitation while the event still has guests", async () => {
+    let calendar = new CalendarModel();
+    calendar.add("meeting", { attendees: [{ email: "guest@example.com" }] });
+    calendar.install();
+
+    let call = await hooks().updateEvent("apply-invitation", "meeting", { title: "Moved" });
+    expect(call.action).toMatchObject({ actionKind: INVITATION, autoApprovable: true });
+    calendar.edit("meeting", { attendees: [{ email: "guest@example.com" }, { email: "other@example.com" }] });
+    expect(await hooks().applyAction("apply-invitation", call.actionId!)).toBeNull();
+    expect(calendar.patches).toEqual([{ eventId: "meeting", body: { summary: "Moved" } }]);
   });
 
   it("applies an auto-approvable update while the event is still the calendar's own", async () => {
@@ -258,14 +295,15 @@ describe("Google Calendar auto-approval", () => {
     expect(calendar.patches).toHaveLength(1);
   });
 
-  it("applies an update a person approved as a meeting without judging it again", async () => {
+  it("applies an update held for a person without judging it again", async () => {
     let calendar = new CalendarModel();
     calendar.add("meeting", { attendees: [{ email: "guest@example.com" }] });
     calendar.install();
 
-    let call = await hooks().updateEvent("apply-meeting", "meeting", { title: "Moved" });
+    let call = await hooks().updateEvent("apply-meeting", "meeting", { visibility: "public" });
     expect(call.action).toMatchObject({ autoApprovable: false });
+    calendar.edit("meeting", { attendees: [] });
     expect(await hooks().applyAction("apply-meeting", call.actionId!)).toBeNull();
-    expect(calendar.patches).toEqual([{ eventId: "meeting", body: { summary: "Moved" } }]);
+    expect(calendar.patches).toEqual([{ eventId: "meeting", body: { visibility: "public" } }]);
   });
 });
