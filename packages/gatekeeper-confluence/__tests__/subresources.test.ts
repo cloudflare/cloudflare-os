@@ -1,0 +1,358 @@
+// Observer verification by subresources: what each binding's reads report, what its
+// verifyObserverAccess() accepts, and how an observer's UserAccount answers and reuses access checks.
+// The Durable Objects run over in-memory storage and a fake Atlassian, reached through `fetch`.
+
+import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ConfluenceContentGatekeeperImpl,
+  ConfluenceSiteGatekeeperImpl,
+  ConfluenceSpaceGatekeeperImpl,
+  UserAccount,
+} from "../src/confluence";
+
+const CLOUD = "cloud-1";
+const API = `https://api.atlassian.com/ex/confluence/${CLOUD}/wiki/api/v2`;
+const RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources";
+const TOKEN_URL = "https://auth.atlassian.com/oauth/token";
+
+type Route = (url: string, init?: RequestInit) => Response | undefined;
+
+let routes: Route[];
+let requests: string[];
+
+beforeEach(() => {
+  routes = [];
+  requests = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    requests.push(url);
+    for (const route of routes) {
+      const response = route(url, init);
+      if (response) return response;
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+/** Answers `url` exactly with `body`, or with a bare status when `body` is a number. */
+function answer(url: string, body: unknown | number): void {
+  routes.unshift(requested => requested === url
+    ? typeof body === "number" ? new Response("refused", { status: body }) : Response.json(body)
+    : undefined);
+}
+
+function makeStorage() {
+  const map = new Map<string, unknown>();
+  const kv = {
+    get: <T>(key: string) => map.get(key) as T | undefined,
+    put: <T>(key: string, value: T) => void map.set(key, value),
+    delete: (key: string) => map.delete(key),
+    list: <T>({ prefix }: { prefix: string }) =>
+      [...map.entries()].filter(([key]) => key.startsWith(prefix)) as [string, T][],
+  };
+  return {
+    map,
+    storage: { kv, deleteAll: () => map.clear(), deleteAlarm: () => {}, setAlarm: () => {} },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reads
+
+type Observation = { title: string; subresources?: string[]; excludeObservers?: string[] };
+
+function makeQueue() {
+  const observations: Observation[] = [];
+  const queue = {
+    observations,
+    async authorizeObservation(observation: Observation) { observations.push(observation); },
+    async submitAction() {},
+    dup: () => queue,
+    [Symbol.dispose]() {},
+  };
+  return queue;
+}
+
+function gatekeeper<T>(
+  Class: new (ctx: never, env: never) => T, props: Record<string, string> = {},
+): T {
+  const owner = {
+    getIdentity: async () => null,
+    getSites: async () => [],
+    getAccessToken: async () => "owner-token",
+    refreshCredentials: async () => "owner-token",
+  };
+  const ctx = {
+    props: { userObjectId: "owner", cloudId: CLOUD, webBase: "https://acme.atlassian.net/wiki", ...props },
+    storage: makeStorage().storage,
+    exports: { UserAccount: { idFromString: (id: string) => id, get: () => owner } },
+  };
+  return new Class(ctx as never, {} as never);
+}
+
+describe("subresources reported by reads", () => {
+  it("reports the site on every site-binding read, with the spaces each page reveals", async () => {
+    answer(`${API}/spaces?limit=25`,
+      { results: [{ id: "10", key: "ENG", name: "Eng" }, { id: "11", key: "OPS", name: "Ops" }],
+        _links: { next: "/wiki/api/v2/spaces?cursor=page-2&limit=25" } });
+    answer(`${API}/spaces?cursor=page-2&limit=25`, { results: [] });
+    answer(`${API}/spaces?keys=ENG&limit=1&include-icon=true`,
+      { results: [{ id: "10", key: "ENG", name: "Eng" }] });
+    answer(`${API}/spaces/10/pages?depth=root&limit=25`, { results: [] });
+    const queue = makeQueue();
+    const session = await gatekeeper(ConfluenceSiteGatekeeperImpl).startSession(queue as never);
+
+    await session.getMetadata();
+    const spaces = await session.listSpaces();
+    await spaces.next();
+    await spaces.next();
+    const space = await session.getSpace("ENG");
+    await (await space.listPages()).next();
+
+    expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
+      ["site/cloud-1"],
+      ["site/cloud-1", "site/cloud-1/space/10", "site/cloud-1/space/11"],
+      ["site/cloud-1"],
+      ["site/cloud-1", "site/cloud-1/space/10"],
+      // A space opened through a site binding still reports the site, even for an empty page.
+      ["site/cloud-1"],
+    ]);
+    expect(queue.observations.every(observation => observation.excludeObservers === undefined))
+      .toBe(true);
+  });
+
+  it("reports the bound space with the content each page reveals, but no staged content", async () => {
+    answer(`${API}/spaces?keys=ENG&limit=1&include-icon=true`,
+      { results: [{ id: "10", key: "ENG", name: "Eng" }] });
+    answer(`${API}/spaces/10/pages?depth=root&limit=25`,
+      { results: [{ id: "100", title: "Home" }, { id: "101", title: "Runbook" }] });
+    const queue = makeQueue();
+    const session = await gatekeeper(ConfluenceSpaceGatekeeperImpl, { spaceKey: "ENG" })
+      .startSession(queue as never);
+
+    await (await session.listPages()).next();
+    const draft = await session.createPage({ title: "Draft" });
+    await draft.getMetadata();
+
+    expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
+      ["site/cloud-1/space/ENG", "site/cloud-1/content/100", "site/cloud-1/content/101"],
+      ["site/cloud-1/space/ENG"],
+    ]);
+  });
+
+  it("reports the bound content with its child pages, and alone on an empty page", async () => {
+    answer(`${API}/pages/200?body-format=storage`,
+      { id: "200", title: "Parent", _links: { webui: "/spaces/ENG/pages/200" } });
+    answer(`${API}/pages/200/children?limit=25`, { results: [{ id: "201", title: "Child" }] });
+    answer(`${API}/pages/200/footer-comments?body-format=storage&limit=25`, { results: [] });
+    const queue = makeQueue();
+    const session = await gatekeeper(ConfluenceContentGatekeeperImpl, { contentId: "200" })
+      .startSession(queue as never);
+
+    await (await session.listChildPages()).next();
+    await (await session.listComments()).next();
+
+    expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
+      ["site/cloud-1/content/200", "site/cloud-1/content/201"],
+      ["site/cloud-1/content/200"],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// verifyObserverAccess
+
+function observer(id: string, allowed: (subresource: string) => boolean = () => true) {
+  const checkSubresourceAccess = vi.fn(async (subresources: string[]) => subresources.map(allowed));
+  const verifier = { checkSubresourceAccess, dup: () => verifier };
+  return { id, verifier: verifier as never, checkSubresourceAccess };
+}
+
+describe("verifyObserverAccess", () => {
+  it("allows the observers whose accounts can read every resource a site binding reports", async () => {
+    const binding = gatekeeper(ConfluenceSiteGatekeeperImpl);
+    const allowed = observer("allowed");
+    const denied = observer("denied", subresource => !subresource.endsWith("/content/5"));
+    const subresources = ["site/cloud-1", "site/cloud-1/space/10", "site/cloud-1/content/5"];
+
+    expect(await binding.verifyObserverAccess([allowed, denied], subresources))
+      .toEqual({ allowedObserverIds: ["allowed"] });
+    expect(allowed.checkSubresourceAccess).toHaveBeenCalledWith(subresources);
+  });
+
+  it.each([
+    ["another site", ConfluenceSiteGatekeeperImpl, {}, "site/cloud-2/content/5"],
+    ["an unknown kind", ConfluenceSiteGatekeeperImpl, {}, "site/cloud-1/attachment/5"],
+    ["a non-Confluence ID", ConfluenceSiteGatekeeperImpl, {}, "repo/5"],
+    ["another space", ConfluenceSpaceGatekeeperImpl, { spaceKey: "ENG" }, "site/cloud-1/space/OPS"],
+    ["the site, on a space binding", ConfluenceSpaceGatekeeperImpl, { spaceKey: "ENG" }, "site/cloud-1"],
+    ["a space, on a content binding", ConfluenceContentGatekeeperImpl, { contentId: "200" },
+      "site/cloud-1/space/ENG"],
+  ] as const)("refuses %s without asking any observer", async (_name, Class, props, foreign) => {
+    const binding = gatekeeper(Class as new (ctx: never, env: never) => ConfluenceSiteGatekeeperImpl, props);
+    const candidate = observer("candidate");
+
+    await expect(binding.verifyObserverAccess([candidate], ["site/cloud-1/content/5", foreign]))
+      .rejects.toThrow();
+    expect(candidate.checkSubresourceAccess).not.toHaveBeenCalled();
+  });
+
+  it("accepts a space binding's own space and its content", async () => {
+    const binding = gatekeeper(ConfluenceSpaceGatekeeperImpl, { spaceKey: "ENG" });
+
+    expect(await binding.verifyObserverAccess([observer("candidate")],
+      ["site/cloud-1/space/ENG", "site/cloud-1/content/100"]))
+      .toEqual({ allowedObserverIds: ["candidate"] });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// UserAccount.checkSubresourceAccess
+
+const RESOURCE = { name: "Acme", url: "https://acme.atlassian.net", scopes: ["read:page:confluence"] };
+
+function account() {
+  const { map, storage } = makeStorage();
+  storage.kv.put("grant", {
+    accessToken: "token-1", refreshToken: "refresh-1", expiresAt: Date.now() + 24 * 3600_000,
+  });
+  const ctx = { storage, id: { toString: () => "account" }, exports: {} };
+  const env = { CLIENT_ID: "client", CLIENT_SECRET: "secret" };
+  return { map, storage, account: new UserAccount(ctx as never, env as never) };
+}
+
+/** Answers token refreshes with a new grant. */
+function refreshes(): void {
+  routes.unshift((url, init) => url === TOKEN_URL && init?.method === "POST"
+    ? Response.json({ access_token: "token-2", refresh_token: "refresh-2", expires_in: 3600 })
+    : undefined);
+}
+
+const count = (url: string) => requests.filter(requested => requested === url).length;
+const PAGE_1 = `${API}/pages/1`;
+const SPACE_ENG = `${API}/spaces?keys=ENG&limit=1&include-icon=true`;
+
+describe("UserAccount.checkSubresourceAccess", () => {
+  it("reuses an allowance for 15 minutes and a denial for 15 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
+    const { account: observer } = account();
+    answer(PAGE_1, { id: "1", title: "Page" });
+    answer(SPACE_ENG, { results: [] });
+    const ids = ["site/cloud-1/content/1", "site/cloud-1/space/ENG"];
+
+    expect(await observer.checkSubresourceAccess(ids)).toEqual([true, false]);
+    vi.setSystemTime(new Date("2026-11-04T12:00:10Z"));
+    await observer.checkSubresourceAccess(ids);
+    expect([count(PAGE_1), count(SPACE_ENG)]).toEqual([1, 1]);
+
+    vi.setSystemTime(new Date("2026-11-04T12:00:16Z"));
+    await observer.checkSubresourceAccess(ids);
+    expect([count(PAGE_1), count(SPACE_ENG)]).toEqual([1, 2]);
+
+    vi.setSystemTime(new Date("2026-11-04T12:15:01Z"));
+    await observer.checkSubresourceAccess(ids);
+    expect(count(PAGE_1)).toBe(2);
+  });
+
+  it("answers every site from one live listing, not the sites saved at connect", async () => {
+    const { storage, account: observer } = account();
+    storage.kv.put("sites", [{ ...RESOURCE, id: "cloud-2" }]);
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: CLOUD }]);
+
+    expect(await observer.checkSubresourceAccess(["site/cloud-1", "site/cloud-2", "site/cloud-1"]))
+      .toEqual([true, false, true]);
+    expect(count(RESOURCES_URL)).toBe(1);
+  });
+
+  it("keeps answers across a token refresh but asks again after a reconnect", async () => {
+    const { storage, account: observer } = account();
+    answer(PAGE_1, { id: "1", title: "Page" });
+    refreshes();
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([true]);
+
+    await observer.refreshCredentials();
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([true]);
+    expect(count(PAGE_1)).toBe(1);
+
+    // The reconnect may sign in as another Atlassian account, which can't see the page.
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: CLOUD }]);
+    answer("https://api.atlassian.com/me", { account_id: "other" });
+    answer(PAGE_1, 404);
+    answer(`${API}/blogposts/1`, 404);
+    const stageId = stageCredentials(storage.kv,
+      { accessToken: "token-3", refreshToken: "refresh-3", expiresAt: Date.now() + 3600_000 }, Date.now());
+    await observer.commitReconnect(stageId);
+
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([false]);
+    expect(count(PAGE_1)).toBe(2);
+  });
+
+  it("keeps a reconnected grant when a refresh of the replaced one finishes after it", async () => {
+    const { storage, account: observer } = account();
+    const started = Promise.withResolvers<void>();
+    const refreshed = Promise.withResolvers<Response>();
+    routes.unshift((url, init) => {
+      if (url !== TOKEN_URL || init?.method !== "POST") return undefined;
+      started.resolve();
+      return refreshed.promise as unknown as Response;
+    });
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: CLOUD }]);
+    answer("https://api.atlassian.com/me", { account_id: "other" });
+
+    const refreshing = observer.refreshCredentials();
+    await started.promise;
+    await observer.commitReconnect(stageCredentials(storage.kv,
+      { accessToken: "token-3", refreshToken: "refresh-3", expiresAt: Date.now() + 3600_000 }, Date.now()));
+    refreshed.resolve(Response.json({ access_token: "token-2", refresh_token: "refresh-2", expires_in: 3600 }));
+
+    await expect(refreshing).resolves.toBe("token-3");
+    expect(storage.kv.get<{ accessToken: string }>("grant")?.accessToken).toBe("token-3");
+  });
+
+  it("throws, and reuses nothing, when Atlassian fails to answer", async () => {
+    const { account: observer } = account();
+    answer(PAGE_1, 500);
+    await expect(observer.checkSubresourceAccess(["site/cloud-1/content/1"])).rejects.toThrow();
+
+    answer(PAGE_1, { id: "1", title: "Page" });
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([true]);
+    expect(count(PAGE_1)).toBe(2);
+  });
+
+  it("throws, rather than denying, when the observer's credentials can't be refreshed", async () => {
+    const { map, account: observer } = account();
+    answer(PAGE_1, 401);
+    answer(RESOURCES_URL, 401);
+    answer(TOKEN_URL, 400);
+
+    await expect(observer.checkSubresourceAccess(["site/cloud-1/content/1"])).rejects.toThrow();
+    expect([...map.keys()].some(key => key.startsWith("cache:@access:entry:"))).toBe(false);
+  });
+
+  it("denies a resource on a site the observer's live listing leaves out", async () => {
+    const { account: observer } = account();
+    answer(PAGE_1, 401);
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: "cloud-2" }]);
+    refreshes();
+
+    expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([false]);
+  });
+
+  it("throws without credentials, and for an ID it can't check before asking anything", async () => {
+    const { storage, account: observer } = account();
+    await expect(observer.checkSubresourceAccess(["site/cloud-1/content/1", "repo/5"])).rejects.toThrow();
+    expect(requests).toEqual([]);
+
+    storage.kv.delete("grant");
+    answer(PAGE_1, 403);
+    await expect(observer.checkSubresourceAccess(["site/cloud-1/content/1"])).rejects.toThrow();
+    expect(requests).toEqual([]);
+  });
+});

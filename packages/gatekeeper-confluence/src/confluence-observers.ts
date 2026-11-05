@@ -2,11 +2,17 @@
 //
 // Confluence permissions are not purely hierarchical: access to a site does not imply access to
 // every space, access to a space does not imply access to every page, and a child page can be more
-// restricted than its parent. All three binding granularities therefore use strategy C. A binding
-// first verifies its coarse baseline (site, space, or content) and then uses
-// ConfluenceObserverTracker to remember the narrower spaces/content whose data was actually
-// revealed. Existing observations are checked when an observer joins; newly revealed resources
-// are checked against observers already present.
+// restricted than its parent. All three binding granularities therefore use strategy C. Reads
+// report the binding's site, space, or content plus each narrower space and content item they
+// reveal as subresources (see confluence-subresources.ts), which the Workshop checks through
+// verifyObserverAccess().
+//
+// Before reads reported subresources, a binding verified its coarse baseline (site, space, or
+// content) when an observer joined, and ConfluenceObserverTracker remembered the narrower spaces
+// and content reads revealed. That tracker now guards only legacy history: the sets reads recorded
+// before they reported subresources, or that a read still running that code records. Reads no
+// longer feed it, so addObserver() verifies each observer against the baseline and that history
+// alone, through the verifier's has*Access methods, which reuse no answers.
 
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -32,14 +38,23 @@ export interface ConfluenceVerifierApi extends GatekeeperUserVerifier {
 
   /** Whether the observer can retrieve a page or blog post from the requested site. */
   hasContentAccess(cloudId: string, contentId: string): Promise<boolean>;
+
+  /**
+   * Whether the observer can read each Confluence subresource (see confluence-subresources.ts), in
+   * order, reusing recent answers (see UserAccount.checkSubresourceAccess). Throws for an ID it
+   * can't check, or when access can't be determined (credentials that can't be obtained or
+   * refreshed, a rate limit, an outage).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
 
-// The verifier deliberately receives only the three read operations needed to answer ACL
+// The legacy verifier methods receive only the three read operations needed to answer ACL
 // questions. Keeping this structural type small also makes the access semantics easy to unit-test.
 type AccessApi = Pick<ConfluenceApi, "getSpaceById" | "getSpaceByKey" | "getContentById">;
 
 /**
- * Implements Confluence access checks independently of the WorkerEntrypoint wrapper.
+ * Implements the legacy Confluence access checks behind addObserver() independently of the
+ * WorkerEntrypoint wrapper.
  *
  * The injected token/API factories ensure every lookup uses the observer's account and make the
  * status handling testable without constructing a Cloudflare worker context. Checks are live: in
@@ -114,41 +129,37 @@ export class ConfluenceAccessChecker {
 /**
  * A resource revealed by an observation whose ACL must be checked independently.
  *
- * The prefix is part of the persisted key. It prevents a numeric space ID and content ID from
- * colliding and tells the tracker which verifier method to call after restoring the key.
+ * The prefix is part of the legacy tracker's persisted key. It prevents a numeric space ID and
+ * content ID from colliding and tells the tracker which verifier method to call after restoring the
+ * key. Reads still name what they reveal this way, and report it as the matching subresource (see
+ * observedSetSubresource).
  */
 export type ConfluenceObservedSet = `space:${string}` | `content:${string}`;
 
 // Minimal structural view of DurableObjectStorage.kv used by the tracker. The tracker owns keys
 // under `observer:` and `observed:`; pending-action/cache keys in the same DO use other prefixes.
 type ObserverKv = {
-  get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
   delete(key: string): void;
   list<T>(options: { prefix: string }): Iterable<[string, T]>;
 };
 
-/** The result of checking observers before an observation is authorized. */
-export type ConfluenceObservationCheck = {
-  excludeObservers?: string[];
-  pendingSets: ConfluenceObservedSet[];
-  commit(): void;
-};
-
 type ObservedSetState = true | "pending" | "observed";
 
 /**
- * Persists the strategy-C state for one Confluence gatekeeper DO.
+ * The legacy strategy-C state of one Confluence gatekeeper DO, kept for history recorded before
+ * reads reported subresources.
  *
  * Storage contains two kinds of records:
  *
- * - `observed:space:<id>` / `observed:content:<id>` state for every independently protected
- *   resource whose observation is pending or complete.
+ * - `observed:space:<id>` / `observed:content:<id>` state (`true`, `"pending"`, or `"observed"`)
+ *   for every independently protected resource an old read observed or began to observe.
  * - `observer:<opaque-id>` persistent verifier stubs for collaborators that passed all checks.
  *
  * The binding's baseline check is intentionally outside this class because it differs by DO type.
  * Site, space, and content gatekeepers perform that check first, then call addObserver() here to
- * validate historical sets and retain the verifier for forward exclusion.
+ * validate historical sets and retain the verifier, as a Worker version still running the old
+ * reads expects to find it.
  */
 export class ConfluenceObserverTracker {
   readonly #kv: ObserverKv;
@@ -162,11 +173,11 @@ export class ConfluenceObserverTracker {
 
   /**
    * Verifies a prospective observer against every resource observed in the past, then remembers
-   * their verifier for checks on future observations.
+   * their verifier, which reads still running the legacy code check newly revealed sets against.
    *
    * The caller must already have checked the binding baseline. The verifier is written only after
    * all historical checks pass, so a rejected collaborator can never participate in forward
-   * exclusion.
+   * exclusion. Sets marked while this awaits are checked too.
    */
   async addObserver(id: string, verifier: Fetcher<ConfluenceVerifierApi>): Promise<void> {
     const checked = new Set<ConfluenceObservedSet>();
@@ -191,65 +202,14 @@ export class ConfluenceObserverTracker {
     this.#kv.delete(this.#observerKey(id));
   }
 
-  /**
-   * Marks resources pending and identifies observers who cannot see them.
-   *
-   * Observed sets require no work. Pending sets are rechecked on every attempt so failed
-   * authorization cannot turn a retry into an unchecked read.
-   */
-  async prepareObservation(sets: ConfluenceObservedSet[]): Promise<ConfluenceObservationCheck> {
-    const pendingSets = [...new Set(sets)].filter(setId => !this.#isObserved(setId));
-    if (pendingSets.length === 0) return { pendingSets, commit() {} };
-
-    // Publish pending state before the first await so a concurrently admitted observer must check it.
-    for (const setId of pendingSets) {
-      if (this.#state(setId) === undefined) this.#kv.put(this.#observedKey(setId), "pending");
-    }
-
-    const observerAccess = await Promise.all([...this.#listObservers()].map(async ([id, verifier]) => {
-      const access = await Promise.all(pendingSets.map(setId => this.#hasSetAccess(verifier, setId)));
-      return [id, access.every(hasAccess => hasAccess)] as const;
-    }));
-    const excluded = observerAccess.filter(([, hasAccess]) => !hasAccess).map(([id]) => id);
-    return {
-      excludeObservers: excluded.length > 0 ? excluded : undefined,
-      pendingSets,
-      commit: () => this.commitObservation(pendingSets),
-    };
-  }
-
-  /** Promotes sets only after the overseer authorizes the observation that revealed them. */
-  commitObservation(pendingSets: ConfluenceObservedSet[]): void {
-    for (const setId of pendingSets) this.#kv.put(this.#observedKey(setId), "observed");
-  }
-
-  // Centralize the persisted key formats so writers and prefix scans cannot drift apart.
+  // Centralize the persisted key format so writes and deletes cannot drift apart.
   #observerKey(id: string): string { return `observer:${id}`; }
-  #observedKey(setId: ConfluenceObservedSet): string { return `observed:${setId}`; }
-
-  /** Returns whether this DO has already accounted for the resource in observer checks. */
-  #isObserved(setId: ConfluenceObservedSet): boolean {
-    const state = this.#state(setId);
-    return state === true || state === "observed";
-  }
-
-  #state(setId: ConfluenceObservedSet): ObservedSetState | undefined {
-    return this.#kv.get<ObservedSetState>(this.#observedKey(setId));
-  }
 
   /** Restores every typed observed-set ID from the DO's marker keys. */
   #listTrackedSets(): ConfluenceObservedSet[] {
     const prefix = "observed:";
     return [...this.#kv.list<ObservedSetState>({ prefix })]
       .map(([key]) => key.slice(prefix.length) as ConfluenceObservedSet);
-  }
-
-  /** Iterates opaque observer IDs and their persistent, vendor-specific verifier stubs. */
-  *#listObservers(): IterableIterator<[string, Fetcher<ConfluenceVerifierApi>]> {
-    const prefix = "observer:";
-    for (const [key, verifier] of this.#kv.list<Fetcher<ConfluenceVerifierApi>>({ prefix })) {
-      yield [key.slice(prefix.length), verifier];
-    }
   }
 
   /** Dispatches a typed set to the matching live ACL check on the observer's verifier. */

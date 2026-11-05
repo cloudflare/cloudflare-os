@@ -136,6 +136,43 @@ before approval (provisional IDs for created content, body/title/label/comment o
 state). `rejectAction()` / `revertAction()` discard or undo. Content responses are cached in DO
 storage with a short TTL and invalidated on write. This logic lives in `confluence-actions.ts`.
 
+## Observer verification
+
+All three bindings use strategy C: Confluence access is not hierarchical, so a site member may not
+see every space, and a page can be more restricted than its space or parent. Every read, each
+cursor page included (an empty or simulated one too), reports the resources it depends on as
+`ObservationDescription.subresources` (`src/confluence-subresources.ts`), through one typed helper
+(`authorizeRead`) that makes the field required:
+
+| Binding | Reported on every read | Plus, per read |
+| --- | --- | --- |
+| Site | `site/<cloudId>` | `site/<cloudId>/space/<spaceId>` for each space a listing or `getSpace()` returns; `site/<cloudId>/content/<contentId>` for each search hit and each content item a content session reads |
+| Space | `site/<cloudId>/space/<spaceKey>` | `site/<cloudId>/content/<contentId>` for each listed page/blog post, search hit, and content item a content session reads |
+| Page / blog post | `site/<cloudId>/content/<contentId>` | `site/<cloudId>/content/<childId>` for each listed child page |
+
+Content a Gadget has staged but Confluence has not created (a `~` ID) is never reported. Sessions
+opened through a binding (a space or content session from a site binding, say) keep reporting that
+binding's resource. The site prefix only identifies where a space or content item lives; it asks
+nothing beyond that resource itself.
+
+`verifyObserverAccess()` refuses, for every observer, any ID that is not one of these, names
+another site, or names a kind the binding never reports (a site on a space or content binding, a
+space on a content binding, another space on a space binding). It then asks each observer's
+`ConfluenceVerifier.checkSubresourceAccess()`, which their `UserAccount` answers with their own
+token: sites from one live `accessible-resources` listing (never the `sites` saved at connect),
+spaces and content one request at a time by retrieving them. Only a 403/404, or a site the live
+listing leaves out, is a denial; credentials that can't be obtained or refreshed, rate limits and
+outages throw, which denies every observer in the call. Answers are cached under
+`cache:@access:` (a `KvTtlCache` named `access`) for 15 minutes when allowed and 15 seconds when
+denied, partitioned by `credentialsId`: a UUID replaced on every connect and reconnect (not on a
+token refresh), named lazily for an account connected before it existed, and deleted on revoke.
+
+Reads no longer feed the legacy `ConfluenceObserverTracker` or set `excludeObservers`. Its
+`observed:space:<id>` / `observed:content:<id>` markers and `observer:<id>` verifiers stay, and
+`addObserver()` still checks the binding baseline (site, space, or content access) and every
+recorded set, for reads made before they reported subresources and reads by an older Worker
+version during rollout.
+
 ## Resource picker
 
 The three resource types are grouped (`groupedWith`) into one Confluence card, and one configurator
@@ -173,5 +210,5 @@ must enable the scope before this version is deployed**, or new connections fail
 ## Development
 
 - `pnpm exec vp run -F @gadgets/confluence-gatekeeper build` — build the configurator UI (`build:configurator`, which this task depends on) and type-check (`tsc`). A Vite+ task rather than a script, so `pnpm --filter` cannot see it.
-- `pnpm --filter @gadgets/confluence-gatekeeper test:run` — build the configurator frame, then run the unit tests (URL/CQL parsing, Markdown conversion, v2 converters, icon redirect and byte-limit enforcement, action simulation, the configurator against a fake Confluence) and the frame's journeys in Chromium (`__tests__/configurator-frame.test.ts`, through `__tests__/frame-host.ts`).
+- `pnpm --filter @gadgets/confluence-gatekeeper test:run` — build the configurator frame, then run the unit tests (URL/CQL parsing, Markdown conversion, v2 converters, icon redirect and byte-limit enforcement, action simulation, the configurator against a fake Confluence, observer subresource reporting and access checks against a fake Atlassian) and the frame's journeys in Chromium (`__tests__/configurator-frame.test.ts`, through `__tests__/frame-host.ts`).
 - The Worker is run via the root `pnpm dev-server`, not directly.
