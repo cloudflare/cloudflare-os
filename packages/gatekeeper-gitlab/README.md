@@ -127,8 +127,9 @@ can still hold confidential issues and internal notes; job logs and test reports
   A binding that read before ids were pinned is pinned to the project its path names at its first
   read since, which may not be the one it read then.
   Returned issue and merge request references use the current project path from GitLab's web URL,
-  including same-project source and target branches; the original binding path remains only the
-  REST rewrite key and the legacy admission requirement.
+  including same-project source and target branches, and comment, diff-thread and queued-item
+  links use the path the pinned project has now; the original binding path remains only the REST
+  rewrite key and the legacy admission requirement.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, so the Workshop checks everyone who can see it before it is returned (see
@@ -145,21 +146,15 @@ can still hold confidential issues and internal notes; job logs and test reports
   account reuses a grant for up to 15 minutes and a denial for up to 15 seconds, so a removed
   membership can still admit them for 15 minutes; it asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
-  grant dead: the check fails. Each open also asks, uncached and never with the binding owner's
-  token, for the stored project id when there is one. Bindings created before subresource reporting
-  additionally require the project their original path names now, since earlier path-addressed
-  reads may have disclosed a project that later took it. For those older bindings, no stored id
-  means the path is all they are checked by; recorded CI data still needs its role the same way.
-  Newly minted `reportsSubresources: true` bindings have no path-addressed history and never check
-  that original path at admission. Caches filled before conversion are discarded on upgrade.
-- **Historical export.** Newly created bindings are marked `reportsSubresources: true` in their
-  immutable props and return `[]` from the read-only `getHistoricalSubresources()`: all their reads
-  already reported their requirements. Older bindings export their bound project at the strongest
-  recorded CI role: Reporter normally, Developer for `ci-logs`, or Maintainer for `ci-test-reports`.
-  Pending markers count too. The exporter uses the stored project id, or resolves the binding's
-  path if none is stored, without pinning it or changing binding storage. Historical path reuse is
-  outside this migration's model. Provider lookup failures still propagate. The kernel importer is
-  not shipped; existing admission and CI-role checks remain until it imports the requirements.
+  grant dead: the check fails. Bindings created since subresource reporting (marked
+  `reportsSubresources: true` in their immutable props) have no reads that predate it, so they
+  admit every collaborator without asking GitLab, record none, and have no collaborator cap: the
+  Workshop checks each read's report instead. Older bindings also ask each open, uncached and never
+  with the binding owner's token, for the stored project id when there is one, and for the project
+  their original path names now, since earlier path-addressed reads may have disclosed a project
+  that later took it. For those older bindings, no stored id means the path is all they are checked
+  by; recorded CI data still needs its role the same way. Caches filled before conversion are
+  discarded on upgrade. Their legacy history is not exported, so these checks remain.
 
 ## Setting up GitLab OAuth credentials
 
@@ -291,10 +286,9 @@ An owner sees this if the project moved before the connection pinned its id (see
 created before subresource reporting can fail after **any** rename or transfer, even when its id
 was already pinned and the owner's reads still work: its retained legacy check asks for the
 original path as well as the stored id. GitLab redirects a freed path, and the gatekeeper refuses
-that redirect because it cannot prove earlier path-addressed history. Re-bind at the new path for
-future use; the old binding's legacy requirements remain enforced until the kernel can import
-complete history. A newly minted `reportsSubresources: true` binding checks only its stored id,
-so sharing follows a pinned project through renames and old-path reuse.
+that redirect because it cannot prove earlier path-addressed history. Re-bind at the new path to
+share it again. A binding created since subresource reporting makes no admission check, so
+sharing follows a pinned project through renames and old-path reuse.
 
 ### "GitLab credentials have expired or been revoked"
 
@@ -362,6 +356,7 @@ workspace that has not read them.
 
 ### "This binding already answers for 50 collaborators …"
 
-A binding can be shared with at most 50 collaborators at once: it records each one it admits, as
-the releases that checked every one of them on each job-log or test-report read did. Remove a
-collaborator from the workspace before adding another.
+A binding created before subresource reporting can be shared with at most 50 collaborators at
+once: it records each one it admits, as the releases that checked every one of them on each
+job-log or test-report read did. Remove a collaborator from the workspace before adding another,
+or bind the project again: a binding created since has no cap.

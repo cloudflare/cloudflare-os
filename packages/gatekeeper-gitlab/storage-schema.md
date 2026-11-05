@@ -26,12 +26,9 @@ and size budget, outside the generation: no action changes a finished log), and 
 that survives cache clears.
 
 Newly minted binding props include `reportsSubresources: true`, proving that all reads were
-reported to the kernel. This is immutable binding metadata, not a KV marker. Those bindings
-export `[]` from `getHistoricalSubresources()`. Older bindings export one requirement for their
-bound project at the strongest recorded CI role, including pending markers: Maintainer for
-`ci-test-reports`, else Developer for `ci-logs`, else Reporter. The exporter uses `projectId` if
-stored, otherwise resolves the binding's path without storing the result. Historical path reuse
-is outside this migration's model. Export is read-only and leaves legacy admission checks intact.
+reported to the kernel. This is immutable binding metadata, not a KV marker. Those bindings'
+`addObserver` and `removeObserver` touch no storage, so the `observer*` keys below exist only on
+older bindings.
 
 | Key | Value | Notes |
 |---|---|---|
@@ -50,7 +47,7 @@ is outside this migration's model. Export is read-only and leaves legacy admissi
 | `ciLog:age:<storedAt>:<jobId>` | `string` (the job id) | Eviction index, oldest first (`storedAt` zero-padded to 16 digits). A store sweeps expired entries, then evicts the oldest until the new log fits. |
 | `ciLog:totalBytes` | `number` | Bytes held across every `ciLog:chunk:*`, against a 32 MiB budget; a log larger than the budget is not stored. |
 | `observedSet:<set>` | `"pending" \| "observed"` | The CI-data gate releases before reads reported subresources kept (the kit's `ObserverTracker`, two tracked sets): marked by the first read of its set, `ci-logs` by a job-log read or a test-report read whose connected account was below Maintainer, `ci-test-reports` by a test-report read whose account held Maintainer (40). Reads no longer mark either. While a set is present, `addObserver` requires its role, Developer (30) for `ci-logs` and Maintainer for `ci-test-reports`, on the project the binding's path names and, once `projectId` is stored, on that one too. |
-| `observer:<id>` | `Fetcher<GitLabVerifierApi>` | An admitted observer's verifier, which the tracker stores and caps at 50; no read checks them any more. `removeObserver` deletes it. |
+| `observer:<id>` | `Fetcher<GitLabVerifierApi>` | An older binding's admitted observer's verifier, which the tracker stores and caps at 50; no read checks them any more. `removeObserver` deletes it. |
 | `observerRoster` | `"complete" \| "legacy"` | Written by releases that refused CI-data reads on a binding created before they stored observers. Deleted on start (see `cachesByProjectId`); nothing reads it. |
 | `observer-attempt:<id>` | `{ verifier, at }` | The tracker's record of an admission in flight; swept after 10 minutes. |
 | `observer-nonce:<id>` | `string` | Fences that attempt: `removeObserver` deletes it, which cancels the admission wherever it is parked. |

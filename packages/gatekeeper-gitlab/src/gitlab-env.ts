@@ -273,6 +273,9 @@ export type GitLabGatekeeperImplProps = {
   projectPath: string;
   /** The issue or merge request number, for those resource kinds. */
   iid?: number;
-  /** Present only on bindings whose every read reports subresources; older history is unprovable. */
+  /**
+   * Present only on bindings minted since every read reported its subresources, which therefore
+   * have no legacy reads for addObserver to check (see GitLabGatekeeperImpl.addObserver).
+   */
   reportsSubresources?: true;
 };

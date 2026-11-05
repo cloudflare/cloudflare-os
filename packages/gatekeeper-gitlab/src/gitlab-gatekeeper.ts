@@ -392,8 +392,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return instanceUrlOf(this.env);
   }
 
-  #projectRef(): GitLabProjectRef {
-    return projectRef(this.#instanceUrl(), this.#projectPath());
+  /**
+   * The bound project as GitLab names it now, for the references and links a read returns: a
+   * rename or a transfer moves it, and its original path, which stays the key requests are
+   * rewritten to its id by (see PinnedProject), may by then name another project. Read from the
+   * cached project, so a move shows once that entry expires.
+   */
+  async #currentProjectRef(): Promise<GitLabProjectRef> {
+    return projectRef(this.#instanceUrl(), (await this.#getProjectResponse()).path_with_namespace);
   }
 
   #userAccount() {
@@ -859,11 +865,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async #buildProvisionalIssueDetails(action: CreateIssueAction): Promise<GitLabIssueDetails> {
-    const viewer = await this.#getViewerActor();
+    const [viewer, project] = await Promise.all([this.#getViewerActor(), this.#currentProjectRef()]);
     return {
-      project: this.#projectRef(),
+      project,
       id: action.provisionalId,
-      url: issueUrl(this.#instanceUrl(), this.#projectPath(), action.provisionalId),
+      url: issueUrl(this.#instanceUrl(), project.path, action.provisionalId),
       title: action.options.title,
       state: "opened",
       labels: (action.options.labels ?? []).map(name => ({ name })),
@@ -912,11 +918,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         event: "merge.request.provisional.comparison.compute.failed", error,
       });
     }
-    const project = this.#projectRef();
+    const project = await this.#currentProjectRef();
     return {
       project,
       id: action.provisionalId,
-      url: mergeRequestUrl(this.#instanceUrl(), this.#projectPath(), action.provisionalId),
+      url: mergeRequestUrl(this.#instanceUrl(), project.path, action.provisionalId),
       title: mergeRequestCreateTitle(action.options),
       state: "opened",
       labels: (action.options.labels ?? []).map(name => ({ name })),
@@ -1131,10 +1137,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   // -- discussion -------------------------------------------------------------------------
 
-  #noteableUrl(kind: EntityKind, id: string): string {
+  /** An issue's or merge request's page, beneath the path the project has now (see #currentProjectRef). */
+  async #noteableUrl(kind: EntityKind, id: string): Promise<string> {
+    const { path } = await this.#currentProjectRef();
     return kind === "issue"
-      ? issueUrl(this.#instanceUrl(), this.#projectPath(), id)
-      : mergeRequestUrl(this.#instanceUrl(), this.#projectPath(), id);
+      ? issueUrl(this.#instanceUrl(), path, id)
+      : mergeRequestUrl(this.#instanceUrl(), path, id);
   }
 
   /**
@@ -1147,8 +1155,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * read and cached, as the diff threads already are.
    */
   async #fetchRemoteDiscussionComments(kind: EntityKind, realId: string): Promise<GitLabDiscussionCommentEntry[]> {
-    const noteableUrl = this.#noteableUrl(kind, realId);
-    const discussions = await this.#fetchRemoteDiscussions(kind, realId);
+    const [noteableUrl, discussions] = await Promise.all([
+      this.#noteableUrl(kind, realId), this.#fetchRemoteDiscussions(kind, realId)]);
     return discussions
       .filter(discussion => diffAnchor(discussion) === null)
       .flatMap(discussion => discussion.notes)
@@ -1161,8 +1169,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const realId = this.#realIdOf(logicalId);
     const compare = (a: GitLabDiscussionEntry, b: GitLabDiscussionEntry) => a.createdAt.getTime() - b.createdAt.getTime();
 
-    const viewer = await this.#getViewerActor();
-    const noteableUrl = this.#noteableUrl(kind, logicalId);
+    const [viewer, noteableUrl] = await Promise.all([this.#getViewerActor(), this.#noteableUrl(kind, logicalId)]);
     const provisionals: GitLabDiscussionEntry[] = [];
     for (const action of this.#pendingActionsForEntity(kind, logicalId)) {
       if (action.type === "postComment") {
@@ -1208,11 +1215,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** Diff-anchored discussions as threads, in creation order. */
   async #fetchRemoteDiffThreads(realId: string): Promise<GitLabDiffThread[]> {
-    const [mr, discussions] = await Promise.all([
-      this.#getRawMergeRequest(realId), this.#fetchRemoteDiscussions("mergeRequest", realId)]);
+    const [mr, discussions, noteableUrl] = await Promise.all([
+      this.#getRawMergeRequest(realId), this.#fetchRemoteDiscussions("mergeRequest", realId),
+      this.#noteableUrl("mergeRequest", realId)]);
     const headSha = mr.diff_refs?.head_sha ?? mr.sha;
     const threads: GitLabDiffThread[] = [];
-    const noteableUrl = this.#noteableUrl("mergeRequest", realId);
     for (const discussion of discussions) {
       const anchor = diffAnchor(discussion);
       if (anchor === null) continue;
@@ -1244,13 +1251,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async #overlaidDiffThreads(logicalId: string): Promise<GitLabDiffThread[]> {
     const realId = this.#realIdOf(logicalId);
-    const [base, viewer] = await Promise.all([
+    const [base, viewer, noteableUrl] = await Promise.all([
       realId ? this.#fetchRemoteDiffThreads(realId) : [],
       this.#getViewerActor(),
+      this.#noteableUrl("mergeRequest", logicalId),
     ]);
 
     const threads = new Map<string, GitLabDiffThread>(base.map(thread => [thread.id, structuredClone(thread)]));
-    const noteableUrl = this.#noteableUrl("mergeRequest", logicalId);
     for (const action of this.#pendingActionsForEntity("mergeRequest", logicalId)) {
       if (action.type === "postReview") {
         for (const comment of action.review.diffComments ?? []) {
@@ -1979,10 +1986,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * membership reaches Reporter on the project the binding's path names, as releases that addressed
    * it by path asked, and on the project the binding is pinned to, by its stored id, when it has
    * one: those releases followed the path, so what they read may have come from a project that
-   * took it. Bindings minted with reportsSubresources have no path-addressed history and check
-   * only the stored id. Admission never pins the project, which would ask with the binding owner's
-   * token, so a binding whose owner's grant has lapsed still admits observers on their own; no
-   * stored id means no data has been read by id (every read pins it first). The CI-data sets those reads
+   * took it. A binding minted with reportsSubresources has no such reads, so it admits every
+   * observer without asking GitLab and records none (see addObserver). Admission never pins the
+   * project, which would ask with the binding owner's token, so a binding whose owner's grant has
+   * lapsed still admits observers on their own; no stored id means no data has been read by id
+   * (every read pins it first). The CI-data sets those reads
    * marked (strategy C) need their role the same way (`CI_DATA_ACCESS_LEVELS`): `ci-logs`
    * (Developer) for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer)
    * for test reports read as one. Reads no longer mark sets, so the observers the tracker stores are
@@ -1991,12 +1999,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   #observerStrategy: ObserverStrategy | undefined;
 
   #observers(): ObserverStrategy {
-    // New bindings have only ID-addressed reads; older history also requires the original path.
     const hasLevel = async (verifier: Fetcher<GitLabVerifierApi>, level?: number) => {
       const id = this.ctx.storage.kv.get<number>("projectId");
       const [byId, byPath] = await Promise.all([
         id === undefined || verifier.hasProjectAccess(id, level),
-        this.#props().reportsSubresources === true || verifier.hasProjectPathAccess(this.#projectPath(), level),
+        verifier.hasProjectPathAccess(this.#projectPath(), level),
       ]);
       return byId && byPath;
     };
@@ -2005,9 +2012,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
       maxTrackedCollections: 2,
-      // The tracker still stores each observer it admits, and refuses one past this cap. 50 is the
-      // cap bindings admitted under while each CI-data read checked every stored observer, so none
-      // loses a collaborator it had.
+      // An older binding's tracker still stores each observer it admits, and refuses one past this
+      // cap. 50 is the cap they admitted under while each CI-data read checked every stored
+      // observer, so none loses a collaborator it had.
       maxObservers: 50,
       verifyBaseline: async verifier => {
         if (!(await hasLevel(verifier))) {
@@ -2028,28 +2035,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     });
   }
 
+  /**
+   * Every read of a binding minted with reportsSubresources reported its project, which the
+   * Workshop checks for each observer through verifyObserverAccess, so there is nothing left to
+   * admit or record. Older bindings keep the checks above for what they read before.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    if (this.#props().reportsSubresources === true) return;
     await this.#observers().addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
+    if (this.#props().reportsSubresources === true) return;
     await this.#observers().removeObserver(id);
-  }
-
-  /**
-   * Exports the bound project at the strongest role legacy CI reads recorded. Use the stored id,
-   * or resolve the binding's path without pinning it; historical path reuse is outside this
-   * migration's model. New bindings have no legacy requirements. Export never changes binding
-   * storage or replaces the legacy admission checks.
-   */
-  async getHistoricalSubresources(): Promise<string[]> {
-    if (this.#props().reportsSubresources === true) return [];
-    const kv = this.ctx.storage.kv;
-    const id = kv.get<number>("projectId") ?? (await withAccountApi(
-      this.env, this.#userAccount(), api => api.getProject(this.#projectPath()), { replayable: true })).id;
-    const role = kv.get(`${OBSERVED_SET_PREFIX}ci-test-reports`) !== undefined ? "maintainer"
-      : kv.get(`${OBSERVED_SET_PREFIX}ci-logs`) !== undefined ? "developer" : undefined;
-    return [projectSubresourceId(id, role)];
   }
 
   /**

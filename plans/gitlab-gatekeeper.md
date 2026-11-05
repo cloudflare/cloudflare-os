@@ -1021,18 +1021,14 @@ reported id is only true if the read came from it, so REST is addressed by id (Â
 by the path the id has now, and caches filled while reads followed the path are discarded once on
 upgrade.
 
-New bindings carry `reportsSubresources: true` in their immutable props. Their read-only
-`getHistoricalSubresources()` returns `[]`, since no read predates reporting. Legacy bindings
-export their bound project at the strongest recorded CI role: Maintainer for `ci-test-reports`,
-else Developer for `ci-logs`, else Reporter; pending markers count too. The exporter uses the
-stored `projectId`, or resolves the binding's path without storing the result when no id exists.
-Historical path reuse is outside this migration's model, not a reason to fail the export or
-make the binding private. Provider lookup failures still propagate. Export leaves binding storage
-and legacy admission checks unchanged until the kernel imports the requirements. Legacy admission
-still checks the original path and any stored id. Newly minted bindings check only the stored id
-at admission, so sharing follows that project through renames and reuse of its old path.
-Returned issue and merge request references follow GitLab's current `web_url`, not the old path
-used as the REST ID-rewrite key; same-project simulation compares their current source and target.
+New bindings carry `reportsSubresources: true` in their immutable props. No read of theirs
+predates reporting, so their `addObserver` and `removeObserver` are no-ops: no check, no stored
+observer, no cap, and a rename or reuse of the old path does not stop sharing them. Legacy
+bindings keep the tracker and the admission checks above, on the original path and any stored id:
+their history is not exported (`getHistoricalSubresources` is not implemented). Returned issue and
+merge request references follow GitLab's current `web_url`, and comment, diff-thread and
+queued-item links the pinned project's current path, not the old path used as the REST ID-rewrite
+key; same-project simulation compares their current source and target.
 
 ### 9. Tests
 

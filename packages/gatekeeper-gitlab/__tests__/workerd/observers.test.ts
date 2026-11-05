@@ -144,6 +144,13 @@ class ObserverGitLab extends FakeGitLab {
         return json({ ...fx.mergeRequestResponse.data, iid: 1,
           project_id: PROJECT_ID, source_project_id: PROJECT_ID, target_project_id: PROJECT_ID,
           web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/merge_requests/1` });
+      case "/issues/1/discussions":
+        return json(firstPage ? fx.issueDiscussionsResponse.data : []);
+      case "/merge_requests/1/discussions":
+        return json(firstPage ? [
+          fx.diffDiscussionResponse.data,
+          { id: "plain", individual_note: true, notes: [fx.issueNotesResponse.data[1]] },
+        ] : []);
       case "/pipelines/6":
         return json({ ...fx.pipelineResponse.data, id: 6, project_id: PROJECT_ID, sha: HEAD });
       case "/pipelines/6/test_report_summary":
@@ -233,8 +240,7 @@ async function binding(options: { pinned?: boolean; reportsSubresources?: true }
     /** verifyObserverAccess for observers named by id, each with the account given. */
     verify: (observers: Record<string, string>, subresources = [PROJECT]) => hooks().verifyObservers(
       name, props, Object.entries(observers).map(([id, userObjectId]) => ({ id, userObjectId })), subresources),
-    admit: (userObjectId: string) => hooks().addObserver(name, props, userObjectId),
-    history: () => hooks().historicalSubresources(name, props),
+    admit: (userObjectId: string, observerId?: string) => hooks().addObserver(name, props, userObjectId, observerId),
   };
 }
 
@@ -360,6 +366,34 @@ describe("reads", () => {
     expect(gitlab.requestsWith(OWNER_TOKEN).filter(path => !path.startsWith(`/api/v4/projects/${PROJECT_ID}`)))
       .toEqual([]);
     expect((await gk.observations()).every(observation => observation.subresources?.[0] === PROJECT)).toBe(true);
+  });
+
+  it("links comments and diff threads beneath the project's current path when the original is reused", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+    const moved = "acme/renamed";
+    gitlab.projects.set(PROJECT_ID, moved);
+    gitlab.projects.set(OTHER_ID, PATH);
+    const issue = `${WEB}/${moved}/-/issues/1`;
+    const mr = `${WEB}/${moved}/-/merge_requests/1`;
+
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "postComment", args: ["Queued"] }]))
+      .toEqual({ ok: undefined });
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "readDiscussion", drain: true }]))
+      .toMatchObject({ ok: [
+        { url: `${issue}#note_1126` }, { url: `${issue}#note_1128` }, { url: `${issue}#note_1129` },
+        { id: "~comment1", url: `${issue}#note_~comment1` },
+      ] });
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "readDiscussion", drain: true }]))
+      .toMatchObject({ ok: [{ url: `${mr}#note_305` }] });
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "readDiffThreads", drain: true }]))
+      .toMatchObject({ ok: [{ comments: [{ url: `${mr}#note_1128` }] }] });
+    expect(await gk.read([{ method: "createIssue", args: [{ title: "Queued" }] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: { project: { path: moved }, url: `${WEB}/${moved}/-/issues/~1` } });
+    // The current path is read by the project's id, never through the path another project took.
+    expect(gitlab.requestsWith(OWNER_TOKEN).filter(path =>
+      path.startsWith("/api/v4/projects/") && !path.startsWith(`/api/v4/projects/${PROJECT_ID}`))).toEqual([]);
   });
 
   it("disclose nothing once the project is deleted and another takes its path", async () => {
@@ -596,19 +630,24 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
-  it.each(["redirect", "reused path"])("admits a new binding by its pinned project after a rename with %s", async scenario => {
+  it("admits anyone to a new binding, uncapped and without asking GitLab, leaving its reads to be checked", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
     gitlab.member("alice", { [PROJECT_ID]: REPORTER });
     gitlab.member("bob", { [OTHER_ID]: MAINTAINER_LEVEL });
     const gk = await binding({ pinned: true, reportsSubresources: true });
+    // Renamed, and another project at the old path: an older binding would refuse everyone now.
     gitlab.projects.set(PROJECT_ID, "acme/renamed");
-    if (scenario === "redirect") gitlab.formerPaths.set(PATH, PROJECT_ID);
-    else gitlab.projects.set(OTHER_ID, PATH);
+    gitlab.projects.set(OTHER_ID, PATH);
 
-    expect(await gk.admit(alice)).toEqual({ ok: undefined });
-    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+    // One past the 50 collaborators an older binding records.
+    for (let index = 0; index <= 50; index++) {
+      expect(await gk.admit(bob, `bob-${index}`)).toEqual({ ok: undefined });
+    }
+    expect(gitlab.requests).toEqual([]);
+    // What its reads reported, the project by its id, only alice can see.
+    expect(await gk.verify({ alice, bob })).toEqual({ ok: ["alice"] });
   });
 
   it("keeps legacy admission closed on a freed path's redirect after a plain rename", async () => {
@@ -643,54 +682,5 @@ describe("addObserver", () => {
     expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
       .toEqual(["/api/v4/projects/group%2Fsub%2Fproject/members/all"]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
-  });
-});
-
-describe("getHistoricalSubresources", () => {
-  it("returns no legacy requirements for a new binding, before and after reported reads", async () => {
-    const gitlab = new ObserverGitLab();
-    gitlab.install();
-    const gk = await binding({ reportsSubresources: true });
-    expect(await gk.history()).toEqual({ ok: [] });
-    expect(gitlab.requests).toEqual([]);
-    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });
-    expect(await gk.history()).toEqual({ ok: [] });
-  });
-
-  it.each([
-    { name: "ordinary reads", sets: {}, required: PROJECT, level: REPORTER },
-    { name: "pending job logs", sets: { "ci-logs": "pending" }, required: DEVELOPER, level: DEVELOPER_LEVEL },
-    { name: "test reports", sets: { "ci-test-reports": "observed" }, required: MAINTAINER, level: MAINTAINER_LEVEL },
-    { name: "both CI tiers", sets: { "ci-logs": "observed", "ci-test-reports": "pending" }, required: MAINTAINER, level: MAINTAINER_LEVEL },
-  ])("exports the project's strongest recorded requirement for $name", async ({ sets, required, level }) => {
-    const gitlab = new ObserverGitLab();
-    gitlab.install();
-    const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
-    gitlab.member("alice", { [PROJECT_ID]: level });
-    gitlab.member("bob", { [PROJECT_ID]: level - 10 });
-    const gk = await binding({ pinned: true });
-    await gk.upgradeFrom(Object.fromEntries(Object.entries(sets).map(([set, state]) => [`observedSet:${set}`, state])));
-
-    expect(await gk.history()).toEqual({ ok: [required] });
-    expect(await gk.history()).toEqual({ ok: [required] });
-    expect(gitlab.requests).toEqual([]);
-    expect(await gk.verify({ alice, bob }, [required])).toEqual({ ok: ["alice"] });
-    expect(await gk.admit(bob)).toEqual({ error: expect.any(String) });
-    expect(await gk.admit(alice)).toEqual({ ok: undefined });
-  });
-
-  it("resolves a legacy binding's project when no id was stored", async () => {
-    const gitlab = new ObserverGitLab();
-    gitlab.install();
-    const gk = await binding();
-    expect(await gk.history()).toEqual({ ok: [PROJECT] });
-  });
-
-  it("propagates a project lookup failure rather than exporting empty history", async () => {
-    const gitlab = new ObserverGitLab();
-    gitlab.probeStatus = 503;
-    gitlab.install();
-    const gk = await binding();
-    expect(await gk.history()).toEqual({ error: expect.stringContaining("Server Error") });
   });
 });
