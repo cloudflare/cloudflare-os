@@ -20,16 +20,42 @@ describe("RenderedView", { timeout: 60_000 }, () => {
 
   it("records errors and blocked requests", async () => {
     await using view = await RenderedView.open(`
+      <link rel="stylesheet" href="https://example.com/style.css">
       <img src="https://example.com/chart.png">
+      <div style="width:10px;height:10px;background:url(https://example.com/tile.png)"></div>
+      <iframe src="https://example.com/embed"></iframe>
+      <script type="module" src="https://example.com/app.js"></script>
       <script type="module">
         fetch("https://example.com/api").catch(() => {});
         new WebSocket("wss://example.com/socket");
         Promise.reject(new Error("rejected"));
       </script>`);
     await expect.poll(() => view.requests.toSorted()).toEqual([
-      "https://example.com/api", "https://example.com/chart.png", "wss://example.com/socket",
+      "https://example.com/api", "https://example.com/app.js", "https://example.com/chart.png",
+      "https://example.com/embed", "https://example.com/style.css", "https://example.com/tile.png",
+      "wss://example.com/socket",
     ]);
     await expect.poll(() => view.errors).toEqual(["rejected"]);
+  });
+
+  it("runs a view under the Workshop frame's script rules", async () => {
+    await using view = await RenderedView.open(`
+      <p id="out"></p>
+      <button onclick="agent.send('Clicked')">Ask</button>
+      <script type="module">
+        const tries = [
+          () => eval("1"),
+          () => new Function("return 1")(),
+          () => import(URL.createObjectURL(new Blob(["export default 1"], { type: "text/javascript" }))),
+          () => import("data:text/javascript,export default 1"),
+          () => WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+        ];
+        const results = await Promise.all(tries.map(async run => { try { await run(); return "ran"; } catch { return "refused"; } }));
+        document.getElementById("out").textContent = results.join(" ");
+      </script>`);
+    expect((await view.waitForText(text => text.includes("ran"))).text).toContain("refused refused refused ran ran");
+    await view.click("Ask", []);
+    expect(view.messages).toEqual(["Clicked"]);
   });
 
   it("clicks a chart bar through its label, once", async () => {
