@@ -239,6 +239,41 @@ describe("menus", () => {
 });
 
 describe("block order", () => {
+  // The server took a move whose reply was lost, and another writer then moved a block. On
+  // reconnect the snapshot names the save as this page's last: its order was taken, and the other
+  // writer's later move stands rather than being saved over.
+  it("takes a move whose reply was lost as applied, keeping a later move made elsewhere", async () => {
+    const { gadget } = globalThis as unknown as { gadget: GadgetStub };
+    const ids = () => Array.from(editor().children, (n) => n.getAttribute("data-block-id")!);
+    const others = ids();
+    const blocks = ["lm1", "lm2", "lm3"].map((id) => ({ id, html: `<p>${id}</p>`, version: 1 }));
+    subscriber.operation({ type: "operation", senderId: "someone", revision: 29, title: "Doc", lastModified: 0, upserts: blocks, deletedIds: [], order: [...others, "lm1", "lm2", "lm3"] });
+    let seq: number | undefined;
+    vi.mocked(gadget.applyOperation).mockImplementationOnce(async (operation) => {
+      seq = operation.seq;
+      (subscriber as SubscriberCallbacks & Disposable)[Symbol.dispose]();
+      throw new Error("connection lost");
+    });
+    vi.mocked(gadget.subscribe).mockImplementationOnce(async (callbacks) => {
+      subscriber = callbacks;
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+      const server = [...others, "lm2", "lm1", "lm3"].map((id) => byId.get(id) ?? { id, html: editor().querySelector(`[data-block-id="${id}"]`)!.outerHTML, version: 50 });
+      return { revision: 29, title: "Doc", lastModified: 0, settings: { font: "sans", wide: false }, lastSave: { seq: seq!, versions: [] }, blocks: server };
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const m3 = editor().querySelector('[data-block-id="lm3"]')!;
+      m3.after(m3.previousElementSibling!);
+      window.dispatchEvent(new Event("pagehide"));
+      await vi.waitFor(() => expect(vi.mocked(gadget.subscribe).mock.results.at(-1)?.type).toBe("return"));
+      await vi.waitFor(() => expect(ids().slice(-3)).toEqual(["lm2", "lm1", "lm3"]));
+      vi.mocked(gadget.applyOperation).mockClear();
+      window.dispatchEvent(new Event("pagehide"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(gadget.applyOperation).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
+  });
+
   // A save's reply confirms the order as of its revision; a live event from a later revision that
   // arrived first must keep its order, or a later move of the new block is never saved.
   it("keeps a newer event's order over an older save reply", async () => {

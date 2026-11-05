@@ -5854,11 +5854,12 @@ function confirmOrder(order: string[], rev: number) {
   ackOrderRevision = rev;
 }
 const pendingByBlock = new Map<string, PendingChange>(); // id -> remote change held back from a block being edited
-// The save last sent, numbered, and its drafts, until the reply comes. If the
-// reply is lost, the reconnect's snapshot says which of these blocks the server
-// wrote (its `lastSave`): they rest on the drafts, which aren't merged in again.
+// The save last sent, numbered, with its drafts and order, until the reply
+// comes. If the reply is lost, the reconnect's snapshot says whether the server
+// applied it (its `lastSave`): the blocks it wrote rest on the drafts, which
+// aren't merged in again, and its order isn't taken for a move still to send.
 let saveSeq = 0;
-let unconfirmedDrafts: Map<string, string> | null = null;
+let unconfirmedSave: { drafts: Map<string, string>; order: string[] } | null = null;
 // A newer version may already have arrived; never step a block back to an
 // older one. (An unknown block's missing version compares false.)
 function acknowledge({ id, html, version }: StoredBlock) {
@@ -5951,13 +5952,14 @@ async function sendChanges(failures = 0): Promise<SaveOutcome> {
   const sentOrder = blocks.map((b) => b.id);
   // If this times out, a late reply is simply dropped and the page reconnects;
   // should the server have applied it after all, the snapshot then says so.
-  unconfirmedDrafts = new Map(upserts.map((b) => [b.id, b.html]));
-  savingIds = new Set([...unconfirmedDrafts.keys(), ...deletes.map((d) => d.id)]);
+  const drafts = new Map(upserts.map((b) => [b.id, b.html]));
+  unconfirmedSave = { drafts, order: sentOrder };
+  savingIds = new Set([...drafts.keys(), ...deletes.map((d) => d.id)]);
   savingOrder = reordered ? sentOrder : null;
   let result: ApplyOperationResult;
   try {
     result = await withTimeout(gadget.applyOperation({ senderId: clientId, seq: ++saveSeq, baseRevision: revision, upserts, deletes, order: sentOrder }), saveTimeoutMs(failures));
-    unconfirmedDrafts = null;
+    unconfirmedSave = null;
     revision = Math.max(revision, result.revision || 0);
     confirmOrder(Array.isArray(result.order) ? result.order : sentOrder, result.revision || 0);
     for (const b of result.upserts || []) {
@@ -6169,7 +6171,7 @@ function applySnapshot(doc: DocumentSnapshot) {
     lastEventRevision = revision;
     acknowledged.clear();
     pendingByBlock.clear();
-    unconfirmedDrafts = null;
+    unconfirmedSave = null;
     heldWhileSaving.clear();
     editor.replaceChildren(...(doc.blocks || []).map(parseBlock));
     normalize();
@@ -6188,14 +6190,16 @@ function reconcileSnapshot(doc: DocumentSnapshot, lastSave?: LastSave) {
   // The snapshot is newer than any change held for a save.
   heldWhileSaving.clear();
   // This page's save whose reply was lost, which the server applied: the blocks
-  // it wrote rest on its drafts, so the drafts aren't merged in a second time.
-  if (unconfirmedDrafts && lastSave?.seq === saveSeq) {
+  // it wrote rest on its drafts, so the drafts aren't merged in a second time,
+  // and its order is confirmed, so remoteOrder sees no unsent move in it.
+  if (unconfirmedSave && lastSave?.seq === saveSeq) {
     for (const [id, version] of lastSave.versions) {
-      const html = unconfirmedDrafts.get(id);
+      const html = unconfirmedSave.drafts.get(id);
       if (html !== undefined) acknowledge({ id, html, version });
     }
+    ackOrder = unconfirmedSave.order;
   }
-  unconfirmedDrafts = null;
+  unconfirmedSave = null;
   revision = Math.max(revision, doc.revision || 0);
   lastEventRevision = Math.max(lastEventRevision, doc.revision || 0);
   const activeId = editingBlockId();
