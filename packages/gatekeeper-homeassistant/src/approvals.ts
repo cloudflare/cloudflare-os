@@ -127,6 +127,7 @@ function describeCallService(
         `This indicates a programming error in the gadget that called callService(); ` +
         `it likely passed a single options object instead of positional arguments.`,
       implementsRevert: false,
+      autoApprovable: false,
     };
   }
 
@@ -257,6 +258,7 @@ function describeCallService(
     title: sanitizeTitle(title),
     ...builder.finish(),
     implementsRevert: canRevert(action),
+    autoApprovable: false,
   };
 }
 
@@ -268,6 +270,7 @@ function describeFireEvent(action: HomeAssistantAction & { type: "fireEvent" }):
     title: sanitizeTitle(`Fire event: ${action.eventType}`),
     ...builder.finish(),
     implementsRevert: false,
+    autoApprovable: false,
   };
 }
 
@@ -289,6 +292,7 @@ function describeSaveDashboard(
       .json("Dashboard configuration", action.config)
       .finish(),
     implementsRevert: true,
+    autoApprovable: false,
   };
 }
 

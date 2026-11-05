@@ -703,6 +703,7 @@ export function describeAction(action: NotionAction): ActionDescription {
           .verbatim("Content", action.markdown, "markdown")
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "setTitle":
       return {
@@ -712,6 +713,7 @@ export function describeAction(action: NotionAction): ActionDescription {
           .inline("New title", action.title)
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "setProperties":
       return {
@@ -720,6 +722,7 @@ export function describeAction(action: NotionAction): ActionDescription {
           .json("Properties", action.properties)
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "setIcon":
       return {
@@ -728,18 +731,21 @@ export function describeAction(action: NotionAction): ActionDescription {
           ? onPage("Set the page icon.", action.pageId).inline("Icon", iconInputDisplay(action.icon)).finish()
           : onPage("Remove the page icon.", action.pageId).finish()),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "archive":
       return {
         title: "Move Notion page to trash",
         ...onPage("Move the page to the Notion trash (reversible).", action.pageId).finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "restore":
       return {
         title: "Restore Notion page from trash",
         ...onPage("Restore the page from the Notion trash.", action.pageId).finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     case "addComment":
       return {
@@ -747,6 +753,7 @@ export function describeAction(action: NotionAction): ActionDescription {
         ...onPage("Post a comment.", action.pageId).verbatim("Comment", action.text).finish(),
         // The Notion public API can't delete comments, so this can't be reverted automatically.
         implementsRevert: false,
+        autoApprovable: false,
       };
     case "createPage": {
       const { parent } = action;
@@ -788,6 +795,7 @@ export function describeAction(action: NotionAction): ActionDescription {
         title: "Create Notion page",
         ...builder.finish(),
         implementsRevert: true,
+        autoApprovable: false,
       };
     }
   }

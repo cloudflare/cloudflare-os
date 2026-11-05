@@ -6,7 +6,8 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionDescription, GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type {
   GitHubCheckRunDetails, GitHubCommitChecks, GitHubLogPage, GitHubPullRequestChecks,
@@ -466,7 +467,7 @@ async function gatekeeper(pull?: number) {
     async queuePush(branch: string): Promise<number> {
       const action = await unwrap(hooks.preparePush(
         scenario, props, branch, PUSHED, false, new RpcStub(queue.cache) as never)) as PushActionData;
-      const description: ActionDescription = {
+      const description: ActionPresentation = {
         title: "push", description: "push", pushedCommits: [PUSHED], implementsRevert: true,
       };
       await unwrap(hooks.submitPush(scenario, props, new RpcStub(queue) as never, action, description));

@@ -1141,7 +1141,7 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
     this.#invalidatePendingActions();
     try {
-      await approvalQueue.submitAction(id, description);
+      await approvalQueue.submitAction(id, { ...description, autoApprovable: false });
     } catch (err) {
       // An auto-approval can apply the action mid-flight, which proves the overseer received it --
       // only the reply was lost, and reporting failure would invite a repeated provider write. A

@@ -41,6 +41,9 @@ Two limits keep a gadget from running up the bill:
   The default is 2,000 (about $10 a day at the post-read price); `0` removes the limit. Reads past
   it fail with a message naming when it resets.
 - **Approvals** bound writes: nothing is posted, liked or followed without a user approving it.
+  Bookmarks, mutes and hidden replies are billed too, and the daily read limit does not cover
+  them: once a user auto-approves one of those kinds, only X's per-account rate limit and the
+  app's spending limit bound it.
 
 Reads are cached briefly (a post for 5 minutes, a profile for an hour, a listing's first page for a
 minute), so a gadget polling one page pays at most once a minute.

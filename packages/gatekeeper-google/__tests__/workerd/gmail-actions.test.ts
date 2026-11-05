@@ -1231,7 +1231,7 @@ describe("Gmail auto-approval eligibility", () => {
     expect(descriptions).toHaveLength(6);
     for (const index of [0, 1, 2, 3, 5]) {
       expect(descriptions[index]).not.toHaveProperty("actionKind");
-      expect(descriptions[index]).not.toHaveProperty("autoApprovable");
+      expect(descriptions[index]).toHaveProperty("autoApprovable", false);
     }
     // Later reads show each message as sent, so no send stops the caller to wait for a decision.
     for (const description of descriptions) {

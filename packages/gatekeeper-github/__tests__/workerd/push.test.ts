@@ -16,6 +16,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { FLUSH_PKT, ZERO_OID, encodePktLine, pktText } from "@gadgets/gatekeeper-kit/git-transport";
 import type { GatekeeperProps, Outcome, PushActionData } from "./worker";
 
@@ -272,7 +273,7 @@ async function repoGatekeeper() {
   return {
     preparePush: (branch: string, commitId: string, force: boolean, cache: TestGitCache) =>
       unwrap(hooks.preparePush(scenario, props, branch, commitId, force, stubOf(cache))),
-    submitPush: (queue: TestApprovalQueue, action: PushActionData, description: ActionDescription) =>
+    submitPush: (queue: TestApprovalQueue, action: PushActionData, description: ActionPresentation) =>
       unwrap(hooks.submitPush(scenario, props, stubOf(queue), action, description)),
     applyAction: (actionId: number, cache: TestGitCache) =>
       unwrap(hooks.applyAction(scenario, props, actionId, stubOf(cache))),

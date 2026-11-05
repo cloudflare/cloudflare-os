@@ -416,6 +416,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.content ?? "", "markdown")
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("createContent", "Create page/blog post"),
       };
     }
@@ -426,6 +427,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.markdown, "markdown")
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "appendContent":
@@ -435,6 +437,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.markdown, "markdown")
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "setTitle":
@@ -445,6 +448,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .inline("New title", action.title)
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("setTitle", "Rename content"),
       };
     case "addComment":
@@ -452,6 +456,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         title: "Comment on Confluence content",
         ...onContent("Post a comment.", action.contentId).verbatim("Comment", action.text).finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("addComment", "Add comment"),
       };
     case "addLabel":
@@ -459,6 +464,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         title: "Add label to Confluence content",
         ...onContent("Add a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("label", "Add/remove label"),
       };
     case "removeLabel":
@@ -466,6 +472,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         title: "Remove label from Confluence content",
         ...onContent("Remove a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("label", "Add/remove label"),
       };
     case "uploadAttachment":
@@ -483,6 +490,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Comment", action.comment ?? "")
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("uploadAttachment", "Upload attachment"),
       };
     case "trash":
@@ -490,6 +498,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         title: "Move Confluence content to trash",
         ...onContent("Move this content to the trash (reversible).", action.contentId).finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("trash", "Trash content"),
       };
     case "restore":
@@ -497,6 +506,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         title: "Restore Confluence content from trash",
         ...onContent("Restore this content from the trash.", action.contentId).finish(),
         implementsRevert: true,
+        autoApprovable: false,
         actionKind: kind("trash", "Trash content"),
       };
   }

@@ -3075,6 +3075,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Event", event)
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);
@@ -3122,6 +3123,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Changes", patch)
           .finish(),
         implementsRevert: true,
+        autoApprovable: false,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);

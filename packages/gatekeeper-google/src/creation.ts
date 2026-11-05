@@ -66,6 +66,7 @@ export function creationAction(resource: SupportedResource, title: string): Acti
       .inline("Title", title).finish(),
     // No actionKind: the kernel never auto-applies a creation.
     implementsRevert: false,
+    autoApprovable: false,
   };
 }
 
