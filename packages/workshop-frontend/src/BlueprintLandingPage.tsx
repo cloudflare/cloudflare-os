@@ -2,7 +2,7 @@ import { logRpcFailure } from './rpcErrors'
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
-import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, ResourceConfiguratorFrame, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
 import { Banner, Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
@@ -76,8 +76,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   const [downloading, setDownloading] = useState(false)
   const [showLogin, setShowLogin] = useState(false)
 
-  // Vendor catalog + connected accounts, shared by all gatekeeper bindings during configure.
+  // Vendor catalog, addable ambient vendors and connected accounts, shared by all bindings during
+  // configure.
   const [vendors, setVendors] = useState<{id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]>([])
+  const [addableVendors, setAddableVendors] = useState<GatekeeperVendorInfo[]>([])
   const [accounts, setAccounts] = useState<AccountOption[]>([])
   const accountsRef = useRef<Map<number, AccountOption>>(new Map())
   const [connectingVendor, setConnectingVendor] = useState<string | null>(null)
@@ -113,14 +115,15 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     () => new Map(vendors.map(v => [v.id.toLowerCase(), v])),
     [vendors],
   )
-  // A saved gatekeeper assignment stops being usable when its account disconnects, expires, or
-  // loses the required grant. Deriving this per render (rather than pruning state in an effect)
-  // means Create can never submit a stale account id, even for one render.
+  // A saved assignment stops being usable when its account disconnects, expires, or loses the
+  // required grant, or when a spawner's ambient resource isn't on. Deriving this per render (rather
+  // than pruning state in an effect) means Create can never submit a stale assignment, even for one
+  // render.
   const usableDraftAssignments = useMemo(
     () => blueprint
-      ? removeUnavailableGatekeeperAssignments(draftAssignments, blueprint, accounts)
+      ? removeUnusableAssignments(draftAssignments, blueprint, accounts, addableVendors)
       : draftAssignments,
-    [accounts, blueprint, draftAssignments],
+    [accounts, addableVendors, blueprint, draftAssignments],
   )
   // Fetch blueprint metadata.
   useEffect(() => {
@@ -169,10 +172,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [isAuthenticated, authenticatedApi])
 
-  // Load vendors (gatekeeper catalog) for both the summary cards and configure panel.
+  // Load vendors (gatekeeper catalog and addable ambient vendors) for the summary cards and
+  // configure panel.
   useEffect(() => {
     if (!(isAuthenticated && authenticatedApi)) {
       setVendors([])
+      setAddableVendors([])
       return
     }
     let cancelled = false
@@ -183,11 +188,16 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       if (cancelled) return
       console.error('Failed to load gatekeeper vendors:', err)
     })
+    authenticatedApi.listAddableGatekeepers().then(list => {
+      if (!cancelled) setAddableVendors(list)
+    }).catch(err => {
+      if (!cancelled) console.error('Failed to load addable gatekeepers:', err)
+    })
     return () => { cancelled = true }
   }, [isAuthenticated, authenticatedApi])
 
   // Subscribe to connected accounts while authenticated. The same subscription serves all
-  // gatekeeper bindings; each binding filters down to the vendor + resource it requires.
+  // bindings; each filters down to the vendor (and resource) it requires.
   useEffect(() => {
     if (!(isAuthenticated && authenticatedApi)) {
       accountsRef.current.clear()
@@ -227,7 +237,9 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       },
     })
 
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // Forced ambient accounts too: an agent spawner may need one (see ambientGrants).
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch(err => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', err)
@@ -254,6 +266,20 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       setConnectingVendor(null)
     }
   }, [authenticatedApi, toasts])
+
+  // The new account arrives through the connected-accounts subscription.
+  const handleTurnOnAmbient = async (vendorId: string) => {
+    if (!authenticatedApi) return
+    setConnectingVendor(vendorId)
+    try {
+      await authenticatedApi.provisionAmbientAccount(vendorId)
+    } catch (err) {
+      logRpcFailure(`Failed to turn on ${vendorId}:`, err)
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not turn it on', variant: 'error' })
+    } finally {
+      setConnectingVendor(null)
+    }
+  }
 
   const handleGrantAccountResources = useCallback(async (
     accountId: number,
@@ -467,7 +493,9 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setGatekeeperReady(prev => ({ ...prev, [name]: false }))
     collectorsRef.current.delete(name)
-    const existing = usableDraftAssignments[name]
+    // Only a gatekeeper draft can go stale (its account). A spawner's is unusable just while an
+    // ambient resource is off, and its model still applies.
+    const existing = binding.type === 'gatekeeper' ? usableDraftAssignments[name] : draftAssignments[name]
     let initial: any = existing ? { ...existing } : { type: binding.type }
     if (binding.type === 'gatekeeper') {
       initial = {
@@ -488,7 +516,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
     setBindingForm(prev => ({ ...prev, [name]: initial }))
     setActiveBindingName(name)
-  }, [blueprint, usableDraftAssignments])
+  }, [blueprint, draftAssignments, usableDraftAssignments])
 
   useEffect(() => {
     if (!blueprint || !isAuthenticated) return
@@ -567,10 +595,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     } else if (binding.type === 'aiModel') {
       return Boolean((assignment as any).modelId)
     } else if (binding.type === 'agentSpawner') {
-      return (assignment as any).modelId !== undefined
+      return (assignment as any).modelId !== undefined &&
+        ambientGrants(binding, accounts, addableVendors).every(grant => grant.state === 'on')
     }
     return false
-  }, [activeBindingName, blueprint, bindingForm, gatekeeperReady])
+  }, [activeBindingName, blueprint, bindingForm, gatekeeperReady, accounts, addableVendors])
 
   const handleSaveActiveBinding = async () => {
     if (!activeBindingName || !blueprint) return
@@ -1029,6 +1058,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     binding={binding}
                     assignment={usableDraftAssignments[name]}
                     vendor={binding.type === 'gatekeeper' ? vendorById.get(binding.gatekeeperName.toLowerCase()) : undefined}
+                    grants={ambientGrants(binding, accounts, addableVendors)}
                     models={modelsFor(binding)}
                     onConfigure={() => isAuthenticated ? openBindingConfigurator(name) : setShowLogin(true)}
                   />
@@ -1095,11 +1125,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   authenticatedApi={authenticatedApi}
                   vendors={vendors}
                   accounts={accounts}
+                  grants={ambientGrants(activeBinding, accounts, addableVendors)}
                   connectingVendor={connectingVendor}
                   grantingAccountId={grantingAccountId}
                   reconnectingAccountId={reconnectingAccountId}
                   onChange={(updates) => updateBinding(activeBindingName, updates)}
                   onConnectAccount={handleConnectAccount}
+                  onTurnOnAmbient={handleTurnOnAmbient}
                   onGrantAccountResources={handleGrantAccountResources}
                   onReconnectAccount={handleReconnectAccount}
                   onReadyChange={(ready) => handleGatekeeperReadyChange(activeBindingName, ready)}
@@ -1295,6 +1327,7 @@ function BlueprintBindingSummaryCard({
   binding,
   assignment,
   vendor,
+  grants,
   models,
   onConfigure,
 }: {
@@ -1302,6 +1335,7 @@ function BlueprintBindingSummaryCard({
   binding: BlueprintBinding
   assignment?: BlueprintBindingAssignment
   vendor?: { id: string, description: VendorDescription, supportedResources: SupportedResource[] }
+  grants: AmbientGrant[]
   models: AiChatAuthorInfo[]
   onConfigure: () => void
 }) {
@@ -1373,6 +1407,11 @@ function BlueprintBindingSummaryCard({
               ? `Suggested: ${suggestion}`
               : detail}
         </p>
+        {grants.length > 0 && (
+          <p className="mt-0.5 truncate text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
+            Agents get your {grants.map(grant => grant.name).join(', ')}
+          </p>
+        )}
       </div>
       <button
         type="button"
@@ -1394,11 +1433,13 @@ function BindingField({
   authenticatedApi,
   vendors,
   accounts,
+  grants,
   connectingVendor,
   grantingAccountId,
   reconnectingAccountId,
   onChange,
   onConnectAccount,
+  onTurnOnAmbient,
   onGrantAccountResources,
   onReconnectAccount,
   onReadyChange,
@@ -1412,11 +1453,13 @@ function BindingField({
   authenticatedApi: RpcStub<AuthenticatedApi>
   vendors: {id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]
   accounts: AccountOption[]
+  grants: AmbientGrant[]
   connectingVendor: string | null
   grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
   onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
+  onTurnOnAmbient: (vendorId: string) => void
   onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
@@ -1515,6 +1558,17 @@ function BindingField({
             </Select.Option>
           ))}
         </Select>
+        {grants.map(grant => (
+          <div key={grant.vendorId} className="mt-3 flex items-center justify-between gap-3 text-sm text-kumo-subtle">
+            <span>Agents get your {grant.name}</span>
+            {grant.state === 'addable' && (
+              <Button size="sm" loading={connectingVendor === grant.vendorId} onClick={() => onTurnOnAmbient(grant.vendorId)}>
+                Turn on {grant.name}
+              </Button>
+            )}
+            {grant.state === 'unavailable' && <span className="text-kumo-danger">Not available to you</span>}
+          </div>
+        ))}
       </div>
     )
   }
@@ -1540,17 +1594,43 @@ function accountCanConfigureBinding(
   return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
 }
 
-function removeUnavailableGatekeeperAssignments(
+// An always-available resource (e.g. Skills) an agent spawner hands its agents. Installing gives
+// the spawner the installer's own (see SpawnerEnvTarget), so it must be on first.
+type AmbientGrant = { vendorId: string, name: string, state: 'on' | 'addable' | 'unavailable' }
+
+function ambientGrants(
+  binding: BlueprintBinding,
+  accounts: AccountOption[],
+  addable: GatekeeperVendorInfo[],
+): AmbientGrant[] {
+  if (binding.type !== 'agentSpawner') return []
+  const vendorIds = new Set(Object.values(binding.env).flatMap(target =>
+    target.type === 'ambient' ? [target.vendorId] : []))
+  return [...vendorIds].map((vendorId): AmbientGrant => {
+    const account = accounts.find(candidate => candidate.vendorId === vendorId)
+    const offer = addable.find(candidate => candidate.id === vendorId)
+    return {
+      vendorId,
+      name: (account?.vendorDescription ?? offer?.description)?.displayName ?? vendorId,
+      state: account ? 'on' : offer ? 'addable' : 'unavailable',
+    }
+  })
+}
+
+function removeUnusableAssignments(
   assignments: Record<string, BlueprintBindingAssignment>,
   blueprint: BlueprintPublicInfo,
   accounts: AccountOption[],
+  addable: GatekeeperVendorInfo[],
 ): Record<string, BlueprintBindingAssignment> {
   let next = assignments
   for (const [name, assignment] of Object.entries(assignments)) {
     const binding = blueprint.metadata.bindings[name]
-    if (assignment.type !== 'gatekeeper' || binding?.type !== 'gatekeeper') continue
-    const account = accounts.find(candidate => candidate.id === assignment.accountId)
-    if (account && accountCanConfigureBinding(binding, account)) continue
+    if (!binding) continue
+    const usable = binding.type === 'gatekeeper' && assignment.type === 'gatekeeper'
+      ? accounts.some(account => account.id === assignment.accountId && accountCanConfigureBinding(binding, account))
+      : ambientGrants(binding, accounts, addable).every(grant => grant.state === 'on')
+    if (usable) continue
     if (next === assignments) next = { ...assignments }
     delete next[name]
   }

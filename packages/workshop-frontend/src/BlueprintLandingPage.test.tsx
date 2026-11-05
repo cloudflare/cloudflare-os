@@ -187,6 +187,7 @@ function authenticatedApi(): RpcStub<AuthenticatedApi> {
   return {
     listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [MODEL],
     listGatekeeperVendors: async () => [],
+    listAddableGatekeepers: async () => [],
     subscribeConnectedAccounts: subscription,
     getAdminApi: async () => null,
     isBlueprintInLibrary: async () => null,
@@ -771,5 +772,99 @@ describe('BlueprintLandingPage configurator access requests', () => {
     expect(startResourceConfigurator).toHaveBeenLastCalledWith(2, RESOURCE.urlPattern)
     await ensureResources([IMPORT_GRANT])
     expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(2, [IMPORT_GRANT])
+  })
+})
+
+describe('BlueprintLandingPage ambient spawner resources', () => {
+  const SKILLS: VendorDescription = { displayName: 'Skills', url: 'https://workers.cloudflare.com/' }
+  const SPAWNER_BLUEPRINT = {
+    ...BLUEPRINT,
+    metadata: {
+      ...BLUEPRINT.metadata,
+      bindings: {
+        AGENTS: {
+          type: 'agentSpawner',
+          title: 'Luna',
+          description: '',
+          env: { CONTEXT: { type: 'ambient', vendorId: 'context' } },
+          suggestedModel: null,
+        },
+      },
+    },
+  } satisfies BlueprintPublicInfo
+
+  let root: Root | undefined
+  let rootContainer: HTMLDivElement | undefined
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    rootContainer?.remove()
+    testState.authenticatedApi = null
+  })
+
+  // `addable`: the installer may turn Skills on. `forced`: the deployment has it on for everyone,
+  // which the subscription reports only to callers asking for forced accounts.
+  const render = async ({ addable = false, forced = false } = {}) => {
+    let subscriber: ConnectedAccountsSubscriber
+    const addAccount = () =>
+      subscriber.add(5, { uniqueName: 'skills', avatar: { url: SKILLS.url } }, SKILLS, [], true, 'context')
+    const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>(async () => addAccount())
+    const newWorkspaceFromBlueprint = vi.fn<(id: string, assignments: object) => unknown>(() =>
+      Object.assign(new Promise(() => {}), { getMetadata: () => new Promise(() => {}) }))
+    testState.authenticatedApi = {
+      ...authenticatedApi(),
+      listAddableGatekeepers: async () =>
+        addable ? [{ id: 'context', description: SKILLS, supportedResources: [] }] : [],
+      subscribeConnectedAccounts: (
+        next: ConnectedAccountsSubscriber,
+        filter?: { includeForcedAutoProvisionedAccounts?: boolean },
+      ) => {
+        subscriber = next
+        if (forced && filter?.includeForcedAutoProvisionedAccounts) addAccount()
+        subscriber.ready()
+        return subscription()
+      },
+      provisionAmbientAccount,
+      newWorkspaceFromBlueprint,
+    } as unknown as RpcStub<AuthenticatedApi>
+    rootContainer = document.createElement('div')
+    document.body.appendChild(rootContainer)
+    root = createRoot(rootContainer)
+    await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi(SPAWNER_BLUEPRINT)} />))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    return { provisionAmbientAccount, newWorkspaceFromBlueprint }
+  }
+
+  it('blocks creating until the installer turns on what the spawner hands its agents', async () => {
+    const { provisionAmbientAccount, newWorkspaceFromBlueprint } = await render({ addable: true })
+    expect(document.body.textContent).toContain('Agents get your Skills')
+
+    await act(async () => findButton('Configure 1 remaining connection')!.click())
+    expect(findButton('Save connection')!.disabled).toBe(true)
+
+    await act(async () => findButton('Turn on Skills')!.click())
+    expect(provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('context')
+    await act(async () => findButton('Save connection')!.click())
+    await act(async () => findButton('Create Gadget')!.click())
+
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledExactlyOnceWith(
+      'blueprint-one', { AGENTS: { type: 'agentSpawner', modelId: null } })
+  })
+
+  it('keeps creating blocked when the installer cannot turn it on', async () => {
+    await render()
+
+    await act(async () => findButton('Configure 1 remaining connection')!.click())
+
+    expect(document.body.textContent).toContain('Not available to you')
+    expect(findButton('Turn on Skills')).toBeUndefined()
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('counts a resource the deployment turns on for everyone', async () => {
+    await render({ forced: true })
+
+    expect(document.body.textContent).toContain('Agents get your Skills')
+    expect(findButton('Create Gadget')).toBeDefined()
   })
 })
