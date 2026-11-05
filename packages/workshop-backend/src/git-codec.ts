@@ -412,11 +412,23 @@ function normalizeCommitMessage(message: string): string {
   return `${message.slice(start, end)}\n`;
 }
 
+// A signature's timezone in minutes east of UTC. Git reads the zone as a decimal number of the
+// form hhmm (so `+0530` is 5:30), and writes what it read back verbatim; history it imported
+// can hold a zone git fsck calls bad (`+05800`, or none at all). Such a zone is read as git
+// would where it can be, else as UTC: a commit is not unreadable for its timezone.
+function parseUtcOffset(zone: string | undefined): number {
+  let match = zone === undefined ? null : /^([+-])(\d+)/.exec(zone);
+  if (match === null) return 0;
+  let hhmm = Number(match[2]);
+  let offset = Math.floor(hhmm / 100) * 60 + hhmm % 100;
+  return match[1] === "-" && offset !== 0 ? -offset : offset;
+}
+
 /**
  * Parses a commit payload into its fields; `readGitCommitHeader()` reads any others. Names,
  * emails and the message are decoded leniently, as git displays them, and the message is
- * normalized (see `GitCommitFields.message`). Throws on a commit whose tree, parents, author or
- * committer cannot be read.
+ * normalized (see `GitCommitFields.message`), and a malformed timezone is read leniently (see
+ * `parseUtcOffset`). Throws on a commit whose tree, parents, author or committer cannot be read.
  */
 export function parseGitCommit(payload: Uint8Array, commitOid?: GitOid): GitCommitFields {
   let where = commitOid ?? "(unidentified)";
@@ -425,15 +437,14 @@ export function parseGitCommit(payload: Uint8Array, commitOid?: GitOid): GitComm
   let headerLines = (blank < 0 ? text : text.slice(0, blank)).split("\n");
   let signature = (name: string): CommitSignature => {
     let line = headerLines.find(header => header.startsWith(`${name} `));
-    let match = line && /^(.*) <(.*)> (\d+) ([+-])(\d\d)(\d\d)$/.exec(line.slice(name.length + 1));
+    let match = line && /^(.*) <(.*)> (\d+)(?: (.*))?$/.exec(line.slice(name.length + 1));
     if (!match) throw new Error(`corrupt commit object ${where}: malformed ${name} header`);
-    let [, personName, email, seconds, sign, hours, minutes] = match;
-    let offset = Number(hours) * 60 + Number(minutes);
+    let [, personName, email, seconds, zone] = match;
     return {
       name: personName,
       email,
       timestamp: new Date(Number(seconds) * 1000),
-      utcOffsetMinutes: sign === "-" && offset !== 0 ? -offset : offset,
+      utcOffsetMinutes: parseUtcOffset(zone),
     };
   };
   return {

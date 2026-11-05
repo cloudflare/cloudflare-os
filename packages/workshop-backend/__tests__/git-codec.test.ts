@@ -393,6 +393,18 @@ describe("commit parser", () => {
     expect(Object.is(parseGitCommit(payload).author.utcOffsetMinutes, -0)).toBe(false);
   });
 
+  it("reads a timezone git fsck calls bad as git does, or as UTC", () => {
+    let offsetOf = (zone: string) => parseGitCommit(new TextEncoder().encode(
+        `tree ${TREE_1}\nauthor A <a@b> 1${zone}\ncommitter B <b@c> 2 +0000\n\nm\n`))
+        .author.utcOffsetMinutes;
+    expect(offsetOf(" +0530")).toBe(330);
+    expect(offsetOf(" -05800")).toBe(-(58 * 60));
+    expect(offsetOf(" +530")).toBe(330);
+    expect(offsetOf(" -0000")).toBe(0);
+    expect(offsetOf(" GMT")).toBe(0);
+    expect(offsetOf("")).toBe(0);
+  });
+
   it("rejects a commit whose author or committer cannot be read", () => {
     let noCommitter = `tree ${TREE_1}\nauthor A <a@b> 1 +0000\n\nmessage\n`;
     expect(() => parseGitCommit(new TextEncoder().encode(noCommitter), "0".repeat(40)))
