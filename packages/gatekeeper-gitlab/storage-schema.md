@@ -26,10 +26,12 @@ and size budget, outside the generation: no action changes a finished log), and 
 that survives cache clears.
 
 Newly minted binding props include `reportsSubresources: true`, proving that all reads were
-reported to the kernel. This is immutable binding metadata, not a KV marker. Only those bindings
-export `[]` from `getHistoricalSubresources()`. An older binding's export throws: no KV record
-proves the identity behind every legacy path-addressed disclosure, including when `projectId`
-was pinned later. Export is read-only and leaves every legacy admission/CI-role check intact.
+reported to the kernel. This is immutable binding metadata, not a KV marker. Those bindings
+export `[]` from `getHistoricalSubresources()`. Older bindings export one requirement for their
+bound project at the strongest recorded CI role, including pending markers: Maintainer for
+`ci-test-reports`, else Developer for `ci-logs`, else Reporter. The exporter uses `projectId` if
+stored, otherwise resolves the binding's path without storing the result. Historical path reuse
+is outside this migration's model. Export is read-only and leaves legacy admission checks intact.
 
 | Key | Value | Notes |
 |---|---|---|

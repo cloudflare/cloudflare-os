@@ -2037,14 +2037,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * New bindings have no legacy disclosures. Older bindings recorded CI roles, but not the
-   * identity behind each path-addressed read: even a stored projectId was pinned only later and
-   * cannot prove that earlier reads came from that project. Refuse an incomplete export, without
-   * probing today's path or changing the legacy records and admission checks that still guard it.
+   * Exports the bound project at the strongest role legacy CI reads recorded. Use the stored id,
+   * or resolve the binding's path without pinning it; historical path reuse is outside this
+   * migration's model. New bindings have no legacy requirements. Export never changes binding
+   * storage or replaces the legacy admission checks.
    */
   async getHistoricalSubresources(): Promise<string[]> {
     if (this.#props().reportsSubresources === true) return [];
-    throw new Error("This GitLab connection cannot export complete historical project identities; legacy observer checks must remain enabled.");
+    const kv = this.ctx.storage.kv;
+    const id = kv.get<number>("projectId") ?? (await withAccountApi(
+      this.env, this.#userAccount(), api => api.getProject(this.#projectPath()), { replayable: true })).id;
+    const role = kv.get(`${OBSERVED_SET_PREFIX}ci-test-reports`) !== undefined ? "maintainer"
+      : kv.get(`${OBSERVED_SET_PREFIX}ci-logs`) !== undefined ? "developer" : undefined;
+    return [projectSubresourceId(id, role)];
   }
 
   /**

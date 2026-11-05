@@ -657,18 +657,40 @@ describe("getHistoricalSubresources", () => {
     expect(await gk.history()).toEqual({ ok: [] });
   });
 
-  it("refuses incomplete legacy identities repeatedly without probing or altering admission", async () => {
+  it.each([
+    { name: "ordinary reads", sets: {}, required: PROJECT, level: REPORTER },
+    { name: "pending job logs", sets: { "ci-logs": "pending" }, required: DEVELOPER, level: DEVELOPER_LEVEL },
+    { name: "test reports", sets: { "ci-test-reports": "observed" }, required: MAINTAINER, level: MAINTAINER_LEVEL },
+    { name: "both CI tiers", sets: { "ci-logs": "observed", "ci-test-reports": "pending" }, required: MAINTAINER, level: MAINTAINER_LEVEL },
+  ])("exports the project's strongest recorded requirement for $name", async ({ sets, required, level }) => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
-    const alice = await account("alice");
-    gitlab.member("alice", { [PROJECT_ID]: REPORTER });
+    const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
+    gitlab.member("alice", { [PROJECT_ID]: level });
+    gitlab.member("bob", { [PROJECT_ID]: level - 10 });
     const gk = await binding({ pinned: true });
-    await gk.upgradeFrom({ "observedSet:ci-test-reports": "observed" });
-    expect(await gk.history()).toEqual({ error: expect.stringContaining("cannot export complete historical project identities") });
-    expect(await gk.history()).toEqual({ error: expect.stringContaining("cannot export complete historical project identities") });
+    await gk.upgradeFrom(Object.fromEntries(Object.entries(sets).map(([set, state]) => [`observedSet:${set}`, state])));
+
+    expect(await gk.history()).toEqual({ ok: [required] });
+    expect(await gk.history()).toEqual({ ok: [required] });
     expect(gitlab.requests).toEqual([]);
-    expect(await gk.admit(alice)).toEqual({ error: expect.stringContaining("Maintainer") });
-    gitlab.member("alice", { [PROJECT_ID]: MAINTAINER_LEVEL });
+    expect(await gk.verify({ alice, bob }, [required])).toEqual({ ok: ["alice"] });
+    expect(await gk.admit(bob)).toEqual({ error: expect.any(String) });
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
+  });
+
+  it("resolves a legacy binding's project when no id was stored", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const gk = await binding();
+    expect(await gk.history()).toEqual({ ok: [PROJECT] });
+  });
+
+  it("propagates a project lookup failure rather than exporting empty history", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.probeStatus = 503;
+    gitlab.install();
+    const gk = await binding();
+    expect(await gk.history()).toEqual({ error: expect.stringContaining("Server Error") });
   });
 });

@@ -154,11 +154,12 @@ can still hold confidential issues and internal notes; job logs and test reports
   that original path at admission. Caches filled before conversion are discarded on upgrade.
 - **Historical export.** Newly created bindings are marked `reportsSubresources: true` in their
   immutable props and return `[]` from the read-only `getHistoricalSubresources()`: all their reads
-  already reported their requirements. Older bindings fail the export rather than inventing an
-  identity: their CI markers record roles, not the projects previously read by path, and even a
-  stored id was pinned only later. Neither today's path nor the owner's credentials can recover
-  that history. The kernel importer is not shipped; existing admission and CI-role checks remain
-  necessary and must not be removed on the strength of this exporter.
+  already reported their requirements. Older bindings export their bound project at the strongest
+  recorded CI role: Reporter normally, Developer for `ci-logs`, or Maintainer for `ci-test-reports`.
+  Pending markers count too. The exporter uses the stored project id, or resolves the binding's
+  path if none is stored, without pinning it or changing binding storage. Historical path reuse is
+  outside this migration's model. Provider lookup failures still propagate. The kernel importer is
+  not shipped; existing admission and CI-role checks remain until it imports the requirements.
 
 ## Setting up GitLab OAuth credentials
 

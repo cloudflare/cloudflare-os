@@ -914,15 +914,15 @@ its resource types.
 | **slack** | Workspace | **C**, kernel-checked (§10) | Every read reports what it disclosed: `workspace/<teamId>` for workspace metadata, the member directory, and a listing or search page naming no conversation; `workspace/<teamId>/conversation/<conversationId>` for each conversation a listing or search page named, and for everything read in a conversation, its threads, messages and members included, since Slack's access control stops at the conversation. `verifyObserverAccess` allows a workspace only to an observer whose own account belongs to it, and a conversation only to one whose account also opens it there (`conversations.info`), answered by their `UserAccount`, which reuses an allowed answer for up to 15 minutes and a denial for up to 15 seconds, until its credentials are next installed. Only Slack answering that the workspace or conversation is out of the observer's reach counts as no access; any other refusal, such as an expired token, a missing scope or a rate limit, fails the check. `addObserver` keeps requiring workspace membership and every conversation reads recorded before they reported subresources, pending or observed. `getHistoricalSubresources` exports those recorded requirements only with a stored workspace and a nonempty legacy tracker; it throws when history is unprovable, without consulting the current account or changing storage. |
 | **slack** | Conversation / Thread | **B**, kernel-checked (§10) | Every read, including a thread binding's, reports the bound conversation as `workspace/<teamId>/conversation/<conversationId>`, checked as for a workspace binding. `addObserver` keeps checking the observer can open it, for reads made before they reported it. `getHistoricalSubresources` throws for legacy bindings because they did not record whether data was observed; bindings created since reporting began export `[]`. |
 
-GitLab's read-only historical exporter returns `[]` only for bindings minted with
-`reportsSubresources: true`; older bindings throw rather than guess the identities behind past
-path-addressed reads. A later numeric project pin and the CI role markers cannot establish a
-complete history. Until the kernel imports complete requirements, older bindings' legacy admission
-checks remain, including refusing a freed path's redirect after a rename or transfer even when
-reads by pinned id still succeed. A redirect cannot prove that no earlier read reached a replacement
-project that subsequently moved away. Newly minted `reportsSubresources: true` bindings have no
-path-addressed history and check only their stored project id at admission, so renames and old-path
-reuse do not prevent sharing them.
+GitLab's read-only historical exporter returns `[]` for bindings minted with
+`reportsSubresources: true`. Older bindings export their bound project with its strongest recorded
+CI requirement: `project/<id>/role/maintainer` for `ci-test-reports`, else
+`project/<id>/role/developer` for `ci-logs`, else `project/<id>` (Reporter). Pending markers count.
+The id comes from storage or, when absent, a lookup of the binding's path without pinning it.
+Historical path reuse is outside this migration's model; the exporter does not reconstruct prior
+occupants of the path. Existing legacy admission and CI-role checks remain until the kernel imports
+the requirements. Newly minted bindings check only their stored project id at admission, so renames
+and old-path reuse do not prevent sharing them.
 
 ### 9.3 The "broad binding" lens
 

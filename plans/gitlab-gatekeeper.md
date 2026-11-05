@@ -1023,13 +1023,13 @@ upgrade.
 
 New bindings carry `reportsSubresources: true` in their immutable props. Their read-only
 `getHistoricalSubresources()` returns `[]`, since no read predates reporting. Legacy bindings
-instead throw: no stored state identifies every project previously read by path, and a later
-`projectId` pin cannot prove those earlier identities. The CI markers retain only role tiers.
-The exporter neither probes the current path nor modifies history; retained admission checks
-continue to enforce it until a complete history can be imported by the kernel. In particular,
-legacy admission still refuses a freed path's redirect after any rename or transfer, including
-older bindings first pinned under this release. Waiving that path check would drop unproven history.
-Newly minted `reportsSubresources: true` bindings have no such history and check only the stored id
+export their bound project at the strongest recorded CI role: Maintainer for `ci-test-reports`,
+else Developer for `ci-logs`, else Reporter; pending markers count too. The exporter uses the
+stored `projectId`, or resolves the binding's path without storing the result when no id exists.
+Historical path reuse is outside this migration's model, not a reason to fail the export or
+make the binding private. Provider lookup failures still propagate. Export leaves binding storage
+and legacy admission checks unchanged until the kernel imports the requirements. Legacy admission
+still checks the original path and any stored id. Newly minted bindings check only the stored id
 at admission, so sharing follows that project through renames and reuse of its old path.
 Returned issue and merge request references follow GitLab's current `web_url`, not the old path
 used as the REST ID-rewrite key; same-project simulation compares their current source and target.
