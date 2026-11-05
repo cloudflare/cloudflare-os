@@ -59,6 +59,19 @@ it("stores a blob of any size, chunked, and reads it back", async () => {
   expect(() => git.assertBlob(ref.oid, 1)).toThrow("length does not match");
 });
 
+it("refuses a chunked blob read as a commit without reading its chunks", async () => {
+  const {git, storage} = fixture();
+  const ref = await git.writeBlob(new Uint8Array(4 * 1024 * 1024).fill(7));
+  const get = storage.gitObjects.get.bind(storage.gitObjects);
+  const reads: string[] = [];
+  storage.gitObjects.get = (oid: string) => {
+    reads.push(oid);
+    return get(oid);
+  };
+  expect(() => git.readCommitLog(ref.oid)).toThrow("is a blob, but a commit was expected");
+  expect(reads).toEqual([ref.oid]);
+});
+
 it("reports a storage failure without publishing a reference, and a retry has the same identity", async () => {
   const {git, storage} = fixture();
   const put = vi.spyOn(storage.gitObjects, "put").mockImplementation(() => {

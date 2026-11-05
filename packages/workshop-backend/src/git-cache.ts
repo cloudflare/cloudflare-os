@@ -678,13 +678,14 @@ export class WorkspaceGitCache {
   }
 
   // The payload of a locally held object, which must be of the expected type, or undefined if
-  // the store does not hold it.
+  // the store does not hold it. The type is checked before a chunked blob is assembled.
   #heldPayload(oid: GitOid, type: GitObjectType): Uint8Array | undefined {
-    let object = this.readLocalObject(oid);
-    if (object !== undefined && object.type !== type) {
-      throw new Error(`git object ${oid} is a ${object.type}, but a ${type} was expected`);
+    let local = this.#readLocalShallow(oid);
+    if (local === undefined) return undefined;
+    if (local.type !== type) {
+      throw new Error(`git object ${oid} is a ${local.type}, but a ${type} was expected`);
     }
-    return object?.payload;
+    return this.#wholeObject(oid, local).payload;
   }
 
   #requireHeld(oid: GitOid, type: GitObjectType): Uint8Array {
