@@ -18,7 +18,7 @@ import {
   parseTokenLimit,
   type AllowedModelSuggestion,
 } from './modelForm'
-import { useFieldErrorAlert } from './useFieldErrorAlert'
+import { useFieldErrorAlert } from '../../hooks/useFieldErrorAlert'
 import type { GatewayTestState } from './useGatewayTests'
 
 /** Each mode's name and what it does to a model, as the Models tab words them. */
