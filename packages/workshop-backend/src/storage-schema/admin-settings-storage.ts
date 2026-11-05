@@ -111,6 +111,12 @@ export type AdminConfig = {
    */
   modelsDevSuggestions: boolean;
   /**
+   * Whether an admin has changed one of the Models tab settings ADMIN_CONFIG_SEED may set (see
+   * effectiveAdminConfig in admin-config.ts). Until then the seed decides them; from then on the
+   * stored values do. Absent from a config stored before this field existed, which counts as true.
+   */
+  modelsSaved: boolean;
+  /**
    * Whether the deployment checks for a newer release by itself (default true). Only meaningful
    * for a deployment the deploy flow installed (see deployment-updates.ts).
    */
@@ -167,6 +173,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
+  modelsSaved: false,
   updateChecksEnabled: true,
   updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
   updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
@@ -196,7 +203,7 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
     singletons: {
       // Authoritative deployment admin config. Mirrored to BLUEPRINTS KV (ADMIN_CONFIG_KEY) so the
       // connect/login/agent hot paths can read it without touching this singleton DO. Null until
-      // an admin first saves one, while the deployment runs on initialAdminConfig() (admin-config.ts).
+      // the first write; read through effectiveAdminConfig() (admin-config.ts) either way.
       adminConfig: null as Partial<AdminConfig> | null,
 
       // Which set of bundled blueprints has been installed (see

@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, defaultOutputFormatId, initialAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, normalizeAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -442,8 +442,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // config persisted before a field existed is missing that field entirely; in particular,
   // userSearchEnabled has a dependent default and cannot be restored by a simple defaults spread.
   #config(): AdminConfig {
-    let stored = this.storage.adminConfig.get();
-    return stored ? normalizeAdminConfig(stored) : initialAdminConfig(this.env);
+    return effectiveAdminConfig(this.storage.adminConfig.get(), adminConfigSeed(this.env));
   }
 
   getAdminConfig(): AdminConfig {
@@ -456,13 +455,19 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     this.adminConfigMutationTail = new Promise<void>(resolve => { release = resolve; });
     await previousMutation;
     try {
+      // The raw slot, null before the first write, is what a failed write restores: restoring the
+      // seeded config read from it would leave the seed in place as if it had been saved.
+      let stored = this.storage.adminConfig.get();
       let current = this.#config();
       let next = mutate(current);
+      if (!next.modelsSaved && changesModelSettings(current, next)) {
+        next = { ...next, modelsSaved: true };
+      }
       this.storage.adminConfig.put(next);
       try {
         await this.env.BLUEPRINTS.put(ADMIN_CONFIG_KEY, serializeAdminConfig(next));
       } catch (error) {
-        this.storage.adminConfig.put(current);
+        this.storage.adminConfig.put(stored);
         throw error;
       }
     } finally {

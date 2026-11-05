@@ -32,8 +32,8 @@ let counter = 0;
  * AdminSettings namespace, so it is constructed on the state of an unrelated Durable Object: all
  * it needs from one is storage of its own. Its KV mirror is `mirror`, written through `put`.
  */
-function adminSettings(vars: object = GATEWAY) {
-  const stub = env.TEST_USER_DIRECTORY.getByName(`admin-settings-models-${++counter}`);
+function adminSettings(vars: object = GATEWAY, name = `admin-settings-models-${++counter}`) {
+  const stub = env.TEST_USER_DIRECTORY.getByName(name);
   const mirror = { current: null as string | null, fail: false };
   const put = vi.fn(async (_key: string, value: string) => {
     if (mirror.fail) throw new Error("KV unavailable");
@@ -50,7 +50,7 @@ function adminSettings(vars: object = GATEWAY) {
       });
   const settings = (): Promise<AdminConfig["modelSettings"]> =>
       inDo(admin => admin.getAdminConfig().modelSettings);
-  return { inDo, stored, settings, put, mirror };
+  return { inDo, stored, settings, put, mirror, name };
 }
 
 describe("AdminSettings gateway model modes", () => {
@@ -1788,25 +1788,59 @@ describe("AdminSettings with ADMIN_CONFIG_SEED", () => {
     modelModes: { "claude-sonnet-5": "enabled" },
     modelSettings: { "claude-opus-5-5": { compactionInputBudget: 300000 } },
   };
+  const NEW_SEED = { modelSettings: { "claude-opus-5-5": { compactionInputBudget: 200000 } } };
+  // The same storage, deployed again with `seed`.
+  const redeployed = (name: string, seed: object) =>
+      adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: JSON.stringify(seed) }, name);
 
-  it("starts from the seed, and stores it with the first change", async () => {
-    const { inDo, stored, settings, mirror } =
+  it("starts from the seed", async () => {
+    const { stored, settings, mirror } =
         adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: JSON.stringify(SEED) });
     expect(await stored()).toEqual({ modelModes: SEED.modelModes, addedModels: [] });
     expect(await settings()).toEqual(SEED.modelSettings);
     expect(mirror.current).toBeNull();
+  });
 
+  it("follows a changed seed after writes that change no model setting", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-bootstrap-${++counter}`, SEED);
+    // What the first request's bundled-format promotion does: a config write, no model change.
+    await inDo(admin => admin.updateAdminConfig({ siteName: "acme" }));
+    expect(parseAdminConfig(mirror.current).modelsSaved).toBe(false);
+
+    const again = redeployed(name, NEW_SEED);
+    expect(await again.settings()).toEqual(NEW_SEED.modelSettings);
+    expect((await again.stored()).modelModes).toEqual({});
+    expect(await again.inDo(admin => admin.getAdminConfig().siteName)).toBe("acme");
+  });
+
+  it("stores the seed with the first model change, and ignores it from then on", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-saved-${++counter}`, SEED);
     await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden"));
     let expectedModes = { ...SEED.modelModes, "claude-fable-5-1": "hidden" };
-    expect((await stored()).modelModes).toEqual(expectedModes);
     let mirrored = parseAdminConfig(mirror.current);
+    expect(mirrored.modelsSaved).toBe(true);
     expect(mirrored.modelModes).toEqual(expectedModes);
     expect(mirrored.modelSettings).toEqual(SEED.modelSettings);
+
+    const again = redeployed(name, NEW_SEED);
+    expect((await again.stored()).modelModes).toEqual(expectedModes);
+    expect(await again.settings()).toEqual(SEED.modelSettings);
   });
 
   it("lets an admin clear a seeded setting", async () => {
     const { inDo, settings } = adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: SEED });
     await inDo(admin => admin.setGatewayModelSettings("claude-opus-5-5", {}));
     expect(await settings()).toEqual({});
+  });
+
+  it("keeps following the seed when the first write fails to reach KV", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-failed-${++counter}`, SEED);
+    mirror.fail = true;
+    await expect(inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden")))
+        .rejects.toThrow("KV unavailable");
+    expect(await inDo(admin => admin.getAdminConfig().modelsSaved)).toBe(false);
+
+    const again = redeployed(name, NEW_SEED);
+    expect(await again.settings()).toEqual(NEW_SEED.modelSettings);
   });
 });

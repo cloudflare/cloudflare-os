@@ -719,7 +719,7 @@ export function backendSecrets({
 
 /**
  * The Models tab's admin settings a preview starts with, from PREVIEW_ADMIN_CONFIG_SEED, as the
- * backend's ADMIN_CONFIG_SEED (see initialAdminConfig in workshop-backend's admin-config.ts). A
+ * backend's ADMIN_CONFIG_SEED (see effectiveAdminConfig in workshop-backend's admin-config.ts). A
  * secret rather than a var, like the rest of backendSecrets, because the model ids it names are a
  * deployment's own business. Empty when unset, and the preview starts from the defaults.
  *

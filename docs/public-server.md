@@ -76,10 +76,13 @@ apply to language models.
 A deployment can start with Models tab settings already in place: `ADMIN_CONFIG_SEED` is a JSON
 object of the admin config's model fields (`modelModes`, `addedProviders`, `addedModels`,
 `modelSettings`, `defaultReasoning`, `userModelsEnabled` and `modelsDevSuggestions`), set as a
-secret or a JSON var. It applies only while no admin has saved a setting. The first save stores
-the seeded values with the change, and from then on the tab alone decides. A seed that is not a
-JSON object, or that names any other field, is ignored whole and logged. Previews take theirs from
-the `PREVIEW_ADMIN_CONFIG_SEED` repository secret.
+secret or a JSON var. It decides those settings until an admin changes one of them on the Models
+tab. Until then, a changed seed applies on the next deploy, and other admin settings leave it in
+force. The first change stores the seeded values with it, and from then on the tab alone decides.
+A deployment that had a stored config before the seed was supported counts as changed already, so
+a seed never overrides its admins' choices. A seed that is not a JSON object, or that names any
+other field, is ignored whole and logged. Previews take theirs from the
+`PREVIEW_ADMIN_CONFIG_SEED` repository secret, and fail to deploy if it is not a JSON object.
 
 The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
 which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
