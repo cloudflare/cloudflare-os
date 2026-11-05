@@ -21,7 +21,7 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import TYPES_CODE from "./types.txt";
-import { DESCRIPTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
+import { DESCRIPTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi, GraphApiError } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveSharePoint, type Env, type SharePointAccess, type SharePointGatekeeperProps, type SharePointSites } from "./microsoft-env";
@@ -36,10 +36,12 @@ import {
   type SharePointActionHost,
 } from "./sharepoint-actions";
 import { MAX_UPLOAD_BYTES } from "./sharepoint-content";
-import { sharePointObservers } from "./sharepoint-observers";
+import { verifyMicrosoftObserverAccess } from "./observer-access";
+import { decodeUnit, sharePointObservers } from "./sharepoint-observers";
 import { effectiveRoles, getDrive, getItem } from "./sharepoint-reads";
 import { ScopeGuard, type ScopeKind } from "./sharepoint-scope";
 import { ScopeReader, SessionContext, SharePointReaderImpl, SharePointSessionImpl, type SessionHost } from "./sharepoint-session";
+import { sharePointSubresourceId } from "./subresources";
 import type { SharePointReader, SharePointSession } from "./types";
 
 /** Most bytes the uploads of every pending action may hold together. */
@@ -244,12 +246,35 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
     });
   }
 
+  /**
+   * Observers: every read reports what it revealed as subresources (subresources.ts), which the
+   * Workshop checks through verifyObserverAccess(). This keeps checking, at every admission, the
+   * tenant and the units reads recorded before they reported subresources.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers.removeObserver(id);
+  }
+
+  /**
+   * Checks the tenant and SharePoint subresources, each against the observer's own account, which
+   * must also be in the owner's tenant; any other ID fails the whole call.
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[], subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return await verifyMicrosoftObserverAccess(observers, subresources, { resource: "sharepoint", owner: () => this.#user.get() });
+  }
+
+  /** What reads recorded before they reported subresources, as subresource IDs (see legacyHistory). */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(this.ctx.storage.kv, unit => {
+      const decoded = decodeUnit(unit);
+      return decoded && sharePointSubresourceId(decoded);
+    });
   }
 
   // -- the connection ----------------------------------------------------------------------

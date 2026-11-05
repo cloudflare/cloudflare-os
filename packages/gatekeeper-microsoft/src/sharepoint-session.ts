@@ -15,7 +15,7 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { ArrayCursor, TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { isProvisional } from "./binding";
+import { authorizeRead, isProvisional } from "./binding";
 import { convertToText } from "./content/index";
 import { GraphApiError, type GraphApi } from "./graph-api";
 import { parseCanvas, splitSiteId, type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphSite, type GraphSitePage } from "./graph-parse";
@@ -160,10 +160,9 @@ export class SessionContext extends ScopeReader implements Disposable {
     this.queue[Symbol.dispose]();
   }
 
-  /** Authorizes an observation of what a read revealed. No units means it revealed nothing shareable. */
-  async observe(title: string, description: string, revealed: readonly string[]): Promise<void> {
-    await this.gate.authorize({ title, description },
-      revealed.length > 0 ? { kind: "collections", ids: [...new Set(revealed)] } : { kind: "baseline" });
+  /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
+  async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
+    await authorizeRead(gate, () => this.host.owner(), { title, description }, revealed);
   }
 }
 
@@ -453,11 +452,10 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         return { items: sites.map(toSiteInfo), ...(page.nextFrom !== undefined ? { nextToken: String(page.nextFrom) } : {}) };
       },
       authorizePage: (items, { terminal }) => items.length === 0
-        ? walk.authorize({ title: "Listed SharePoint sites", description: `${described}${terminal ? "; there were no more" : ""}.` }, { kind: "baseline" })
-        : walk.authorize({
-          title: "Listed SharePoint sites",
-          description: `${described}: ${items.slice(0, 20).map(site => md(site.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
-        }, { kind: "collections", ids: items.map(site => units.site(site.id)) }),
+        ? this.ctx.observe("Listed SharePoint sites", `${described}${terminal ? "; there were no more" : ""}.`, [], walk)
+        : this.ctx.observe("Listed SharePoint sites",
+          `${described}: ${items.slice(0, 20).map(site => md(site.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
+          items.map(site => units.site(site.id)), walk),
     });
   }
 
@@ -647,13 +645,12 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
           .filter((entry): entry is DriveEntry => entry !== null);
         return { items: entries, ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
-      authorizePage: (items, { terminal }) => walk.authorize({
-        title: "Listed a SharePoint folder",
-        description: items.length === 0
+      authorizePage: (items, { terminal }) => this.ctx.observe("Listed a SharePoint folder",
+        items.length === 0
           ? `Listed the folder ${describeFolder}${terminal ? "; it holds nothing more" : ""}.`
           : `Listed ${items.length} item${items.length === 1 ? "" : "s"} in the folder ${describeFolder}: ` +
             `${items.slice(0, 20).map(entry => md(entry.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
-      }, { kind: "collections", ids: [units.item(folderRef), ...items.map(entry => units.item(decodeItemRef(entry.id) as ItemRef))] }),
+        [units.item(folderRef), ...items.map(entry => units.item(decodeItemRef(entry.id) as ItemRef))], walk),
     });
   }
 
@@ -737,14 +734,10 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         }
       },
       authorizePage: (items, { terminal }) => items.length === 0
-        ? walk.authorize({
-          title: "Searched SharePoint",
-          description: `Searched for ${md(query)}${terminal ? "; there were no more results" : ""}.`,
-        }, root.units ? { kind: "collections", ids: root.units } : { kind: "baseline" })
-        : walk.authorize({
-          title: "Searched SharePoint",
-          description: `Searched for ${md(query)}: ${items.slice(0, 20).map(entry => md(entry.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
-        }, { kind: "collections", ids: items.map(entry => units.item(decodeItemRef(entry.id) as ItemRef)) }),
+        ? this.ctx.observe("Searched SharePoint", `Searched for ${md(query)}${terminal ? "; there were no more results" : ""}.`, root.units ?? [], walk)
+        : this.ctx.observe("Searched SharePoint",
+          `Searched for ${md(query)}: ${items.slice(0, 20).map(entry => md(entry.name)).join(", ")}${items.length > 20 ? ", …" : ""}.`,
+          items.map(entry => units.item(decodeItemRef(entry.id) as ItemRef)), walk),
     });
   }
 
@@ -958,13 +951,12 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         });
         return { items, ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
-      authorizePage: (items, { terminal }) => walk.authorize({
-        title: "Listed SharePoint pages",
-        description: items.length === 0
+      authorizePage: (items, { terminal }) => this.ctx.observe("Listed SharePoint pages",
+        items.length === 0
           ? `Listed the pages of ${md(site.name)}${terminal ? "; there were no more" : ""}.`
           : `Listed pages of ${md(site.name)}: ${items.slice(0, 20).map(page => md(page.title)).join(", ")}.`,
-      }, { kind: "collections", ids: [units.site(id), ...items.flatMap(page =>
-        units.pageRead(decodePageRef(page.id), shown.get(page.id)?.state, shown.get(page.id)?.version))] }),
+        [units.site(id), ...items.flatMap(page =>
+          units.pageRead(decodePageRef(page.id), shown.get(page.id)?.state, shown.get(page.id)?.version))], walk),
     });
   }
 
@@ -1088,13 +1080,12 @@ export class SharePointListReaderImpl extends RpcTarget implements SharePointLis
         const items = page.items.map(toListItem).map(item => overlay.applyItem(this.ref, item, true)).filter((item): item is ListItem => item !== null);
         return { items, ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
-      authorizePage: (items, { terminal }) => walk.authorize({
-        title: "Queried a SharePoint list",
-        description: items.length === 0
+      authorizePage: (items, { terminal }) => this.ctx.observe("Queried a SharePoint list",
+        items.length === 0
           ? `Queried the list ${md(this.list.name)}${terminal ? "; no more items matched" : ""}.`
           : `Read ${items.length} item${items.length === 1 ? "" : "s"} of the list ${md(this.list.name)}.`,
-      }, { kind: "collections", ids: [listUnit, ...items.flatMap(item =>
-        units.listItemRead(this.ref, item.id, versions.get(item.id)?.version, versions.get(item.id)?.moderation))] }),
+        [listUnit, ...items.flatMap(item =>
+          units.listItemRead(this.ref, item.id, versions.get(item.id)?.version, versions.get(item.id)?.moderation))], walk),
     });
   }
 

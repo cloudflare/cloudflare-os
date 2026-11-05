@@ -245,10 +245,10 @@ tenant, through their own `MicrosoftVerifier`; probes run with their token, neve
 
 SharePoint breaks permission inheritance at any level, and listings are trimmed to what the reader can open, so
 one container's ACL never vouches for its contents. Every read therefore names the objects it revealed as
-**access units** (`sharepoint-observers.ts`, the kit's tracked-collection strategy, at most 2,000 per binding),
-and an observer sees the read only if their account can open every unit. Units are probed by ID, twenty to a
-`$batch`; a 403 or 404 means no access, and anything else (throttling, an outage) fails the check rather than
-admitting.
+**access units** (`sharepoint-observers.ts`), reported as subresource IDs (`subresources.ts`) that the Workshop
+checks through `verifyObserverAccess()`, and an observer sees the read only if their account can open every unit.
+Units are probed by ID, twenty to a `$batch`; a 403 or 404 means no access, and anything else (throttling, an
+outage) fails the check rather than admitting.
 
 Seeing an object is weaker than reading it, so a read names what it needed:
 

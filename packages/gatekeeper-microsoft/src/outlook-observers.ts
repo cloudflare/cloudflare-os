@@ -1,18 +1,23 @@
 // Observers of a workspace that reads Outlook mail. Mail is readable by the mailbox's owner, by
 // delegates, and for a shared mailbox by its members; a folder can also be shared on its own. So
-// every read records the access units it revealed (the mailbox, a folder, a message), and a
-// collaborator sees the read only if their own Microsoft 365 account can open every one of them,
-// probed by immutable ID with their token. For the user's own mailbox that is almost always no one.
+// every read reports the access units it revealed (the mailbox, a folder, a message) as subresource
+// IDs (subresources.ts), and a collaborator sees the read only if their own Microsoft 365 account
+// can open every one of them, probed by immutable ID with their token. For the user's own mailbox
+// that is almost always no one. Units recorded before reads reported subresources stay in the
+// binding's legacy tracker (`outlookObservers`), spelled `mail:<userId>:<messageId>` and so on,
+// which admission still checks.
 //
 // Exchange answers 403 or 404 for a mailbox or item the caller can't open, and neither says whether
 // it exists, so both mean "no access".
 
 import { trackedCollectionObservers, type ObserverKv, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
+import { OBSERVED_UNIT_PREFIX } from "./binding";
 import { MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi } from "./graph-api";
 import { isMailId } from "./outlook-graph";
 import type { MicrosoftVerifierApi, StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { AccessProbeError } from "./sharepoint-observers";
+import { isObjectId, outlookSubresourceId } from "./subresources";
 
 /** Something a mail read revealed, in the mailbox of the user with object ID `userId`. */
 export type MailUnit =
@@ -22,21 +27,11 @@ export type MailUnit =
 
 // Object IDs are GUIDs; immutable IDs are base64 (`+`, `/`, `=`, `-`, `_`), never a colon.
 const SEPARATOR = ":";
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** A mail unit as a tracked collection ID. */
-export function encodeMailUnit(unit: MailUnit): string {
-  switch (unit.kind) {
-    case "mailbox": return ["mailbox", unit.userId].join(SEPARATOR);
-    case "mailFolder": return ["mailFolder", unit.userId, unit.folderId].join(SEPARATOR);
-    case "mail": return ["mail", unit.userId, unit.messageId].join(SEPARATOR);
-  }
-}
-
-/** A collection ID back as its unit, or null for one that isn't a mail unit (or is malformed). */
+/** A unit as the legacy tracker spelled it, or null for one that isn't a mail unit (or is malformed). */
 export function decodeMailUnit(id: string): MailUnit | null {
   const [kind, userId, item, ...rest] = id.split(SEPARATOR);
-  if (rest.length > 0 || userId === undefined || !GUID.test(userId)) return null;
+  if (rest.length > 0 || !isObjectId(userId)) return null;
   switch (kind) {
     case "mailbox": return item === undefined ? { kind, userId } : null;
     case "mailFolder": return isMailId(item) ? { kind, userId, folderId: item } : null;
@@ -45,17 +40,17 @@ export function decodeMailUnit(id: string): MailUnit | null {
   }
 }
 
-/** Whether a collection ID is a mail unit, which `probeMailUnits` checks. */
+/** Whether a legacy tracker's unit is a mail unit, which `probeMailUnits` checks. */
 export function isMailUnit(id: string): boolean {
   return /^(mailbox|mailFolder|mail):/.test(id);
 }
 
-/** Unit constructors for a mailbox, by its owner's object ID. */
+/** Subresource IDs of a mailbox's units, by its owner's object ID. */
 export function mailUnits(userId: string) {
   return {
-    mailbox: () => encodeMailUnit({ kind: "mailbox", userId }),
-    folder: (folderId: string) => encodeMailUnit({ kind: "mailFolder", userId, folderId }),
-    message: (messageId: string) => encodeMailUnit({ kind: "mail", userId, messageId }),
+    mailbox: () => outlookSubresourceId({ kind: "mailbox", userId }),
+    folder: (folderId: string) => outlookSubresourceId({ kind: "mailFolder", userId, folderId }),
+    message: (messageId: string) => outlookSubresourceId({ kind: "mail", userId, messageId }),
   };
 }
 
@@ -71,15 +66,14 @@ function probePath(unit: MailUnit): string {
 }
 
 /**
- * Whether `api`'s user can open each mail unit, in order. A malformed unit is denied, as is one
- * Graph says is missing or forbidden; anything else throws, which the tracker counts against the
- * observer.
+ * Whether `api`'s user can open each mail unit, in order. A unit this version could not parse
+ * (null) is denied, as is one Graph says is missing or forbidden; anything else throws: the check
+ * could not be made.
  */
-export async function probeMailUnits(api: GraphApi, ids: readonly string[]): Promise<boolean[]> {
-  const verdicts = Array.from({ length: ids.length }, () => false);
+export async function probeMailUnits(api: GraphApi, units: readonly (MailUnit | null)[]): Promise<boolean[]> {
+  const verdicts = Array.from({ length: units.length }, () => false);
   const requests: { index: number; request: BatchRequest }[] = [];
-  ids.forEach((id, index) => {
-    const unit = decodeMailUnit(id);
+  units.forEach((unit, index) => {
     if (unit !== null) {
       requests.push({ index, request: { id: String(index), method: "GET", url: probePath(unit), headers: { prefer: 'IdType="ImmutableId"' } } });
     }
@@ -101,13 +95,14 @@ export async function probeMailUnits(api: GraphApi, ids: readonly string[]): Pro
 const MAX_TRACKED_MAIL_UNITS = 2000;
 
 /**
- * The binding's observer strategy: a collaborator needs a working connection in the owner's own
- * organization, and then must open, as themselves, everything each read revealed.
+ * The binding's legacy observer strategy, for the units reads recorded before they reported
+ * subresources: a collaborator needs a working connection in the owner's own organization, and
+ * then must open, as themselves, everything those reads revealed.
  */
 export function outlookObservers(kv: ObserverKv, owner: () => Promise<StoredIdentity>): ObserverStrategy {
   return trackedCollectionObservers<MicrosoftVerifierApi>({
     kv,
-    collectionPrefix: "observedUnit:",
+    collectionPrefix: OBSERVED_UNIT_PREFIX,
     maxTrackedCollections: MAX_TRACKED_MAIL_UNITS,
     verifyBaseline: async verifier => {
       const [observer, me] = await Promise.all([verifier.getIdentity(), owner()]);

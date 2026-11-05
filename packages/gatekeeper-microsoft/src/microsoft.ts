@@ -1,8 +1,9 @@
 // The Microsoft 365 gatekeeper's main module: the HTTP entrypoint (connect link, OAuth callback,
 // Outlook change notifications), the vendor and per-account entrypoints, the account Durable Object
-// that holds the OAuth grant, and the observer verifier. Each resource's per-binding gatekeeper and
-// sessions live in their own modules and are re-exported here so wrangler finds every class on the
-// main module. The design record is plans/microsoft-365-gatekeeper.md.
+// that holds the OAuth grant and answers, with it, what its user may see when they observe someone
+// else's workspace, and the observer verifier. Each resource's per-binding gatekeeper and sessions
+// live in their own modules and are re-exported here so wrangler finds every class on the main
+// module. The design record is plans/microsoft-365-gatekeeper.md.
 //
 // Users sign in with Entra ID's authorization-code flow with PKCE, as a confidential web client.
 // Access tokens live about an hour; refresh tokens slide for 90 days. `UserAccount` keeps the grant
@@ -29,10 +30,12 @@ import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import {
   PAGE_STYLE, connectHandoffPageHtml, errorPageHtml, escapeHtml, htmlResponse, INVALID_LINK_HTML,
 } from "@gadgets/gatekeeper-kit/connect-pages";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
 import { CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
   CredentialCoordinator,
+  CredentialSource,
   CredentialsExpiredError,
   isConnectionSuperseded,
   isCredentialsExpired,
@@ -45,7 +48,9 @@ import {
   OAuthClient, createPkce, isInvalidGrant, mergeOAuthTokens, oauthRefresh, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { GraphApi } from "./graph-api";
+import { CalendarApi, MAX_SCHEDULE_ADDRESSES, type GraphCalendarPermission } from "./calendar-graph";
+import { findUserByMail, organizationDomains } from "./directory";
+import { GraphApi, MAX_BATCH_REQUESTS, isGraphAuthError } from "./graph-api";
 import { SITE_SELECT, parseMe, parseSite } from "./graph-parse";
 import {
   RECONNECT_MESSAGE, accountSource, type MicrosoftVerifierApi, type PublicGrant, type StoredIdentity, type VerifiedIdentity,
@@ -80,7 +85,7 @@ import {
   type SharePointGatekeeperProps,
 } from "./microsoft-env";
 import { obsContext } from "./observability";
-import { isAvailabilityUnit, probeAvailability } from "./calendar-observers";
+import { decodeCalendarUnit, isAvailabilityUnit, probeAvailability } from "./calendar-observers";
 import { resolveCalendarUrl } from "./calendar-resolve";
 import { CalendarUrlError, parseCalendarUrl } from "./calendar-scope";
 import { CalendarConfiguratorUI } from "./calendar-configurator";
@@ -88,10 +93,11 @@ import { accountConnection } from "./configurator-connection";
 import { OutlookConfiguratorUI } from "./outlook-configurator";
 import { SharePointConfiguratorUI } from "./sharepoint-configurator";
 import { handleOutlookNotification } from "./outlook-hooks";
-import { isMailUnit, probeMailUnits } from "./outlook-observers";
+import { decodeMailUnit, isMailUnit, probeMailUnits, type MailUnit } from "./outlook-observers";
 import { resolveOutlookUrl } from "./outlook-resolve";
 import { OutlookUrlError, parseOutlookUrl } from "./outlook-scope";
-import { probeUnits } from "./sharepoint-observers";
+import { decodeUnit, probeUnits, type AccessUnit } from "./sharepoint-observers";
+import { parseMicrosoftSubresource } from "./subresources";
 import { UnresolvableUrlError, resolveSharePointUrl } from "./sharepoint-resolve";
 import { parseSharePointHost } from "./sharepoint-urls";
 import MICROSOFT_LOGO_SVG from "./microsoft-logo.svg";
@@ -129,6 +135,21 @@ const MICROSOFT_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(MICROSOFT_LO
 
 /** How long the connected identity is served before it is read from Graph again. */
 const IDENTITY_TTL_MS = 24 * 60 * 60 * 1000;
+
+// How long an account reuses Graph's answer about its own access to a subresource, counted from
+// when it started asking. Microsoft doesn't say when access changes: a revoked share is noticed only
+// once the answer that allowed it expires, while a denial is kept briefly so that a new share is
+// noticed soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
+const subresourceAccessTtl = (allowed: boolean) => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+
+// How long an account reuses what decides observers of its own calendars (calendar-acl.ts) across
+// its Calendar bindings: a calendar's sharing list (a share removed in Outlook stops counting within
+// this long), whether an address is a person, and the organization's domains.
+const CALENDAR_ACL_TTL_MS = 2 * 60 * 1000;
+const DIRECTORY_TTL_MS = 60 * 60 * 1000;
+const ORGANIZATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Entra's documented access-token lifetime is 60–90 minutes; a response always carries
@@ -508,6 +529,22 @@ export class UserAccount extends DurableObject<Env> {
   readonly #notify = (): Promise<void> => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
     this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
 
+  // This connection's own credentials, for the Graph requests it makes to answer for its user: a
+  // rejected token is adjudicated, and a read replayed past a refreshed one, as a facet's would be.
+  readonly #self = new CredentialSource<PublicGrant>({
+    account: () => this,
+    isAuthError: isGraphAuthError,
+    expiredMessage: RECONNECT_MESSAGE,
+    vendorId: VENDOR_ID,
+  });
+
+  // Graph's answers about this connection's access to subresources, keyed by subresource, and what
+  // decides observers of its user's own calendars. Partitioned by the connection, which every connect
+  // and reconnect replaces, and read through its credentials on every use, so a disconnected
+  // account, or one whose grant is dead, serves no answer but throws.
+  readonly #access = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#self, { name: "access" });
+  readonly #calendarAcl = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#self, { name: "calendarAcl" });
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
                     requestedScopes: string[]): Promise<void> {
     if (!this.#creds.stored()) await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
@@ -710,6 +747,105 @@ export class UserAccount extends DurableObject<Env> {
       logger.warn("failed to refresh the Microsoft identity", { event: "microsoft.identity.refresh.failed", error });
       return stored;
     }
+  }
+
+  /**
+   * This connection's tenant, user and primary SMTP address (what calendar sharing lists name), or
+   * null when its grant reaches none of the resources. Throws when the connection can't be used,
+   * which says nothing about what its user may see.
+   */
+  async verifiedIdentity(): Promise<VerifiedIdentity | null> {
+    const { creds } = await this.getCredentials();
+    if (grantedResourcePatterns(creds.scopes).length === 0) return null;
+    const identity = await this.getIdentity();
+    return { tenantId: identity.tenantId, objectId: identity.objectId, ...(identity.email ? { email: identity.email.toLowerCase() } : {}) };
+  }
+
+  /**
+   * Whether this connection's user can see each subresource (subresources.ts), in order: the tenant
+   * and someone's whole calendars by who the user is, and SharePoint and Outlook units and other
+   * people's free/busy by asking Graph with this connection's token, as the legacy probes do
+   * (sharepoint-, outlook- and calendar-observers.ts). A binding's subresources are its tenant's, so
+   * asked alongside a tenant this user isn't in, everything is denied without asking Graph, as
+   * admission's tenant check spares the legacy probes. Graph's answer is reused for up to
+   * SUBRESOURCE_ACCESS_ALLOWED_TTL_MS when it allowed and SUBRESOURCE_ACCESS_DENIED_TTL_MS when it
+   * denied, while this connection lasts. A calendar's events are decided by its owner's sharing list,
+   * not here, so asking about them fails the whole call, as does any other ID this account can't
+   * check, and access it can't determine (an unusable connection, an outage, a reconnect mid-check),
+   * which is never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check fails the whole call.
+    const parsed = subresources.map(id => {
+      const resource = parseMicrosoftSubresource(id);
+      if (resource.kind === "calendar" && resource.unit.kind === "calendar") {
+        throw new Error("A calendar's events are decided by its owner's sharing list, not by an observer's account.");
+      }
+      return resource;
+    });
+    // Every answer must come from the connection the check began under.
+    const generation = this.#creds.connectionGeneration();
+    const identity = await this.verifiedIdentity();
+    const tenantId = identity?.tenantId.toLowerCase();
+    if (identity === null || parsed.some(resource => resource.kind === "tenant" && resource.tenantId !== tenantId)) {
+      return subresources.map(() => false);
+    }
+    const answers = new Map<string, boolean>();
+    const files = new Map<string, AccessUnit>();
+    const mail = new Map<string, MailUnit>();
+    const schedules = new Map<string, string>();
+    parsed.forEach((resource, index) => {
+      const id = subresources[index]!;
+      if (resource.kind === "tenant") answers.set(id, true);
+      else if (resource.kind === "sharepoint") files.set(id, resource.unit);
+      else if (resource.kind === "outlook") mail.set(id, resource.unit);
+      else if (resource.unit.kind === "calendars") answers.set(id, resource.unit.ownerId === identity.objectId.toLowerCase());
+      else if (resource.unit.kind === "availability" && resource.unit.address === identity.email) answers.set(id, true);
+      else if (resource.unit.kind === "availability") schedules.set(id, resource.unit.address);
+    });
+    // One cache load per Graph request ($batch and getSchedule each take twenty), so a failure keeps
+    // what earlier requests learned. The three kinds are asked at once, as the legacy probes are.
+    const asked = await Promise.all([
+      this.#access.cachedMany([...files.keys()], subresourceAccessTtl,
+        ids => this.#graph(api => probeUnits(api, ids.map(id => files.get(id)!))), { batchSize: MAX_BATCH_REQUESTS }),
+      this.#access.cachedMany([...mail.keys()], subresourceAccessTtl,
+        ids => this.#graph(api => probeMailUnits(api, ids.map(id => mail.get(id)!))), { batchSize: MAX_BATCH_REQUESTS }),
+      this.#access.cachedMany([...schedules.keys()], subresourceAccessTtl,
+        ids => this.#graph(api => probeAvailability(api, ids.map(id => schedules.get(id)!))), { batchSize: MAX_SCHEDULE_ADDRESSES }),
+    ]);
+    [files, mail, schedules].forEach((kind, at) => [...kind.keys()].forEach((id, index) => answers.set(id, asked[at]![index]!)));
+    if (this.#creds.connectionGeneration() !== generation) {
+      throw new Error("This Microsoft 365 connection was reconnected while its access was being checked.");
+    }
+    return subresources.map(id => answers.get(id) === true);
+  }
+
+  /**
+   * The sharing list of one of this user's own calendars, which only they can read, reused for
+   * CALENDAR_ACL_TTL_MS across their Calendar bindings.
+   */
+  async calendarPermissions(calendarId: string): Promise<GraphCalendarPermission[]> {
+    return await this.#calendarAcl.cached(`permissions:${calendarId}`, CALENDAR_ACL_TTL_MS,
+      () => this.#graph(api => new CalendarApi(api, { kind: "me" }).permissions(calendarId)));
+  }
+
+  /**
+   * Whether an address is a person in this user's directory rather than a group, list or contact,
+   * reused for DIRECTORY_TTL_MS. Not found, or not allowed to look, counts as not a person.
+   */
+  async isDirectoryPerson(address: string): Promise<boolean> {
+    return await this.#calendarAcl.cached(`person:${address}`, DIRECTORY_TTL_MS,
+      () => this.#graph(async api => await findUserByMail(api, address) !== null));
+  }
+
+  /** This user's organization's verified domains, reused for ORGANIZATION_TTL_MS. */
+  async organizationDomains(): Promise<string[]> {
+    return await this.#calendarAcl.cached("orgDomains", ORGANIZATION_TTL_MS, () => this.#graph(organizationDomains));
+  }
+
+  /** Runs Graph requests with this connection's own token, replayed once past a refreshed one. */
+  #graph<T>(op: (api: GraphApi) => Promise<T>): Promise<T> {
+    return this.#self.run(creds => op(new GraphApi(creds.accessToken)), { replayable: true });
   }
 
   async alarm(): Promise<void> {
@@ -925,9 +1061,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // Verifier
 //
 // A collaborator observes a binding only with a working Microsoft 365 connection of their own, in
-// the same tenant, and only reads whose every access unit their own account can open (see
-// sharepoint-observers.ts, outlook-observers.ts and calendar-observers.ts). Probes run with the
-// collaborator's token, never the owner's.
+// the same tenant, and only reads whose every subresource (subresources.ts), or for reads made
+// before they reported subresources every access unit, their own account can open (see
+// observer-access.ts, sharepoint-observers.ts, outlook-observers.ts and calendar-observers.ts).
+// Probes run with the collaborator's token, never the owner's.
 
 type MicrosoftVerifierProps = {
   userObjectId: string;
@@ -940,18 +1077,21 @@ export class MicrosoftVerifier extends WorkerEntrypoint<Env, MicrosoftVerifierPr
   }
 
   async getIdentity(): Promise<VerifiedIdentity | null> {
-    const account = this.#account();
     try {
       // The identity outlives the grant, so it speaks for the observer only while the connection's
       // credentials still work and still reach at least one resource.
-      const { creds } = await account.getCredentials();
-      if (grantedResourcePatterns(creds.scopes).length === 0) return null;
-      const identity = await account.getIdentity();
-      // The primary SMTP address Graph gave the observer's own token: what calendar sharing lists name.
-      return { tenantId: identity.tenantId, objectId: identity.objectId, ...(identity.email ? { email: identity.email.toLowerCase() } : {}) };
+      return await this.#account().verifiedIdentity();
     } catch {
       return null;
     }
+  }
+
+  async verifiedIdentity(): Promise<VerifiedIdentity | null> {
+    return await this.#account().verifiedIdentity();
+  }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    return await this.#account().checkSubresourceAccess(subresources);
   }
 
   async canAccess(units: string[]): Promise<boolean[]> {
@@ -966,9 +1106,12 @@ export class MicrosoftVerifier extends WorkerEntrypoint<Env, MicrosoftVerifierPr
       const api = new GraphApi(creds.accessToken);
       const pick = (list: number[]) => list.map(index => units[index]!);
       const [availabilityVerdicts, mailVerdicts, fileVerdicts] = await Promise.all([
-        availability.length ? probeAvailability(api, pick(availability)) : [],
-        mail.length ? probeMailUnits(api, pick(mail)) : [],
-        files.length ? probeUnits(api, pick(files)) : [],
+        availability.length ? probeAvailability(api, pick(availability).map(unit => {
+          const decoded = decodeCalendarUnit(unit);
+          return decoded?.kind === "availability" ? decoded.address : null;
+        })) : [],
+        mail.length ? probeMailUnits(api, pick(mail).map(decodeMailUnit)) : [],
+        files.length ? probeUnits(api, pick(files).map(decodeUnit)) : [],
       ]);
       const verdicts = Array.from({ length: units.length }, () => false);
       availability.forEach((index, at) => { verdicts[index] = availabilityVerdicts[at] === true; });

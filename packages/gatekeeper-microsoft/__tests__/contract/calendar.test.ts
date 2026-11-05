@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Availability, CalendarInfo, CalendarOverview, EventContent, EventInfo, FreeTimes } from "../../src/calendar-types";
 import type { CalendarScope } from "../../src/calendar-scope";
 import type { CalendarGatekeeperProps } from "../../src/microsoft-env";
-import { account, connect, failure, facet, hooks, live, run, unwrap, walk, type Label } from "./tenant";
+import { account, admitted, connect, failure, facet, hooks, live, run, unwrap, walk, type Label } from "./tenant";
 
 const RUN = `run-${Date.now().toString(36)}`;
 const OUTSIDE = /is outside what this Calendar connection covers, or doesn't exist/;
@@ -158,37 +158,35 @@ describe.skipIf(!live)("calendar", { timeout: 180_000 }, () => {
     const full = await bindCalendar("phillip", `https://outlook.office.com/calendar/id/${encodeURIComponent(team.id)}?access=read`);
     const name = facet("observe-full");
     await events(name, full);
-    unwrap(await hooks().addObserver(name, full, "sarah", await connect("sarah")));
-    expect(failure(await hooks().addObserver(name, full, "bob", await connect("bob")))).toBeTruthy();
+    expect(await admitted(name, full, ["sarah", "bob"])).toEqual(["sarah"]);
 
     const freeBusy = await bindCalendar("phillip", `https://outlook.office.com/calendar/id/${encodeURIComponent(team.id)}?details=freeBusy`);
     const fbName = facet("observe-fb");
     await events(fbName, freeBusy);
-    unwrap(await hooks().addObserver(fbName, freeBusy, "sarah", await connect("sarah")));
-    unwrap(await hooks().addObserver(fbName, freeBusy, "bob", await connect("bob")));
+    expect(await admitted(fbName, freeBusy, ["sarah", "bob"])).toEqual(["sarah", "bob"]);
 
     // Showing private events is for the owner and private-access delegates alone.
     const shown = await bindCalendar("phillip", `https://outlook.office.com/calendar/id/${encodeURIComponent(team.id)}?private=show&access=read`);
     const shownName = facet("observe-private");
     const withPrivate = await events(shownName, shown);
     expect(withPrivate.find(event => event.id === teamPrivate)).toMatchObject({ subject: `Team private ${RUN}` });
-    expect(failure(await hooks().addObserver(shownName, shown, "sarah", await connect("sarah")))).toBeTruthy();
+    expect(await admitted(shownName, shown, ["sarah"])).toEqual([]);
 
     // The main calendar's organization-wide free/busy admits colleagues at free/busy, and no further.
     const mainFb = await bindCalendar("phillip", "https://outlook.office.com/calendar/default?details=freeBusy");
     const mainName = facet("observe-main");
     await events(mainName, mainFb);
-    unwrap(await hooks().addObserver(mainName, mainFb, "bob", await connect("bob")));
+    expect(await admitted(mainName, mainFb, ["bob"])).toEqual(["bob"]);
     const mainLimited = await bindCalendar("phillip", "https://outlook.office.com/calendar/default?details=limited");
     const limitedName = facet("observe-main-limited");
     await events(limitedName, mainLimited);
-    expect(failure(await hooks().addObserver(limitedName, mainLimited, "bob", await connect("bob")))).toBeTruthy();
+    expect(await admitted(limitedName, mainLimited, ["bob"])).toEqual([]);
 
     // An all-calendars binding that has read events is the user's alone.
     const all = await bindCalendar("phillip", "https://outlook.office.com/calendar/?access=read");
     const allName = facet("observe-all");
     await events(allName, all);
-    expect(failure(await hooks().addObserver(allName, all, "sarah", await connect("sarah")))).toBeTruthy();
+    expect(await admitted(allName, all, ["sarah", "phillip"])).toEqual(["phillip"]);
   });
 
   it("an availability binding reads colleagues' busy time without subjects, and finds time everyone is free", async () => {
@@ -211,7 +209,7 @@ describe.skipIf(!live)("calendar", { timeout: 180_000 }, () => {
     }
     expect(free.slots.some(slot => Date.parse(slot.start) <= Date.parse(at(17)) && Date.parse(slot.end) >= Date.parse(at(17, 30)))).toBe(true);
     // Whoever is told what this read shows must be able to see those people's free/busy themselves.
-    unwrap(await hooks().addObserver(name, props, "bob", await connect("bob")));
+    expect(await admitted(name, props, ["bob"])).toEqual(["bob"]);
   });
 
   // Fixture: Bob shares nothing with the organization, not even free/busy.
@@ -229,11 +227,11 @@ describe.skipIf(!live)("calendar", { timeout: 180_000 }, () => {
     const ownName = facet("availability-own");
     const [himself] = unwrap<Availability[]>(await run(ownName, own, [["getAvailability", [address("bob")], WINDOW.start, WINDOW.end]]));
     expect(himself!.error).toBeUndefined();
-    expect(failure(await hooks().addObserver(ownName, own, "sarah", await connect("sarah")))).toBeTruthy();
+    expect(await admitted(ownName, own, ["sarah"])).toEqual([]);
     const main = await bindCalendar("bob", "https://outlook.office.com/calendar/default?details=freeBusy");
     const mainName = facet("observe-bob-main");
     await events(mainName, main);
-    expect(failure(await hooks().addObserver(mainName, main, "sarah", await connect("sarah")))).toBeTruthy();
+    expect(await admitted(mainName, main, ["sarah"])).toEqual([]);
   });
 
   it("writes: create, read back pending, apply, change, refuse a stale change, delete, and revert", async () => {

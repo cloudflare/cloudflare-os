@@ -13,7 +13,7 @@ import { ActionApplyError, ActionJournal } from "@gadgets/gatekeeper-kit/actions
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./outlook-types.txt";
-import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
+import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveOutlookAccess, grantsSharedMailboxes, type Env, type OutlookGatekeeperProps } from "./microsoft-env";
@@ -25,10 +25,12 @@ import { MAX_ATTACHMENT_BYTES } from "./outlook-content";
 import {
   OutlookHookDeliveryImpl, subscribeNewMessages, type OutlookHookDelivery, type OutlookHookParams, type OutlookHookTarget,
 } from "./outlook-hooks";
-import { outlookObservers } from "./outlook-observers";
+import { verifyMicrosoftObserverAccess } from "./observer-access";
+import { decodeMailUnit, outlookObservers } from "./outlook-observers";
 import { allows, describeScope, outlookUrl, type OutlookAccessLevel } from "./outlook-scope";
 import { MailboxGuard, OutlookContext, OutlookReaderImpl, OutlookSessionImpl, type OutlookSessionHost } from "./outlook-session";
 import type { OutlookReader, OutlookSession } from "./outlook-types";
+import { outlookSubresourceId } from "./subresources";
 
 
 /** Most bytes the attachments of every pending action may hold together. */
@@ -207,12 +209,35 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
     });
   }
 
+  /**
+   * Observers: every read reports what it revealed as subresources (subresources.ts), which the
+   * Workshop checks through verifyObserverAccess(). This keeps checking, at every admission, the
+   * tenant and the units reads recorded before they reported subresources.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers.removeObserver(id);
+  }
+
+  /**
+   * Checks the tenant and Outlook subresources, each against the observer's own account, which must
+   * also be in the owner's tenant; any other ID fails the whole call.
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[], subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return await verifyMicrosoftObserverAccess(observers, subresources, { resource: "outlook", owner: () => this.#user.get() });
+  }
+
+  /** What reads recorded before they reported subresources, as subresource IDs (see legacyHistory). */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(this.ctx.storage.kv, unit => {
+      const decoded = decodeMailUnit(unit);
+      return decoded && outlookSubresourceId(decoded);
+    });
   }
 
   // -- the connection ----------------------------------------------------------------------

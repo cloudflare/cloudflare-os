@@ -1,13 +1,16 @@
 // What the three per-binding gatekeepers (sharepoint-, outlook- and calendar-gatekeeper.ts) do
 // alike: pin the Entra user a binding's connection belongs to and fence its actions on that user,
-// name what an action awaiting approval will create, retire applied actions too old to revert, and
-// tell a provider's refusal (to apply or undo) from a failure worth retrying.
+// export what their reads recorded for observers before they reported subresources, name what an
+// action awaiting approval will create, retire applied actions too old to revert, and tell a
+// provider's refusal (to apply or undo) from a failure worth retrying.
 
 import { ActionApplyError, type ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import type { ObservationGate, ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import { GraphApiError } from "./graph-api";
 import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
+import { tenantSubresourceId } from "./subresources";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.microsoft.binding", vendorId: VENDOR_ID });
 
@@ -23,6 +26,12 @@ const HOUSEKEEPING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // Storage keys this module owns in each binding's storage.
 const PINNED_USER_KEY = "pinnedUser";
 const HOUSEKEEPING_KEY = "housekeptAt";
+
+/**
+ * Where each binding's legacy observer tracker keeps the access units its reads recorded before
+ * they reported subresources, which `addObserver()` still checks every collaborator against.
+ */
+export const OBSERVED_UNIT_PREFIX = "observedUnit:";
 
 const PROVISIONAL = /^~[1-9][0-9]{0,9}$/;
 
@@ -77,6 +86,40 @@ export class PinnedUser {
 
 function userKey(identity: StoredIdentity): string {
   return `${identity.tenantId}/${identity.objectId}`;
+}
+
+/**
+ * Authorizes a read through `gate`, reporting `revealed`, the subresource IDs (subresources.ts) of
+ * what it revealed. A read that revealed nothing narrower names the owner's tenant.
+ */
+export async function authorizeRead(
+  gate: ObservationGate, owner: () => Promise<StoredIdentity>, input: ObservationInput, revealed: readonly string[],
+): Promise<void> {
+  const ids = revealed.length > 0 ? revealed : [tenantSubresourceId((await owner()).tenantId)];
+  await gate.authorize(input, { kind: "subresources", ids });
+}
+
+/**
+ * A binding's `getHistoricalSubresources()`: each access unit its reads recorded before they
+ * reported subresources, as the subresource ID naming it now, and the owner's tenant, which
+ * admission required of every collaborator before any of those reads, the ones that named nothing
+ * narrower and so recorded nothing included. Every Graph call pins the user first, so a binding
+ * with no pin read nothing and has no history. Reads storage only.
+ * @param toSubresource The subresource ID a recorded unit names, or null for one this version can't read.
+ * @throws Error rather than leave out a unit it can't name.
+ */
+export function legacyHistory(kv: SyncKvStorage, toSubresource: (unit: string) => string | null): string[] {
+  const pinned = kv.get<string>(PINNED_USER_KEY);
+  const recorded = [...kv.list({ prefix: OBSERVED_UNIT_PREFIX })].map(([key]) => key.slice(OBSERVED_UNIT_PREFIX.length));
+  if (pinned === undefined && recorded.length === 0) return [];
+  if (pinned === undefined) throw new Error("This binding recorded what it read without pinning its user, so its history can't be exported.");
+  const history = new Set([tenantSubresourceId(pinned.slice(0, pinned.indexOf("/")))]);
+  for (const unit of recorded) {
+    const id = toSubresource(unit);
+    if (id === null) throw new Error("This binding recorded an access unit this version can't read, so its history can't be exported.");
+    history.add(id);
+  }
+  return [...history];
 }
 
 /**

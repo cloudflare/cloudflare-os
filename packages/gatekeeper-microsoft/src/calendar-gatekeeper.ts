@@ -14,29 +14,21 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./calendar-types.txt";
-import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, PinnedUser, provisionalId, revertRefused } from "./binding";
+import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi } from "./graph-api";
-import { findUserByMail, organizationDomains } from "./directory";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveCalendarAccess, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
 import {
   actions, dependedRefs, providedRefs, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type EventVersion, type RevertOutcome,
 } from "./calendar-actions";
 import { ownerAcl } from "./calendar-acl";
-import { CalendarApi } from "./calendar-graph";
-import { calendarObservers } from "./calendar-observers";
+import { calendarObservers, decodeCalendarUnit } from "./calendar-observers";
 import { accessCeiling, allows, calendarUrl, describeScope, lowerAccess, type CalendarAccessLevel } from "./calendar-scope";
 import { CalendarContext, CalendarReaderImpl, CalendarSessionImpl, type CalendarSessionHost } from "./calendar-session";
 import type { CalendarReader, CalendarSession } from "./calendar-types";
+import { verifyMicrosoftObserverAccess } from "./observer-access";
+import { calendarSubresourceId } from "./subresources";
 
-
-/**
- * How long a calendar's sharing list is reused when deciding observers. A share removed in Outlook
- * stops counting for observers within this long.
- */
-const ACL_TTL_MS = 2 * 60 * 1000;
-const DIRECTORY_TTL_MS = 60 * 60 * 1000;
-const ORGANIZATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Storage keys of this class's own. binding.ts owns `pinnedUser` and `housekeptAt`; the kit modules
 // own theirs: `calendar:` and the journal's tiers, `refs:`, `cache:@calendar:`,
@@ -61,15 +53,14 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
   readonly #journal = new ActionJournal<CalendarAction>(this.ctx.storage.kv, { namespace: "calendar" });
   readonly #refs = new ProvisionalIds<string>(this.ctx.storage.kv, { namespace: "refs:", isProvisional });
   readonly #cache = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#creds, { name: "calendar" });
-  readonly #observers = calendarObservers(this.ctx.storage.kv, () => this.#user.get(), ownerAcl({
-    // Read as the binding's owner: only an owner can read a calendar's sharing list.
-    permissions: calendarId => this.#cache.cached(`acl:${calendarId}`, ACL_TTL_MS,
-      () => this.#graph(api => new CalendarApi(api, { kind: "me" }).permissions(calendarId), true)),
-    // Not found, or not allowed to look, counts as a group, which can only lower the default.
-    isPerson: address => this.#cache.cached(`person:${address}`, DIRECTORY_TTL_MS,
-      () => this.#graph(async api => await findUserByMail(api, address) !== null, true)),
-    orgDomains: () => this.#cache.cached("orgDomains", ORGANIZATION_TTL_MS, () => this.#graph(organizationDomains, true)),
-  }));
+  // Read as the binding's owner, through their account, which reuses them across their bindings:
+  // only an owner can read a calendar's sharing list.
+  readonly #acl = ownerAcl({
+    permissions: calendarId => this.#account().calendarPermissions(calendarId),
+    isPerson: address => this.#account().isDirectoryPerson(address),
+    orgDomains: () => this.#account().organizationDomains(),
+  });
+  readonly #observers = calendarObservers(this.ctx.storage.kv, () => this.#user.get(), this.#acl);
 
   readonly #user = new PinnedUser(this.ctx.storage.kv, () => this.#account().getIdentity(), "the calendar");
 
@@ -184,12 +175,38 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
     });
   }
 
+  /**
+   * Observers: every read reports what it revealed as subresources (subresources.ts), which the
+   * Workshop checks through verifyObserverAccess(). This keeps checking, at every admission, the
+   * tenant and the units reads recorded before they reported subresources.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
   }
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers.removeObserver(id);
+  }
+
+  /**
+   * Checks the tenant and Calendar subresources: one calendar's events by the owner's sharing list,
+   * the rest against the observer's own account, which must also be in the owner's tenant; any
+   * other ID fails the whole call.
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[], subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return await verifyMicrosoftObserverAccess(observers, subresources, {
+      resource: "calendar", owner: () => this.#user.get(), acl: this.#acl,
+    });
+  }
+
+  /** What reads recorded before they reported subresources, as subresource IDs (see legacyHistory). */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(this.ctx.storage.kv, unit => {
+      const decoded = decodeCalendarUnit(unit);
+      return decoded && calendarSubresourceId(decoded);
+    });
   }
 
   // -- the connection ----------------------------------------------------------------------
