@@ -6,9 +6,9 @@
 // gatekeeper of the same vendor, which is what makes the cast in each `addObserver()` and in
 // `createFileOnce()` safe.
 //
-// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat, Gmail) can
-// use the interface, and the verifyObserverAccess() built on it, without importing the module that
-// implements it, which also re-exports the interface.
+// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat, Gmail,
+// Sheets, Slides) can use the interface, and the verifyObserverAccess() built on it, without
+// importing the module that implements it, which also re-exports the interface.
 
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
@@ -37,6 +37,11 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
   /** Whether the observer's own account can open one Google Chat space, and with `members`, list its members. */
   hasChatSpaceAccess(spaceName: string, options?: { members?: boolean }): Promise<boolean>;
+  /**
+   * Whether the observer holds a Drive grant, and whether their own token can see each file or
+   * list each folder, asking Drive every time, for the units addObserver still guards from before
+   * reads reported them.
+   */
   verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
   /**
    * The connected account this verifier stands for, so applyCreation() can create a file in it and

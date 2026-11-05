@@ -3,10 +3,18 @@ import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
 import {
-  BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
-  type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps, type HookDriverRef,
+  BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl,
+  GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
+  type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps,
+  type GoogleDocGatekeeperImplProps, type GoogleDriveGatekeeperImplProps, type HookDriverRef,
 } from "../../src/google";
 import type { BigQuerySession } from "../../src/bigquery-types";
+import type { GoogleDocSession } from "../../src/docs-types";
+import type { GoogleDriveSession } from "../../src/drive-types";
+import type { GoogleSheetsGatekeeperImplProps } from "../../src/sheets";
+import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
+import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
+import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
   ActionKind, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -29,8 +37,17 @@ export { default } from "../../src/google";
 export { ChatHookController } from "../../src/chat-hooks";
 export { GmailHookController } from "../../src/gmail-hooks";
 export {
-  BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier,
+  BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl,
+  GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl,
+  GoogleVerifier,
 };
+
+/** A Google Drive, Docs, Sheets or Slides binding: which gatekeeper, and its props. */
+export type WorkspaceBinding =
+  | { kind: "doc"; props: GoogleDocGatekeeperImplProps }
+  | { kind: "sheets"; props: GoogleSheetsGatekeeperImplProps }
+  | { kind: "slides"; props: GoogleSlidesGatekeeperImplProps }
+  | { kind: "drive"; props: GoogleDriveGatekeeperImplProps };
 
 const UNREACHABLE = "The test hook driver can't be reached.";
 
@@ -706,17 +723,17 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     this.#bigQuery(facetName, id, props);
   }
 
-  /** The test approval queue a BigQuery binding's sessions and observers share. */
-  #bigQueryQueue(queueId: string): TestApprovalQueue {
-    const queue = this.#queues.get(queueId);
-    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+  /** The test approval queue a binding's sessions and observers share, made on first use. */
+  #sharedQueue(queueId: string): TestApprovalQueue {
+    let queue = this.#queues.get(queueId);
+    if (!queue) this.#queues.set(queueId, queue = new TestApprovalQueue());
     return queue;
   }
 
   async openBigQuerySession(
       facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
   ): Promise<BigQuerySession> {
-    using queueStub = new RpcStub(this.#bigQueryQueue(queueId));
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
     return await this.#bigQuery(facetName, id, props).startSession(queueStub);
   }
 
@@ -727,7 +744,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   ): Promise<void> {
     await this.#bigQuery(facetName, id, props).addObserver(observerId,
       this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
-    this.#bigQueryQueue(queueId).addObserver(observerId);
+    this.#sharedQueue(queueId).addObserver(observerId);
   }
 
   async bigQueryVerifyObserverAccess(
@@ -747,6 +764,84 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     // Installed on the prototype below; the facet's own type lacks it.
     const bigQuery = this.#bigQuery(facetName, id, props) as unknown as TestBigQuery;
     await bigQuery.applyTestStorage(operations);
+  }
+
+  // ── Google Drive, Docs, Sheets and Slides ───────────────────────────
+
+  #googleFile<T extends Rpc.DurableObjectBranded>(
+      className: string, facetName: string, id: string, props: object,
+  ): Fetcher<T> {
+    const exports = this.ctx.exports as unknown as
+      Record<string, (options: {props: object}) => DurableObjectClass<T>>;
+    return this.ctx.facets.get<T>(facetName, () => ({id, class: exports[className]({props})}));
+  }
+
+  #workspace(facetName: string, id: string, binding: WorkspaceBinding) {
+    switch (binding.kind) {
+      case "doc":
+        return this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, binding.props);
+      case "sheets":
+        return this.#googleFile<GoogleSheetsGatekeeperImpl>(
+          "GoogleSheetsGatekeeperImpl", facetName, id, binding.props);
+      case "slides":
+        return this.#googleFile<GoogleSlidesGatekeeperImpl>(
+          "GoogleSlidesGatekeeperImpl", facetName, id, binding.props);
+      case "drive":
+        return this.#googleFile<GoogleDriveGatekeeperImpl>(
+          "GoogleDriveGatekeeperImpl", facetName, id, binding.props);
+    }
+  }
+
+  async openDocSession(
+      facetName: string, id: string, props: GoogleDocGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleDocSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openSheetsSession(
+      facetName: string, id: string, props: GoogleSheetsGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleSpreadsheetSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleSheetsGatekeeperImpl>("GoogleSheetsGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openSlidesSession(
+      facetName: string, id: string, props: GoogleSlidesGatekeeperImplProps, queueId: string,
+  ): Promise<GooglePresentationSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleSlidesGatekeeperImpl>("GoogleSlidesGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openDriveSession(
+      facetName: string, id: string, props: GoogleDriveGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleDriveSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleDriveGatekeeperImpl>("GoogleDriveGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */
+  async workspaceAddObserver(
+      facetName: string, id: string, binding: WorkspaceBinding, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#workspace(facetName, id, binding).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#sharedQueue(queueId).addObserver(observerId);
+  }
+
+  async workspaceVerifyObserverAccess(
+      facetName: string, id: string, binding: WorkspaceBinding,
+      observers: Array<{ id: string; userObjectId: string }>, subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return this.#workspace(facetName, id, binding).verifyObserverAccess(
+      observers.map(({ id: observerId, userObjectId }) =>
+        ({ id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }) })),
+      subresources);
   }
 
   // ── Google Chat and Gmail hooks, with these hooks standing in for the Overseer ──

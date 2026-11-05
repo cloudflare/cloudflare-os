@@ -196,12 +196,14 @@ function queuedBatch(id: number, changes: PlannedChange[]): QueuedChange {
   };
 }
 
+const SHEET_FILE = [{ kind: "spreadsheet", fileId: "sheet-1" }] as const;
+
 function newSession(pending: QueuedChange[] = []) {
   let queue = new TestApprovalQueue();
   let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
   let session = new RpcStub(new GoogleSpreadsheetSessionImpl(
     new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-    unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+    unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     { ...NO_CHANGES, snapshot: read => read(pending) },
   ));
   return { queue, session };
@@ -357,7 +359,7 @@ describe("Google Sheets spreadsheet session", () => {
     let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
     using session = new RpcStub(new GoogleSpreadsheetReadSessionImpl(
       new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-      unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+      unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     ));
 
     expect((await session.getSpreadsheet()).title).toBe("Budget");
@@ -478,6 +480,7 @@ describe("Google Sheets format reads", () => {
     expect(queue.observations).toEqual([{
       title: "Read Google Sheets formatting of Sales!A19:B20",
       description: "Read the formatting of 6 cell(s) in the connected spreadsheet.",
+      subresources: ["sheets/spreadsheet/sheet-1"],
     }]);
   });
 
@@ -576,7 +579,7 @@ describe("Google Sheets format reads", () => {
     let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
     using session = new RpcStub(new GoogleSpreadsheetReadSessionImpl(
       new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-      unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+      unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     ));
 
     expect((await session.readFormats("B2")).formats).toEqual([[{ fontSize: 101 }]]);

@@ -20,12 +20,16 @@
 const OBSERVER_PREFIX = "observer:";
 const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
 const OBSERVER_NONCE_PREFIX = "observer-nonce:";
-/** Latched once an owner-only observation has been made: admission is closed for good. */
+/**
+ * Latched by releases that fenced Drive's owner-relative reads instead of reporting them. Nothing
+ * writes it any more, but those reads recorded no tracked set or subresource, so it still closes
+ * admission until a migration retires it with their history.
+ */
 const OBSERVER_WITHHELD_KEY = "observer-withheld";
-/** One marker per owner-only read still in flight. A marker stranded by a crash fails closed. */
+/** One of those reads still in flight when its activation died: it also fails closed. */
 const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
 
-/** Refusal when the binding has read something no observer can ever be verified against. */
+/** Refusal when an earlier release read something no observer can be verified against. */
 export const OBSERVER_WITHHELD_MESSAGE =
   "This binding has made an observation no collaborator can be verified against, so it can no " +
   "longer be observed.";
@@ -44,8 +48,6 @@ export type ObserverCheck<T> = {
   pendingSets: T[];
   /** Promotes the pending sets to observed. Call only after the read is authorized. */
   commit(): void;
-  /** Releases state this call staged. Call when the read was refused. */
-  discard?(): void;
 };
 
 /** The storage surface the tracker needs, satisfied by a Durable Object's `ctx.storage.kv`. */
@@ -251,39 +253,7 @@ export class ObserverTracker<T, V> {
     };
   }
 
-  /**
-   * Fences an owner-only observation: nobody currently admitted may see it, and nobody new may be
-   * admitted after it.
-   *
-   * Such a read registers no tracked set, so {@link addObserver} would have nothing to verify a
-   * later candidate against — the backward check would pass vacuously over data the candidate was
-   * never entitled to. The durable marker goes down before the caller asks for approval, so an
-   * activation that dies mid-read leaves admission closed rather than open; `commit` latches and
-   * then clears it, and `discard` clears it when the read was refused. Once the latch is permanent
-   * there is nothing left to protect, so no marker goes down at all.
-   */
-  prepareWithheld(): ObserverCheck<T> {
-    // Enumerated before the marker goes down: a throw here must strand nothing.
-    let excludeObservers = [...this.observers()].map(([id]) => id);
-    let exclusions = excludeObservers.length > 0 ? { excludeObservers } : {};
-    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) {
-      return { ...exclusions, pendingSets: [], commit() {} };
-    }
-    let markerKey = `${OBSERVER_WITHHOLD_PREFIX}${crypto.randomUUID()}`;
-    this.#kv.put(markerKey, true);
-    return {
-      ...exclusions,
-      pendingSets: [],
-      // Latch before the marker goes, so no state has neither fence standing.
-      commit: () => {
-        this.#kv.put(OBSERVER_WITHHELD_KEY, true);
-        this.#kv.delete(markerKey);
-      },
-      discard: () => this.#kv.delete(markerKey),
-    };
-  }
-
-  /** Whether an owner-only read has latched, or is still unsettled. */
+  /** Whether an earlier release latched admission closed, or left a fenced read unsettled. */
   #observationWithheld(): boolean {
     if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) return true;
     for (let _ of this.#kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
@@ -295,8 +265,6 @@ export class ObserverTracker<T, V> {
    * stages the candidate, then re-lists until every set has been checked before promotion.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
-    // A withheld read tracks no set, so nothing here can establish this candidate was entitled to
-    // it. One still in flight counts: this candidate is absent from the exclusion list it sent.
     if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
     let verifyBatch = this.#options.verifyBatch;
     if (verifyBatch !== undefined) return this.#addBulkObserver(id, verifier, verifyBatch);
