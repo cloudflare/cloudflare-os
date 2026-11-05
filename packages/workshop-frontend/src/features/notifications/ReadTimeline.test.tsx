@@ -505,9 +505,10 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
-  it("uses the replacement snapshot after another device clears unread while hidden", async () => {
+  it.each([false, true])("uses the replacement snapshot after another device clears unread while hidden (rewind received: %s)", async receivedRewind => {
     await render(); await update(snapshot(1, 2)); await settle();
     await markUnreadFrom(1);
+    if (receivedRewind) await updateChat(snapshot(1, 0));
     await act(async () => {
       Object.defineProperty(document, "visibilityState", {configurable: true, value: "hidden"});
       document.dispatchEvent(new Event("visibilitychange"));
@@ -517,7 +518,16 @@ describe("timeline read/unread experience", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await update(snapshot(2, 2));
+    await settle();
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("automatic reading paused");
+    visibleBottom = 450;
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(3, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
     await updateChat(snapshot(3, 1));
     expect(container.textContent).toContain("automatic reading paused");
   });

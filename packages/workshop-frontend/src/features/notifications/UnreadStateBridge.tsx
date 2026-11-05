@@ -34,7 +34,8 @@ class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   }
 }
 
-type UnreadUpdateListener = (state: UserUnreadState) => void;
+// A full snapshot can settle missed transitions even when its horizon matches the cached row.
+type UnreadUpdateListener = (state: UserUnreadState, replacement: boolean) => void;
 
 type UnreadContextValue = {
   state?: UserUnreadState;
@@ -93,9 +94,9 @@ export const UnreadStateBridge = ({
     let generation = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = 1_000;
-    const publish = () => {
+    const publish = (replacement = false) => {
       if (!latest) return;
-      for (const listener of updateListeners.current) listener(latest.state);
+      for (const listener of updateListeners.current) listener(latest.state, replacement);
       setSnapshot(latest);
     };
     const subscribe = () => {
@@ -115,7 +116,7 @@ export const UnreadStateBridge = ({
         (next) => {
           if (!active || currentGeneration !== generation) return;
           latest = {api: authenticatedApi, scopeKey, state: next};
-          publish();
+          publish(true);
           clearTimeout(retryTimer);
           retryTimer = undefined;
           retryDelay = 1_000;
