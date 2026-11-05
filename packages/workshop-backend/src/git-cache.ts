@@ -822,18 +822,16 @@ export class WorkspaceGitCache {
    * is what lets G simulate a queued cross-remote push); an absent onRemote object is not
    * pulled -- G's own remote has it, and null tells G to ask its remote itself.
    *
-   * A blob over MAX_BUFFERED_BLOB_SIZE comes back as a reader, never assembled: a chunked one,
-   * and a legacy inline one too, since `GitCache.get()` streams by size.
+   * A chunked blob comes back as a reader, never assembled. Anything else comes back whole,
+   * including a legacy inline blob over MAX_BUFFERED_BLOB_SIZE (at most 8 MB), which
+   * `GitCache.get()` streams by size: it is inflated once, not again by a reader.
    */
   async readForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid, hints?: GitPullHints)
       : Promise<GatekeeperObject | null> {
     if (!await this.#heldForGatekeeper(gatekeeperId, oid, hints)) return null;
     let object = this.#readLocalShallow(oid);
     if (object === undefined) return null;
-    if (object.type === "blob" &&
-        (object.payload === undefined || object.payload.byteLength > MAX_BUFFERED_BLOB_SIZE)) {
-      return { type: "blob", reader: this.openLocalBlob(oid)! };
-    }
+    if (object.payload === undefined) return { type: "blob", reader: this.openLocalBlob(oid)! };
     return object;
   }
 
@@ -1850,7 +1848,8 @@ export class GitCacheImpl extends RpcTarget implements GitCache {
     let object = await this.cache.readForGatekeeper(this.gatekeeperId, id, hints);
     if (object === null) return null;
     // A Uint8Array iff at most MAX_BUFFERED_BLOB_SIZE, as the interface promises. Over it is a
-    // blob's reader, or, rarely, a whole tree of a very large directory.
+    // chunked blob's reader, or, rarely, a whole legacy inline blob or the tree of a very large
+    // directory.
     if (object.payload === undefined) {
       return { type: object.type, content: blobByteStream(object.reader) };
     } else if (object.payload.byteLength > MAX_BUFFERED_BLOB_SIZE) {
