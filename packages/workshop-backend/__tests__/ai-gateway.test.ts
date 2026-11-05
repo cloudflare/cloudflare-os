@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  SUGGESTED_MODELS, type AiModelProvider, type GatewayModel, type GatewayModelCapabilities,
+  AUTO_ROUTER_MODEL_ID, SUGGESTED_MODELS, type AiModelProvider, type GatewayModel,
+  type GatewayModelCapabilities,
 } from "@gadgets/workshop-shared/api";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
@@ -164,11 +165,11 @@ describe("GatewayModels", () => {
     CF_AI_GATEWAY_API_TOKEN: "gateway-token",
     CF_AI_GATEWAY_PROVIDERS: providers,
   });
-  type Config = Pick<AdminConfig, "modelModes" | "addedProviders" | "addedModels" |
-      "userModelsEnabled" | "modelSettings" | "defaultReasoning">;
+  type Config = Pick<AdminConfig, "modelModes" | "addedProviders" | "providerOrder" |
+      "addedModels" | "modelOrder" | "userModelsEnabled" | "modelSettings" | "defaultReasoning">;
   const NO_CONFIG: Config = {
-    modelModes: {}, addedProviders: [], addedModels: [], userModelsEnabled: true,
-    modelSettings: {}, defaultReasoning: null,
+    modelModes: {}, addedProviders: [], providerOrder: [], addedModels: [], modelOrder: {},
+    userModelsEnabled: true, modelSettings: {}, defaultReasoning: null,
   };
   const gatewayModels = (config: Partial<Config> = {}, providers?: string) =>
       new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), { ...NO_CONFIG, ...config });
@@ -277,6 +278,44 @@ describe("GatewayModels", () => {
     // Haiku 4.5 is hidden, so the last Anthropic catalog model the pickers list is Fable 5.1.
     expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-fable-5-1") + 1);
     expect(listed.indexOf("claude-test-2")).toBe(listed.indexOf("claude-test") + 1);
+  });
+
+  it("lists each provider's models in the admin's order, the rest after in their own", () => {
+    const hidden = "@cf/zai-org/glm-5.3-flash";
+    expect(SUGGESTED_MODELS.cloudflare[hidden]?.hidden).toBe(true);
+    const models = gatewayModels({
+      addedModels: ADDED,
+      // The added model first, then a hidden catalog model; a stale ID changes nothing.
+      modelOrder: { cloudflare: ["@cf/test/added", "@cf/test/removed", hidden] },
+    });
+    // Each provider's models stay together, and other providers keep their order.
+    expect(ids(models.all)).toEqual([
+      "@cf/test/added", hidden,
+      ...Object.keys(SUGGESTED_MODELS.cloudflare).filter(id => id !== hidden),
+      ...Object.keys(SUGGESTED_MODELS.anthropic), "claude-test", "claude-test-2",
+      ...Object.keys(SUGGESTED_MODELS.openai),
+    ]);
+    // The default model is the first one enabled.
+    expect(models.list("language")[0]?.id).toBe("@cf/test/added");
+  });
+
+  it("puts the default model wherever the provider order leads", () => {
+    const providers = "cloudflare-auto-router,cloudflare";
+    expect(gatewayModels({}, providers).list("language")[0]?.id).toBe(AUTO_ROUTER_MODEL_ID);
+    expect(gatewayModels({ providerOrder: ["cloudflare"] }, providers).list("language")[0]?.id)
+        .toBe(Object.keys(SUGGESTED_MODELS.cloudflare)[0]);
+  });
+
+  it("lists the providers in the admin's order, the rest after in catalog order", () => {
+    const models = gatewayModels({ providerOrder: ["openai", "anthropic"] });
+    expect(ids(models.all)).toEqual([
+      ...Object.keys(SUGGESTED_MODELS.openai),
+      ...Object.keys(SUGGESTED_MODELS.anthropic),
+      ...Object.keys(SUGGESTED_MODELS.cloudflare),
+    ]);
+    expect(models.providerSettings.map(({ provider }) => provider)).toEqual(
+        ["openai", "anthropic", "cloudflare-auto-router", "cloudflare", "google"]);
+    expect(models.addableProviders).toEqual(["openai", "anthropic", "cloudflare"]);
   });
 
   it("resolves an added model with its limits in the config", () => {

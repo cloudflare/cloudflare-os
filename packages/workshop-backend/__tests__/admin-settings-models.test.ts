@@ -60,7 +60,12 @@ function adminSettings(vars: object = GATEWAY, name = `admin-settings-models-${+
       });
   const settings = (): Promise<AdminConfig["modelSettings"]> =>
       inDo(admin => admin.getAdminConfig().modelSettings);
-  return { inDo, stored, settings, put, mirror, name };
+  const order = (): Promise<Pick<AdminConfig, "providerOrder" | "modelOrder">> =>
+      inDo(admin => {
+        let { providerOrder, modelOrder } = admin.getAdminConfig();
+        return { providerOrder, modelOrder };
+      });
+  return { inDo, stored, settings, order, put, mirror, name };
 }
 
 describe("AdminSettings gateway model modes", () => {
@@ -1003,12 +1008,102 @@ describe("AdminSettings gateway providers", () => {
   });
 });
 
+// The providers and models the admin panel is shown, in order.
+const listed = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async admin => {
+  let { providerSettings, models } = (await admin.getSettings("admin")).gatewayModels!;
+  return { providerIds: providerSettings.map(({ provider }) => provider), models };
+});
+
+describe("AdminSettings gateway order", () => {
+  // The providers AI Gateway serves, in catalog order.
+  const SERVED = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"] as const;
+
+  it("lists a provider's models, added ones among them, in the order set", async () => {
+    const { inDo, order } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+    const anthropic = [...Object.keys(SUGGESTED_MODELS.anthropic), ADDED.id];
+    const reordered = [ADDED.id, ...anthropic.slice(0, -1).toReversed()];
+    await inDo(admin => admin.setGatewayModelOrder("anthropic", reordered, ACTOR));
+
+    expect(await order()).toStrictEqual(
+        { providerOrder: [], modelOrder: { anthropic: reordered } });
+    const { models } = await listed(inDo);
+    expect(models.filter(model => model.provider === "anthropic").map(model => model.id))
+        .toEqual(reordered);
+    // Another provider's order stays its own.
+    expect(models.filter(model => model.provider === "cloudflare").map(model => model.id))
+        .toEqual(Object.keys(SUGGESTED_MODELS.cloudflare));
+  });
+
+  it("gives a model added again under a removed ID its old place", async () => {
+    const { inDo } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+    await inDo(admin => admin.setGatewayModelOrder(
+        "anthropic", [ADDED.id, ...Object.keys(SUGGESTED_MODELS.anthropic)], ACTOR));
+    await inDo(admin => admin.removeGatewayModel(ADDED.id, ACTOR));
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+
+    const { models } = await listed(inDo);
+    expect(models.find(model => model.provider === "anthropic")?.id).toBe(ADDED.id);
+  });
+
+  it("lists the providers, and so their models, in the order set", async () => {
+    const { inDo, order } = adminSettings();
+    const reordered = ["anthropic", ...SERVED.filter(provider => provider !== "anthropic")];
+    await inDo(admin => admin.setGatewayProviderOrder(reordered, ACTOR));
+
+    expect(await order()).toStrictEqual({ providerOrder: reordered, modelOrder: {} });
+    const { providerIds, models } = await listed(inDo);
+    expect(providerIds).toEqual(reordered);
+    expect(models.map(model => model.provider)).toEqual([
+      ...Object.keys(SUGGESTED_MODELS.anthropic).map(() => "anthropic"),
+      ...Object.keys(SUGGESTED_MODELS.cloudflare).map(() => "cloudflare"),
+    ]);
+  });
+
+  it.each([
+    ["leaves a model out", (ids: string[]) => ids.slice(1)],
+    ["lists a model twice", (ids: string[]) => [ids[0]!, ...ids.slice(0, -1)]],
+    ["lists a model the provider lacks", (ids: string[]) => [...ids.slice(1), "gpt-6-sol"]],
+  ])("refuses a model order that %s, storing nothing", async (_, reorder) => {
+    const { inDo, order, put } = adminSettings();
+    const ids = Object.keys(SUGGESTED_MODELS.anthropic);
+    await expect(inDo(admin => admin.setGatewayModelOrder("anthropic", reorder(ids), ACTOR)))
+        .rejects.toThrow(
+            'The order of the "anthropic" models must list each of them exactly once.');
+    expect(await order()).toStrictEqual({ providerOrder: [], modelOrder: {} });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("refuses a model order for a provider that is off or not served", async () => {
+    const { inDo } = adminSettings();
+    await expect(inDo(admin => admin.setGatewayModelOrder(
+        "openai", Object.keys(SUGGESTED_MODELS.openai), ACTOR)))
+        .rejects.toThrow('Provider "openai" is off.');
+    await expect(inDo(admin => admin.setGatewayModelOrder("ollama", [], ACTOR)))
+        .rejects.toThrow('Provider "ollama" is not served through AI Gateway.');
+  });
+
+  it.each([
+    ["leaves a provider out", SERVED.slice(1)],
+    ["lists a provider twice", [SERVED[1], ...SERVED.slice(1)]],
+    ["lists a provider AI Gateway doesn't serve", [...SERVED.slice(1), "ollama"]],
+  ] as const)("refuses a provider order that %s, storing nothing", async (_, providers) => {
+    const { inDo, order, put } = adminSettings();
+    await expect(inDo(admin => admin.setGatewayProviderOrder([...providers], ACTOR)))
+        .rejects.toThrow(
+            "The provider order must list each provider AI Gateway serves exactly once.");
+    expect(await order()).toStrictEqual({ providerOrder: [], modelOrder: {} });
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
 // The first of Workers AI's suggested models, which is the one a test of that provider asks.
-const KIMI = "@cf/moonshotai/kimi-k2.7-code";
+const DEEPSEEK_FLASH = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 
 // One event of a Workers AI chat completion, as the gateway streams it.
 const chunk = (choice: object, rest: object = {}) => `data: ${JSON.stringify({
-  id: "completion", object: "chat.completion.chunk", created: 0, model: KIMI,
+  id: "completion", object: "chat.completion.chunk", created: 0, model: DEEPSEEK_FLASH,
   choices: [{ index: 0, ...choice }], ...rest,
 })}\n\n`;
 function completion(text: string): Response {
@@ -1107,8 +1202,8 @@ describe("AdminSettings.testGatewayProvider", () => {
     const before = await inDo(admin => admin.getAdminConfig());
     const { result, entries } = await test("cloudflare");
 
-    expect(KIMI).toBe(Object.keys(SUGGESTED_MODELS.cloudflare)[0]);
-    expect(result).toStrictEqual({ model: KIMI, ok: true });
+    expect(DEEPSEEK_FLASH).toBe(Object.keys(SUGGESTED_MODELS.cloudflare)[0]);
+    expect(result).toStrictEqual({ model: DEEPSEEK_FLASH, ok: true });
     expect(requests).toHaveLength(1);
     const [{ url, headers, body }] = requests;
     expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
@@ -1117,12 +1212,12 @@ describe("AdminSettings.testGatewayProvider", () => {
         .toStrictEqual({ user: "admin@example.com" });
     // Every test sends the same request, which a caching gateway must not answer itself.
     expect(headers.get("cf-aig-skip-cache")).toBe("true");
-    expect(body.model).toBe(KIMI);
+    expect(body.model).toBe(DEEPSEEK_FLASH);
     expect(body.max_completion_tokens ?? body.max_tokens).toBe(16);
 
     expect(entries).toEqual([{
       component: "workshop.admin.settings", event: "gateway.provider.test",
-      message: "tested an AI Gateway provider", modelId: KIMI, outcome: "ok",
+      message: "tested an AI Gateway provider", modelId: DEEPSEEK_FLASH, outcome: "ok",
       durationMs: expect.any(Number),
     }]);
     // Nothing is stored.
@@ -1134,13 +1229,14 @@ describe("AdminSettings.testGatewayProvider", () => {
       async () => {
     const { test, requests } = tested(refusal(401, "Incorrect API key provided."));
     const { result, entries } = await test("cloudflare");
-    expect(result).toStrictEqual(
-        { model: KIMI, ok: false, status: 401, message: "401 Incorrect API key provided." });
+    expect(result).toStrictEqual({
+      model: DEEPSEEK_FLASH, ok: false, status: 401, message: "401 Incorrect API key provided.",
+    });
 
     expect(entries).toEqual([{
       component: "workshop.admin.settings", event: "gateway.provider.test",
-      message: "tested an AI Gateway provider", modelId: KIMI, outcome: "error", statusCode: 401,
-      durationMs: expect.any(Number),
+      message: "tested an AI Gateway provider", modelId: DEEPSEEK_FLASH, outcome: "error",
+      statusCode: 401, durationMs: expect.any(Number),
     }]);
     const prompt = (requests[0]!.body.messages as { content: string }[]).at(-1)!.content;
     expect(prompt).toBeTypeOf("string");
@@ -1222,8 +1318,8 @@ describe("AdminSettings.testGatewayProvider", () => {
       const { result, entries } = await test("cloudflare");
       expect(timeout).toHaveBeenCalledWith(15_000);
       expect(requests).toHaveLength(1);
-      expect(result).toStrictEqual({ model: KIMI, ok: false, message: TIMED_OUT });
-      expect(entries).toMatchObject([{ modelId: KIMI, outcome: "error" }]);
+      expect(result).toStrictEqual({ model: DEEPSEEK_FLASH, ok: false, message: TIMED_OUT });
+      expect(entries).toMatchObject([{ modelId: DEEPSEEK_FLASH, outcome: "error" }]);
       expect(entries[0]!.statusCode).toBeUndefined();
     } finally {
       timeout.mockRestore();
@@ -1233,7 +1329,7 @@ describe("AdminSettings.testGatewayProvider", () => {
   it("tests a provider that is off, and leaves it off", async () => {
     const { test, inDo } = tested(
         () => completion("OK"), { CF_AI_GATEWAY_PROVIDERS: "anthropic" });
-    expect((await test("cloudflare")).result).toStrictEqual({ model: KIMI, ok: true });
+    expect((await test("cloudflare")).result).toStrictEqual({ model: DEEPSEEK_FLASH, ok: true });
     const { stored, view } = await providers(inDo);
     expect(stored).toStrictEqual([]);
     expect(view[1]).toStrictEqual({ provider: "cloudflare", needsApiToken: false });
@@ -1289,7 +1385,7 @@ describe("AdminSettings.testGatewayProvider", () => {
     const { test } = tested(refusal(403, said));
     const { result, entries } = await test("cloudflare");
     expect(result).toStrictEqual({
-      model: KIMI, ok: false, status: 403,
+      model: DEEPSEEK_FLASH, ok: false, status: 403,
       message: `403 bad key: [redacted] was refused ${"x".repeat(400)}`.slice(0, 300),
     });
     expect(JSON.stringify(entries)).not.toContain("gateway-token");
@@ -1318,7 +1414,7 @@ describe("AdminSettings.testGatewayProvider", () => {
         const view = (await admin.getSettings("admin")).gatewayModels!;
         expect(view.models.find(model => model.id === "claude-fable-5-1")?.mode).toBe("hidden");
         answer.resolve(completion("OK"));
-        expect(await test).toStrictEqual({ model: KIMI, ok: true });
+        expect(await test).toStrictEqual({ model: DEEPSEEK_FLASH, ok: true });
       });
     } finally {
       logged.mockRestore();
@@ -1327,16 +1423,19 @@ describe("AdminSettings.testGatewayProvider", () => {
 });
 
 // What a request asks its model for, in each API's own terms: the reasoning and the response
-// cap. pi gives a Claude whose effort it manages that effort in a closing system message.
+// cap. pi gives a Claude whose effort it manages that effort in a closing system message, and an
+// OpenAI model that takes a mid-conversation effort that effort in a configuration_update item.
 const asked = ({ body }: { body: Record<string, unknown> }) => {
-  const { messages, thinking, output_config, reasoning } = body as {
+  const { messages, input, thinking, output_config, reasoning } = body as {
     messages?: { output_config?: { effort: string } }[],
+    input?: { type?: string, reasoning?: { effort: string } }[],
     thinking?: { type: string, budget_tokens?: number },
     output_config?: { effort: string }, reasoning?: { effort: string },
   };
   return {
     thinking: thinking?.type, budget: thinking?.budget_tokens,
     effort: messages?.at(-1)?.output_config?.effort ?? output_config?.effort ??
+        input?.findLast(item => item.type === "configuration_update")?.reasoning?.effort ??
         reasoning?.effort ?? body.reasoning_effort,
     cap: body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens,
   };
@@ -1344,6 +1443,7 @@ const asked = ({ body }: { body: Record<string, unknown> }) => {
 
 describe("AdminSettings.testGatewayModel", () => {
   const GLM = "@cf/zai-org/glm-5.2";
+  const KIMI = "@cf/moonshotai/kimi-k2.7-code";
   const OPUS = "claude-opus-5-5";
   const SONNET_5 = "claude-sonnet-5";
   const EVERY_PROVIDER = { CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" };
@@ -1794,6 +1894,10 @@ describe("AdminSettings outside AI Gateway mode", () => {
     await expect(inDo(admin => admin.setDefaultReasoning("low", ACTOR)))
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setGatewayProviderEnabled("openai", true, ACTOR)))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayProviderOrder(["openai"], ACTOR)))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayModelOrder("openai", [], ACTOR)))
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.testGatewayProvider("anthropic", "admin")))
         .rejects.toThrow(NOT_GATEWAY);

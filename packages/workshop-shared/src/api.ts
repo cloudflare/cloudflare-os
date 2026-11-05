@@ -1637,7 +1637,7 @@ export const ADMIN_SETTING_METHODS = [
   "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
-  "setAdminAuditRetentionDays",
+  "setAdminAuditRetentionDays", "setGatewayProviderOrder", "setGatewayModelOrder",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -1919,8 +1919,9 @@ export interface AdminApi {
   setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void>;
 
   /**
-   * Add a model to the ones the deployment provides, listed after its provider's suggested models
-   * and 'enabled' by default. Throws if the model is malformed (an empty or over-long ID or name,
+   * Add a model to the ones the deployment provides, 'enabled' by default and listed where its
+   * provider's order puts it (see setGatewayModelOrder): after the provider's other models unless
+   * the order names its ID. Throws if the model is malformed (an empty or over-long ID or name,
    * an over-long `behavesLike`, a token limit that isn't a positive integer), if the gateway does
    * not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or
    * added model already has its ID, if the model runtime does not know its `behavesLike` under
@@ -1994,6 +1995,28 @@ export interface AdminApi {
    * minted for one of its models, which setUserModelsEnabled(false) does.
    */
   setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void>;
+
+  /**
+   * List the providers, and so their models, in the order `providers` gives: in the admin's and
+   * users' model pickers, and for the default model, which is the first one enabled. Throws
+   * unless `providers` lists each provider of AdminSettingsView.gatewayModels.providerSettings,
+   * on or off, exactly once.
+   *
+   * A provider a later release adds follows the listed ones.
+   */
+  setGatewayProviderOrder(providers: AiModelProvider[]): Promise<void>;
+
+  /**
+   * List one provider's models in the order `modelIds` gives, which also decides the provider's
+   * first model and so may change the default model (see setGatewayProviderOrder). Throws for a
+   * provider the gateway does not serve or that is off, and unless `modelIds` lists each of the
+   * provider's gateway models exactly once: suggested and added, in every mode.
+   *
+   * A model that joins the provider later, added or suggested by a later release, follows the
+   * listed ones. A removed model keeps its place until the next call, so one added again under its
+   * ID takes the place back.
+   */
+  setGatewayModelOrder(provider: AiModelProvider, modelIds: string[]): Promise<void>;
 
   /**
    * Send one small request to the first of a provider's SUGGESTED_MODELS through the gateway, as
@@ -2663,7 +2686,7 @@ type SuggestedModel = {
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
   // First so that, when its provider is on, Auto leads the model pickers and is the model a new
-  // user or chat gets by default.
+  // user or chat gets by default, unless the admin lists the providers in another order.
   "cloudflare-auto-router": {
     // The router answers with whichever model it picks, so the window is the smallest documented
     // in its pool (https://developers.cloudflare.com/ai-gateway/features/auto-router/#models:
@@ -2675,20 +2698,28 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "cloudflare": {
+    // First, so that it is the Workers AI model a deployment defaults to.
+    "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+      name: "DeepSeek V4.1 Flash (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/zai-org/glm-5.3": {
+      name: "GLM 5.3 (Workers AI)", contextWindow: 1048576, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.2": {
       name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.3-flash": {
       name: "GLM 5.3 Flash (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/cloudflare/clef": {name: "Clef (Workers AI)", contextWindow: 65536, kind: "decision"},
     "@cf/cloudflare/clef-flash": {

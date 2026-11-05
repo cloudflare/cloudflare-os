@@ -95,7 +95,8 @@ them:
   `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and
   `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
 - In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`,
-  `addedModels`, `modelSettings`, `addedProviders`, `userModelsEnabled`). `GatewayModels` in
+  `addedModels`, `modelSettings`, `addedProviders`, `providerOrder`, `modelOrder`,
+  `userModelsEnabled`). `GatewayModels` in
   `ai-gateway.ts` is the only place that merges them with `SUGGESTED_MODELS`, and *disabled* is
   enforced where a model is about to run: `user.ts:getChatContext()` and
   `LanguageModelGatekeeper.startSession()`. The Auto Router model's pool (`modelSettings[id]

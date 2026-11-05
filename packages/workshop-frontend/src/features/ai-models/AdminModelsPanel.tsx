@@ -21,6 +21,7 @@ import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { AddGatewayModelForm } from './AddGatewayModelForm'
 import { GatewayModelRow, MODES } from './GatewayModelRow'
 import { GatewayProviders } from './GatewayProviders'
+import { MOVE_BUTTONS_SELECTOR, rowMove } from './MoveButtons'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { PROVIDER_LABELS, REASONING_LEVEL_LABELS, allowedModelSuggestions } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
@@ -151,11 +152,18 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   // A write disables every control, and a browser takes focus from a control that becomes disabled
   // without giving it back. So the control that had focus when the write began gets it again once
   // the controls are enabled, unless focus has gone elsewhere since. A control that left the
-  // document in the meantime takes no focus.
+  // document in the meantime takes no focus. A move to either end of a list leaves the button that
+  // made it disabled, so focus goes to the row's other move button instead.
   const focusBeforeWrite = useRef<HTMLElement | null>(null)
   useEffect(() => {
     if (busy) return
-    if (document.activeElement === document.body) focusBeforeWrite.current?.focus()
+    if (document.activeElement === document.body) {
+      const control = focusBeforeWrite.current
+      const moves = control instanceof HTMLButtonElement && control.disabled
+        ? control.closest(MOVE_BUTTONS_SELECTOR) : null
+      const target = moves ? moves.querySelector<HTMLButtonElement>('button:not(:disabled)') : control
+      target?.focus()
+    }
     focusBeforeWrite.current = null
   }, [busy])
 
@@ -232,6 +240,14 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     write(() => admin.setGatewayProviderEnabled(provider, enabled))
       .catch((err) => reportFailure(`Couldn’t update ${PROVIDER_LABELS[provider]}`, err))
 
+  const changeProviderOrder = (providers: AiModelProvider[]) =>
+    write(() => admin.setGatewayProviderOrder(providers))
+      .catch((err) => reportFailure('Couldn’t reorder the providers', err))
+
+  const changeModelOrder = (provider: AiModelProvider, modelIds: string[]) =>
+    write(() => admin.setGatewayModelOrder(provider, modelIds))
+      .catch((err) => reportFailure(`Couldn’t reorder the ${PROVIDER_LABELS[provider]} models`, err))
+
   // Runs when the add form's Model ID field is first turned to, and at most once for as long as
   // the panel is mounted: the list is several megabytes, and a failure only costs the suggestions.
   const loadModelsDev = () => {
@@ -261,12 +277,13 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     setPendingDisable(null)
   }
 
-  const catalogByProvider = new Map<AiModelProvider, AdminModelView[]>()
+  // Each provider's models, added ones among them, in the order the server lists them, which is the
+  // order users see them in.
+  const byProvider = new Map<AiModelProvider, AdminModelView[]>()
   for (const model of gatewayModels.models) {
-    if (model.added) continue
-    const group = catalogByProvider.get(model.provider)
+    const group = byProvider.get(model.provider)
     if (group) group.push(model)
-    else catalogByProvider.set(model.provider, [model])
+    else byProvider.set(model.provider, [model])
   }
   const added = gatewayModels.models.filter((model) => model.added)
   const { userModelsEnabled, defaultReasoning } = gatewayModels
@@ -317,6 +334,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
           providers={gatewayModels.providerSettings}
           busy={busy}
           onEnabledChange={changeProviderEnabled}
+          onOrderChange={changeProviderOrder}
           onTest={(provider) => admin.testGatewayProvider(provider)}
         />
       </section>
@@ -335,28 +353,34 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
       </p>
 
       <div className="flex flex-col gap-6">
-        {catalogByProvider.size === 0 && (
+        {byProvider.size === 0 && (
           <p className="text-sm text-kumo-subtle">
             This version’s catalog has no models for the providers that are on.
           </p>
         )}
 
-        {[...catalogByProvider].map(([provider, models]) => (
+        {[...byProvider].map(([provider, models]) => (
           <section key={provider}>
             <h3 className={GROUP_HEADING}>{PROVIDER_LABELS[provider]}</h3>
             <ul className="flex flex-col gap-2">
-              {models.map((model) => (
+              {models.map((model, index) => (
                 <GatewayModelRow
                   key={model.id}
                   model={model}
                   defaultReasoning={defaultReasoning}
+                  behavesLikeName={model.added
+                    ? models.find((listed) => !listed.added && listed.id === model.behavesLike)?.name
+                    : undefined}
                   poolProviders={gatewayModels.providers}
                   poolSuggestions={poolSuggestions}
                   busy={busy}
                   test={modelTests.tests.get(model.id)}
+                  move={rowMove(models.map(({ id }) => id), index,
+                    (modelIds) => changeModelOrder(provider, modelIds))}
                   onModeChange={(mode) => requestMode(model, mode)}
                   onSettingsChange={(settings) => changeSettings(model, settings)}
                   onTest={() => modelTests.startTest(model.id)}
+                  onRemove={model.added ? () => setPendingRemoval(model) : undefined}
                 />
               ))}
             </ul>
@@ -368,32 +392,14 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
           {added.length === 0 ? (
             <p className="text-sm text-kumo-subtle">No models added.</p>
           ) : (
-            <>
-              <ul className="flex flex-col gap-2">
-                {added.map((model) => (
-                  <GatewayModelRow
-                    key={model.id}
-                    model={model}
-                    defaultReasoning={defaultReasoning}
-                    behavesLikeName={catalogByProvider.get(model.provider)
-                      ?.find((listed) => listed.id === model.behavesLike)?.name}
-                    busy={busy}
-                    test={modelTests.tests.get(model.id)}
-                    onModeChange={(mode) => requestMode(model, mode)}
-                    onSettingsChange={(settings) => changeSettings(model, settings)}
-                    onTest={() => modelTests.startTest(model.id)}
-                    onRemove={() => setPendingRemoval(model)}
-                  />
-                ))}
-              </ul>
-              <p className="mt-2 text-xs leading-4 text-kumo-subtle">
-                To shut a model off, disable it. Removing a model frees its ID instead: gadget
-                model bindings made for it{' '}
-                {userModelsEnabled
-                  ? 'then run, even if the model was disabled.'
-                  : 'then stay stopped for as long as users may not add their own models.'}
-              </p>
-            </>
+            <p className="text-sm text-kumo-subtle">
+              The models this deployment added are listed under their providers, marked Added. To
+              shut one off, disable it. Removing a model frees its ID instead: gadget model
+              bindings made for it{' '}
+              {userModelsEnabled
+                ? 'then run, even if the model was disabled.'
+                : 'then stay stopped for as long as users may not add their own models.'}
+            </p>
           )}
 
           <h4 className="mb-2 mt-5 text-sm font-medium text-kumo-default">Add a model</h4>

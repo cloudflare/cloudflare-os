@@ -62,3 +62,24 @@ needed; cached tasks forward it without changing the result fingerprint.
 Do not remove `scripts/assert-workerd.ts` from suites that require workerd: it prevents a failed
 pool from appearing to pass under Node. On a Mac, prevent idle sleep for the duration of a benchmark
 (`caffeinate -is <command>`) before interpreting wall-clock timeout results.
+
+## Local instances
+
+- `pnpm run-local --port <n>` serves the built frontend from the backend's own origin, so it runs
+  beside another checkout's servers with nothing on :3000, and connect handoffs follow the port.
+  It builds the frontend first and has no hot reload. For UI work, run
+  `PUBLIC_BASE_URL=http://localhost:<m> pnpm dev-server --port <n>` and
+  `VITE_BACKEND_HOST=localhost:<n> pnpm --filter @gadgets/workshop-frontend exec vite --port <m> --strictPort`.
+- Point `pnpm cf-os api` at it with `CFOS_API_URL=http://localhost:<n>`; it defaults to :8787.
+- A repo-root `.dev.vars` is loaded automatically; values already in the shell win.
+- AI Gateway mode needs `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_PROVIDERS`
+  (`cloudflare` for `@cf/*` models) and a transport: `--use-workers-ai-binding`, which needs a
+  Wrangler login (set `CLOUDFLARE_ACCOUNT_ID` if it has several accounts), or
+  `CF_AI_GATEWAY_API_TOKEN` with `CF_AI_GATEWAY_USE_BINDING=false`. `google` always needs the token.
+  Listing models and changing admin model settings send nothing to the gateway, so placeholder
+  values are enough for them.
+- workshop-backend's `test:run` runs Vitest twice, unit then integration, so a file argument only
+  reaches the integration run. For one unit file, run the script's two build steps, then
+  `pnpm exec vitest run <file>` in `packages/workshop-backend`.
+- To see what a request sent to a model, read the AI Gateway logs, or add a temporary log in the
+  payload hook (`onPayload` in `ai-models.ts`) and revert it before committing.

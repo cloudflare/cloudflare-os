@@ -215,6 +215,25 @@ describe('AdminAuditPanel', () => {
       for (const glyph of glyphs) expect(glyph.getAttribute('aria-hidden')).toBe('true')
     })
 
+    it('names the provider order, and each provider’s model order, as orders', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([settingRecord({
+        method: 'setGatewayModelOrder',
+        changes: [
+          { setting: 'providerOrder', before: '[]', after: '["openai"]' },
+          { setting: 'modelOrder', key: 'openai', after: '["gpt-6-luna"]' },
+        ],
+      })]))
+
+      await render(settingsWith(), admin)
+
+      const changes = [...recentItems()[0].querySelectorAll('li')].map((li) => li.textContent)
+      expect(changes).toEqual([
+        'Order of providers[]→ changed to ["openai"]',
+        'Order of models · openai—none→ changed to ["gpt-6-luna"]',
+      ])
+    })
+
     it('names each long value’s toggle after its change and side', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([settingRecord({

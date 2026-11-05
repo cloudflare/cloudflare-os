@@ -67,7 +67,7 @@ overrides:
   # pi-agent-core asks for pi-ai by a caret range, which resolves to the newest pi-ai rather than
   # the one workshop-backend pins. The agent loop and the backend's model handles must share one
   # pi-ai (its model registry and types), so the agent core gets the backend's.
-  '@earendil-works/pi-agent-core>@earendil-works/pi-ai': 1.1.0
+  '@earendil-works/pi-agent-core>@earendil-works/pi-ai': 1.5.0
 
 peerDependencyRules:
   allowedVersions:

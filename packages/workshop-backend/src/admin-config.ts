@@ -49,20 +49,31 @@ function parseFormats(value: unknown): FormatCuration[] {
 }
 
 /**
- * `formats` rearranged into the order `blueprintIds` gives. Throws unless that is a permutation of
- * what is promoted, so a stale client can't silently drop a format.
+ * Throws an Error with `message` unless `order` lists each of `ids` exactly once, so that a stale
+ * client reordering a list can't silently drop an entry.
  *
- * Uniqueness is checked separately from length because the lookup Map dedupes: [A, A] against
- * promoted [A, B] passes both a length and a membership test, drops B, and leaves a duplicate that
- * makes every later reorder throw.
+ * Uniqueness is checked separately from length because the lookup Set dedupes: [A, A] against
+ * [A, B] passes both a length and a membership test, drops B, and leaves a duplicate that makes
+ * every later reorder throw.
+ */
+export function assertPermutation(order: readonly string[], ids: Iterable<string>, message: string)
+    : void {
+  let known = new Set(ids);
+  if (order.length !== known.size || new Set(order).size !== order.length
+      || order.some(id => !known.has(id))) {
+    throw new Error(message);
+  }
+}
+
+/**
+ * `formats` rearranged into the order `blueprintIds` gives. Throws unless that is a permutation of
+ * what is promoted (see assertPermutation).
  */
 export function reorderFormats(formats: FormatCuration[], blueprintIds: string[])
     : FormatCuration[] {
   let byId = new Map(formats.map(f => [f.blueprintId, f]));
-  if (blueprintIds.length !== byId.size || new Set(blueprintIds).size !== blueprintIds.length
-      || blueprintIds.some(id => !byId.has(id))) {
-    throw new Error("Format order must list each promoted format exactly once.");
-  }
+  assertPermutation(blueprintIds, byId.keys(),
+      "Format order must list each promoted format exactly once.");
   return blueprintIds.map(id => byId.get(id)!);
 }
 
@@ -381,6 +392,11 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
               return settings ? [[id, settings]] : [];
             }))
           : {};
+  let modelOrder: Partial<Record<AiModelProvider, string[]>> =
+      p.modelOrder && typeof p.modelOrder === "object"
+          ? Object.fromEntries(Object.entries(p.modelOrder).flatMap(([provider, ids]) =>
+              isProvider(provider) ? [[provider, [...new Set(strings(ids))]]] : []))
+          : {};
   let signupsEnabled = typeof p.signupsEnabled === "boolean"
     ? p.signupsEnabled
     : DEFAULT_ADMIN_CONFIG.signupsEnabled;
@@ -408,7 +424,11 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     addedProviders: Array.isArray(p.addedProviders)
       ? [...new Set(p.addedProviders.filter(isProvider))]
       : [],
+    providerOrder: Array.isArray(p.providerOrder)
+      ? [...new Set(p.providerOrder.filter(isProvider))]
+      : [],
     addedModels: parseAddedModels(p.addedModels),
+    modelOrder,
     modelSettings,
     defaultReasoning: isReasoningLevel(p.defaultReasoning) ? p.defaultReasoning : null,
     userModelsEnabled: typeof p.userModelsEnabled === "boolean"
@@ -502,7 +522,8 @@ function diffMap(field: string, before: Record<string, unknown>, after: Record<s
  *     entry alone; then, when the entries both sides hold are in a different relative order, one
  *     change without `key` whose values are the lists of every id, in order;
  *   - a map (an object, not an array: banner, disabledResources, ambientGatekeeperModes,
- *     modelModes, modelSettings): one change per own key, in sorted order, whose value differs;
+ *     modelModes, modelOrder, modelSettings): one change per own key, in sorted order, whose
+ *     value differs;
  *   - any other field: one change with the whole value.
  * Presence is tested with Object.hasOwn, so a "__proto__" or "constructor" entry is an ordinary
  * one. Empty when nothing differs.
@@ -529,8 +550,8 @@ export function diffAdminConfig(before: AdminConfig, after: AdminConfig): AdminS
  * curates for the people using a deployment, which nothing outside the admin UI should decide.
  */
 export const ADMIN_CONFIG_SEED_FIELDS = [
-  "modelModes", "addedProviders", "addedModels", "modelSettings", "defaultReasoning",
-  "userModelsEnabled", "modelsDevSuggestions",
+  "modelModes", "addedProviders", "providerOrder", "addedModels", "modelOrder", "modelSettings",
+  "defaultReasoning", "userModelsEnabled", "modelsDevSuggestions",
 ] as const satisfies readonly (keyof AdminConfig)[];
 
 /** What ADMIN_CONFIG_SEED may hold. */
