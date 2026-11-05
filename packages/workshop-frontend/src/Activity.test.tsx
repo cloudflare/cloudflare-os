@@ -100,7 +100,9 @@ describe('Activity creation approval', () => {
       async () => {
     auth.authenticatedApi = {
       listGatekeeperVendors: async () =>
-        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [] }],
+        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [{
+          id: 'thing', urlPattern: 'https://test.example/*', creatable: true,
+        }] }],
       subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
         const accounts = [[1, 'test', 'work'], [2, 'test', 'home'], [3, 'other', 'elsewhere']] as const
         for (const [id, vendorId, uniqueName] of accounts) {

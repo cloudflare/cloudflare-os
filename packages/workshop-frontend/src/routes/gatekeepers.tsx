@@ -877,6 +877,7 @@ function ConnectorsPage() {
           onConfirm={handleConfirmConnect}
           accountDescription={activeAccount?.accountDescription}
           credentialsValid={activeAccount?.credentialsValid}
+          grantedResourceTypeIds={activeAccount?.accountDescription.grantedResourceTypeIds}
           grantedResourceUrlPatterns={activeAccount?.accountDescription.grantedResourceUrlPatterns}
           onEnsureResources={handleEnsureResources}
           ensuringResourceUrlPatterns={ensuringResourceUrlPatterns}

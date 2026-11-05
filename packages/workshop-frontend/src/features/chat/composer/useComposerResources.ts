@@ -33,6 +33,7 @@ export type ComposerResourceResolution = {
   vendorId: string;
   /** The `SupportedResource.urlPattern` the URL was matched to. */
   resourceUrlPattern: string;
+  resourceTypeId?: string;
 };
 
 /** A URL the attach modal was opened to configure, and the connection the picker chose for it. */
