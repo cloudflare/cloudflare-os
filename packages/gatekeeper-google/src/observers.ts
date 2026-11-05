@@ -20,6 +20,19 @@
 const OBSERVER_PREFIX = "observer:";
 const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
 const OBSERVER_NONCE_PREFIX = "observer-nonce:";
+/**
+ * Latched by releases that fenced Drive's owner-relative reads instead of reporting them. Nothing
+ * writes it any more, but those reads recorded no tracked set or subresource, so it still closes
+ * admission until a migration retires it with their history.
+ */
+const OBSERVER_WITHHELD_KEY = "observer-withheld";
+/** One of those reads still in flight when its activation died: it also fails closed. */
+const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
+
+/** Refusal when an earlier release read something no observer can be verified against. */
+export const OBSERVER_WITHHELD_MESSAGE =
+  "This binding has made an observation no collaborator can be verified against, so it can no " +
+  "longer be observed.";
 
 /** Persisted state of one tracked set. `true` is the pre-"pending" legacy encoding of observed. */
 export type ObservedSetState = true | "pending" | "observed";
@@ -119,7 +132,10 @@ export class ObserverTracker<T, V> {
   #options: ObserverTrackerOptions<T, V>;
 
   constructor(kv: ObserverKv, options: ObserverTrackerOptions<T, V>) {
-    let reserved = [OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX];
+    let reserved = [
+      OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
+      OBSERVER_WITHHELD_KEY,
+    ];
     if (reserved.includes(options.setPrefix)) {
       throw new Error(`setPrefix must not collide with a reserved prefix (${reserved.join(", ")})`);
     }
@@ -237,11 +253,19 @@ export class ObserverTracker<T, V> {
     };
   }
 
+  /** Whether an earlier release latched admission closed, or left a fenced read unsettled. */
+  #observationWithheld(): boolean {
+    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) return true;
+    for (let _ of this.#kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
+    return false;
+  }
+
   /**
    * Admits `id` as an observer, or throws naming the first set they cannot reach. Bulk verification
    * stages the candidate, then re-lists until every set has been checked before promotion.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
+    if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
     let verifyBatch = this.#options.verifyBatch;
     if (verifyBatch !== undefined) return this.#addBulkObserver(id, verifier, verifyBatch);
 
@@ -276,6 +300,7 @@ export class ObserverTracker<T, V> {
           value => !checked.has(this.#options.encode(value)));
         if (!needsBaselineCheck && pending.length === 0) {
           this.#assertCurrentAdmission(nonceKey, nonce);
+          if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
           this.#kv.put(observerKey, verifier);
           this.#kv.delete(attemptKey);
           this.#kv.delete(nonceKey);
@@ -312,6 +337,7 @@ export class ObserverTracker<T, V> {
       let tracked = this.listTracked();
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {
+        if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
         if (recordObservers) this.#kv.put(observerKey, verifier);
         return;
       }

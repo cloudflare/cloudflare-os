@@ -550,6 +550,21 @@ describe("bulk verification", () => {
     expect([...tracker.observers()]).toEqual([]);
     expect(nonceKeys()).toEqual([]);
   });
+
+  // Earlier releases fenced owner-relative Drive reads this way and recorded nothing else about
+  // them, so a candidate who passes every check must still be refused.
+  it.each(["observer-withheld", "observer-withhold:stranded"])(
+    "still refuses admission over a %s marker an earlier release left",
+    async key => {
+      kv.put(key, true);
+      let verifyBatch = vi.fn(async () => ({ baselineAllowed: true, allowed: [] }));
+      let tracker = makeBulkTracker(verifyBatch);
+
+      await expect(tracker.addObserver("reader", allow())).rejects.toThrow(/can no longer be observed/);
+      expect(verifyBatch).not.toHaveBeenCalled();
+      expect([...tracker.observers()]).toEqual([]);
+    },
+  );
 });
 
 describe("removeObserver", () => {
