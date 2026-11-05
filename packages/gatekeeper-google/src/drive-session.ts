@@ -2,7 +2,7 @@ import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper
 import { CursorPager, type Pager } from "./cursor";
 import {
   FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, SHORTCUT_MIME_TYPE,
-  isFileInvisible, isListableFolderFile, isListableFolderNode,
+  isFileInvisible, isInsufficientScope, isListableFolderFile, isListableFolderNode,
   type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -539,6 +539,8 @@ export class DriveSessionCore extends DriveCoreBase {
     try {
       return await this.api.getFile(fileId);
     } catch (error) {
+      // A missing OAuth scope is an account-wide failure, not an invisible-file result.
+      if (isInsufficientScope(error)) throw error;
       if (this.#scope.kind === "account" && isFileInvisible(error)) {
         await this.authorizeAccountRelative("Check Google Drive file access",
           `Check whether the connected account can access Drive file ${fileId}.`);

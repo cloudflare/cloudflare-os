@@ -179,6 +179,17 @@ describe("Drive session scope", () => {
     expect(events).toEqual(["authorize"]);
   });
 
+  it("propagates missing OAuth scopes without recording a file-access observation", async () => {
+    let { session, authorizations } = core({
+      getFile: async () => { throw new DriveApiRequestError(403, "insufficientPermissions"); },
+    });
+
+    await expect(session.getEntry("file-1")).rejects.toMatchObject({
+      status: 403, reason: "insufficientPermissions",
+    });
+    expect(authorizations).toEqual([]);
+  });
+
   // A file unit proves only metadata access, so it cannot stand for "this account can list the
   // folder": a metadata-only observer would pass it vacuously.
   it("reports a listable parent folder as a folder subresource", async () => {
