@@ -437,6 +437,21 @@ describe("more edits", () => {
     expect(Array.from(table.querySelectorAll("tr"), (tr) => Array.from(tr.cells, (c) => c.textContent))).toEqual([["X", "Y"], ["Z", "W"]]);
   });
 
+  // Text dragged within the document is the browser's to move: claiming its dragover or drop
+  // would stop the move. Text dragged in from elsewhere is still inserted here.
+  it("leaves text dragged within the document to the browser", () => {
+    send([{ id: "dg", html: "<p>First word</p>", version: 1 }]);
+    const drag = (type: string) => {
+      const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { dataTransfer: { types: ["text/plain"], items: [], files: [], getData: () => "" } });
+      editor().querySelector('[data-block-id="dg"]')!.firstChild!.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    drag("dragstart");
+    expect([drag("dragover"), drag("drop")]).toEqual([false, false]);
+    drag("dragend");
+    expect(drag("dragover")).toBe(true);
+  });
+
   // A block deleted remotely while it was typed in, then re-created by this page's save: the next
   // remote change merges against that save, not the text from before the deletion.
   it("merges against a re-created block's save, not the deleted version", async () => {

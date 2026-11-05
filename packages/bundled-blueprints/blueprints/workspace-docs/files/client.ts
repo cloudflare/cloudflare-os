@@ -2427,6 +2427,8 @@ editor.addEventListener("dragstart", (e) => {
 });
 editor.addEventListener("dragend", () => { draggedImage = null; textDragFromEditor = false; editor.classList.remove("drop-target"); });
 editor.addEventListener("dragover", (e) => {
+  // Cancelling dragover claims the drop, and the browser then moves no text.
+  if (textDragFromEditor) return;
   const types = Array.from(e.dataTransfer?.types || []);
   if (draggedImage || types.includes("Files") || types.includes("text/html") || types.includes("text/plain")) {
     e.preventDefault();
