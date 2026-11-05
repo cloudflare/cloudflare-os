@@ -20,9 +20,10 @@ read admin settings, including through `getWebFetchEnv()`, must provide a `BLUEP
 returning `null` selects the default configuration. Assert async refusals with an awaited
 `.rejects.toThrow(...)`, not a synchronous `.toThrow(...)`.
 
-Workspace-restart integration tests must accept either a pending-restart refusal or an already-closed
-RPC session. Assert that old capabilities return no data and a replacement session re-verifies;
-do not require the transient error code to win a round trip against the scheduled abort.
+Workspace-restart integration tests must accept either a pending-restart refusal or an already-broken
+RPC session. Match the pending-restart code or the same failure reported by that stub's `onRpcBroken()`,
+not error wording or an arbitrary rejection. Assert that old capabilities return no data and a
+replacement session re-verifies; do not race the transient error code against the scheduled abort.
 
 For tests that advance time within a daily budget, pin the fake clock to a fixed UTC time before
 seeding credentials and counters. Advancing from the wall clock can cross midnight and legitimately
