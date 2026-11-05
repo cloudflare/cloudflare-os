@@ -261,7 +261,8 @@ export const ReadTimeline = ({
           const action = Symbol();
           latestAction.current = action;
           const previous = {visit: latest.current.visit, jump,
-            target: jumpSequence.current, page: requestedPage.current};
+            target: jumpSequence.current, page: requestedPage.current,
+            horizon: latest.current.chat?.readThroughSequence ?? -1};
           pendingUnread.current++;
           jumpSequence.current = undefined;
           requestedPage.current = undefined;
@@ -275,7 +276,15 @@ export const ReadTimeline = ({
             requestedPage.current = previous.page;
             onUnreadNavigation(!!previous.jump);
             setJump(previous.jump);
-          }).finally(() => { pendingUnread.current--; });
+          }).finally(() => {
+            const current = latest.current.chat;
+            if (--pendingUnread.current === 0 && current?.unreadMessageCount === 0 &&
+                current.readThroughSequence > previous.horizon) {
+              // A newer all-read update could not resume us while the command was pending.
+              // The unchanged pre-command row cannot clear the optimistic unread pause.
+              setVisit(visit => visit && {...visit, paused: false});
+            }
+          });
         },
       }}
     >

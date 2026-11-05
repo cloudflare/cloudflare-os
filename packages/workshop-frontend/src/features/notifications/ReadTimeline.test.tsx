@@ -264,6 +264,7 @@ describe("timeline read/unread experience", () => {
   });
 
   it.each([false, true])("preserves local unread navigation across an intervening arrival delta (ACK first: %s)", async ackFirst => {
+    visibleBottom = 450;
     await render();
     await update(snapshot(1, 2));
     await settle();
@@ -279,6 +280,8 @@ describe("timeline read/unread experience", () => {
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     if (!ackFirst) await act(async () => ack.resolve(true));
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled(); // A changed command still awaits its rewind echo.
     const rewind = snapshot(3, 0);
     await updateChat({...rewind, unreadMessageCount: 3,
       chats: [{...rewind.chats[0], unreadMessageCount: 3}]});
@@ -321,12 +324,22 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
-  it("resumes after another device marks a completed no-op unread selection read", async () => {
+  it.each([false, true])("resumes after a remote read clears a no-op unread selection (ACK first: %s)", async ackFirst => {
     await render(); await update(snapshot(1, 0)); await settle();
-    markChatUnread.mockResolvedValueOnce(false);
-    await markUnreadFrom(1);
+    const ack = Promise.withResolvers<boolean>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await markUnreadFrom(1); // The source horizon is already zero; there will be no local echo.
+    if (ackFirst) await act(async () => ack.resolve(false));
     await updateChat(snapshot(2, 2));
+    if (!ackFirst) await act(async () => ack.resolve(false));
+    visibleBottom = 450;
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(3, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
 
   it("keeps a newer manual unread paused when an earlier mark-read ACK arrives", async () => {
