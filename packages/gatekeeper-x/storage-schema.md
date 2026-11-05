@@ -25,7 +25,7 @@ One per binding.
 |---|---|---|
 | `pinnedUserId` | `string` | The X user the binding was first used as. A connection that comes to name anyone else is refused. Also the action fence, and the `user/<id>` subresource reads private to the account report. |
 | `profileUserId` | `string` | A Profile binding's user, pinned by ID at its first lookup by handle, so a rename cannot redirect the binding. |
-| `description` | `ResourceDescription` | A Post, List or Profile binding's description, fetched once: describing one costs a read. |
+| `description` | `ResourceDescription` | A Profile binding's public description, fetched once because it costs a read. Legacy Post/List descriptions are discarded by `describe()`; their cards show only the bound ID and link, with no X request. |
 | `x:nextActionId`, `x:action:<id>`, `retained:x:action:<id>`, `applied:x:action:` | kit `ActionJournal` records of `XAction` | Pending, failed and retained (applied) actions. Applied actions are kept 30 days for revert, pruned at most every six hours. Every record is fenced on `pinnedUserId`. |
 | `refs:seq:provisional`, `refs:prov:<~N>`, `refs:kind:<~N>` | kit `ProvisionalIds` | Temporary IDs of posts and Lists not yet created, and the IDs X assigned them. |
 | `progress:<actionId>` | `string[]` | The posts a thread has published so far, so a retry resumes rather than reposting. |

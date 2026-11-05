@@ -394,11 +394,13 @@ OpenAPI `2.170`'s `post.fields` enum lists `note_post` and omits `author_id` and
   reading. A first segment X reserves (`home`, `explore`, `search`, `notifications`, `messages`,
   `settings`, `compose`, `i`, …) is never a handle. Anything else throws. Nothing widens silently,
   unlike Spotify's "any other URL is the account".
-- **Descriptions.** Account: title `@username`, snippet the display name. Post: title
-  `Post by @author`, snippet its first 100 characters. Profile: title `@username`, snippet the
-  display name and follower count. List: its name, `List by @owner · N members`. Whatever a
-  description needs is fetched once and kept in the facet, since `describe()` must not cost on
-  every open.
+- **Descriptions.** Account: title `@username`, snippet the display name. Profile: title
+  `@username`, snippet the display name and follower count, fetched once and kept in the facet
+  because describing it costs a read. Post: title `X post <id>`; List: `X List <id>`, both with
+  canonical ID-based links and no snippet or X request. Descriptions are visible outside read
+  authorization, so they must not reveal post text or private List metadata. Legacy Post/List
+  descriptions are discarded on describe, including their old cached snippets; session reads
+  return the data only after authorizing its subresources (§7).
 - **Configurators.** *Account*: a static confirmation, like Spotify's, whose `resourceUrl()` is
   the constant `https://x.com/settings/account`. *Post*: a `TextInput` for the post URL, parsed and
   canonicalized in the frame with no RPC (a preview would cost a read);
@@ -726,7 +728,6 @@ previous grant's rows; every TTL is far inside X's 24-hour deletion rule:
 | List metadata | 15 min |
 | A listing page, keyed by endpoint + params + token | 60 s — absorbs gadgets polling one first page |
 | Identity (account DO) | 24 h |
-| Observer verdicts, positive only (§7) | 1 h |
 
 **Media.** `ActionFileStore` with `maxFileBytes` 5 MiB and `maxTotalBytes` 64 MiB across pending
 posts, `pruneUnreferenced` before each capture, refs released when a record retires. Apply uploads

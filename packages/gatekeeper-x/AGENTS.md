@@ -20,6 +20,9 @@ by accident:
   observer's own account stores. Do not add a probe of the bound post, List or author: each is a
   billed read on the observer's connection, and the bound resource restricts nothing a read doesn't
   already report.
+- Post/List `describe()` is visible without observation authorization. Return only the bound ID and
+  canonical link, discard legacy cached descriptions, and never fetch snippets or List metadata
+  there; private data belongs behind session read authorization.
 - Publishing is `claimBeforeApply`, and a send whose outcome X never reported is reconciled inline on
   the next apply (an attempt marker, then a look at the account's posts from around the attempt,
   binding only a unique match on text, links, media and reply parent), because the kit's

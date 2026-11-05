@@ -93,6 +93,11 @@ private Lists, a protected account's follow graph and home timeline, and posts b
 to, and is shown only to collaborators whose own connection is pinned to that same X user. Checking
 that makes no request to X, so it costs no reads. See `docs/observers.md`.
 
+Post and List connection cards show only the resource's ID and link, never post text, List names or
+member counts. These descriptions can be seen without read authorization, so private details are
+returned only by session reads subject to the checks above. Old cached Post/List descriptions are
+discarded when described; describing these bindings makes no billed request to X.
+
 ## Troubleshooting
 
 ### "The X connection has expired or was revoked. Reconnect the X account."

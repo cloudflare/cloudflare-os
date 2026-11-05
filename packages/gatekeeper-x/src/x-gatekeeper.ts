@@ -50,8 +50,6 @@ import {
   XListImpl,
   XPostImpl,
   XProfileImpl,
-  fetchList,
-  fetchPost,
   readUser,
   type XSessionHost,
 } from "./x-sessions";
@@ -69,8 +67,6 @@ const IMAGE_GRACE_MS = 60 * 60 * 1000;
 const RETAINED_ACTION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How often housekeeping may run. */
 const HOUSEKEEPING_INTERVAL_MS = 6 * 60 * 60 * 1000;
-/** A description's snippet, in characters. */
-const SNIPPET_LENGTH = 100;
 
 // Storage keys of this class's own. The kit modules own theirs: `x:` and the journal's
 // `retained:`/`applied:` tiers, `refs:`, `cache:@x:`, `images:`, `imageAllocations:`, and the
@@ -96,11 +92,6 @@ const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
 };
 
 type XSession = XAccountSession | XPost | XList | XProfile;
-
-function snippet(text: string): string {
-  const chars = [...text.replace(/\s+/g, " ").trim()];
-  return chars.length > SNIPPET_LENGTH ? `${chars.slice(0, SNIPPET_LENGTH - 1).join("")}…` : chars.join("");
-}
 
 @validateRpc()
 export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> implements Gatekeeper<XSession> {
@@ -197,40 +188,30 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
         suggestedBindingName: "X", tsType: "XAccountSession",
       };
     }
-    // Describing a post, List or profile costs a read, so it is fetched once and kept.
+    // Descriptions are visible outside observation authorization. Never expose post text or List
+    // metadata here, even if it was public when cached: privacy can change before the next open.
+    // Discard descriptions written before this rule rather than returning their private snippets.
+    if (props.resourceKind === "post" || props.resourceKind === "list") {
+      this.ctx.storage.kv.delete(DESCRIPTION_KEY);
+      return props.resourceKind === "post" ? {
+        url: postUrl(props.postId), title: `X post ${props.postId}`, snippet: "",
+        suggestedBindingName: "X_POST", tsType: "XPost",
+      } : {
+        url: listUrl(props.listId), title: `X List ${props.listId}`, snippet: "",
+        suggestedBindingName: "X_LIST", tsType: "XList",
+      };
+    }
+    // A profile description contains only public profile fields. Fetch it once to avoid billed
+    // reads on every open; the pinned user ID prevents a reused handle from retargeting it.
     const stored = this.ctx.storage.kv.get<ResourceDescription>(DESCRIPTION_KEY);
     if (stored) return stored;
-    let description: ResourceDescription;
-    switch (props.resourceKind) {
-      case "post": {
-        const { info: post } = await fetchPost(this.#sessionHost, props.postId);
-        description = {
-          url: post.url ?? postUrl(props.postId), title: `Post by @${post.author.username}`,
-          snippet: snippet(post.text), suggestedBindingName: "X_POST", tsType: "XPost",
-        };
-        break;
-      }
-      case "list": {
-        const list = await fetchList(this.#sessionHost, props.listId);
-        description = {
-          url: list.url ?? listUrl(props.listId), title: list.name,
-          snippet: `List by @${list.owner.username} · ${list.memberCount.toLocaleString("en-US")} ` +
-            `member${list.memberCount === 1 ? "" : "s"}`,
-          suggestedBindingName: "X_LIST", tsType: "XList",
-        };
-        break;
-      }
-      case "profile": {
-        const user = toUserInfo(await this.#profileUser(props.username), false);
-        description = {
-          url: user.url, title: `@${user.username}`,
-          snippet: `${user.name} · ${user.followersCount.toLocaleString("en-US")} ` +
-            `follower${user.followersCount === 1 ? "" : "s"}`,
-          suggestedBindingName: "X_PROFILE", tsType: "XProfile",
-        };
-        break;
-      }
-    }
+    const user = toUserInfo(await this.#profileUser(props.username), false);
+    const description: ResourceDescription = {
+      url: user.url, title: `@${user.username}`,
+      snippet: `${user.name} · ${user.followersCount.toLocaleString("en-US")} ` +
+        `follower${user.followersCount === 1 ? "" : "s"}`,
+      suggestedBindingName: "X_PROFILE", tsType: "XProfile",
+    };
     this.ctx.storage.kv.put(DESCRIPTION_KEY, description);
     return description;
   }

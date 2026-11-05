@@ -62,38 +62,61 @@ describe("describe", () => {
     expect(x.requests).toHaveLength(0);
   });
 
-  it("describes a post once, then from storage", async () => {
+  it.each(["post", "list"] as const)("describes a %s without disclosing protected or cached content", async resourceKind => {
     const x = new FakeX().install();
     const userObjectId = await seedAccount(x);
-    const post = x.post(BOB, `A long post ${"word ".repeat(40)}`);
+    const bob = await seedAccount(x, BOB);
+    x.following.add(`${ALICE.id}:${CAROL.id}`);
+    const post = x.post(CAROL, "followers only");
+    x.lists.set("5", { id: "5", name: "Secret List", private: true, owner_id: ALICE.id, member_count: 1 });
     const name = crypto.randomUUID();
-    const props: GatekeeperProps = { userObjectId, resourceKind: "post", postId: post.id };
-    const description = unwrap(await hooks().describe(name, props)) as { title: string; snippet: string; url: string };
-    expect(description).toMatchObject({
-      url: `https://x.com/bob/status/${post.id}`, title: "Post by @bob", suggestedBindingName: "X_POST", tsType: "XPost",
+    const props: GatekeeperProps = resourceKind === "post"
+      ? { userObjectId, resourceKind, postId: post.id }
+      : { userObjectId, resourceKind, listId: "5" };
+    const expected = resourceKind === "post" ? {
+      url: `https://x.com/i/web/status/${post.id}`, title: `X post ${post.id}`,
+      suggestedBindingName: "X_POST", tsType: "XPost", snippet: "",
+    } : {
+      url: "https://x.com/i/lists/5", title: "X List 5", suggestedBindingName: "X_LIST", tsType: "XList", snippet: "",
+    };
+    expect(unwrap(await hooks().describe(name, props))).toEqual(expected);
+    // Earlier deployments kept data here without reporting an observation. Upgrading must not
+    // expose it to a collaborator newly admitted without the old Post/List visibility probe.
+    await hooks().putStorage(name, props, "description", {
+      ...expected, title: "Private title", snippet: "Private text", url: "https://x.com/carol/status/1",
     });
-    expect([...description.snippet]).toHaveLength(100);
     await hooks().restart(name);
-    unwrap(await hooks().describe(name, props));
-    expect(x.count("GET", /^\/2\/tweets\//)).toBe(1);
+    unwrap(await hooks().addObserver(name, props, "bob", bob));
+    expect(unwrap(await hooks().describe(name, props))).toEqual(expected);
+    await hooks().restart(name);
+    expect(unwrap(await hooks().describe(name, props))).toEqual(expected);
+    expect(x.requests).toHaveLength(0);
+    expect((await hooks().queueLog(name)).observations).toEqual([]);
+    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
+
+    // The actual data still crosses the observation boundary with the unchanged private ID.
+    unwrap(await hooks().run(name, props, [["getInfo"]]));
+    expect((await hooks().queueLog(name)).observations.at(-1)?.subresources).toEqual([`user/${ALICE.id}`]);
+    expect(unwrap(await hooks().verifyObserverAccess(name, props, [{ id: "bob", userObjectId: bob }], [`user/${ALICE.id}`])))
+      .toEqual({ allowedObserverIds: [] });
   });
 
-  it("describes a List and a profile", async () => {
+  it("describes a profile using public profile fields", async () => {
     const x = new FakeX().install();
     const userObjectId = await seedAccount(x);
-    x.lists.set("5", { id: "5", name: "Friends", owner_id: BOB.id, member_count: 1 });
-    expect(unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "list", listId: "5" })))
-      .toMatchObject({ title: "Friends", snippet: "List by @bob · 1 member", url: "https://x.com/i/lists/5", tsType: "XList" });
     expect(unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "profile", username: "alice" })))
       .toMatchObject({ title: "@alice", snippet: "Alice · 10 followers", url: "https://x.com/alice", tsType: "XProfile" });
   });
 
-  it("refuses to describe a post the account can't see", async () => {
+  it("describes an inaccessible post without reading it, but refuses to return its content", async () => {
     const x = new FakeX().install();
     const userObjectId = await seedAccount(x);
     const hidden = x.post(CAROL, "followers only");
-    expect(failure(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "post", postId: hidden.id })))
-      .toMatch(/no post with that ID/);
+    const name = crypto.randomUUID();
+    const props: GatekeeperProps = { userObjectId, resourceKind: "post", postId: hidden.id };
+    expect(unwrap(await hooks().describe(name, props))).toMatchObject({ title: `X post ${hidden.id}` });
+    expect(x.requests).toHaveLength(0);
+    expect(failure(await hooks().run(name, props, [["getInfo"]]))).toMatch(/no post with that ID/);
   });
 });
 
