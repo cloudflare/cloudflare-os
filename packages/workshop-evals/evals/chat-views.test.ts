@@ -315,6 +315,17 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
       expect(await failed(verifyPlanPicker, picker("Basic $15 · Everyday $30 · Streamer $45 · Family $80"))).toEqual([]);
       expect(await failed(verifyPlanPicker, picker("$15 Basic · $30 Everyday · $45 Streamer · $80 Family"))).toEqual([]);
       expect(await failed(verifyPlanPicker, picker("Basic $15 Everyday $30 Streamer $45 Family $80"))).toEqual([]);
+      expect(await failed(verifyPlanPicker, picker(
+          "<b>Basic</b> $15 · <b>Everyday</b> $30 · <b>Streamer</b> $45 · <b>Family</b> $80"))).toEqual([]);
+    });
+
+    it("reads each price as one amount, however its parts are drawn", async ({ expect }) => {
+      const prices = (price: (dollars: number) => string) =>
+        PLANS.reduce((picker, [, dollars]) => picker.replace(`$${dollars}/mo`, price(dollars)), PICKER);
+      expect(await failed(verifyPlanPicker, prices(dollars => `$<b>${dollars}</b>/mo`))).toEqual([]);
+      expect(await failed(verifyPlanPicker, prices(dollars => `$${dollars}.99/mo`))).toEqual(["compares-every-plan"]);
+      expect(await failed(verifyPlanPicker, prices(dollars => `$<b>${dollars}</b><small>.99</small>/mo`)))
+        .toEqual(["compares-every-plan"]);
     });
 
     it("fails prices shown against the wrong plans", async ({ expect }) => {
