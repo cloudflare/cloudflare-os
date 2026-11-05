@@ -73,6 +73,14 @@ compaction budgets, adds models the catalog doesn't list, and tests a provider o
 one real request. A decision model (Clef) has only a mode there: the settings and the test
 apply to language models.
 
+A deployment can start with Models tab settings already in place: `ADMIN_CONFIG_SEED` is a JSON
+object of the admin config's model fields (`modelModes`, `addedProviders`, `addedModels`,
+`modelSettings`, `defaultReasoning`, `userModelsEnabled` and `modelsDevSuggestions`), set as a
+secret or a JSON var. It applies only while no admin has saved a setting. The first save stores
+the seeded values with the change, and from then on the tab alone decides. A seed that is not a
+JSON object, or that names any other field, is ignored whole and logged. Previews take theirs from
+the `PREVIEW_ADMIN_CONFIG_SEED` repository secret.
+
 The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
 which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
 pick the model behind each request by its difficulty and each candidate's cost. While the

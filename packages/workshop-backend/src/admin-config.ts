@@ -14,6 +14,9 @@ import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import { createWorkshopLogger } from "./observability.js";
+
+const logger = createWorkshopLogger("workshop.admin.config");
 
 /**
  * Longest `agentHint` a promoted format may carry. Every enabled format's hint goes into the
@@ -427,8 +430,72 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
   };
 }
 
-export function parseAdminConfig(raw: string | null): AdminConfig {
-  if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
+/**
+ * The fields ADMIN_CONFIG_SEED may set: the Models tab's. The rest of the config is what an admin
+ * curates for the people using a deployment, which nothing outside the admin UI should decide.
+ */
+export const ADMIN_CONFIG_SEED_FIELDS = [
+  "modelModes", "addedProviders", "addedModels", "modelSettings", "defaultReasoning",
+  "userModelsEnabled", "modelsDevSuggestions",
+] as const satisfies readonly (keyof AdminConfig)[];
+
+/** What ADMIN_CONFIG_SEED may hold. */
+export type AdminConfigSeed =
+    Partial<Pick<AdminConfig, typeof ADMIN_CONFIG_SEED_FIELDS[number]>>;
+
+/**
+ * Parse an ADMIN_CONFIG_SEED value: a JSON object, or that object as a JSON string, which is what
+ * a secret can carry. A value that is not one, or that names a field ADMIN_CONFIG_SEED_FIELDS
+ * leaves out, gives no seed at all rather than part of one, so that a typo cannot apply half of
+ * what was meant. The fields' values are checked later, by normalizeAdminConfig(), the same way
+ * as a stored config's.
+ */
+export function parseAdminConfigSeed(raw: unknown): AdminConfigSeed {
+  if (raw === undefined || raw === null || raw === "") return {};
+  let value: unknown;
+  try {
+    value = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    logger.error("ADMIN_CONFIG_SEED is not JSON; ignoring it", {event: "admin.seed.invalid"});
+    return {};
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    logger.error("ADMIN_CONFIG_SEED is not a JSON object; ignoring it", {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  let allowed: readonly string[] = ADMIN_CONFIG_SEED_FIELDS;
+  let unknown = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unknown.length > 0) {
+    logger.error(`ADMIN_CONFIG_SEED sets fields it may not (${unknown.join(", ")}); ignoring it`, {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  return value as AdminConfigSeed;
+}
+
+// The last seed parsed, by the value it was parsed from, so the hot path parses (and logs a bad
+// seed) once per isolate rather than once per read.
+let parsedSeed: { raw: unknown, seed: AdminConfigSeed } | undefined;
+
+/**
+ * The config a deployment has until an admin saves one: the defaults, with ADMIN_CONFIG_SEED's
+ * fields over them. Once any admin setter runs, the stored config is this one plus that change,
+ * and a later change to ADMIN_CONFIG_SEED no longer applies.
+ */
+export function initialAdminConfig(env: Pick<Cloudflare.Env, "ADMIN_CONFIG_SEED">): AdminConfig {
+  let raw = env.ADMIN_CONFIG_SEED;
+  if (parsedSeed === undefined || parsedSeed.raw !== raw) {
+    parsedSeed = { raw, seed: parseAdminConfigSeed(raw) };
+  }
+  let { seed } = parsedSeed;
+  return normalizeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, ...seed });
+}
+
+export function parseAdminConfig(raw: string | null, initial?: AdminConfig): AdminConfig {
+  if (!raw) return initial ?? { ...DEFAULT_ADMIN_CONFIG };
   try {
     return normalizeAdminConfig(JSON.parse(raw) as Partial<AdminConfig>);
   } catch {
@@ -442,7 +509,7 @@ export function serializeAdminConfig(config: AdminConfig): string {
 
 /** Read the admin config from the KV mirror. Cheap enough for the hot path (a single KV get). */
 export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig> {
-  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY));
+  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY), initialAdminConfig(env));
 }
 
 // --- Resource-disable helpers ---

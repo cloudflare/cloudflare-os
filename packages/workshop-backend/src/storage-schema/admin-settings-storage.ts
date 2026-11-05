@@ -195,8 +195,9 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
     },
     singletons: {
       // Authoritative deployment admin config. Mirrored to BLUEPRINTS KV (ADMIN_CONFIG_KEY) so the
-      // connect/login/agent hot paths can read it without touching this singleton DO.
-      adminConfig: DEFAULT_ADMIN_CONFIG as AdminConfig,
+      // connect/login/agent hot paths can read it without touching this singleton DO. Null until
+      // an admin first saves one, while the deployment runs on initialAdminConfig() (admin-config.ts).
+      adminConfig: null as Partial<AdminConfig> | null,
 
       // Which set of bundled blueprints has been installed (see
       // bundledBlueprintsManifestVersion). Empty means none yet; a mismatch means the repo shipped

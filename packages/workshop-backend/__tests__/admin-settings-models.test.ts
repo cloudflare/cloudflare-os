@@ -1782,3 +1782,31 @@ describe("AdminSettings outside AI Gateway mode", () => {
     expect(put).not.toHaveBeenCalled();
   });
 });
+
+describe("AdminSettings with ADMIN_CONFIG_SEED", () => {
+  const SEED = {
+    modelModes: { "claude-sonnet-5": "enabled" },
+    modelSettings: { "claude-opus-5-5": { compactionInputBudget: 300000 } },
+  };
+
+  it("starts from the seed, and stores it with the first change", async () => {
+    const { inDo, stored, settings, mirror } =
+        adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: JSON.stringify(SEED) });
+    expect(await stored()).toEqual({ modelModes: SEED.modelModes, addedModels: [] });
+    expect(await settings()).toEqual(SEED.modelSettings);
+    expect(mirror.current).toBeNull();
+
+    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden"));
+    let expectedModes = { ...SEED.modelModes, "claude-fable-5-1": "hidden" };
+    expect((await stored()).modelModes).toEqual(expectedModes);
+    let mirrored = parseAdminConfig(mirror.current);
+    expect(mirrored.modelModes).toEqual(expectedModes);
+    expect(mirrored.modelSettings).toEqual(SEED.modelSettings);
+  });
+
+  it("lets an admin clear a seeded setting", async () => {
+    const { inDo, settings } = adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: SEED });
+    await inDo(admin => admin.setGatewayModelSettings("claude-opus-5-5", {}));
+    expect(await settings()).toEqual({});
+  });
+});

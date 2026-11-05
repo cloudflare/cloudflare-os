@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, defaultOutputFormatId, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, normalizeAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, defaultOutputFormatId, initialAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, normalizeAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -442,7 +442,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // config persisted before a field existed is missing that field entirely; in particular,
   // userSearchEnabled has a dependent default and cannot be restored by a simple defaults spread.
   #config(): AdminConfig {
-    return normalizeAdminConfig(this.storage.adminConfig.get());
+    let stored = this.storage.adminConfig.get();
+    return stored ? normalizeAdminConfig(stored) : initialAdminConfig(this.env);
   }
 
   getAdminConfig(): AdminConfig {

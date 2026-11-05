@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { defaultOutputFormatId, initialAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -476,5 +476,65 @@ describe("admin config update notice", () => {
       expect(parseAdminConfig(kv).updateCheckIntervalMinutes).toBe(stored);
       expect(isUpdateCheckInterval(stored)).toBe(true);
     }
+  });
+});
+
+describe("ADMIN_CONFIG_SEED", () => {
+  const SEED = {
+    modelModes: { "claude-fable-5-1": "hidden" },
+    modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "high", compactionInputBudget: 200000 } },
+    addedModels: [
+      { provider: "cloudflare", id: "@cf/test/added", name: "Added", contextWindow: 131072 },
+    ],
+    defaultReasoning: "medium",
+    userModelsEnabled: false,
+    modelsDevSuggestions: true,
+  };
+
+  it("is the defaults while unset or empty", () => {
+    expect(initialAdminConfig({})).toEqual(DEFAULT_ADMIN_CONFIG);
+    expect(initialAdminConfig({ ADMIN_CONFIG_SEED: "" })).toEqual(DEFAULT_ADMIN_CONFIG);
+  });
+
+  it("sets the Models tab's fields over the defaults, as a secret's string or a JSON var", () => {
+    for (let ADMIN_CONFIG_SEED of [JSON.stringify(SEED), structuredClone(SEED)]) {
+      expect(initialAdminConfig({ ADMIN_CONFIG_SEED })).toEqual({ ...DEFAULT_ADMIN_CONFIG, ...SEED });
+    }
+  });
+
+  it("checks the values the way a stored config's are checked", () => {
+    let config = initialAdminConfig({ ADMIN_CONFIG_SEED: JSON.stringify({
+      modelModes: { kept: "disabled", dropped: "sometimes" },
+      defaultReasoning: "loud",
+    }) });
+    expect(config.modelModes).toEqual({ kept: "disabled" });
+    expect(config.defaultReasoning).toBeNull();
+  });
+
+  it("is ignored whole when it sets a field outside the Models tab", () => {
+    // Half of a seed is never applied: a typo in one field name must not leave the rest in force.
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, signupsEnabled: false }))).toEqual({});
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelSetting: {} }))).toEqual({});
+  });
+
+  it("is ignored when it is not a JSON object", () => {
+    for (let raw of ["{", "[]", "null", "\"text\"", "3", [SEED]]) {
+      expect(parseAdminConfigSeed(raw), JSON.stringify(raw)).toEqual({});
+    }
+  });
+
+  it("is what the KV hot path reads until a config is mirrored, and nothing after", async () => {
+    const ADMIN_CONFIG_SEED = JSON.stringify(SEED);
+    const withMirror = (value: string | null) => ({
+      ADMIN_CONFIG_SEED, BLUEPRINTS: { get: async () => value },
+    }) as unknown as Cloudflare.Env;
+
+    expect((await readAdminConfig(withMirror(null))).modelSettings).toEqual(SEED.modelSettings);
+    // A stored config already holds whatever of the seed it started from, so the seed is not
+    // merged into it again: this is what lets an admin clear a seeded setting.
+    let stored = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, siteName: "acme" });
+    let config = await readAdminConfig(withMirror(stored));
+    expect(config.siteName).toBe("acme");
+    expect(config.modelSettings).toEqual({});
   });
 });
