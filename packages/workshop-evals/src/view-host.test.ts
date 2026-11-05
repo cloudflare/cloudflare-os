@@ -107,7 +107,7 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       .toMatchObject({ pass: true, how: "changed the control and pressed Enter" });
 
     await using stepper = await RenderedView.open(`
-      <span id="people">4</span> <button aria-label="Add a person">+</button>
+      <span id="people">4</span><button aria-label="Add a person">+</button>
       <p id="each"></p>
       <script type="module">
         let people = 4;
@@ -177,8 +177,20 @@ describe("RenderedView", { timeout: 60_000 }, () => {
 
   it("reads the space between inline elements, and none where they touch", async () => {
     await using view = await RenderedView.open(`<div><span>Jan</span> <span>410</span></div><div><b>Feb</b>\n  <i>380</i></div>
-      <p><span style="display:inline-block">$54</span><span style="display:inline-block">.46</span></p>`);
-    expect(await view.text()).toBe("Jan 410\nFeb 380\n$54.46");
+      <p><span style="display:inline-block">$54</span><span style="display:inline-block">.46</span></p><pre>Mar\n340</pre>`);
+    expect(await view.text()).toBe("Jan 410\nFeb 380\n$54.46\nMar\n340");
+  });
+
+  it("reads text that elements split as one reading, not as its parts", async () => {
+    await using view = await RenderedView.open(`
+      <p>Each pays <span>$<b>4</b><small>.50</small></span> <button aria-label="Add a person">+</button></p>
+      <p><b>Stream</b>er $45 · <b>Basic</b> $15</p>`);
+    expect((await view.shownTexts()).map(({ text }) => text).toSorted())
+      .toEqual(["$4.50", "+", "Basic", "Each pays $4.50 +", "Streamer $45 · Basic $15"]);
+    const { series } = await view.waitForSeries(["Streamer", "Basic"], () => true);
+    expect(series.beside).toEqual([expect.stringContaining("$45"), expect.stringContaining("$15")]);
+    expect(series.beside[0]).not.toContain("$15");
+    expect(await view.setValue("4", "5", text => text.includes("$5"))).toMatchObject({ pass: false, how: "found no control holding 4" });
   });
 
   it("reads the values a person sees in form controls", async () => {
@@ -217,5 +229,17 @@ describe("RenderedView", { timeout: 60_000 }, () => {
     expect(series.beside[0]).not.toContain("$185");
     expect(series.marks.filter(mark => mark.key === "rect 0"))
       .toEqual([{ label: 2, key: "rect 0", axis: "y", at: expect.any(Number) }, { label: 3, key: "rect 0", axis: "y", at: expect.any(Number) }]);
+  });
+
+  it("finds each label where it is drawn, in a box of its own beside another", async () => {
+    for (const gap of ["", " "]) {
+      await using view = await RenderedView.open(`
+        <div style="display:flex;gap:60px;height:100px;align-items:flex-end">
+          <div style="background:black;width:30px;height:80px"></div><div style="background:black;width:30px;height:40px"></div>
+        </div>
+        <div><span style="display:inline-block;width:90px">Jan</span>${gap}<span style="display:inline-block;width:90px">Feb</span></div>`);
+      const { series } = await view.waitForSeries(["Jan", "Feb"], () => true);
+      expect(series.marks.map(({ label, axis }) => [label, axis]), JSON.stringify(gap)).toEqual([[0, "y"], [1, "y"]]);
+    }
   });
 });

@@ -100,31 +100,72 @@ const FRAME_SCRIPT = String.raw`(() => {
   const controlText = el => (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && !UNREAD.includes(el.type))) &&
     el.value.trim() !== "" && shown(el) ? el.value : null;
 
-  // The text a person sees in root, read as innerText reads it, without the text they cannot see.
+  // The text a person sees in root, without the text they cannot see, in runs that read as one: a
+  // box of its own (a block, a table cell, an inline-block such as a button, a control, an SVG text)
+  // or a line break ends a run, and an inline element does not, so "$<b>15</b>.99" reads "$15.99".
+  // Each run has the gap before it (none, a space as between a row's cells, or a new line), its
+  // text, and the text nodes and controls that show it, with where each one's text starts and ends.
   const SKIPPED = new Set(["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT", "title", "desc", "script", "style", "defs", "metadata"]);
-  const textOf = root => {
-    const parts = [];
+  const runsOf = root => {
+    const runs = [];
+    let run = { gap: "", text: "", parts: [] };
+    const read = (text, node) => {
+      if (node !== undefined) run.parts.push({ node, start: run.text.length, end: run.text.length + text.length });
+      run.text += text;
+    };
+    const end = gap => {
+      runs.push(run);
+      run = { gap, text: "", parts: [] };
+    };
+    const control = (node, value) => {
+      end("");
+      read(" ");
+      if (value !== null) read(value, node);
+      read(" ");
+      end("");
+    };
     const visit = node => {
       if (node.nodeType === Node.TEXT_NODE) {
         // Blank text, as between two inline elements, is the space between them.
-        if (node.data.trim() === "") parts.push(" ");
-        else if (textShown(node)) parts.push(node.data);
+        if (node.data.trim() === "") read(" ");
+        else if (textShown(node)) read(node.data, node);
         return;
       }
       if (!(node instanceof Element) || SKIPPED.has(node.tagName)) return;
-      if (node instanceof HTMLBRElement) return void parts.push("\n");
-      if (node instanceof HTMLSelectElement) return void parts.push(shown(node) ? " " + (node.selectedOptions[0]?.text ?? "") + " " : "");
-      if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) return void parts.push(" " + (controlText(node) ?? "") + " ");
+      if (node instanceof HTMLBRElement) return void end("\n");
+      if (node instanceof HTMLSelectElement) {
+        if (shown(node)) control(node, node.selectedOptions[0]?.text ?? "");
+        return;
+      }
+      if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) return void control(node, controlText(node));
       const display = getComputedStyle(node).display;
       if (display === "none") return;
-      const gap = node instanceof SVGElement ? (["text", "foreignObject"].includes(node.tagName) ? "\n" : node.tagName === "tspan" ? " " : "")
-        : display.startsWith("inline") || display === "contents" || display === "ruby" ? "" : display === "table-cell" ? " " : "\n";
-      parts.push(gap);
+      const gap = node instanceof SVGElement ? (["text", "foreignObject"].includes(node.tagName) ? "\n" : node.tagName === "tspan" ? " " : null)
+        : ["inline", "contents", "ruby"].includes(display) ? null : display.startsWith("inline") ? "" : display === "table-cell" ? " " : "\n";
+      if (gap !== null) end(gap);
       for (const child of node.childNodes) visit(child);
-      parts.push(gap);
+      if (gap !== null) end(gap);
     };
     visit(root);
-    return parts.join("").split("\n").map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+    runs.push(run);
+    return runs;
+  };
+  // The text a person sees in root, read as innerText reads it.
+  const textOf = root => runsOf(root).map(run => run.gap + run.text).join("").split("\n")
+    .map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+  // The elements that show text in runs, but for those that show part of a word, as the 15 of
+  // "$<b>15</b>.99" is: an element's text must start and end at a space or an end of its run.
+  const wholeIn = runs => {
+    const edges = new Map();
+    for (const run of runs) {
+      for (const { node, start, end } of run.parts) {
+        for (let el = node instanceof Element ? node : node.parentElement; el && el !== document.body; el = el.parentElement) {
+          edges.set(el, { first: edges.get(el)?.first ?? { text: run.text, at: start }, last: { text: run.text, at: end } });
+        }
+      }
+    }
+    const parted = ({ text, at }) => /\s/.test(text[at - 1] ?? " ") || /\s/.test(text[at] ?? " ");
+    return new Set([...edges].flatMap(([el, { first, last }]) => parted(first) && parted(last) ? [el] : []));
   };
   // An element's aria-label, title, and, for an SVG shape, its <title> tooltip.
   const ownLabels = el => [el.getAttribute("aria-label"), el.getAttribute("title"),
@@ -209,26 +250,30 @@ const FRAME_SCRIPT = String.raw`(() => {
   };
   const depth = el => { let count = 0; for (let up = el; up && up !== document.body; up = up.parentElement) count++; return count; };
   const series = labels => {
-    const matchers = labels.map(text => new RegExp("(?<![\\p{L}\\p{N}])" + text.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), "iu"));
+    const matchers = labels.map(text => new RegExp("(?<![\\p{L}\\p{N}])" +
+      text.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"), "iu"));
     const namesIn = text => matchers.flatMap((matcher, index) => matcher.test(text) ? [index] : []);
-    const pieces = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (textShown(node)) pieces.push({ text: norm(node.data), box: textBox(node), el: node.parentElement, isText: true });
-    }
-    for (const el of document.body.querySelectorAll("input, textarea")) {
-      const value = controlText(el);
-      if (value !== null) pieces.push({ text: norm(value), box: el.getBoundingClientRect(), el, isText: true });
-    }
+    const boxAround = parts => {
+      const boxes = parts.map(({ node }) => node instanceof Element ? node.getBoundingClientRect() : textBox(node));
+      const left = Math.min(...boxes.map(box => box.left)), top = Math.min(...boxes.map(box => box.top));
+      return new DOMRect(left, top, Math.max(...boxes.map(box => box.right)) - left, Math.max(...boxes.map(box => box.bottom)) - top);
+    };
+    const runs = runsOf(document.body).filter(run => run.text.trim() !== "");
+    // A run's element is the one that holds all of it.
+    const pieces = runs.map(({ text, parts }) => {
+      let el = parts[0].node instanceof Element ? parts[0].node : parts[0].node.parentElement;
+      while (!el.contains(parts[parts.length - 1].node)) el = el.parentElement;
+      return { text: norm(text), box: boxAround(parts), el };
+    });
     for (const el of document.body.querySelectorAll("*")) {
       const own = ownLabels(el);
-      if (own.length > 0 && shown(el)) pieces.push({ text: norm(own.join(" ")), box: el.getBoundingClientRect(), el, isText: false });
+      if (own.length > 0 && shown(el)) pieces.push({ text: norm(own.join(" ")), box: el.getBoundingClientRect(), el });
     }
     for (const piece of pieces) piece.names = namesIn(piece.text);
     // Text that names several labels reads as its entries, split at separators such as "·" or ", ",
     // as "$15 Basic · $30 Everyday"; an entry that still names several reads as each label and the
     // text after it, up to the next label, as "Basic $15 Everyday $30".
-    const segment = (piece, text, names) => ({ ...piece, text, names, isText: false, segment: true });
+    const segment = (piece, text, names) => ({ ...piece, text, names, segment: true });
     const segments = pieces.flatMap(piece => piece.names.length < 2 ? [] : piece.text.split(/\s*[·•|;]\s*|,\s+/).flatMap(entry => {
       const names = namesIn(entry);
       if (names.length < 2) return names.length === 1 ? [segment(piece, entry, names)] : [];
@@ -238,9 +283,14 @@ const FRAME_SCRIPT = String.raw`(() => {
       return starts.map(({ index, at }, order) => segment(piece, entry.slice(at, starts[order + 1]?.at), [index]));
     }));
     const own = labels.map((_, index) => [...pieces, ...segments].filter(piece => piece.names.length === 1 && piece.names[0] === index));
+    // Where each label is drawn: the box of the text nodes or controls that show it, when what they
+    // show names no other label.
+    const anchors = matchers.map(matcher => runs.flatMap(({ text, parts }) => [...text.matchAll(new RegExp(matcher.source, "giu"))].flatMap(match => {
+      const spanned = parts.filter(({ start, end }) => start < match.index + match[0].length && end > match.index);
+      return namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length === 1 ? [{ box: boxAround(spanned) }] : [];
+    })));
     // The label whose text is nearest box in its column or row, if no other label is as near, as
     // when a line runs under every label.
-    const anchors = own.map(found => found.filter(piece => piece.isText));
     const inLine = (box, line) => {
       const gaps = anchors.map(found => Math.min(...found.filter(piece => line.aligned(piece.box, box)).map(piece => line.gap(piece.box, box))));
       const nearest = Math.min(...gaps);
@@ -331,18 +381,9 @@ const FRAME_SCRIPT = String.raw`(() => {
       step(count);
     }),
     text: () => [textOf(document.body), ...labelsIn(document.body)].filter(Boolean).join("\n"),
-    // The text of each element a person sees text in, or a control's value, and of each element around it.
-    texts: () => {
-      const found = new Map();
-      const holders = [];
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) if (textShown(node)) holders.push(node.parentElement);
-      for (const el of document.body.querySelectorAll("input, textarea")) if (controlText(el) !== null) holders.push(el);
-      for (const holder of holders) {
-        for (let el = holder; el && el !== document.body && !found.has(el); el = el.parentElement) found.set(el, textOf(el));
-      }
-      return [...found].map(([el, text]) => ({ id: idOf(el), text }));
-    },
+    // The text of each element a person sees text in, or a control's value, and of each element
+    // around it, but for those that show part of a word.
+    texts: () => [...wholeIn(runsOf(document.body))].map(el => ({ id: idOf(el), text: textOf(el) })),
     visible: () => textOf(document.body) !== "" || [...document.body.querySelectorAll("svg, canvas, img, video")].some(shown),
     targets,
     series,
@@ -380,7 +421,9 @@ const FRAME_SCRIPT = String.raw`(() => {
       const raise = Number(to) > Number(from);
       const sign = raise ? /^[+＋▲↑]$/ : /^[-−–▼↓]$/;
       const word = raise ? /increase|increment|more|plus|add|up/i : /decrease|decrement|less|minus|remove|down/i;
-      const shows = [...document.body.querySelectorAll("*")].filter(el => el.children.length === 0 && shown(el) && sameValue(textOf(el), from));
+      const whole = wholeIn(runsOf(document.body));
+      const shows = [...document.body.querySelectorAll("*")].filter(el =>
+        el.children.length === 0 && whole.has(el) && shown(el) && sameValue(textOf(el), from));
       for (const el of shows) {
         for (let up = el.parentElement, depth = 0; up && depth < 3; up = up.parentElement, depth++) {
           const button = [...up.querySelectorAll("button, [role=button]")].find(candidate => usable(candidate) &&
