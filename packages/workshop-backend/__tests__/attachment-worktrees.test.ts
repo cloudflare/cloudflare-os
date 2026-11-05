@@ -663,8 +663,19 @@ describe("scratch worktree attachment ingress", () => {
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
       .rejects.toThrow("Unknown Git blob");
     const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
+    // Refused by its size alone: none of its chunks is read.
+    const record = impl.storage.gitObjects.get(tooBig.oid)!;
+    if (!("chunks" in record)) throw new Error("expected a chunked blob");
+    const chunks = new Set(record.chunks.map(chunk => chunk.oid));
+    const get = impl.storage.gitObjects.get.bind(impl.storage.gitObjects);
+    let chunkReads = 0;
+    impl.storage.gitObjects.get = (oid: string) => {
+      if (chunks.has(oid)) chunkReads++;
+      return get(oid);
+    };
     await expect(impl.newChat(user, {profile: USER}, "Too large", undefined,
       [{oid: tooBig.oid, mimeType: "application/octet-stream"}]))
       .rejects.toThrow("too large");
+    expect(chunkReads).toBe(0);
   }));
 });

@@ -6122,8 +6122,9 @@ class OverseerImpl implements AgentHooks {
     let seenIds = new Set<string>();
     for (let attachment of attachments) {
       if ("oid" in attachment) {
-        const content = this.gitCache.readBlob(attachment.oid);
-        assertChatAttachmentSize(content.byteLength);
+        const reader = this.gitCache.openBlobRef(attachment.oid, undefined);
+        assertChatAttachmentSize(reader.size);
+        const content = reader.read(0, reader.size);
         const upload = validateChatAttachmentUpload({
           mimeType: attachment.mimeType, name: attachment.name,
           content,
