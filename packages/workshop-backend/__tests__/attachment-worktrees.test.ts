@@ -83,7 +83,7 @@ describe("scratch worktree attachment ingress", () => {
       impl.storage.chatContext.put(context);
       const writeBlob = impl.gitCache.writeBlob.bind(impl.gitCache);
       const fault = vi.spyOn(impl.gitCache, "writeBlob").mockImplementation(bytes => {
-        if (bytes[0] === 0) return Promise.reject(new Error("migration interrupted"));
+        if (bytes[0] === 0) throw new Error("migration interrupted");
         return writeBlob(bytes);
       });
       try {
