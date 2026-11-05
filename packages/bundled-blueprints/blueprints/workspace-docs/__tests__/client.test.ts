@@ -264,13 +264,14 @@ describe("block order", () => {
     try {
       const m3 = editor().querySelector('[data-block-id="lm3"]')!;
       m3.after(m3.previousElementSibling!);
+      vi.mocked(gadget.applyOperation).mockClear();
       window.dispatchEvent(new Event("pagehide"));
       await vi.waitFor(() => expect(vi.mocked(gadget.subscribe).mock.results.at(-1)?.type).toBe("return"));
       await vi.waitFor(() => expect(ids().slice(-3)).toEqual(["lm2", "lm1", "lm3"]));
-      vi.mocked(gadget.applyOperation).mockClear();
       window.dispatchEvent(new Event("pagehide"));
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(gadget.applyOperation).not.toHaveBeenCalled();
+      // Only the lost save: nothing after the reconnect, automatic or flushed.
+      expect(gadget.applyOperation).toHaveBeenCalledTimes(1);
     } finally { error.mockRestore(); }
   });
 
