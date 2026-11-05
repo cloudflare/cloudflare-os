@@ -482,34 +482,38 @@ describe("Slack legacy observer history", () => {
     expect(await slack.verify(workspace, observers, exported)).toEqual({ allowedObserverIds: ["insider"] });
   });
 
-  it("names an older binding's workspace as its reads do: the pinned one, else the account's", async () => {
+  it("exports recorded conversations only with a stored workspace, without asking the current account", async () => {
     const slack = slackHarness();
     const pinned = await slack.workspace({});
-    await slack.seed(pinned, { boundTeamId: "TTWO" });
-    expect(await slack.history(pinned)).toEqual(["workspace/TTWO"]);
-    expect(await slack.history(await slack.workspace({}))).toEqual([WORKSPACE]);
+    await slack.seed(pinned, { boundTeamId: "TTWO", "trackedConversation:CGENERAL": "observed" });
+    const exported = ["workspace/TTWO", "workspace/TTWO/conversation/CGENERAL"];
+    expect(await slack.history(pinned)).toEqual(exported);
+    expect(await slack.history(pinned)).toEqual(exported);
+    expect(slack.backend.requests).toEqual([]);
   });
 
-  it("exports an older conversation or thread binding's conversation", async () => {
+  it("refuses to infer a historical workspace from the account's current grant", async () => {
     const slack = slackHarness();
-    expect(await slack.history(await slack.conversation({ conversationId: "GSECRET", teamId: "TONE" })))
-      .toEqual([conversation("GSECRET")]);
-    // Without a workspace of its own or the account's, a thread binding recovers its permalink's.
-    const unsaved = slackHarness({ ownerTeamId: "" });
-    expect(await unsaved.history(await unsaved.thread({
-      conversationId: "CGENERAL", threadTs: ROOT_TS, permalink: "https://one.slack.com/archives/CGENERAL/p1700000000000100",
-    }))).toEqual([conversation("CGENERAL")]);
+    const workspace = await slack.workspace({});
+    await slack.seed(workspace, { "trackedConversation:CGENERAL": "observed" });
+    await expect(slack.history(workspace)).rejects.toThrow(/historical workspace/);
+    expect(slack.backend.requests).toEqual([]);
   });
 
-  it("throws rather than export an older binding whose workspace can't be recovered", async () => {
-    const slack = slackHarness({ ownerTeamId: "" });
-    // The account's own workspace is not the one the permalink names.
-    await expect(slack.history(await slack.thread({
-      conversationId: "CGENERAL", threadTs: ROOT_TS, permalink: "https://elsewhere.slack.com/archives/CGENERAL/p1700000000000100",
-    }))).rejects.toThrow(/team_access_not_granted/);
-    // Slack can't say which workspaces the account has.
-    slack.backend.refusals.set(OWNER_TOKEN, "fatal_error");
-    await expect(slack.history(await slack.workspace({}))).rejects.toThrow(/fatal_error/);
+  it("refuses legacy bindings that did not record whether any data was observed", async () => {
+    const slack = slackHarness();
+    const bindings = [
+      await slack.workspace({ teamId: "TONE" }),
+      await slack.conversation({ conversationId: "GSECRET", teamId: "TONE" }),
+      await slack.thread({
+        conversationId: "CGENERAL", threadTs: ROOT_TS, teamId: "TONE",
+        permalink: "https://one.slack.com/archives/CGENERAL/p1700000000000100",
+      }),
+    ];
+    for (const binding of bindings) {
+      await expect(slack.history(binding)).rejects.toThrow(/legacy.*history/);
+    }
+    expect(slack.backend.requests).toEqual([]);
   });
 });
 

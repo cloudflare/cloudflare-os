@@ -102,9 +102,14 @@ also need to be replaced with a selected `T…` workspace URL.
 Bindings created before reads reported subresources keep `addObserver()`'s checks while the
 Workshop calls it: a workspace binding requires workspace membership plus every conversation its
 reads recorded, pending or observed; a conversation or thread binding requires its conversation.
-`getHistoricalSubresources()` exports the same IDs, in the workspace reads pin, and throws when that
-workspace can't be recovered. Bindings created since carry `reportsSubresources` in their props and
-export nothing.
+`getHistoricalSubresources()` is read-only: a workspace binding with recorded conversations exports
+its stored workspace and those conversations, pending or observed. It never resolves history from
+the current account or pins a workspace during export. It throws if the historical workspace is
+missing or if the binding did not record whether any data was observed: an empty workspace tracker,
+or any legacy conversation/thread binding. Those states cannot distinguish an unused connection
+from untracked disclosures, so neither an empty export nor an invented binding requirement is safe.
+Legacy admission remains necessary; the current kernel does not import this history yet. Bindings
+created since carry `reportsSubresources` in their props and export nothing.
 
 Legacy conversation-only/thread-only grants may lack the metadata scopes listed below. Reconnect
 or grant the resource again to approve the additional scopes; the reconnect flow preserves those

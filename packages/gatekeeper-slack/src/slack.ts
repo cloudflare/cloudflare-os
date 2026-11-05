@@ -1182,7 +1182,7 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
   // Reads made before they reported subresources relied on addObserver() instead: it requires
   // workspace membership (for workspace metadata and the member directory) plus access to every
   // conversation those reads recorded, pending or observed. The overseer still runs it on every
-  // open, and getHistoricalSubresources() exports the same requirements.
+  // open; history export cannot replace it when legacy observations were not recorded.
 
   #listTrackedConversations(): string[] {
     let prefix = "trackedConversation:";
@@ -1219,19 +1219,23 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
   }
 
   /**
-   * For a binding created before reads reported subresources, what addObserver() still requires:
-   * its workspace, and each conversation those reads recorded, pending or observed. The workspace
-   * is the one reads pin (see boundWorkspaceId); a binding whose workspace can't be recovered
-   * throws rather than exporting conversations nobody could check. A binding created since reports
-   * everything it reads, so it has no history.
+   * Export recorded legacy requirements without consulting today's account or changing storage.
+   * The old tracker proves a disclosure only when it names a conversation; workspace-only reads
+   * and unused bindings left the same state, so an empty tracker cannot prove an empty history.
    */
   async getHistoricalSubresources(): Promise<string[]> {
     if (this.ctx.props.reportsSubresources) return [];
-    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId);
+    let conversations = this.#listTrackedConversations();
+    if (conversations.length === 0) {
+      throw new Error("This Slack binding's legacy observation history was not recorded completely.");
+    }
+    let teamId = this.ctx.storage.kv.get<string>("boundTeamId") ?? this.ctx.props.teamId;
+    if (!isWorkspaceId(teamId)) {
+      throw new Error("This Slack binding's historical workspace was not recorded.");
+    }
     return [
       slackSubresourceId({ teamId }),
-      ...this.#listTrackedConversations().map(
-          conversationId => slackSubresourceId({ teamId, conversationId })),
+      ...conversations.map(conversationId => slackSubresourceId({ teamId, conversationId })),
     ];
   }
 
@@ -1314,15 +1318,10 @@ export class SlackConversationGatekeeperImpl
     return verifySlackObserverAccess(observers, subresources);
   }
 
-  /**
-   * For a binding created before reads reported subresources, what addObserver() still requires:
-   * the bound conversation, in the workspace reads pin (see boundWorkspaceId). A binding created
-   * since reports everything it reads, so it has no history.
-   */
+  /** Legacy reads did not record whether this conversation's data was ever observed. */
   async getHistoricalSubresources(): Promise<string[]> {
     if (this.ctx.props.reportsSubresources) return [];
-    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId);
-    return [slackSubresourceId({ teamId, conversationId: this.ctx.props.conversationId })];
+    throw new Error("This Slack binding's legacy observation history was not recorded completely.");
   }
 
   applyAction(): Promise<void> { return unreachableAction(); }
@@ -1410,16 +1409,10 @@ export class SlackThreadGatekeeperImpl extends DurableObject<Env, SlackThreadGat
     return verifySlackObserverAccess(observers, subresources);
   }
 
-  /**
-   * For a binding created before reads reported subresources, what addObserver() still requires:
-   * the thread's conversation, in the workspace reads pin (see boundWorkspaceId). A binding created
-   * since reports everything it reads, so it has no history.
-   */
+  /** Legacy reads did not record whether this thread's data was ever observed. */
   async getHistoricalSubresources(): Promise<string[]> {
     if (this.ctx.props.reportsSubresources) return [];
-    let domain = new URL(this.ctx.props.permalink).hostname.slice(0, -".slack.com".length);
-    let teamId = await boundWorkspaceId(this.ctx, this.#account(), this.ctx.props.teamId, domain);
-    return [slackSubresourceId({ teamId, conversationId: this.ctx.props.conversationId })];
+    throw new Error("This Slack binding's legacy observation history was not recorded completely.");
   }
 
   applyAction(): Promise<void> { return unreachableAction(); }
