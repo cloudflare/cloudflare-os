@@ -48,6 +48,7 @@ export type WorkshopObservabilityFields = {
   status: number;
   statusCode: number;
   statusText: string;
+  streaming: boolean;
   toolCallId: string;
   toolName: string;
   vendorId: string;

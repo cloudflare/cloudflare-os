@@ -378,6 +378,12 @@ export interface AgentHooks {
   commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void;
 
   /**
+   * Keeps the prompt of the chat's model request cached while its response streams, until the
+   * returned function is called as the response ends (see ChatCacheWarmer.warmWhileStreaming).
+   */
+  warmWhileStreaming(chatId: number, request: CachedRequest): () => void;
+
+  /**
    * The gadget's current head commit (WorkpieceSummary.commitId), or undefined if it has none:
    * still pending in a chat, created outside chats and never accepted, or deleted. An unpinned
    * gadget with a head is read at that head; one without a head lives only in the session doc.
@@ -4241,6 +4247,11 @@ async function runAgentPass(
     ? withAnthropicCompactionBlock(
         handle.stream, checkpoint.anthropicCompactionBlock, priorConversation)
     : handle.stream;
+  // A response can stream past its prompt's cache lifetime, so each request of the turn is kept
+  // cached while it streams. Compaction's isn't: the request after it doesn't start with it.
+  let turnStream: ModelHandle["stream"] = (model, prompt, options) => stream(model, prompt, {
+    ...options, onCached: request => hooks.warmWhileStreaming(chatId, request),
+  });
 
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
@@ -4396,7 +4407,7 @@ async function runAgentPass(
         return {action: "end"};
       }
     },
-  }, emit, abortSignal, stream);
+  }, emit, abortSignal, turnStream);
 
   // (No end-of-turn flush: every completed step's effects were barrier-committed with its
   // message, and an abort simply drops the in-flight step's buffer -- nothing durable exists

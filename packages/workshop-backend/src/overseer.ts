@@ -7752,6 +7752,10 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
+  warmWhileStreaming(chatId: number, request: CachedRequest): () => void {
+    return this.cacheWarmer.warmWhileStreaming(chatId, request);
+  }
+
   // Refolds each checkpoint a revert reaches into, oldest first, from the one before it. A revert
   // changes what the chat proposes, not what was said, so a checkpoint keeps its boundary and
   // summary and only the code state foldCompactedCode derives from the log changes. `messages` is

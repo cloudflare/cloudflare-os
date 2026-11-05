@@ -13,7 +13,7 @@ import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/ad
 import { zeroUsage } from "../src/ai-invoke.js";
 import {
   DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
-  getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
+  getModel, isRuntimeModel, LanguageModelGatekeeper, type CachedRequest, type ModelHandle,
 } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
@@ -2074,6 +2074,44 @@ describe("Resending a request to keep its cache", () => {
     // As for a prompt below the model's minimum.
     await send(handle, { fetch: answering({ cached: false }) });
     expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+
+  it("hands over an Anthropic request to keep cached as its response starts, the same request " +
+      "it keeps once the response ends", async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    // Answers with the first event at once, and the rest once released.
+    const released = Promise.withResolvers<void>();
+    const holding = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const [first, ...rest] =
+          (await (await answering()(input, init)).text()).split(/(?<=\n\n)/);
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(encoder.encode(first));
+          await released.promise;
+          controller.enqueue(encoder.encode(rest.join("")));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const handedOver = Promise.withResolvers<CachedRequest>();
+    const ended = vi.fn();
+    const sending = send(handle, {
+      fetch: holding,
+      onCached: request => {
+        handedOver.resolve(request);
+        return ended;
+      },
+    });
+
+    const cached = await handedOver.promise;
+    expect(cached.cacheLifetime).toBe(5 * 60_000);
+    expect(ended).not.toHaveBeenCalled();
+    released.resolve();
+    await sending;
+    expect(ended).toHaveBeenCalledOnce();
+    expect(handle.lastRequest).toBe(cached);
   }, 15000);
 });
 

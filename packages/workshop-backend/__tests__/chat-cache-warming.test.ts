@@ -1,8 +1,11 @@
+import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { Usage } from "@earendil-works/pi-ai";
-import type { AiChatMetadata } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig,
+} from "@gadgets/workshop-shared/api";
 import type { CachedRequest } from "../src/ai-models.js";
 import { ChatCacheWarmer } from "../src/chat-cache-warming.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -214,6 +217,95 @@ describe("ChatCacheWarmer", () => {
     expect(resent).toHaveBeenCalledExactlyOnceWith(CHAT, { usage: usage(100_000) });
   });
 
+  describe("while a response streams", () => {
+    it("resends its request once per cache lifetime, viewed or not, until the response ends",
+        async () => {
+      const leave = warmer.view(CHAT);
+      const { cached, resend } = request();
+      const ended = warmer.warmWhileStreaming(CHAT, cached);
+      // The viewer leaving doesn't stop it: the turn's next request reads the cached copy.
+      leave();
+
+      await vi.advanceTimersByTimeAsync(FIRST_PING - 1);
+      expect(resend).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(resend).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(FIRST_PING);
+      expect(resend).toHaveBeenCalledTimes(2);
+      expect(resent).toHaveBeenCalledTimes(2);
+      expect(resent).toHaveBeenLastCalledWith(CHAT, { usage: usage(100_000) });
+
+      ended();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60 * MINUTE);
+      expect(resend).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops at the turn's next request", async () => {
+      const first = request();
+      warmer.warmWhileStreaming(CHAT, first.cached);
+      await vi.advanceTimersByTimeAsync(2 * MINUTE);
+      const second = request();
+      warmer.warmWhileStreaming(CHAT, second.cached);
+
+      await vi.advanceTimersByTimeAsync(FIRST_PING);
+      expect(first.resend).not.toHaveBeenCalled();
+      expect(second.resend).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops at the end of a turn nobody views", async () => {
+      const { cached, resend } = request();
+      warmer.warmWhileStreaming(CHAT, cached);
+      warmer.start(CHAT, cached, MODEL);
+
+      await vi.advanceTimersByTimeAsync(60 * MINUTE);
+      expect(resend).not.toHaveBeenCalled();
+    });
+
+    // Without the pings, the cached copy of a response that streamed this long has expired.
+    it("leaves the turn's end to warm on from the last ping", async () => {
+      warmer.view(CHAT);
+      const { cached, resend } = request();
+      const ended = warmer.warmWhileStreaming(CHAT, cached);
+      await vi.advanceTimersByTimeAsync(FIRST_PING + MINUTE);
+      ended();
+      warmer.start(CHAT, cached, MODEL);
+
+      await vi.advanceTimersByTimeAsync(FIRST_PING - MINUTE - 1);
+      expect(resend).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(resend).toHaveBeenCalledTimes(2);
+    });
+
+    it("leaves the turn's end to warm on from a ping still out", async () => {
+      warmer.view(CHAT);
+      let answer!: (usage: Usage) => void;
+      const { cached, resend } = request(() => new Promise(resolve => { answer = resolve; }));
+      const ended = warmer.warmWhileStreaming(CHAT, cached);
+      await vi.advanceTimersByTimeAsync(FIRST_PING);
+      expect(resend).toHaveBeenCalledTimes(1);
+      ended();
+      warmer.start(CHAT, cached, MODEL);
+      answer(usage(100_000));
+
+      await vi.advanceTimersByTimeAsync(FIRST_PING);
+      expect(resend).toHaveBeenCalledTimes(2);
+    });
+
+    // The pings during the turn's last response and after the turn avoid the same miss.
+    it("counts its pings against the miss the turn's end warms against", async () => {
+      warmer.view(CHAT);
+      const { cached, resend } = request();
+      const ended = warmer.warmWhileStreaming(CHAT, cached);
+      await vi.advanceTimersByTimeAsync(2 * FIRST_PING + MINUTE);
+      ended();
+      warmer.start(CHAT, cached, MODEL);
+
+      await vi.advanceTimersByTimeAsync(24 * FIRST_PING);
+      expect(resend).toHaveBeenCalledTimes(11);
+    });
+  });
+
   describe("logs each pause", () => {
     let logs: MockInstance<typeof console.info>;
 
@@ -304,6 +396,142 @@ describe("a workspace's warm pings", () => {
       expect(impl.storage.chatMeta.get(CHAT)).toMatchObject(
           { totalCost: 0.5, lastActive: new Date(0) });
       expect(impl.storage.totalCost.get() - workspaceCost).toBe(0.5);
+    });
+  });
+});
+
+// The OverseerImpl members a test running a whole turn drives.
+interface TurnInternals extends OverseerInternals {
+  ownerId: string;
+  users: {
+    idFromString(id: string): string;
+    get(id: string): {
+      getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: TurnModel }>;
+      getCloudflareGatekeeperAccount(): Promise<null>;
+      consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
+      whoami(): Promise<AiChatAuthorInfo>;
+      messageArrived(): Promise<void>;
+    };
+  };
+  storage: OverseerInternals["storage"] & { chats: { put(message: AiChatMessage): void } };
+  nextChatSequence(chatId: number): number;
+  startAgent(chatId: number, aiModel: TurnModel, initiator: AiChatAuthorInfo,
+             initiatorUserId: string): void;
+  waitForAllAgentsToComplete(): Promise<void>;
+}
+
+interface TurnModel {
+  profile: AiChatAuthorInfo;
+  config: AiModelConfig;
+}
+
+// An Anthropic answer to a 100k-token prompt that wrote `cacheWrite` tokens of it to the cache and
+// read the rest, as server-sent events.
+function anthropicAnswer(cacheWrite: number): Uint8Array[] {
+  return [
+    { type: "message_start", message: {
+      id: "message", type: "message", role: "assistant", model: "claude-opus-5-5", content: [],
+      stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 10, cache_read_input_tokens: 100_000 - cacheWrite,
+        cache_creation_input_tokens: cacheWrite, output_tokens: 1 },
+    } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 1 } },
+    { type: "message_stop" },
+  ].map(event =>
+      new TextEncoder().encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+}
+
+describe("a turn whose response streams past its cache lifetime", () => {
+  const API_URL = "https://anthropic.test";
+  const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.com", name: "Owner" };
+  const TURN_MODEL: TurnModel = {
+    profile: { type: "agent", id: "claude", name: "Claude" },
+    config: { provider: "anthropic", model: "claude-opus-5-5", apiToken: "key", apiUrl: API_URL },
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("resends its request while it streams, and the turn's end warms on from that ping",
+      async () => {
+    // The turn's request streams its first event at once and the rest once released; resends,
+    // capped at one token, answer at once from the cache.
+    let released = Promise.withResolvers<void>();
+    let resends = 0;
+    let realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let sent = new Request(input, init);
+      if (new URL(sent.url).origin !== API_URL) return realFetch(input, init);
+      let headers = { "content-type": "text/event-stream" };
+      if (z.object({ max_tokens: z.literal(1) }).safeParse(await sent.json()).success) {
+        resends++;
+        return new Response(new Blob(anthropicAnswer(0)), { headers });
+      }
+      let [first, ...rest] = anthropicAnswer(10_000);
+      return new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(first);
+          await released.promise;
+          for (let event of rest) controller.enqueue(event);
+          controller.close();
+        },
+      }), { headers });
+    });
+
+    let stub = env.TEST_OVERSEER.getByName(`chat-cache-warming-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: TurnInternals }).impl;
+      impl.ownerId = "owner-user-do";
+      impl.users = {
+        idFromString: id => id,
+        get: () => ({
+          getChatContext: async () => ({ profile: OWNER, aiModel: TURN_MODEL }),
+          getCloudflareGatekeeperAccount: async () => null,
+          consumeDailyLlmCall: async () => ({ withinLimits: false }),
+          whoami: async () => OWNER,
+          messageArrived: async () => {},
+        }),
+      };
+      impl.storage.chatMeta.put({ id: CHAT, title: "Chat", started: new Date(0),
+        lastActive: new Date(0), activeAgent: TURN_MODEL.profile });
+      impl.storage.chats.put({ chatId: CHAT, sequence: impl.nextChatSequence(CHAT),
+        timestamp: new Date(0), author: OWNER, type: "message", message: "Write a long answer." });
+      let leave = impl.cacheWarmer.view(CHAT);
+      // Resolves once the provider reported caching the turn's prompt.
+      let streaming = Promise.withResolvers<void>();
+      let warm = impl.cacheWarmer.warmWhileStreaming.bind(impl.cacheWarmer);
+      vi.spyOn(impl.cacheWarmer, "warmWhileStreaming").mockImplementation((chatId, cached) => {
+        streaming.resolve();
+        return warm(chatId, cached);
+      });
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        impl.startAgent(CHAT, TURN_MODEL, OWNER, "owner-user-do");
+        await streaming.promise;
+        await vi.advanceTimersByTimeAsync(FIRST_PING - 1);
+        expect(resends).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(resends).toBe(1);
+
+        // The response ends a minute past its prompt's own cache lifetime.
+        await vi.advanceTimersByTimeAsync(MINUTE);
+        released.resolve();
+        await impl.waitForAllAgentsToComplete();
+
+        await vi.advanceTimersByTimeAsync(FIRST_PING - MINUTE - 1);
+        expect(resends).toBe(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(resends).toBe(2);
+      } finally {
+        leave();
+        vi.useRealTimers();
+      }
     });
   });
 });

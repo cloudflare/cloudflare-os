@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
+import { z } from "zod";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
@@ -88,6 +89,14 @@ export type ModelStreamOptions = SimpleStreamOptions & {
    * quick, and none of them benefit from cross-step reasoning. Default: true.
    */
   thinking?: boolean;
+
+  /**
+   * Called while the response streams, once the provider reports caching the prompt, with the
+   * request that keeps the cached copy when sent again (see CachedRequest). That request becomes
+   * `lastRequest` when the response ends, and the function returned is called then. Only Anthropic
+   * reports caching before its response ends; other providers never call it.
+   */
+  onCached?: (request: CachedRequest) => () => void;
 };
 
 /**
@@ -552,7 +561,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const handle: ModelHandle = {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
-    stream: (model, context, { thinking = true, ...options } = {}) => {
+    stream: (model, context, { thinking = true, onCached, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata, or leave the
       // previous request to be resent in its place.
       handle.lastResponse = undefined;
@@ -562,6 +571,11 @@ function makeHandle(args: HandleArgs): ModelHandle {
       let received: ModelHandle["lastResponse"];
       // This request as sent, and when, if prompt caching is on.
       let sent: { payload: unknown; at: number } | undefined;
+      // This request as sent again to keep its prompt cached, once the provider's first event
+      // reported caching it, and what to call when its response ends.
+      let started = false;
+      let streamed: CachedRequest | undefined;
+      let streamEnded: (() => void) | undefined;
       const headers: ProviderHeaders = {
         ...args.headers,
         ...options.headers,
@@ -618,26 +632,44 @@ function makeHandle(args: HandleArgs): ModelHandle {
           sent = { payload: final ?? payload, at: Date.now() };
           return final;
         },
+        // Anthropic counts the prompt in its first event, so the prompt of a long response can be
+        // kept cached while it streams (see onCached).
+        onProviderStreamEvent: async (event, eventModel) => {
+          await options.onProviderStreamEvent?.(event, eventModel);
+          if (started || sent === undefined) return;
+          started = true;
+          const start = MessageStart.safeParse(event);
+          if (!start.success) return;
+          const { usage } = start.data.message;
+          streamed = cachedRequest(streamFn, model, transcript, sent, {
+            input: usage.input_tokens,
+            cacheRead: usage.cache_read_input_tokens ?? 0,
+            cacheWrite: usage.cache_creation_input_tokens ?? 0,
+          }, args.aiGatewayLogRoute, resending);
+          if (streamed !== undefined) streamEnded = onCached?.(streamed);
+        },
+      };
+      const resending: SimpleStreamOptions = {
+        fetch: merged.fetch,
+        apiKey: merged.apiKey,
+        sessionId: merged.sessionId,
+        cacheRetention: options.cacheRetention,
+        headers: args.gatewayMetadata ? {
+          ...headers,
+          "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
+          // The resend is the same every time, which a gateway that caches responses would
+          // answer without asking the provider.
+          "cf-aig-skip-cache": "true",
+        } : headers,
       };
       const stream = traceChat(model, () => received,
           () => streamFn(model, transcript, merged));
       // Kept once the response ends, which is before its caller can start another request.
       void stream.result().then(message => {
+        streamEnded?.();
         if (sent === undefined) return;
-        handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage,
-            args.aiGatewayLogRoute, {
-          fetch: merged.fetch,
-          apiKey: merged.apiKey,
-          sessionId: merged.sessionId,
-          cacheRetention: options.cacheRetention,
-          headers: args.gatewayMetadata ? {
-            ...headers,
-            "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
-            // The resend is the same every time, which a gateway that caches responses would
-            // answer without asking the provider.
-            "cf-aig-skip-cache": "true",
-          } : headers,
-        });
+        handle.lastRequest = streamed ?? cachedRequest(streamFn, model, transcript, sent,
+            message.usage, args.aiGatewayLogRoute, resending);
       });
       return stream;
     },
@@ -660,14 +692,15 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   return rest;
 }
 
-// The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
-// resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
-// can't keep the cache (see cappedForResend), or the provider cached none of the request, as for a
-// prompt below its minimum. Resending takes nothing else from the request, so a kept request holds
-// only its payload, not the caller's options or transcript.
+// The request a handle `sent` for `context`, whose prompt the provider counted in `usage`, as a
+// CachedRequest that resends it with `routing`: the handle's endpoint, auth and headers. Undefined
+// where resending can't keep the cache (see cappedForResend), or the provider cached none of the
+// request, as for a prompt below its minimum. Resending takes nothing else from the request, so a
+// kept request holds only its payload, not the caller's options or transcript.
 function cachedRequest(
     streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
-    sent: { payload: unknown; at: number }, usage: Usage,
+    sent: { payload: unknown; at: number },
+    usage: Pick<Usage, "input" | "cacheRead" | "cacheWrite">,
     aiGatewayLogRoute: AiGatewayLogRoute | undefined,
     routing: SimpleStreamOptions): CachedRequest | undefined {
   const resent = cappedForResend(model, sent.payload);
@@ -729,6 +762,19 @@ function cappedForResend(model: Model<Api>, payload: unknown)
 const hasEnabledThinking = (payload: object): boolean =>
     "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
     "type" in payload.thinking && payload.thinking.type === "enabled";
+
+// An Anthropic stream's first event, which counts the prompt's tokens, and those read from and
+// written to the cache, before the response starts.
+const MessageStart = z.object({
+  type: z.literal("message_start"),
+  message: z.object({
+    usage: z.object({
+      input_tokens: z.number(),
+      cache_read_input_tokens: z.number().nullish(),
+      cache_creation_input_tokens: z.number().nullish(),
+    }),
+  }),
+});
 
 // Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
 // The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do
