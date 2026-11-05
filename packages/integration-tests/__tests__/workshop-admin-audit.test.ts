@@ -4,17 +4,18 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_SITE_NAME_LENGTH,
   type AdminApi, type AdminAuditKind, type AdminAuditRecord,
-  type AdminAuditStats, type AdminSettingRecord, type AuthenticatedApi,
+  type AdminAuditStats, type AdminSettingRecord, type AuthenticatedApi, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_USERNAME, startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR, TEST_VENDOR_ID,
   type Harness,
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, signUp } from "../src/rpc-client.js";
+import { connect, nextUsernames, signUp } from "../src/rpc-client.js";
 
 // A second deployment admin, so that the statistics can be checked across two.
 const AUDITOR_USERNAME = "auditor";
+const REASON = "Audit log check";
 
 // Admin settings and the audit log are deployment-wide, so this file owns its harness and runs
 // serially.
@@ -38,7 +39,11 @@ beforeAll(async () => {
   harness = await startHarness({
     gatekeepers: [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }],
     patchWorkshop: config => {
-      config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME, AUDITOR_USERNAME] };
+      config.vars = {
+        ...config.vars,
+        ADMINS: [ADMIN_USERNAME, AUDITOR_USERNAME],
+        ADMIN_WORKSPACE_ACCESS_MAX: "full",
+      };
     },
   });
   ({ api: adminApi, admin } = await signUpAdmin(ADMIN_USERNAME));
@@ -58,6 +63,9 @@ afterAll(async () => {
 /** The newest setting record of the deployment-wide audit log, if any. */
 async function newestSetting(): Promise<AdminSettingRecord | undefined> {
   const [record] = (await admin.listAdminAudit({ kind: "setting", limit: 1 })).records;
+  if (record !== undefined && record.kind !== "setting") {
+    throw new Error("The kind filter returned an access record");
+  }
   return record;
 }
 
@@ -67,6 +75,17 @@ async function newSetting(previous: AdminSettingRecord | undefined): Promise<Adm
   if (record === undefined) throw new Error("No setting change was recorded");
   expect(record).not.toEqual(previous);
   return record;
+}
+
+/** A fresh owner's workspace, retitled so that its records can be recognised. */
+async function newWorkspace(stack: DisposableStack, prefix: string)
+    : Promise<{ id: string; title: string; ownerName: string; ws: RpcStub<Overseer> }> {
+  const [ownerName] = nextUsernames(prefix);
+  const owner = stack.use(await signUp(stack.use(connect(harness.url)), ownerName!));
+  const ws = stack.use(await owner.newWorkspace());
+  const title = `Workspace of ${ownerName}`;
+  await ws.setTitle(title);
+  return { id: (await ws.getMetadata()).id, title, ownerName: ownerName!, ws };
 }
 
 // The smallest PNG a site logo accepts: the signature and a 1x1 IHDR chunk, 33 bytes.
@@ -263,25 +282,21 @@ async function kinds(kind: AdminAuditKind): Promise<AdminAuditKind[]> {
 }
 
 it("filters the log by kind", async () => {
-  // A workspace access record, as the table can hold, which a setting filter leaves out.
-  const storage = await harness.server.getWorker("workshop-backend")
-      .getDurableObjectStorage("AdminAuditDurableObject", { name: "" });
+  using stack = new DisposableStack();
+  const { id } = await newWorkspace(stack, "kinds");
   const settingsBefore = await admin.getAdminAuditStats({ kind: "setting" });
-  await storage.exec(`INSERT INTO admin_audit
-      (at, kind, admin, workspace_id, workspace_title, exposed, record)
-      VALUES (${Date.now()}, 'workspace', 'filter-check', 'workspace-1', 'Filter check',
-          'metadata', '{}')`);
-  try {
-    const setting = await kinds("setting");
-    expect(setting.length).toBeGreaterThan(0);
-    expect(new Set(setting)).toEqual(new Set(["setting"]));
-    const settingsAfter = await admin.getAdminAuditStats({ kind: "setting" });
-    expect(settingsAfter.totalEvents)
-        .toBe(settingsBefore.totalEvents - droppedDays(settingsBefore, settingsAfter));
-    expect(settingsAfter.topAdmins.map(entry => entry.admin)).not.toContain("filter-check");
-  } finally {
-    await storage.exec("DELETE FROM admin_audit WHERE admin = 'filter-check'");
+  {
+    using _view = await admin.inspectWorkspace(id, REASON);
   }
+  const workspace = await kinds("workspace");
+  expect(workspace.length).toBeGreaterThan(0);
+  expect(new Set(workspace)).toEqual(new Set(["workspace"]));
+  const setting = await kinds("setting");
+  expect(setting.length).toBeGreaterThan(0);
+  expect(new Set(setting)).toEqual(new Set(["setting"]));
+  const settingsAfter = await admin.getAdminAuditStats({ kind: "setting" });
+  expect(settingsAfter.totalEvents)
+      .toBe(settingsBefore.totalEvents - droppedDays(settingsBefore, settingsAfter));
 });
 
 it("filters the log by method, and refuses a method that is not audited", async () => {
@@ -318,19 +333,30 @@ function droppedDays(before: AdminAuditStats, after: AdminAuditStats): number {
 }
 
 it("counts the log across two admins", async () => {
+  using stack = new DisposableStack();
+  const a = await newWorkspace(stack, "statsa");
+  const b = await newWorkspace(stack, "statsb");
   const before = await admin.getAdminAuditStats();
   const settingsBefore = await admin.getAdminAuditStats({ kind: "setting" });
 
   try {
+    {
+      using view = await admin.inspectWorkspace(a.id, REASON);
+      await view.describe();
+      await view.listChats();
+      await view.getDiagnostics();
+    }
     await admin.setUserSearchEnabled(true);
-    await auditor.setSiteName("Stats check");
-    await auditor.setSiteName("");
+    {
+      using view = await auditor.inspectWorkspace(b.id, REASON);
+      await view.listChats();
+    }
 
     const after = await admin.getAdminAuditStats();
     expect(after.days).toBe(7);
-    expect(after.totalEvents).toBe(before.totalEvents + 3 - droppedDays(before, after));
+    expect(after.totalEvents).toBe(before.totalEvents + 7 - droppedDays(before, after));
     const byDay = growth(before.byDay, after.byDay, entry => entry.day, entry => entry.count);
-    expect([...byDay.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
+    expect([...byDay.values()].reduce((sum, count) => sum + count, 0)).toBe(7);
 
     expect(after.byDay).toHaveLength(7);
     const days = after.byDay.map(({ day }) => Date.parse(`${day}T00:00:00Z`));
@@ -338,12 +364,24 @@ it("counts the log across two admins", async () => {
 
     const admins = growth(before.topAdmins, after.topAdmins, entry => entry.admin,
         entry => entry.count);
-    expect(admins.get(ADMIN_USERNAME)).toBe(1);
+    expect(admins.get(ADMIN_USERNAME)).toBe(5);
     expect(admins.get(AUDITOR_USERNAME)).toBe(2);
+    // Setting records name no workspace, so A counts its four access records alone.
+    const workspaces = growth(before.topWorkspaces, after.topWorkspaces,
+        entry => entry.workspaceId, entry => entry.count);
+    expect(workspaces.get(a.id)).toBe(4);
+    expect(workspaces.get(b.id)).toBe(2);
+    expect(after.topWorkspaces)
+        .toContainEqual({ workspaceId: a.id, title: a.title, count: 4, contentReads: 0 });
+    expect(after.topWorkspaces)
+        .toContainEqual({ workspaceId: b.id, title: b.title, count: 2, contentReads: 0 });
 
     const settingsAfter = await admin.getAdminAuditStats({ kind: "setting" });
     expect(settingsAfter.totalEvents)
-        .toBe(settingsBefore.totalEvents + 3 - droppedDays(settingsBefore, settingsAfter));
+        .toBe(settingsBefore.totalEvents + 1 - droppedDays(settingsBefore, settingsAfter));
+    expect(growth(settingsBefore.topAdmins, settingsAfter.topAdmins, entry => entry.admin,
+        entry => entry.count).get(ADMIN_USERNAME)).toBe(1);
+    expect(settingsAfter.topWorkspaces).toEqual([]);
   } finally {
     await admin.setUserSearchEnabled(false);
   }
@@ -351,6 +389,66 @@ it("counts the log across two admins", async () => {
   expect((await admin.getAdminAuditStats({ days: 1 })).byDay).toHaveLength(1);
   for (const days of [0, 367, 1.5]) {
     await expect(admin.getAdminAuditStats({ days }), `days ${days}`).rejects.toThrow();
+  }
+});
+
+it("counts content reads, by admin and by workspace", async () => {
+  using stack = new DisposableStack();
+  const a = await newWorkspace(stack, "contenta");
+  const b = await newWorkspace(stack, "contentb");
+  const chatA = await a.ws.newChat("hello", null);
+  const chatB = await b.ws.newChat("hello", null);
+
+  try {
+    await admin.setAdminWorkspaceAccess("full");
+    const before = await admin.getAdminAuditStats();
+    {
+      using view = await admin.inspectWorkspace(a.id, REASON, { access: "full" });
+      await view.getChat(chatA);
+      await view.getChat(chatA);
+      // No steer is queued, so this exposes no content.
+      await view.listChats();
+    }
+    {
+      using view = await auditor.inspectWorkspace(b.id, REASON, { access: "full" });
+      await view.getChat(chatB);
+    }
+    const after = await admin.getAdminAuditStats();
+
+    // Every content read in this harness happens during the run, so none has left the window.
+    expect(after.contentReads - before.contentReads).toBe(3);
+    const admins = growth(before.topAdmins, after.topAdmins,
+        entry => entry.admin, entry => entry.contentReads);
+    expect(admins.get(ADMIN_USERNAME)).toBe(2);
+    expect(admins.get(AUDITOR_USERNAME)).toBe(1);
+    // The open, the two getChat() calls and listChats(); only the getChat() calls read content.
+    expect(after.topWorkspaces)
+        .toContainEqual({ workspaceId: a.id, title: a.title, count: 4, contentReads: 2 });
+    expect(after.topWorkspaces)
+        .toContainEqual({ workspaceId: b.id, title: b.title, count: 2, contentReads: 1 });
+
+    // Each workspace's records, found by its owner.
+    const owned = (await admin.listAdminAudit({ owner: a.ownerName, limit: 200 })).records;
+    expect(owned.map(record => record.method))
+        .toEqual(["listChats", "getChat", "getChat", "inspectWorkspace"]);
+    expect(new Set(owned.map(record => record.kind === "workspace" && record.workspaceId)))
+        .toEqual(new Set([a.id]));
+
+    const settings = await admin.getAdminAuditStats({ kind: "setting" });
+    expect(settings.contentReads).toBe(0);
+    expect(settings.topAdmins.every(entry => entry.contentReads === 0)).toBe(true);
+    expect(settings.topWorkspaces).toEqual([]);
+    expect((await admin.getAdminAuditStats({ kind: "workspace" })).contentReads)
+        .toBe(after.contentReads);
+
+    const [newest] = (await admin.listAdminAudit(
+        { exposed: "content", admin: AUDITOR_USERNAME, limit: 1 })).records;
+    expect(newest).toMatchObject({
+      kind: "workspace", workspaceId: b.id, method: "getChat", args: { chatId: chatB },
+      requested: "full", access: "full", exposed: "content",
+    });
+  } finally {
+    await admin.setAdminWorkspaceAccess("metadata");
   }
 });
 

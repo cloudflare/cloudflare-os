@@ -772,8 +772,9 @@ test("an unknown command or option says which was meant: a near name, or where t
   real(["list-chats"], /list-chats is on Overseer: `cf-os api open-workspace <id> list-chats`/);
   real(["open-workspace", "g", "list-actions", "--option", "{}"], /Did you mean --options\?/);
   real(["list-workspace"], /Did you mean list-workspaces\?/);
-  // A name cut short wins over a typo that changes its verb: get-chat is two edits from new-chat.
-  real(["get-chat"], /Did you mean get-chat-[a-z-]+, on Overseer: `cf-os api open-workspace <id> get-chat-/);
+  // A name cut short wins over a typo that changes its verb: get-gatekeeper is two edits from
+  // new-gatekeeper.
+  real(["get-gatekeeper"], /Did you mean get-gatekeeper-app\? /);
   // A short name a typo starts with is no run-on: list-chtas is list-chats, not a bare `list`.
   real(["open-workspace", "g", "list-chtas"], /^Overseer has no command "list-chtas"\. Did you mean list-chats\? /);
   real(["list-worksapces"], /Did you mean list-workspaces\? /);
