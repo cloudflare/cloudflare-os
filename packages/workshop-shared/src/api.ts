@@ -596,6 +596,24 @@ export const createAuthError = authErrors.create;
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
 
+/** Stable error codes attached to expected refusals to use a gatekeeper (connection). */
+export const GATEKEEPER_ERROR_CODES = {
+  /** Blocked until a scheduled workspace restart lands (e.g. after adding or binding it); the same
+   * call on the replacement session succeeds. */
+  pendingRestart: "GATEKEEPER_PENDING_RESTART",
+} as const;
+
+const gatekeeperErrors = codedErrorFamily({
+  [GATEKEEPER_ERROR_CODES.pendingRestart]:
+      "The workspace is restarting to apply a connection change. Please retry.",
+});
+
+/** Creates a gatekeeper refusal with a machine-readable code. */
+export const createGatekeeperError = gatekeeperErrors.create;
+
+/** Reads the machine-readable code from a gatekeeper refusal. */
+export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
+
 /**
  * One user as listed in the deployment-wide user directory (see
  * `AuthenticatedApi.searchUsers`).

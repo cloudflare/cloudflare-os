@@ -542,7 +542,8 @@ session opened before the mark spawns nothing while it stands). Marking gatekeep
 quarantine because a binding loopback is not a session but a per-call route: its props name the
 target and every call re-resolves a session through `openGatekeeperSession`, where the mark is checked —
 so the quarantine holds even for a loopback retained across a facet abort or the reset itself,
-which is *not* merely "re-minted on facet reload"). Every route to a marked connection refuses with a retryable error until
+which is *not* merely "re-minted on facet reload"). Every route to a marked connection refuses with a retryable error
+(coded `GATEKEEPER_ERROR_CODES.pendingRestart`, so a client can wait for the reconnect instead) until
 the reset destroys the mark along with the sessions: `getGatekeeperById` (the mint clients
 pipeline on), `openGatekeeperSession` (which client opens and binding loopbacks both pass through), the
 slash-command invoke in `#prepareChatMessage`, `GadgetClientImpl.bindWithSuggestedName`, and
