@@ -284,10 +284,22 @@ const FRAME_SCRIPT = String.raw`(() => {
     }));
     const own = labels.map((_, index) => [...pieces, ...segments].filter(piece => piece.names.length === 1 && piece.names[0] === index));
     // Where each label is drawn: the box of the text nodes or controls that show it, when what they
-    // show names no other label.
+    // show names no other label, and the point it marks on an axis. That point is an SVG label's
+    // own x and y as drawn, since a rotated or end-anchored label's box is not centered on its
+    // tick; for any other label, the center of its box.
+    const markedAt = (spanned, box) => {
+      const node = spanned[0].node;
+      const label = (node instanceof Element ? node : node.parentElement)?.closest("tspan[x], text");
+      const ctm = label instanceof SVGTextPositioningElement ? label.getScreenCTM() : null;
+      if (ctm === null) return center(box);
+      const first = list => list.baseVal.numberOfItems > 0 ? list.baseVal.getItem(0).value : 0;
+      return new DOMPoint(first(label.x), first(label.y)).matrixTransform(ctm);
+    };
     const anchors = matchers.map(matcher => runs.flatMap(({ text, parts }) => [...text.matchAll(new RegExp(matcher.source, "giu"))].flatMap(match => {
       const spanned = parts.filter(({ start, end }) => start < match.index + match[0].length && end > match.index);
-      return namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length === 1 ? [{ box: boxAround(spanned) }] : [];
+      if (namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length !== 1) return [];
+      const box = boxAround(spanned);
+      return [{ box, at: markedAt(spanned, box) }];
     })));
     // The label whose text is nearest box in its column or row, if no other label is as near, as
     // when a line runs under every label.
@@ -326,7 +338,7 @@ const FRAME_SCRIPT = String.raw`(() => {
     const plot = (kind, points) => {
       for (const [index, found] of anchors.entries()) {
         if (found[0] === undefined) continue;
-        const at = center(found[0].box);
+        const at = found[0].at;
         const ys = points.flatMap(line => crossings(line, "x", at.x));
         if (ys.length > 0) add(index, kind, "y", Math.min(...ys));
         const xs = points.flatMap(line => crossings(line, "y", at.y));
