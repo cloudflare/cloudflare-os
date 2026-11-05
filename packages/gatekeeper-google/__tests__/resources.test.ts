@@ -956,3 +956,16 @@ describe("Drive resources' file content access", () => {
       .toEqual(DRIVE_RESOURCES);
   });
 });
+
+describe("stable resource grant identity", () => {
+  it("uses an ID grant despite an obsolete pattern snapshot and does not fall back from an empty ID list", () => {
+    expect(recordedResourceUrlPatterns({
+      resourceTypeIds: [GOOGLE_SHEETS_RESOURCE.id!],
+      resourceUrlPatterns: ["https://old.example/spreadsheets/*"],
+    })).toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern]);
+    expect(recordedResourceUrlPatterns({
+      resourceTypeIds: [], resourceUrlPatterns: [GOOGLE_SHEETS_RESOURCE.urlPattern],
+    })).toEqual([]);
+    expect(recordedResourceUrlPatterns({ resourceTypeIds: ["removed-type"] })).toEqual([]);
+  });
+});

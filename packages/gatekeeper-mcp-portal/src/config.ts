@@ -176,6 +176,7 @@ export function toolGrantOptions(args: {
 /** The single resource type this connector offers, scoped to the configured portal's origin. */
 export function portalResource(config: PortalConfig): SupportedResource {
   return {
+    id: "portal",
     // Origin-scoped, so a resource URL for anything else matches nothing this connector offers.
     urlPattern: `${new URL(config.endpoint).origin}/*`,
     title: config.name,

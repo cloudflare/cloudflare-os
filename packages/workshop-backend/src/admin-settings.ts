@@ -1,12 +1,12 @@
 import { AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminVia, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
-import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
 import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, isResourceDisabled, unresolvedResourceRestrictions } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -1066,15 +1066,36 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   }
 
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
-  async setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean,
-                           actor: AdminSettingActor): Promise<void> {
+  async setResourceEnabled(
+      vendorId: string, resourceTypeId: string, enabled: boolean, actor: AdminSettingActor): Promise<void> {
     vendorId = vendorId.toLowerCase();
+    const vendor = this.vendors.get(vendorId);
+    if (!vendor) throw new Error("Unknown gatekeeper vendor.");
+    const resources = await vendor.getSupportedResources({ userId: actor.admin });
+    const resource = findResourceType(resources, resourceTypeId)
+      ?? findResourceType(resources, undefined, resourceTypeId);
     await this.#mutateAdminConfig(actor, config => {
-      let map = { ...config.disabledResources };
-      let disabled = new Set(map[vendorId] ?? []);
-      if (enabled) disabled.delete(urlPattern); else disabled.add(urlPattern);
-      if (disabled.size === 0) delete map[vendorId]; else map[vendorId] = [...disabled];
-      return { ...config, disabledResources: map };
+      const legacy = new Set(config.disabledResources[vendorId] ?? []);
+      if (!resource && (!enabled || !legacy.has(resourceTypeId))) {
+        throw new Error("Unknown resource type; only an existing legacy restriction can be cleared.");
+      }
+      const disabled = new Set(config.disabledResourceTypeIds?.[vendorId] ?? []);
+      // Upgrade only exact matches, leaving unknown restrictions visible and enforced.
+      for (const type of resources) {
+        if (type.id !== undefined && legacy.delete(type.urlPattern)) disabled.add(type.id);
+      }
+      if (resource) {
+        if (resource.id !== undefined) {
+          if (enabled) disabled.delete(resource.id); else disabled.add(resource.id);
+        } else {
+          if (enabled) legacy.delete(resource.urlPattern); else legacy.add(resource.urlPattern);
+        }
+      } else legacy.delete(resourceTypeId);
+      const oldMap = { ...config.disabledResources };
+      const idMap = { ...config.disabledResourceTypeIds };
+      if (legacy.size) oldMap[vendorId] = [...legacy]; else delete oldMap[vendorId];
+      if (disabled.size) idMap[vendorId] = [...disabled]; else delete idMap[vendorId];
+      return { ...config, disabledResources: oldMap, disabledResourceTypeIds: idMap };
     });
   }
 
@@ -1196,24 +1217,30 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
               ambientMode: mode,
             };
           }
-          if (supportedResources.length === 0) {
+          if (supportedResources.length === 0 && !config.disabledResources[id]?.length) {
             // Nothing to toggle for this gatekeeper.
             return null;
           }
-          let disabled = new Set(config.disabledResources[id] ?? []);
+          let unresolved = unresolvedResourceRestrictions(config, id, supportedResources);
           return {
             vendorId: id,
             displayName: description.displayName,
             logo: description.logo,
             autoProvisions: false,
             enabled: !disabledGatekeeperSet.has(id),
-            resources: supportedResources.map(r => ({
+            resources: [...supportedResources.map(r => ({
+              resourceTypeId: getResourceTypeId(r),
               urlPattern: r.urlPattern,
               title: r.title,
               description: r.description,
               icon: r.icon,
-              enabled: !disabled.has(r.urlPattern),
-            })),
+              enabled: !isResourceDisabled(config, id, r, supportedResources),
+            })), ...unresolved.map(pattern => ({
+              urlPattern: pattern,
+              title: "Unavailable resource type",
+              description: "This saved restriction blocks the vendor because its pattern no longer matches a type. Enable this row to remove the restriction explicitly.",
+              enabled: false,
+            }))],
           };
         } catch (err) {
           logger.warn("failed to read resource config for gatekeeper", {

@@ -92,7 +92,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
         'The "Test Thing" resource is disabled on this deployment by an administrator.');
     const model = models.script([
       { toolCall: { id: "create-thing", name: "createExternalResource", arguments: {
-        vendorId: TEST_VENDOR_ID, resourceUrlPattern: "https://gadgets-test.example/things/*",
+        vendorId: TEST_VENDOR_ID, resourceTypeId: "thing",
         title: "Blocked", bindingName: "BLOCKED",
       } } },
       { text: "The creation was refused." },
