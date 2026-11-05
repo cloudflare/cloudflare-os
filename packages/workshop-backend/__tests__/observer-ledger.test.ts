@@ -1542,7 +1542,8 @@ describe("pending creation", () => {
         expect(impl.storage.actions.get(before).description.subresources).toBeUndefined();
         expect(impl.storage.nextActionId.get()).toBe(before + 1);
         expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
-        await expect(impl.getWebFetchEnv()).rejects.toThrow(/observed sensitive data/);
+        await expect(impl.authorizeWebFetch(1, "https://example.com/", true))
+            .rejects.toThrow(/observed sensitive data/);
         seedGadget(impl);
         for (let role of ["build", "use"] as const) {
           expect(impl.listObserverRequirements(grantOf(role))).toEqual([]);

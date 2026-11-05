@@ -14,7 +14,7 @@ import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
-import { RestrictedWebFetchHostsCard } from './features/web-fetch/RestrictedWebFetchHostsCard'
+import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -54,8 +54,9 @@ export default function AdminPage() {
   const [instructionsDraft, setInstructionsDraft] = useState('')
   const [savingInstructions, setSavingInstructions] = useState(false)
 
-  // The hosts a workspace that has observed restricted data may still fetch from.
+  // What a workspace that has observed restricted data may still fetch.
   const [restrictedWebFetchHosts, setRestrictedWebFetchHosts] = useState<string[]>([])
+  const [restrictedWebFetchApprovals, setRestrictedWebFetchApprovals] = useState(false)
 
   // Top-bar notice: last-saved value + current editor draft.
   const [savedAnnouncement, setSavedAnnouncement] = useState('')
@@ -135,6 +136,7 @@ export default function AdminPage() {
     setSavedInstructions(view.instanceInstructions)
     setInstructionsDraft(view.instanceInstructions)
     setRestrictedWebFetchHosts(view.restrictedWebFetchHosts)
+    setRestrictedWebFetchApprovals(view.restrictedWebFetchApprovals)
     setSavedAnnouncement(view.announcement)
     setAnnouncementDraft(view.announcement)
     setSavedBanner(view.banner)
@@ -916,10 +918,12 @@ export default function AdminPage() {
       )}
 
       {activeTab === 'general' && (
-        <RestrictedWebFetchHostsCard
+        <RestrictedWebFetchCard
           admin={admin.api}
           hosts={restrictedWebFetchHosts}
           onSaved={setRestrictedWebFetchHosts}
+          approvals={restrictedWebFetchApprovals}
+          onApprovalsSaved={setRestrictedWebFetchApprovals}
         />
       )}
 

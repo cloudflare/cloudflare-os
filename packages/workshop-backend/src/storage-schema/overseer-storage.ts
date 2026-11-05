@@ -1426,9 +1426,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
       // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
-      // `AdminConfig.restrictedWebFetchHosts`, and every action pends for manual approval
-      // (autoApprovalRule never fires); the approver checks the action text for restricted data.
-      // The key on disk predates the flag's rename.
+      // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
+      // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
+      // approval (autoApprovalRule never fires); the approver checks the action text for restricted
+      // data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in

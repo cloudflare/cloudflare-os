@@ -1437,6 +1437,11 @@ export type AdminSettingsView = {
   accentColor: string;
   /** The hosts `webFetch` may reach in a workspace that has observed restricted data. */
   restrictedWebFetchHosts: string[];
+  /**
+   * Whether a user may approve, one URL at a time, a fetch that `restrictedWebFetchHosts` doesn't
+   * allow, in a workspace that has observed restricted data.
+   */
+  restrictedWebFetchApprovals: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1619,6 +1624,9 @@ export interface AdminApi {
    * host name, such as one with a scheme, port, path or wildcard. Resolves to the list as stored.
    */
   setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]>;
+
+  /** Set `AdminSettingsView.restrictedWebFetchApprovals`. */
+  setRestrictedWebFetchApprovals(enabled: boolean): Promise<void>;
 
   /**
    * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
@@ -2590,8 +2598,8 @@ export type WorkspaceMetadata = {
    * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
-   * fetches reach only the hosts the deployment admin trusts (none by default), and every action
-   * requires manual approval.
+   * fetches reach only the hosts the deployment admin trusts (none by default) or, where the admin
+   * allows it, a URL a user approves, and every action requires manual approval.
    */
   containsRestrictedData?: boolean;
 
@@ -3345,6 +3353,16 @@ export interface Overseer extends RpcTarget {
   denyConnectionRequest(requestId: string): Promise<void>;
 
   /**
+   * Approve an agent's pending request to fetch a URL (a "webFetchRequest" chat message) that the
+   * workspace's restricted mode refuses. Updates the inline card and resumes the agent, which may
+   * then fetch that URL, and follow its redirects, until the user's next prompt.
+   */
+  approveWebFetchRequest(requestId: string): Promise<void>;
+
+  /** Deny an agent's pending request to fetch a URL. Like denyConnectionRequest, the turn stays ended. */
+  denyWebFetchRequest(requestId: string): Promise<void>;
+
+  /**
    * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
    *
    * The subscription delivers live deltas only — nothing pre-existing is replayed. Query for
@@ -3649,9 +3667,10 @@ export interface Overseer extends RpcTarget {
    * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
    * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
    * starts: the message is then its reply (`message`), the `error` that ended it, or what it stopped
-   * to wait on (an `action` or a `connectionRequest`). Returns at once if no turn is running, and
-   * null if the agent has written nothing in the chat. The other records logged under the agent,
-   * such as the `changes` a step records after its reply, are not messages it wrote.
+   * to wait on (an `action`, a `connectionRequest` or a `webFetchRequest`). Returns at once if no
+   * turn is running, and null if the agent has written nothing in the chat. The other records
+   * logged under the agent, such as the `changes` a step records after its reply, are not messages
+   * it wrote.
    *
    * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
    * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
@@ -4643,6 +4662,22 @@ export type AiChatMessageBody = {
    * turn-start naming chokepoint.
    */
   bindingName?: string;
+} | {
+  /**
+   * The agent asked to fetch a URL that the workspace's restricted mode refuses (see
+   * `AdminSettingsView.restrictedWebFetchApprovals`). Rendered as an approve/deny card, and mutated
+   * in place when the user decides, who vouches that the URL holds no restricted data.
+   */
+  type: "webFetchRequest";
+
+  /** Unique id used by approveWebFetchRequest()/denyWebFetchRequest(). */
+  requestId: string;
+
+  /** The URL, exactly as it will be requested. */
+  url: string;
+
+  /** Starts "pending"; set by the user's decision. */
+  state: "pending" | "approved" | "denied";
 };
 
 /**

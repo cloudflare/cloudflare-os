@@ -55,12 +55,17 @@ export type AdminConfig = {
    */
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
   /**
-   * The hosts `webFetch` may reach in a workspace that has observed restricted data (see
-   * Overseer.getWebFetchEnv), as lowercase ASCII host names. Empty ⇒ no web fetches there. A host
+   * The hosts `webFetch` may reach without asking in a workspace that has observed restricted data
+   * (see Overseer.authorizeWebFetch), as lowercase ASCII host names. A host
    * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
    * analytics and caches, and anything it fetches on a request's behalf.
    */
   restrictedWebFetchHosts: string[];
+  /**
+   * Whether a user may approve, one URL at a time, a fetch that `restrictedWebFetchHosts` doesn't
+   * allow. Off by default: approving moves the leak check onto the approver.
+   */
+  restrictedWebFetchApprovals: boolean;
 
   /**
    * The blueprints offered as this deployment's standard output formats. What a user gets from
@@ -165,6 +170,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   restrictedWebFetchHosts: [],
+  restrictedWebFetchApprovals: false,
   formats: [],
   modelModes: {},
   addedProviders: [],
