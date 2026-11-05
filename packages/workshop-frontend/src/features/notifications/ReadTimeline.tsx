@@ -81,6 +81,10 @@ export const ReadTimeline = ({
     const previous = receivedChat.current;
     if (previous === chat) return;
     receivedChat.current = chat;
+    // A legacy thread's first cursor can confirm the local selection before its RPC fails.
+    if (!previous && visit?.paused && chat.readThroughSequence + 1 === visit.divider) {
+      latestAction.current = undefined;
+    }
     // Server transitions supersede local optimism, even before the command ACK arrives.
     if (!visit) {
       const divider = chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;

@@ -267,6 +267,52 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
+  it.each([
+    {existingCursor: false, confirmationCount: 1},
+    {existingCursor: false, confirmationCount: 0},
+    {existingCursor: true, confirmationCount: 1},
+  ])("preserves a confirmed unread selection when its response fails (existing cursor: $existingCursor, initial unread: $confirmationCount)", async ({existingCursor, confirmationCount}) => {
+    using _ = vi.spyOn(console, "debug").mockImplementation(() => {});
+    visibleBottom = 450;
+    await render();
+    await update(existingCursor ? snapshot(1, 2) :
+      {chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    const failed = Promise.withResolvers<boolean>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(1);
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const confirmed = {...snapshot(2, 0), unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...snapshot(2, 0).chats[0], unreadMessageCount: 1}]};
+    await updateChat({...confirmed, unreadChatCount: confirmationCount, unreadMessageCount: confirmationCount,
+      chats: [{...confirmed.chats[0], unreadMessageCount: confirmationCount}]});
+    // A legacy-only boundary can be confirmed before the first tracked message arrives.
+    if (confirmationCount === 0) await updateChat(confirmed);
+    await act(async () => failed.reject(Object.assign(new Error("Object restarted"), {durableObjectReset: true})));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a failed legacy selection when the first cursor belongs to ordinary arrival enrollment", async () => {
+    using _ = vi.spyOn(console, "debug").mockImplementation(() => {});
+    visibleBottom = 450;
+    await render();
+    await update({chats: [], workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    const failed = Promise.withResolvers<boolean>();
+    markChatUnread.mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(1);
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    const arrival = snapshot(2, 2);
+    await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
+    await act(async () => failed.reject(Object.assign(new Error("Object restarted"), {durableObjectReset: true})));
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+  });
+
   it.each([false, true])("keeps a failed unread command's navigation in its owning visit (reentered: %s)", async reenter => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = Promise.withResolvers<never>();
