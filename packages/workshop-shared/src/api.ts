@@ -994,14 +994,14 @@ export interface AuthenticatedApi extends RpcTarget {
    * sees the ticket (see docs/connect-handoff.md). A vendor that provisions its own account
    * (`description.autoProvisionsAccount`) needs no flow: see provisionAmbientAccount().
    *
-   * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
+   * `resourceTypeIds`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
    * authorization for all of the vendor's resource types is requested. An empty array is meaningful
    * and distinct from omitting it: it requests no resource authorization at all, which is how a
    * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
    * grant data access it will never use.
    */
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart>;
+  connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart>;
 
   /**
    * Redeem a finished connect flow's handoff. Called by the Workshop's own /connect/handoff page
@@ -1018,7 +1018,7 @@ export interface AuthenticatedApi extends RpcTarget {
   completeConnectHandoff(ticket: string, nonce: string): Promise<void>;
 
   /**
-   * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
+   * Ensure the authorization for the listed grantable resource types (by stable vendor-scoped ID) is granted
    * on a connected account, expanding if needed. Returns a flow to open as a disowned popup, which
    * only the Workshop client that started it can complete (as for connectAccount()), to authorize
    * them, or null if nothing was needed. Completion is redeemed via completeConnectHandoff(); the
@@ -1026,7 +1026,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * Returning null also re-reads the account's description, so a list of granted resource types
    * that was out of date is corrected and observable the same way.
    */
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
+  ensureAccountResources(accountId: number, resourceTypeIds: string[]): Promise<ConnectFlowStart | null>;
 
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
@@ -1068,24 +1068,24 @@ export interface AuthenticatedApi extends RpcTarget {
    * Get the UI used to choose a specific resource from a connected account.
    *
    * `accountId` is the user's connected account that provides this resource.
-   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   * `resourceTypeId` is the stable vendor-scoped ID of the supported resource.
    *
    * Once the user has chosen in the frame, the Workshop asks its iframe for the resource URL
    * (ResourceConfiguratorIframe.collectResourceUrl()) and passes it to Overseer.newGatekeeper().
-   * A caller without the iframe makes that URL itself, in the form of `resourceUrlPattern`, the
+   * A caller without the iframe makes that URL itself, matching the type's current `urlPattern`, the
    * frame's `ui` helping only to look up what fills it.
    */
   startResourceConfigurator(
     accountId: number,
-    resourceUrlPattern: string,
+    resourceTypeId: string,
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
-   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * Get the UI in which the approver of a creation of the type `resourceTypeId` configures it
    * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
    * frame's collectResourceUrl() gives CreationApproval.configuration.
    */
-  startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+  startCreationConfigurator(accountId: number, resourceTypeId: string)
       : Promise<GatekeeperUiFrame>;
 
   /**
@@ -1298,7 +1298,9 @@ export function isHexColor(value: unknown): value is string {
 
 /** A single gatekeeper resource type in the admin resource-config UI. */
 export type AdminResource = {
-  /** The resource's urlPattern, used as its stable identifier. */
+  /** Stable vendor-scoped type ID; older responses and unresolved legacy restrictions omit it. */
+  resourceTypeId?: string;
+  /** URL matching pattern, or the retained unmatched pattern of a legacy restriction. */
   urlPattern: string;
   title: string;
   description: string;
@@ -1621,11 +1623,11 @@ export interface AdminApi {
   setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]>;
 
   /**
-   * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
+   * Enable or disable a single gatekeeper resource type, keyed by vendor ID + stable resource type ID.
    * Soft enforcement: disabling hides the resource from the connect UI, the resource picker, and the
    * agent; it doesn't revoke a capability a gadget already holds.
    */
-  setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void>;
+  setResourceEnabled(vendorId: string, resourceTypeId: string, enabled: boolean): Promise<void>;
 
   /**
    * Set a gatekeeper's availability. For an auto-provisioning ("ambient") gatekeeper, `mode` is the
@@ -4620,6 +4622,9 @@ export type AiChatMessageBody = {
    */
   resourceUrlPattern?: string;
 
+  /** Stable vendor-scoped type ID. Authoritative over the legacy pattern when present. */
+  resourceTypeId?: string;
+
   /** Why the agent wants this connection. Shown to the user to inform their decision. */
   reason: string;
 
@@ -5000,6 +5005,8 @@ export type AiToolCall = {
   toolName: "requestConnection";
   input: {
     vendorId: string;
+    /** Stable type ID from listConnectableResources; omitting it retains URL-based selection. */
+    resourceTypeId?: string;
     resourceUrl?: string;
     reason: string;
 
@@ -5021,8 +5028,11 @@ export type AiToolCall = {
   input: {
     vendorId: string;
 
-    /** `urlPattern` of the creatable resource type. */
-    resourceUrlPattern: string;
+    /** Stable ID of the creatable resource type, from listConnectableResources. */
+    resourceTypeId?: string;
+
+    /** Legacy persisted tool calls used the type's exact URL pattern instead. */
+    resourceUrlPattern?: string;
 
     /** Title of the new resource, e.g. a document's title. */
     title: string;
@@ -5706,7 +5716,9 @@ export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
-  typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
+  /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
+  resourceTypeId?: string;
+  typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.
 } | {
   type: "aiModel";
   modelId: string;         // the user's configured model ID
@@ -5804,7 +5816,10 @@ export type BlueprintBinding = {
    */
   gatekeeperName: string;
 
-  /** URL pattern describing the type of resource this binding accepts. */
+  /** Stable vendor-scoped type ID. Authoritative when present, including after pattern changes. */
+  resourceTypeId?: string;
+
+  /** Matching hint; legacy bindings without an ID resolve only by exact current pattern. */
   typeUrlPattern: string;
 
   /** The specific resource URL from the source gadget (suggestion only). */

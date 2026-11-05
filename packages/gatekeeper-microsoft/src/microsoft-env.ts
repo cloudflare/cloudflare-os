@@ -168,6 +168,7 @@ export function sharePointAccess(env: Env): SharePointAccess {
  * file, list or page. See plans/microsoft-365-gatekeeper.md.
  */
 export const SHAREPOINT_RESOURCE: SupportedResource = {
+  id: "sharepoint",
   urlPattern: "https://*.sharepoint.com/*",
   title: "SharePoint & OneDrive",
   description: "Find, read and edit files, lists and pages, with your approval for every change. " +
@@ -180,6 +181,7 @@ export const SHAREPOINT_RESOURCE: SupportedResource = {
  * configurator narrows. See plans/microsoft-outlook.md.
  */
 export const OUTLOOK_RESOURCE: SupportedResource = {
+  id: "outlook",
   urlPattern: "https://outlook.office.com/*",
   title: "Outlook",
   description: "Read, search and triage mail, draft replies, and send with your approval. Connect your " +
@@ -192,6 +194,7 @@ export const OUTLOOK_RESOURCE: SupportedResource = {
  * detail, which the configurator chooses. See plans/microsoft-calendar.md.
  */
 export const CALENDAR_RESOURCE: SupportedResource = {
+  id: "calendar",
   urlPattern: "https://outlook.office.com/calendar/*",
   title: "Outlook Calendar",
   description: "See when you and your colleagues are free, read calendars, and schedule with your approval. " +

@@ -24,6 +24,7 @@ import {
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ActionDescriptionBuilder, buildDescription, codeSpan, sanitizeTitle, type RenderedDescription,
@@ -690,18 +691,21 @@ const OAUTH_SCOPES = ["repo", "read:user", "user:email"];
 const AUTH_SCOPES = ["read:user", "user:email"];
 
 const REPO_RESOURCE: SupportedResource = {
+  id: "repository",
   urlPattern: "https://github.com/:owner/:repo",
   title: "GitHub Repository",
   description: "Read and manage issues, pull requests, reviews, and discussions in a GitHub repository.",
 };
 
 const ISSUE_RESOURCE: SupportedResource = {
+  id: "issue",
   urlPattern: "https://github.com/:owner/:repo/issues/:number",
   title: "GitHub Issue",
   description: "Read and manage a specific GitHub issue.",
 };
 
 const PULL_REQUEST_RESOURCE: SupportedResource = {
+  id: "pull-request",
   urlPattern: "https://github.com/:owner/:repo/pull/:number",
   title: "GitHub Pull Request",
   description: "Read and manage a specific GitHub pull request and its review threads.",
@@ -1809,6 +1813,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async startResourceConfigurator(
     resourceUrlPattern: string,
   ): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const read = accountReader(this.ctx.exports, this.ctx.props.userObjectId);
 
     if (resourceUrlPattern === REPO_RESOURCE.urlPattern) {

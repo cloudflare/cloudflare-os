@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Check, Plus, UserCircle } from '@phosphor-icons/react'
-import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { AccountDescription, SupportedResource, VendorDescription, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper'
 
 /**
  * Account info as consumed by the chooser. Matches the shape used by GatekeeperModal and the
@@ -77,7 +77,7 @@ export function AccountChooser({
           const name = account.description.uniqueName || account.description.displayName || 'Connected account'
           const expired = !account.credentialsValid
           const reconnecting = reconnectingAccountId === account.id
-          const granted = account.description.grantedResourceUrlPatterns
+          const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
           const required = typeof requiredResourceUrlPatterns === 'function'
             ? requiredResourceUrlPatterns(account) : requiredResourceUrlPatterns
           const accountMissing =

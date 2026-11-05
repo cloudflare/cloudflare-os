@@ -10,7 +10,7 @@
 // things *out*.
 
 import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
-import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { SupportedResource, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
@@ -354,13 +354,12 @@ export function parseRestrictedWebFetchHosts(hosts: string[]): string[] {
  * storage or its KV mirror.
  */
 export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
-  let disabledResources: Record<string, string[]> = {};
-  if (p.disabledResources && typeof p.disabledResources === "object") {
-    for (let [vendorId, patterns] of Object.entries(p.disabledResources)) {
-      let list = strings(patterns);
-      if (list.length > 0) disabledResources[vendorId] = list;
-    }
-  }
+  const restrictions = (raw: Record<string, string[]> | undefined) => Object.fromEntries(
+    Object.entries(raw ?? {}).flatMap(([vendorId, values]) => {
+      const list = strings(values);
+      return list.length ? [[vendorId.toLowerCase(), list]] : [];
+    }));
+  let disabledResources = restrictions(p.disabledResources);
   let ambientGatekeeperModes: Record<string, AmbientGatekeeperMode> = {};
   if (p.ambientGatekeeperModes && typeof p.ambientGatekeeperModes === "object") {
     for (let [vendorId, mode] of Object.entries(p.ambientGatekeeperModes)) {
@@ -398,6 +397,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     },
     accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
     disabledResources,
+    ...(p.disabledResourceTypeIds ? {disabledResourceTypeIds: restrictions(p.disabledResourceTypeIds)} : {}),
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
@@ -555,16 +555,25 @@ export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig>
 
 // --- Resource-disable helpers ---
 
+/** Legacy restrictions whose type can no longer be identified without an admin's decision. */
+export function unresolvedResourceRestrictions(
+    config: AdminConfig, vendorId: string, resources: readonly SupportedResource[]): string[] {
+  return (config.disabledResources[vendorId] ?? [])
+      .filter(pattern => !resources.some(resource => resource.urlPattern === pattern));
+}
+
 export function isResourceDisabled(
-    config: AdminConfig, vendorId: string, urlPattern: string): boolean {
-  return config.disabledResources[vendorId]?.includes(urlPattern) ?? false;
+    config: AdminConfig, vendorId: string, resource: SupportedResource,
+    advertisedResources: readonly SupportedResource[]): boolean {
+  return unresolvedResourceRestrictions(config, vendorId, advertisedResources).length > 0 ||
+    (config.disabledResourceTypeIds?.[vendorId]?.includes(getResourceTypeId(resource)) ?? false) ||
+    (config.disabledResources[vendorId]?.includes(resource.urlPattern) ?? false);
 }
 
 export function filterEnabledResources(
-    config: AdminConfig, vendorId: string, resources: SupportedResource[]): SupportedResource[] {
-  let disabled = config.disabledResources[vendorId];
-  if (!disabled || disabled.length === 0) return resources;
-  return resources.filter(r => !disabled.includes(r.urlPattern));
+    config: AdminConfig, vendorId: string, resources: SupportedResource[],
+    advertisedResources: readonly SupportedResource[] = resources): SupportedResource[] {
+  return resources.filter(resource => !isResourceDisabled(config, vendorId, resource, advertisedResources));
 }
 
 // --- Agent system-prompt instructions ---
