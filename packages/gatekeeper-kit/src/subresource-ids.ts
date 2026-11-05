@@ -1,6 +1,18 @@
-/** Canonical subresource IDs: an optional product-family namespace, then the resources naming one. */
+/** The global connection requirement and canonical, structured resource IDs. */
 
 const SEPARATOR = "/";
+
+/**
+ * A subresource requirement satisfied by the observer's own live connection to the service, with
+ * no additional resource-specific permission check. Report it on every disclosure governed only
+ * by that connection; an empty subresource list instead means no observer-access restriction.
+ *
+ * This is not a wildcard or an automatic grant: the gatekeeper's `verifyObserverAccess()` must
+ * recognize it and establish that the observer's connection is live for the same service/tenant.
+ * It cannot stand in for independent tenant membership, resource ACLs, or private account data.
+ * Compare it directly before parsing structured IDs; {@link parseSubresourceId} rejects it.
+ */
+export const GLOBAL_SUBRESOURCE_ID = "global";
 
 /**
  * One resource on the path to a subresource: its kind and the provider's identifier for it, both
@@ -24,7 +36,7 @@ export type SubresourceFragment = {
   id: string;
 };
 
-/** A subresource ID before encoding (see {@link formatSubresourceId}). */
+/** A structured resource ID before encoding (see {@link formatSubresourceId}), not the global ID. */
 export type SubresourceId = {
   /**
    * The product family the resource belongs to, for a gatekeeper exposing several that each have
@@ -85,6 +97,8 @@ export function formatSubresourceId(value: SubresourceId): string {
  * the canonical spelling parses: any other (a lowercase or needless escape, a raw character the
  * encoder would escape, an empty component, a namespace with no fragments) is not an ID this module
  * made, and is refused rather than read as some nearby resource.
+ * {@link GLOBAL_SUBRESOURCE_ID} is a separate sentinel, not a structured ID; recognize it before
+ * calling this parser, which rejects it rather than changing the meaning of a namespace alone.
  * @param id Encoded subresource ID.
  * @returns Its namespace, when it has one, and its fragments.
  * @throws Error when `id` is not a subresource ID in canonical form.

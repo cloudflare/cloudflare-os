@@ -964,6 +964,11 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
   recorded as requirements on the audit record. A denial or failed check refuses the read and
   records nothing.
 - **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
+- **`[GLOBAL_SUBRESOURCE_ID]` (`["global"]`):** a connection-only requirement, not unrestricted
+  access. The gatekeeper recognizes this exact sentinel and verifies the observer's own live
+  connection to the same service/tenant; the kernel handles it like any other reported ID, with no
+  wildcard or automatic grant. Use it only when no additional permission check is needed. See the
+  kit's [connection-only example](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first).

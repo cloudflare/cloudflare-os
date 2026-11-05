@@ -695,7 +695,8 @@ legacy observer methods:
 - Every observation explicitly reports all dependencies, even if another read already reported them.
   Workshop records requirements per chat or gadget, not just per binding.
 - `[]` means **no observer-access restriction**. It never means a binding/admission baseline was
-  already checked. If membership restricts a read, include the workspace/tenant resource and check it.
+  already checked. Report membership requirements explicitly; when a live connection alone grants
+  all disclosed access, use [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), not `[]`.
 - Private-only reads report the actual mailbox, account, document, or other resource ID;
   `verifyObserverAccess()` denies observers who may not read it. Neither `[]` nor a synthetic
   `private` policy marker expresses that requirement.
@@ -727,9 +728,10 @@ async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Prom
 async removeObserver(_id: string): Promise<void> {}
 ```
 
-`hasCollectionAccess` is the helper's existing option name; here its IDs are canonical subresource
-IDs, not a tracked collection set. The provider's `canAccess` implementation must parse and validate
-IDs, reject unknown kinds, and verify every requirement using the observer's own account. Check
+`hasCollectionAccess` is the helper's existing option name; here its IDs are subresource requirements,
+not a tracked collection set. The provider's `canAccess` implementation must recognize any supported
+`GLOBAL_SUBRESOURCE_ID` sentinel before parsing structured IDs, reject unknown IDs, and verify every
+requirement using the observer's own account. Check
 workspace/tenant membership explicitly and enforce private-only resources there too. Throw when
 access cannot be determined (expired credentials or a provider outage), rather than disguising
 uncertainty as a known denial. The helper stores no verifier or observer-ID verdict: each call uses
@@ -794,6 +796,72 @@ table-row, or private-field visibility, and a mutation role is not inherently th
 An account-identity comparison can implement a private policy; it is not a delegated-resource ACL
 probe. If no adequate oracle exists, choose A, not D. See the worked patterns below for real examples
 and limits of the existing implementations.
+
+### Connection-only access (`global`)
+
+Use `GLOBAL_SUBRESOURCE_ID` from `@gadgets/gatekeeper-kit/subresource-ids` when the observer's own
+live connection to the service is sufficient to read everything disclosed, with no additional
+resource-specific authorization. This is a connection-only form of strategy B, not unrestricted
+strategy D. `subresources: [GLOBAL_SUBRESOURCE_ID]` records that requirement; `[]` records none.
+
+Choose requirements from the provider's permission boundaries, not its API's object hierarchy or
+the binding's grant scope. For example, consider an Access-protected project catalog whose admission
+policy grants instance-wide read access, with no additional project/item ACLs. It can offer
+whole-catalog, project, and item bindings while every provider-data read reports the same `global`
+requirement. Do not fetch an object merely to prove a permission the live connection already establishes.
+Read-only APIs are not automatically connection-only: separate ACLs or private user-specific
+results still require their own resource checks.
+
+```ts
+import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
+
+await queue.authorizeObservation({
+  title: "Read project catalog",
+  description: "List projects from the connected Access-protected catalog.",
+  subresources: [GLOBAL_SUBRESOURCE_ID],
+});
+```
+
+Report this requirement on every such disclosure, including empty results, cache hits, cursor
+pages, and hook deliveries. Narrow bindings must still enforce their project/item scope; the
+shared observer requirement does not expand the caller's capabilities.
+
+The same-vendor verifier must establish that the **observer's** connection is live, not that the
+owner is connected or that a token exists in storage. With the account's `getCredentials()` from
+the [credential sequence](#2-expose-the-account-rpc-methods), its batched oracle can be:
+
+```ts
+async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
+  if (ids.some(id => id !== GLOBAL_SUBRESOURCE_ID)) {
+    throw new Error("Unknown subresource ID.");
+  }
+  await this.getCredentials();
+  return ids.map(() => true);
+}
+```
+
+The verifier delegates to this method on its own account; `observerAccessVerifier` combines its
+answers normally. The credential lifecycle handles expiry, refresh, and disconnect. An expired
+connection or indeterminate refresh must throw, not return an allow; refreshing credentials is
+not an extra content/ACL probe. Document the credential lifetime and revocation detection of the
+integration rather than claiming a local validity check detects every remote revocation instantly.
+
+`global` is an exact sentinel, not a wildcard, a private-policy marker, or a grant across vendors
+or tenants. Use it only when the observer's connection proves access to the same provider instance
+whose data was disclosed. A deployment-fixed tenant needs no redundant `tenant/<origin>` ID;
+a deployment supporting multiple tenants still needs explicit tenant identity and verification.
+Do not use `global` instead of independently required tenant membership or resource permissions.
+
+This is the exception to the structured-ID grammar below: compare `GLOBAL_SUBRESOURCE_ID` directly
+before calling `parseSubresourceId()`. The parser deliberately rejects `global`, and the kernel
+does not give it special authorization behavior. A verifier supporting only concrete resource
+kinds must continue to refuse it.
+
+For an existing migration, `global` can describe historical reads only when the same connection-only
+requirement covers every historical disclosure. Preserve old enforcement and export complete history
+under the [migration rules](#existing-code-migration-only-preserve-historical-enforcement); adding
+this constant does not make unknown history empty or justify dropping stronger checks.
+
 
 ### Worked patterns from the Google migrations
 
@@ -1007,8 +1075,9 @@ workspace its sharing until the kernel distinguishes the two.
 
 ### Subresource IDs name resources
 
-Build every `ObservationDescription.subresources` ID with `formatSubresourceId()` from
-`./subresource-ids`, and read them back in `verifyObserverAccess()` with `parseSubresourceId()`:
+Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global).
+Build every **structured resource** ID with `formatSubresourceId()` from `./subresource-ids`, and
+read it back in `verifyObserverAccess()` with `parseSubresourceId()`:
 
 ```ts
 formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId }] });
