@@ -62,11 +62,15 @@ function workspace(enabled = false) {
   return { server, overseer: { listHooks, enableHook, disableHook, [Symbol.dispose]: () => {} } }
 }
 
-async function renderConnections(overseer: ReturnType<typeof workspace>['overseer']) {
-  const gadget = { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => [] }
+async function renderConnections(
+  overseer: ReturnType<typeof workspace>['overseer'],
+  props: { gadget?: object; chatId?: number; onConnectionsChange?: () => void } = {},
+) {
+  const gadget = props.gadget ?? { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => [] }
   const authenticatedApi = { listGatekeeperVendors: async () => [] }
   await view.render(
-    <Connections overseer={overseer as never} gadget={gadget as never} authenticatedApi={authenticatedApi as never} />,
+    <Connections overseer={overseer as never} gadget={gadget as never} chatId={props.chatId}
+      authenticatedApi={authenticatedApi as never} onConnectionsChange={props.onConnectionsChange} />,
   )
   await act(async () => {})
 }
@@ -146,12 +150,6 @@ const gadgetStub = (bind: GadgetClient['bindWithSuggestedName']) => ({
   bindWithSuggestedName: vi.fn<GadgetClient['bindWithSuggestedName']>(bind),
 })
 
-const renderWithGadget = (stub: object, chatId: number, onConnectionsChange?: () => void) => view.render(
-  <Connections overseer={workspace().overseer as never} gadget={stub as never} chatId={chatId}
-    authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
-    onConnectionsChange={onConnectionsChange} />,
-)
-
 it.each([
   ['the restart refusal', createGatekeeperError(GATEKEEPER_ERROR_CODES.pendingRestart)],
   // A distant client's bind arrives after the restart closed its session.
@@ -161,18 +159,18 @@ it.each([
     throw failure
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
+  const { overseer } = workspace()
   const onConnectionsChange = vi.fn<() => void>()
 
-  await renderWithGadget(dying, 1, onConnectionsChange)
+  await renderConnections(overseer, { gadget: dying, chatId: 1, onConnectionsChange })
   // Resolving is what closes the modal rather than leaving it to create a second connection.
   await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).resolves.toBeUndefined())
 
   // A chat switch while the old session goes down must not spend the retry on it.
-  await renderWithGadget(dying, 2, onConnectionsChange)
+  await renderConnections(overseer, { gadget: dying, chatId: 2, onConnectionsChange })
   expect(dying.bindWithSuggestedName).toHaveBeenCalledOnce()
 
-  await renderWithGadget(reconnected, 2, onConnectionsChange)
-  await act(async () => {})
+  await renderConnections(overseer, { gadget: reconnected, chatId: 2, onConnectionsChange })
   expect(reconnected.bindWithSuggestedName).toHaveBeenCalledWith(9, 1)
   expect(onConnectionsChange).toHaveBeenCalledOnce()
 })
@@ -186,12 +184,12 @@ it.each([
     throw failure
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
+  const { overseer } = workspace()
 
-  await renderWithGadget(failing, 1)
+  await renderConnections(overseer, { gadget: failing, chatId: 1 })
   // Rejecting keeps the modal open with the error.
   await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).rejects.toBe(failure))
 
-  await renderWithGadget(reconnected, 1)
-  await act(async () => {})
+  await renderConnections(overseer, { gadget: reconnected, chatId: 1 })
   expect(reconnected.bindWithSuggestedName).not.toHaveBeenCalled()
 })
