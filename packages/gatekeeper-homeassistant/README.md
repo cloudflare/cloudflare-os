@@ -62,7 +62,7 @@ See `src/types.d.ts` for the complete API and `@example` blocks for every method
 
 ## Approval & simulation
 
-Every read calls `authorizeObservation` and every write goes through `submitAction`. Writes do **not** execute against HA until the user approves them, or until an always-approve rule the user enabled covers them.
+Every read calls `authorizeObservation` with `subresources: []` (any collaborator may observe; `verifyObserverAccess` allows everyone) and every write goes through `submitAction`. Writes do **not** execute against HA until the user approves them, or until an always-approve rule the user enabled covers them.
 
 Two kinds can be auto-approved, each only once the user enables a rule for it (`src/auto-approval.ts` holds the verdicts):
 

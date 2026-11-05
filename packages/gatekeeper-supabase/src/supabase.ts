@@ -11,6 +11,7 @@ import {
   type GatekeeperUser,
   type GatekeeperUserVerifier,
   type GatekeeperVendor as GatekeeperVendorIface,
+  type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
@@ -19,6 +20,8 @@ import {
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import {
   SupabaseApi,
   SupabaseApiError,
@@ -34,6 +37,12 @@ import {
   SupabaseOrganizationConfiguratorUI,
   SupabaseProjectConfiguratorUI,
 } from "./supabase-configurators";
+import {
+  organizationSubresourceId,
+  parseSupabaseSubresource,
+  projectSubresourceId,
+  type SupabaseSubresource,
+} from "./subresources";
 import type {
   SupabaseDatabase,
   SupabaseEdgeFunction,
@@ -133,6 +142,11 @@ const METADATA_CACHE_TTL_MS = 60 * 1000;
 const SCHEMA_CACHE_TTL_MS = 30 * 1000;
 // Re-fetch the access token from the UserAccount DO at most this often per gatekeeper session.
 const SESSION_TOKEN_TTL_MS = 30 * 1000;
+// How long an account's answer about its own access to an organization or project is reused (see
+// UserAccount.checkSubresourceAccess). A grant is trusted for longer than a denial, so an observer
+// just added to a project or organization is let in soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 
 type ResourceKind = "project" | "organization";
 
@@ -404,6 +418,28 @@ export class UserAccount extends DurableObject<Env> {
   // coalesce overlapping refreshes onto a single in-flight promise.
   #refreshInFlight?: Promise<StoredToken>;
 
+  // This account's answers about its own access to organizations and projects, keyed by
+  // subresource ID and partitioned by the credentials that learned them (see #credentialsId), so an
+  // answer can't outlive a disconnect that left storage behind, nor survive a reconnect, which may
+  // sign in as another Supabase user. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the credentials installed now, or undefined while there are none. Every install names
+  // its credentials afresh (see #installGrant), and revoking deletes the name with everything
+  // else, so no load that started under earlier credentials can find the same name when it
+  // finishes. A token refresh renews the same grant and keeps the name. Credentials installed
+  // before names existed are named on first use.
+  #credentialsId(): string | undefined {
+    const kv = this.ctx.storage.kv;
+    if (!kv.get<string>("refreshToken")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
       await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
@@ -480,7 +516,7 @@ export class UserAccount extends DurableObject<Env> {
       const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
       handoff = await callback.reconnectComplete(stageId);
     } else {
-      this.#storeGrant(grant);
+      this.#installGrant(grant);
       clearCredentialExpiryLatch(this.ctx.storage.kv);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
@@ -489,6 +525,7 @@ export class UserAccount extends DurableObject<Env> {
         this.ctx.storage.kv.delete("accessToken");
         this.ctx.storage.kv.delete("refreshToken");
         this.ctx.storage.kv.delete("accessTokenExpiresAt");
+        this.ctx.storage.kv.delete("credentialsId");
         throw error;
       }
     }
@@ -501,8 +538,16 @@ export class UserAccount extends DurableObject<Env> {
   async commitReconnect(stageId: string): Promise<void> {
     const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-    this.#storeGrant(grant);
+    this.#installGrant(grant);
     clearCredentialExpiryLatch(this.ctx.storage.kv);
+  }
+
+  // Makes `grant` the account's credentials, named afresh (see #credentialsId) so that no access
+  // answer learned under earlier credentials is reused. A refresh stores its grant with
+  // #storeGrant alone: it renews these credentials rather than replacing them.
+  #installGrant(grant: StoredGrant): void {
+    this.#storeGrant(grant);
+    this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
   }
 
   #storeGrant(grant: StoredGrant): void {
@@ -544,12 +589,21 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Supabase OAuth is not configured.");
     }
 
+    // Named before the request, so a reconnect or revoke that replaces these credentials while it
+    // runs is seen when it returns.
+    const installed = this.#credentialsId();
     try {
       const grant = toStoredGrant(
         await refreshAccessToken(refreshToken, clientId, clientSecret), Date.now());
+      // Storing a refresh of replaced credentials would put the old account's tokens under the new
+      // installation's name, where the access cache would serve one account's answers to the other.
+      if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) return this.#installedToken();
       this.#storeGrant(grant);
       return { token: grant.accessToken, expiresAt: grant.accessTokenExpiresAt };
     } catch (error) {
+      // The credentials that failed to refresh are no longer installed, so their failure says
+      // nothing about the ones that are.
+      if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) return this.#installedToken();
       // A revoked/expired refresh token surfaces as an auth error; record it so the UI prompts a
       // reconnect rather than surfacing a cryptic failure.
       if (error instanceof SupabaseApiError && error.isAuthError) {
@@ -559,9 +613,85 @@ export class UserAccount extends DurableObject<Env> {
     }
   }
 
+  // The installed token, for a refresh that a reconnect or revoke overtook.
+  #installedToken(): StoredToken {
+    const token = this.ctx.storage.kv.get<string>("accessToken");
+    if (!token) throw new Error("Supabase credentials have not been configured for this account.");
+    return { token, expiresAt: this.ctx.storage.kv.get<number>("accessTokenExpiresAt") ?? 0 };
+  }
+
   async noteCredentialsExpired(): Promise<void> {
     await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
       this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
+  }
+
+  /**
+   * Whether this account can read each organization or project subresource, in order. A project
+   * ID asks only whether the account can reach that project (its organization in the ID is
+   * identity, since projects move between organizations); an organization ID asks for membership.
+   * An allowed answer is reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
+   * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Every answer comes from
+   * the credentials installed when the check began: a reconnect partway through could otherwise
+   * combine one Supabase account's answers with another's, so it fails the check. Throws for an ID
+   * it can't check, or when access can't be determined (missing or expired credentials, a rate
+   * limit, an outage), which is never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
+    const parsed = subresources.map(parseSupabaseSubresource);
+    const installed = this.#credentialsId();
+    const projectRefs = new Map<string, string>();
+    const organizationSlugs = new Map<string, string>();
+    parsed.forEach((resource, index) => {
+      if (resource.kind === "project") projectRefs.set(subresources[index], resource.ref);
+      else organizationSlugs.set(subresources[index], resource.slug);
+    });
+    const api = new SupabaseApi(async () => (await this.getAccessToken()).token);
+    const ttl = (allowed: boolean) =>
+      allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+    const access = new Map<string, boolean>();
+    // `/v1/projects` lists exactly the projects this account's token can reach, so one request
+    // answers every project ID without a recent answer, and `/v1/organizations` likewise every
+    // organization ID; one request at a time. Only absence from a list is a denial: a request
+    // Supabase refuses says nothing about access, so it throws and nothing is cached.
+    const projectIds = [...projectRefs.keys()];
+    if (projectIds.length > 0) {
+      const answers = await this.#access.cachedMany(projectIds, ttl, async missing => {
+        const reachable = new Set(
+          (await this.#askForAccessCheck(() => api.listProjects())).map(project => project.ref));
+        return missing.map(subresource => reachable.has(projectRefs.get(subresource)!));
+      });
+      projectIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    const organizationIds = [...organizationSlugs.keys()];
+    if (organizationIds.length > 0) {
+      const answers = await this.#access.cachedMany(organizationIds, ttl, async missing => {
+        const memberships = new Set(
+          (await this.#askForAccessCheck(() => api.listOrganizations())).map(org => org.slug));
+        return missing.map(subresource => memberships.has(organizationSlugs.get(subresource)!));
+      });
+      organizationIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Supabase connection changed while their access was being checked.");
+    }
+    return subresources.map(subresource => access.get(subresource)!);
+  }
+
+  // Makes one request for checkSubresourceAccess, naming an auth failure for what it is: this
+  // account can't currently show what it can reach. Unlike SupabaseVerifier's legacy checks, which
+  // read it as a denial, it throws, so the observer is refused without the answer being kept.
+  async #askForAccessCheck<T>(request: () => Promise<T>): Promise<T> {
+    try {
+      return await request();
+    } catch (error) {
+      if (error instanceof SupabaseApiError && error.isAuthError) {
+        throw new Error(
+          "This collaborator's Supabase credentials have expired or been revoked, so their access " +
+          "cannot be checked until they reconnect.", { cause: error });
+      }
+      throw error;
+    }
   }
 
   async alarm(): Promise<void> {
@@ -706,10 +836,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   /**
-   * Mint a verifier representing this account, used by SupabaseGatekeeperImpl.addObserver to confirm
-   * a prospective observer may read a bound project (and, for org bindings, the org and each
-   * accessed project). The verifier carries this user's own account id, so the access checks run
-   * against the observer's *own* Supabase token.
+   * Mint a verifier representing this account, used by SupabaseGatekeeperImpl's addObserver and
+   * verifyObserverAccess to confirm a prospective observer may read a bound project or
+   * organization and the projects read through it (see those methods). The verifier carries this
+   * user's own account id, so the access checks run against the observer's *own* Supabase token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -721,9 +851,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // ---------------------------------------------------------------------------
 // Verifier
 //
-// Supabase uses the "ACL check (single unit)" strategy for project bindings and "data-set tracking
-// (by project)" for organization bindings (see SupabaseGatekeeperImpl observer methods). Both
-// reduce to two per-observer access questions answered against the observer's *own* token:
+// Every read reports the organization and/or project it depends on (see
+// SupabaseSessionContext.authorizeRead), which verifyObserverAccess checks through
+// checkSubresourceAccess, answered by the observer's own UserAccount, which reuses recent answers.
+// The legacy checks addObserver still makes for history recorded before reads reported them reduce
+// to two per-observer access questions answered against the observer's *own* token, asked now:
 //   - hasProjectAccess(refs): the Management API's `/v1/projects` returns exactly the projects the
 //     calling token can reach, so one response can check every requested ref.
 //   - hasOrgAccess(slug):    likewise `/v1/organizations` lists the orgs the token belongs to.
@@ -735,19 +867,19 @@ type SupabaseVerifierProps = {
 };
 
 /**
- * The non-standard methods the Supabase gatekeeper calls on its own verifier (see addObserver). Not
- * part of the generic GatekeeperUserVerifier contract.
+ * The non-standard methods the Supabase gatekeeper calls on its own verifier (see addObserver and
+ * verifyObserverAccess). Not part of the generic GatekeeperUserVerifier contract.
  */
 export interface SupabaseVerifierApi extends GatekeeperUserVerifier {
   hasProjectAccess(refs: string[]): Promise<boolean[]>;
   hasOrgAccess(slug: string): Promise<boolean>;
+  /**
+   * Whether the observer's account can read each organization or project subresource, in order,
+   * reusing recent answers (see UserAccount.checkSubresourceAccess). Throws for an ID it can't
+   * check, or when access can't be determined (expired credentials, a rate limit, an outage).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
-
-type ProjectObservationCheck = {
-  excludeObservers?: string[];
-  pendingProjects: string[];
-  commit(): void;
-};
 
 type ObservedProjectState = true | "pending" | "observed";
 
@@ -783,7 +915,21 @@ export class SupabaseVerifier extends WorkerEntrypoint<Env, SupabaseVerifierProp
       throw error;
     }
   }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    const accounts = this.ctx.exports.UserAccount;
+    return await accounts.get(accounts.idFromString(this.ctx.props.userObjectId))
+      .checkSubresourceAccess(subresources);
+  }
 }
+
+// Allows an observer only if their own account can read every organization and project a
+// binding's reads reported, as their UserAccount last learned (see
+// UserAccount.checkSubresourceAccess).
+const verifySupabaseAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<SupabaseVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});
 
 // ---------------------------------------------------------------------------
 // Action queue storage. Mutating SQL statements are stored here when submitted for approval and
@@ -858,21 +1004,26 @@ class SupabaseCache {
 // Holds the API client, error handling, the approval queue, the cache, and the pending-action
 // store. It is NOT an RpcTarget — it is captured privately by the session objects.
 
+/**
+ * An observation that names every subresource it depends on, so a read that leaves them out, and
+ * would fall back to the legacy observer protocol, is a type error (see authorizeRead).
+ */
+type SubresourceObservation = ObservationDescription & { subresources: string[] };
+
+/** The resource a session's binding is pinned to, which decides what its reads report. */
+type SessionBinding = { kind: "organization"; slug: string } | { kind: "project"; ref: string };
+
 class SupabaseSessionContext {
   // A .dup() of the queue passed to startSession (so it outlives that call). We deliberately do not
   // dispose it ourselves: disposing a stub schedules an RPC release, and doing that during isolate
   // shutdown trips a fatal workerd assertion. Like the reference gatekeepers, we let the session's
   // RPC connection teardown reclaim it.
-  readonly approvalQueue: RpcStub<ApprovalQueue>;
+  #approvalQueue: RpcStub<ApprovalQueue>;
   #api: SupabaseApi;
   #cache: SupabaseCache;
   #pending: PendingActionStore;
   #noteExpired: () => Promise<void>;
-  // Set only for organization bindings (data-set tracking). Given the project ref a project-scoped
-  // observation is about to reveal, records it as an observed data set and returns the observer ids
-  // that must not see it (those lacking access). Undefined for project bindings (single-unit ACL),
-  // where there is nothing to exclude. See SupabaseGatekeeperImpl.#prepareProjectObservation.
-  #projectObservationHook?: (ref: string) => Promise<ProjectObservationCheck>;
+  #binding: SessionBinding;
 
   constructor(
     api: SupabaseApi,
@@ -880,31 +1031,63 @@ class SupabaseSessionContext {
     cache: SupabaseCache,
     pending: PendingActionStore,
     noteExpired: () => Promise<void>,
-    projectObservationHook?: (ref: string) => Promise<ProjectObservationCheck>,
+    binding: SessionBinding,
   ) {
     this.#api = api;
-    this.approvalQueue = approvalQueue;
+    this.#approvalQueue = approvalQueue;
     this.#cache = cache;
     this.#pending = pending;
     this.#noteExpired = noteExpired;
-    this.#projectObservationHook = projectObservationHook;
+    this.#binding = binding;
   }
 
-  // Authorize an observation that reveals data belonging to a specific project. For organization
-  // bindings this also tracks the project as an observed data set and excludes any observers who
-  // lack access to it; for project bindings it is a plain authorizeObservation. Use this (rather
-  // than approvalQueue.authorizeObservation directly) for every read that exposes project data.
-  async authorizeProjectObservation(
-    ref: string,
-    description: { title: string; description: string },
+  // Authorizes a read, reporting every subresource it depends on, which the Workshop checks through
+  // SupabaseGatekeeperImpl.verifyObserverAccess. Every observation goes through here, with the IDs
+  // from organizationSubresources or projectSubresources (see authorizeProjectRead); none feeds the
+  // legacy tracker addObserver still checks.
+  async authorizeRead(observation: SubresourceObservation): Promise<void> {
+    await this.#approvalQueue.authorizeObservation(observation);
+  }
+
+  // What a read of the bound organization's own metadata depends on: membership of it, which
+  // addObserver required of every observer before reads reported it, and no project, since such
+  // a read reveals no project's data that the legacy tracker would have recorded.
+  organizationSubresources(): string[] {
+    if (this.#binding.kind !== "organization") {
+      throw new Error("Only a Supabase organization binding reads organization metadata.");
+    }
+    return [organizationSubresourceId(this.#binding.slug)];
+  }
+
+  // What a read revealing project `ref`'s data depends on. Through an organization binding: the
+  // organization, whose membership addObserver requires, and the project, which such a read
+  // recorded as observed. Through a project binding: the project alone, which is all addObserver
+  // checks there, named under the organization Supabase says owns it. That comes from the cached
+  // project info (fetchProjectInfo), so a read costs no extra request while it is fresh, and a
+  // project whose organization is unknown is not read rather than reported without it.
+  async projectSubresources(ref: string): Promise<string[]> {
+    if (this.#binding.kind === "organization") {
+      const { slug } = this.#binding;
+      return [organizationSubresourceId(slug), projectSubresourceId(slug, ref)];
+    }
+    if (ref !== this.#binding.ref) {
+      throw new Error(`This binding reads only the Supabase project ${this.#binding.ref}.`);
+    }
+    const { organizationSlug } = await fetchProjectInfo(this, ref);
+    if (!organizationSlug) {
+      throw new Error(
+        `Supabase did not say which organization owns the project ${ref}, so who may see data ` +
+        `read from it cannot be checked. Try again later, or reconnect the account.`);
+    }
+    return [projectSubresourceId(organizationSlug, ref)];
+  }
+
+  // Authorizes a read revealing project `ref`'s data (see projectSubresources). Use this for every
+  // read that exposes project data.
+  async authorizeProjectRead(
+    ref: string, description: Omit<ObservationDescription, "subresources">,
   ): Promise<void> {
-    const check = this.#projectObservationHook
-      ? await this.#projectObservationHook(ref)
-      : {pendingProjects: [], commit() {}};
-    await this.approvalQueue.authorizeObservation({
-      ...description, excludeObservers: check.excludeObservers,
-    });
-    check.commit();
+    await this.authorizeRead({ ...description, subresources: await this.projectSubresources(ref) });
   }
 
   async run<T>(fn: (api: SupabaseApi) => Promise<T>): Promise<T> {
@@ -940,7 +1123,7 @@ class SupabaseSessionContext {
     const action: StoredExecuteAction = { ref, sql, params, submittedAt: Date.now() };
     const actionId = this.#pending.submit(action);
     try {
-      await this.approvalQueue.submitAction(actionId, executeActionDescription(ref, sql, params));
+      await this.#approvalQueue.submitAction(actionId, executeActionDescription(ref, sql, params));
     } catch (error) {
       this.#pending.remove(actionId);
       throw error;
@@ -991,66 +1174,29 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
   }
 
   #makeContext(approvalQueue: RpcStub<ApprovalQueue>): SupabaseSessionContext {
-    // Organization bindings track which projects' data has actually been observed and exclude
-    // observers who lack access to them; project bindings are a single ACL unit with nothing to
-    // exclude, so they get no hook.
-    const projectObservationHook = this.ctx.props.resourceKind === "organization"
-      ? (ref: string) => this.#prepareProjectObservation(ref)
-      : undefined;
+    const binding: SessionBinding = this.ctx.props.resourceKind === "project"
+      ? { kind: "project", ref: this.#requireRef() }
+      : { kind: "organization", slug: this.#requireSlug() };
     return new SupabaseSessionContext(
       this.#makeApi(),
       approvalQueue.dup(),
       new SupabaseCache(this.ctx.storage.kv),
       new PendingActionStore(this.ctx.storage.kv),
       async () => { await this.#userAccount().noteCredentialsExpired(); },
-      projectObservationHook,
+      binding,
     );
   }
 
   // -------------------------------------------------------------------------
-  // Observer tracking (see addObserver/removeObserver).
+  // Legacy observer tracking (see addObserver/removeObserver). Reads no longer record projects
+  // here; what earlier reads recorded stays, and addObserver keeps checking it.
 
   #observerKey(id: string): string { return `observer:${id}`; }
-  #observedProjectKey(ref: string): string { return `observedProject:${ref}`; }
-
-  #isProjectObserved(ref: string): boolean {
-    const state = this.ctx.storage.kv.get<ObservedProjectState>(this.#observedProjectKey(ref));
-    return state === true || state === "observed";
-  }
 
   #listTrackedProjects(): string[] {
     const prefix = "observedProject:";
     return [...this.ctx.storage.kv.list<ObservedProjectState>({ prefix })]
       .map(([key]) => key.slice(prefix.length));
-  }
-
-  *#listObservers(): IterableIterator<[string, Fetcher<SupabaseVerifierApi>]> {
-    const prefix = "observer:";
-    for (const [key, verifier] of this.ctx.storage.kv.list<Fetcher<SupabaseVerifierApi>>({ prefix })) {
-      yield [key.slice(prefix.length), verifier];
-    }
-  }
-
-  // Organization bindings only. Marks the project pending and returns current observers who cannot
-  // access it. Authorization promotes it; failed attempts remain pending and are rechecked.
-  async #prepareProjectObservation(ref: string): Promise<ProjectObservationCheck> {
-    if (this.#isProjectObserved(ref)) return {pendingProjects: [], commit() {}};
-    const key = this.#observedProjectKey(ref);
-    if (this.ctx.storage.kv.get<ObservedProjectState>(key) === undefined) {
-      this.ctx.storage.kv.put(key, "pending");
-    }
-    const observers = [...this.#listObservers()];
-    const access = await Promise.all(
-      observers.map(([, verifier]) => verifier.hasProjectAccess([ref])),
-    );
-    const excluded = observers
-      .filter((_, index) => !access[index][0])
-      .map(([id]) => id);
-    return {
-      excludeObservers: excluded.length > 0 ? excluded : undefined,
-      pendingProjects: [ref],
-      commit: () => this.ctx.storage.kv.put(key, "observed"),
-    };
   }
 
   // Caches infrequent metadata reads (used by describe()) in the same DO-backed cache the session
@@ -1162,7 +1308,15 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
   }
 
   /**
-   * Observer tracking. Strategy depends on the binding's granularity:
+   * Observer tracking. Every read reports the subresources it depends on (see
+   * SupabaseSessionContext.authorizeRead), which the Workshop checks through
+   * verifyObserverAccess: a project binding reports its project, an organization binding its
+   * organization plus the project whose data a read reveals.
+   *
+   * These checks now guard only legacy history, the reads made before they reported subresources
+   * and reads by a Worker version still running that code during a rollout, so they stay as they
+   * were, asking with the observer's own token, now, through hasProjectAccess / hasOrgAccess, which
+   * reuse no answers:
    *
    * - Project binding — "ACL check (single unit)". Arbitrary read-only SQL can read anything in the
    *   project's database, so the project is the atomic unit. We just confirm the observer can access
@@ -1170,12 +1324,11 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
    *   so no observers are tracked and removeObserver is a no-op.
    *
    * - Organization binding — "data-set tracking (by project)". Org members may have access to
-   *   different projects, so we track which projects' data the Gadget has actually observed and
-   *   verify each observer against them. addObserver requires org membership (so org-level metadata
-   *   like the project list is fine to show) plus access to every already-observed project; later,
-   *   the first observation of a *new* project excludes any observer lacking it (see
-   *   #prepareProjectObservation). Verified observers are remembered (their verifier stored) so that
-   *   forward-exclusion check can run.
+   *   different projects, so earlier reads recorded which projects' data the Gadget observed
+   *   (`observedProject:` keys, pending ones included). addObserver requires org membership plus
+   *   access to every recorded project. Verified observers are still remembered (their verifier
+   *   stored), since a Worker version still recording projects excludes observers by them. Reads no
+   *   longer record projects or exclude observers.
    *
    * The overseer re-runs addObserver on every open, catching loss of access promptly.
    */
@@ -1221,6 +1374,36 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
   async removeObserver(id: string): Promise<void> {
     this.ctx.storage.kv.delete(this.#observerKey(id));
   }
+
+  /**
+   * Checks the subresources this binding's reads report (see SupabaseSessionContext.authorizeRead),
+   * failing the whole call for any other ID: an organization binding accepts only IDs under its
+   * own organization; a project binding only its own project, under any organization, since a
+   * project can move between organizations. An observer is allowed when their own account can read
+   * each, as their UserAccount last learned (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    for (const subresource of subresources) {
+      this.#assertReportedHere(parseSupabaseSubresource(subresource));
+    }
+    return await verifySupabaseAccess(observers, subresources);
+  }
+
+  // Refuses a subresource this binding's reads never report.
+  #assertReportedHere(resource: SupabaseSubresource): void {
+    if (this.ctx.props.resourceKind === "project") {
+      if (resource.kind !== "project" || resource.ref !== this.#requireRef()) {
+        throw new Error("Not a subresource this Supabase project binding reports.");
+      }
+      return;
+    }
+    if (resource.slug !== this.#requireSlug()) {
+      throw new Error("Not a subresource this Supabase organization binding reports.");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,9 +1445,10 @@ class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization
       return { slug: org.slug, name: org.name, url: organizationUrl(org.slug) };
     });
 
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await this.#ctx.authorizeRead({
       title: "Read Supabase organization",
       description: `Read metadata for the Supabase organization \`${this.#slug}\`.`,
+      subresources: this.#ctx.organizationSubresources(),
     });
     return info;
   }
@@ -1275,10 +1459,13 @@ class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization
       return all.filter(project => project.organization_slug === this.#slug).map(projectSummary);
     });
 
-    await this.#ctx.approvalQueue.authorizeObservation({
+    // Reports the organization alone, as the legacy tracker recorded no project for a listing: the
+    // list is organization metadata every member was admitted to see.
+    await this.#ctx.authorizeRead({
       title: "List Supabase projects",
       description:
           `List the ${projects.length} project(s) in the Supabase organization \`${this.#slug}\`.`,
+      subresources: this.#ctx.organizationSubresources(),
     });
     return projects;
   }
@@ -1286,7 +1473,7 @@ class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization
   async getProject(ref: string): Promise<SupabaseProject> {
     // Authorize first: this performs an external read and would otherwise be an unlogged
     // existence/membership oracle for arbitrary project refs.
-    await this.#ctx.authorizeProjectObservation(ref, {
+    await this.#ctx.authorizeProjectRead(ref, {
       title: "Open Supabase project",
       description: `Look up Supabase project \`${ref}\` within organization \`${this.#slug}\`.`,
     });
@@ -1314,7 +1501,7 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
   async getInfo(): Promise<SupabaseProjectInfo> {
     const info = await fetchProjectInfo(this.#ctx, this.#ref);
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "Read Supabase project",
       description: `Read metadata for the Supabase project \`${this.#ref}\`.`,
     });
@@ -1332,7 +1519,7 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
     const health = await this.#ctx.run(api => api.getServicesHealth(this.#ref, HEALTH_SERVICES));
     const result = health.map(item => ({ service: item.name, status: item.status, error: item.error }));
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "Check Supabase project health",
       description: `Check the health of services for the Supabase project \`${this.#ref}\`.`,
     });
@@ -1353,7 +1540,7 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
       }));
     });
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "List Supabase edge functions",
       description: `List the ${functions.length} edge function(s) deployed to project \`${this.#ref}\`.`,
     });
@@ -1367,7 +1554,7 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
       api => api.getFunctionBody(this.#ref, slug),
     );
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "Read Supabase edge function source",
       description: `Read the deployed source of edge function \`${slug}\` in project \`${this.#ref}\`.`,
     });
@@ -1386,7 +1573,7 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
       }));
     });
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "List Supabase storage buckets",
       description: `List the ${buckets.length} storage bucket(s) in project \`${this.#ref}\`.`,
     });
@@ -1411,7 +1598,7 @@ class SupabaseDatabaseImpl extends RpcTarget implements SupabaseDatabase {
     // result size is bounded inside runReadOnlyQuery (it throws before returning an oversized body).
     const rows = await this.#ctx.run(api => api.runReadOnlyQuery(this.#ref, sql, params));
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "Run read-only SQL on Supabase",
       description:
           `Run a read-only query against Supabase project \`${this.#ref}\`.\n\n` +
@@ -1438,7 +1625,7 @@ class SupabaseDatabaseImpl extends RpcTarget implements SupabaseDatabase {
       api => listSchemas(api, this.#ref),
     );
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "List Supabase schemas",
       description: `List the ${schemas.length} schema(s) in the database of project \`${this.#ref}\`.`,
     });
@@ -1456,7 +1643,7 @@ class SupabaseDatabaseImpl extends RpcTarget implements SupabaseDatabase {
       api => listTables(api, this.#ref, { schema, includeViews }),
     );
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "List Supabase tables",
       description:
           `List the ${tables.length} table(s)/view(s) in schema \`${schema}\` of project \`${this.#ref}\`.`,
@@ -1471,7 +1658,7 @@ class SupabaseDatabaseImpl extends RpcTarget implements SupabaseDatabase {
       api => describeTable(api, this.#ref, schema, name),
     );
 
-    await this.#ctx.authorizeProjectObservation(this.#ref, {
+    await this.#ctx.authorizeProjectRead(this.#ref, {
       title: "Describe Supabase table",
       description: `Read the structure of table \`${schema}.${name}\` in project \`${this.#ref}\`.`,
     });
