@@ -119,10 +119,12 @@ can still hold confidential issues and internal notes; job logs and test reports
   path; GitLab answers a moved project's old path with a redirect, which is not followed, so that
   read fails) and reads nothing until it has. From then on every REST request beneath the project
   goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
-  sent to the path that id has now, and a fetch fails if the path read again once GitLab has
-  answered differs from the one it was sent to. So a rename or transfer keeps the binding on its
-  project, and a project later created at an old path is not read in its place unless the path
-  moves away and back between those two reads. A push is not checked
+  sent to the path that id has: a push's read afresh, a fetch's from the project read cached for
+  up to 30 seconds. A fetch fails if the path read afresh once GitLab has answered differs from
+  the one it was sent to, and a failed fetch drops the cached project, so a retry goes to the new
+  path. So a rename or transfer keeps the binding on its project, and a project later created at
+  an old path is never served in its place (a fetch may reach it, and its answer is refused) unless
+  the path moves away and back between the path sent and that check. A push is not checked
   again once GitLab has answered, since what GitLab accepted can't be called back: only a move
   and the path's reuse both landing between the lookup and the push could deliver it elsewhere.
   A binding that read before ids were pinned is pinned to the project its path names at its first

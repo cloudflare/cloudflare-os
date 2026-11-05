@@ -475,8 +475,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The bound project's path now, read by its id, since a rename or a transfer changes it. Asked of
-   * GitLab each time, uncached: GitLab answers no conditional requests, and a git request must be
-   * sent to the path the project has at that moment.
+   * GitLab each time, uncached: GitLab answers no conditional requests, and a push, and the check
+   * after a fetch, need the path the project has at that moment (see #gitRequest).
    */
   async #currentProjectPath(): Promise<string> {
     const { id } = await this.#pinnedProject();
@@ -485,25 +485,36 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Sends a git smart-HTTP request to the bound project. GitLab addresses git only by path, so
-   * `send` is given the path the project has now, read by its id (see #currentProjectPath). With
-   * `confirm`, as for a fetch, the response is refused if the path read again after GitLab answered
-   * differs from the one it was sent to: the path it left may already name another project, which
-   * would then have served the request instead. Only those two reads are compared, so a move and a
-   * move back between them goes unseen. A push is sent unconfirmed: GitLab has applied it by the
+   * `send` is given the project's path, read by its id. With `confirm`, as for a fetch, that path
+   * may come from the project read cached for up to ENTITY_CACHE_TTL_MS, and the response is
+   * refused if the path read afresh after GitLab answered differs from the one it was sent to: the
+   * path it left may already name another project, which would then have served the request
+   * instead. Only the path sent and that fresh read are compared, so a move and a move back between
+   * them goes unseen. A failed fetch drops the cached project, so a retry after a move goes to the
+   * new path. A push is sent to a path read afresh and unconfirmed: GitLab has applied it by the
    * time it answers, so a check then could only report, not prevent, its delivery to a project
    * that took the path between the lookup and the push.
    */
   async #gitRequest(send: (projectPath: string) => Promise<Response>, options: { confirm: boolean }): Promise<Response> {
-    const current = await this.#currentProjectPath();
-    const response = await send(current);
-    if (!options.confirm) return response;
+    if (!options.confirm) return await send(await this.#currentProjectPath());
+    const sent = (await this.#getProjectResponse()).path_with_namespace;
+    const forgetProject = () => this.ctx.storage.kv.delete(this.#cacheKey("project-raw", this.#projectPath()));
+    let response: Response;
+    try {
+      response = await send(sent);
+    } catch (error) {
+      forgetProject();
+      throw error;
+    }
     const after = await this.#currentProjectPath().catch(async (error: unknown) => {
+      forgetProject();
       await response.body?.cancel();
       throw error;
     });
-    if (after !== current) {
+    if (after !== sent) {
+      forgetProject();
       await response.body?.cancel();
-      throw new Error(`The GitLab project was moved from ${current} during a git request, which may have ` +
+      throw new Error(`The GitLab project was moved from ${sent} during a git request, which may have ` +
         "reached the project now at its old path. Please retry it.");
     }
     return response;

@@ -413,7 +413,7 @@ describe("reads", () => {
       .toEqual([]);
   });
 
-  it("pull git by the path the project's id has now, and never by a path it left", async () => {
+  it("pull git by the path the project's id has now, and serve nothing from a path it left", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const gk = await binding({ pinned: true });
@@ -421,14 +421,16 @@ describe("reads", () => {
     expect(await gk.pull()).toEqual({ ok: { state: "complete" } });
     expect(gitlab.gitRequests).toEqual(["acme/renamed"]);
 
-    // Deleted, and its old paths taken by another project: nothing is asked of either.
+    // Deleted, and its old path taken by another project: the fetch may go to the path it had,
+    // from the cached project, but the answer is refused, and the next one asks nothing of it.
     gitlab.projects.delete(PROJECT_ID);
     gitlab.projects.set(OTHER_ID, "acme/renamed");
     expect(await gk.pull()).toEqual({ error: expect.any(String) });
-    expect(gitlab.gitRequests).toEqual(["acme/renamed"]);
+    expect(await gk.pull()).toEqual({ error: expect.any(String) });
+    expect(gitlab.gitRequests).toEqual(["acme/renamed", "acme/renamed"]);
   });
 
-  it("refuse a git answer if the project moved before it arrived", async () => {
+  it("refuse a git answer if the project moved before it arrived, and send the retry to its new path", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const gk = await binding({ pinned: true });
@@ -439,6 +441,12 @@ describe("reads", () => {
     gitlab.onGit = undefined;
     expect(await gk.pull()).toEqual({ ok: { state: "complete" } });
     expect(gitlab.gitRequests).toEqual([PATH, "acme/renamed"]);
+
+    // A fetch reads the path once, from the cached project, and checks it once afresh.
+    const before = gitlab.requestsWith(OWNER_TOKEN).length;
+    expect(await gk.pull()).toEqual({ ok: { state: "complete" } });
+    expect(gitlab.requestsWith(OWNER_TOKEN).slice(before))
+      .toEqual([`/api/v4/projects/${PROJECT_ID}`]);
   });
 
   it("serve nothing cached while the project was read by path", async () => {
