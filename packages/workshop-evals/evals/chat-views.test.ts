@@ -444,6 +444,16 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
           `<input id="people" type="number" value="4">`, "-184.6 * 1.18 / Number(people.value)")))
         .toEqual(["shows-each-share", "splits-again-for-five"]);
     });
+
+    it("fails a splitter that compiles code from a string, which the Workshop's frame refuses", async ({ expect }) => {
+      for (const formula of [
+        `new Function("people", "return 184.6 * 1.18 / people")(Number(people.value))`,
+        `eval("184.6 * 1.18 / " + Number(people.value))`,
+      ]) {
+        expect(await failed(verifyBillSplitter, splitter(`<input id="people" type="number" min="1" value="4">`, formula)))
+          .toEqual(["shows-each-share", "splits-again-for-five", "view-runs"]);
+      }
+    });
   });
 
   describe("the spending view", () => {

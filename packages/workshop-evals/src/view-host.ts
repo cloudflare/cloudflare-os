@@ -3,9 +3,10 @@ import { chromium, type Browser, type BrowserContext, type Frame, type Page } fr
 import { z } from "zod";
 
 // Runs an `<inline-html>` view as the Workshop does, so an eval can see what it does: in an
-// opaque-origin srcdoc frame with `sandbox="allow-scripts"` (UiBlockCard.tsx), in headless
-// Chromium. A view is model-written code, so it runs only there, never in this process. Every
-// request it makes is blocked and recorded, as the Workshop's frame has no network.
+// opaque-origin srcdoc frame with `sandbox="allow-scripts"` (UiBlockCard.tsx) and, but for the
+// network, the Workshop's CSP, in headless Chromium. A view is model-written code, so it runs only
+// there, never in this process. Every request it makes is blocked and recorded, as the Workshop's
+// frame has no network.
 
 /** The view's text, and whether it showed what a check waited for before the wait ran out. */
 export type TextWait = { pass: boolean; text: string };
@@ -473,12 +474,14 @@ const VIEW_STYLE = `<style>
   code, kbd, pre, samp { font-family: var(--font-mono); }
 </style>`;
 
-// The view's document. It leaves out the Workshop's CSP, which would stop the view's requests
-// before they are recorded.
+// The view's document, with the CSP of the Workshop's frame (sandboxDocument.ts's SANDBOX_HEAD), but
+// for one change: where that CSP allows no network, this one allows http(s) and ws(s), so that the
+// view's requests reach the routing that blocks and records them.
 function viewDocument(html: string): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src http: https:; frame-src http: https:; script-src data: 'unsafe-inline' 'wasm-unsafe-eval' http: https:; style-src data: 'unsafe-inline' http: https:; img-src data: http: https:; media-src data: http: https:; object-src http: https:; base-uri 'none'; form-action 'none'; connect-src http: https: ws: wss:;">
 ${VIEW_STYLE}</head>
 <body>
 ${html}
