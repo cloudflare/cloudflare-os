@@ -742,9 +742,9 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   /**
    * Prove every named folder is a listable direct child of `current`, in one batch.
    *
-   * Same predicate and same fence as {@link openFolder}: invisible or live-but-unlistable is
-   * owner-relative, while a non-folder, a trashed one, or a non-child is an objective refusal a
-   * listing of this folder would disclose anyway.
+   * Same predicate as {@link openFolder}: invisible or live-but-unlistable is relative to the
+   * connected account and reported with `subresources: []`, while a non-folder, a trashed one,
+   * or a non-child is an objective refusal a listing of this folder would disclose anyway.
    */
   async #requireChildFolders(
     folderIds: readonly string[], current: DriveScopeNode,

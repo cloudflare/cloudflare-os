@@ -33,6 +33,13 @@ covers its hook events. A `403` or `404` definitively means the account cannot r
 assumptions to the real provider: a public metadata probe is not proof of access to private data
 or hooks. The OAuth, action, and event-source scaffolding remains service-specific.
 
+This is the **B — One access-controlled unit** example, not a requirement that a binding have one resource kind or
+one permission level. Account discovery can be private while item reads are shareable; a broad
+binding can report several independently checked resources, and one provider object can expose
+different audiences for metadata, content, or availability. Choose the strategy for each disclosure
+before adapting this template; see [Choosing a strategy](SKILL.md#choosing-a-strategy-per-resource-type--binding)
+and the kit's [worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations).
+
 ## Main implementation (`src/<name>.ts`)
 
 ```typescript
