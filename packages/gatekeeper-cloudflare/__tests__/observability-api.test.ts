@@ -6,25 +6,9 @@ import {
   type ObservabilityFilter,
 } from "../src/observability-api";
 import { CloudflareObservabilityApiError } from "../src/observability-parse";
-import type { WorkerScope } from "../src/workers-api";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const TEST_NOW = new Date("2026-08-14T12:00:00Z");
-// The Worker a scoped binding is pinned to. An event is its own only by carrying one of its
-// versions: the name an event was recorded under can belong to another Worker before or since.
-const WORKER: WorkerScope = {
-  workerId: "a".repeat(32),
-  name: "api-worker",
-  versionIds: new Set(["version-own"]),
-};
-const OWN_VERSION = { scriptVersion: { id: "version-own" } };
-const FOREIGN_VERSION = { scriptVersion: { id: "version-foreign" } };
-const SERVICE_CONDITION = {
-  kind: "filter", key: "$metadata.service", operation: "eq", type: "string", value: "api-worker",
-};
-const VERSION_CONDITION = {
-  kind: "filter", key: "$workers.scriptVersion.id", operation: "in", type: "string", value: "version-own",
-};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -52,7 +36,7 @@ describe("scopeObservabilityFilters", () => {
     expect(scopeObservabilityFilters(undefined, filter)).toEqual([filter]);
   });
 
-  it("adds immutable Worker conditions around caller OR filters", () => {
+  it("adds an immutable Worker condition around caller OR filters", () => {
     const callerFilter: ObservabilityFilter = {
       kind: "group",
       filterCombination: "or",
@@ -74,9 +58,14 @@ describe("scopeObservabilityFilters", () => {
       ],
     };
 
-    expect(scopeObservabilityFilters(WORKER, callerFilter)).toEqual([
-      SERVICE_CONDITION,
-      VERSION_CONDITION,
+    expect(scopeObservabilityFilters("api-worker", callerFilter)).toEqual([
+      {
+        kind: "filter",
+        key: "$metadata.service",
+        operation: "eq",
+        type: "string",
+        value: "api-worker",
+      },
       callerFilter,
     ]);
   });
@@ -90,9 +79,12 @@ describe("scopeObservabilityFilters", () => {
       value: "api-worker",
     };
 
-    expect(scopeObservabilityFilters(WORKER, callerFilter)).toEqual([
-      SERVICE_CONDITION,
-      VERSION_CONDITION,
+    expect(scopeObservabilityFilters("api-worker", callerFilter)).toEqual([
+      expect.objectContaining({
+        key: "$metadata.service",
+        operation: "eq",
+        value: "api-worker",
+      }),
       callerFilter,
     ]);
   });
@@ -119,7 +111,7 @@ describe("scopeObservabilityFilters", () => {
       }],
     };
 
-    expect(() => scopeObservabilityFilters(WORKER, depthThree))
+    expect(() => scopeObservabilityFilters("api-worker", depthThree))
       .toThrow("Filter nesting is too deep");
   });
 });
@@ -139,7 +131,7 @@ describe("CloudflareObservabilityApi", () => {
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
     const from = new Date("2026-08-14T09:00:00Z");
     const to = new Date("2026-08-14T10:00:00Z");
 
@@ -167,7 +159,6 @@ describe("CloudflareObservabilityApi", () => {
         filterCombination: "and",
         filters: [
           { key: "$metadata.service", operation: "eq", value: "api-worker" },
-          { key: "$workers.scriptVersion.id", operation: "in", value: "version-own" },
           { kind: "group", filterCombination: "or" },
         ],
       },
@@ -184,12 +175,12 @@ describe("CloudflareObservabilityApi", () => {
           statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
           events: { count: 1, events: [{
             dataset: "cloudflare-workers", timestamp: 1, source: {},
-            $metadata: { id: "event", service: "api-worker" }, $workers: OWN_VERSION,
+            $metadata: { id: "event", service: "api-worker" },
           }] },
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const trace = await api.getTrace("trace-id", {
       timeframe: {
@@ -202,7 +193,6 @@ describe("CloudflareObservabilityApi", () => {
     expect(trace.events).toHaveLength(1);
     expect(requestBody?.parameters.filters).toEqual([
       expect.objectContaining({ key: "$metadata.service", value: "api-worker" }),
-      expect.objectContaining({ key: "$workers.scriptVersion.id", value: "version-own" }),
       expect.objectContaining({ key: "$metadata.traceId", value: "trace-id" }),
     ]);
   });
@@ -338,13 +328,13 @@ describe("CloudflareObservabilityApi", () => {
               dataset: "cloudflare-workers",
               timestamp: 1,
               source: { route: "/health" },
-              $metadata: { id: "e1", service: "api-worker", level: "info" }, $workers: OWN_VERSION,
+              $metadata: { id: "e1", service: "api-worker", level: "info" },
             }],
           },
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
     const timeframe = {
       from: new Date("2026-08-14T09:00:00Z"),
       to: new Date("2026-08-14T10:00:00Z"),
@@ -363,7 +353,7 @@ describe("CloudflareObservabilityApi", () => {
         view: "events",
         timeframe: { from: timeframe.from.valueOf(), to: timeframe.to.valueOf() },
         parameters: {
-          filters: [SERVICE_CONDITION, VERSION_CONDITION],
+          filters: [{ key: "$metadata.service", operation: "eq", value: "api-worker" }],
         },
       });
     }
@@ -386,16 +376,16 @@ describe("CloudflareObservabilityApi", () => {
         statistics: { elapsed: 0.01, rows_read: 3, bytes_read: 30 },
         invocations: {
           mixed: [
-            { dataset: "cloudflare-workers", timestamp: 1, source: { secret: "foreign" }, $metadata: { id: "foreign-cursor", service: "other-worker" }, $workers: FOREIGN_VERSION },
-            { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "own-cursor", service: "api-worker" }, $workers: OWN_VERSION },
+            { dataset: "cloudflare-workers", timestamp: 1, source: { secret: "foreign" }, $metadata: { id: "foreign-cursor", service: "other-worker" } },
+            { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "own-cursor", service: "api-worker" } },
           ],
           foreign: [
-            { dataset: "cloudflare-workers", timestamp: 3, source: {}, $metadata: { id: "last-foreign", service: "other-worker" }, $workers: FOREIGN_VERSION },
+            { dataset: "cloudflare-workers", timestamp: 3, source: {}, $metadata: { id: "last-foreign", service: "other-worker" } },
           ],
         },
       },
     })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const page = await api.listInvocations();
 
@@ -416,7 +406,7 @@ describe("CloudflareObservabilityApi", () => {
   it("rejects trace summaries for Worker-scoped bindings before fetching", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     await expect(api.listTraces()).rejects.toThrow("account-scoped");
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -428,12 +418,12 @@ describe("CloudflareObservabilityApi", () => {
       result: {
         statistics: { elapsed: 0.01, rows_read: 2, bytes_read: 20 },
         events: { count: 2, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" }, $workers: OWN_VERSION },
-          { dataset: "cloudflare-workers", timestamp: 2, source: { secret: "foreign" }, $metadata: { id: "foreign", service: "other-worker" }, $workers: FOREIGN_VERSION },
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" } },
+          { dataset: "cloudflare-workers", timestamp: 2, source: { secret: "foreign" }, $metadata: { id: "foreign", service: "other-worker" } },
         ] },
       },
     })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const trace = await api.getTrace("trace-id");
 
@@ -451,12 +441,12 @@ describe("CloudflareObservabilityApi", () => {
       result: {
         statistics: { elapsed: 0.01, rows_read: 9000, bytes_read: 90000 },
         events: { count: 5000, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" }, $workers: OWN_VERSION },
-          { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "foreign", service: "other-worker" }, $workers: FOREIGN_VERSION },
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" } },
+          { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "foreign", service: "other-worker" } },
         ] },
       },
     })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const page = await api.listEvents();
 
@@ -478,135 +468,13 @@ describe("CloudflareObservabilityApi", () => {
       result: {
         statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
         events: { count: 42, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" }, $workers: OWN_VERSION },
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" } },
         ] },
       },
     })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     expect((await api.listEvents()).count).toBe(42);
-  });
-
-  it("drops another Worker's event recorded under the bound Worker's current name", async () => {
-    // Names are reusable: once the bound Worker is renamed or deleted, another Worker can take its
-    // old name, and the name a binding sees now may have belonged to someone else then. Only a
-    // version proves which Worker emitted an event, so a matching name must not let one through.
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      success: true,
-      result: {
-        statistics: { elapsed: 0.01, rows_read: 2, bytes_read: 20 },
-        events: { count: 2, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" }, $workers: OWN_VERSION },
-          { dataset: "cloudflare-workers", timestamp: 2, source: { secret: "impostor" }, $metadata: { id: "impostor", service: "api-worker" }, $workers: FOREIGN_VERSION },
-        ] },
-      },
-    })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
-
-    const page = await api.listEvents();
-
-    expect(page.events.map(event => event.$metadata.id)).toEqual(["own"]);
-    expect(JSON.stringify(page.events)).not.toContain("impostor");
-    // The provider let a foreign event through, so its count covers more than this Worker.
-    expect(page.count).toBeUndefined();
-  });
-
-  it("keeps the bound Worker's own event recorded under a name it no longer has", async () => {
-    // The counterpart: after a rename the Worker's older telemetry still carries its old name, and
-    // it is still this Worker's -- its version says so -- so the re-check keeps it whatever name it
-    // was recorded under; only the version decides.
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      success: true,
-      result: {
-        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
-        events: { count: 1, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "before-rename", service: "old-name" }, $workers: OWN_VERSION },
-        ] },
-      },
-    })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
-
-    const page = await api.listEvents();
-
-    expect(page.events.map(event => event.$metadata.id)).toEqual(["before-rename"]);
-    expect(page.count).toBe(1);
-  });
-
-  it("drops an event that names no Worker version", async () => {
-    // Without a version nothing ties the event to the bound Worker, whatever name it carries, so it
-    // fails closed rather than being trusted on its name.
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      success: true,
-      result: {
-        statistics: { elapsed: 0.01, rows_read: 2, bytes_read: 20 },
-        events: { count: 2, events: [
-          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" }, $workers: OWN_VERSION },
-          { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "unversioned", service: "api-worker" } },
-        ] },
-      },
-    })));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
-
-    const page = await api.listEvents();
-
-    expect(page.events.map(event => event.$metadata.id)).toEqual(["own"]);
-    expect(page.count).toBeUndefined();
-  });
-
-  it("resolves the Worker scope again for every query", async () => {
-    // A binding outlives renames and deploys. Resolving the scope once would keep querying the old
-    // name -- matching nothing, or a Worker that took the name -- and drop every new version's events.
-    const bodies: Array<{ parameters: { filters: unknown[] } }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)) as typeof bodies[number]);
-      return Response.json({
-        success: true,
-        result: {
-          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
-          events: { count: 1, events: [
-            { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "deployed", service: "renamed-worker" }, $workers: { scriptVersion: { id: "version-deployed" } } },
-          ] },
-        },
-      });
-    }));
-    const scopes: WorkerScope[] = [
-      WORKER,
-      { ...WORKER, name: "renamed-worker", versionIds: new Set(["version-own", "version-deployed"]) },
-    ];
-    const resolver = vi.fn(async () => scopes.shift()!);
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, resolver);
-
-    const before = await api.listEvents();
-    const after = await api.listEvents();
-
-    expect(resolver).toHaveBeenCalledTimes(2);
-    // Under the first scope the new version is not yet the Worker's, so its event is dropped...
-    expect(before.events).toEqual([]);
-    // ...and under the re-resolved one it is.
-    expect(after.events.map(event => event.$metadata.id)).toEqual(["deployed"]);
-    expect(bodies[1].parameters.filters).toEqual([
-      { ...SERVICE_CONDITION, value: "renamed-worker" },
-      { ...VERSION_CONDITION, value: "version-own,version-deployed" },
-    ]);
-  });
-
-  it("reads nothing for a bound Worker with no versions, without querying", async () => {
-    // A Worker created but never deployed has emitted nothing, and what the provider makes of an
-    // empty `in` condition is undocumented, so no read of it reaches Cloudflare.
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID,
-      async () => ({ ...WORKER, versionIds: new Set<string>() }));
-
-    await expect(api.listEvents()).resolves.toMatchObject({ events: [], count: 0 });
-    await expect(api.listInvocations()).resolves.toMatchObject({ invocations: [] });
-    await expect(api.calculate({ calculations: [{ operator: "count" }] }))
-      .resolves.toMatchObject({ calculations: [] });
-    await expect(api.listKeys()).resolves.toEqual([]);
-    await expect(api.getTrace("trace-id")).rejects.toMatchObject({ status: 404 });
-    // A query refused for any other Worker is still refused rather than answered empty.
-    await expect(api.listEvents({ limit: 0 })).rejects.toThrow("limit");
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("keeps reporting the provider count for an account-scoped binding", async () => {
@@ -885,10 +753,8 @@ describe("CloudflareObservabilityApi", () => {
   it("constrains a Worker-scoped calculation to that Worker", async () => {
     // An aggregate is the one read with no second line of defence: `#scopeEvents` can re-check
     // events after the fact, but a median or a `uniq` computed across services cannot be un-mixed.
-    // So the injected Worker conditions are the *only* thing keeping a Worker binding's aggregate
-    // from summarizing the whole account, and they are asserted here for that reason: the version
-    // condition pins it to this Worker, and the current name backs it up should the provider ever
-    // ignore the version condition.
+    // So the injected `$metadata.service` filter is the *only* thing keeping a Worker binding's
+    // aggregate from summarizing the whole account, and it is asserted here for that reason.
     let requestBody: { parameters: { filters: unknown[] } } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
@@ -904,8 +770,7 @@ describe("CloudflareObservabilityApi", () => {
         },
       });
     }));
-    const scope: WorkerScope = { ...WORKER, versionIds: new Set(["version-old", "version-new"]) };
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => scope);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     await api.calculate({
       calculations: [{ operator: "count" }],
@@ -914,17 +779,16 @@ describe("CloudflareObservabilityApi", () => {
       },
     });
 
-    // The Worker conditions lead, and the caller's own filter cannot displace or reorder them.
+    // The Worker condition leads, and the caller's own filter cannot displace or reorder it.
     expect(requestBody?.parameters.filters).toEqual([
-      SERVICE_CONDITION,
-      { ...VERSION_CONDITION, value: "version-old,version-new" },
+      expect.objectContaining({ key: "$metadata.service", operation: "eq", value: "api-worker" }),
       expect.objectContaining({ key: "$metadata.level", value: "error" }),
     ]);
   });
 
-  it("keeps the Worker conditions when a calculation groups by service", async () => {
+  it("keeps the Worker condition when a calculation groups by service", async () => {
     // A caller that groups by `$metadata.service` must not thereby widen the query: the injected
-    // conditions still have to be present, so the only group that can come back is this Worker's.
+    // condition still has to be present, so the only group that can come back is this Worker's.
     let requestBody: { parameters: { filters: unknown[]; groupBys?: unknown } } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
@@ -943,14 +807,16 @@ describe("CloudflareObservabilityApi", () => {
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     await api.calculate({
       calculations: [{ operator: "count" }],
       groupBys: [{ value: "$metadata.service", type: "string" }],
     });
 
-    expect(requestBody?.parameters.filters).toEqual([SERVICE_CONDITION, VERSION_CONDITION]);
+    expect(requestBody?.parameters.filters).toEqual([
+      expect.objectContaining({ key: "$metadata.service", operation: "eq", value: "api-worker" }),
+    ]);
     // The group-by really was sent, so the filter above is what keeps the result to one service
     // rather than the group-by having been quietly dropped.
     expect(requestBody?.parameters.groupBys)
@@ -1076,13 +942,13 @@ describe("CloudflareObservabilityApi", () => {
               dataset: "cloudflare-workers",
               timestamp: index,
               source: {},
-              $metadata: { id: `event-${page}-${index}`, service: "api-worker" }, $workers: OWN_VERSION,
+              $metadata: { id: `event-${page}-${index}`, service: "api-worker" },
             })),
           },
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const trace = await api.getTrace("trace-id");
 
@@ -1099,13 +965,14 @@ describe("CloudflareObservabilityApi", () => {
       const events = page === 1
         ? Array.from({ length: 100 }, (_, index) => ({
             dataset: "cloudflare-workers", timestamp: index, source: {},
-            $metadata: { id: `event-1-${index}`, service: "api-worker" },
-            // The last event of the full page is another Worker's, so filtering shortens the page.
-            $workers: index === 99 ? FOREIGN_VERSION : OWN_VERSION,
+            $metadata: {
+              id: `event-1-${index}`,
+              service: index === 99 ? "other-worker" : "api-worker",
+            },
           }))
         : [{
             dataset: "cloudflare-workers", timestamp: 101, source: {},
-            $metadata: { id: "event-2-0", service: "api-worker" }, $workers: OWN_VERSION,
+            $metadata: { id: "event-2-0", service: "api-worker" },
           }];
       return Response.json({
         success: true,
@@ -1115,7 +982,7 @@ describe("CloudflareObservabilityApi", () => {
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const trace = await api.getTrace("trace-id");
 
@@ -1134,13 +1001,13 @@ describe("CloudflareObservabilityApi", () => {
           count: 100,
           events: Array.from({ length: 100 }, (_, index) => ({
             dataset: "cloudflare-workers", timestamp: index, source: {},
-            $metadata: { id: `event-${index}`, service: "api-worker" }, $workers: OWN_VERSION,
+            $metadata: { id: `event-${index}`, service: "api-worker" },
           })),
         },
       },
     }));
     vi.stubGlobal("fetch", fetchSpy);
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const trace = await api.getTrace("trace-id");
 
@@ -1169,7 +1036,7 @@ describe("indexed field names", () => {
       event: "user_do.reset.surfaced",
       exception: { name: "Error" },
     },
-    $metadata: { id: "e1", service: "api-worker", level: "warn" }, $workers: OWN_VERSION,
+    $metadata: { id: "e1", service: "api-worker", level: "warn" },
   };
 
   function stubEvents(): { bodies: unknown[] } {
@@ -1200,7 +1067,7 @@ describe("indexed field names", () => {
 
   it("derives discoverable keys under their indexed names", async () => {
     stubEvents();
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     const keys = (await api.listKeys()).map(entry => entry.key);
 
@@ -1212,7 +1079,7 @@ describe("indexed field names", () => {
 
   it("finds values for a field discovered under its indexed name", async () => {
     stubEvents();
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     // The exact round trip that failed: discover `event`, then ask for its values.
     const values = await api.listValues("event", "string");
@@ -1224,7 +1091,7 @@ describe("indexed field names", () => {
 
   it("accepts the envelope path as an alias when reading values", async () => {
     stubEvents();
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     // An agent that copied the path out of a `listEvents` result gets the same answer, reported
     // under the indexed name so the two spellings cannot diverge in later calls.
@@ -1237,7 +1104,7 @@ describe("indexed field names", () => {
 
   it("rewrites a caller filter's envelope paths before sending them", async () => {
     const { bodies } = stubEvents();
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     await api.listEvents({
       filter: {
@@ -1254,9 +1121,8 @@ describe("indexed field names", () => {
     expect(bodies[0]).toMatchObject({
       parameters: {
         filters: [
-          // The binding's own scope conditions are never rewritten.
+          // The binding's own scope condition is never rewritten.
           { key: "$metadata.service", operation: "eq", value: "api-worker" },
-          { key: "$workers.scriptVersion.id", operation: "in", value: "version-own" },
           {
             kind: "group",
             filters: [
@@ -1281,7 +1147,7 @@ describe("indexed field names", () => {
         },
       });
     }));
-    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, async () => WORKER);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
 
     await api.calculate({
       calculations: [{ operator: "uniq", key: "source.event", keyType: "string", alias: "kinds" }],
@@ -1301,9 +1167,8 @@ describe("indexed field names", () => {
       kind: "filter", key: "source.event", operation: "eq", type: "string", value: "x",
     };
 
-    expect(scopeObservabilityFilters(WORKER, filter)).toEqual([
-      SERVICE_CONDITION,
-      VERSION_CONDITION,
+    expect(scopeObservabilityFilters("api-worker", filter)).toEqual([
+      { kind: "filter", key: "$metadata.service", operation: "eq", type: "string", value: "api-worker" },
       { kind: "filter", key: "event", operation: "eq", type: "string", value: "x" },
     ]);
   });

@@ -1,8 +1,6 @@
 // Workers Observability provides read-only telemetry for either one Cloudflare account or one
 // Worker, depending on the binding the user granted. The binding enforces that boundary; callers do
 // not pass account IDs or Worker names, and a Worker binding never returns another Worker's events.
-// A Worker binding stays with the Worker it was granted if that Worker is renamed, though telemetry
-// recorded before the rename may not be returned, and it stops working if the Worker is deleted.
 //
 // Start unfamiliar queries with `listKeys()` to discover indexed field names and types, then use
 // `listValues()` to discover actual values before constructing filters or calculations. Do not guess
@@ -506,10 +504,10 @@ export interface CloudflareObservabilitySession {
    * field names and types first; use aliases when ordering grouped results or requesting multiple
    * calculations.
    *
-   * On a Worker binding this is scoped to the bound Worker by the same conditions as every other
-   * read, but unlike events the result cannot be re-checked afterwards -- an aggregate computed
-   * across services could not be un-mixed. Treat a surprisingly large aggregate as a question to
-   * raise with the user rather than a fact about the bound Worker.
+   * On a Worker binding this is scoped by the same immutable `$metadata.service` condition as every
+   * other read, but unlike events the result cannot be re-checked afterwards -- an aggregate
+   * computed across services could not be un-mixed. Treat a surprisingly large aggregate as a
+   * question to raise with the user rather than a fact about the bound Worker.
    */
   calculate(query: CloudflareObservabilityCalculationQuery):
     Promise<CloudflareObservabilityCalculationResult>;

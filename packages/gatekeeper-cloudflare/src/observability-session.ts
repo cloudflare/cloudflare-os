@@ -65,8 +65,8 @@ export class CloudflareObservabilitySessionImpl extends RpcTarget
   readonly #subresource: string;
 
   /**
-   * @param subresource What every read reports as its subresource: the bound account's, or the
-   * bound Worker's (see observabilitySubresourceId).
+   * @param subresource What every read reports as its subresource: the bound account's (see
+   * observabilitySubresourceId), on a Worker binding too.
    */
   constructor(
     api: CloudflareObservabilityApi,
