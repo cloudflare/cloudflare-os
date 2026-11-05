@@ -25,9 +25,10 @@ import SidebarUtilityStrip from './SidebarUtilityStrip'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
 
 /**
- * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
- * the user can always reach Search, primary nav, and the bottom utility strip no matter how many
- * workspaces they have.
+ * The persistent left rail. Three pinned regions sandwich a scrolling region of workspaces, so the
+ * user can always reach Search, primary nav, and the bottom utility strip no matter how many
+ * workspaces they have. When the viewport is too short for the pinned regions, the top stack
+ * shrinks and scrolls instead of pushing the lists and utility strip out of view.
  *
  * Layout (top → bottom):
  *   • brand row                            pinned
@@ -115,8 +116,9 @@ export default function Sidebar({
       )}
 
       <SidebarWorkspacesProvider>
-        {/* Pinned top stack. shrink-0 keeps it from squishing when the lists below grow. */}
-        <div className="flex shrink-0 flex-col gap-3 pt-3">
+        {/* Pinned top stack. It keeps its height while the lists below grow, but shrinks and
+            scrolls when the viewport is too short to show every item. */}
+        <div className="sidebar-scroll flex min-h-0 shrink flex-col gap-3 overflow-y-auto pt-3">
           {/* Primary nav */}
           <nav className="flex flex-col gap-0.5 px-2">
             <SidebarItem
