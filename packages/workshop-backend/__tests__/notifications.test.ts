@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { NotificationSubscriber, UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
@@ -83,7 +83,9 @@ const trackNativeTimeouts = () => vi.spyOn(AbortSignal, "timeout").mockImplement
   return controller.signal;
 });
 
-afterEach(() => {
+// Retire each fixture's alarms before another test replaces the global notification service.
+afterEach(async () => {
+  await reset();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
