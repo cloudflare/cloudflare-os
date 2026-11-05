@@ -97,7 +97,8 @@ export const ReadTimeline = ({
       setVisit({divider: chat.readThroughSequence + 1, paused: true});
       pending.current = -1;
       // Live changes, including remote rewinds, never take over the viewport.
-    } else if (visit.paused && chat.unreadMessageCount === 0) {
+    } else if (visit.paused && chat.unreadMessageCount === 0 && previous &&
+        chat.readThroughSequence > previous.readThroughSequence) {
       latestAction.current = undefined;
       setVisit({...visit, paused: false});
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {

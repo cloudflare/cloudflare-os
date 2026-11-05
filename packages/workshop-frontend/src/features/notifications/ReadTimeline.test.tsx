@@ -263,7 +263,12 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
-  it.each([false, true])("preserves local unread navigation across an intervening arrival delta (ACK first: %s)", async ackFirst => {
+  it.each([
+    {ackFirst: false, metadataDelta: false},
+    {ackFirst: true, metadataDelta: false},
+    {ackFirst: false, metadataDelta: true},
+    {ackFirst: true, metadataDelta: true},
+  ])("preserves local unread navigation across an intervening arrival (ACK first: $ackFirst, metadata delta: $metadataDelta)", async ({ackFirst, metadataDelta}) => {
     visibleBottom = 450;
     await render();
     await update(snapshot(1, 2));
@@ -275,6 +280,8 @@ describe("timeline read/unread experience", () => {
     markChatUnread.mockReturnValueOnce(ack.promise);
     await markUnreadFrom(1);
     if (ackFirst) await act(async () => ack.resolve(true));
+    // Renaming publishes a new row without changing its read horizon or count.
+    if (metadataDelta) await updateChat(snapshot(1, 2));
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const arrival = snapshot(2, 2);
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
