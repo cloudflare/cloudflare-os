@@ -130,15 +130,15 @@ installer, and the check that decides whether to run it, are the Workshop's own.
 A gatekeeper's `main` is such an input too, so a gatekeeper can be upgraded from an older release:
 `build:upgrade-base` bundles gatekeeper-google as an earlier revision of the repo had it, the
 Google hooks suite boots that bundle, and `upgradeGoogle()` (`__tests__/google-fake.ts`) swaps in
-this tree's build with `server.update(current => …)`, replacing only that Worker's config.
+this tree's build with `deploy(harness.server, current => …)`, replacing only that Worker's config.
 
 `update()` resolves at the first reload, not the last. It hands each Worker its new config in
 turn, and each rebuilds and reloads on its own, so the reload it waited for can be running one
 Worker's new build beside the other's old one, with a second reload still to come. That second
-restart breaks the sessions and the requests the test has opened since. `upgradeGoogle()` gives
-every Worker's config a mark unique to the update, and waits until each reports it through
+restart breaks the sessions and the requests the test has opened since. So `deploy()`
+(`src/harness.ts`), which `Harness.redeployWorkshop()` and `upgradeGoogle()` both go through,
+gives every Worker's config a mark unique to the update, and waits until each reports it through
 `getWorker(name).getEnv()`, the one state no reload can leave half-applied.
-`Harness.redeployWorkshop()` doesn't wait this way yet.
 
 ### wrangler and miniflare versions are coupled
 
