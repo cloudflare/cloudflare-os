@@ -3233,8 +3233,7 @@ async function runAgentPass(
   let workpieceParam = Type.String({
     description:
         "Env binding name of the workpiece (gadget or worktree) that owns the file, as listed " +
-        "in the system prompt or chosen when creating it. Pass the bare name, e.g. " +
-        "\"SCRATCH\" rather than \"env.SCRATCH\".",
+        "in the system prompt or chosen when creating it.",
   });
 
   let tools: Record<string, AgentTool> = {
