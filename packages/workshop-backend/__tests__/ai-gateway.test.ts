@@ -274,7 +274,8 @@ describe("GatewayModels", () => {
       mode: "enabled", defaultMode: "enabled", added: true,
     });
     const listed = ids(models.list("language"));
-    expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-haiku-4-5") + 1);
+    // Haiku 4.5 is hidden, so the last Anthropic catalog model the pickers list is Fable 5.1.
+    expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-fable-5-1") + 1);
     expect(listed.indexOf("claude-test-2")).toBe(listed.indexOf("claude-test") + 1);
   });
 
