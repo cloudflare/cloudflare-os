@@ -62,8 +62,12 @@ import {
 } from "./bigquery-types";
 import {
   calendarEventOverlaps, calendarEventSortKey, eventPatchToGoogle, GoogleCalendarApi,
-  hasCalendarPrivateAccessRole, MAX_FREE_BUSY_CALENDARS, validateCalendarTimeWindow,
+  GoogleCalendarApiError, hasCalendarPrivateAccessRole, MAX_FREE_BUSY_CALENDARS, validateCalendarTimeWindow,
+  type LiveCalendarEvent,
 } from "./calendar-api";
+import {
+  CALENDAR_EVENTS_ACTION, createEventVerdict, updateEventVerdict,
+} from "./calendar-verdict";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
   CalendarListEventsOptions, CalendarSendUpdates, CalendarTime, GoogleCalendarCapabilities,
@@ -1343,6 +1347,21 @@ class PendingActionStore<Action> {
 
   remove(id: number): void {
     this.#kv.delete(this.#actionKey(id));
+    this.#kv.delete(this.#applyingKey(id));
+  }
+
+  #applyingKey(id: number): string {
+    return `pending:applying:${id}`;
+  }
+
+  /** Records that the overseer has started applying `id`, which proves it received the action. */
+  markApplying(id: number): void {
+    this.#kv.put(this.#applyingKey(id), true);
+  }
+
+  /** Whether the overseer has started applying `id` (see `markApplying`). */
+  isApplying(id: number): boolean {
+    return this.#kv.get<boolean>(this.#applyingKey(id)) === true;
   }
 }
 
@@ -2582,6 +2601,12 @@ type GoogleCalendarUpdateAction = GoogleCalendarActionBase & {
   type: "updateEvent";
   eventId: string;
   patch: CalendarEventPatch;
+  /**
+   * The verdict it was submitted with. One judged auto-approvable is judged again against the
+   * live event when it applies, since guests may have been added in Google meanwhile. Absent on
+   * actions stored before verdicts were recorded, which were never auto-approvable.
+   */
+  autoApprovable?: boolean;
 }
 
 type GoogleCalendarAction = GoogleCalendarCreateAction | GoogleCalendarUpdateAction;
@@ -2633,7 +2658,7 @@ function pendingCalendarEventFromDraft(
 function applyCalendarPatchToEvent(
   event: CalendarEvent,
   patch: CalendarEventPatch,
-  opts: CalendarListEventsOptions,
+  opts: Pick<CalendarListEventsOptions, "includeDescriptions">,
 ): void {
   if (patch.title !== undefined) event.title = patch.title;
   if (patch.start !== undefined) event.start = patch.start;
@@ -2698,6 +2723,21 @@ function applyPendingCalendarActions(
 
   return [...byId.values(), ...added]
       .toSorted((a, b) => calendarEventSortKey(a) - calendarEventSortKey(b));
+}
+
+// The event as it will be once this binding's pending updates to it apply, so a change queued
+// behind one that adds guests is judged as reaching them.
+function simulatedCalendarEvent(
+  event: LiveCalendarEvent,
+  pending: {id: number, action: GoogleCalendarAction}[],
+): LiveCalendarEvent {
+  let simulated = {...event};
+  for (let {action} of pending) {
+    if (action.type === "updateEvent" && action.eventId === event.id) {
+      applyCalendarPatchToEvent(simulated, action.patch, {includeDescriptions: true});
+    }
+  }
+  return simulated;
 }
 
 function validateEventTimes(start: CalendarTime, end: CalendarTime): void {
@@ -2793,7 +2833,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [CALENDAR_EVENTS_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -2813,8 +2853,12 @@ export class GoogleCalendarGatekeeperImpl
     let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
     let action = pendingActions.get(actionId);
     if (!action) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.ctx.storage.kv.get(this.#revertKey(actionId)) !== undefined) return;
       throw new Error(`Unknown pending Google Calendar action: ${actionId}`);
     }
+    pendingActions.markApplying(actionId);
 
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
     switch (action.type) {
@@ -2831,10 +2875,35 @@ export class GoogleCalendarGatekeeperImpl
       }
       case "updateEvent": {
         let oldEvent = await api.getEvent(action.calendarId, action.eventId);
+        // Whoever approved it, it was approved as reaching nobody; with guests added or its
+        // visibility narrowed in Google since, applying it would now email them or expose it.
+        let changedError = new Error(
+          "The event has changed in Google Calendar since this was proposed: it now has other " +
+          "people on it, or this change would widen who can see it. This attempt changed nothing. " +
+          "Reject this and ask the agent to read the event again.");
+        // The write below is conditional on the etag, so an event Google sent without one cannot
+        // be updated without a person.
+        if (action.autoApprovable && !oldEvent.etag) {
+          throw new Error(
+            "Google Calendar sent this event without the version tag this change needs to apply " +
+            "only to the event as it was checked. This attempt changed nothing. Reject this and " +
+            "ask the agent to make the change again.");
+        }
+        if (action.autoApprovable && !updateEventVerdict(oldEvent, action.patch).autoApprovable) {
+          throw changedError;
+        }
         let previous = priorCalendarPatch(oldEvent, action.patch);
-        await api.patchEvent(
-          action.calendarId, action.eventId,
-          eventPatchToGoogle(action.patch), action.sendUpdates);
+        try {
+          // Conditional on the version just judged, so guests added between the read and the
+          // write cannot receive it.
+          await api.patchEvent(
+            action.calendarId, action.eventId,
+            eventPatchToGoogle(action.patch), action.sendUpdates,
+            action.autoApprovable ? oldEvent.etag : undefined);
+        } catch (error) {
+          if (error instanceof GoogleCalendarApiError && error.status === 412) throw changedError;
+          throw error;
+        }
         pendingActions.remove(actionId);
         this.ctx.storage.kv.put<GoogleCalendarRevertInfo>(this.#revertKey(actionId), {
           type: "updatedEvent",
@@ -3075,9 +3144,10 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Event", event)
           .finish(),
         implementsRevert: true,
-        autoApprovable: false,
+        ...createEventVerdict(event),
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
@@ -3090,18 +3160,14 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   ): Promise<void> {
     if (!eventId.trim()) throw new Error("eventId is required.");
     if (Object.keys(patch).length === 0) throw new Error("patch must change at least one field.");
+    // Read for the verdict, which turns on who is on the event, and for the side of a start/end
+    // pair the patch leaves alone.
+    let current = await this.#api.getEvent(this.#calendarId, eventId);
     if (patch.start !== undefined || patch.end !== undefined) {
-      // Validate the resulting start/end pair. If only one side is patched, fetch the event to
-      // get the other side.
-      let start = patch.start;
-      let end = patch.end;
-      if (start === undefined || end === undefined) {
-        let current = await this.#api.getEvent(this.#calendarId, eventId);
-        start ??= current.start;
-        end ??= current.end;
-      }
-      validateEventTimes(start, end);
+      validateEventTimes(patch.start ?? current.start, patch.end ?? current.end);
     }
+    let verdict = updateEventVerdict(
+      simulatedCalendarEvent(current, this.#pendingActions.list()), patch);
     let action: GoogleCalendarAction = {
       type: "updateEvent",
       calendarId: this.#calendarId,
@@ -3109,6 +3175,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       sendUpdates: opts?.sendUpdates ?? "all",
       eventId,
       patch,
+      autoApprovable: verdict.autoApprovable,
     };
     let actionId = this.#pendingActions.submit(action);
 
@@ -3123,12 +3190,21 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Changes", patch)
           .finish(),
         implementsRevert: true,
-        autoApprovable: false,
+        ...verdict,
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
+  }
+
+  // An auto-approval can apply an action before its submit reply arrives. Its pending record goes
+  // only once the overseer has applied or rejected it, and is marked while an apply is under way
+  // or has failed, so a lost reply then is no failure: reporting one would invite a repeated write,
+  // and dropping the record would take away the retry.
+  #receivedDespite(actionId: number): boolean {
+    return this.#pendingActions.get(actionId) === undefined || this.#pendingActions.isApplying(actionId);
   }
 }
 

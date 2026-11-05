@@ -10,12 +10,12 @@ export type * from "./sheets-read-types";
  *
  * To enter a date or time, write its serial number into a cell formatted as a date or time, as a
  * `formatCells` change setting `numberFormat: { type: "DATE" }` (or `"TIME"` or `"DATE_TIME"`)
- * formats it. Text such as `"2026-10-12"` stays text, and `=DATE(2026, 10, 12)` works but makes the batch
- * wait for approval. `"raw"` reads show dates and times as serial numbers.
+ * formats it. Text such as `"2026-10-12"` stays text, and `=DATE(2026, 10, 12)` works too.
+ * `"raw"` reads show dates and times as serial numbers.
  *
  * Text starting with `=` cannot be entered as text, and `"formula"` reads show such text exactly as
  * they show a formula. So reading a cell back and writing it again can turn its text into a
- * formula, which then needs approval.
+ * formula, which may then need approval.
  */
 export type SheetCellInput = string | number | boolean | null;
 
@@ -188,12 +188,13 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * columns, in ranges too, are numbered as earlier changes that insert or delete some leave them:
    * to delete rows 3 and 7, delete row 7 first (or delete row 3, then row 6).
    *
-   * The user may let a batch apply without asking only when it enters literal values and clears
-   * ranges, or, as "Sheet formatting", when it only formats cells with `formatCells`; a batch with
-   * any formula, any change to rows, columns or sheets, or formatting together with any other
-   * change, waits for approval. Formulas calling `IMPORTRANGE`, which reads another spreadsheet,
-   * or `IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a
-   * URL, are refused.
+   * The user may let a batch apply without asking unless it deletes a sheet, rows or columns, or
+   * has a formula calling a function other than common built-ins that compute only from the
+   * spreadsheet (arithmetic, logic, statistics, text, dates, lookups and arrays; not `HYPERLINK`,
+   * `LET`, `LAMBDA`, nor any of the spreadsheet's named functions), or naming anything but cells,
+   * called functions, `TRUE` and `FALSE`, such as a named range; such a batch waits for approval.
+   * Formulas calling `IMPORTRANGE`, which reads another spreadsheet, or `IMPORTDATA`, `IMPORTHTML`,
+   * `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, are refused.
    *
    * A batch makes at most 50 changes, a change addresses at most 10,000 cells and a batch 20,000,
    * and a cell holds at most 50,000 characters. A batch may overwrite or delete at most 50,000

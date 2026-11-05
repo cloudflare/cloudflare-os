@@ -81,7 +81,9 @@ Stored action variants:
 - `replyToDiffComment`
 - `mergePullRequest` (bound to `expectedHeadSha` at queue time; a record from before that
   binding applies at the agent's `options.expectedHeadSha`, and is refused without one)
-- `push`
+- `push` (`gatedBranch` records whether the branch was the default or a protected branch at
+  queue time; a record without it counts as gated. The submit-time verdict reads it, and apply
+  checks a push it left ungated again)
 
 Pending records are the source of truth for simulation.
 

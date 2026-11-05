@@ -400,6 +400,12 @@ type PushAction = BaseAction & {
   expectedOldSha: string;
   newSha: string;
   force: boolean;
+  /**
+   * Whether `branch` was the repository's default branch or a protected branch when the push was
+   * queued. Such a push skips the review a merge gets, so it never applies without a person.
+   * Optional because older stored records lack it; absent counts as gated.
+   */
+  gatedBranch?: boolean;
 };
 
 type GitHubAction =
@@ -550,7 +556,11 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
           `creating branch ${codeSpan(action.branch)}.`
         : `Push commit ${codeSpan(action.newSha)} to branch ${codeSpan(action.branch)} of ${repo}, ` +
           `moving the branch from its current head ${codeSpan(action.expectedOldSha)}.` +
-          (action.force ? " This is a force push: it rewrites the branch's history." : "");
+          (action.force ? " This is a force push: it rewrites the branch's history." : "") +
+          (action.gatedBranch === true
+            ? ` Branch ${codeSpan(action.branch)} is the repository's default branch or a protected ` +
+              `branch, the repository is empty, or GitHub could not be asked which.`
+            : "");
       // The commits themselves cannot be reviewed as text here, so no completeness claim.
       return { description };
     }
@@ -580,7 +590,8 @@ const ACTION_KINDS = {
 type AutoApprovalKind = keyof typeof ACTION_KINDS;
 
 // The auto-approvable kinds each binding's session can submit, so a pre-approval UI lists only
-// those its actions can carry. Merges never appear: they are never auto-approvable.
+// those its actions can carry. Merges never appear: they are never auto-approvable. Pushes do,
+// though one to the default or a protected branch always waits for a person.
 const ISSUE_ACTIONS: AutoApprovalKind[] =
   ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
 const PULL_ACTIONS: AutoApprovalKind[] = [...ISSUE_ACTIONS, "postReview", "replyToDiffComment"];
@@ -592,16 +603,34 @@ const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
 
 /**
  * The action's kind, and whether it may be applied without a person once the user has enabled
- * that kind. Every action may be except a merge and an approving review, which always wait for a
- * person: an approval shares its kind with the other reviews, so enabling those never covers it.
+ * that kind. Every action may be except those that pass a review gate, which always wait for a
+ * person: a merge, an approving review, and a push or force push to the default or a protected
+ * branch. An approval shares its kind with the other reviews, and a gated push with the other
+ * pushes, so enabling those kinds never covers them. So does an issue assigned to an app.
  */
 function autoApprovalOf(action: GitHubAction): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
   const kind: AutoApprovalKind = action.type === "push" && action.force ? "forcePush" : action.type;
-  return {
-    actionKind: ACTION_KINDS[kind],
-    autoApprovable: action.type !== "mergePullRequest" &&
-      !(action.type === "postReview" && action.review.decision === "approve"),
-  };
+  return { actionKind: ACTION_KINDS[kind], autoApprovable: autoApprovable(action) };
+}
+
+function autoApprovable(action: GitHubAction): boolean {
+  switch (action.type) {
+    case "mergePullRequest": return false;
+    case "postReview": return action.review.decision !== "approve";
+    case "push": return action.gatedBranch === false;
+    case "createIssue": return !(action.options.assignees ?? []).some(isAppLogin);
+    default: return true;
+  }
+}
+
+/**
+ * Whether `login` names an app rather than a person. Assigning an issue to an app such as
+ * Copilot's coding agent starts a run that spends the user's billed credits. App logins end in
+ * `[bot]`, and Copilot is also assignable by its display name.
+ */
+function isAppLogin(login: string): boolean {
+  const normalized = login.trim().toLowerCase();
+  return normalized.endsWith("[bot]") || normalized === "copilot";
 }
 
 type StoredActionRecord = {
@@ -4464,6 +4493,33 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         return;
       }
       case "push": {
+        // A branch can become the default or protected while the push waits, and the head it
+        // compares against does not change, so a push that could apply without a person is
+        // checked again.
+        if (action.gatedBranch === false) {
+          // A branch already at the pushed commit is an apply whose first attempt landed, and that
+          // push can itself have gated the branch (created where a ruleset covers it), so it is
+          // looked for before the gate is judged again.
+          const head = await this.#withApi(api =>
+            api.getBranchHead(action.owner, action.repo, action.branch));
+          if (head === action.newSha) {
+            this.#appliedPushes.record(action.newSha);
+            this.#markActionApproved(action);
+            this.#clearCaches();
+            return;
+          }
+          const gated = await this.#isGatedBranch(action.branch);
+          if (gated === undefined) {
+            throw new Error(
+              `Could not read whether branch "${action.branch}" is the default or a protected branch, ` +
+              `so this push was not applied. Try again.`);
+          }
+          if (gated) {
+            throw new Error(
+              `Branch "${action.branch}" has become the default or a protected branch since this push was ` +
+              `queued, so it can no longer apply without review. Discard it and push again to have it reviewed.`);
+          }
+        }
         // No gatekeeper-side object walk: the overseer composes the pack from the action's
         // pending-push marks (`cache.buildPack()` on the action-scoped stub), and this side
         // contributes only send-pack framing plus the ref-update command. The command's old-sha
@@ -6323,11 +6379,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * fast-forward from; the zero-id compare-and-swap at apply protects against a branch appearing
    * in the interim), and `force` skips only this policy check -- it does not loosen the old-sha
    * match at apply.
+   *
+   * It also records whether the branch is the default or a protected branch, which keeps the push
+   * from auto-approving (see `autoApprovalOf`).
    */
   async preparePush(branch: string, commitId: string, force: boolean,
                     gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
-    const realHead = await this.#withApi(api =>
-      api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, branch));
+    const { owner, repo } = this.ctx.props;
+    const [realHead, gatedBranch] = await Promise.all([
+      this.#withApi(api => api.getBranchHead(owner, repo, branch)),
+      this.#isGatedBranch(branch).then(gated => gated ?? true),
+    ]);
     const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;
     if (!force && expectedOldSha !== ZERO_OID &&
@@ -6348,7 +6410,44 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       expectedOldSha,
       newSha: commitId,
       force,
+      gatedBranch,
     };
+  }
+
+  /**
+   * Whether a push to `branch` must wait for a person: it is the repository's default branch,
+   * GitHub reports it protected, or a ruleset applies to it (which covers a branch the push would
+   * create). Rules a ruleset applies to the whole repository, such as `repository_delete`, do not
+   * protect a branch, as GitHub's own `protected` flag agrees. All three are read live. GitHub
+   * refusing this account the protection or the rulesets counts as neither protecting the branch;
+   * any other failed read, a rate limit included, answers undefined, which callers treat as
+   * gated. A push into an empty repository is gated too, since GitHub makes the first branch the
+   * default. A classic protection rule's pattern is shown only to admins, so a branch the push
+   * would create is not matched against those.
+   */
+  async #isGatedBranch(branch: string): Promise<boolean | undefined> {
+    const { owner, repo } = this.ctx.props;
+    const unlessRefused = <T>(read: Promise<T>, refused: T): Promise<T> => read.catch(error => {
+      if (error instanceof GitHubApiError && error.status === 403 && !error.rateLimited) return refused;
+      throw error;
+    });
+    try {
+      const [repository, isProtected, rules] = await Promise.all([
+        this.#withApi(api => api.getRepo(owner, repo)),
+        unlessRefused(this.#withApi(api => api.isBranchProtected(owner, repo, branch)), false),
+        unlessRefused(this.#withApi(api => api.getBranchRules(owner, repo, branch)), []),
+      ]);
+      if (branch === repository.default_branch || isProtected ||
+          rules.some(rule => !rule.type.startsWith("repository_"))) return true;
+      // An empty repository has no head on its default branch (GitHub answers 404 or 409).
+      return await this.#withApi(api => api.getBranchHead(owner, repo, repository.default_branch)) === null;
+    } catch (error) {
+      logger.warn("failed to read whether a push target is gated", {
+        event: "push.branch.gate.read.failed",
+        ...(error instanceof GitHubApiError ? { status: error.status } : { error }),
+      });
+      return undefined;
+    }
   }
 
   /**

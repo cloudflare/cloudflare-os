@@ -317,6 +317,7 @@ function gmailAutoApprovalMetadata(
   switch (action.type) {
   case "send":
   case "draftSend":
+    // Rule 2: sends mail as the user to people outside the bound mailbox.
     return {autoApprovable: false};
   case "messageMutation":
     return {

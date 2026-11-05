@@ -39,20 +39,22 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
-// What a user may let apply without asking: a batch that only edits text, or one that only changes
-// how existing text, elements and slides look, in shapes and table cells alike, and skipping slides
-// or showing them again, which destroys nothing and is undone the same way. Setting a link or font
-// does not count, since Google keeps the whole string, nor does a picture background, which Google
-// downloads. Anything that creates or deletes, changes a table's rows, columns or cell fills, sets
-// alt text, or changes a layout or master, which reaches slides the user is not looking at, needs
-// approval.
+// What a user may let apply without asking: any change but deleting a slide, or a batch that
+// deletes elements, table rows or columns, or makes Google download an image from a URL the agent
+// chose, which would carry whatever it encoded there past the presentation. A batch is tried
+// against the narrow kinds first, and they are never widened, since a rule a user enabled for one
+// covers only what its label says.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
-const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
-// Every other batch, and adding, copying, reordering and deleting slides, always waits for approval.
-const UPDATE_SLIDES: ActionKind = { tag: "update-slides", label: "Other slide changes" };
+const EDIT_SLIDES: ActionKind = {
+  tag: "edit-slides", label: "Slide edits that keep every element, table row and column and download no images",
+};
+const UPDATE_SLIDES: ActionKind = {
+  tag: "update-slides", label: "Slide changes that delete elements, table rows or columns, or download images",
+};
 const ARRANGE_SLIDES: ActionKind = { tag: "arrange-slides", label: "Adding, copying and reordering slides" };
 const DELETE_SLIDES: ActionKind = { tag: "delete-slides", label: "Deleting slides" };
+const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
 
 function isFormatting(change: DesignChange): boolean {
   switch (change.op) {
@@ -71,10 +73,42 @@ function isFormatting(change: DesignChange): boolean {
   }
 }
 
+// Whether a change deletes content or makes Google download a URL. Exhaustive, so a new change
+// cannot join `edit-slides` without a decision here.
+function deletesOrDownloads(change: DesignChange): boolean {
+  switch (change.op) {
+    case "deleteElement":
+    case "deleteTableRows":
+    case "deleteTableColumns":
+    case "insertImage":
+    case "replaceImage":
+      return true;
+    case "setBackground":
+      return change.background !== null && typeof change.background === "object";
+    case "editText":
+    case "formatText":
+    case "formatParagraphs":
+    case "createShape":
+    case "updateShape":
+    case "setBounds":
+    case "setAltText":
+    case "arrange":
+    case "createTable":
+    case "insertTableRows":
+    case "insertTableColumns":
+    case "setThemeColors":
+    case "formatTableCells":
+      return false;
+  }
+}
+
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
-export function batchKind(changes: readonly DesignChange[]): "editText" | "formatSlides" | "updateSlides" {
+export function batchKind(
+  changes: readonly DesignChange[],
+): "editText" | "formatSlides" | "editSlides" | "updateSlides" {
   if (changes.every(change => change.op === "editText")) return "editText";
-  return changes.every(isFormatting) ? "formatSlides" : "updateSlides";
+  if (changes.every(isFormatting)) return "formatSlides";
+  return changes.some(deletesOrDownloads) ? "updateSlides" : "editSlides";
 }
 
 // Planning against a fresh read, and resending a batch whose response was lost.
@@ -513,7 +547,7 @@ function slideIdsOf(changes: readonly DesignChange[]): string[] {
   return [...new Set(changes.flatMap(change => slideIdOf(change) ?? []))];
 }
 
-/** A design batch's definition, the same for each kind but in its `kind` and its auto-approval verdict. */
+/** A design batch's definition, the same for each kind but its `kind` and verdict. */
 function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition<DesignBatch, SlidesHost> {
   return {
     kind,
@@ -559,11 +593,13 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
 export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
   editText: designBatch(EDIT_SLIDES_TEXT, true),
   formatSlides: designBatch(FORMAT_SLIDES, true),
+  editSlides: designBatch(EDIT_SLIDES, true),
+  // Deletes content, or has Google download an agent-chosen URL.
   updateSlides: designBatch(UPDATE_SLIDES, false),
 
   duplicateSlide: {
     kind: ARRANGE_SLIDES,
-    autoApprovable: false,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slide }) => ({
@@ -586,6 +622,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     }),
   },
 
+  // Deletes the slide's content and notes, and can take its master and layouts with it.
   deleteSlide: {
     kind: DELETE_SLIDES,
     autoApprovable: false,
@@ -608,7 +645,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
 
   moveSlides: {
     kind: ARRANGE_SLIDES,
-    autoApprovable: false,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ slides, afterSlide }) => {
@@ -640,7 +677,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
 
   createSlide: {
     kind: ARRANGE_SLIDES,
-    autoApprovable: false,
+    autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ layout, after, afterSlide }) => {

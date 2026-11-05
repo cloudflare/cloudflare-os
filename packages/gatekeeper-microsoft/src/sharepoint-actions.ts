@@ -662,6 +662,7 @@ export const definitions = {
 
   deleteItem: {
     kind: { tag: "sharepoint.files.delete", label: "Delete SharePoint files" },
+    // Rule 1: deletes content.
     autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
@@ -861,6 +862,7 @@ export const definitions = {
 
   deleteListItem: {
     kind: { tag: "sharepoint.lists.delete", label: "Delete SharePoint list items" },
+    // Rule 1: deletes content.
     autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: payload => {
