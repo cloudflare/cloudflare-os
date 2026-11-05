@@ -325,10 +325,13 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   transferred issue, which redirects into another repository, is still refused, and props stay
   path-based, so the observer probe and URL builders are unchanged.
   Since the observer conversion (§8) this gatekeeper pins the project's id as well, read once from
-  its path, whose redirect is still never followed, and sends every REST request beneath the
+  its path, and now matches GitHub on redirects: a GET of a project's root by path follows a 301
+  to the root by id (re-issued to the API origin, since the Location names the browser-facing
+  host), which the pin and the legacy admission path check use; nothing beneath a project is
+  followed. It sends every REST request beneath the
   project to `/projects/<id>/…`, so a move after the pin no longer reaches the error; git, which
   GitLab addresses only by path, goes to the path the id has now, and a fetch is refused if that
-  path changed before GitLab answered.
+  path, read afresh once GitLab answered, differs from the one the fetch was sent to.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`

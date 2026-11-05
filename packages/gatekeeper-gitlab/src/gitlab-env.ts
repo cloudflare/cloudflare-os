@@ -193,18 +193,21 @@ export async function hasProjectMembership(
  * The access level of `account`'s GitLab user's effective membership of the project, named by its
  * numeric id or its path, read with the account's own token, or `null` when none is confirmed:
  * nothing (`[]`) for a non-member, 404 for a project the token cannot see at all (GitLab hides
- * existence) -- the same answer here. `null` is not "below Reporter": an instance admin who is no
- * member reads as `null` and sees everything. The user id comes from the account, fenced to the
- * connection that answered it: if a reconnect (possibly as another GitLab user) lands between the
- * two reads, the membership row would be one user's and the token another's, so the answer is
- * discarded as `null`.
+ * existence) -- the same answer here. A path is first resolved to the project it names, following
+ * a rename's or transfer's redirect from a path the project left (see GitLabApi's redirectTarget),
+ * as the GitHub gatekeeper's name check does. `null` is not "below Reporter": an instance admin
+ * who is no member reads as `null` and sees everything. The user id comes from the account, fenced
+ * to the connection that answered it: if a reconnect (possibly as another GitLab user) lands
+ * between the two reads, the membership row would be one user's and the token another's, so the
+ * answer is discarded as `null`.
  */
 export async function projectMembershipLevel(
   env: Env, account: MemberAccount, project: number | string,
 ): Promise<number | null> {
   try {
     const user = await account.getUser();
-    const member = await withAccountApi(env, account, api => api.getProjectMember(project, user.id), { replayable: true });
+    const member = await withAccountApi(env, account, async api => await api.getProjectMember(
+      typeof project === "number" ? project : (await api.getProject(project)).id, user.id), { replayable: true });
     if ((await account.getUser()).generation !== user.generation) return null;
     return effectiveAccessLevel(member);
   } catch (error) {

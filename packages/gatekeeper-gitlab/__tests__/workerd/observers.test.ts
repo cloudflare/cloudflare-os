@@ -620,10 +620,11 @@ describe("addObserver", () => {
 
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
-    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")).toSorted()).toEqual([
-      ...Array(2).fill(`/api/v4/projects/${PROJECT_ID}/members/all`),
-      ...Array(2).fill("/api/v4/projects/group%2Fsub%2Fproject/members/all"),
-    ].toSorted());
+    // Its path is read at the project's root, then its membership by the id that names.
+    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
+      .toEqual(Array(4).fill(`/api/v4/projects/${PROJECT_ID}/members/all`));
+    expect(gitlab.requestsWith("alice").filter(path => path === "/api/v4/projects/group%2Fsub%2Fproject"))
+      .toHaveLength(2);
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
     // An answer that says nothing about access fails admission, as an error rather than a denial.
     expect(await gk.admit(carol)).toEqual({ error: expect.stringContaining("500") });
@@ -658,19 +659,31 @@ describe("addObserver", () => {
     expect(await gk.verify({ alice, bob })).toEqual({ ok: ["alice"] });
   });
 
-  it("keeps legacy admission closed on a freed path's redirect after a plain rename", async () => {
+  it("follows a moved project's redirect from its old path in legacy admission, as GitHub does", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
-    const alice = await account("alice");
+    const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
     gitlab.member("alice", { [PROJECT_ID]: MAINTAINER_LEVEL });
+    gitlab.member("bob", { [OTHER_ID]: MAINTAINER_LEVEL });
     const gk = await binding({ pinned: true });
     gitlab.projects.set(PROJECT_ID, "acme/renamed");
     gitlab.formerPaths.set(PATH, PROJECT_ID);
 
-    // Modern reads and verification still follow the pinned id. Earlier path-addressed history
-    // cannot prove that it never read a replacement that also subsequently moved away.
     expect(await gk.verify({ alice })).toEqual({ ok: ["alice"] });
-    expect(await gk.admit(alice)).toEqual({ error: expect.stringMatching(/renamed or transferred/) });
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
+    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+  });
+
+  it("pins a project that moved before its first read through its old path's redirect", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.issues = [1];
+    gitlab.install();
+    const gk = await binding();
+    gitlab.projects.set(PROJECT_ID, "acme/renamed");
+    gitlab.formerPaths.set(PATH, PROJECT_ID);
+
+    expect(await gk.read([{ method: "listIssues", drain: true }])).toMatchObject({ ok: [{ id: "1" }] });
+    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT]]);
   });
 
   it("admits an observer on their own membership by path while no id is stored, never asking the owner", async () => {
@@ -688,7 +701,7 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
     expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
-      .toEqual(["/api/v4/projects/group%2Fsub%2Fproject/members/all"]);
+      .toEqual([`/api/v4/projects/${PROJECT_ID}/members/all`]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
   });
 });

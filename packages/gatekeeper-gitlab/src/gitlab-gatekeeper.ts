@@ -414,8 +414,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * reports (see PinnedProject, authorizeRead). The id is read once from the project's path and
    * stored. Until a probe succeeds nothing is read or written through the binding, since its path
    * alone may by then name another project; a failed probe is retried by the next call. GitLab
-   * answers a moved project's old path with a redirect, which is never followed, so a binding whose
-   * project moved before it was pinned fails until it is connected again at the new path.
+   * answers a moved project's old path with a redirect to its id, which this probe follows (see
+   * GitLabApi's redirectTarget), as GitHub's pin does, so a binding whose project moved before it
+   * was pinned is pinned to that project.
    *
    * A binding that read before ids were pinned is pinned to the project its path names at its first
    * read since: that may not be the one it read then, should the path have passed to another project

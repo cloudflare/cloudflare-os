@@ -175,9 +175,10 @@ describe("observer admission", () => {
     await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"));
     expect(gitlab.requests.map(r => r.url.pathname + r.url.search)).toEqual([
       "/api/v4/user",
-      "/api/v4/projects/group%2Fsub%2Fproject/members/all?user_ids%5B%5D=100&per_page=100",
+      "/api/v4/projects/group%2Fsub%2Fproject",
+      `/api/v4/projects/${PROJECT_ID}/members/all?user_ids%5B%5D=100&per_page=100`,
     ]);
-    // Re-verification (every workspace open) costs the membership read alone.
+    // Re-verification (every workspace open) costs the path's project read and the membership read.
     await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"));
     expect(gitlab.count("GET", /\/api\/v4\/user$/)).toBe(1);
     expect(gitlab.count("GET", /members\/all/)).toBe(2);

@@ -419,9 +419,9 @@ export type GitLabCompareResponse = {
  * requires an eligible approver -- so only a 401 from `GET /user`, the one request that asserts
  * nothing but authentication, is classified as one; every other endpoint's 401 is that
  * operation's own answer, for the caller to explain. (A revoked token still surfaces: the next
- * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx: a
- * renamed or transferred project answers its old path with a `301` to its numeric-id URL, which
- * must never be followed (a followed 301 turns a POST into a GET).
+ * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx it did
+ * not follow: a renamed or transferred project answers its old path with a `301` to its numeric-id
+ * URL, which is followed only for a GET of the project's root (see redirectTarget).
  */
 export class GitLabApiError extends Error {
   status: number;
@@ -616,12 +616,12 @@ export function errorMessageFromBody(parsed: unknown, fallback: string): string 
 /**
  * Explain a 3xx from the REST API or the OAuth endpoints, neither of which redirects a request it
  * answers itself. Two unrelated things answer with one: a renamed or transferred project, whose
- * old path 301s to its numeric-id URL under `/api/v4/`, and an access proxy in front of the
- * instance (Cloudflare Access without a valid service token) that 302s every request to a login
- * page. They need opposite remedies, so the message is chosen by the redirect's *path*, not its
- * host: GitLab builds the rename's Location from its configured external URL -- the
- * browser-facing host -- which differs from the host the Worker requested whenever the instance
- * is reached through a separate Access hostname.
+ * old path 301s to its numeric-id URL under `/api/v4/` (followed only for the project's root, see
+ * redirectTarget), and an access proxy in front of the instance (Cloudflare Access without a valid
+ * service token) that 302s every request to a login page. They need opposite remedies, so the
+ * message is chosen by the redirect's *path*, not its host: GitLab builds the rename's Location
+ * from its configured external URL -- the browser-facing host -- which differs from the host the
+ * Worker requested whenever the instance is reached through a separate Access hostname.
  */
 function redirectMessage(requested: URL, location: string | undefined): string {
   let target: URL | undefined;
@@ -657,6 +657,29 @@ function appendQuery(url: URL, query: Query | undefined): void {
   }
 }
 
+/** A request for a project's root by its path, the one request whose rename redirect is followed. */
+const PROJECT_PATH_ROOT = /^\/projects\/[^/]*[^/\d][^/]*$/;
+/** Where GitLab redirects a moved project's old path: the project's root by its numeric id. */
+const PROJECT_ID_ROOT = /^\/api\/v4\/projects\/\d+$/;
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from the Location, or
+ * undefined to refuse the redirect. As the GitHub gatekeeper does for a repository, only a GET of
+ * a project's root by path is followed, and only to a project's root by id: GitLab redirects a
+ * renamed or transferred project's freed path there, and at the root the id can only be that same
+ * project's. The Location names GitLab's browser-facing host (see redirectMessage), so the id path
+ * is re-issued to the API origin. A request by id is addressed by it already, and nothing beneath
+ * a project is followed.
+ */
+function redirectTarget(method: string, path: string, requested: URL, response: Response, instance: GitLabInstance):
+    URL | undefined {
+  if (response.status < 300 || response.status >= 400 || method !== "GET" || !PROJECT_PATH_ROOT.test(path)) return undefined;
+  const location = response.headers.get("location");
+  const moved = location === null ? null : URL.parse(location, requested.href);
+  return moved !== null && PROJECT_ID_ROOT.test(moved.pathname)
+    ? new URL(`${moved.pathname}${requested.search}`, instance.apiOrigin) : undefined;
+}
+
 /**
  * Send one request to the API: the instance's headers and the bearer token attached, the
  * documented redirect behaviour applied (see `redirectMessage`), and any status the caller did not
@@ -688,19 +711,25 @@ async function send(
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(url.toString(), {
+  const attempt = async (target: URL) => await fetch(target.toString(), {
     method,
     headers,
     body,
-    // Never follow: a renamed project's 301 points at its numeric-id URL, and following it would
-    // silently turn a POST into a GET. Surfaced as a "project moved" error instead.
+    // Never followed automatically: a followed 301 turns a POST into a GET, and a redirect beneath
+    // a project could lead into another one. See redirectTarget for the one that is re-issued.
     redirect: "manual",
     signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
   }).catch((error: unknown) => {
     throw transportError(error);
   });
 
-  await throwOnRedirect(response, url);
+  let response = await attempt(url);
+  const moved = redirectTarget(method, path, url, response, instance);
+  if (moved !== undefined) {
+    await response.body?.cancel().catch(() => {});
+    response = await attempt(moved);
+  }
+  await throwOnRedirect(response, moved ?? url);
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
     const parsed = await parseErrorBody(response);

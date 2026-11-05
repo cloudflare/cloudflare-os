@@ -116,8 +116,8 @@ can still hold confidential issues and internal notes; job logs and test reports
 [CI status](#ci-status)).
 
 - **Identity.** A binding pins its project's numeric GitLab id on its first read (read once by
-  path; GitLab answers a moved project's old path with a redirect, which is not followed, so that
-  read fails) and reads nothing until it has. From then on every REST request beneath the project
+  path; GitLab answers a moved project's old path with a redirect to its id, which that read
+  follows, as GitHub's does) and reads nothing until it has. From then on every REST request beneath the project
   goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
   sent to the path that id has: a push's read afresh, a fetch's from the project read cached for
   up to 30 seconds. A fetch fails if the path read afresh once GitLab has answered differs from
@@ -154,8 +154,9 @@ can still hold confidential issues and internal notes; job logs and test reports
   admit every collaborator without asking GitLab, record none, and have no collaborator cap: the
   Workshop checks each read's report instead. Older bindings also ask each open, uncached and never
   with the binding owner's token, for the stored project id when there is one, and for the project
-  their original path names now, since earlier path-addressed reads may have disclosed a project
-  that later took it. For those older bindings, no stored id means the path is all they are checked
+  their original path names now (read at the project's root first, following a moved project's
+  redirect from that path, as GitHub's name check does), since earlier path-addressed reads may
+  have disclosed a project that later took it. For those older bindings, no stored id means the path is all they are checked
   by; recorded CI data still needs its role the same way. Caches filled before conversion are
   discarded on upgrade. Their legacy history is not exported, so these checks remain.
 
@@ -284,14 +285,10 @@ receives them.
 
 ### "The GitLab project has been renamed or transferred"
 
-An owner sees this if the project moved before the connection pinned its id (see
-[Sharing with collaborators](#sharing-with-collaborators)). Collaborator admission on a binding
-created before subresource reporting can fail after **any** rename or transfer, even when its id
-was already pinned and the owner's reads still work: its retained legacy check asks for the
-original path as well as the stored id. GitLab redirects a freed path, and the gatekeeper refuses
-that redirect because it cannot prove earlier path-addressed history. Re-bind at the new path to
-share it again. A binding created since subresource reporting makes no admission check, so
-sharing follows a pinned project through renames and old-path reuse.
+A request beneath a project was answered with a redirect, which is followed only for a read of the
+project itself. The bound project is read by its id once pinned, and the pin and collaborator
+checks follow a moved project's redirect from its old path, so a rename or transfer does not cause
+this on its own; if you see it, report it.
 
 ### "GitLab credentials have expired or been revoked"
 

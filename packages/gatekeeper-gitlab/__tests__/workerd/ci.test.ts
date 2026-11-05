@@ -1039,8 +1039,8 @@ describe("what CI reads disclose to observers", () => {
       await observer(name, props, "at");
     });
 
-    it.each([["the pinned id", P], ["the binding's path", PATH]] as const)(
-      "needs the role, and Reporter at all, by %s as well", async (_, address) => {
+    it.each([["the pinned id", false], ["the project its path names now", true]] as const)(
+      "needs the role, and Reporter at all, on %s as well", async (_, pathMoved) => {
         // The marked reads followed the path, which may since name another project than the one
         // the binding has pinned since: a membership of either alone does not show the observer may
         // see what was read.
@@ -1049,6 +1049,11 @@ describe("what CI reads disclose to observers", () => {
         await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed", projectId: PROJECT_ID });
         // CiFake numbers its members from 100 in order.
         const developerId = 100 + [...fake.members.keys()].indexOf("developer");
+        const address = pathMoved ? String(PROJECT_ID + 1000) : P;
+        if (pathMoved) {
+          fake.on("GET", new RegExp(`^/api/v4/projects/${PATH}$`), () =>
+            json({ ...fx.projectResponse.data, id: Number(address), path_with_namespace: PROJECT }));
+        }
         fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), request => {
           const id = Number(request.url.searchParams.get("user_ids[]"));
           // Here the Reporter is no member, and the Developer only a Reporter.

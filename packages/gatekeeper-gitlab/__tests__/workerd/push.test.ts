@@ -477,11 +477,11 @@ describe("simulated reads over queued pushes", () => {
     const cache = cacheWithChain();
     await queuePush(name, props, "main", HEAD2, false, cache);
     gitlab.projectPath = "acme/renamed";
-    const link = (id: string) => `https://gitlab.example.com/acme/renamed/-/commit/${id}`;
+    const renamed = "https://gitlab.example.com/acme/renamed/-/commit";
     const head = await unwrap(await hooks().getCommit(name, props, "main", stubOf(cache)));
-    expect(head).toMatchObject({ fromCache: true, details: { id: HEAD2, url: link(HEAD2) } });
+    expect(head).toMatchObject({ fromCache: true, details: { id: HEAD2, url: `${renamed}/${HEAD2}` } });
     const commits = await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache)));
-    expect(commits.slice(0, 2).map(c => c.url)).toEqual([link(HEAD2), link(HEAD1)]);
+    expect(commits.slice(0, 2).map(c => c.url)).toEqual([`${renamed}/${HEAD2}`, `${renamed}/${HEAD1}`]);
   });
 
   it("filters the pending chain by author as GitLab does: any part of `Name <email>`, case and all", async () => {

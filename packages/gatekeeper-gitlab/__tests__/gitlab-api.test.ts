@@ -129,12 +129,34 @@ describe("redirect refusal", () => {
     // hostname the rename redirect is cross-origin to the request -- still a rename.
     fakeFetch([new Response(null, {
       status: 301,
-      headers: { location: "https://gitlab.example.com/api/v4/projects/81" },
+      headers: { location: "https://gitlab.example.com/api/v4/projects/81/issues/1" },
     })]);
-    const error = await api(ACCESS_INSTANCE).getProject("old/path").catch(e => e);
+    const error = await api(ACCESS_INSTANCE).getIssue("old/path", 1).catch(e => e);
     expect(error).toBeInstanceOf(GitLabApiError);
     expect(error.message).toMatch(/renamed or transferred/);
-    expect(error.movedTo).toBe("https://gitlab.example.com/api/v4/projects/81");
+    expect(error.movedTo).toBe("https://gitlab.example.com/api/v4/projects/81/issues/1");
+  });
+
+  it("follows a moved project's root to its id once, on the API origin, as GitHub's repository root", async () => {
+    const calls = fakeFetch([
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/81" } }),
+      json({ ...fx.projectResponse.data, id: 81 }),
+    ]);
+    expect(await api(ACCESS_INSTANCE).getProject("old/path")).toMatchObject({ id: 81 });
+    expect(calls.map(call => call.url.toString())).toEqual([
+      "https://gitlab-access.example.com/api/v4/projects/old%2Fpath",
+      "https://gitlab-access.example.com/api/v4/projects/81",
+    ]);
+    expect(calls[1].headers.get("CF-Access-Client-Id")).toBe("id.access");
+
+    // Anywhere but another project's root by id, or a second redirect, is refused.
+    fakeFetch([new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/groups/9" } })]);
+    await expect(api().getProject("old/path")).rejects.toMatchObject({ status: 301 });
+    fakeFetch([
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/81" } }),
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/82" } }),
+    ]);
+    await expect(api().getProject("old/path")).rejects.toMatchObject({ status: 301 });
   });
 
   it("names the access proxy, not a rename, when the redirect is to a login page", async () => {
