@@ -33,6 +33,7 @@ import {
   type SupportedResource,
   type VendorDescription,
   workerVersionTag,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -175,21 +176,24 @@ const CONFLUENCE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(CONFLUENCE_
 
 // One connect card chooses among the three, so the site type, which leads it, is titled for the card.
 const SITE_RESOURCE: SupportedResource = {
+  id: "site",
   urlPattern: "https://*.atlassian.net/wiki",
   title: "Confluence",
   description: "A whole Confluence site, one space, or one page or blog post.",
 };
 const SPACE_RESOURCE: SupportedResource = {
+  id: "space",
   urlPattern: "https://*.atlassian.net/wiki/spaces/:spaceKey",
   title: "Confluence Space",
   description: "Read and edit the pages and blog posts in a single Confluence space.",
-  groupedWith: SITE_RESOURCE.urlPattern,
+  groupedWith: SITE_RESOURCE.id,
 };
 const PAGE_RESOURCE: SupportedResource = {
+  id: "page",
   urlPattern: "https://*.atlassian.net/wiki/spaces/:spaceKey/pages/:pageId/*?",
   title: "Confluence Page or Blog Post",
   description: "Read and edit a specific Confluence page or blog post (and its child pages).",
-  groupedWith: SITE_RESOURCE.urlPattern,
+  groupedWith: SITE_RESOURCE.id,
 };
 const SUPPORTED_RESOURCES = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE];
 
@@ -607,6 +611,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     // The three types share one card, so each starts the same configurator.
     if (!SUPPORTED_RESOURCES.some(resource => resource.urlPattern === resourceUrlPattern)) {
       throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);

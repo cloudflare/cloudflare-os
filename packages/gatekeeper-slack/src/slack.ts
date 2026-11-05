@@ -6,6 +6,7 @@ import {
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -115,6 +116,7 @@ const IDENTITY_SCOPES = ["users:read"];
 
 // `https://*` denotes account-wide access; the configurator resolves the concrete workspace URL.
 const WORKSPACE_RESOURCE: SupportedResource = {
+  id: "workspace",
   urlPattern: "https://*",
   title: "Slack Workspace",
   description:
@@ -124,6 +126,7 @@ const WORKSPACE_RESOURCE: SupportedResource = {
 };
 
 const CONVERSATION_RESOURCE: SupportedResource = {
+  id: "conversation",
   urlPattern: "https://app.slack.com/client/:teamId/:conversationId",
   title: "Slack Conversation",
   description: "Read a single channel, direct message, or group DM.",
@@ -131,6 +134,7 @@ const CONVERSATION_RESOURCE: SupportedResource = {
 };
 
 const THREAD_RESOURCE: SupportedResource = {
+  id: "thread",
   urlPattern: "https://*.slack.com/archives/:conversationId/:messageId",
   title: "Slack Thread",
   description: "Read a single message thread and its replies.",
@@ -844,6 +848,7 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     if (resourceUrlPattern === WORKSPACE_RESOURCE.urlPattern) {
       return {
         iframeHtml: WORKSPACE_CONFIGURATOR_HTML,

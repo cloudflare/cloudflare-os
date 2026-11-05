@@ -477,6 +477,7 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
       description: "Connect the source test thing.",
       type: "gatekeeper",
       gatekeeperName: TEST_VENDOR_ID,
+      resourceTypeId: "thing",
       typeUrlPattern: "https://gadgets-test.example/things/*",
       resourceUrl: "https://gadgets-test.example/things/source",
     },

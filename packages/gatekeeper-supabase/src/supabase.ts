@@ -16,6 +16,7 @@ import {
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -164,6 +165,7 @@ type GatekeeperUserImplProps = {
 const SUPABASE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(SUPABASE_LOGO_SVG)}`;
 
 const PROJECT_RESOURCE: SupportedResource = {
+  id: "project",
   urlPattern: "https://supabase.com/dashboard/project/:ref",
   title: "Supabase Project",
   description:
@@ -172,6 +174,7 @@ const PROJECT_RESOURCE: SupportedResource = {
 };
 
 const ORGANIZATION_RESOURCE: SupportedResource = {
+  id: "organization",
   urlPattern: "https://supabase.com/dashboard/org/:slug",
   title: "Supabase Organization",
   description: "Discover and manage every project in a Supabase organization.",
@@ -806,6 +809,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     if (resourceUrlPattern === PROJECT_RESOURCE.urlPattern) {
       return {
         iframeHtml: SUPABASE_PROJECT_CONFIGURATOR_HTML,
