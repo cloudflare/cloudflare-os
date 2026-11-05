@@ -802,25 +802,32 @@ describe('BlueprintLandingPage ambient spawner resources', () => {
     testState.authenticatedApi = null
   })
 
-  // `addable`: the installer may turn Skills on. `forced`: the deployment has it on for everyone,
-  // which the subscription reports only to callers asking for forced accounts.
-  const render = async ({ addable = false, forced = false } = {}) => {
+  // `optional`: the deployment lets users turn Skills on; `connected`: this one already has.
+  // `forced`: the deployment has it on for everyone, which the subscription reports only to callers
+  // asking for forced accounts.
+  const render = async ({ optional = false, connected = false, forced = false } = {}) => {
     let subscriber: ConnectedAccountsSubscriber
-    const addAccount = () =>
+    const connect = () => {
+      connected = true
       subscriber.add(5, { uniqueName: 'skills', avatar: { url: SKILLS.url } }, SKILLS, [], true, 'context')
-    const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>(async () => addAccount())
+    }
+    const disconnect = () => {
+      connected = false
+      subscriber.remove(5)
+    }
+    const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>(async () => connect())
     const newWorkspaceFromBlueprint = vi.fn<(id: string, assignments: object) => unknown>(() =>
       Object.assign(new Promise(() => {}), { getMetadata: () => new Promise(() => {}) }))
     testState.authenticatedApi = {
       ...authenticatedApi(),
       listAddableGatekeepers: async () =>
-        addable ? [{ id: 'context', description: SKILLS, supportedResources: [] }] : [],
+        optional && !connected ? [{ id: 'context', description: SKILLS, supportedResources: [] }] : [],
       subscribeConnectedAccounts: (
         next: ConnectedAccountsSubscriber,
         filter?: { includeForcedAutoProvisionedAccounts?: boolean },
       ) => {
         subscriber = next
-        if (forced && filter?.includeForcedAutoProvisionedAccounts) addAccount()
+        if (connected || (forced && filter?.includeForcedAutoProvisionedAccounts)) connect()
         subscriber.ready()
         return subscription()
       },
@@ -832,11 +839,11 @@ describe('BlueprintLandingPage ambient spawner resources', () => {
     root = createRoot(rootContainer)
     await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi(SPAWNER_BLUEPRINT)} />))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
-    return { provisionAmbientAccount, newWorkspaceFromBlueprint }
+    return { provisionAmbientAccount, newWorkspaceFromBlueprint, disconnect }
   }
 
   it('blocks creating until the installer turns on what the spawner hands its agents', async () => {
-    const { provisionAmbientAccount, newWorkspaceFromBlueprint } = await render({ addable: true })
+    const { provisionAmbientAccount, newWorkspaceFromBlueprint } = await render({ optional: true })
     expect(document.body.textContent).toContain('Agents get your Skills')
 
     await act(async () => findButton('Configure 1 remaining connection')!.click())
@@ -859,6 +866,16 @@ describe('BlueprintLandingPage ambient spawner resources', () => {
     expect(document.body.textContent).toContain('Not available to you')
     expect(findButton('Turn on Skills')).toBeUndefined()
     expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('offers turning it back on after it is turned off elsewhere', async () => {
+    const { disconnect } = await render({ optional: true, connected: true })
+    expect(findButton('Create Gadget')).toBeDefined()
+
+    await act(async () => disconnect())
+    await act(async () => findButton('Configure 1 remaining connection')!.click())
+
+    await vi.waitFor(() => expect(findButton('Turn on Skills')).toBeDefined())
   })
 
   it('counts a resource the deployment turns on for everyone', async () => {

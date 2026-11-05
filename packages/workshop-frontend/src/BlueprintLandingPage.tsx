@@ -172,12 +172,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [isAuthenticated, authenticatedApi])
 
-  // Load vendors (gatekeeper catalog and addable ambient vendors) for the summary cards and
-  // configure panel.
+  // Load vendors (gatekeeper catalog) for both the summary cards and configure panel.
   useEffect(() => {
     if (!(isAuthenticated && authenticatedApi)) {
       setVendors([])
-      setAddableVendors([])
       return
     }
     let cancelled = false
@@ -187,11 +185,6 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }).catch(err => {
       if (cancelled) return
       console.error('Failed to load gatekeeper vendors:', err)
-    })
-    authenticatedApi.listAddableGatekeepers().then(list => {
-      if (!cancelled) setAddableVendors(list)
-    }).catch(err => {
-      if (!cancelled) console.error('Failed to load addable gatekeepers:', err)
     })
     return () => { cancelled = true }
   }, [isAuthenticated, authenticatedApi])
@@ -250,6 +243,23 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       subscription[Symbol.dispose]()
     }
   }, [isAuthenticated, authenticatedApi])
+
+  // listAddableGatekeepers leaves out the vendors the user has, so it's refetched whenever that set
+  // changes (e.g. Skills turned off in another tab).
+  const connectedVendorIds = [...new Set(accounts.map(account => account.vendorId))].toSorted().join()
+  useEffect(() => {
+    if (!(isAuthenticated && authenticatedApi)) {
+      setAddableVendors([])
+      return
+    }
+    let cancelled = false
+    authenticatedApi.listAddableGatekeepers().then(list => {
+      if (!cancelled) setAddableVendors(list)
+    }).catch(err => {
+      if (!cancelled) console.error('Failed to load addable gatekeepers:', err)
+    })
+    return () => { cancelled = true }
+  }, [isAuthenticated, authenticatedApi, connectedVendorIds])
 
   const handleConnectAccount = useCallback(async (vendorId: string, resourceUrlPatterns?: string[]) => {
     if (!authenticatedApi) return
