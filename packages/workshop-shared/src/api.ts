@@ -599,7 +599,7 @@ export const getAuthErrorCode = authErrors.getCode;
 /** Stable error codes attached to expected refusals to use a gatekeeper (connection). */
 export const GATEKEEPER_ERROR_CODES = {
   /** Blocked until a scheduled workspace restart lands (e.g. after adding or binding it); the same
-   * call succeeds once the client has reconnected. */
+   * call on the replacement session succeeds. */
   pendingRestart: "GATEKEEPER_PENDING_RESTART",
 } as const;
 
