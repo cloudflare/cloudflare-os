@@ -342,7 +342,7 @@ for scope-specific examples and implementation caveats.
 Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` JSDoc for ID limits and answer shape, and this skill for the access model: no restriction may depend on admission.
 
 1. **Report every dependency on every observation**, not just resources new to the binding. Include ordinary reads, cursor pages (even buffered pages), cache hits, nested capability reads, and hook deliveries. An empty result can reveal restricted absence; retain the parent/container or tenant requirement even when there are no rows. `[]` is correct only if nothing restricts that disclosure.
-2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`. Fragments name real resources, never predicates; include enough identity (e.g. provider instance and tenant) for unambiguous checks. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since recorded IDs are checked on later opens.
+2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`. Fragments name real resources, never predicates; include enough identity for unambiguous checks. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: include a tenant prefix if and only if the tenant is not permanently fixed by the deployed Worker's configuration. A tenant fixed only in an account or resource facet is not deployment-fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since recorded IDs are checked on later opens. See the kit's [tenant identity guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
 3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
@@ -354,7 +354,16 @@ The Workshop attributes requirements to the trusted authorizer's original chat/g
 
 This section is **only for existing gatekeepers**, not an alternative new-authoring recipe. Legacy reads and history may still rely on `addObserver()`, `removeObserver()`, observed-set logs, stored verifiers, and `excludeObservers`. Preserve their enforcement while converting every session/cursor/hook path to complete subresource reporting. Do not neutralize old checks merely because new reads now report IDs.
 
-Implement a complete, deduplicated `getHistoricalSubresources()` export of resources actually observed under legacy tracking. Do not omit a legacy requirement merely because a later observation reported the same resource ID: reports are context-specific, so a read in one chat or gadget does not cover historical disclosures in another. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not export a binding requirement merely because a connection exists; export the bound resource only if its data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and return a complete list or throw—never truncate or discard history. Connections with no legacy observations return `[]`.
+Implement a complete, deduplicated `getHistoricalSubresources()` export of historical access requirements. Do not omit a legacy requirement merely because a later observation reported the same resource ID: reports are context-specific, so a read in one chat or gadget does not cover historical disclosures in another. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not seed a binding requirement merely because a connection exists when the legacy state proves that no restricted data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and never truncate or discard history.
+
+The exporter must return a valid, complete, conservative `string[]` for every supported legacy state.
+Do not intentionally throw because granular historical resource IDs are unavailable; return broader
+real resource IDs whose verifier checks preserve all historical access restrictions. A container or
+tenant ID is sufficient only if its verifier also covers every possible historical disclosure from
+its children; otherwise use an account-private resource whose verifier denies collaborators.
+Return `[]` only when no historical access requirement applies, never merely because history is
+unknown. Unexpected storage or runtime failures must propagate, not become an empty or incomplete
+export.
 
 The current kernel does not call this export; its importer is still deferred in
 [`plans/kernel-observer-tracking.md`](../../../plans/kernel-observer-tracking.md#deferred). Retain
@@ -362,7 +371,7 @@ legacy enforcement until every affected read reports complete requirements and a
 importer has committed the complete historical requirements to the observer ledger. Implementing
 the exporter alone does not replace enforcement of past disclosures.
 
-Existing migrations must preserve/export historical access requirements, including membership requirements that governed past disclosures. If the old state cannot prove a complete export, resolve that migration explicitly; an empty export or a no-op admission method is not a safe substitute. `docs/observers.md` documents the deployed protocol.
+Existing migrations must preserve/export historical access requirements, including membership requirements that governed past disclosures. If existing resource kinds cannot express a safe conservative fallback, define the appropriate real resource kind and its verifier as part of the migration; an empty export or a no-op admission method is not a safe substitute. `docs/observers.md` documents the deployed protocol.
 
 ## Hooks (push notifications)
 

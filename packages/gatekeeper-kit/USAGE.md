@@ -856,11 +856,21 @@ Do not apply the new-gatekeeper empty-history/no-op admission recipe to an exist
 Preserve old binding-wide checks, private restrictions, observed sets, stored verifiers, and
 admission enforcement until every affected read is converted **and a shipped kernel importer has
 committed all actual historical access requirements to the observer ledger**. Export those real
-requirements through `getHistoricalSubresources(): Promise<string[]>`, not a blind `[]`; if
-historical state cannot yet express them, retain the old enforcement. The current kernel does not
+requirements through `getHistoricalSubresources(): Promise<string[]>` as a complete, conservative
+array. The current kernel does not
 call this export; the importer is still deferred in
 [`plans/kernel-observer-tracking.md`](../../plans/kernel-observer-tracking.md#deferred). Implementing
 a complete exporter alone does not protect past disclosures or justify retiring legacy checks.
+
+The exporter must return a valid subresource array for every supported legacy state. Missing granular
+history is not an intentional error path: return broader real resource IDs whose verifier checks
+preserve all historical access restrictions. A parent/container ID works only if its check covers
+every possible historical child disclosure; otherwise fall back to an account-private resource whose
+verifier denies collaborators. If no existing resource kind safely expresses that fallback, define
+one and its verifier as part of the migration. Keep the export deduplicated, read-only, and repeatable;
+never truncate history. Return `[]` only when no historical access requirement applies, not because
+history is unknown. Unexpected storage or runtime failures must propagate rather than be converted
+to an empty or incomplete export.
 
 Legacy `privateObservers`, `aclObservers`, `trackedCollectionObservers`, and `openObservers`, and
 the `baseline`, `collections`, and `withholdFromObservers` scopes, exist for maintaining and
@@ -1011,6 +1021,33 @@ account, not a `private` marker; the verifier knows what access each kind of res
 including that one is shared with nobody else. Set `namespace` only when the gatekeeper exposes
 distinct product families with their own resources, as Google does with Gmail, Drive and BigQuery.
 A single-product gatekeeper omits it instead of repeating its own name.
+
+Cloud IDs, workspace URLs, organization IDs, and similar provider-instance identifiers are **tenant
+identities**. Include a tenant fragment in another resource's ID hierarchy **if and only if** that
+tenant is not permanently fixed by the deployed gatekeeper Worker's configuration. A tenant selected
+through a connected account, resource binding, or URL is not deployment-fixed. One OAuth app can
+serve multiple tenants; sharing an OAuth client ID does not make tenant identity implicit.
+
+For a multi-tenant deployment, qualify the resource with its tenant. A deployment permanently tied
+to one tenant omits the redundant prefix; its verifier resolves the tenant from trusted deployment
+configuration instead:
+
+```ts
+// Multi-tenant deployment: tenant/<escaped cloudId>/page/<escaped pageId>.
+formatSubresourceId({ fragments: [{ name: "tenant", id: cloudId }, { name: "page", id: pageId }] });
+// Deployment permanently tied to one tenant: page/<escaped pageId>.
+formatSubresourceId({ fragments: [{ name: "page", id: pageId }] });
+```
+
+Prefer an immutable provider tenant ID over a mutable workspace URL. If the provider identifies a
+tenant by URL, normalize it consistently and preserve its identity across renames and reconnects;
+canonical escaping alone does not make it stable. An implicit tenant must remain fixed for as long
+as historical requirements exist: repointing a deployment to another tenant requires an explicit
+migration, never silently interpreting old IDs in the new tenant.
+
+This prefix rule qualifies another resource's identity; it does not remove access requirements.
+Report and verify independently required tenant membership even when the tenant is deployment-fixed.
+Conversely, nesting under a tenant does not imply that its membership check covers child-resource ACLs.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes.
