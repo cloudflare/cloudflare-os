@@ -1,0 +1,75 @@
+# Unread state consumers
+
+The web UI consumes the [unread-state API](user-unread-state.md), without calculating independent
+unread counts or persisting a second set of read horizons. First-party native forwarding is added
+in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
+
+## Web experience
+
+- One User DO subscription follows the active view: rollups only on ordinary pages, one workspace's
+  thread statuses in its editor, and rollup changes that refresh the inbox. Global/sidebar workspace badges
+  use rollups, not the user's historical thread rows. Returning, reconnecting or changing views
+  replaces the subscription with the same explicit scope; stale callbacks cannot replace new data.
+- Unread threads opens a live, newest-first inbox with a one-line latest-message preview, direct
+  thread links, an empty state and Mark all read. Browsing it does not read threads. Previews arrive
+  from `getUnreadThreads()` on the User DO, refreshed by live count/title updates. Loading the inbox
+  never queries Workspace DOs. Mark all read updates only the User DO's locally replicated horizons.
+- Thread menus offer Mark thread read/unread through the already-authorized workspace session,
+  which translates the boundary locally and pushes it to the User DO. Workspace menus offer Mark
+  workspace read, which updates the User DO's local rows without fetching workspace metadata.
+- Each rendered timeline item offers Mark unread from here. The new-items divider moves there.
+  A local mark-unread keeps the viewed item in place rather than initiating a history jump.
+- Opening an unread thread loads checkpoint history back to its first unread item and positions
+  it in view. Failed history loads keep automatic receipts paused; Jump to first unread retries
+  the load, and explicit Mark thread read can release it. Jump remains available as the pointer
+  advances. Live horizon changes and reconnect snapshots never initiate another scroll; automatic
+  positioning happens only on thread entry, and subsequent jumps require the explicit button.
+- Automatic reads require a visible document, focused window, visible chat pane and an item's
+  bottom edge in the scroll viewport. Fetching/opening a history page alone never reads it.
+  An already-open legacy thread's first cursor establishes its read baseline; normal viewport
+  receipts then apply. The independently streamed history tail is never a substitute for that horizon.
+  Bookkeeping can extend an item's receipt range, but divider placement and first-unread navigation
+  use its countable text/attachment boundary, not trailing observations or checkpoints.
+- Live replies in a focused, caught-up pane do not insert an unread divider or toolbar.
+  The visit's divider stays after reading, showing where new activity began. Explicit mark-unread
+  pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
+  marking it read. This prevents immediate accidental acknowledgement, but does not cancel
+  already-dispatched reads; a later-processed read can clear the manual unread.
+  A local unread command pauses the visit immediately. Server read/rewind transitions apply as
+  received, even before the command responds. Only the latest local action can restore its previous
+  UI after failure, and cannot undo a subsequent server transition. Overlapping failures do not
+  reconstruct an action history.
+- Failed read commands display an error without pretending the state advanced. An inbox query
+  failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
+
+`UnreadStateBridge` releases its live callback while hidden, and refreshes on return or transport/DO
+reset. Unread support therefore adds no hidden-tab callback keeping the User DO resident. Background native badges use the
+separate push-service path; hidden windows never issue automatic read receipts.
+`NotificationBridge` also releases its independent alert subscription while hidden so unavailable
+tabs cannot delay mobile push. Receiving an unread snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
+page visibility.
+
+## Native integration scope
+
+This layer exposes unread state to the web UI, but does not forward snapshots to native hosts.
+Native badge forwarding and its bridge contract are a separate consumer layer. Native clients
+must use complete absolute totals rather than message increments; an unavailable total or
+disconnect is stale/unknown, not zero.
+
+The Electron callback implementation, OS badge/alert presentation and permissions, and retaining
+instance webviews when the window closes to the tray are separate desktop-shell work. This bridge
+does not prevent OS suspension/termination, deliver after full Quit, or alter APNs payloads.
+
+## Verification
+
+Frontend tests cover subscription/retry lifecycle, history navigation, unread actions and inbox
+state. Chromium tests cover actual viewport geometry, focus, pointer input and badge layout.
+
+```sh
+pnpm --filter @gadgets/workshop-frontend test:run
+pnpm --filter @gadgets/workshop-frontend exec playwright install chromium --only-shell
+pnpm --filter @gadgets/workshop-frontend test:run:browser
+```
+
+On Node versions that expose experimental global Web Storage without a backing file, run jsdom
+tests with `NODE_OPTIONS=--no-experimental-webstorage` so jsdom supplies its own localStorage.

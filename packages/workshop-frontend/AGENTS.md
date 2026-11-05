@@ -251,6 +251,7 @@ Useful commands from the public workspace root:
 
 ```bash
 pnpm --filter @gadgets/workshop-frontend test:run
+pnpm --filter @gadgets/workshop-frontend test:run:browser
 pnpm exec tsc -p packages/workshop-frontend/tsconfig.json
 pnpm exec tsc -p packages/workshop-frontend/tsconfig.vite.json
 pnpm exec vp run -F @gadgets/workshop-frontend build

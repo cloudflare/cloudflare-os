@@ -717,8 +717,9 @@ export interface AuthenticatedApi extends RpcTarget {
   authorizeNotificationDevice(): Promise<string>;
 
   /**
-   * Subscribe while this client can visibly present notifications. Dispose the returned handle
-   * when the page becomes hidden so the backend can promptly fall back to push.
+   * Subscribe to live notifications while able to present them. Dispose the returned handle
+   * while hidden or on logout so unavailable clients do not delay push. A client that becomes
+   * unable to present an event must reject `notify()`. Receipt does not mark its chat read.
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;

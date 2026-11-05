@@ -610,10 +610,11 @@ describe("sensitive observations", () => {
       (await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))[Symbol.dispose]();
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Removing Bob triggers the revocation restart: the DO aborts shortly after this call
-      // returns, killing every stub from this connection -- including the session Bob holds,
-      // which is the point. Everything past here runs on a fresh connection.
-      await ws.overseer.removeCollaborator(bob.bobProfileId, []);
+      // The revocation restart kills every stub, including Bob's session. It can overtake the
+      // ACK on a loaded runner; the fresh session below verifies the persisted removal/cleanup.
+      await ws.overseer.removeCollaborator(bob.bobProfileId, []).catch(error => {
+        if (!(error instanceof Error && error.message.startsWith("Peer closed WebSocket: 3000 "))) throw error;
+      });
       const reopened = await reopenAfterRestart(ws);
 
       try {

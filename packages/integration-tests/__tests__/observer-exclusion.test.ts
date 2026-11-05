@@ -140,7 +140,11 @@ it("an excluded build collaborator blocks the observation until removed", async 
     expect(metadata.ownerInvitesOnly).toBeFalsy();
     expect(await observerEvents(url)).toEqual([{ resourceUrl: url, type: "add", id: bob.observerId }]);
 
-    await ws.overseer.removeCollaborator(bob.profileId, []);
+    // The revocation restart can overtake its ACK on a loaded runner. The fresh session below
+    // verifies the persisted removal by observing data Bob previously blocked.
+    await ws.overseer.removeCollaborator(bob.profileId, []).catch(error => {
+      if (!(error instanceof Error && error.message.startsWith("Peer closed WebSocket: 3000 "))) throw error;
+    });
     using reopened = await reopenAfterRestart(ws);
     await expect(reopened.session.readValue(false, false, [bob.observerId])).resolves.toBe(42);
   });
