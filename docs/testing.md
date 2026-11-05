@@ -20,6 +20,10 @@ read admin settings, including through `getWebFetchEnv()`, must provide a `BLUEP
 returning `null` selects the default configuration. Assert async refusals with an awaited
 `.rejects.toThrow(...)`, not a synchronous `.toThrow(...)`.
 
+For tests that advance time within a daily budget, pin the fake clock to a fixed UTC time before
+seeding credentials and counters. Advancing from the wall clock can cross midnight and legitimately
+reset the budget; test that rollover separately from cache expiry or limit enforcement.
+
 Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
 Run them separately with `pnpm --filter @gadgets/workshop-frontend test:run:browser`.
