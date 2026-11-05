@@ -22,13 +22,14 @@ const collection = (
 
 const document = (
   path: string,
-  options: { skillName?: string; description?: string } = {},
+  options: { skillName?: string; skillError?: string; description?: string } = {},
 ): ContextDocumentSummary => ({
   path,
   name: path.split("/").at(-1) ?? path,
   description: options.description ?? "",
   contentType: "text/markdown",
   skillName: options.skillName,
+  skillError: options.skillError,
   lastUpdated: new Date(0),
 });
 
@@ -106,5 +107,69 @@ describe("skillNavigatorModel", () => {
     );
 
     expect(filterSkillNavigator(navigator, "empty")).toEqual(navigator);
+  });
+
+  it("lists a valid collection-root manifest as a top-level skill", () => {
+    expect(buildSkillNavigator(
+      [collection("pricing", "Pricing")],
+      new Map([["pricing", [
+        document("SKILL.md", { skillName: "pricing-analytics", description: "Pricing data" }),
+        document("references/tables.md"),
+      ]]]),
+    )[0].children).toEqual([{
+      type: "skill",
+      collectionId: "pricing",
+      manifestPath: "SKILL.md",
+      directoryPath: "",
+      name: "pricing-analytics",
+      description: "Pricing data",
+      lastUpdated: new Date(0),
+    }]);
+  });
+
+  it("keeps invalid manifests, named after their directory or collection", () => {
+    const navigator = buildSkillNavigator(
+      [collection("pricing", "Pricing analytics")],
+      new Map([["pricing", [
+        document("SKILL.md", {
+          skillError: "Skill frontmatter is not valid YAML.",
+          description: "Tables covered: invoices",
+        }),
+        document("skills/forecast/SKILL.md", {
+          skillError: "Skill description must be at most 1024 characters.",
+        }),
+      ]]]),
+    );
+
+    expect(navigator[0].children).toMatchObject([
+      {
+        type: "directory",
+        path: "skills",
+        children: [{
+          type: "skill",
+          manifestPath: "skills/forecast/SKILL.md",
+          name: "forecast",
+          invalid: "Skill description must be at most 1024 characters.",
+        }],
+      },
+      {
+        type: "skill",
+        manifestPath: "SKILL.md",
+        name: "Pricing analytics",
+        invalid: "Skill frontmatter is not valid YAML.",
+      },
+    ]);
+    expect(filterSkillNavigator(navigator, "forecast")[0].children).toMatchObject([
+      { path: "skills", children: [{ name: "forecast" }] },
+    ]);
+    // The description of an invalid manifest is not displayed, so it does not match.
+    expect(filterSkillNavigator(navigator, "invoices")).toEqual([]);
+  });
+
+  it("gives a collection of plain documents no skills", () => {
+    expect(buildSkillNavigator(
+      [collection("notes", "Notes")],
+      new Map([["notes", [document("README.md"), document("guides/SKILL.txt")]]]),
+    )).toMatchObject([{ collection: { title: "Notes" }, children: [] }]);
   });
 });

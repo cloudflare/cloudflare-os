@@ -97,10 +97,10 @@ it.concurrent("a created resource is made in the approver's account, and edits a
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, approver);
   const workspaceId = await withOwnerWorkspace(harness.url, session.username, async ws => {
-    await ws.addCollaborator(approver, "build");
+    await ws.addCollaborator(approver, "workspace");
     return (await ws.getMetadata()).id;
   });
-  using ws = await api.openGadget(workspaceId);
+  using ws = await api.openWorkspace(workspaceId);
   await expect(ws.approveAction(write.id)).rejects.toThrow("Approve its creation first.");
   await expect(ws.approveAction(creation.id)).rejects.toThrow("Choose one of your accounts");
 

@@ -9,7 +9,8 @@ GitLab instances. It serves two purposes:
   transient (discarded right after the email is read).
 - **Connections:** when a user connects GitLab (or signs in and later connects it), the `api` and
   `write_repository` scopes are requested so gadgets can read and manage projects, issues, and
-  merge requests, and pull from and push to repositories, on the user's behalf.
+  merge requests, read their CI pipelines, and pull from and push to repositories, on the user's
+  behalf.
 
 It is a mirror of the GitHub gatekeeper: the same three resource granularities (project, issue,
 merge request), the same worktree integration (commit ids advertised, `gitPull()` over git
@@ -26,6 +27,89 @@ the kernel selects objects from recorded provenance, not a provider-side adverti
 No encoded Git commands, ref discovery, or arbitrary clone URLs cross this interface. OAuth and
 optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
 self-hosted instances.
+
+## Auto-approval
+
+As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and
+most may be auto-approved once the user opts in to their kind, including closing and reopening,
+resolving and reopening diff threads, `requestChanges` reviews and pushes to other branches. These
+always wait for a person, because they pass a gate or drop commits:
+
+- **merging a merge request**;
+- **an approving review**, which shares the `gitlab.postReview` kind with the other reviews;
+- **a force push** (`gitlab.forcePush`);
+- **a push to the default or a protected branch**, which shares the `gitlab.push` kind with other
+  pushes. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
+  wildcards included. A push into an empty repository creates its default branch, so it waits too,
+  and so does any push whose protection could not be read, except that if GitLab denies the account
+  access to the rules (listing them takes Maintainer), no rule counts as covering the branch. An
+  auto-approvable push is checked again when it applies; if its protection cannot be read then, the
+  apply asks for a retry.
+
+An issue or merge request created with a bot or service account among its assignees waits too,
+under the same `gitlab.createIssue` or `gitlab.createMergeRequest` kind as other creates, because
+the assignment can start an agent run (a GitLab Duo flow) that spends the namespace's credits.
+
+Each binding advertises through `getAutoApprovableActions()` only the kinds its session can submit
+that may be auto-approved, so `gitlab.mergeMergeRequest` and `gitlab.forcePush` never appear.
+
+## CI status
+
+Bindings read CI; they do not act on it. Retrying, cancelling or starting jobs, and merging when
+the pipeline succeeds, stay in GitLab. `api` already covers every read, so no new scope is needed.
+
+- **A commit's or merge request's CI.** `getCommit(ref).ci` on a project and `getDetails().ci` on
+  a merge request report the commit's latest pipeline and a `phase`: poll while it is
+  `notStarted` or `active`, stop at `blocked` (waiting for a person, such as a manual job) or
+  `done`. A merge request's `ci` is for its current head only, never a pipeline an earlier head
+  left behind. With no pipeline yet, `notStarted` means one is expected: a queued push will make
+  the commit a head, or it became one less than ten minutes ago and has CI configuration (the
+  project's `ci_config_path`, else `.gitlab-ci.yml`) or its first parent ran a pipeline.
+  Otherwise it is `done` with `pipeline: null`. When it became a head is, in order: when this
+  gatekeeper pushed it, else the merge request diff version GitLab made for it, else its
+  committer date or, when that is older than the window and CI is expected, a push GitLab
+  recorded among the project's latest 100 push events (`GET /projects/:id/events?action=pushed`),
+  so an old commit someone else just pushed reads `notStarted` rather than a terminal `done`.
+  These lookups are best-effort: one that GitLab fails is skipped. `ci` is left
+  out for an account that cannot read the project's pipelines, and when GitLab fails any other
+  CI read (logged; read again), so the commit or merge request is still returned. A refused or
+  expired token still fails the read.
+- **Pipelines and jobs.** A project binding has `listPipelines(filter)`, `getPipeline(id)` and
+  `getJob(id)` for the bound project. A merge request binding has `listPipelines()`,
+  `getPipeline(id?)` (the head's pipeline by default) and `getJob(id)`, limited to the merge
+  request's pipelines and their child pipelines in the same project. A pipeline lists its jobs
+  (runner jobs, trigger jobs and external statuses, at most 1000, favouring the most recent, so a
+  larger pipeline has some left out, even under a status filter, and one with more than 1000 jobs
+  or trigger jobs lists no external statuses), opens a same-project child
+  pipeline, and reads its unit test report: totals, and the failed and errored cases with about
+  4 KiB of output each. Pipelines of a fork's source project and downstream pipelines in other
+  projects are data only.
+- **Job logs.** `readLog()` returns numbered lines, the last 200 by default (up to 2000 per
+  page), from a line onwards or filtered by `search`, with terminal colours removed and section
+  headers as `▶` lines. A log over 128 MiB is refused; a very long one keeps only its tail
+  (`firstAvailableLine`). Finished logs are cached for an hour, but every read re-reads the job
+  first, so an erased log is never served, and a cached log is served only while the connected
+  account still holds Developer on the project; otherwise the log is read from GitLab, which
+  decides.
+- **Sharing.** Once a binding has read a job log or a test report, a collaborator needs the
+  **Developer** role on the project, not Reporter, to observe the workspace. A job run with
+  `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab shows such
+  logs only to Developers and above
+  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
+  recorded output comes from the job that ran it, so test reports count too. A test report needs
+  **Maintainer** instead unless the connected account is a project member below Maintainer and
+  not an instance administrator: a job can restrict its reports to Maintainers
+  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab includes
+  those for a Maintainer and for an administrator, whatever its membership. Collaborators already observing are checked again at that role on each
+  of those reads, and left out of them if they fall short. A connection made before this version
+  did not record its collaborators, so
+  those reads cannot leave out one admitted then: on it, job logs and test reports are refused
+  (every other CI read works) until the GitLab connection is removed and added again.
+
+Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
+`blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
+(`…/bridges` → `…/trigger_jobs`); the gatekeeper picks the route from the instance's version.
+This gatekeeper registers no GitLab webhooks, so agents poll.
 
 ## Setting up GitLab OAuth credentials
 
@@ -203,3 +287,30 @@ above — or is a member only at Guest. Being able to open the project in GitLab
 even on an `internal` or `public` one: a project can hold confidential issues and internal notes
 that only members at those roles see, and the workspace may have read them. The remedy is for a
 project maintainer to add the collaborator as a Reporter (inherited group membership counts).
+
+### "This workspace has read CI job logs or test reports from this GitLab project …"
+
+The collaborator is a member below **Developer**, and the workspace has read a job log or a test
+report, which raises the bar from Reporter to Developer (see [CI status](#ci-status)). A project
+maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
+CI job logs or test reports.
+
+### "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access …"
+
+The connected account is a Maintainer, an instance administrator, or not a project member, so the
+test reports it read may include ones a job keeps from anyone below Maintainer, and the
+collaborator is below Maintainer (see [CI status](#ci-status)).
+A project owner can grant the collaborator Maintainer; otherwise share a workspace whose test
+reports were read through a Developer's connection, or none at all.
+
+### "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read …"
+
+The connection predates this gatekeeper's record of who shares the workspace, so it cannot keep
+a collaborator admitted back then (perhaps at Reporter) out of a job log or test report. Remove
+the GitLab connection from the workspace and add it again; the new one reads them.
+
+### "This binding already answers for 50 collaborators …"
+
+A binding can be shared with at most 50 collaborators at once. Every job-log or test-report read
+checks each of them with GitLab, and the cap keeps that within what one request may fetch. Remove
+a collaborator from the workspace before adding another.

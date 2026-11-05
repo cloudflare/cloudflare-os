@@ -17,7 +17,6 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import {
   DELIVERED_RETENTION_MS, HookDeliveryQueue, disposeStubs,
 } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
@@ -27,7 +26,7 @@ import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  GitHubApiError, withAccountApi,
+  GitHubApiError, isConnectionExpired, withAccountApi,
   type GitHubApi, type GitHubRepoWebhookResponse, type GitHubWebhookDeliveryResponse, type PinnedRepo,
 } from "./github-api";
 import { getBasePath, webhookOrigin, type Env } from "./github-env";
@@ -654,7 +653,7 @@ function retryable(error: unknown): boolean {
     return error.status >= 500 || error.status === 401 || error.rateLimited;
   }
   // A confirmed expiry, which withAccountApi() wraps.
-  return !isCredentialsExpired((error as { cause?: unknown } | undefined)?.cause);
+  return !isConnectionExpired(error);
 }
 
 /**

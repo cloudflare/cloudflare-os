@@ -19,26 +19,21 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Fragment: "Fragment",
   Notice: "Notice",
   RadioCards: "RadioCards",
+  HierarchyPicker: "HierarchyPicker",
   Section: "Section",
   TextInput: "TextInput",
 }));
-import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
-import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
+import driveConfigurator from "../src/configurator/drive-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
-import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
-import googleDocConfigurator from "../src/configurator/google-doc-configurator-ui";
-import googleSheetsConfigurator from "../src/configurator/google-sheets-configurator-ui";
-import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
 import {
   GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   parseResourceUrl,
 } from "../src/resources";
 
@@ -60,21 +55,6 @@ const configurableUrl = (
   configurator: { resourceUrl?: (context: { values: Record<string, unknown>; ui: never }) => string },
   values: Record<string, unknown>,
 ) => configurator.resourceUrl!({ values, ui: noUi });
-
-// Drive value keys match the urlPattern named groups, so the sandbox runtime's
-// `defaultValuesFromResourceUrl` (not a per-module hook) is the prefill path. This is that fallback:
-// URLPattern groups plus decodeURIComponent, ignoring numeric/wildcard names.
-function valuesFromUrlPattern(resourceUrl: string, resourceUrlPattern: string) {
-  const match = new URLPattern(resourceUrlPattern).exec(resourceUrl);
-  const groups = match?.pathname.groups ?? {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(groups)) {
-    if (typeof value === "string" && value.length > 0 && !/^[0-9]+$/.test(key)) {
-      out[key] = decodeURIComponent(value);
-    }
-  }
-  return out;
-}
 
 const renderedCopy = (configurator: { render?: (context: never) => unknown }) =>
   JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui: noUi } as never));
@@ -306,93 +286,48 @@ describe("Google Chat thread configurator URLs", () => {
 });
 
 describe("Drive configurator URLs", () => {
-  it("mints the whole-account resource", () => {
-    let url = configurableUrl(driveAccountConfigurator, { scope: "account" });
-    expect(url).toBe(GOOGLE_DRIVE_RESOURCE.urlPattern);
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
-  });
-
-  it("round-trips an encoded file ID", () => {
-    let values = { fileId: "file/id with spaces" };
-    let url = configurableUrl(driveFileConfigurator, values);
-    expect(url).toBe(
-      GOOGLE_DRIVE_FILE_RESOURCE.urlPattern.replace(":fileId", encodeURIComponent(values.fileId)),
-    );
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
-  });
-
-  it("round-trips an encoded folder ID", () => {
-    let values = { folderId: "folder/id with spaces" };
-    let url = configurableUrl(driveFolderConfigurator, values);
-    expect(url).toBe(
-      GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern.replace(
-        ":folderId", encodeURIComponent(values.folderId)),
-    );
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: values.folderId });
-  });
-
-  it("mints the natural Drive folder URL", () => {
-    let url = configurableUrl(driveFolderConfigurator, { folderId: "FOLDER123" });
-    expect(url).toBe("https://drive.google.com/drive/folders/FOLDER123");
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: "FOLDER123" });
-  });
-
-  // Prefill after deleting the hand-written hooks: the sandbox fallback extracts named groups and
-  // decodeURIComponent's them. A missing decode would leave `%2F`/`%20` in the form values.
-  it("prefills encoded IDs from urlPattern named groups", () => {
-    let fileValues = { fileId: "file/id with spaces" };
-    let fileUrl = configurableUrl(driveFileConfigurator, fileValues);
-    expect(valuesFromUrlPattern(fileUrl, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern))
-      .toEqual(fileValues);
-
-    let folderValues = { folderId: "folder/id with spaces" };
-    let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
-    expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
-      .toEqual(folderValues);
-  });
-});
-
-describe.each([
-  ["Docs", googleDocConfigurator, GOOGLE_DOC_RESOURCE, "document", "docId", "doc", "documentId"],
-  ["Sheets", googleSheetsConfigurator, GOOGLE_SHEETS_RESOURCE, "spreadsheets", "spreadsheetId",
-    "sheets", "spreadsheetId"],
-  ["Slides", googleSlidesConfigurator, GOOGLE_SLIDES_RESOURCE, "presentation", "presentationId",
-    "slides", "presentationId"],
-] as const)("Google %s configurator URLs", (
-  _title, configurator, resource, path, field, kind, targetField,
-) => {
-  // The prefill asks what the file is; a native one fills the ID field as it is.
-  const nativeUi = { inspectFile: vi.fn(async () => ({ type: "native" })) } as never;
-  const prefill = (resourceUrl: string, ui: never = nativeUi) =>
-    configurator.initialValuesFromResourceUrl!({
-      resourceUrl, resourceUrlPattern: resource.urlPattern, ui,
-    });
-
-  it("mints a URL the server parses and the prefill reads back", async () => {
-    const values = { [field]: "1AbC-dEf_9xYz" };
-    const url = configurableUrl(configurator, values);
-    expect(parseResourceUrl(url)).toEqual({ kind, [targetField]: "1AbC-dEf_9xYz" });
-    await expect(prefill(url)).resolves.toEqual(values);
-  });
-
-  // The shape an Office file's URL takes when it is pasted into chat.
-  it("reads a pasted editor URL the way the server does", async () => {
-    const pasted = `https://docs.google.com/${path}/d/1AbC-dEf_9xYz/edit?rtpof=true&sd=true`;
-    expect(parseResourceUrl(pasted)).toEqual({ kind, [targetField]: "1AbC-dEf_9xYz" });
-    await expect(prefill(pasted)).resolves.toEqual({ [field]: "1AbC-dEf_9xYz" });
+  const driveValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: noUi,
   });
 
   it.for([
-    `https://docs.google.com/${path}/u/0/`,
-    "not a url",
-  ])("prefills nothing, and asks nothing, for %s, which the server would not bind", async url => {
-    expect(() => parseResourceUrl(url)).toThrow();
-    await expect(prefill(url, noUi)).resolves.toEqual({});
+    ["the whole account", "drive", { kind: "driveAccount" }],
+    ["a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" }],
+    ["a file", "file:file/id with spaces", { kind: "driveFile", fileId: "file/id with spaces" }],
+  ] as const)("mints %s, and reads the URL back into the same choice", async ([, target, parsed]) => {
+    let url = configurableUrl(driveConfigurator, { target });
+    expect(parseResourceUrl(url)).toEqual(parsed);
+    await expect(driveValues(url)).resolves.toEqual({ target });
   });
 
-  // The server binds the segment as it is; the prefill leaves an ID outside Drive's alphabet,
-  // which no Drive file has, to be chosen by hand rather than sent to `inspectFile`.
-  it("prefills nothing, and asks nothing, for an ID outside Drive's alphabet", async () => {
-    await expect(prefill(`https://docs.google.com/${path}/d/bad%2Fid/edit`, noUi)).resolves.toEqual({});
+  it("mints the natural Drive folder URL", () => {
+    expect(configurableUrl(driveConfigurator, { target: "folder:FOLDER123" }))
+      .toBe("https://drive.google.com/drive/folders/FOLDER123");
+  });
+
+  it("reads a pasted sharing link", async () => {
+    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1" });
+    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1" });
+  });
+
+  it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
+    expect(() => configurableUrl(driveConfigurator, { target: null })).toThrow("Choose what to connect.");
+    expect(() => configurableUrl(driveConfigurator, { target: "shared-with-me" })).toThrow();
+  });
+
+  // The picker offers the whole account, folders and files, but the Workshop may ask for only one of
+  // them, as a blueprint's folder binding does. The configurator copies each pattern, so each is
+  // checked against its resource.
+  it("is ready only for a type the Workshop accepts, or any type when it does not say", () => {
+    let ready = (target: string, accepted?: string[]) =>
+      driveConfigurator.isReady({ values: { target }, acceptedResourceUrlPatterns: accepted });
+    let folderOnly = [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern];
+    expect(ready("folder:D1", folderOnly)).toBe(true);
+    expect(ready("file:F1", folderOnly)).toBe(false);
+    expect(ready("drive", folderOnly)).toBe(false);
+    expect(ready("drive", [GOOGLE_DRIVE_RESOURCE.urlPattern])).toBe(true);
+    expect(ready("file:F1", [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern])).toBe(true);
+    expect(ready("file:F1")).toBe(true);
+    expect(ready("shared-drives")).toBe(false);
   });
 });

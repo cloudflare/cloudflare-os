@@ -12,6 +12,7 @@ import { createLogger } from "@gadgets/observability/logger";
 import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import {
   stripTrailingSlashes,
+  workerVersionTag,
   type AvatarImage,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -188,6 +189,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
         "Connect a Model Context Protocol server and use its tools from a Gadget. Reads happen " +
         "straight away. Anything that writes waits for your approval.",
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(
@@ -451,6 +456,14 @@ export class McpGatekeeperImpl
 
   get serverName(): string {
     return this.ctx.props.serverName;
+  }
+
+  /**
+   * None: reads stay with the inherited `addObserver`, which refuses every observer. A pasted
+   * endpoint names no resource whose access a collaborator could be checked against.
+   */
+  get observationSubresources(): undefined {
+    return undefined;
   }
 
   async describe(): Promise<ResourceDescription> {

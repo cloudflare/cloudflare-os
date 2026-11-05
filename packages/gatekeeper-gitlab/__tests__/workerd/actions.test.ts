@@ -58,9 +58,20 @@ type IssueJson = Omit<typeof fx.issueResponse.data, "state"> & { state: "opened"
 const issue = (over: Partial<IssueJson> = {}): IssueJson => ({ ...fx.issueResponse.data, iid: 1, state: "opened", ...over });
 
 describe("issue creation", () => {
+  it("holds an issue for a person when whether an assignee is a bot cannot be read", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot-unreadable");
+    gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ message: "403 Forbidden" }, { status: 403 }));
+    gitlab.install();
+    const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
+      [{ title: "New thing", assignees: ["lennie"] }], DESC));
+    expect(action).toMatchObject({ type: "createIssue", assigneeIds: [9], assigneeIsBot: true });
+  });
+
   it("queues with a provisional id, reads back simulated, applies, then resolves the real id", async () => {
     const { gitlab, props, name } = await setup("create-issue");
     gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues$`), request =>
       json(issue({ iid: 77, title: JSON.parse(request.body!).title }), { status: 201 }));
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/77\\?`), () => json(issue({ iid: 77, title: "New thing" })));
@@ -69,7 +80,7 @@ describe("issue creation", () => {
 
     const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
       [{ title: "New thing", bodyMarkdown: "see !~1", labels: ["bug"], assignees: ["lennie"] }], DESC));
-    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
 
     // Simulated: the provisional issue reads as if created, authored by the viewer.
     const provisional = await unwrap(await hooks().openIssue(name, props, "~1"));
@@ -93,6 +104,31 @@ describe("issue creation", () => {
     // The provisional id now resolves to the real one; both lookups work.
     const real = await unwrap(await hooks().openIssue(name, props, "~2"));
     expect(real.id).toBe("77");
+  });
+
+  it("keeps an issue assigned to a bot or service account, or to a user whose kind GitLab does not report, from auto-approval", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot");
+    const users: Record<string, { id: number; bot?: boolean }> = { lennie: { id: 9, bot: false }, duo: { id: 10, bot: true }, quiet: { id: 11 } };
+    gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => {
+      const username = request.url.searchParams.get("username")!;
+      return json([{ ...fx.usersByUsernameResponse.data[0], id: users[username]!.id, username }]);
+    });
+    gitlab.on("GET", /^\/api\/v4\/users\/\d+$/, request => {
+      const [username, user] = Object.entries(users).find(([, u]) => request.url.pathname.endsWith(`/${u.id}`))!;
+      const { bot: _, ...rest } = fx.singleUserResponse.data;
+      return json({ ...rest, id: user.id, username, ...(user.bot === undefined ? {} : { bot: user.bot }) });
+    });
+    gitlab.install();
+    for (const assignees of [[], ["lennie"], ["lennie", "duo"], ["quiet"]]) {
+      await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New", assignees }], DESC));
+    }
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable])).toEqual([
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", false],
+      ["gitlab.createIssue", false],
+    ]);
   });
 
   it("serves a created issue once from a listing that was opened before its create applied", async () => {
@@ -426,6 +462,7 @@ describe("merge requests", () => {
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/compare`), () => json(fx.compareResponse.data));
     gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => json(request.url.searchParams.get("username") === "lennie"
       ? fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" })) : []));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     let posted: Record<string, unknown> | undefined;
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests$`), request => {
       posted = JSON.parse(request.body!);
@@ -445,7 +482,7 @@ describe("merge requests", () => {
       title: "Feature", sourceBranch: "feature", targetBranch: "main", draft: true, removeSourceBranch: true,
       labels: ["backend"], assignees: ["lennie"],
     }], DESC));
-    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
     const provisional = await unwrap(await hooks().openMergeRequest(name, props, "~1"));
     expect(provisional).toMatchObject({
       id: "~1", title: "Draft: Feature", draft: true, state: "opened", source: { branch: "feature" }, target: { branch: "main" },
@@ -592,7 +629,7 @@ describe("merge requests", () => {
     refusal = 405;
     const blocked = await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest", ["133", {}], DESC));
     await expect(unwrap(await hooks().applyAction(name, props, blocked.approvalId)))
-      .rejects.toThrow(/pipeline has not passed yet; pipeline status is not available through this connection/);
+      .rejects.toThrow(/pipeline has not passed yet; follow it with getDetails\(\)\.ci/);
 
     // It is also the answer for a merge request already merged -- as when this apply retries one
     // whose reply was lost. Merged at the bound head, that merge landed and this apply succeeds;
@@ -1081,7 +1118,7 @@ describe("reviews", () => {
     expect(review.discussions.map(discussion => discussion.note)).toEqual(["Nit"]);
   });
 
-  it("counts a lost approval as the review's own: it is not made twice, and a discard takes it back, retrying a cleanup that fails", async () => {
+  it("counts a lost approval as the review's own: it is not made twice, and a discard takes it back", async () => {
     const { gitlab, props, name } = await setup("review-lost-approval");
     const review = new ReviewGitLab(gitlab);
     gitlab.install();
@@ -1095,15 +1132,30 @@ describe("reviews", () => {
     await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
     expect(gitlab.count("POST", /\/approve$/)).toBe(1);
 
-    // A cleanup that fails keeps the action pending, so the discard can be retried; once done,
-    // discarding again succeeds without doing anything more.
-    review.refuse("unapprove");
-    await expect(unwrap(await hooks().rejectAction(name, props, action.approvalId))).rejects.toThrow(/500/);
-    expect(review.approval).not.toBeNull();
     await unwrap(await hooks().rejectAction(name, props, action.approvalId));
     expect(review.approval).toBeNull();
+    // Discarding again succeeds without doing anything more.
     await unwrap(await hooks().rejectAction(name, props, action.approvalId));
-    expect(gitlab.count("POST", /\/unapprove$/)).toBe(2);
+    expect(gitlab.count("POST", /\/unapprove$/)).toBe(1);
+  });
+
+  it("discards a review whose cleanup GitLab refuses, leaving the approval behind", async () => {
+    const { gitlab, props, name } = await setup("review-cleanup-refused");
+    const review = new ReviewGitLab(gitlab);
+    gitlab.install();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
+      revision: REVISION, decision: "approve",
+      diffComments: [{ target: { path: "README", line: 1, side: "new" }, bodyMarkdown: "Nit" }],
+    }], DESC));
+    review.refuse("draft");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
+
+    review.refuse("unapprove");
+    await unwrap(await hooks().rejectAction(name, props, action.approvalId));
+    expect(review.approval).not.toBeNull();
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow();
+    await unwrap(await hooks().rejectAction(name, props, action.approvalId));
+    expect(gitlab.count("POST", /\/unapprove$/)).toBe(1);
   });
 
   it("leaves alone an approval the account already held: not made again, and not withdrawn by a discard", async () => {
@@ -1268,7 +1320,34 @@ describe("approval cards", () => {
         { label: "Diff comment 1", kind: "text", value: comment, syntax: "markdown" },
       ],
       descriptionIsComplete: true,
+      actionKind: { tag: "gitlab.postReview", label: "Submit reviews that comment or request changes" },
+      autoApprovable: false,
     } }]);
+  });
+
+  it("offers comment and request-changes reviews for auto-approval, never an approval or a merge, which still apply once approved by hand", async () => {
+    const { gitlab, props, name } = await setup("card-auto-approval");
+    const review = new ReviewGitLab(gitlab);
+    gitlab.install();
+    const queued = [];
+    for (const decision of ["comment", "requestChanges", "approve"] as const) {
+      queued.push(await unwrap(await hooks().queueAction(name, props, "preparePostReview",
+        ["133", { revision: REVISION, decision, bodyMarkdown: "Summary" }], DESC)));
+    }
+    queued.push(await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest",
+      ["133", { expectedHeadSha: MR.sha }], DESC)));
+
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable])).toEqual([
+      ["gitlab.postReview", true],
+      ["gitlab.postReview", true],
+      ["gitlab.postReview", false],
+      ["gitlab.mergeMergeRequest", false],
+    ]);
+
+    // Ineligible for auto-approval is not refused: the approval applies when a person approves it.
+    await unwrap(await hooks().applyAction(name, props, queued[2].approvalId));
+    expect(review.approval).not.toBeNull();
   });
 });
 

@@ -69,6 +69,17 @@ export class ZoomInfoApiError extends Error {
   }
 }
 
+/**
+ * Whether a token-endpoint failure is ZoomInfo refusing the grant itself, which a reconnect alone
+ * recovers: RFC 6749's `invalid_grant` in a 4xx other than 429, as the kit's `isInvalidGrant`
+ * reads one. Keyed on the OAuth error code rather than the status, which a client misconfiguration
+ * (`invalid_client`) or a proxy's error page shares.
+ */
+export function isGrantRefused(error: unknown): boolean {
+  return error instanceof ZoomInfoApiError && error.status >= 400 && error.status < 500 && error.status !== 429
+    && (error.details as { error?: unknown } | null | undefined)?.error === "invalid_grant";
+}
+
 // ---------------------------------------------------------------------------
 // PKCE helpers
 

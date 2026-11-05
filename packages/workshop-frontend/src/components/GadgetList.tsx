@@ -1,10 +1,10 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, UserPlus, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
-import { GadgetMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
+import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../features/notifications/notificationMute'
 import ShareModal from '../ShareModal'
@@ -46,13 +46,13 @@ function AppRow({
   onRename,
   onNotificationMuteChange,
 }: {
-  gadget: GadgetMetadataWithTimestamps
-  onDelete: (gadget: GadgetMetadataWithTimestamps) => void
-  onShare: (gadget: GadgetMetadataWithTimestamps) => void
-  onInfo: (gadget: GadgetMetadataWithTimestamps) => void
-  onTogglePin: (gadget: GadgetMetadataWithTimestamps) => void
-  onRename: (gadget: GadgetMetadataWithTimestamps, newTitle: string) => void
-  onNotificationMuteChange: (gadget: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  gadget: WorkspaceMetadataWithTimestamps
+  onDelete: (gadget: WorkspaceMetadataWithTimestamps) => void
+  onShare: (gadget: WorkspaceMetadataWithTimestamps) => void
+  onInfo: (gadget: WorkspaceMetadataWithTimestamps) => void
+  onTogglePin: (gadget: WorkspaceMetadataWithTimestamps) => void
+  onRename: (gadget: WorkspaceMetadataWithTimestamps, newTitle: string) => void
+  onNotificationMuteChange: (gadget: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
 }) {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
@@ -146,21 +146,24 @@ function AppRow({
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
           <DropdownMenu.Item onClick={startRenaming} className={MENU_ITEM}>
-            <Pencil size={13} className="mr-2" />
+            <Pencil size={13} />
             Rename
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onTogglePin(gadget)} className={MENU_ITEM}>
-            <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
+            <Star size={13} weight={gadget.pinned ? 'fill' : 'regular'} />
             {gadget.pinned ? 'Unfavorite' : 'Favorite'}
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onInfo(gadget)} className={MENU_ITEM}>
-            <Info size={13} className="mr-2" />
+            <Info size={13} />
             Information
           </DropdownMenu.Item>
-          <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
-            <ShareNetwork size={13} className="mr-2" />
-            Share
-          </DropdownMenu.Item>
+          {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+          {gadget.role !== 'use' && (
+            <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
+              <UserPlus size={13} />
+              Invite to workspace
+            </DropdownMenu.Item>
+          )}
           <WorkspaceNotificationsMenu
             workspaceId={gadget.id}
             mute={gadget.notificationMute}
@@ -172,7 +175,7 @@ function AppRow({
             onClick={() => onDelete(gadget)}
             className={MENU_ITEM_DANGER}
           >
-            <Trash size={13} className="mr-2" />
+            <Trash size={13} />
             {gadget.owner ? 'Dismiss' : 'Delete'}
           </DropdownMenu.Item>
         </DropdownMenu.Content>
@@ -185,20 +188,20 @@ function AppRow({
 export default function GadgetList({ showHeader = true }: { showHeader?: boolean } = {}) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
-  const [gadgets, setGadgets] = useState<GadgetMetadataWithTimestamps[]>([])
+  const [gadgets, setGadgets] = useState<WorkspaceMetadataWithTimestamps[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
 
   // Delete confirmation state
-  const [deleteTarget, setDeleteTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
 
   // Info modal state
-  const [infoTarget, setInfoTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
+  const [infoTarget, setInfoTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
 
   // Share modal state
-  const [shareTarget, setShareTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
+  const [shareTarget, setShareTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
   const [shareOverseer, setShareOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
 
@@ -210,7 +213,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     setLoading(true)
     setLoadError(false)
     let cancelled = false
-    authenticatedApi.listGadgets().then((list) => {
+    authenticatedApi.listWorkspaces().then((list) => {
       if (cancelled) return
       const sorted = [...list].toSorted((a, b) => {
         if (a.pinned && !b.pinned) return -1
@@ -243,7 +246,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     return () => { shareOverseerRef.current?.stub[Symbol.dispose]() }
   }, [])
 
-  const handleDelete = (gadget: GadgetMetadataWithTimestamps) => {
+  const handleDelete = (gadget: WorkspaceMetadataWithTimestamps) => {
     setDeleteTarget(gadget)
   }
 
@@ -252,10 +255,10 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     setIsDeleting(true)
     try {
       if (deleteTarget.owner) {
-        await authenticatedApi.dismissSharedGadget(deleteTarget.id)
+        await authenticatedApi.dismissSharedWorkspace(deleteTarget.id)
         toasts.add({ title: 'Workspace removed from list', variant: 'success' })
       } else {
-        const overseer = await authenticatedApi.openGadget(deleteTarget.id)
+        const overseer = await authenticatedApi.openWorkspace(deleteTarget.id)
         try {
           await overseer.deleteSelf()
         } finally {
@@ -273,10 +276,10 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     }
   }
 
-  const handleShare = async (gadget: GadgetMetadataWithTimestamps) => {
+  const handleShare = async (gadget: WorkspaceMetadataWithTimestamps) => {
     let overseer: RpcStub<Overseer> | null = null
     try {
-      overseer = authenticatedApi.openGadget(gadget.id)
+      overseer = authenticatedApi.openWorkspace(gadget.id)
       const metadata = await overseer.getMetadata()
       setShareOverseer({ stub: overseer })
       setShareTarget({ ...gadget, ...metadata })
@@ -288,7 +291,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     }
   }
 
-  const handleTogglePin = async (gadget: GadgetMetadataWithTimestamps) => {
+  const handleTogglePin = async (gadget: WorkspaceMetadataWithTimestamps) => {
     const newPinned = !gadget.pinned
     // Optimistically update the list
     setGadgets(prev => {
@@ -315,11 +318,11 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     }
   }
 
-  const handleRename = async (gadget: GadgetMetadataWithTimestamps, newTitle: string) => {
+  const handleRename = async (gadget: WorkspaceMetadataWithTimestamps, newTitle: string) => {
     // Optimistically update
     setGadgets(prev => prev.map(g => g.id === gadget.id ? { ...g, title: newTitle } : g))
-    // Use promise pipelining — call setTitle without awaiting openGadget first
-    const overseer = authenticatedApi.openGadget(gadget.id)
+    // Use promise pipelining — call setTitle without awaiting openWorkspace first
+    const overseer = authenticatedApi.openWorkspace(gadget.id)
     try {
       await overseer.setTitle(newTitle)
     } catch (err) {
@@ -331,7 +334,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     }
   }
 
-  const handleNotificationMuteChange = (gadget: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) =>
+  const handleNotificationMuteChange = (gadget: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) =>
     setGadgets(prev => prev.map(g => g.id === gadget.id ? { ...g, notificationMute: mute } : g))
 
   const handleShareClose = () => {
@@ -485,6 +488,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
           onClose={handleShareClose}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
+          target={{ kind: 'workspace' }}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
         />

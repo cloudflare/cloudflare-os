@@ -56,6 +56,16 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
+  // The live-tenant suite (`vitest.contract.config.ts`) and its sign-in and rendering tooling under
+  // `scripts/` run as package.json scripts and by hand, never as vp tasks.
+  "packages/gatekeeper-microsoft": {
+    external: ["MICROSOFT_CONTRACT_BASE_URL", "MICROSOFT_CONTRACT_TOKENS"],
+  },
+  // `build/runtime.ts` defines `process.env.NODE_ENV` as "production" for the libraries it bundles
+  // into the configurator runtime; the ambient value is never read.
+  "packages/configurator-ui": {
+    injected: ["NODE_ENV"],
+  },
   // `src/worker-inputs.ts` resolves BUNDLED_BLUEPRINTS_DIR only to name a directory for the watcher
   // and `forceRerunTriggers`. The `test` task is cached and strips it; `vitest run` never reads
   // those exports, and `pnpm test:watch` is a script, so it keeps the ambient value.
@@ -81,7 +91,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
-  // `build-release.ts`, `run-local.ts` and `preview/` are invoked directly, never as vp tasks.
+  // `build-release.ts`, `run-dev-server.ts`, `run-local.ts` and `preview/` are invoked directly,
+  // never as vp tasks.
   // Every cached watchdogged task declares the timeout policy via TESTS_WITH_TIMEOUT_ENV;
   // vitest-task.test.ts pins the shared declaration.
   scripts: {
@@ -93,8 +104,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-      "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
-      "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
+      "CLOUDFLARE_OS_DEPLOYMENT", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMIN_CONFIG_SEED", "PREVIEW_ADMINS",
+      "PREVIEW_GITHUB_CLIENT_ID", "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
       "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
       // Read by `vp/concurrency.ts` in the wrapper before `vp` starts, never inside a task.
       "VP_RUN_CONCURRENCY_LIMIT",

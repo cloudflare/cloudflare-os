@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
+import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -118,6 +118,23 @@ describe("format presentation", () => {
     expect(defaultOutputFormatId(long)).toBe(defaultOutputFormatId(long));
     expect(defaultOutputFormatId(long)).toHaveLength(40);
     expect(defaultOutputFormatId(long)).not.toBe(defaultOutputFormatId(long + "other"));
+  });
+});
+
+describe("parseRestrictedWebFetchHosts", () => {
+  it("stores trimmed, lowercase hosts once each, without blanks", () => {
+    expect(parseRestrictedWebFetchHosts([" Docs.Example.com ", "", "docs.example.com", "api.example.com"]))
+      .toEqual(["docs.example.com", "api.example.com"]);
+  });
+
+  it("refuses entries no URL's host could match", () => {
+    for (let entry of [
+      "https://docs.example.com",
+      "*.example.com",
+      "bücher.example", // `URL.host` holds an IDN only as punycode
+    ]) {
+      expect(() => parseRestrictedWebFetchHosts(["docs.example.com", entry]), entry).toThrow(/is not a host name/);
+    }
   });
 });
 
@@ -314,7 +331,15 @@ describe("admin config gateway models", () => {
         .toStrictEqual({ reasoning: "max", compactionInputBudget: 1 });
     expect(sanitizeModelSettings({ reasoning: "max", compactionInputBudget: 2 ** 53 }))
         .toStrictEqual({ reasoning: "max" });
-    for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max"]) {
+    // Allowed models are kept trimmed and once each, less the malformed; an empty list is none.
+    expect(sanitizeModelSettings({
+      allowedModels: [
+        " anthropic/* ", "openai/gpt-6-luna", "anthropic/*", "claude opus", "a,b/c", 3,
+      ],
+    })).toStrictEqual({ allowedModels: ["anthropic/*", "openai/gpt-6-luna"] });
+    for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max",
+        { allowedModels: [] }, { allowedModels: ["anthropic"] },
+        { allowedModels: "anthropic/*" }]) {
       expect(sanitizeModelSettings(value)).toBeUndefined();
     }
   });
@@ -384,5 +409,172 @@ describe("admin config gateway models", () => {
     expect(parseAdminConfig('{"modelsDevSuggestions":true}').modelsDevSuggestions).toBe(true);
     expect(parseAdminConfig(serializeAdminConfig(
         { ...DEFAULT_ADMIN_CONFIG, modelsDevSuggestions: true })).modelsDevSuggestions).toBe(true);
+  });
+});
+
+describe("admin config update notice", () => {
+  const HOURS = ["updateMinimumAgeHours", "updateNoticeSnoozeHours"] as const;
+
+  it("checks for updates by itself, at the default hours, unless stored otherwise", () => {
+    expect(DEFAULT_ADMIN_CONFIG).toMatchObject({
+      updateChecksEnabled: true,
+      updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+      updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+      updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+    });
+    // A config, in the Durable Object or in KV, stored before the settings existed.
+    for (let config of [normalizeAdminConfig({ signupsEnabled: false }), parseAdminConfig("{}"),
+        parseAdminConfig(null)]) {
+      expect(config).toMatchObject({
+        updateChecksEnabled: true, updateCheckIntervalMinutes: 60, updateMinimumAgeHours: 24,
+        updateNoticeSnoozeHours: 24,
+      });
+    }
+  });
+
+  it("reads anything but a stored boolean as automatic checks on", () => {
+    for (let stored of [null, "false", 0, true]) {
+      expect(normalizeAdminConfig({ updateChecksEnabled: stored as boolean }).updateChecksEnabled,
+          String(stored)).toBe(true);
+    }
+    expect(normalizeAdminConfig({ updateChecksEnabled: false }).updateChecksEnabled).toBe(false);
+    expect(parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, updateChecksEnabled: false })).updateChecksEnabled).toBe(false);
+  });
+
+  it.each(HOURS)("reads a %s that is not a whole number of hours in range as the default",
+      field => {
+    for (let stored of [1.5, -1, MAX_UPDATE_HOURS + 1, NaN, Infinity, "12", null]) {
+      expect(normalizeAdminConfig({ [field]: stored as number })[field], String(stored)).toBe(24);
+      expect(isUpdateHours(stored), String(stored)).toBe(false);
+    }
+  });
+
+  it.each(HOURS)("keeps a stored %s from 0 to the maximum", field => {
+    for (let stored of [0, 1, 48, MAX_UPDATE_HOURS]) {
+      expect(normalizeAdminConfig({ [field]: stored })[field]).toBe(stored);
+      let kv = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, [field]: stored });
+      expect(parseAdminConfig(kv)[field]).toBe(stored);
+      expect(isUpdateHours(stored)).toBe(true);
+    }
+  });
+
+  it("reads a check interval that is not a whole number of minutes in range as the default", () => {
+    for (let stored of [1.5, 0, -1, MAX_UPDATE_CHECK_INTERVAL_MINUTES + 1, NaN, Infinity, "12",
+        null]) {
+      expect(normalizeAdminConfig({ updateCheckIntervalMinutes: stored as number })
+          .updateCheckIntervalMinutes, String(stored)).toBe(60);
+      expect(isUpdateCheckInterval(stored), String(stored)).toBe(false);
+    }
+  });
+
+  it("keeps a stored check interval from 1 minute to the maximum", () => {
+    for (let stored of [1, 15, 360, MAX_UPDATE_CHECK_INTERVAL_MINUTES]) {
+      expect(normalizeAdminConfig({ updateCheckIntervalMinutes: stored })
+          .updateCheckIntervalMinutes).toBe(stored);
+      let kv = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, updateCheckIntervalMinutes: stored });
+      expect(parseAdminConfig(kv).updateCheckIntervalMinutes).toBe(stored);
+      expect(isUpdateCheckInterval(stored)).toBe(true);
+    }
+  });
+});
+
+describe("ADMIN_CONFIG_SEED", () => {
+  const SEED = {
+    modelModes: { "claude-fable-5-1": "hidden" },
+    modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "high", compactionInputBudget: 200000 } },
+    addedModels: [
+      { provider: "cloudflare", id: "@cf/test/added", name: "Added", contextWindow: 131072 },
+    ],
+    defaultReasoning: "medium",
+    userModelsEnabled: false,
+    modelsDevSuggestions: true,
+  } as const;
+  const seeded = (seed: unknown = SEED) =>
+      effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED: JSON.stringify(seed) }));
+
+  it("is nothing while unset or empty", () => {
+    expect(effectiveAdminConfig(null, adminConfigSeed({}))).toEqual(DEFAULT_ADMIN_CONFIG);
+    expect(effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED: "" })))
+        .toEqual(DEFAULT_ADMIN_CONFIG);
+  });
+
+  it("sets the Models tab's fields over the defaults, as a secret's string or a JSON var", () => {
+    for (let ADMIN_CONFIG_SEED of [JSON.stringify(SEED), structuredClone(SEED)]) {
+      expect(effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED })))
+          .toEqual({ ...DEFAULT_ADMIN_CONFIG, ...SEED });
+    }
+  });
+
+  it("checks the values the way a stored config's are checked", () => {
+    let config = seeded({
+      modelModes: { kept: "disabled", dropped: "sometimes" },
+      defaultReasoning: "loud",
+    });
+    expect(config.modelModes).toEqual({ kept: "disabled" });
+    expect(config.defaultReasoning).toBeNull();
+  });
+
+  it("is ignored whole when it sets a field outside the Models tab", () => {
+    // Half of a seed is never applied: a typo in one field name must not leave the rest in force.
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, signupsEnabled: false }))).toEqual({});
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelSetting: {} }))).toEqual({});
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelsSaved: true }))).toEqual({});
+  });
+
+  it("is ignored when it is not a JSON object", () => {
+    for (let raw of ["{", "[]", "null", "\"text\"", "3", [SEED]]) {
+      expect(parseAdminConfigSeed(raw), JSON.stringify(raw)).toEqual({});
+    }
+  });
+
+  it("still decides a stored config's model fields until an admin changes one", () => {
+    // What promoting the bundled formats on the first request stores: other settings, written
+    // over the seeded config, with modelsSaved still false.
+    let bootstrapped = { ...seeded(), siteName: "acme" };
+    let newSeed = { modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "max" } } };
+    let config = effectiveAdminConfig(bootstrapped, newSeed);
+    expect(config.siteName).toBe("acme");
+    expect(config.modelSettings).toEqual(newSeed.modelSettings);
+    // A field the old seed set and the new one leaves out is back to its default, not left over.
+    expect(config.addedModels).toEqual([]);
+    expect(config.modelModes).toEqual({});
+  });
+
+  it("decides nothing once an admin has changed a model setting, or in a config stored before it existed", () => {
+    let saved = { ...seeded(), modelsSaved: true, modelModes: {} };
+    expect(effectiveAdminConfig(saved, SEED).modelModes).toEqual({});
+    // A legacy config has no flag at all.
+    let { modelsSaved: _, ...legacy } = { ...DEFAULT_ADMIN_CONFIG, siteName: "acme" };
+    let config = effectiveAdminConfig(legacy, SEED);
+    expect(config.modelsSaved).toBe(true);
+    expect(config.modelSettings).toEqual({});
+  });
+
+  it("ends with a change to any Models tab field, compared by value", () => {
+    let config = seeded({ ...SEED, modelSettings: {
+      ...SEED.modelSettings, "claude-opus-5-5": { compactionInputBudget: 300000 } } });
+    expect(changesModelSettings(config, { ...config, siteName: "acme" })).toBe(false);
+    // Rebuilt in a different key order, but the same settings.
+    let reordered = { ...config, modelSettings: Object.fromEntries(
+        Object.entries(config.modelSettings).toReversed()) };
+    expect(Object.keys(reordered.modelSettings)).not.toEqual(Object.keys(config.modelSettings));
+    expect(changesModelSettings(config, reordered)).toBe(false);
+    expect(changesModelSettings(config, { ...config, modelModes: {} })).toBe(true);
+    expect(changesModelSettings(config, { ...config, userModelsEnabled: true })).toBe(true);
+  });
+
+  it("is what the KV hot path reads, under the same rules", async () => {
+    const ADMIN_CONFIG_SEED = JSON.stringify(SEED);
+    const withMirror = (value: string | null) => ({
+      ADMIN_CONFIG_SEED, BLUEPRINTS: { get: async () => value },
+    }) as unknown as Cloudflare.Env;
+
+    expect((await readAdminConfig(withMirror(null))).modelSettings).toEqual(SEED.modelSettings);
+    let bootstrapped = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, siteName: "acme" });
+    expect((await readAdminConfig(withMirror(bootstrapped))).modelSettings)
+        .toEqual(SEED.modelSettings);
+    let saved = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, modelsSaved: true });
+    expect((await readAdminConfig(withMirror(saved))).modelSettings).toEqual({});
   });
 });

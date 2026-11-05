@@ -5,13 +5,24 @@ cross-Worker harness and its isolation rules, see [integration testing](integrat
 
 ## Entry points
 
-- `pnpm --filter <package> test:run`: direct Vitest route, useful while iterating.
+- `pnpm --filter <package> test:run`: the direct route, useful while iterating: Vitest, or `node --test`
+  for `packages/api-cli`.
 - `pnpm exec vp run -F <package> test`: cached task route; unchanged results may replay.
-- `pnpm test`: workspace verification, including `scripts/` suites under `node --test`.
+- `pnpm test`: workspace verification, including the `scripts/` and `packages/api-cli` suites, which
+  run under `node --test` rather than Vitest.
 - `pnpm lint`: lint, script types, generated-config checks, and workspace build/type-checks.
 
 A direct `test:run` script does not execute a task's `dependsOn`. When tests import generated files,
 both entrypoints must request codegen; verify without a root prebuild or prepared snapshot.
+
+Backend unit tests use inline Miniflare bindings, not the full deployment configuration. Tests that
+read admin settings, including through `getWebFetchEnv()`, must provide a `BLUEPRINTS.get` fixture;
+returning `null` selects the default configuration. Assert async refusals with an awaited
+`.rejects.toThrow(...)`, not a synchronous `.toThrow(...)`.
+
+For tests that advance time within a daily budget, pin the fake clock to a fixed UTC time before
+seeding credentials and counters. Advancing from the wall clock can cross midnight and legitimately
+reset the budget; test that rollover separately from cache expiry or limit enforcement.
 
 Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.

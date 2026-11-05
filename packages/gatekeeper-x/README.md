@@ -41,6 +41,9 @@ Two limits keep a gadget from running up the bill:
   The default is 2,000 (about $10 a day at the post-read price); `0` removes the limit. Reads past
   it fail with a message naming when it resets.
 - **Approvals** bound writes: nothing is posted, liked or followed without a user approving it.
+  Bookmarks, mutes and hidden replies are billed too, and the daily read limit does not cover
+  them: once a user auto-approves one of those kinds, only X's per-account rate limit and the
+  app's spending limit bound it.
 
 Reads are cached briefly (a post for 5 minutes, a profile for an hour, a listing's first page for a
 minute), so a gadget polling one page pays at most once a minute.
@@ -115,11 +118,12 @@ the X Developer Console.
 X limits each endpoint per account per 15 minutes; the message names when the window resets. The
 gatekeeper never retries on its own.
 
-### "X never confirmed whether this post was published, so it may already be on X and can't be rejected."
+### "X did not confirm whether this post was published."
 
 An approval sent the post, and X's answer was lost. Approve it again: the gatekeeper first checks the
 account's recent posts and records the post if it landed, so it is never posted twice. Revert it
-afterwards if it shouldn't stay.
+afterwards if it shouldn't stay. Rejecting it instead withdraws the request, but a post X already
+made stays on the account.
 
 ### The callback URI does not match
 

@@ -67,7 +67,7 @@ describe("gadget bindings in the agent's env", () => {
     expect(agentEnv).toEqual({
       GIT: { type: "git" },
       APP: { rpc: { type: "gadget", id: 100 }, exports: { type: "exports", id: 100 } },
-      DB: { type: "gatekeeper", id: 5 },
+      DB: { type: "gatekeeper", id: 5, executionId: "exec-1" },
     });
 
     // A gadget's own env keeps direct RPC stubs and offers no exports.

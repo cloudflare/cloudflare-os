@@ -64,7 +64,7 @@ async function withLoggingGadget<T>(fn: (owner: Owner) => Promise<T>): Promise<T
   const [username] = nextUsernames("logowner");
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username!);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
@@ -134,14 +134,14 @@ it.concurrent("disposing a console log subscription stops its logs but not other
 });
 
 it.concurrent("a use collaborator's console log subscription receives nothing", async () => {
-  await withLoggingGadget(async ({ ws, gadget }) => {
+  await withLoggingGadget(async ({ ws, gadget, gadgetId }) => {
     const [viewer] = nextUsernames("logviewer");
     using viewerPublic = connect(harness.url);
     using viewerApi = await signUp(viewerPublic, viewer!);
-    if (!await ws.addCollaborator(viewer!, "use")) {
+    if (!await ws.addCollaborator(viewer!, { gadgetId })) {
       throw new Error(`Failed to share with ${viewer}`);
     }
-    using useWs = await viewerApi.openGadget((await ws.getMetadata()).id);
+    using useWs = await viewerApi.openWorkspace((await ws.getMetadata()).id);
     const viewerLogs = new LogRecorder();
     const ownerLogs = new LogRecorder();
     using viewerStub = stubFor(viewerLogs);

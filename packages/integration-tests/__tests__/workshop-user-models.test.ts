@@ -69,7 +69,7 @@ it("editing a model keeps its secrets usable without returning them", async () =
       { ...redacted, contextWindow: 1000, apiUrl: "https://attacker.test" }))
       .rejects.toThrow(/since the provider or API URL changed/);
 
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const chatId = await ws.newChat("Prove the saved credentials work.", PROFILE.id);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));

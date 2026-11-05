@@ -228,6 +228,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                     ? patterns => requestAccountResources(
                       authenticatedApi, toasts, configuratorAccountId, patterns)
                     : undefined}
+                  acceptedResourceUrlPatterns={[target.typeUrlPattern]}
                 />
               )}
             </div>

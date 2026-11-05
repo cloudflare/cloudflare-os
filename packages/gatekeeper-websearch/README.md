@@ -38,6 +38,12 @@ export default async function(self, env) {
 `query` is 1 to 1,024 characters, the API's limits. The caller picks no provider and no result
 count, and gets up to 10 results.
 
+Ceramic, the provider `search.ts` pins, matches keywords, not meaning. So `types.d.ts` tells the
+agent to send a few specific keywords rather than a question, as
+[Ceramic's agent skill](https://docs.ceramic.ai/api/search/agent-skill) advises. In our blind test
+of 36 questions, two graders scored Ceramic's results about 0.4 points higher out of 4 for queries
+written this way than for the queries a model wrote without the guidance.
+
 ## How a search runs
 
 <p align="center"><img src="../../docs/images/web-search-flow.svg" alt="A search passes the gatekeeper's query check and is recorded in the Activity log before it goes through the Workers AI binding and the deployment's AI Gateway to Ceramic" width="860"></p>
@@ -59,7 +65,8 @@ A query goes only to the provider that `search.ts` pins. The agent cannot choose
 it can with a `webFetch` URL, so a workspace that has observed restricted data can still search,
 as it can search GitHub or Slack through their gatekeepers.
 
-- **Observers.** `addObserver` admits every collaborator, because search results are public.
+- **Observers.** Each query reports `subresources: []`, and `addObserver` and
+  `verifyObserverAccess` admit every collaborator, because search results are public.
 - **Ambience.** The gatekeeper declares only that it can mint an account and that the account has
   a singleton. The admin's mode and the user's opt-in decide who gets it.
 
@@ -109,6 +116,11 @@ outside AI Gateway.
   it on in onboarding gets it.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
+
+## Testing
+
+`pnpm --filter @gadgets/gatekeeper-websearch test:run` runs search and observer-access tests in
+workerd with RPC validation enabled. No live provider calls or Cloudflare login are needed.
 
 ## Known limits
 

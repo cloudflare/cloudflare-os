@@ -14,6 +14,7 @@ export default function ResourceConfiguratorHost({
   topOffset = 0,
   initialResourceUrl,
   resourceUrlPattern,
+  acceptedResourceUrlPatterns,
 }: {
   frame: ResourceConfiguratorFrame | null
   frameKey: number | null
@@ -27,6 +28,8 @@ export default function ResourceConfiguratorHost({
   topOffset?: number
   initialResourceUrl?: string
   resourceUrlPattern?: string
+  /** The resource types the caller will accept a URL of from the configurator. */
+  acceptedResourceUrlPatterns: readonly string[]
 }) {
   if (disabled) return <Placeholder>Choose an account before selecting a resource.</Placeholder>
   if (loading) return <Placeholder>Loading configurator...</Placeholder>
@@ -42,6 +45,7 @@ export default function ResourceConfiguratorHost({
     onEnsureResources={onEnsureResources}
     initialResourceUrl={initialResourceUrl}
     resourceUrlPattern={resourceUrlPattern}
+    acceptedResourceUrlPatterns={acceptedResourceUrlPatterns}
   />
 }
 

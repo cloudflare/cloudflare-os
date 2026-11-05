@@ -5,8 +5,11 @@ export type ContextObservabilityFields = {
   bodyBytes: number;
   branch: string;
   collectionId: string;
+  commit: string;
   dir: string;
   filepath: string;
+  invalidSkillManifestCount: number;
+  invalidSkillManifests: Array<{ filepath: string; reason: string }>;
   maxBodyBytes: number;
   maxGitDirBytes: number;
   operation: string;

@@ -1,12 +1,15 @@
-// Retrying a model request that failed transiently: runAgent runs the pass again even when the
-// failed request already streamed output, and tells clients to discard that output first. Drives
-// the real runAgent against a real OverseerImpl, with pi's faux provider standing in for the model.
+// How runAgent ends a turn. It retries a model request that failed transiently, running the pass
+// again even when the failed request already streamed output, and tells clients to discard that
+// output first. And it leaves the turn's last request to keep cached only when the chat's next
+// request will start with it. Drives the real runAgent against a real OverseerImpl, with pi's faux
+// provider standing in for the model.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
-  createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, type AssistantMessage,
+  createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall,
+  type AssistantMessage,
 } from "@earendil-works/pi-ai";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent,
@@ -14,6 +17,7 @@ import type {
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GadgetRecord } from "../src/storage-schema/overseer-storage.js";
 import { runAgent, type AgentHooks } from "../src/agent";
+import type { CachedRequest, ModelHandle } from "../src/ai-models.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -108,5 +112,58 @@ describe("transient model failures", () => {
           { stopReason: "error", errorMessage: "400 Invalid request" }),
       fauxAssistantMessage(fauxText("Never requested.")),
     ])).rejects.toThrow("400 Invalid request");
+  }));
+});
+
+describe("the request a turn leaves to keep cached", () => {
+  // Runs one turn whose model answers each request with the next of `steps`, with a compaction
+  // trigger at 85% of `compactionInputBudget`. Returns what runAgent left to keep cached and every
+  // request the handle could have resent.
+  async function runTurn(
+      impl: OverseerInternals, steps: AssistantMessage[], compactionInputBudget: number) {
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    faux.setResponses(steps);
+    let requests: CachedRequest[] = [];
+    let handle: ModelHandle = {
+      model: faux.getModel(),
+      stream: (model, context, options) => {
+        handle.lastRequest = {
+          sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 0,
+          resend: () => Promise.reject(new Error("Not resent in this test.")),
+        };
+        requests.push(handle.lastRequest);
+        return faux.stream(model, context, options);
+      },
+    };
+    let kept = await runAgent(impl, handle, CHAT_ID,
+        { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, OWNER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "", compactionInputBudget });
+    return { kept, requests };
+  }
+
+  it("leaves the last request when the next one fits", () => withImpl(async impl => {
+    seedChat(impl);
+    let { kept, requests } = await runTurn(
+        impl, [fauxAssistantMessage(fauxText("A short answer."))], 200_000);
+    expect(requests).toHaveLength(1);
+    expect(kept).toBe(requests[0]);
+  }));
+
+  // A turn that ends to wait for the user's decision leaves its tool results for the next
+  // request, which compacts first if they don't fit. The model calls a tool that doesn't exist,
+  // whose error result repeats the tool's name: with a 50k-token name, the call fits under the
+  // trigger at 95k tokens, and the call with its result passes it.
+  it.each([
+    { name: "fits", tool: "lookUp", fits: true },
+    { name: "would compact", tool: "x".repeat(200_000), fits: false },
+  ])("leaves the last request of a turn awaiting a decision only if the next one $name",
+      ({ tool, fits }) => withImpl(async impl => {
+    seedChat(impl);
+    impl.consumeCapturedActions =
+        () => ({ actions: [], accessedGadget: false, awaitDecision: true });
+    let { kept, requests } = await runTurn(
+        impl, [fauxAssistantMessage(fauxToolCall(tool, {}))], 112_000);
+    expect(requests).toHaveLength(1);
+    expect(kept).toBe(fits ? requests[0] : undefined);
   }));
 });

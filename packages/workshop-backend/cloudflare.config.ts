@@ -43,6 +43,10 @@ export default defineGadgetsWorker({
     AVATARS: bindings.kv(),
     BLUEPRINT_CONTENT: bindings.r2({ name: "gadgets-blueprint-content" }),
     LOADER: bindings.workerLoader(),
+
+    // This version's id, which the frontend compares with the one new requests reach, to notice a
+    // session still connected to an older version after a deploy.
+    CF_VERSION_METADATA: bindings.versionMetadata(),
   },
 
   // When deploying to prod, you may want to bundle the frontend as assets on the backend, like so.

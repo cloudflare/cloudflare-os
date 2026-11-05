@@ -1,12 +1,14 @@
 import {
-  AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel,
-  GatewayModelMode, HTTPS_ONLY_PROVIDERS, ModelKind, ReasoningLevel, SUGGESTED_MODELS, modelKind,
+  AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider,
+  AutoRouterPool, GatewayModel, GatewayModelMode, HTTPS_ONLY_PROVIDERS, ModelKind, ReasoningLevel,
+  SUGGESTED_MODELS, modelKind,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
-// The model used for quick tasks like title generation when AI Gateway mode is active.
+// The model used for quick tasks like title generation in AI Gateway mode while the user has
+// chosen none, and always on a deployment that applies Cloudflare usage limits.
 //
 // This 70B model is quite fast and cheap and produces pretty good titles. The cost is insignificant
 // compared to the actual coding model so there's not much reason to use a smaller model.
@@ -16,8 +18,13 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
  * Providers AI Gateway serves: the ones gatewayNativeModel() in ai-models.ts has a route for.
  * Ollama has none, so a model added under it could never run.
  */
-const GATEWAY_PROVIDERS: ReadonlySet<string> =
-    new Set<AiModelProvider>(["anthropic", "openai", "google", "cloudflare"]);
+const GATEWAY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>([
+  "anthropic", "openai", "google", "cloudflare", "cloudflare-auto-router",
+]);
+
+/** The providers a model may be added under: the gateway's, less Auto Router's, which has one. */
+const ADDABLE_PROVIDERS: ReadonlySet<string> =
+    new Set([...GATEWAY_PROVIDERS].filter(provider => provider !== "cloudflare-auto-router"));
 
 /** Throws unless AI Gateway serves `provider`. */
 export function assertGatewayProvider(provider: string): void {
@@ -53,18 +60,20 @@ export function gatewayModelConfig(model: AdminModel): AiModelConfig {
 
 /**
  * The config a gateway model runs with at the reasoning level `reasoning`, or with no level set
- * when that is null, and with the compaction budget `budget` when one is given. A stored model's
- * config (see GatewayModels.runConfig) and that of a model an admin tests before adding it are
- * both built here, so that the test asks what the added model would be asked.
+ * when that is null, with the compaction budget `budget` when one is given, and for the Auto
+ * Router model with the pool `pool` to pick from. A stored model's config (see
+ * GatewayModels.runConfig) and that of a model an admin tests before adding it are both built
+ * here, so that the test asks what the added model would be asked.
  */
-export function gatewayRunConfig(
-    model: AdminModel, reasoning: ReasoningLevel | null, budget?: number): AiModelConfig {
+export function gatewayRunConfig(model: AdminModel, reasoning: ReasoningLevel | null,
+                                 budget?: number, pool?: AutoRouterPool): AiModelConfig {
   return {
     ...gatewayModelConfig(model),
     ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
     ...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {}),
     ...(reasoning !== null ? { reasoning } : {}),
     ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
+    ...(pool !== undefined ? { autoRouterPool: pool } : {}),
   };
 }
 
@@ -143,10 +152,10 @@ export class AiGatewayConfig {
   }
 
   /**
-   * Get the AiModelConfig for the quick model (used for title generation).
+   * Get the AiModelConfig for the deployment's own quick model (used for title generation where
+   * the user's choice is not).
    */
   getQuickModelConfig(): AiModelConfig | undefined {
-    // Always use Workers AI here.
     return {
       provider: "cloudflare",
       model: QUICK_MODEL_ID,
@@ -162,6 +171,27 @@ export class AiGatewayConfig {
 export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null {
   if (!env.CF_AI_GATEWAY) return null;
   return new AiGatewayConfig(env);
+}
+
+/**
+ * How AI Gateway names each provider Auto Router routes to: in its `cf-aig-allowed-providers`
+ * header, and as the prefix of the provider's models in `cf-aig-allowed-models` (Workers AI
+ * models keep their own `@cf/` names there). Google is absent because the router's pool holds no
+ * Google models, and Ollama because the gateway serves none.
+ */
+export const AUTO_ROUTER_PROVIDER_NAMES:
+    Partial<Record<AiModelProvider, { header: string; prefix: string }>> = {
+  anthropic: { header: "anthropic", prefix: "anthropic/" },
+  openai: { header: "openai", prefix: "openai/" },
+  cloudflare: { header: "workers-ai", prefix: "@cf/" },
+};
+
+/** The provider of ours that a gateway model name in an Auto Router allow-list belongs to. */
+export function allowedModelProvider(name: string): AiModelProvider | undefined {
+  for (let [provider, names] of Object.entries(AUTO_ROUTER_PROVIDER_NAMES)) {
+    if (name.startsWith(names.prefix)) return provider as AiModelProvider;
+  }
+  return undefined;
 }
 
 /**
@@ -212,13 +242,19 @@ export class GatewayModels {
       this.#byId.set(
           model.id, { ...model, mode, defaultMode, added, ...(settings && { settings }) });
     };
+    // With no provider Auto Router routes to on, its model would fail every request, so it is
+    // not offered.
+    let routable = [...this.providers]
+        .some(provider => AUTO_ROUTER_PROVIDER_NAMES[provider as AiModelProvider] !== undefined);
     for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
       if (!this.providers.has(provider)) continue;
+      if (provider === "cloudflare-auto-router" && !routable) continue;
       for (let [id, model] of Object.entries(catalog)) {
-        add({ provider: provider as AiModelProvider, id, name: model.name, ...tokenLimits(model) },
+        add({ provider: provider as AiModelProvider, id, name: model.name,
+              ...(model.description && { description: model.description }), ...tokenLimits(model) },
             model.hidden ? "hidden" : "enabled", false);
       }
-      if (!GATEWAY_PROVIDERS.has(provider)) continue;
+      if (!ADDABLE_PROVIDERS.has(provider)) continue;
       this.addableProviders.push(provider as AiModelProvider);
       for (let model of config.addedModels) {
         // A gateway model is looked up by ID alone, so the catalog wins an ID it lists under any
@@ -255,7 +291,8 @@ export class GatewayModels {
   list(kind: ModelKind): AiChatAuthorInfo[] {
     return this.all.filter(model =>
             model.mode === "enabled" && modelKind(model.provider, model.id) === kind)
-        .map(({ id, name }) => ({ type: "agent", id, name }));
+        .map(({ id, name, description }) =>
+            ({ type: "agent", id, name, ...(description && { description }) }));
   }
 
   /**
@@ -281,7 +318,26 @@ export class GatewayModels {
     let model = this.#byId.get(id);
     if (!model) return undefined;
     return gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
-        model.settings?.compactionInputBudget);
+        model.settings?.compactionInputBudget,
+        model.provider === "cloudflare-auto-router"
+            ? this.autoRouterPool(model.settings?.allowedModels) : undefined);
+  }
+
+  /**
+   * The pool an Auto Router model whose admin listed `listed` picks from, or that one with no
+   * list picks from when it is undefined: the listed models of enabled providers, or else those
+   * providers whole. It never exceeds the enabled providers, so a listed model drops out once its
+   * provider is turned off.
+   */
+  autoRouterPool(listed: string[] | undefined): AutoRouterPool {
+    if (listed === undefined) return { providers: this.addableProviders };
+    return { models: listed.filter(name => this.enablesProviderOf(name)) };
+  }
+
+  /** Whether a gateway model name belongs to a provider the deployment enables. */
+  enablesProviderOf(name: string): boolean {
+    let provider = allowedModelProvider(name);
+    return provider !== undefined && this.addableProviders.includes(provider);
   }
 
   /** Throws if `id` names a gateway model that an admin disabled. */
@@ -312,6 +368,9 @@ export class GatewayModels {
    */
   assertAddable(model: GatewayModel): void {
     assertGatewayProvider(model.provider);
+    if (!ADDABLE_PROVIDERS.has(model.provider)) {
+      throw new Error(`Models can't be added under provider "${model.provider}".`);
+    }
     if (!this.providers.has(model.provider)) {
       throw new Error(`Provider "${model.provider}" is not enabled on this deployment.`);
     }

@@ -130,7 +130,10 @@ it.concurrent("two external conversations with one gadget keep separate contexts
   expect(model.remainingSteps()).toBe(0);
 });
 
-it.concurrent("deleting the chat while a reply is pending sends the terminal text", async () => {
+it.concurrent.each([
+  ["deleting the chat", "deleteChat", "The chat was deleted before the agent responded."],
+  ["stopping the agent", "stopAgent", "The user stopped the agent."],
+] as const)("%s while a reply is pending sends the terminal text", async (_, end, text) => {
   const model = models.script([{ pending: true }]);
   const [owner] = nextUsernames("owner");
   const gadgetKey = `${owner}-gadget`;
@@ -156,10 +159,9 @@ it.concurrent("deleting the chat while a reply is pending sends the terminal tex
   if (!Number.isInteger(chatId)) throw new Error(`Invalid external chat path: ${result.chatPath}`);
   using freshPublicApi = connect(harness.url);
   using freshApi = await logIn(freshPublicApi, owner);
-  using ws = await freshApi.openGadget(gadgetId);
-  await ws.deleteChat(chatId);
+  using ws = await freshApi.openWorkspace(gadgetId);
+  await ws[end](chatId);
 
-  expect(await awaitReplies(messageKey))
-      .toEqual(["The chat was deleted before the agent responded."]);
+  expect(await awaitReplies(messageKey)).toEqual([text]);
   expect(model.requests).toHaveLength(1);
 });

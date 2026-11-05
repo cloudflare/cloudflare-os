@@ -9,11 +9,14 @@
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import { createWorkshopLogger } from "./observability.js";
+
+const logger = createWorkshopLogger("workshop.admin.config");
 
 /**
  * Longest `agentHint` a promoted format may carry. Every enabled format's hint goes into the
@@ -255,17 +258,41 @@ function isTokenLimit(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
+/** How many gateway model names Auto Router may be allowed, at most. */
+export const MAX_ALLOWED_MODELS = 100;
+
+/**
+ * Whether `value` is a gateway model name as Auto Router's allow-list takes one: `provider/model`
+ * with no whitespace or comma (the list's separator on the wire), no longer than an added model's
+ * id.
+ */
+export function isAllowedModelName(value: string): boolean {
+  return value.length <= MAX_ADDED_MODEL_TEXT && /^[^\s,/]+\/[^\s,]+$/.test(value);
+}
+
+// The well-formed names of `value`, trimmed and once each, or undefined for no list or an empty
+// or over-long one.
+function sanitizeAllowedModels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  let names = [...new Set(value.filter((name): name is string => typeof name === "string")
+      .map(name => name.trim()).filter(isAllowedModelName))];
+  return names.length > 0 && names.length <= MAX_ALLOWED_MODELS ? names : undefined;
+}
+
 /**
  * The well-formed part of a gateway model's settings, or undefined if none of it is. Shape only:
  * how large a compaction budget may be depends on the model (see compactionBudgetRange() in
- * admin-settings.ts).
+ * admin-settings.ts), and which model may list allowed models on the model (see
+ * AdminSettings.setGatewayModelSettings).
  */
 export function sanitizeModelSettings(value: unknown): GatewayModelSettings | undefined {
   if (!value || typeof value !== "object") return undefined;
-  let {reasoning, compactionInputBudget} = value as Partial<GatewayModelSettings>;
+  let {reasoning, compactionInputBudget, allowedModels} = value as Partial<GatewayModelSettings>;
   let settings: GatewayModelSettings = {};
   if (isReasoningLevel(reasoning)) settings.reasoning = reasoning;
   if (isTokenLimit(compactionInputBudget)) settings.compactionInputBudget = compactionInputBudget;
+  let allowed = sanitizeAllowedModels(allowedModels);
+  if (allowed) settings.allowedModels = allowed;
   return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
@@ -280,8 +307,46 @@ function parseAddedModels(value: unknown): GatewayModel[] {
   return [...models.values()];
 }
 
+/**
+ * Whether `value` may be the minimum age or the notice snooze of the update notice: a whole number
+ * of hours from 0 to MAX_UPDATE_HOURS.
+ */
+export function isUpdateHours(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_UPDATE_HOURS;
+}
+
+/**
+ * Whether `value` may be the update check interval: a whole number of minutes from 1 to
+ * MAX_UPDATE_CHECK_INTERVAL_MINUTES.
+ */
+export function isUpdateCheckInterval(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 &&
+      value <= MAX_UPDATE_CHECK_INTERVAL_MINUTES;
+}
+
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+// An exact, lowercase ASCII host name: no scheme, port, path, wildcard or trailing dot. ASCII because
+// `URL.host` always is (an IDN arrives as punycode), so any other entry could never match.
+const HOST_NAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+/**
+ * An admin's `restrictedWebFetchHosts` as stored: trimmed, lowercased, without blanks or
+ * duplicates. Throws on an entry that is not an exact ASCII host name.
+ */
+export function parseRestrictedWebFetchHosts(hosts: string[]): string[] {
+  let parsed = new Set<string>();
+  for (let entry of hosts) {
+    let host = entry.trim().toLowerCase();
+    if (host === "") continue;
+    if (!HOST_NAME.test(host)) {
+      throw new Error(`"${entry}" is not a host name. Enter exact host names, such as docs.example.com.`);
+    }
+    parsed.add(host);
+  }
+  return [...parsed];
 }
 
 /**
@@ -335,6 +400,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledResources,
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
+    restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
     formats: parseFormats(p.formats),
     modelModes,
     addedProviders: Array.isArray(p.addedProviders)
@@ -349,16 +415,133 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
       ? p.modelsDevSuggestions
       : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
+    // A config stored before the flag existed counts as saved, so a seed set on an existing
+    // deployment never overrides what its admins chose.
+    modelsSaved: typeof p.modelsSaved === "boolean" ? p.modelsSaved : true,
+    updateChecksEnabled: typeof p.updateChecksEnabled === "boolean"
+      ? p.updateChecksEnabled
+      : DEFAULT_ADMIN_CONFIG.updateChecksEnabled,
+    updateCheckIntervalMinutes: isUpdateCheckInterval(p.updateCheckIntervalMinutes)
+      ? p.updateCheckIntervalMinutes
+      : DEFAULT_ADMIN_CONFIG.updateCheckIntervalMinutes,
+    updateMinimumAgeHours: isUpdateHours(p.updateMinimumAgeHours)
+      ? p.updateMinimumAgeHours
+      : DEFAULT_ADMIN_CONFIG.updateMinimumAgeHours,
+    updateNoticeSnoozeHours: isUpdateHours(p.updateNoticeSnoozeHours)
+      ? p.updateNoticeSnoozeHours
+      : DEFAULT_ADMIN_CONFIG.updateNoticeSnoozeHours,
   };
 }
 
-export function parseAdminConfig(raw: string | null): AdminConfig {
-  if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
+/**
+ * The fields ADMIN_CONFIG_SEED may set: the Models tab's. The rest of the config is what an admin
+ * curates for the people using a deployment, which nothing outside the admin UI should decide.
+ */
+export const ADMIN_CONFIG_SEED_FIELDS = [
+  "modelModes", "addedProviders", "addedModels", "modelSettings", "defaultReasoning",
+  "userModelsEnabled", "modelsDevSuggestions",
+] as const satisfies readonly (keyof AdminConfig)[];
+
+/** What ADMIN_CONFIG_SEED may hold. */
+export type AdminConfigSeed =
+    Partial<Pick<AdminConfig, typeof ADMIN_CONFIG_SEED_FIELDS[number]>>;
+
+/**
+ * Parse an ADMIN_CONFIG_SEED value: a JSON object, or that object as a JSON string, which is what
+ * a secret can carry. A value that is not one, or that names a field ADMIN_CONFIG_SEED_FIELDS
+ * leaves out, gives no seed at all rather than part of one, so that a typo cannot apply half of
+ * what was meant. The fields' values are checked later, by normalizeAdminConfig(), the same way
+ * as a stored config's.
+ */
+export function parseAdminConfigSeed(raw: unknown): AdminConfigSeed {
+  if (raw === undefined || raw === null || raw === "") return {};
+  let value: unknown;
   try {
-    return normalizeAdminConfig(JSON.parse(raw) as Partial<AdminConfig>);
+    value = typeof raw === "string" ? JSON.parse(raw) : raw;
   } catch {
-    return { ...DEFAULT_ADMIN_CONFIG };
+    logger.error("ADMIN_CONFIG_SEED is not JSON; ignoring it", {event: "admin.seed.invalid"});
+    return {};
   }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    logger.error("ADMIN_CONFIG_SEED is not a JSON object; ignoring it", {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  let allowed: readonly string[] = ADMIN_CONFIG_SEED_FIELDS;
+  let unknown = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unknown.length > 0) {
+    logger.error(`ADMIN_CONFIG_SEED sets fields it may not (${unknown.join(", ")}); ignoring it`, {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  return value as AdminConfigSeed;
+}
+
+// The last seed parsed, by the value it was parsed from, so the hot path parses (and logs a bad
+// seed) once per isolate rather than once per read.
+let parsedSeed: { raw: unknown, seed: AdminConfigSeed } | undefined;
+
+/** The deployment's ADMIN_CONFIG_SEED, parsed (see parseAdminConfigSeed). */
+export function adminConfigSeed(env: Pick<Cloudflare.Env, "ADMIN_CONFIG_SEED">): AdminConfigSeed {
+  let raw = env.ADMIN_CONFIG_SEED;
+  if (parsedSeed === undefined || parsedSeed.raw !== raw) {
+    parsedSeed = { raw, seed: parseAdminConfigSeed(raw) };
+  }
+  return parsedSeed.seed;
+}
+
+// The Models tab fields of a config no admin has changed them in: the defaults, under the seed.
+function unsavedModelFields(seed: AdminConfigSeed): AdminConfigSeed {
+  let defaults = Object.fromEntries(ADMIN_CONFIG_SEED_FIELDS.map(
+      field => [field, DEFAULT_ADMIN_CONFIG[field]])) as AdminConfigSeed;
+  return { ...defaults, ...seed };
+}
+
+/**
+ * The config a deployment runs on, from the one stored (in the AdminSettings DO or its KV mirror;
+ * null when there is none) and its ADMIN_CONFIG_SEED. Until an admin changes a Models tab setting
+ * (`modelsSaved`), those fields are the defaults under the seed, whatever is stored for them: the
+ * deployment's own writes, such as promoting its bundled formats on its first request, store a
+ * config without ending the seed, and a changed seed applies on the next deploy.
+ *
+ * Without a seed the stored config is read as it is, as it was before seeds existed; so a
+ * deployment whose seed is removed keeps the values the seed last gave it.
+ */
+export function effectiveAdminConfig(
+    stored: Partial<AdminConfig> | null, seed: AdminConfigSeed): AdminConfig {
+  let config = normalizeAdminConfig(stored ?? { ...DEFAULT_ADMIN_CONFIG });
+  if (config.modelsSaved || Object.keys(seed).length === 0) return config;
+  return normalizeAdminConfig({ ...config, ...unsavedModelFields(seed) });
+}
+
+/**
+ * Whether a write from `current` to `next` changes a Models tab setting, which is what ends a
+ * seed (see effectiveAdminConfig). Compared by value, so a setter that rebuilds a record without
+ * changing it does not count.
+ */
+export function changesModelSettings(current: AdminConfig, next: AdminConfig): boolean {
+  return ADMIN_CONFIG_SEED_FIELDS.some(
+      field => canonicalJson(current[field]) !== canonicalJson(next[field]));
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v)
+          ? Object.fromEntries(Object.entries(v).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+          : v);
+}
+
+export function parseAdminConfig(raw: string | null, seed: AdminConfigSeed = {}): AdminConfig {
+  if (!raw) return effectiveAdminConfig(null, seed);
+  let stored: Partial<AdminConfig>;
+  try {
+    stored = JSON.parse(raw) as Partial<AdminConfig>;
+  } catch {
+    return effectiveAdminConfig(null, seed);
+  }
+  return effectiveAdminConfig(stored, seed);
 }
 
 export function serializeAdminConfig(config: AdminConfig): string {
@@ -367,7 +550,7 @@ export function serializeAdminConfig(config: AdminConfig): string {
 
 /** Read the admin config from the KV mirror. Cheap enough for the hot path (a single KV get). */
 export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig> {
-  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY));
+  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY), adminConfigSeed(env));
 }
 
 // --- Resource-disable helpers ---

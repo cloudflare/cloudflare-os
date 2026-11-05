@@ -107,7 +107,8 @@ export class ActionApplyError extends Error {}
  * Marks an apply failure as terminal with an **unknown** provider outcome: the call may already
  * have taken effect. The record is not pruned and no dependent is retired on its account -- a
  * reference it was to provide may in fact exist at the provider -- so it stays until the user
- * rejects it and the reconciliation warning survives.
+ * rejects it and the reconciliation warning survives. Rejecting it retires the dependents whose
+ * references it never bound, since nothing can bind them once it is withdrawn.
  *
  * Pair it with `claimBeforeApply`. Non-replay rests on the durable claim taken *before* dispatch:
  * without one the record is still `pending` when the handler throws, so an activation that dies
@@ -161,9 +162,19 @@ export type ActionContext = {
 
 /** How one kind of action is described to the approver and carried out once approved. */
 export type ActionDefinition<Payload, Host> = {
-  kind?: ActionKind;
-  /** Whether this kind may be auto-applied when the submitted action also allows it. */
-  autoApprovable?: boolean;
+  /**
+   * Sent as `ActionDescription.actionKind`. Users' auto-approval rules are stored under its tag, so
+   * an existing tag is never renamed; definitions sharing a tag must share its label.
+   */
+  kind: ActionKind;
+  /**
+   * Sent as `ActionDescription.autoApprovable`: whether an action of this definition may be applied
+   * without review once the user enables a rule for its `kind`. `true` is the norm; the
+   * `write-gatekeeper` skill's "Action kinds and auto-approval" lists when it must be `false`. A
+   * verdict that depends on the payload is sibling definitions, one `true` and one `false`, with
+   * the session submitting through the one that matches.
+   */
+  autoApprovable: boolean;
   /** Whether pending effects are simulated or the agent must await the decision. */
   delivery: "continue-with-simulation" | "await-decision";
   /**
@@ -204,6 +215,9 @@ export type ActionDefinition<Payload, Host> = {
    * rejects a terminal failure the apply refused *before* dispatch, whose artifacts are still
    * unreleased; a failure the handler itself raised is cleared without it, since the handler owns
    * whatever its partial effect left behind.
+   *
+   * Cleanup only: rejecting withdraws the action even when the provider may already hold its
+   * effect, so the hook must not refuse. One that throws is logged and the action removed anyway.
    * @param payload Stored action payload.
    * @param host Bound provider host.
    * @param ctx Durable action context.
@@ -392,6 +406,7 @@ function strandedBy(
  * const declared = defineActions<VendorApi, { createTask: CreateTask }>({
  *   createTask: {
  *     kind: { tag: "create-task", label: "Create a task" },
+ *     autoApprovable: true,
  *     delivery: "continue-with-simulation",
  *     claimBeforeApply: true,
  *     describe: task => ({
@@ -438,12 +453,6 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       throw new Error(
         `Action "${name}" declares dependsOn, so the set needs isResolvedReference.`);
     }
-    // Auto-approval rules key on the tag, so without a kind the flag could never take effect.
-    if (definition.autoApprovable === true && !definition.kind) {
-      throw new Error(`Action "${name}" declares autoApprovable without a kind.`);
-    }
-    if (definition.kind === undefined) continue;
-
     // The catalog advertises one label per tag, so a second spelling would put a name in the
     // approval UI that does not cover everything enabling that tag authorizes.
     const { tag, label } = definition.kind;
@@ -453,7 +462,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       throw new Error(
         `Action tag "${tag}" is declared with two labels, "${declaredLabel}" and "${label}".`);
     }
-    if (definition.autoApprovable === true) autoApprovableByTag.set(tag, definition.kind);
+    if (definition.autoApprovable) autoApprovableByTag.set(tag, definition.kind);
   }
 
   const attributed = options.vendorId ? logger.with({ vendorId: options.vendorId }) : logger;
@@ -685,15 +694,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         if (record === undefined) return;
         // The same proof of receipt apply takes.
         journal.markSubmitted(id);
-        if (record.state === "claimed" && !claimedHere.has(id)) {
-          return failOrphanedClaim(id);
-        }
 
         const action = record.action;
         // Rejecting a terminal failure is the user clearing the record: its handler already ran
         // and owns whatever it left behind. One that never reached the handler is the exception —
-        // its staging artifacts are still the rejection's to release.
-        const failed = record.state === "failed";
+        // its staging artifacts are still the rejection's to release. A claim orphaned by an
+        // earlier activation reached its handler with an unknown outcome, so it is cleared alike.
+        const failed = record.state === "failed"
+          || (record.state === "claimed" && !claimedHere.has(id));
         try {
           if (!failed || record.undispatched) {
             await definitionFor(action)?.reject?.(action.payload, host, {
@@ -702,13 +710,18 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             });
           }
         } catch (error) {
-          // Same reasoning as a failed apply: the handler may have half-changed simulation state.
-          await resolved("failed");
-          throw error;
+          // Rejecting withdraws the action whatever the provider holds, so a refusal here would
+          // leave it with no way out.
+          attributed.warn("reject hook failed; removing the action anyway", {
+            event: "actions.reject.hook.failed",
+            action: id,
+            error,
+          });
         }
         journal.remove(id);
-        // A failure stranded its dependents when it was recorded.
-        if (!failed) strandDependents(id, action);
+        // A known failure stranded its dependents when it was recorded. An unknown outcome left
+        // them waiting on a reference it might still bind, which nothing can once it is withdrawn.
+        if (record.state !== "failed" || record.outcome === "unknown") strandDependents(id, action);
         await resolved("rejected");
       };
 
@@ -744,16 +757,16 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             title,
             description,
             implementsRevert,
-            // Spread, so an action with no fields, no git, no kind, no awaited decision, or no claim
-            // of completeness puts no key on the wire at all. A push is never complete, whatever the
+            // Spread, so an action with no fields, no git, no awaited decision, or no claim of
+            // completeness puts no key on the wire at all. A push is never complete, whatever the
             // hook claims: the approver sees commit ids, not the bytes they carry.
             ...(fields?.length ? { fields } : {}),
             ...(pushedCommits ? { pushedCommits } : {}),
             ...(descriptionIsComplete === true && !pushedCommits?.length
               ? { descriptionIsComplete: true }
               : {}),
-            autoApprovable: definition.autoApprovable === true,
-            ...(definition.kind ? { actionKind: definition.kind } : {}),
+            autoApprovable: definition.autoApprovable,
+            actionKind: definition.kind,
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
           }, staged, () => {
             const unbound = (definition.dependsOn?.(payload) ?? [])

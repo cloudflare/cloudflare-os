@@ -8,27 +8,40 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ContextApi,
   ContextCollectionMetadata,
+  ContextCollectionPermissions,
   EnabledCollectionInfo,
 } from "../../src/context-types";
 import { ContextApiProvider } from "../bridge";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
-import type { SkillNavigatorCollection } from "./skillNavigatorModel";
+import type { SkillNavigatorCollection, SkillNavigatorNode } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
 import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const info = (id: string): EnabledCollectionInfo => ({
+const info = (
+  id: string,
+  access: Pick<EnabledCollectionInfo, "source" | "membership">,
+): EnabledCollectionInfo => ({
   id,
   title: id,
   description: "",
-  source: "private",
   lastUpdated: new Date(),
+  ...access,
 });
 
-const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
-  collection: info(collectionId),
-  children: [{
+const OWNED: Pick<EnabledCollectionInfo, "source" | "membership"> = {
+  source: "private",
+  membership: { role: "owner", shared: false },
+};
+
+const navigator = (
+  collectionId: string,
+  access = OWNED,
+  children?: SkillNavigatorNode[],
+): SkillNavigatorCollection[] => [{
+  collection: info(collectionId, access),
+  children: children ?? [{
     type: "directory",
     path: "legacy",
     name: "legacy",
@@ -47,6 +60,7 @@ const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
 const metadata = (
   source: "web" | "git",
   visibility: ContextCollectionMetadata["visibility"] = "private",
+  documentCount = 1,
 ): ContextCollectionMetadata => ({
   id: "collection",
   title: "collection",
@@ -54,11 +68,13 @@ const metadata = (
   visibility,
   created: new Date(),
   lastUpdated: new Date(),
-  documentCount: 1,
+  documentCount,
   content: source === "web"
     ? { source }
     : { source, remote: "", branch: "main", lastRefreshedAt: new Date() },
 });
+
+const menuItems = () => [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];
 
 describe("SkillsNavigatorTree", () => {
   let container: HTMLDivElement | undefined;
@@ -72,21 +88,29 @@ describe("SkillsNavigatorTree", () => {
 
   const renderTree = ({
     writable,
-    manageable = writable,
+    permissions = writable
+      ? { canEdit: true, canShare: true, canManageOwners: true, canDelete: true }
+      : undefined,
+    access = OWNED,
     metadataAvailable = true,
     documentsFailed = false,
     retryFails = false,
     source = "web",
     visibility = "private",
+    children,
+    documentCount,
     onUploadSkills = () => {},
   }: {
     writable: boolean;
-    manageable?: boolean;
+    permissions?: ContextCollectionPermissions;
+    access?: Pick<EnabledCollectionInfo, "source" | "membership">;
     metadataAvailable?: boolean;
     documentsFailed?: boolean;
     retryFails?: boolean;
     source?: "web" | "git";
     visibility?: ContextCollectionMetadata["visibility"];
+    children?: SkillNavigatorNode[];
+    documentCount?: number;
     onUploadSkills?: (target: UploadSkillsTarget) => void;
   }) => {
     container = document.createElement("div");
@@ -96,6 +120,10 @@ describe("SkillsNavigatorTree", () => {
       ContextApi["syncContextCollectionArtifactSource"]
     >(async () => {});
     const onDelete = vi.fn<(target: NavigatorDeleteTarget) => void>();
+    const onOpenCollection = vi.fn<(collectionId: string) => void>();
+    const onSelectSkill = vi.fn<(collectionId: string, manifestPath: string) => void>();
+    const onShareCollection = vi.fn<(collection: { id: string; title: string }) => void>();
+    const onLeaveCollection = vi.fn<(collection: { id: string; title: string }) => void>();
     const onRetryCollection = vi.fn<(collectionId: string) => Promise<void>>(async () => {
       if (retryFails) throw new Error("unavailable");
     });
@@ -107,19 +135,22 @@ describe("SkillsNavigatorTree", () => {
       <ContextApiProvider value={api}>
         <Toasty>
           <SkillsNavigatorTree
-            navigator={navigator("collection")}
+            navigator={navigator("collection", access, children)}
             collectionMetadata={metadataAvailable
-              ? new Map([["collection", metadata(source, visibility)]])
+              ? new Map([["collection", metadata(source, visibility, documentCount)]])
               : new Map()}
+            collectionPermissions={permissions ? new Map([["collection", permissions]]) : new Map()}
             failedDocumentCollectionIds={documentsFailed ? new Set(["collection"]) : new Set()}
-            manageableCollectionIds={manageable ? new Set(["collection"]) : new Set()}
             writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
             supportsGitCollections
             expandAll
-            onSelectSkill={() => {}}
+            onSelectSkill={onSelectSkill}
+            onOpenCollection={onOpenCollection}
             onAddSkill={() => {}}
             onUploadSkills={onUploadSkills}
             onEditCollection={() => {}}
+            onShareCollection={onShareCollection}
+            onLeaveCollection={onLeaveCollection}
             onDelete={onDelete}
             onRetryCollection={onRetryCollection}
             onChanged={() => {}}
@@ -127,8 +158,23 @@ describe("SkillsNavigatorTree", () => {
         </Toasty>
       </ContextApiProvider>,
     ));
-    return { onDelete, onRetryCollection, syncContextCollectionArtifactSource };
+    return {
+      onDelete, onLeaveCollection, onOpenCollection, onRetryCollection, onSelectSkill,
+      onShareCollection, syncContextCollectionArtifactSource,
+    };
   };
+
+  const editor: ContextCollectionPermissions = {
+    canEdit: true,
+    canShare: true,
+    canManageOwners: false,
+    canDelete: false,
+  };
+
+  const openMenu = (name: string) => act(() => row(name)?.dispatchEvent(new MouseEvent("contextmenu", {
+    bubbles: true,
+    cancelable: true,
+  })));
 
   const row = (name: string) => [...container!.querySelectorAll<HTMLElement>(
     "[data-hierarchical-list-row]",
@@ -147,6 +193,59 @@ describe("SkillsNavigatorTree", () => {
     expect(document.body.textContent).not.toContain("Delete");
   });
 
+  it("lets a viewer open or leave a collection shared with them, without management actions", () => {
+    const { onLeaveCollection, onOpenCollection } = renderTree({
+      writable: false,
+      permissions: { canEdit: false, canShare: false, canManageOwners: false, canDelete: false },
+      access: { source: "private", membership: { role: "viewer", shared: true } },
+    });
+
+    expect(row("collection")?.textContent).toContain("Shared with you · Viewer");
+    openMenu("collection");
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Open collection", "Leave"]);
+
+    act(() => menuItems().find((item) => item.textContent === "Leave")?.click());
+    expect(onLeaveCollection).toHaveBeenCalledWith({ id: "collection", title: "collection" });
+    openMenu("collection");
+    act(() => menuItems().find((item) => item.textContent === "Open collection")?.click());
+    expect(onOpenCollection).toHaveBeenCalledWith("collection");
+  });
+
+  it("offers editors sharing but not deletion", () => {
+    const { onShareCollection } = renderTree({
+      writable: true,
+      permissions: editor,
+      access: { source: "private", membership: { role: "editor", shared: true } },
+    });
+
+    expect(row("collection")?.textContent).toContain("Shared with you · Editor");
+    openMenu("collection");
+    expect([...document.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .map((item) => item.textContent)).toEqual([
+      "Open collection",
+      "Add skill",
+      "Upload skills",
+      "Edit",
+      "Share",
+      "Leave",
+    ]);
+
+    const share = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent === "Share");
+    act(() => share?.click());
+    expect(onShareCollection).toHaveBeenCalledWith({ id: "collection", title: "collection" });
+  });
+
+  it("labels an owned collection as shared once others can read it", () => {
+    renderTree({
+      writable: true,
+      access: { source: "private", membership: { role: "owner", shared: true } },
+    });
+
+    expect(row("collection")?.textContent).toContain("Shared");
+    expect(row("collection")?.textContent).not.toContain("Shared with you");
+  });
+
   it("moves skills but not legacy directories in a writable collection", () => {
     renderTree({ writable: true });
 
@@ -158,10 +257,10 @@ describe("SkillsNavigatorTree", () => {
     expect(row("legacy")?.draggable).toBe(false);
   });
 
-  it("identifies and refreshes a manageable Git collection", async () => {
+  it("identifies and refreshes an editable Git collection", async () => {
     const { syncContextCollectionArtifactSource } = renderTree({
       writable: false,
-      manageable: true,
+      permissions: editor,
       source: "git",
     });
     const collectionRow = row("collection");
@@ -186,7 +285,7 @@ describe("SkillsNavigatorTree", () => {
   });
 
   it("identifies an organization collection", () => {
-    renderTree({ writable: true, visibility: "public" });
+    renderTree({ writable: true, access: { source: "public" }, visibility: "public" });
 
     expect(row("collection")?.textContent).toContain("Organization");
   });
@@ -194,18 +293,14 @@ describe("SkillsNavigatorTree", () => {
   it("keeps delete available when collection metadata fails to load", () => {
     const { onDelete } = renderTree({
       writable: false,
-      manageable: true,
+      permissions: { ...editor, canDelete: true },
       metadataAvailable: false,
     });
 
-    act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true,
-      cancelable: true,
-    })));
-    const menuItems = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];
-    expect(menuItems.map((item) => item.textContent)).toEqual(["Delete"]);
+    openMenu("collection");
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Open collection", "Share", "Delete"]);
 
-    act(() => menuItems[0]?.click());
+    act(() => menuItems()[2]?.click());
     expect(onDelete).toHaveBeenCalledWith({
       type: "collection",
       collectionId: "collection",
@@ -216,20 +311,17 @@ describe("SkillsNavigatorTree", () => {
   it("shows document load failures with retry and withholds collection deletion", () => {
     const { onRetryCollection } = renderTree({
       writable: false,
-      manageable: true,
+      permissions: { ...editor, canShare: false, canDelete: true },
       documentsFailed: true,
     });
 
     const retryRow = row("click to try again");
     expect(retryRow?.textContent).toBe("Couldn't load contents, click to try again");
 
-    act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true,
-      cancelable: true,
-    })));
+    openMenu("collection");
     const menu = document.querySelector<HTMLElement>("[role=menu]");
     expect([...menu!.querySelectorAll<HTMLElement>("[role=menuitem]")]
-      .map((item) => item.textContent)).toEqual(["Edit"]);
+      .map((item) => item.textContent)).toEqual(["Open collection", "Edit"]);
 
     act(() => retryRow?.click());
     expect(onRetryCollection).toHaveBeenCalledWith("collection");
@@ -238,7 +330,7 @@ describe("SkillsNavigatorTree", () => {
   it("shows a toast when retrying a document load fails", async () => {
     renderTree({
       writable: false,
-      manageable: true,
+      permissions: editor,
       documentsFailed: true,
       retryFails: true,
     });
@@ -263,9 +355,11 @@ describe("SkillsNavigatorTree", () => {
     expect(menu).not.toBeNull();
     expect([...menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
       .map((item) => item.textContent)).toEqual([
+        "Open collection",
         "Add skill",
         "Upload skills",
         "Edit",
+        "Share",
         "Delete",
       ]);
   });
@@ -304,5 +398,52 @@ describe("SkillsNavigatorTree", () => {
     expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
     act(() => vi.advanceTimersByTime(0));
     expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+
+  it("shows an invalid skill manifest with its error and opens it for fixing", () => {
+    const { onSelectSkill } = renderTree({
+      writable: true,
+      children: [{
+        type: "skill",
+        collectionId: "collection",
+        manifestPath: "pricing-analytics/SKILL.md",
+        directoryPath: "pricing-analytics",
+        name: "pricing-analytics",
+        description: "Unused",
+        lastUpdated: new Date(),
+        invalid: "Skill frontmatter is not valid YAML.",
+      }],
+    });
+
+    const skillRow = row("pricing-analytics");
+    expect(skillRow?.textContent).toContain("Skill frontmatter is not valid YAML.");
+    expect(skillRow?.draggable).toBe(false);
+    expect(skillRow?.textContent).not.toContain("Unused");
+
+    openMenu("pricing-analytics");
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Delete"]);
+
+    act(() => skillRow?.click());
+    expect(onSelectSkill).toHaveBeenCalledWith("collection", "pricing-analytics/SKILL.md");
+  });
+
+  it("opens a collection that has documents but no skills", () => {
+    const { onOpenCollection } = renderTree({
+      writable: false,
+      source: "git",
+      children: [],
+      documentCount: 40,
+    });
+
+    expect(container?.textContent).not.toContain("No contents");
+    act(() => row("40 files, no skills. Open collection")?.click());
+    expect(onOpenCollection).toHaveBeenCalledWith("collection");
+  });
+
+  it("calls a collection with no documents empty", () => {
+    renderTree({ writable: true, children: [], documentCount: 0 });
+
+    expect(row("No contents")).toBeDefined();
+    expect(container?.textContent).not.toContain("Open collection");
   });
 });

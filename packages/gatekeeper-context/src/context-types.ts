@@ -6,9 +6,6 @@ import type { RpcTarget } from "capnweb";
 /** Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased). */
 export const VENDOR_ID = "context";
 
-/** Error returned when a visible collection already uses the requested title. */
-export const DUPLICATE_COLLECTION_TITLE_ERROR = "A collection with this name already exists.";
-
 // ---------------------------------------------------------------------------
 // Read-session value types
 //
@@ -105,7 +102,12 @@ export function decodeDocId(docId: string): {collectionId: string; path: string}
 // Stored data model
 // ---------------------------------------------------------------------------
 
-/** Collection visibility within a sharing domain. */
+/**
+ * Collection visibility within a sharing domain, which says who can read a collection: `private`,
+ * its members (see ContextApi.shareContextCollection()), or every account in the domain when its
+ * `everyoneCanView` is set (see ContextApi.setContextCollectionEveryoneCanView()); or `public`,
+ * everyone, which only deployment admins may create or edit.
+ */
 export type ContextCollectionVisibility = "public" | "private";
 export const DEFAULT_GIT_BRANCH = "main";
 
@@ -194,20 +196,20 @@ export type ContextDocumentSummary = {
   name: string;
   description: string;
   contentType: string;
+  /** Set when this document is a valid skill. */
   skillName?: string;
+  /** Set when this document is a SKILL.md whose frontmatter fails validation; says why. */
+  skillError?: string;
   lastUpdated: Date;
 };
 
-/** A user's record of one of their own (private) collections. */
-export type OwnedCollectionRecord = {
-  id: string;
-  title: string;
-  description: string;
-  icon?: string;
-  lastUpdated: Date;
-};
+/**
+ * An account's role on a private collection. Every role reads all of its content; see
+ * ContextCollectionPermissions for what each may change.
+ */
+export type ContextCollectionRole = "viewer" | "editor" | "owner";
 
-/** Collections an account's agents can use: own private plus all public. */
+/** Collections in an account's library: those it holds a role on, plus every public one. */
 export type EnabledCollectionInfo = {
   id: string;
   title: string;
@@ -215,6 +217,46 @@ export type EnabledCollectionInfo = {
   icon?: string;
   source: "private" | "public";
   lastUpdated: Date;
+  /** Private collections only: this account's role, and whether anyone else can read it. */
+  membership?: { role: ContextCollectionRole; shared: boolean };
+};
+
+/** What the viewing account may do with one collection. */
+export type ContextCollectionPermissions = {
+  /**
+   * Edit web-managed content and collection details, and manage git mirroring. On a private
+   * collection, also share it as viewer or editor and toggle everyone-viewable.
+   */
+  canEdit: boolean;
+  /** Open the Share dialog: an editable private collection. */
+  canShare: boolean;
+  /** Grant `owner`, and demote or remove owners. */
+  canManageOwners: boolean;
+  /** Delete the whole collection. */
+  canDelete: boolean;
+};
+
+/** One account holding a role on a private collection. */
+export type ContextCollectionMember = {
+  /** Opaque member identifier, passed back to change or remove this member's role. */
+  memberId: string;
+  role: ContextCollectionRole;
+  /**
+   * The Workshop display name snapshotted when they were added. Absent for the account that
+   * created the collection before sharing existed. Presentation only.
+   */
+  displayName?: string;
+  /** Whether this member is the viewing account. */
+  isViewer: boolean;
+};
+
+/** A private collection's sharing state. */
+export type ContextCollectionSharing = {
+  members: ContextCollectionMember[];
+  /** Every account in the sharing domain may read it, without it appearing in their library. */
+  everyoneCanView: boolean;
+  /** False once the last owner's account was disconnected while others still held access. */
+  hasOwner: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -327,6 +369,12 @@ export interface ContextApi extends RpcTarget {
   /** Gates creating/editing public collections and offering Git-backed collections. */
   getViewerInfo(): Promise<{ isAdmin: boolean; supportsGitCollections: boolean }>;
 
+  /**
+   * Creates a collection this account owns. `description` is what agents read to decide whether it
+   * is relevant; `icon` is an emoji. `source` is `"web"` (the default: its documents are written
+   * through this API) or `"git"`, a Git repository reached with a token from
+   * createContextCollectionGitToken(), where getViewerInfo() says the deployment supports it.
+   */
   createContextCollection(
     title: string, description: string, visibility: ContextCollectionVisibility, icon?: string,
     source?: ContextCollectionContent["source"],
@@ -346,7 +394,17 @@ export interface ContextApi extends RpcTarget {
   putContextDocument(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;
-  /** Creates a skill, rejecting the operation if its directory is already occupied. */
+  /**
+   * Creates a skill, rejecting the operation if its directory is already occupied. `path` is the
+   * skill's manifest, a file named SKILL.md in a new directory: `my-skill/SKILL.md`, or
+   * `tools/my-skill/SKILL.md` in an existing directory that is not inside another skill.
+   *
+   * `doc.body` is the manifest's text. It starts with YAML frontmatter between two `---` lines,
+   * holding `name` (at most 64 characters of lowercase letters, digits and single hyphens:
+   * `my-skill`) and `description` (1 to 1024 characters: what the skill does and when to use it);
+   * the instructions follow it. `doc.description` describes the document in listings, as for any
+   * document. Supporting files go in the skill's directory, written with putContextDocument().
+   */
   createContextSkill(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;
@@ -360,8 +418,26 @@ export interface ContextApi extends RpcTarget {
   moveContextSkill(collectionId: string, manifestPath: string, directoryPath: string): Promise<void>;
   /** Atomically renames a skill directory and its manifest name. */
   renameContextSkill(collectionId: string, manifestPath: string, newName: string): Promise<void>;
-  /** Own private collections plus every public one. */
+  /** Collections this account holds a role on, plus every public one. */
   listEnabledContextCollections(): Promise<EnabledCollectionInfo[]>;
-  /** Whether the viewer may edit this collection: own private collection, or public collection as admin. */
-  canWriteContextCollection(collectionId: string): Promise<boolean>;
+  /** What the viewer may do with a collection it can read. */
+  getContextCollectionPermissions(collectionId: string): Promise<ContextCollectionPermissions>;
+
+  // --- Sharing (private collections only) ---
+
+  /** Members and everyone-viewability of a collection the viewer can read. */
+  getContextCollectionSharing(collectionId: string): Promise<ContextCollectionSharing>;
+  /**
+   * Share with the person a Workshop user-picker ticket names. Resolves once the share is durable;
+   * rejects with a message meant for display beside that person.
+   */
+  shareContextCollection(
+    collectionId: string, ticket: string, role: ContextCollectionRole): Promise<void>;
+  setContextCollectionMemberRole(
+    collectionId: string, memberId: string, role: ContextCollectionRole): Promise<void>;
+  /** Remove a member; removing the viewer's own membership leaves the collection. */
+  removeContextCollectionMember(collectionId: string, memberId: string): Promise<void>;
+  /** Give up the viewer's own role, whatever it is; the last owner cannot leave. */
+  leaveContextCollection(collectionId: string): Promise<void>;
+  setContextCollectionEveryoneCanView(collectionId: string, everyoneCanView: boolean): Promise<void>;
 }

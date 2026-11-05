@@ -45,6 +45,8 @@ See `src/types.d.ts` for the full, agent-facing Session API.
    - `read:label:confluence`, `write:label:confluence`
    - `read:attachment:confluence`, `write:attachment:confluence`, `delete:attachment:confluence`
    - `read:user:confluence`
+   - `read:hierarchical-content:confluence` (the resource picker's content tree: folders,
+     whiteboards, databases)
 
    **Classic scopes** (authorize the v1 fallbacks — v1 doesn't accept granular scopes):
    - `search:confluence` (CQL search)
@@ -127,18 +129,37 @@ and restore-from-trash.
 Every read calls `ApprovalQueue.authorizeObservation()`; every side-effecting operation
 (create/edit page or blog post, comments, labels, attachment upload, trash/restore) is recorded as
 a pending action and submitted via `submitAction()` — nothing reaches Confluence until the Overseer
-calls `applyAction()`. Reads simulate pending (unapproved) writes so the agent can keep working
+calls `applyAction()`. A user can let creates, edits, renames, comments, labels, attachment uploads
+and restores apply without review, each kind on its own; moving content to the trash always waits
+for a person. Reads simulate pending (unapproved) writes so the agent can keep working
 before approval (provisional IDs for created content, body/title/label/comment overlays, trashed
 state). `rejectAction()` / `revertAction()` discard or undo. Content responses are cached in DO
 storage with a short TTL and invalidated on write. This logic lives in `confluence-actions.ts`.
 
-## Resource pickers
+## Resource picker
 
-The Connections UI shows space / page-or-blog / site pickers supplied by
-`startResourceConfigurator()`. Pasting a resource URL — or an agent's
-`requestConnection(resourceUrl)` — also works and pre-fills the picker. For multi-site Atlassian
-accounts the space/page pickers search across **all** accessible sites (each option's value carries
-the correct site), so pasting a URL works for any connected site too.
+The three resource types are grouped (`groupedWith`) into one Confluence card, and one configurator
+frame (`src/configurator/confluence-configurator-ui.tsx`, served by `confluence-configurator.ts`)
+chooses among them. It is the shared `HierarchyPicker` from `@gadgets/configurator-ui`, with the
+whole site above and three tabs: recently viewed pages, what the user starred (spaces, pages and
+blog posts) and every space. A space
+opens into its home page, blog and page tree; search covers the whole site (titles, or a pasted
+link, short `/wiki/x/…` links included). Rows use Confluence's own icons; space avatars are fetched
+after the rows show (`spaceAvatars`), so no listing waits on them. Icon downloads accept only an
+HTTPS redirect to Atlassian's media host, send it no OAuth token, refuse further redirects, and
+enforce a byte cap on both declared and streamed bodies. The frame
+trades refs; `resourceUrlFor` writes the resource URL, always in the page-shaped form for pages and
+blog posts, so the URL patterns and every existing binding are unchanged. Pasting a resource URL, or
+an agent's `requestConnection(resourceUrl)`, opens the picker where it lives; one this connection
+can't open pre-fills nothing, never the whole site. When the Workshop accepts only some resource
+types (a blueprint binding), the rest can be opened but not chosen.
+
+Folders, whiteboards, databases and embeds are listed through Confluence's content-tree endpoints,
+which need `read:hierarchical-content:confluence`. A grant without it (connected before the scope
+was added) still lists pages, with a notice to reconnect; the scopes a grant holds are recorded
+from the token response, since `accessible-resources` doesn't list this one. **An Atlassian app
+must enable the scope before this version is deployed**, or new connections fail with
+`invalid_scope`.
 
 ## Notes and current limitations
 
@@ -151,6 +172,6 @@ the correct site), so pasting a URL works for any connected site too.
 
 ## Development
 
-- `pnpm exec vp run -F @gadgets/confluence-gatekeeper build` — build the configurator UIs (`build:configurator`, which this task depends on) and type-check (`tsc`). A Vite+ task rather than a script, so `pnpm --filter` cannot see it.
-- `pnpm --filter @gadgets/confluence-gatekeeper test:run` — run unit tests (URL/CQL parsing, Markdown conversion, v2 converters, action simulation).
+- `pnpm exec vp run -F @gadgets/confluence-gatekeeper build` — build the configurator UI (`build:configurator`, which this task depends on) and type-check (`tsc`). A Vite+ task rather than a script, so `pnpm --filter` cannot see it.
+- `pnpm --filter @gadgets/confluence-gatekeeper test:run` — build the configurator frame, then run the unit tests (URL/CQL parsing, Markdown conversion, v2 converters, icon redirect and byte-limit enforcement, action simulation, the configurator against a fake Confluence) and the frame's journeys in Chromium (`__tests__/configurator-frame.test.ts`, through `__tests__/frame-host.ts`).
 - The Worker is run via the root `pnpm dev-server`, not directly.

@@ -282,7 +282,11 @@ function googleAccount(id: number, grantedResourceUrlPatterns: string[]): Accoun
   }
 }
 
-function gatekeeperApi(initialGrants: string[] | null, secondAccountGrants?: string[]) {
+function gatekeeperApi(
+  initialGrants: string[] | null,
+  secondAccountGrants?: string[],
+  resource = CALENDAR_RESOURCE,
+) {
   let subscriber: ConnectedAccountsSubscriber | null = null
   const startResourceConfigurator = vi.fn<
     (accountId: number, resourceUrlPattern: string) => Promise<ResourceConfiguratorFrame>
@@ -304,15 +308,15 @@ function gatekeeperApi(initialGrants: string[] | null, secondAccountGrants?: str
     listGatekeeperVendors: async () => [{
       id: 'google',
       description: GOOGLE_VENDOR,
-      supportedResources: [CALENDAR_RESOURCE],
+      supportedResources: [resource],
     }],
     subscribeConnectedAccounts: (nextSubscriber: ConnectedAccountsSubscriber) => {
       subscriber = nextSubscriber
       if (initialGrants) {
-        subscriber.add(7, googleAccount(7, initialGrants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+        subscriber.add(7, googleAccount(7, initialGrants), GOOGLE_VENDOR, [resource], true, 'google')
       }
       if (secondAccountGrants) {
-        subscriber.add(8, googleAccount(8, secondAccountGrants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+        subscriber.add(8, googleAccount(8, secondAccountGrants), GOOGLE_VENDOR, [resource], true, 'google')
       }
       subscriber.ready()
       return subscription()
@@ -331,11 +335,11 @@ function gatekeeperApi(initialGrants: string[] | null, secondAccountGrants?: str
     reconnectAccount,
     updateGrants(grants: string[]) {
       if (!subscriber) throw new Error('account subscriber is not ready')
-      subscriber.add(7, googleAccount(7, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+      subscriber.add(7, googleAccount(7, grants), GOOGLE_VENDOR, [resource], true, 'google')
     },
-    addAccount(id: number, grants: string[]) {
+    addAccount(id: number, grants: string[], supportedResources = [resource]) {
       if (!subscriber) throw new Error('account subscriber is not ready')
-      subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+      subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, supportedResources, true, 'google')
     },
     removeAccount(id: number) {
       if (!subscriber) throw new Error('account subscriber is not ready')
@@ -383,6 +387,49 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await act(async () => findButton('Save connection')!.click())
     await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
   }
+
+  it.each([{ grants: null }, { grants: [CALENDAR_PATTERN] }])(
+    'explains an unsupported creation-only blueprint binding with account grants $grants',
+    async ({ grants }) => {
+      const harness = gatekeeperApi(grants, undefined, {
+        ...CALENDAR_RESOURCE, connectable: false, creatable: true,
+      })
+      await render(harness)
+      await act(async () => findButton('Configure')!.click())
+
+      expect(document.body.textContent).toContain('does not support connecting an existing resource')
+      expect(findButton('Connect Google')).toBeUndefined()
+      expect(findButton('Save connection')!.disabled).toBe(true)
+      expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+    },
+  )
+
+  it('invalidates a saved connection when its account stops offering connections', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await saveCalendarConnection()
+    harness.startResourceConfigurator.mockClear()
+
+    await act(async () => harness.addAccount(7, [CALENDAR_PATTERN], [{
+      ...CALENDAR_RESOURCE, connectable: false, creatable: true,
+    }]))
+
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+    await act(async () => findButton('Configure')!.click())
+    expect(document.body.textContent).toContain("Your connected Google account can't be used")
+    expect(findButton('Save connection')!.disabled).toBe(true)
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+  })
+
+  it('configures an existing resource when its type also offers creation', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN], undefined, {
+      ...CALENDAR_RESOURCE, connectable: true, creatable: true,
+    })
+    await render(harness)
+    await saveCalendarConnection()
+
+    expect(harness.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN)
+  })
 
   it('shows the recommendation without prefilling it into the configurator', async () => {
     const harness = gatekeeperApi([CALENDAR_PATTERN])
@@ -505,6 +552,32 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await act(async () => findButton('Connect Google')!.click())
 
     expect(harness.connectAccount).toHaveBeenCalledExactlyOnceWith('google', [CALENDAR_PATTERN])
+  })
+
+  it('explains why a newly connected account that cannot serve the binding is not listed', async () => {
+    // A gatekeeper may offer an account fewer resource types than its vendor, and the chooser lists
+    // only accounts offering the binding's type, so without a message the account the user just
+    // connected silently never appears.
+    const harness = gatekeeperApi(null)
+    await render(harness)
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Connect Google')).toBeDefined())
+
+    await act(async () => harness.addAccount(7, [GMAIL_PATTERN], [{
+      urlPattern: GMAIL_PATTERN,
+      title: 'Gmail',
+      description: 'Read and send mail.',
+      grantable: true,
+    }]))
+
+    expect(document.body.textContent).toContain("Your connected Google account can't be used for Google Calendar")
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(8, CALENDAR_PATTERN))
+    expect(document.body.textContent).not.toContain("can't be used for Google Calendar")
   })
 
   it('unblocks configuration when the server says the resource is already granted', async () => {

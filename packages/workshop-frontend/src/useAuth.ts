@@ -3,6 +3,8 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
 import { NativeConnectSession } from './features/native-app/connectSession'
+import { browserPushSupport, disableBrowserPush } from './features/notifications/browserPush'
+import { disconnectNativeNotificationEnrollment } from './features/notifications/nativeNotificationEnrollment'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -127,18 +129,20 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }
 
   const logout = () => {
-    setReportedUserId(undefined)
-
-    if (CF_ACCESS_MODE) {
-      window.location.assign('/cdn-cgi/access/logout')
-      return
+    try {
+      disconnectNativeNotificationEnrollment()
+    } catch (error) {
+      console.error('Failed to disconnect native notifications:', error)
     }
+    setReportedUserId(undefined)
+    // On a shared computer, signing out is how the user stops this browser showing their chats.
+    const releasePush = browserPushSupport() === 'supported'
+      ? disableBrowserPush().catch(error =>
+          console.error('Failed to stop browser notifications:', error))
+      : Promise.resolve()
 
-    // Use functional updater to read current state (avoids stale closure).
     setAuthState(prev => {
-      if (prev.authenticatedApi) {
-        prev.authenticatedApi[Symbol.dispose]()
-      }
+      prev.authenticatedApi?.[Symbol.dispose]()
       return {
         token: null,
         authenticatedApi: null,
@@ -146,8 +150,12 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
         error: null
       }
     })
-
     localStorage.removeItem('authToken')
+
+    if (CF_ACCESS_MODE) {
+      void releasePush.then(() => window.location.assign('/cdn-cgi/access/logout'))
+      return
+    }
   }
 
   return {

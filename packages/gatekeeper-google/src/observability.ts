@@ -6,10 +6,14 @@ export type GoogleObservabilityFields = {
   conversionKind: string;
   copyFileId: string;
   fileId: string;
+  /** Whether a converted PDF had a text layer. */
+  hasText: boolean;
   httpStatus: number;
   messageId: string;
   method: string;
   operation: string;
+  /** Size of a PDF sent for conversion, in bytes. */
+  pdfBytes: number;
   provider: string;
   providerCode: number;
   providerReasons: string[];

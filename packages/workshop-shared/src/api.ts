@@ -153,14 +153,17 @@ export interface PublicApi extends RpcTarget {
       : Promise<string | null>;
 
   /**
-   * Fetch blueprint metadata by ID. Returns null if the blueprint doesn't exist. No
-   * authentication required (knowing the ID is sufficient, since a blueprint is "just data").
+   * Fetch blueprint metadata by ID, whose current release says if an update is available. A gadget
+   * following the blueprint has one when that release differs from the release it last took (see
+   * GadgetUpstream). Returns null if the blueprint doesn't exist. No authentication required
+   * (knowing the ID is sufficient, since a blueprint is "just data").
    */
   getBlueprint(id: string): Promise<BlueprintPublicInfo | null>;
 
   /**
-   * Download a blueprint as a `.gadget` archive stream. The archive contains only
-   * BlueprintMetadata plus the current blueprint code snapshot, not the full KV record.
+   * Export a blueprint: download it as a `.gadget` archive stream. Another Workshop instance takes
+   * the archive in with AuthenticatedApi.importBlueprint(). It contains only BlueprintMetadata plus
+   * the current blueprint code snapshot, not the full KV record.
    */
   downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>>;
 }
@@ -197,6 +200,14 @@ export type UserNotification = {
   chatTitle: string;
 };
 
+/** A browser's Web Push subscription: the endpoint its push service issued, and the keys that encrypt pushes to it. */
+export type WebPushSubscription = {
+  /** Push service URL the browser issued for this subscription. */
+  endpoint: string;
+  /** The browser's encryption keys, base64url-encoded as `PushSubscription.toJSON()` returns them. */
+  keys: { p256dh: string; auth: string };
+};
+
 /** How long a workspace's notifications stay muted: until a time, or until the user unmutes it. */
 export type NotificationMute = { until: Date, indefinite?: never } | { indefinite: true, until?: never };
 
@@ -204,10 +215,159 @@ export type NotificationMute = { until: Date, indefinite?: never } | { indefinit
 export interface NotificationSubscriber extends RpcTarget {
   /**
    * Present a notification to the active user. Resolve only once the user has seen it, or is
-   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to mobile
-   * push delivery.
+   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to push to
+   * the user's registered devices and browsers.
    */
   notify(notification: UserNotification): Promise<void>;
+}
+
+// Unread tracking
+//
+// Every user has their own private read position in each chat; other users never see it. Unread
+// counts include only "visible" messages, meaning chat messages with text or attachments, from a
+// person or the agent. Tool calls, reasoning-only records, slash-command expansions and other
+// internal activity are never counted.
+//
+// Read positions are timeline sequence numbers (the same numbers as `AiChatMessage.sequence`), so
+// a client can pass the sequence of a message it is displaying. Messages written before unread
+// tracking was introduced always count as read.
+//
+// Unread state is tracked only for workspaces the user owns or can build in, not for use-only
+// workspaces. It is stored with the user's account and kept up to date by each workspace as
+// messages arrive. So the unread queries and subscriptions on `AuthenticatedApi` are cheap and
+// never need to open a workspace. Marking a single chat read or unread goes through that
+// workspace's `Overseer` session (`markChatRead()` / `markChatUnread()`), because only the
+// workspace can turn a sequence number into a count of visible messages. See
+// docs/user-unread-state.md for the full design.
+
+/** The current user's read state for one chat. */
+export type ChatReadState = {
+  /** Workspace containing the chat. */
+  workspaceId: string;
+  /** The chat's ID within its workspace. */
+  chatId: number;
+  /** How many visible messages in the chat the user hasn't read. Zero means the chat is fully read. */
+  unreadMessageCount: number;
+  /**
+   * Sequence of the last timeline record the user has read, inclusive: any visible messages after
+   * it are unread. -1 means the user hasn't read anything in this chat yet. Use this, for example,
+   * to place a "new messages" divider.
+   */
+  readThroughSequence: number;
+};
+
+/**
+ * What a chat's most recent visible message looks like, used to display the chat in a list such as
+ * the unread inbox. It's the same for every user, regardless of what they've read.
+ */
+export type ChatTimelineHead = {
+  /** The chat's current title. */
+  chatTitle: string;
+  /** Sequence of the chat's latest visible message, or -1 if the chat has none. */
+  latestSequence: number;
+  /**
+   * Snippet of the latest visible message: its first line of text, cut off at 240 characters
+   * ("Attachment" if the message only has attachments). Empty if the chat has no visible messages.
+   * Absent when the server is older than this field.
+   */
+  latestMessagePreview?: string;
+  /**
+   * When the latest visible message was sent. Absent if the chat has no visible messages, or when
+   * the server is older than this field.
+   */
+  latestActivityAt?: Date;
+};
+
+/**
+ * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
+ * Returned by `AuthenticatedApi.getUnreadThreads()`.
+ */
+export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
+
+/** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
+export type WorkspaceUnreadSummary = {
+  /** The workspace these totals are for. */
+  workspaceId: string;
+  /** Number of chats in the workspace with at least one unread message. */
+  unreadChatCount: number;
+  /** Total number of unread messages across all chats in the workspace. */
+  unreadMessageCount: number;
+};
+
+/** The user's unread totals for badges: overall and per workspace, without per-chat details. */
+export type UserUnreadSummary = {
+  /** Number of chats with at least one unread message, across all of the user's workspaces. */
+  unreadChatCount: number;
+  /** Total number of unread messages across all of the user's workspaces. */
+  unreadMessageCount: number;
+  /**
+   * Totals for each workspace that has unread messages. Fully read workspaces are left out, so a
+   * workspace that isn't listed has nothing unread.
+   */
+  workspaces: WorkspaceUnreadSummary[];
+};
+
+/**
+ * Updated unread totals, sent to live subscribers when something changes. To keep updates small,
+ * this has the new overall totals but only the one workspace whose totals changed, not all of them.
+ */
+export type UnreadSummaryUpdate = {
+  /** Number of chats with unread messages across all of the user's workspaces. */
+  unreadChatCount: number;
+  /** Total unread messages across all of the user's workspaces. */
+  unreadMessageCount: number;
+  /**
+   * New totals for the workspace that changed; replace your copy of that workspace's totals with
+   * these. If the counts are zero, the workspace now has nothing unread and should be dropped from
+   * your `UserUnreadSummary.workspaces` list.
+   */
+  workspace: WorkspaceUnreadSummary;
+};
+
+/**
+ * Which chats an `AuthenticatedApi.subscribeToUnreadState()` subscription receives per-chat
+ * updates for. Every scope receives the overall and per-workspace totals. The scope only controls
+ * which chat rows are sent:
+ * - `"summary"`: no chats, only totals (e.g. for badges).
+ * - `"unread"`: every chat that has unread messages (e.g. for the unread inbox).
+ * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
+ *   list).
+ */
+export type UnreadStateScope = "summary" | "unread" | {
+  /** The workspace whose chats to send. */
+  workspaceId: string;
+};
+
+/** A full snapshot for an unread-state subscription: the totals, plus the chats its scope asks for. */
+export interface UserUnreadState extends UserUnreadSummary {
+  /**
+   * The chats in the subscription's scope (see `UnreadStateScope`): none for `"summary"`, chats
+   * with unread messages for `"unread"`, or one workspace's chats for a workspace scope. Chats in
+   * that workspace that aren't listed have nothing unread.
+   */
+  chats: ChatReadState[];
+}
+
+/** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
+export interface UnreadStateSubscriber extends RpcTarget {
+  /**
+   * Replace everything you have with this full snapshot. Called once right after subscribing, and
+   * again after changes that affect many chats at once (such as "mark all read", or losing access
+   * to a workspace).
+   */
+  updated(state: UserUnreadState): Promise<void>;
+  /**
+   * The totals changed because of a chat outside this subscription's scope. Apply the new totals;
+   * no chat rows are affected.
+   */
+  summaryUpdated(summary: UnreadSummaryUpdate): Promise<void>;
+  /**
+   * One chat in this subscription's scope changed. Replace your row for it with `chat`, or remove
+   * the row if `chat` is null (the chat was deleted, or, for the `"unread"` scope, it's now fully
+   * read). `summary` has the updated totals, just like `summaryUpdated()`.
+   */
+  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+    summary: UnreadSummaryUpdate): Promise<void>;
 }
 
 /**
@@ -353,12 +513,13 @@ export type ObserverAccountChoice = {
 };
 
 /**
- * Provided by the client when opening a gadget. Invoked by the overseer ONLY if the opening user
- * must choose connected accounts for one or more gatekeeper bindings before they can observe the
- * gadget. In the common case (owner, or an already-configured observer) this is never called and
- * open() resolves without an extra round trip. The overseer does not resolve open() until this
- * returns. If the user cannot or will not provide the needed accounts, the callback should reject,
- * and the overseer denies the open.
+ * Provided by the client when opening a workspace, or a gadget within it (see
+ * Overseer.getGadget()). Invoked by the overseer ONLY if the user must choose connected accounts
+ * for one or more gatekeeper bindings before they can observe what they are opening. In the common
+ * case (owner, or an already-configured observer) this is never called and the open resolves
+ * without an extra round trip. The overseer does not resolve the open until this returns. If the
+ * user cannot or will not provide the needed accounts, the callback should reject, and the
+ * overseer denies the open.
  *
  * `configure()` may be called a second time within one open, for the subset of bindings that failed
  * verification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --
@@ -386,30 +547,30 @@ function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
   };
 }
 
-/** Stable error codes attached to expected failures from `AuthenticatedApi.openGadget()`. */
-export const OPEN_GADGET_ERROR_CODES = {
+/** Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`. */
+export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
   workspaceAccessDenied: "WORKSPACE_ACCESS_DENIED",
   shareLinksDisabled: "SHARE_LINKS_DISABLED",
 } as const;
 
-/** An expected failure code from `AuthenticatedApi.openGadget()`. */
-export type OpenGadgetErrorCode =
-    typeof OPEN_GADGET_ERROR_CODES[keyof typeof OPEN_GADGET_ERROR_CODES];
+/** An expected failure code from `AuthenticatedApi.openWorkspace()`. */
+export type OpenWorkspaceErrorCode =
+    typeof OPEN_WORKSPACE_ERROR_CODES[keyof typeof OPEN_WORKSPACE_ERROR_CODES];
 
-const openGadgetErrors = codedErrorFamily<OpenGadgetErrorCode>({
-  [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
-  [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
-  [OPEN_GADGET_ERROR_CODES.shareLinksDisabled]:
+const openWorkspaceErrors = codedErrorFamily<OpenWorkspaceErrorCode>({
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
+  [OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
+  [OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled]:
       "Share links are disabled for this workspace because it contains sensitive data. " +
       "The owner must add each person directly.",
 });
 
-/** Creates an expected `openGadget()` error with a machine-readable code. */
-export const createOpenGadgetError = openGadgetErrors.create;
+/** Creates an expected `openWorkspace()` error with a machine-readable code. */
+export const createOpenWorkspaceError = openWorkspaceErrors.create;
 
-/** Reads the machine-readable code from an expected `openGadget()` error. */
-export const getOpenGadgetErrorCode = openGadgetErrors.getCode;
+/** Reads the machine-readable code from an expected `openWorkspace()` error. */
+export const getOpenWorkspaceErrorCode = openWorkspaceErrors.getCode;
 
 /** Stable error codes attached to authentication failures. */
 export const AUTH_ERROR_CODES = {
@@ -458,7 +619,10 @@ export type DeviceSessionHandoffStart = {
   ticket: string;
 };
 
-/** Top-level API exposed to the user after they have authenticated. */
+/**
+ * Top-level API exposed to the user after they have authenticated, from which they reach their
+ * workspaces and the gadgets in them.
+ */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
@@ -511,18 +675,77 @@ export interface AuthenticatedApi extends RpcTarget {
   hasPasswordLogin(): Promise<boolean>;
 
   /**
-   * Connect the native app's one-time central device registration to this authenticated user. Each
-   * registered device gets push; a device that registers again replaces its own subscription. The
-   * deployment never receives an APNs device token or Cloudflare account token.
+   * Register one of the user's devices for push: an older native app's one-time central device
+   * registration, or this browser's Web Push subscription. Each registered device gets push; a
+   * device that registers again replaces its own subscription. The deployment never receives an
+   * APNs device token or Cloudflare account token. A browser's subscription passes through it to
+   * the central notification service under this user's opaque installation-local identity; the
+   * service delivers to an endpoint only for its most recent registration.
    */
-  registerNotificationDevice(deviceRegistrationId: string): Promise<void>;
+  registerNotificationDevice(registration: string | WebPushSubscription): Promise<void>;
+
+  /**
+   * Claim a new native registration using this user's CFOS authorization, not legacy OAuth.
+   * This is separate from `registerNotificationDevice()` because legacy and authorized native
+   * registrations have the same opaque string shape; only the native protocol version identifies
+   * which central exchange is valid.
+   */
+  registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void>;
+
+  /**
+   * Authorize native push enrollment as this CFOS user. The single-use central grant is bound to
+   * this installation and user; it carries no provider token or Dashboard credential.
+   */
+  authorizeNotificationDevice(): Promise<string>;
 
   /**
    * Subscribe while this client can visibly present notifications. Dispose the returned handle
-   * when the page becomes hidden so the backend can promptly fall back to mobile push.
+   * when the page becomes hidden so the backend can promptly fall back to push.
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * List the chats with unread messages across all of the user's workspaces, most recently active
+   * first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
+   * so the inbox can be shown without opening any workspace. See "Unread tracking" above
+   * `ChatReadState`.
+   */
+  getUnreadThreads(): Promise<UnreadThread[]>;
+
+  /**
+   * Get the user's read state for the chats in one workspace, to combine with that workspace's own
+   * chat list (e.g. to highlight unread chats). Chats that aren't returned have nothing unread.
+   */
+  getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]>;
+
+  /** Get the user's unread totals, overall and per workspace, for badges. */
+  getUnreadSummary(): Promise<UserUnreadSummary>;
+
+  /**
+   * Subscribe to live unread-state changes. `scope` picks which chats to get per-chat updates for
+   * (see `UnreadStateScope`). Totals are always included. Use the narrowest scope the current view
+   * needs: `"summary"` for badges, `"unread"` for the inbox, or a workspace ID for that workspace's
+   * chat list.
+   *
+   * The subscriber first gets a full snapshot through `updated()`, then incremental changes. Dispose
+   * of the returned stub to unsubscribe, e.g. when the view is hidden or its scope changes. If the
+   * connection drops, subscribe again to get a fresh snapshot.
+   *
+   * Subscribing is read-only: it never marks messages read or dismisses notifications.
+   */
+  subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Mark every chat in a workspace read, up to the latest messages the user's unread state has
+   * received from it. Doesn't open the workspace, so a message that is still on its way from the
+   * workspace at that moment stays unread, as do messages that arrive later. To mark a single chat
+   * read, use `Overseer.markChatRead()`.
+   */
+  markWorkspaceRead(workspaceId: string): Promise<void>;
+
+  /** Mark every chat in all of the user's workspaces read. Works like `markWorkspaceRead()`. */
+  markAllRead(): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
@@ -577,11 +800,14 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Set the model to use for simple quick tasks, like generating chat titles. Set null to
-   * disable quick model use (e.g. chats will be titled "New Chat").
+   * disable quick model use (e.g. chats will be titled "New Chat"); in AI Gateway mode, null and
+   * a model that no longer resolves leave quick tasks to the deployment's own quick model.
+   * Throws for a model on a deployment that applies Cloudflare usage limits, whose quick tasks
+   * always run on its own quick model, since they count against no limit.
    */
   setQuickModel(id: string | null): Promise<void>;
 
-  /** Get the quick model setting. */
+  /** Get the quick model setting: null when unset or when the model no longer resolves. */
   getQuickModel(): Promise<null | string>;
 
   /**
@@ -644,50 +870,56 @@ export interface AuthenticatedApi extends RpcTarget {
   getAvatar(userId: string): Promise<Uint8Array | null>;
 
   /**
-   * Open an existing gadget.
+   * Open an existing workspace, or join one shared with you by redeeming its share link's key.
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
-   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget has
-   * `ownerInvitesOnly` set (see `GadgetMetadata`), a caller the owner has not added directly
+   * collaborator. If the key is invalid or expired, the call throws an exception. If the workspace
+   * has `ownerInvitesOnly` set (see `WorkspaceMetadata`), a caller the owner has not added directly
    * is refused with a `shareLinksDisabled` coded exception. This design
-   * allows share-key redemption and gadget opening in a single round trip, and further calls
+   * allows share-key redemption and workspace opening in a single round trip, and further calls
    * can be pipelined on the returned Overseer.
    *
-   * To allow for pipelining, this throws an exception if the gadget doesn't exist. Expected
-   * missing and authorization failures carry a code from `OPEN_GADGET_ERROR_CODES`.
+   * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
+   * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
    *
-   * `configureObservers` is invoked only when the opening user is a non-owner who must choose
-   * connected accounts for one or more gatekeeper bindings before they can observe the gadget (see
-   * ObserverConfigCallback). It is never called for the owner or an already-configured observer,
-   * so the common-case open is still a single pipelined round trip.
-   *
-   * TODO(multi-gadget): This should be renamed to openWorkspace().
+   * `configureObservers` is invoked only when the opening user is a non-owner "build" collaborator
+   * who must choose connected accounts for one or more gatekeeper bindings before they can observe
+   * the workspace (see ObserverConfigCallback). It is never called for the owner or an
+   * already-configured observer, so the common-case open is still a single pipelined round trip.
+   * Collaborators with access to individual gadgets are verified when they get each gadget instead
+   * (see Overseer.getGadget()).
    */
-  openGadget(id: string, shareKey?: string,
-             configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
+  openWorkspace(id: string, shareKey?: string,
+      configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
 
   /**
    * Create a new workspace. It will start out titled "Untitled Workspace".
    *
-   * Note: A gadget is considered "provisional" until it has some sort of activity, such as a
-   *   chat message or code edit. Provisional gadgets do not appear on the home page and will be
-   *   automatically deleted after some time. Note in particular that calling
-   *   new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound
-   *   into a gadget), so provisional gadgets are useful to allow the user to write an initial
-   *   chat message without explicitly creating a new gadget.
+   * Note: A workspace is considered "provisional" until it has some sort of activity, such as a
+   *   chat message or code edit. Provisional workspaces do not appear on the home page
+   *   (listWorkspaces() leaves them out). They are garbage, meant to be deleted after a while,
+   *   though nothing deletes them yet. Note in particular that calling new*Gatekeeper() will
+   *   not clear the provisional bit (as long as the gatekeeper isn't bound into a gadget), so
+   *   provisional workspaces are useful to allow the user to write an initial chat message without
+   *   explicitly creating a new workspace.
    *
-   * TODO(multi-gadget): This should be renamed to newWorkspace().
+   * A client that does not keep the returned Overseer, such as a one-shot command, reads the
+   * workspace's id with Overseer.getMetadata() before letting it go, and later opens the workspace
+   * with openWorkspace().
+   *
+   * @reportsId workspace getMetadata().id
    */
-  newGadget(): Promise<RpcStub<Overseer>>;
+  newWorkspace(): Promise<RpcStub<Overseer>>;
 
   /**
-   * List metadata about all the user's Gadgets. Used to display the front-page listing.
+   * List metadata about all the user's workspaces, which hold their gadgets. Used to display the
+   * front-page listing.
    *
-   * Provisional gadgets are hidden.
+   * Provisional workspaces are hidden.
    *
    * TODO: Pagination, sort options.
    */
-  listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
+  listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
 
   /** Pin or unpin this workspace in the user's list. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
@@ -698,31 +930,51 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * Served from an index in the user's own account which each workspace pushes to; a workspace
    * shared with the user contributes its outputs from the first time the user opens it (matching
-   * when it appears in listGadgets()), and stops updating them if their access is revoked.
-   * Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.
+   * when it appears in listWorkspaces()), and stops updating them if their access is revoked.
+   * Provisional workspaces (still awaiting acceptance of a chat's changes) are never included.
    *
    * TODO: Pagination, sort options.
    */
   listOutputs(): Promise<ListOutputsResult>;
 
   /**
-   * The deployment's standard output formats, in the order they should be offered -- what fills a
-   * "New Document / New Slides / ..." menu. Empty when the deployment promotes none.
+   * The deployment's standard output formats, the built-in blueprints this instance ships with and
+   * any others an admin promotes, for a "New Document / New Slides / ..." menu, in the order to
+   * offer them.
+   * Empty when the deployment promotes none.
    *
-   * These are ordinary blueprints an admin has promoted.
+   * These are ordinary blueprints an admin has promoted. Each blueprint bundled with the
+   * deployment is promoted once, when it is first installed, and an admin may turn it off.
    */
   listOutputFormats(): Promise<OutputFormatOffer[]>;
 
-  /** List all third-party services that this account can connect to. */
+  /**
+   * Connectors you can connect: third-party services and MCP (Model Context Protocol) servers.
+   * The services are ones such as GitHub or Slack, and the list is those this account can add.
+   *
+   * connectAccount() connects one, giving a connected account, and Overseer.newGatekeeper() then
+   * makes one of that account's resources (a GitHub repository, an MCP server's endpoint) a
+   * gatekeeper in a workspace; that is also how a workspace answers an agent's connection request
+   * (see Overseer.acceptConnectionRequest()). Ambient gatekeepers need no connecting: see
+   * listAddableGatekeepers().
+   */
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
   /**
-   * Connect this account to a specific account on a third-party service. Returns the URL which the
-   * Workshop opens as a disowned popup to complete the authorization, plus the flow's nonce (see
-   * `ConnectFlowStart`). When the flow finishes, the popup lands on the Workshop's own
-   * /connect/handoff page, which redeems the handoff with completeConnectHandoff() over its own
-   * session; only then is the account added to the list, which can be observed through
+   * Connect this account to an account on a connector: a third-party service or MCP server. Returns
+   * the URL which the Workshop opens as a disowned popup to complete the authorization, plus the
+   * flow's nonce (see `ConnectFlowStart`). When the flow finishes, the popup lands on the
+   * Workshop's own /connect/handoff page, which redeems the handoff with completeConnectHandoff()
+   * over its own session; only then is the account added to the list, which can be observed through
    * subscribeConnectedAccounts().
+   *
+   * Only the Workshop client that started the flow can complete it. The ticket arrives only in
+   * the URL fragment of the /connect/handoff page the flow ends on, and that page redeems it only
+   * with the nonce the Workshop stored in its popup (the native apps instead pass the ticket back
+   * to the WebView that kept the nonce). The URL opened any other way, such as in a plain browser
+   * tab, ends on a handoff page that redeems nothing, so a caller holding the nonce still never
+   * sees the ticket (see docs/connect-handoff.md). A vendor that provisions its own account
+   * (`description.autoProvisionsAccount`) needs no flow: see provisionAmbientAccount().
    *
    * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
@@ -749,27 +1001,32 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
-   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
-   * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
-   * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
+   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup, which
+   * only the Workshop client that started it can complete (as for connectAccount()), to authorize
+   * them, or null if nothing was needed. Completion is redeemed via completeConnectHandoff(); the
+   * updated grant is then observable via subscribeConnectedAccounts().
    * Returning null also re-reads the account's description, so a list of granted resource types
    * that was out of date is corrected and observable the same way.
    */
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
 
   /**
-   * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now: those set to
-   * 'optional' by the admin that the user hasn't added yet. Rendered as an "Available" section on the
-   * Connectors page. ('enabled' ones are already provisioned; 'disabled' ones aren't offered.) Returns
-   * the same shape as listGatekeeperVendors (with no resources) so the connect UI handles both
-   * identically, routing on `description.autoProvisionsAccount`.
+   * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
+   * those set to 'optional' by the admin that the user hasn't added yet, such as Skills
+   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). Rendered as an
+   * "Available" section on the Connectors page. ('enabled' ones are already provisioned; 'disabled'
+   * ones aren't offered.) Returns the same shape as listGatekeeperVendors (with no resources) so
+   * the connect UI handles both identically, routing on `description.autoProvisionsAccount`.
    */
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]>;
 
   /**
-   * Opt into an ambient gatekeeper: mint its connected account for this user (no OAuth flow). Only
-   * works while the vendor's mode is 'optional' (or 'enabled') and the user has no account yet; the
-   * new account then appears via subscribeConnectedAccounts(). Throws otherwise.
+   * Opt into an ambient gatekeeper, such as Skills (Context collections), minting its account.
+   * Ambient ones include Skills (`context`), Scheduled Tasks (`scheduler`) and Web Search
+   * (`websearch`), and the account is this user's connected account, minted with no OAuth flow.
+   * The new account appears via subscribeConnectedAccounts(); if the user already has one, the
+   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', or one that
+   * isn't ambient.
    */
   provisionAmbientAccount(vendorId: string): Promise<void>;
 
@@ -794,6 +1051,11 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * `accountId` is the user's connected account that provides this resource.
    * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   *
+   * Once the user has chosen in the frame, the Workshop asks its iframe for the resource URL
+   * (ResourceConfiguratorIframe.collectResourceUrl()) and passes it to Overseer.newGatekeeper().
+   * A caller without the iframe makes that URL itself, in the form of `resourceUrlPattern`, the
+   * frame's `ui` helping only to look up what fills it.
    */
   startResourceConfigurator(
     accountId: number,
@@ -809,10 +1071,10 @@ export interface AuthenticatedApi extends RpcTarget {
       : Promise<GatekeeperUiFrame>;
 
   /**
-   * Remove a shared gadget from the user's home page listing. Does NOT revoke the user's
-   * access -- if they open the gadget again (e.g., via link), it reappears on their home page.
+   * Remove a shared workspace from the user's home page listing. Does NOT revoke the user's
+   * access -- if they open the workspace again (e.g., via link), it reappears on their home page.
    */
-  dismissSharedGadget(gadgetId: string): Promise<void>;
+  dismissSharedWorkspace(workspaceId: string): Promise<void>;
 
   /**
    * List all blueprints created by the current user (from User DO). Useful for an audit
@@ -863,7 +1125,7 @@ export interface AuthenticatedApi extends RpcTarget {
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null>;
 
   /**
-   * Create a new gadget from a blueprint. Reads the blueprint from KV, downloads code from
+   * Create a new workspace from a blueprint. Reads the blueprint from KV, downloads code from
    * R2, creates a new Overseer DO, initializes it with the blueprint's code, and creates
    * gatekeepers from the provided binding assignments.
    *
@@ -871,8 +1133,10 @@ export interface AuthenticatedApi extends RpcTarget {
    * keyed by binding name. Throws if any are missing or if accountId/modelId are invalid.
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
+   *
+   * @reportsId workspace getMetadata().id
    */
-  newGadgetFromBlueprint(
+  newWorkspaceFromBlueprint(
     blueprintId: string,
     bindings: Record<string, BlueprintBindingAssignment>
   ): Promise<RpcStub<Overseer>>;
@@ -891,10 +1155,10 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Re-authenticate a connected account whose credentials have expired (or may be about to
-   * expire). Returns a flow to open as a disowned popup (as for connectAccount()). Once the OAuth
-   * flow completes and the popup's /connect/handoff page redeems the handoff via
-   * completeConnectHandoff(), the account is updated and subscribers are notified with
-   * credentialsValid: true.
+   * expire). Returns a flow to open as a disowned popup, which only the Workshop client that
+   * started it can complete (as for connectAccount()). Once the OAuth flow completes and the
+   * popup's /connect/handoff page redeems the handoff via completeConnectHandoff(), the account is
+   * updated and subscribers are notified with credentialsValid: true.
    */
   reconnectAccount(accountId: number): Promise<ConnectFlowStart>;
 
@@ -908,9 +1172,20 @@ export interface AuthenticatedApi extends RpcTarget {
   listGatekeeperApps(): Promise<GatekeeperAppInfo[]>;
 
   /**
-   * Get the app frame (self-contained iframe HTML + the gatekeeper's `ui` capability) for the given
-   * gatekeeper id, or null if there is no such UI-providing gatekeeper. The Workshop hosts the HTML
-   * in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.
+   * Get the app of gatekeeper `id`, such as Skills, for creating Skills/Context collections.
+   * A UI-providing gatekeeper has one: Skills (`context`) has a `ui` that creates and manages
+   * Skills/Context collections, and Scheduled Tasks (`scheduler`) one that lists schedules. The app
+   * is the gatekeeper's frame (self-contained iframe HTML + its `ui` capability), or null if the
+   * user has no such gatekeeper. An ambient one the deployment only offers is null until the user
+   * opts in with provisionAmbientAccount(). The Workshop hosts the HTML in a sandboxed iframe and
+   * exposes `ui` to it over a MessagePort RPC session. The `ui`'s interface is the gatekeeper's own:
+   * `ContextApi` in gatekeeper-context's `context-types.ts`, `ScheduleManagementApi` in
+   * gatekeeper-scheduler's `management-types.ts`.
+   *
+   * @appApi ui id
+   * @nullWhen the user has no gatekeeper of that id with an app, as listGatekeeperApps() lists
+   *   them; for an ambient one the deployment only offers, provisionAmbientAccount() with that id
+   *   adds it
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
 
@@ -937,6 +1212,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * an admin. The access check happens once here, so the returned stub's methods need no per-call
    * checks. (Authentication config — sign-in providers, password login — is intentionally not
    * managed here; it stays env-var driven.)
+   *
+   * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
   getAdminApi(): Promise<RpcStub<AdminApi> | null>;
 
@@ -1041,8 +1318,8 @@ export type AdminResourceVendor = {
 );
 
 /**
- * A connectable third-party service: its vendor id, display metadata, and the resource types it
- * offers (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
+ * A third-party service: its vendor id, display metadata, and resource types with connection and
+ * creation flags (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
  * listGatekeeperVendors and listAddableGatekeepers so the connect UI treats both uniformly.
  */
 export type GatekeeperVendorInfo = {
@@ -1082,6 +1359,46 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
 /** Maximum width or height of an admin-uploaded site logo in pixels. */
 export const MAX_SITE_LOGO_DIMENSION = 512;
 
+/**
+ * The default of the deployment's check interval (see AdminApi.setUpdateCheckIntervalMinutes): how
+ * many minutes a successful update check is relied on before the deployment asks again.
+ */
+export const DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES = 60;
+
+/** The largest check interval, in minutes, an admin may set: 30 days. */
+export const MAX_UPDATE_CHECK_INTERVAL_MINUTES = 43_200;
+
+/**
+ * The default of the deployment's minimum age (see AdminApi.setUpdateMinimumAgeHours): how many
+ * hours a newer release must have been available before admins are notified of it.
+ */
+export const DEFAULT_UPDATE_MINIMUM_AGE_HOURS = 24;
+
+/**
+ * The default of the deployment's notice snooze (see AdminApi.setUpdateNoticeSnoozeHours): how
+ * many hours a dismissed update notice stays hidden in the browser that dismissed it.
+ */
+export const DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS = 24;
+
+/** The largest minimum age and notice snooze, in hours, an admin may set: 30 days. */
+export const MAX_UPDATE_HOURS = 720;
+
+/**
+ * The path a Workshop browser POSTs to, through the router, before it reads the update status, so
+ * that the backend records the router's current version tag first. The Workshop's other calls
+ * travel over one WebSocket, which carries the router's tag only when it opens. Answered with an
+ * empty 204.
+ */
+export const ROUTER_TAG_PROBE_PATH = "/api/router-tag";
+
+/**
+ * The path a Workshop browser GETs, through the router, to learn the version id of the backend that
+ * new requests reach: `{ version: string | null }`, never cached, `null` where the backend has no
+ * version id. A deploy does not move the WebSocket a tab already holds, so a tab whose
+ * `ServerConfig.backendVersion` differs is still talking to an older backend, and reconnects.
+ */
+export const VERSION_PATH = "/api/version";
+
 /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
 export type AdminSettingsView = {
   /** Whether new account signups are allowed. */
@@ -1100,6 +1417,8 @@ export type AdminSettingsView = {
   banner: BannerConfig;
   /** Accent color hex, or "" for the default theme. */
   accentColor: string;
+  /** The hosts `webFetch` may reach in a workspace that has observed restricted data. */
+  restrictedWebFetchHosts: string[];
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1171,6 +1490,76 @@ export type AdminFormat = {
 };
 
 /**
+ * Whether a newer release is available for a deployment the deploy flow installed, returned by
+ * AdminApi.getUpdateStatus(). The check fields describe the last successful update check made for
+ * the release this backend runs: until one succeeds, `latestReleaseId`, `availableSince` and
+ * `checkedAt` are absent and `updateAvailable` is false.
+ */
+export type DeploymentUpdateStatus = {
+  /** The release this backend runs. */
+  currentReleaseId: string;
+  /** The newest release the last successful check for `currentReleaseId` reported. */
+  latestReleaseId?: string;
+  /** Whether that check said a release newer than `currentReleaseId` exists. */
+  updateAvailable: boolean;
+  /**
+   * When the first release newer than `currentReleaseId` was published. Absent unless
+   * `updateAvailable`.
+   */
+  availableSince?: Date;
+  /**
+   * Whether the home page should show admins the update notice now, before the browser applies
+   * its own dismissal (see `noticeSnoozeHours`). True exactly when `checksEnabled`, the check says
+   * `updateAvailable`, the deployment is not `modified`, and `availableSince` is at least
+   * `minimumAgeHours` ago.
+   */
+  notify: boolean;
+  /**
+   * Whether the deployment checks for updates by itself (see AdminApi.setUpdateChecksEnabled).
+   * When false, `notify` is false and only AdminApi.checkForUpdates() asks for the newest release.
+   */
+  checksEnabled: boolean;
+  /**
+   * The deployment's check interval: how many minutes a successful check is relied on before the
+   * deployment asks again (see AdminApi.setUpdateCheckIntervalMinutes).
+   */
+  checkIntervalMinutes: number;
+  /**
+   * The deployment's minimum age: how many hours a newer release must have been available before
+   * `notify` is true (see AdminApi.setUpdateMinimumAgeHours).
+   */
+  minimumAgeHours: number;
+  /**
+   * The deployment's notice snooze: how many hours a browser hides the notice after an admin
+   * dismisses it there (see AdminApi.setUpdateNoticeSnoozeHours).
+   */
+  noticeSnoozeHours: number;
+  /**
+   * Whether this deployment's running code differs from what the deploy flow installed: true
+   * exactly when `modifiedWorkers` is non-empty. The deploy flow refuses to upgrade a modified
+   * deployment.
+   */
+  modified: boolean;
+  /**
+   * The Workers whose running version is neither this installation's current one nor another
+   * release of it: they have no version tag, or one the deploy flow did not write for this
+   * installation. Each is "backend", "router", or a gatekeeper's install slug. A Worker that did
+   * not report its version is in neither this list nor `unfinishedWorkers`.
+   */
+  modifiedWorkers: string[];
+  /**
+   * The Workers still running another release of this installation: an update that did not
+   * finish, which the deploy flow can finish once no Worker is modified. Named as in
+   * `modifiedWorkers`. Unlike those, they do not affect `notify`.
+   */
+  unfinishedWorkers: string[];
+  /** The opaque link that opens the deploy flow for this installation. */
+  updateUrl: string;
+  /** When the last successful check for `currentReleaseId` was made. */
+  checkedAt?: Date;
+};
+
+/**
  * Capability for managing deployment-wide admin settings, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
  * capability is minted, so these methods don't re-check. Covers branding, agent instructions,
@@ -1204,6 +1593,14 @@ export interface AdminApi {
 
   /** Replace the agent system-prompt instructions. Pass "" to clear. Rejects over MAX_INSTANCE_INSTRUCTIONS_LENGTH. */
   setInstanceInstructions(text: string): Promise<void>;
+
+  /**
+   * Replace the hosts `webFetch` may reach in a workspace that has observed restricted data. Each
+   * entry is an exact host name, so a subdomain needs its own entry. Entries are trimmed and
+   * lowercased, and duplicates and blank entries are dropped. Rejects an entry that is not an ASCII
+   * host name, such as one with a scheme, port, path or wildcard. Resolves to the list as stored.
+   */
+  setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]>;
 
   /**
    * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
@@ -1382,7 +1779,8 @@ export interface AdminApi {
    * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
    * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a
    * quick one that takes none of a model's settings: testGatewayModel() sends a model the
-   * request its chats would.
+   * request its chats would. Auto Router's alone carries a setting, the pool its model picks
+   * from, allowed models included, since that decides which model answers.
    */
   testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest>;
 
@@ -1416,6 +1814,51 @@ export interface AdminApi {
    * eight requests, each of which may use the whole response cap.
    */
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]>;
+
+  /**
+   * Whether a newer release is available. Null unless the deploy flow installed this deployment.
+   * While automatic update checks are off (see setUpdateChecksEnabled) it asks no one and reports
+   * the last check made for the running release, if any.
+   */
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null>;
+
+  /**
+   * Ask now for the newest release, whether or not automatic update checks are on, and return
+   * the status that check produces. Null unless the deploy flow installed this deployment. Throws
+   * when the check fails.
+   */
+  checkForUpdates(): Promise<DeploymentUpdateStatus | null>;
+
+  /**
+   * Set whether the deployment checks for updates by itself. On by default. When off,
+   * getUpdateStatus() makes no outbound call and admins are never notified; checkForUpdates()
+   * still asks.
+   */
+  setUpdateChecksEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Set how many minutes a successful update check is relied on before the deployment asks again,
+   * DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES by default. A failed check is retried after the interval
+   * or 15 minutes, whichever is shorter. The deployment asks only while an admin is using it
+   * (getUpdateStatus() makes the check when one is due), never on a schedule of its own. Throws
+   * unless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.
+   */
+  setUpdateCheckIntervalMinutes(minutes: number): Promise<void>;
+
+  /**
+   * Set how many hours a newer release must have been available before admins are notified of
+   * it, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always
+   * installs the newest release. 0 notifies as soon as a check reports an update. Throws unless
+   * `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateMinimumAgeHours(hours: number): Promise<void>;
+
+  /**
+   * Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,
+   * DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next
+   * visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateNoticeSnoozeHours(hours: number): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1501,6 +1944,19 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+
+  /**
+   * The central notification service's VAPID public key (base64url), which browsers subscribe to
+   * Web Push with. Absent when this deployment can't send browser push, which hides the browser
+   * notification setting.
+   */
+  webPushPublicKey?: string;
+
+  /**
+   * The version id of the backend answering this connection, or undefined where it has none.
+   * Compared with what VERSION_PATH answers to notice a connection that outlived a deploy.
+   */
+  backendVersion?: string;
 };
 
 /**
@@ -1539,16 +1995,24 @@ export type CloudflareAccountOption = {
   accountName: string;
 };
 
-/** Supported AI providers. */
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
+/**
+ * Supported AI providers. "cloudflare-auto-router" is AI Gateway's Auto Router, which picks the
+ * model behind each request (see AUTO_ROUTER_MODEL_ID); it exists only inside a gateway.
+ */
+export type AiModelProvider =
+    "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "cloudflare-auto-router";
+
+/** The model ID of AI Gateway's Auto Router, the one model of "cloudflare-auto-router". */
+export const AUTO_ROUTER_MODEL_ID = "cloudflare/auto";
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
   enabled: true;
   /**
    * The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its
-   * admin turned on (see AdminApi.setGatewayProviderEnabled). A user can add a model of their own
-   * under these only.
+   * admin turned on (see AdminApi.setGatewayProviderEnabled), less "cloudflare-auto-router",
+   * whose one model is the deployment's alone. A user can add a model of their own under these
+   * only.
    */
   enabledProviders: AiModelProvider[];
   /**
@@ -1634,6 +2098,16 @@ export type GatewayModelSettings = {
    * most the model's AdminModelView.maxCompactionInputBudget.
    */
   compactionInputBudget?: number;
+
+  /**
+   * For the Auto Router model only: the gateway models it may pick, as the gateway names them
+   * (`anthropic/claude-sonnet-5.5`, `openai/gpt-6-luna`, `@cf/*\/*`; `*` matches one segment).
+   * Unset, it picks among every model of the enabled providers. Each name must belong to an
+   * enabled provider, and a name whose provider is later turned off leaves the pool. The server
+   * refuses the list on any other model, and refuses an empty list or a malformed or foreign
+   * name; a name the gateway does not know fails each request, which the model's test reports.
+   */
+  allowedModels?: string[];
 };
 
 /**
@@ -1667,6 +2141,9 @@ export type GatewayModel = {
 
   /** Display name. */
   name: string;
+
+  /** The line the pickers show under the name, when SUGGESTED_MODELS gives the model one. */
+  description?: string;
 
   /** The maximum tokens one request may total. */
   contextWindow: number;
@@ -1766,10 +2243,10 @@ export type AdminGatewayProvider = {
  * carries a message on one line, cut short: what the provider or the gateway answered, or why no
  * answer came. It carries the HTTP status of the response only when the model runtime reports
  * one, which it does not for every provider (a failed Google request has none): the message then
- * says what there is.
+ * says what there is. A pass of the Auto Router model names the gateway model that answered.
  */
 export type GatewayModelTest = { model: string } &
-    ({ ok: true } | { ok: false; status?: number; message: string });
+    ({ ok: true; routedModel?: string } | { ok: false; status?: number; message: string });
 
 /**
  * One request of AdminApi.testNewGatewayModel(): its result, and the reasoning level it asked
@@ -1789,6 +2266,8 @@ export type AiModelConfig = {
    * Secret API token for the respective provider, for billing purposes. For providers "anthropic",
    * "openai", and "ollama", an empty token means no key is sent at all, e.g. because a proxy
    * authenticated through `extraHeaders` supplies its own.
+   *
+   * @secret
    */
   apiToken: string;
 
@@ -1811,6 +2290,8 @@ export type AiModelConfig = {
    * headers), which is useful for proxies that require their own credentials. Like `apiToken`
    * and `apiUrl`, these are ignored when the Workshop routes requests through its own AI
    * Gateway configuration rather than contacting the provider directly.
+   *
+   * @secret
    */
   extraHeaders?: Record<string, string>;
 
@@ -1849,7 +2330,16 @@ export type AiModelConfig = {
    * deployment's admin added to its AI Gateway.
    */
   capabilities?: GatewayModelCapabilities;
+
+  /** The pool the Auto Router model picks from; absent, the gateway's default pool applies. */
+  autoRouterPool?: AutoRouterPool;
 };
+
+/**
+ * The Auto Router model's pool: the listed gateway model names of enabled providers (see
+ * GatewayModelSettings.allowedModels), or else the enabled providers' every model.
+ */
+export type AutoRouterPool = { models: string[] } | { providers: AiModelProvider[] };
 
 /**
  * An `AiModelConfig` whose secrets may be withheld, so that a stored configuration can be shown
@@ -1860,11 +2350,19 @@ export type AiModelConfig = {
  */
 export type RedactedAiModelConfig = Omit<AiModelConfig,
     "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
-    "capabilities"> & {
-  /** `AiModelConfig.apiToken`, or null if withheld. */
+    "capabilities" | "autoRouterPool"> & {
+  /**
+   * `AiModelConfig.apiToken`, or null if withheld.
+   *
+   * @secret
+   */
   apiToken: string | null;
 
-  /** `AiModelConfig.extraHeaders`, with each value null if withheld. */
+  /**
+   * `AiModelConfig.extraHeaders`, with each value null if withheld.
+   *
+   * @secret
+   */
   extraHeaders?: Record<string, string | null>;
 };
 
@@ -1884,6 +2382,9 @@ export type ModelKind = "language" | "decision";
 /** One entry of SUGGESTED_MODELS. */
 type SuggestedModel = {
   name: string;
+
+  /** A line the model pickers show under the name, when the name alone doesn't say what it does. */
+  description?: string;
 
   /** The maximum tokens one request may total. */
   contextWindow: number;
@@ -1912,6 +2413,18 @@ type SuggestedModel = {
 
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
+  // First so that, when its provider is on, Auto leads the model pickers and is the model a new
+  // user or chat gets by default.
+  "cloudflare-auto-router": {
+    // The router answers with whichever model it picks, so the window is the smallest documented
+    // in its pool (https://developers.cloudflare.com/ai-gateway/features/auto-router/#models:
+    // Workers AI's gpt-oss-20b, 128K), and the output limit is reserved as Workers AI reserves
+    // one, in case a Workers AI model is picked.
+    [AUTO_ROUTER_MODEL_ID]: {
+      name: "Auto", description: "Best model for each request",
+      contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+  },
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
@@ -1936,10 +2449,11 @@ const SUGGESTED_MODEL_CATALOG = {
   "anthropic": {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
+    "claude-haiku-5-5": {name: "Claude Haiku 5.5", contextWindow: 1000000},
     "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000, hidden: true},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000, hidden: true},
-    "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
+    "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000, hidden: true},
   },
   "openai": {
     // pi's GPT-6 catalog reports a 272K window, but these models support 1.05M. Use 272K as the
@@ -2018,12 +2532,10 @@ export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed
  * to render the workspace list on the front page.
- *
- * TODO(multi-gadget): Rename `WorkspaceMetadata`.
  */
-export type GadgetMetadata = {
+export type WorkspaceMetadata = {
   /**
-   * Unique ID for this workspace, used with `openGadget()`. This is a url-safe base64 value
+   * Unique ID for this workspace, used with `openWorkspace()`. This is a url-safe base64 value
    * chosen randomly when the workspace is created.
    */
   id: string;
@@ -2037,35 +2549,36 @@ export type GadgetMetadata = {
   /** Total cost of AI inference in dollars, if known. */
   totalCost?: number;
 
-  /** Whether the user has pinned this gadget to the top of their list. */
+  /** Whether the user has pinned this workspace to the top of their list. */
   pinned?: boolean;
 
   /** Set while the user has muted this workspace's notifications. */
   notificationMute?: NotificationMute;
 
   /**
-   * Set when the gadget is not owned by the current user. Presence of this field indicates the
+   * Set when the workspace is not owned by the current user. Presence of this field indicates the
    * user is a collaborator, not the owner.
    */
   owner?: AiChatAuthorInfo;
 
   /**
-   * The viewing user's effective role for this gadget. The owner is always "build". Used by the
+   * The viewing user's effective role for this workspace. The owner is always "build". Used by the
    * frontend to decide whether to render the full editor ("build") or the UI-only shell ("use").
    * Absent implies "build" for backwards compatibility.
    */
   role?: CollaboratorRole;
 
   /**
-   * True when the gadget has observed data marked `containsRestrictedData` (see
+   * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but can no longer
-   * fetch from the public web, and every action requires manual approval.
+   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
+   * fetches reach only the hosts the deployment admin trusts (none by default), and every action
+   * requires manual approval.
    */
   containsRestrictedData?: boolean;
 
   /**
-   * True when the gadget has observed data marked `ownerInvitesOnly` (see
+   * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
    */
@@ -2087,10 +2600,10 @@ export type GadgetMetadata = {
 }
 
 /**
- * GadgetMetadata extended with timestamps. These are available when listing gadgets from the
- * user's collection, but not from the Overseer (which doesn't track them).
+ * WorkspaceMetadata extended with timestamps. These are available when listing workspaces from the
+ * user's collection (listWorkspaces()), but not from the Overseer (which doesn't track them).
  */
-export type GadgetMetadataWithTimestamps = GadgetMetadata & {
+export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
 }
@@ -2137,7 +2650,8 @@ export type BlueprintOutput = {
 
 /**
  * One entry of the "New ..." menu, as returned by `listOutputFormats()`. This names a blueprint the
- * deployment has promoted, instantiated with `newGadgetFromBlueprint(blueprintId, ...)` like any other.
+ * deployment has promoted, instantiated with `newWorkspaceFromBlueprint(blueprintId, ...)` like any
+ * other.
  */
 export type OutputFormatOffer = {
   blueprintId: string;
@@ -2178,7 +2692,7 @@ export type ListOutputsResult = {
  * directly.
  */
 export type OutputSummary = {
-  /** The workspace that contains this output (an `openGadget()` id). */
+  /** The workspace that contains this output (an `openWorkspace()` id). */
   workspaceId: string;
 
   /**
@@ -2332,6 +2846,10 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
+/**
+ * One entry in a workspace's action log, discriminated by `type`: an action a gadget asked a
+ * gatekeeper to take, an observation it made, or a hook it bound.
+ */
 export type ActionLogEntry = {
   /** Sequential ID number for the action. Counts up from when the workspace was created. */
   id: number;
@@ -2403,6 +2921,7 @@ export type CreationApproval = {
   configuration?: string;
 };
 
+/** A hook bound in a workspace: a gatekeeper event that wakes a gadget's code. */
 export type BoundHookInfo = {
   id: number;
 
@@ -2445,20 +2964,29 @@ export type AgentSpawnerConfig = {
 
   /**
    * The bindings available to agents spawned by this spawner: binding name (as it appears as
-   * `env.NAME` in the spawned agent's executeCode environment) -> target workpiece. When an agent
-   * is spawned, this map is snapshotted into the spawned chat's seed binding layer (entries whose
-   * targets no longer exist are dropped); the spawned agent sees only these bindings, never the
-   * workspace's default binding list.
+   * `env.NAME` in the spawned agent's executeCode environment) -> target workpiece. This is the
+   * spawner's initial set: afterwards the chat agent may add more with `setGadgetBinding`, each
+   * a proposal that takes effect once the user accepts the chat's changes. When an agent is
+   * spawned, the spawner's bindings are snapshotted into the spawned chat's seed binding layer
+   * (entries whose targets no longer exist are dropped); the spawned agent sees only these
+   * bindings, never the workspace's default binding list.
    *
    * The entries are deliberately not limited to bindings held by the gadget that owns the
    * spawner: a spawner may define bindings of its own, with its own names and targets.
    *
-   * Once a gadget binds the spawner, every env target joins each "use" collaborator's
+   * Once a gadget binds the spawner, every binding target joins each "use" collaborator's
    * verification scope transitively: spawning is reachable from the gadget UI, and the spawned
    * agent reads these bindings with the spawner creator's authority.
    */
   env: Record<string, WorkpieceId>,
 };
+
+/**
+ * The `vendorId` with which the agent's requestConnection asks the user to add an agent spawner
+ * (see AgentSpawnerConfig) rather than connect a gatekeeper vendor's resource. No vendor can have
+ * it: vendor ids come from binding names, which have no hyphen.
+ */
+export const AGENT_SPAWNER_CONNECTION_ID = "agent-spawner";
 
 /**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
@@ -2471,7 +2999,7 @@ export type AgentSpawnerConfig = {
  */
 export interface Overseer extends RpcTarget {
   /** Get metadata describing this workspace. */
-  getMetadata(): Promise<GadgetMetadata>;
+  getMetadata(): Promise<WorkspaceMetadata>;
 
   /**
    * Get metadata describing this workspace and subscribe to changes.
@@ -2482,16 +3010,17 @@ export interface Overseer extends RpcTarget {
    * Disposing the returned `RpcStub` will cancel the subscription.
    */
   subscribeToMetadata(
-      callback: RpcStub<(metadata: GadgetMetadata) => void>)
+      callback: RpcStub<(metadata: WorkspaceMetadata) => void>)
       : Promise<RpcStub<{}>>;
 
   /**
-   * Receive the current viewer roster, then incremental updates as viewers come and go.
-   * A viewer is present for the lifetime of the openGadget() session.
+   * Watch who is viewing the workspace: receive the viewer roster, then updates as it changes.
+   * The current roster comes first, then incremental updates as viewers come and go. A viewer is
+   * present for the lifetime of the openWorkspace() session.
    */
   subscribeToPresence(subscriber: RpcStub<PresenceSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Change the workspace title. */
+  /** Rename the workspace: change its title. */
   setTitle(title: string): Promise<void>;
 
   /**
@@ -2503,7 +3032,7 @@ export interface Overseer extends RpcTarget {
   deleteSelf(): Promise<void>;
 
   /**
-   * Subscribe to the workspace's workpiece list.
+   * Subscribe to the workspace's workpiece list, which lists its gadgets, each by ID and title.
    *
    * The subscriber receives one entry() per existing workpiece, followed by ready(), then
    * incremental entry()/removed() calls as workpieces are created, renamed, or deleted, and
@@ -2539,8 +3068,14 @@ export interface Overseer extends RpcTarget {
   /**
    * Get the gadget with the given workpiece ID. To allow for pipelining, this throws an
    * exception if there is no such gadget.
+   *
+   * A collaborator without "build" access is verified as an observer of this one gadget here,
+   * rather than when opening the workspace, so `configureObservers` is invoked as described for
+   * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others that
+   * collaborator holds untouched. Ignored for everyone else, whom opening the workspace verified.
    */
-  getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>>;
+  getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
+      : Promise<RpcStub<GadgetClient>>;
 
   /**
    * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
@@ -2602,9 +3137,9 @@ export interface Overseer extends RpcTarget {
   getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]>;
 
   /**
-   * Submit one code change on a chat's branch. This is the only way to edit code: committed code
-   * cannot be written directly -- gadget heads only advance when a chat's changes are accepted
-   * (see mergeChanges()).
+   * Submit one code change on a chat's branch: how a client edits files.
+   * This is the only way to edit code: committed code cannot be written directly -- gadget heads
+   * only advance when a chat's changes are accepted (see mergeChanges()).
    *
    * `submission.change` is expressed against the chat's content as of
    * `(submission.generation, submission.revision)` -- that is, the submitter has applied every
@@ -2661,14 +3196,17 @@ export interface Overseer extends RpcTarget {
   getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
 
   /**
-   * Try to create a new gatekeeper for this URL.
+   * Try to create a new gatekeeper for this resource URL, such as a repository or MCP server.
+   * The gatekeeper is a connection to that one resource of a connected account, such as a GitHub
+   * repository or an MCP server's endpoint.
    *
    * `accountId` is the user's connected account to use to access this resource. To determine an
    * appropriate account, use `subscribeConnectedAccounts()` with a `filter` for this URL, then
    * let the user choose one.
    *
    * The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by
-   * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget.
+   * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget, or pass
+   * its id to acceptConnectionRequest() to hand it to the agent that asked for it.
    */
   newGatekeeper(accountId: number, resourceUrl: string): Promise<GatekeeperClient<any> | null>;
 
@@ -2712,20 +3250,35 @@ export interface Overseer extends RpcTarget {
   rejectAction(id: number): Promise<void>;
 
   /**
-   * List information about bound hooks (which could wake up a gadget asynchronously).
+   * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
+   * A hook is a callback through which a gatekeeper wakes a gadget: for a scheduled task (the
+   * scheduler gatekeeper), or for an incoming email or GitHub event.
+   *
+   * A gatekeeper binds a hook disabled, when the gadget or an agent registers for it, and it
+   * delivers nothing until enableHook(). The scheduler offers no way to unregister a schedule:
+   * stopping or removing one is disabling or deleting its hook (disableHook(), deleteHook()).
    *
    * The list spans the whole workspace; each entry names the gadget it wakes (see
    * BoundHookInfo.gadgetId), so a per-gadget view must filter on that.
    */
   listHooks(): Promise<BoundHookInfo[]>;
 
-  /** Enable the hook with the given ID. Callbacks will begin flowing. */
+  /**
+   * Enable the hook with the given ID, so callbacks begin flowing: a scheduled task needs it.
+   * Until then the task does not run.
+   */
   enableHook(id: number): Promise<void>;
 
-  /** Disable the hook with the given ID. Callbacks will stop. */
+  /**
+   * Disable the hook with the given ID: callbacks stop, and a scheduled task is removed. Enabling
+   * the hook again re-creates the task's schedule from its original timing, so a one-time task
+   * whose time has passed meanwhile never runs.
+   */
   disableHook(id: number): Promise<void>;
 
-  /** Permanently delete the hook. Implies disabling it. */
+  /**
+   * Permanently delete the hook, disabling it first, which removes a scheduled task for good.
+   */
   deleteHook(id: number): Promise<void>;
 
   /**
@@ -2737,7 +3290,7 @@ export interface Overseer extends RpcTarget {
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
    *
-   * Once the workspace has read restricted data (`GadgetMetadata.containsRestrictedData`), rules
+   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
    * are stored but never fire: every action pends for manual approval.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
@@ -2795,7 +3348,27 @@ export interface Overseer extends RpcTarget {
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
-  /** List past AI chats. */
+  /**
+   * Mark a chat read for the current user, up to and including the timeline record at
+   * `throughSequence` (an `AiChatMessage.sequence`). If omitted, marks the whole chat read, through
+   * its latest visible message. This never moves the user's read position backwards; use
+   * `markChatUnread()` for that. Does nothing if the chat doesn't exist, and throws if the sequence
+   * is beyond the end of the chat. Not available in use-only sessions. See "Unread tracking" above
+   * `ChatReadState`.
+   */
+  markChatRead(chatId: number, throughSequence?: number): Promise<void>;
+
+  /**
+   * Mark a chat unread for the current user, starting at the timeline record at `fromSequence`: the
+   * user's read position moves to just before it, so that message and every visible message after
+   * it count as unread. If omitted, marks only the chat's latest visible message unread. Messages
+   * from before unread tracking was introduced never become unread. Returns true if the user's read
+   * state changed, or false if it was already in that state or the chat doesn't exist. Throws if the
+   * sequence is beyond the end of the chat. Not available in use-only sessions.
+   */
+  markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
+
+  /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;
 
   /**
@@ -2821,7 +3394,7 @@ export interface Overseer extends RpcTarget {
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
 
   /**
-   * Subscribe to all new chat messages (across all threads).
+   * Subscribe to all new chat messages (across all threads), the agent's replies among them.
    *
    * If `startAt` is given, it must be a date in the past. All messages starting from that date
    * will be sent upfront. This is intended to allow resubscribing after being disconnected. If
@@ -2836,18 +3409,30 @@ export interface Overseer extends RpcTarget {
   subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
   /**
-   * Lists slash commands available from Gatekeepers currently attached to this Gadget, including
-   * ambient ones.
+   * Records that this client shows chat `chatId` until the returned handle is disposed. When a
+   * turn finishes in a chat someone is viewing, the workspace resends that turn's last model
+   * request just before the provider's cached copy of it would expire, so the user's next message
+   * costs less and starts sooner. The resends are billed like the turn. They stop when the last
+   * viewer leaves, at the chat's next turn, an hour after the turn, or before they would cost
+   * more than the cache miss they avoid. Throws if the chat doesn't exist.
+   */
+  viewChat(chatId: number): Promise<RpcStub<{}>>;
+
+  /**
+   * Lists the slash commands available in this workspace: the built-in ones, and those of the
+   * Gatekeepers currently attached to it, including ambient ones.
    */
   listSlashCommands(): Promise<SlashCommandChoice[]>;
 
   /**
-   * Starts a new chat with the given initial message or slash-command request. A slash command
-   * always creates a visible chat event, even when it does not produce a message for the agent.
+   * Starts a new chat in this workspace with an initial message or slash-command request.
+   * A slash command always creates a visible chat event, even when it does not produce a message
+   * for the agent.
    * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
-   * (useful when using chat to talk between humans).
+   * (useful when using chat to talk between humans). Returns the new chat's id without waiting
+   * for the agent's turn; `waitForAgent()` waits for it to end.
    *
    * `formats` records where the message names one of the deployment's standard output formats, so
    * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
@@ -2860,12 +3445,17 @@ export interface Overseer extends RpcTarget {
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
+   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
+   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
+   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
+   * agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
-   * (useful when using chat to talk between humans).
+   * (useful when using chat to talk between humans). Returns without waiting for the agent's
+   * turn; `waitForAgent()` waits for it to end.
    *
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
@@ -2873,10 +3463,11 @@ export interface Overseer extends RpcTarget {
                   formats?: MessageFormatRef[]): Promise<void>;
 
   /**
-   * Store raw bytes as an immutable Git blob and return its OID after durable storage.
-   * Retrying identical bytes returns the same OID. This does not change any worktree or message.
-   * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
-   * with the payload's byte length. The blob must be present in this workspace's Git store.
+   * Store raw bytes, such as a file to attach, as an immutable Git blob and return its OID. The OID
+   * comes back after durable storage. Retrying identical bytes returns the same OID. This does not
+   * change any worktree or message. Use the OID in a chat attachment, or in a worktree's whole-file
+   * `setBytes` change together with the payload's byte length. The blob must be present in this
+   * workspace's Git store.
    *
    * There is no size limit. A `Uint8Array` travels in one RPC message; for large content, pass
    * `{stream, byteLength}` instead, which the server stores as it arrives without holding it
@@ -2931,6 +3522,12 @@ export interface Overseer extends RpcTarget {
    * AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains
    * the release as a parent, unless its history already holds it, and the gadget follows that
    * blueprint from then on.
+   *
+   * Each file is taken as it stands, conflict markers included. A caller should first resolve
+   * the conflicts that the chat's still-proposed `changes` messages list
+   * (AiChatMessageBody.blueprintMerges[].conflictPaths and mainlineMerge.gadgets[].conflictPaths),
+   * as the Workshop UI does before accepting: it looks for a `<<<<<<< ` or `>>>>>>> ` line left
+   * in each of those files, and asks the user whether to accept them as they are.
    */
   mergeChanges(chatId: number): Promise<MergeChangesResult>;
 
@@ -3016,6 +3613,9 @@ export interface Overseer extends RpcTarget {
    * reflecting this before `stop()` returns.
    *
    * If no LLM is running, `stop()` does nothing and returns immediately.
+   *
+   * Stopping drops the chat's queued steers (see `AiChatMetadata.queuedSteers`), whoever sent them.
+   * The client that stops is expected to put them in its draft, so its user can still send them.
    */
   stopAgent(chatId: number): Promise<void>;
 
@@ -3026,6 +3626,32 @@ export interface Overseer extends RpcTarget {
    * Throws if an agent is already running on the chat.
    */
   retryAgent(chatId: number, modelId: string): Promise<void>;
+
+  /**
+   * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
+   * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
+   * starts: the message is then its reply (`message`), the `error` that ended it, or what it stopped
+   * to wait on (an `action` or a `connectionRequest`). Returns at once if no turn is running, and
+   * null if the agent has written nothing in the chat. The other records logged under the agent,
+   * such as the `changes` a step records after its reply, are not messages it wrote.
+   *
+   * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
+   * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
+   * to the next (to read the steers sent, or the calls made to the agent, while it ran) is waited
+   * through; one that starts after the wait has ended is not. A `sendChatMessage()` or `retryAgent()` call this session made
+   * before this one, pipelined rather than awaited, is waited for first, so the wait covers the
+   * turn it starts. That holds only once the call is delivered: a call with a promise among its
+   * arguments (an `uploadBlob()` result, say) is delivered when the promise resolves, which may
+   * be after this one, so await such a call before waiting.
+   *
+   * It waits as long as the turn runs. A client that wants a bound times out on its own side,
+   * which leaves the turn running; it can wait again, or stop the agent. The wait is held in the
+   * workspace's memory, so if the workspace restarts meanwhile the call fails as the connection
+   * does; the turn resumes by itself, and a new connection can wait again. A client that
+   * disconnects or lets the workspace go while waiting still counts as present in the workspace
+   * until the turn ends. Requires the same access as `getChatHistory()`.
+   */
+  waitForAgent(chatId: number): Promise<AiChatMessage | null>;
 
   /**
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
@@ -3079,50 +3705,54 @@ export interface Overseer extends RpcTarget {
   // --- Collaborator management ---
 
   /**
-   * List the connections a recipient with `role` must verify before opening this workspace, in
+   * List the connections a recipient of `grant` must verify before opening what it grants, in
    * the order the connections were created. Reports what sharing will cost the recipient; it
    * grants nothing and mints no capability.
    */
-  listObserverRequirements(role: CollaboratorRole): Promise<ObserverBindingNeed[]>;
+  listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
-  /** List all collaborators. Available to owner and all collaborators. */
+  /**
+   * List who this workspace is shared with: its collaborators, the owner aside. Available to owner
+   * and all collaborators.
+   */
   listCollaborators(): Promise<CollaboratorInfo[]>;
 
   /**
-   * Add a collaborator by username/email. The caller must be the owner or an existing
-   * collaborator. `role` is the access level to grant; the caller may not grant a role higher
-   * than their own effective role. Returns the new collaborator's info, or null if the username
-   * doesn't correspond to an existing account.
+   * Share this workspace, or one of its gadgets (see CollaboratorGrant), with another user: invite
+   * them as a collaborator by username/email, or grant an existing one more access. The caller must
+   * be the owner or a "build" collaborator, since only their grants confer anything.
+   * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
+   * the note; one that covers the caller's earlier grants to them replaces those. Returns the
+   * collaborator's info, or null if the username doesn't correspond to an existing account.
    */
-  addCollaborator(username: string, role: CollaboratorRole,
+  addCollaborator(username: string, grant: CollaboratorGrant,
                   note?: string): Promise<CollaboratorInfo | null>;
 
   /**
-   * Remove a collaborator (identified by profile.id).
+   * Stop sharing this workspace with a user (unshare it): remove a collaborator, identified by
+   * profile.id, or with `gadgetId`, only their grants to that gadget. Access they hold through
+   * grants to the whole workspace is unaffected by the latter.
    *
    * Owner can remove anyone. A non-owner collaborator can only remove their own edge(s)
-   * from the target. If the target still has edges from other sources, they keep access
-   * and the return is an empty array. If no edges remain, the target is fully removed.
+   * from the target. If the target still has edges from other sources, they keep that access.
    *
-   * When a target is fully removed, `keepUsers` lists the profile.ids of users who would
-   * lose access transitively but should be retained. Their PermissionEdges through the
-   * removed user are replaced with new edges from the caller. Users reachable only through
-   * the removed user who are NOT in `keepUsers` are also removed.
+   * `keepUsers` lists the profile.ids of users who would lose access transitively but should be
+   * retained: each is given fresh edges from the caller restoring the access they lost. Users
+   * reachable only through the removed grants who are NOT in `keepUsers` lose that access too.
    *
-   * Returns the list of users whose access actually changed (removed or downgraded), including
-   * the primary target. An empty array means the caller's edge was removed but no one's effective
-   * access changed (the target retained their role through other edges).
+   * Returns the list of users whose access actually narrowed, including the primary target. An
+   * empty array means no one's effective access changed (the target retained it through other
+   * edges).
    */
-  removeCollaborator(profileId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
+  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]>;
 
   /**
-   * Preview what would happen if a collaborator were removed. For a non-owner caller,
-   * if the target has edges from other sources that would survive, returns an empty array
-   * (the target would not actually be affected). Otherwise, returns the list of users whose
-   * access would change (lose access or be downgraded to a lower role) as a consequence, so the
-   * caller can present checkboxes for which to keep vs. remove.
+   * Preview what removeCollaborator() would do with the same arguments: the users whose access
+   * would narrow as a consequence, so the caller can present checkboxes for which to keep.
    */
-  previewRemoveCollaborator(profileId: string): Promise<AffectedCollaborator[]>;
+  previewRemoveCollaborator(profileId: string, gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]>;
 
   // --- Share link management ---
   //
@@ -3130,13 +3760,16 @@ export interface Overseer extends RpcTarget {
   // mints more on demand. Renaming, revoking, and grants apply to the link.
 
   /**
-   * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
-   * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
-   * caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
-   * access level granted to anyone who redeems the link; the caller may not grant a role higher
-   * than their own effective role.
+   * Create a share link for this workspace. The server generates a random 128-bit key, stores its
+   * HMAC-SHA-256 hash, and returns the raw key (hex-encoded) along with the id of the link it
+   * created. The caller constructs a URL from the key. The raw key is never stored server-side.
+   * Anyone who redeems the link receives `grant`. The caller must be the owner or a "build"
+   * collaborator.
+   *
+   * A signed-in user redeems the key by passing it as `shareKey` to
+   * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
-  createShareLink(role: CollaboratorRole, note?: string)
+  createShareLink(grant: CollaboratorGrant, note?: string)
       : Promise<{ key: string; linkId: string }>;
 
   /**
@@ -3156,20 +3789,20 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Revoke a share link by its `linkId`, which revokes every secret ever minted for it. Users who
-   * gained access through the link may be transitively removed or downgraded. `keepUsers` lists
-   * profile.ids of users who should be retained at their prior role with fresh edges from the
-   * caller. Returns the list of users whose access actually changed (removed or downgraded).
+   * gained access through the link may transitively lose some or all of it. `keepUsers` lists
+   * profile.ids of users who should keep the access they would lose, through fresh edges from the
+   * caller. Returns the list of users whose access actually narrowed.
    */
   revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
 
   /**
    * Preview what would happen if a share link were revoked. Returns the list of users whose access
-   * would change (lose access or be downgraded to a lower role) as a consequence, so the caller
-   * can present checkboxes for which to keep vs. remove.
+   * would narrow as a consequence, so the caller can present checkboxes for which to keep.
    */
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
 
+/** Metadata about one chat in a workspace. */
 export type AiChatMetadata = {
   id: number,
   title: string,
@@ -3196,6 +3829,15 @@ export type AiChatMetadata = {
    * linger in stored metadata but are never delivered as truth.)
    */
   proposedChangeWorkpieces?: WorkpieceId[];
+
+  /**
+   * Messages sent while the agent works that it has not read yet, oldest first (see
+   * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
+   * unless a turn ends without reading it and without failing or waiting on the user's decision:
+   * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
+   * `Overseer.stopAgent`). Absent when none.
+   */
+  queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -3532,6 +4174,7 @@ export type ActionHistoryPage = {
   nextBeforeId?: number;
 };
 
+/** Who wrote a chat message, or is responding to a chat: a user, an agent's model, or a gadget. */
 export type AiChatAuthorInfo = {
   /**
    * Is the author a human, AI, or Gadget?
@@ -3549,6 +4192,13 @@ export type AiChatAuthorInfo = {
   name: string;
 
   /**
+   * For a model offered by `listModels()`, a line the pickers show under its name, when the name
+   * alone doesn't say what the model does (the Auto Router's "Best model for each request").
+   * Not carried on a message's author.
+   */
+  description?: string;
+
+  /**
    * The user's preferred email address for git commits they author, set via
    * `AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.
    * Self-asserted and unverified: it is attribution only and must never be read as identity.
@@ -3560,6 +4210,7 @@ export type AiChatAuthorInfo = {
   // `AuthenticatedApi.getAvatar(userId)`.
 };
 
+/** One message in a chat: where it is in the chat, when and by whom it was written, and its body. */
 export type AiChatMessage = {
   chatId: number;
   sequence: number;
@@ -3601,6 +4252,13 @@ export type AiChatMessageBody = {
    * Clients use this to group the two records for display.
    */
   generatedBySlashCommandSequence?: number;
+
+  /**
+   * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
+   * reads it before its next model request, or, if the turn ended before it could and started no
+   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   */
+  steered?: true;
 } | {
   /**
    * A slash command exactly as requested by the client, retained for display and never included in
@@ -3741,7 +4399,8 @@ export type AiChatMessageBody = {
    * case `change` is omitted). Like `createdGadgets`, the additions are
    * provisional: the edge is visible only from this chat until a merge through this message
    * makes it permanent, and a revert covering it deletes the edge. `name` is the binding's name
-   * within the gadget identified by `gadgetId`; `target` is the bound workpiece.
+   * within the gadget (or agent spawner) identified by `gadgetId`; `target` is the bound
+   * workpiece.
    */
   addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[];
 
@@ -3857,7 +4516,7 @@ export type AiChatMessageBody = {
   resources: AlwaysAvailableResource[];
 } | {
   /**
-   * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
+   * Indicates that the agent run ended with an error (e.g. LLM API failure, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
    */
@@ -3865,7 +4524,8 @@ export type AiChatMessageBody = {
   message: string;
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
-   * the "connect Cloudflare / add credits" modal instead of a generic error + retry).
+   * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
+   * marks a run the user stopped, which is not a failure).
    */
   code?: string;
 } | {
@@ -3910,7 +4570,10 @@ export type AiChatMessageBody = {
   /** Unique id used by acceptConnectionRequest()/denyConnectionRequest(). */
   requestId: string;
 
-  /** The gatekeeper vendor the agent is requesting (id + denormalized display name). */
+  /**
+   * The gatekeeper vendor the agent is requesting (id + denormalized display name), or
+   * AGENT_SPAWNER_CONNECTION_ID for an agent spawner.
+   */
   vendorId: string;
   vendorName: string;
 
@@ -3932,9 +4595,10 @@ export type AiChatMessageBody = {
   /**
    * The urlPattern of the supported resource this request resolved to at request time (one of the
    * vendor's SupportedResource.urlPattern values, e.g. "https://github.com/:owner/:repo" or the
-   * whole-instance "https://*"). The backend guarantees every connection request resolves to a
-   * concrete resource (see resolveRequestedResource), and the accept modal pre-selects exactly this
-   * resource — so accepting never opens a blank "create new connection" picker.
+   * whole-instance "https://*"). The backend guarantees every connection request for a vendor
+   * resolves to a concrete resource (see resolveRequestedResource), and the accept modal
+   * pre-selects exactly this resource — so accepting never opens a blank "create new connection"
+   * picker. Absent for an agent spawner, which has no resources: accepting opens its form.
    */
   resourceUrlPattern?: string;
 
@@ -4033,7 +4697,7 @@ export function isTextLikeAttachmentMimeType(mimeType: string): boolean {
  *
  * The agent addresses workpieces by their chat binding name (the `gadget`/`workpiece` parameters
  * on several variants), never by workpiece ID. Logs persisted before multi-gadget workspaces lack
- * these names; when a name is absent, the workspace's `defaultGadgetId` (from `GadgetMetadata`)
+ * these names; when a name is absent, the workspace's `defaultGadgetId` (from `WorkspaceMetadata`)
  * is assumed, and it is an error for it to be omitted when there is no default.
  */
 export type AiToolCall = {
@@ -4146,12 +4810,12 @@ export type AiToolCall = {
   };
 } | {
   /**
-   * Wire one of the chat's bindings into a gadget's own binding list. The addition is provisional
-   * to the chat, recorded by a "changes" message (see `addedBindings`).
+   * Wire one of the chat's bindings into a gadget's own binding list, or an agent spawner's. The
+   * addition is provisional to the chat, recorded by a "changes" message (see `addedBindings`).
    */
   toolName: "setGadgetBinding";
   input: {
-    /** Chat binding name of the target gadget. */
+    /** Chat binding name of the target gadget or agent spawner. */
     gadget: string;
     /** Chat binding name of the resource to wire into the gadget. */
     source: string;
@@ -4698,6 +5362,7 @@ export interface ConsoleLogSubscriber {
   event(chatId: number | null, logs: ConsoleLogEvent[]): Promise<void>;
 }
 
+/** One console call made by a gadget's code. */
 export type ConsoleLogEvent = {
   timestamp: Date;
 
@@ -4852,7 +5517,8 @@ export type BlueprintMerge = {
   /**
    * The bindings the release declares that the gadget had none named for, by binding name.
    * Absent if there were none. A binding that exists only to feed an agent spawner
-   * (`spawnerOnly`) is never listed, having no name in the gadget to look for.
+   * (`spawnerOnly`) has no name in the gadget to look for, so it is listed only when a missing
+   * agent-spawner binding's agents get it.
    */
   missingBindings?: Record<string, BlueprintBinding>;
 };
@@ -5030,7 +5696,11 @@ export type GatekeeperCreationSpec = {
   modelName: string;       // model name on the provider's API (e.g. "claude-sonnet-4-6")
 } | {
   type: "agentSpawner";
-  config: AgentSpawnerConfig;
+  /**
+   * The spawner's config, less `env`: its bindings change after creation, so they are binding
+   * edges of the spawner instead, added with the agent's setGadgetBinding tool.
+   */
+  config: Omit<AgentSpawnerConfig, "env">;
 
   /**
    * Denormalized from the creating user's model config at binding creation time.
@@ -5154,6 +5824,7 @@ export type BlueprintBinding = {
   env: Record<string, SpawnerEnvTarget>;
 });
 
+/** A screenshot image uploaded with a blueprint, which stores it apart from its metadata. */
 export type BlueprintScreenshotUpload = {
   mimeType: "image/jpeg" | "image/png";
   content: Uint8Array;
@@ -5269,7 +5940,7 @@ export type BlueprintLibrarySummary = {
 };
 
 /**
- * Binding assignment (input to newGadgetFromBlueprint).
+ * Binding assignment (input to newWorkspaceFromBlueprint).
  * When instantiating a blueprint, the user provides a Record mapping binding name ->
  * assignment. Every required binding in the blueprint must have a corresponding entry.
  */
@@ -5301,7 +5972,7 @@ export interface WorkpieceClient extends RpcTarget {
   getTitle(): Promise<string>;
 
   /**
-   * Change the workpiece's title.
+   * Rename this workpiece (a gadget or a gatekeeper): change its title.
    *
    * (Note gatekeeper titles are initially based on the title of the underlying resource, but this
    * method does not change the remote resource, only the display name used locally within this
@@ -5310,7 +5981,7 @@ export interface WorkpieceClient extends RpcTarget {
   setTitle(title: string): Promise<void>;
 
   /**
-   * Permanently remove this workpiece from the workspace.
+   * Delete this workpiece (a gadget or a gatekeeper), permanently removing it from the workspace.
    *
    * For a gadget, this deletes its registry entry (including its binding map) and hooks and
    * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
@@ -5336,6 +6007,9 @@ export type GadgetExportFormat = {
 
   /** File extension, including the leading dot. */
   fileExtension: string;
+
+  /** Suggested download filename, including its extension. Defaults to the Gadget title plus fileExtension when unset. */
+  fileName?: string;
 };
 
 /**
@@ -5352,13 +6026,19 @@ export interface GadgetClient extends WorkpieceClient {
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
-  // Open an RPC interface to the gadget's server-side Durable Object facet. The frontend may pass
-  // this stub into the gadget's iframe sandbox, so that the gadget UI can communicate with its
-  // server side. It can also permit the coding agent to make direct calls.
-  //
-  // If `chatId` is specified, then the gadget will include changes currently proposed in the given
-  // chat.
-  //
+  /**
+   * Open an RPC connection to the gadget's server side, which holds its data, to call it.
+   * The server side is the gadget's Durable Object facet, and the calls are to its own methods.
+   * The frontend may pass this stub into the gadget's iframe sandbox, so that the gadget UI can
+   * communicate with its server side. It can also permit the coding agent to make direct calls.
+   *
+   * The methods are the gadget's own code, so this API does not list them: the gadget's README.md
+   * and server.js say what they are, readable through Overseer.listTree() and
+   * Overseer.readFilesAtCommit() at its head commit (GadgetSummary.commitId).
+   *
+   * If `chatId` is specified, then the gadget will include changes currently proposed in the given
+   * chat.
+   */
   // @ts-ignore - TODO: Fix type instantiation issue
   connectToGadget(chatId?: number): Promise<RpcStub<any>>;
 
@@ -5381,14 +6061,20 @@ export interface GadgetClient extends WorkpieceClient {
   // times in one gadget or by several gadgets, under independent names.
 
   /**
-   * List this gadget's bindings.
+   * List this gadget's bindings: the names it adds to its worker's `env`, besides the GADGET and
+   * GIT every one holds, with what each is bound to.
    *
    * If `chatId` is specified, bindings which have been proposed but not yet accepted in the given
    * chat thread will be included.
    */
   listBindings(chatId?: number): Promise<GadgetBindingInfo[]>;
 
-  /** Get the gatekeeper bound under the given name, or null if there is no such binding. */
+  /**
+   * Get the gatekeeper bound under the given name, or null if there is no such binding.
+   *
+   * @nullWhen this gadget has no accepted binding by that name whose gatekeeper still exists;
+   *   listBindings() also lists one whose gatekeeper is gone, and, given a chat, that chat's pending ones
+   */
   getBinding(name: string): Promise<GatekeeperClient<any> | null>;
 
   /**
@@ -5432,7 +6118,8 @@ export interface GadgetClient extends WorkpieceClient {
   setBlueprintAnnotation(name: string, annotation: BlueprintBindingAnnotation): Promise<void>;
 
   /**
-   * Create a new blueprint from this gadget's current committed code.
+   * Publish this gadget's current committed code as a new blueprint.
+   * PublicApi.downloadBlueprint() exports it as a `.gadget` archive.
    * `title` defaults to the gadget's title if omitted.
    *
    * The blueprint is always owned by the workspace owner, regardless of who calls this method.
@@ -5492,18 +6179,33 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
 }
 
 /**
- * The level of access a collaborator (or share key) grants.
+ * The level of access a collaborator holds or a permission edge or share link confers.
  *
  * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
- * - "use": may only render, interact with, and export the gadget's deployed UI (getUiBundle(),
- *   connectToGadget(), getExportFormats(), and export()), plus read basic metadata.
- *
- * Roles are ordered build > use. A collaborator's effective role is the maximum role reachable
- * from the owner through their valid permission edges, where each edge grants
- * min(edge role, sharer's effective role). The owner is the implicit root at "build".
+ * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
+ *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
+ *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
+
+/**
+ * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
+ * gadget's deployed UI. ("use" of every gadget at once can no longer be granted, though
+ * collaborators who received it before gadgets were shared individually keep it; see
+ * CollaboratorAccess.)
+ */
+export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
+
+/**
+ * A collaborator's effective access: the union of their valid grants reachable from the owner.
+ * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, or is
+ * "all" for a collaborator granted every gadget before gadgets were shared individually.
+ */
+export type CollaboratorAccess =
+  | {role: "build"}
+  | {role: "use", gadgetIds: WorkpieceId[] | "all"};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -5532,6 +6234,13 @@ export type PermissionEdge = {
    * edges are treated as "build" for backwards compatibility.
    */
   role?: CollaboratorRole;
+
+  /**
+   * The one gadget a "use" edge grants (for a share key edge, a copy of its link's). A "use" edge
+   * without one grants every gadget in the workspace; those are no longer created except to keep
+   * access someone already had (see removeCollaborator()'s `keepUsers`).
+   */
+  gadgetId?: WorkpieceId;
 } & ({
   /** Granted directly by another user. */
   type: "user";
@@ -5553,27 +6262,24 @@ export type CollaboratorInfo = {
   profile: AiChatAuthorInfo;
   addedBy: PermissionEdge[];
 
-  /**
-   * The collaborator's effective role (the maximum role reachable from the owner). Absent implies
-   * "build" for backwards compatibility.
-   */
-  role?: CollaboratorRole;
+  /** The collaborator's effective access. */
+  access: CollaboratorAccess;
 };
 
 /**
- * Describes a collaborator whose access would change (or did change) as a result of a removal or
+ * Describes a collaborator whose access would narrow (or did narrow) as a result of a removal or
  * share key revocation. Used by the preview/confirm flow, which must surface not only users who
- * lose access entirely but also users who would be downgraded to a lower role.
+ * lose access entirely but also users who would keep only some of it.
  */
 export type AffectedCollaborator = {
   profile: AiChatAuthorInfo;
   addedBy: PermissionEdge[];
 
-  /** The effective role before the change. */
-  oldRole: CollaboratorRole;
+  /** The effective access before the change. */
+  oldAccess: CollaboratorAccess;
 
-  /** The effective role after the change, or null if the user loses access entirely. */
-  newRole: CollaboratorRole | null;
+  /** The effective access after the change, or null if the user loses access entirely. */
+  newAccess: CollaboratorAccess | null;
 };
 
 /**
@@ -5591,4 +6297,11 @@ export type ShareLinkInfo = {
    * before roles were introduced.
    */
   role?: CollaboratorRole;
+
+  /**
+   * The one gadget a "use" link grants. A "use" link without one grants every gadget, as links
+   * did before gadgets were shared individually; such a link can no longer be created, but it
+   * can still be copied and redeemed.
+   */
+  gadgetId?: WorkpieceId;
 };

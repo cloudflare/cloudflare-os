@@ -111,6 +111,8 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listPreApprovableActions: ws => ws.listPreApprovableActions(),
   acceptConnectionRequest: ws => ws.acceptConnectionRequest("request", { gatekeeperId: 1 }),
   denyConnectionRequest: ws => ws.denyConnectionRequest("request"),
+  markChatRead: ws => ws.markChatRead(1),
+  markChatUnread: ws => ws.markChatUnread(1),
   listChats: ws => ws.listChats(),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),
@@ -119,6 +121,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     using sink = stubFor(new ChatSink());
     return await ws.subscribeToChat(sink);
   },
+  viewChat: ws => ws.viewChat(1),
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
@@ -133,16 +136,17 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   deleteChat: ws => ws.deleteChat(1),
   stopAgent: ws => ws.stopAgent(1),
   retryAgent: ws => ws.retryAgent(1, "model"),
+  waitForAgent: ws => ws.waitForAgent(1),
   listBlueprints: ws => ws.listBlueprints(),
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
   retryBlueprintPublish: ws => ws.retryBlueprintPublish("blueprint"),
-  listObserverRequirements: ws => ws.listObserverRequirements("build"),
+  listObserverRequirements: ws => ws.listObserverRequirements("workspace"),
   listCollaborators: ws => ws.listCollaborators(),
-  addCollaborator: ws => ws.addCollaborator("someone", "build"),
+  addCollaborator: ws => ws.addCollaborator("someone", "workspace"),
   removeCollaborator: ws => ws.removeCollaborator("someone", []),
   previewRemoveCollaborator: ws => ws.previewRemoveCollaborator("someone"),
-  createShareLink: ws => ws.createShareLink("build"),
+  createShareLink: ws => ws.createShareLink("workspace"),
   newShareLinkKey: ws => ws.newShareLinkKey("link"),
   listShareLinks: ws => ws.listShareLinks(),
   updateShareLink: ws => ws.updateShareLink("link"),
@@ -178,7 +182,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await ownerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(ownerApi)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -213,8 +217,10 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
-  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 
   expect(await outcomes(DENIED_OVERSEER, useWs)).toEqual(allDenied(DENIED_OVERSEER));

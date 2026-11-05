@@ -119,9 +119,12 @@ export interface WranglerConfig {
   services?: ServiceBinding[];
   /** Browser Rendering binding (Gadget PDF exports). */
   browser?: BindingDecl;
+  /** This Worker version's metadata (the backend's, so a session can tell it is out of date). */
+  version_metadata?: BindingDecl;
   /**
-   * Workers AI binding of a worker that declares its own (gatekeeper-websearch). The backend's
-   * `WORKERS_AI` is hardcoded in buildWorkerEntry instead, which refuses one in its config.
+   * Workers AI binding of a worker that declares its own (gatekeeper-websearch, gatekeeper-google).
+   * The backend's `WORKERS_AI` is hardcoded in buildWorkerEntry instead, which refuses one in its
+   * config.
    */
   ai?: BindingDecl;
   /** Artifacts binding — closed beta, cut from customer manifests. */
@@ -256,9 +259,11 @@ const HANDLED_CONFIG_KEYS = new Set([
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
-  // Workers AI, for a gatekeeper that calls it itself (gatekeeper-websearch). Placeholder-free,
-  // like browser.
+  // Workers AI, for a gatekeeper that calls it itself (gatekeeper-websearch's searches,
+  // gatekeeper-google's Drive PDF reading). Placeholder-free, like browser.
   "ai",
+  // The Worker version's metadata. Placeholder-free, like browser.
+  "version_metadata",
   // gatekeeper-context's Artifacts binding is closed-beta and cannot be provisioned in arbitrary
   // user accounts; it is dropped from customer manifests (the gatekeeper degrades gracefully).
   "artifacts",
@@ -449,6 +454,9 @@ export function buildWorkerEntry(
     // Like browser: `remote` is dev-only.
     bindings.push({ type: "ai", name: config.ai.binding });
   }
+  if (config.version_metadata) {
+    bindings.push({ type: "version_metadata", name: config.version_metadata.binding });
+  }
   for (const loader of config.worker_loaders ?? []) {
     bindings.push({ type: "worker_loader", name: loader.binding });
   }
@@ -482,8 +490,8 @@ export function buildWorkerEntry(
   let gatekeeperBindingExpansion: WorkerEntry["gatekeeperBindingExpansion"];
   if (kind === "backend") {
     // Deliberate contract: the manifest carries only $PUBLIC_BASE_URL. The backend's other
-    // instance-state vars (ADMINS, DEPLOY_URL, CF_ACCESS_*, CF_AI_GATEWAY*) are injected by
-    // the deploy service's backendExtraVars at PUT time, never manifest-templated.
+    // instance-state vars (ADMINS, CLOUDFLARE_OS_DEPLOYMENT, CF_ACCESS_*, CF_AI_GATEWAY*) are
+    // injected by the deploy service's backendExtraVars at PUT time, never manifest-templated.
     vars.PUBLIC_BASE_URL = "$PUBLIC_BASE_URL";
     if (config.ai) {
       throw new Error(`${pkgName} declares an ai binding, but the backend's WORKERS_AI is ` +

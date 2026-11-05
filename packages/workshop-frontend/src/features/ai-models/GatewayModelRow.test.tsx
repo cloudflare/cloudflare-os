@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AdminModelView,
+  AiModelProvider,
   BuiltInReasoning,
   GatewayModelCapabilities,
   GatewayModelMode,
@@ -14,6 +15,7 @@ import type {
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import { GatewayModelRow } from './GatewayModelRow'
+import type { AllowedModelSuggestion } from './modelForm'
 import type { GatewayTestState } from './useGatewayTests'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -163,6 +165,8 @@ describe('GatewayModelRow', () => {
     model: AdminModelView
     defaultReasoning?: ReasoningLevel | null
     behavesLikeName?: string
+    poolProviders?: AiModelProvider[]
+    poolSuggestions?: AllowedModelSuggestion[]
     busy?: boolean
     removable?: boolean
     test?: GatewayTestState
@@ -179,7 +183,10 @@ describe('GatewayModelRow', () => {
     root = createRoot(container)
     // Shows the row as a re-read of the settings reported it.
     const show = (
-      { model, defaultReasoning = null, behavesLikeName, busy = false, removable, test }: Shown,
+      {
+        model, defaultReasoning = null, behavesLikeName, poolProviders, poolSuggestions,
+        busy = false, removable, test,
+      }: Shown,
     ) =>
       act(async () => root!.render(
         <ul>
@@ -187,6 +194,8 @@ describe('GatewayModelRow', () => {
             model={model}
             defaultReasoning={defaultReasoning}
             behavesLikeName={behavesLikeName}
+            poolProviders={poolProviders}
+            poolSuggestions={poolSuggestions}
             busy={busy}
             test={test}
             onModeChange={onModeChange}
@@ -448,6 +457,307 @@ describe('GatewayModelRow', () => {
       await choose(levelSelect(), 'Deployment default (built-in: no level sent)')
 
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+    })
+  })
+
+  describe('the allowed models', () => {
+    // The Auto Router model: no reasoning levels, and the gateway's name for it.
+    const AUTO: AdminModelView = {
+      provider: 'cloudflare-auto-router', id: 'cloudflare/auto', name: 'Auto',
+      contextWindow: 200000, outputLimit: 32768, mode: 'enabled', defaultMode: 'enabled',
+      added: false, reasoningLevels: [], builtInReasoning: null,
+      builtInCompactionInputBudget: 167232, maxCompactionInputBudget: 167232, runtimeKnown: false,
+    }
+    const field = () => {
+      const label = Array.from(document.body.querySelectorAll('label'))
+        .find((element) => element.textContent === 'Allowed models for Auto')
+      const element = document.getElementById(label?.htmlFor ?? '')
+      if (!(element instanceof HTMLInputElement)) throw new Error('No allowed models field')
+      return element
+    }
+    const save = () => button('Save the allowed models of Auto')
+
+    it('offers the list to the Auto Router model alone', async () => {
+      await render({ model: SONNET })
+      expect(() => field()).toThrow('No allowed models field')
+
+      const { show } = await render({ model: AUTO, poolProviders: ['anthropic', 'openai'] })
+      expect(field().value).toBe('')
+      expect(field().placeholder).toBe('Every model of the providers that are on')
+      expect(() => button('Reset the allowed models of Auto')).toThrow('No button')
+      // The field names the pool the blank list resolves to, and where the gateway lists it.
+      expect(describedBy(field())).toContain('providers that are on (Anthropic, OpenAI)')
+      expect(document.querySelector('a[href$="/auto-router/#models"]')).not.toBeNull()
+      await show({ model: AUTO, poolProviders: [] })
+      expect(describedBy(field())).toContain('No provider is on for Auto to pick from')
+    })
+
+    // The names staged as chips, in order.
+    const chips = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .map((b) => b.getAttribute('aria-label') ?? '')
+      .filter((label) => label.startsWith('Remove ') && label.endsWith(' from the allowed models of Auto'))
+      .map((label) => label.slice('Remove '.length, -' from the allowed models of Auto'.length))
+    const options = () => {
+      const list = document.getElementById(field().getAttribute('aria-controls') ?? '')
+      return Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
+        .map((option) => option.textContent)
+    }
+    const press = (key: string) => act(async () => {
+      field().dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    })
+    const SUGGESTIONS: AllowedModelSuggestion[] = [
+      { name: 'anthropic/*', description: 'Every Anthropic model' },
+      { name: 'openai/*', description: 'Every OpenAI model' },
+      { name: 'openai/gpt-6-luna', description: 'GPT-6 Luna' },
+    ]
+
+    it('stages names typed with commas, trimmed and once each, and saves them beside the model’s '
+      + 'other settings', async () => {
+      const { onSettingsChange, show } = await render({
+        model: { ...AUTO, settings: { compactionInputBudget: 100000 } },
+      })
+      await type(field(), ' anthropic/* ,openai/gpt-6-luna, anthropic/*, ')
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+      expect(field().value).toBe('')
+
+      await click(save())
+
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({
+        compactionInputBudget: 100000, allowedModels: ['anthropic/*', 'openai/gpt-6-luna'],
+      })
+      await show({
+        model: {
+          ...AUTO,
+          settings: {
+            compactionInputBudget: 100000, allowedModels: ['anthropic/*', 'openai/gpt-6-luna'],
+          },
+        },
+      })
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+    })
+
+    it('suggests the names not yet listed, and adds a typed name exactly', async () => {
+      const { onSettingsChange } = await render({
+        model: { ...AUTO, settings: { allowedModels: ['anthropic/*'] } },
+        poolSuggestions: SUGGESTIONS,
+      })
+      await act(async () => { field().focus() })
+      expect(options()).toEqual([
+        'openai/*Every OpenAI model', 'openai/gpt-6-lunaGPT-6 Luna',
+      ])
+
+      await type(field(), 'luna')
+      expect(options()).toEqual([
+        'openai/gpt-6-lunaGPT-6 Luna', 'Add “luna” exactlyUse the text as a gateway model name',
+      ])
+      await press('Enter')
+      expect(chips()).toEqual(['anthropic/*', 'openai/gpt-6-luna'])
+
+      await type(field(), '@cf/zai-org/glm-5.2')
+      expect(options()).toEqual(['Add “@cf/zai-org/glm-5.2” exactly'
+        + 'Use the text as a gateway model name'])
+      await press('Enter')
+      // Backspace in an empty field takes back the last name staged.
+      await press('Backspace')
+      await type(field(), 'openai/*')
+      await press('Enter')
+
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['anthropic/*', 'openai/gpt-6-luna', 'openai/*'] })
+    })
+
+    it('adds a typed gateway name with Enter rather than a longer suggestion it starts',
+      async () => {
+        await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+        await type(field(), 'openai/gpt-6')
+        expect(options()[0]).toBe('Add “openai/gpt-6” exactlyUse the text as a gateway model name')
+        await press('Enter')
+        expect(chips()).toEqual(['openai/gpt-6'])
+      })
+
+    it('keeps the staged names through a save the server refuses', async () => {
+      const held = { ...AUTO, settings: { allowedModels: ['anthropic/*'] } }
+      const { onSettingsChange, show } = await render({ model: held })
+      await type(field(), 'openai/*,')
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['anthropic/*', 'openai/*'] })
+
+      // The server refused, so the re-read still holds the old list.
+      await show({ model: held })
+      expect(chips()).toEqual(['anthropic/*', 'openai/*'])
+
+      // Once a list lands, the field shows the server's.
+      await show({ model: { ...AUTO, settings: { allowedModels: ['@cf/*/*'] } } })
+      expect(chips()).toEqual(['@cf/*/*'])
+    })
+
+    it('highlights no suggestion until the arrow keys pick one, which Enter then adds', async () => {
+      const { onSettingsChange } = await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+      await act(async () => { field().focus() })
+      expect(options()).toHaveLength(3)
+      // Enter in an empty field is left to submit the form.
+      expect(field().getAttribute('aria-activedescendant')).toBeNull()
+
+      await press('ArrowDown')
+      await press('ArrowDown')
+      expect(document.getElementById(field().getAttribute('aria-activedescendant')!)?.textContent)
+        .toBe('openai/*Every OpenAI model')
+      await press('Enter')
+      expect(chips()).toEqual(['openai/*'])
+      expect(field().getAttribute('aria-activedescendant')).toBeNull()
+
+      // ArrowUp from none picks the last.
+      await press('ArrowUp')
+      expect(document.getElementById(field().getAttribute('aria-activedescendant')!)?.textContent)
+        .toBe('openai/gpt-6-lunaGPT-6 Luna')
+      expect(onSettingsChange).not.toHaveBeenCalled()
+    })
+
+    it('keeps what follows a refused entry of a pasted list, so correcting it loses nothing',
+      async () => {
+        const { onSettingsChange } = await render({ model: AUTO })
+        await type(field(), 'openai/*, bad name, anthropic/*')
+        expect(chips()).toEqual(['openai/*'])
+        expect(field().value).toBe('bad name, anthropic/*')
+        expect(field().getAttribute('aria-invalid')).toBe('true')
+
+        // Saving stages what is valid and still refuses the rest.
+        await click(save())
+        expect(onSettingsChange).not.toHaveBeenCalled()
+        expect(chips()).toEqual(['openai/*', 'anthropic/*'])
+        expect(field().value).toBe('bad name')
+
+        await type(field(), 'workers-ai/good-name')
+        await click(save())
+        expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+          { allowedModels: ['openai/*', 'anthropic/*', 'workers-ai/good-name'] })
+      })
+
+    it('leaves a refused entry being corrected as typed until it is added', async () => {
+      const { onSettingsChange } = await render({ model: AUTO })
+      await type(field(), 'openai/*, bad name, anthropic/*')
+      expect(field().value).toBe('bad name, anthropic/*')
+
+      // Midway through rewriting the refused entry, a prefix that looks like a name is not taken.
+      await type(field(), 'openai/g, anthropic/*')
+      expect(chips()).toEqual(['openai/*'])
+      expect(field().value).toBe('openai/g, anthropic/*')
+      await type(field(), 'openai/gpt-6-luna, anthropic/*')
+      expect(chips()).toEqual(['openai/*'])
+
+      await press('Enter')
+      expect(chips()).toEqual(['openai/*', 'openai/gpt-6-luna', 'anthropic/*'])
+      expect(field().value).toBe('')
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(
+        { allowedModels: ['openai/*', 'openai/gpt-6-luna', 'anthropic/*'] })
+    })
+
+    it('scrolls the list to the option the arrow keys highlight', async () => {
+      const many = Array.from({ length: 8 }, (_, index) =>
+        ({ name: `openai/model-${index}`, description: `Model ${index}` }))
+      await render({ model: AUTO, poolSuggestions: many })
+      await act(async () => { field().focus() })
+      const list = document.getElementById(field().getAttribute('aria-controls')!)!
+      // The list shows 100px of options 40px tall.
+      const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: Element) {
+          const index = Array.from(list.children).indexOf(this)
+          const top = index < 0 ? 0 : index * 40 - list.scrollTop
+          return { top, bottom: index < 0 ? 100 : top + 40 } as DOMRect
+        })
+      try {
+        await press('ArrowUp')
+        expect(list.scrollTop).toBe(7 * 40 + 40 - 100)
+        await press('ArrowDown')
+        expect(list.scrollTop).toBe(0)
+      } finally {
+        rect.mockRestore()
+      }
+    })
+
+    it('keeps the list open until a press that takes focus ends, so the press lands where it began',
+      async () => {
+        await render({ model: AUTO, poolSuggestions: SUGGESTIONS })
+        const listShown = () => field().getAttribute('aria-expanded') === 'true'
+        await act(async () => { field().focus() })
+        expect(listShown()).toBe(true)
+
+        // Pressing Save takes focus before its click, which would miss Save if the list above it
+        // closed under the pointer.
+        await act(async () => {
+          save().dispatchEvent(new Event('pointerdown', { bubbles: true }))
+          field().blur()
+        })
+        expect(listShown()).toBe(true)
+        await act(async () => {
+          save().dispatchEvent(new Event('pointerup', { bubbles: true }))
+          await new Promise((resolve) => setTimeout(resolve))
+        })
+        expect(listShown()).toBe(false)
+
+        // Leaving by keyboard closes it at once.
+        await act(async () => { field().focus() })
+        expect(listShown()).toBe(true)
+        await act(async () => { field().blur() })
+        expect(listShown()).toBe(false)
+      })
+
+    it('refuses a name that is no gateway model name without sending it, and points at the field',
+      async () => {
+        const { onSettingsChange } = await render({ model: AUTO })
+        await type(field(), 'anthropic/*, claude opus')
+        expect(chips()).toEqual(['anthropic/*'])
+
+        await click(save())
+
+        expect(onSettingsChange).not.toHaveBeenCalled()
+        expect(field().value).toBe('claude opus')
+        expect(field().getAttribute('aria-invalid')).toBe('true')
+        expect(describedBy(field())).toContain('“claude opus” is not a gateway model name')
+        expect(document.activeElement).toBe(field())
+
+        // A correction clears the refusal.
+        await type(field(), 'anthropic/claude-opus-5.5')
+        expect(field().getAttribute('aria-invalid')).toBe('false')
+      })
+
+    it('unsets the list when every name is removed and saved, or Reset is pressed', async () => {
+      const held = { ...AUTO, settings: { allowedModels: ['anthropic/*'] } }
+      const { onSettingsChange } = await render({ model: held })
+      await click(button('Remove anthropic/* from the allowed models of Auto'))
+      expect(chips()).toEqual([])
+      expect(document.activeElement).toBe(field())
+      await click(save())
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+
+      onSettingsChange.mockClear()
+      await type(field(), 'openai/*,')
+      await click(button('Reset the allowed models of Auto'))
+      expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
+      expect(document.activeElement).toBe(field())
+      expect(chips()).toEqual(['anthropic/*'])
+    })
+
+    it('sends nothing when the list the model has is saved again', async () => {
+      const { onSettingsChange } = await render({
+        model: { ...AUTO, settings: { allowedModels: ['anthropic/*'] } },
+      })
+      await type(field(), 'anthropic/*,')
+      await click(save())
+      expect(onSettingsChange).not.toHaveBeenCalled()
+    })
+
+    it('names the model the router answered with', async () => {
+      await render({
+        model: AUTO,
+        test: answered({
+          model: 'cloudflare/auto', ok: true, routedModel: 'anthropic/claude-sonnet-5.5',
+        }),
+      })
+      expect(testSaid()).toEqual(['Answered through the gateway via anthropic/claude-sonnet-5.5.'])
     })
   })
 

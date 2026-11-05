@@ -167,6 +167,7 @@ describe('in chat', () => {
         subscriber = next
         return { [Symbol.dispose]: () => {} }
       },
+      viewChat: () => ({ [Symbol.dispose]: () => {} }),
     })
     await render(
       <ChatInterface workspaceId="workspace" overseer={server.overseer} selectedChatId={1}

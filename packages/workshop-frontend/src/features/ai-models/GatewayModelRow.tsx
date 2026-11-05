@@ -3,17 +3,20 @@ import { Badge, Button, Collapsible, Input, Radio, Select } from '@cloudflare/ku
 import { COMPACTION_TRIGGER_RATIO, GATEWAY_MODEL_MODES, modelKind } from '@gadgets/workshop-shared/api'
 import type {
   AdminModelView,
+  AiModelProvider,
   GatewayModelCapabilities,
   GatewayModelMode,
   GatewayModelSettings,
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import { GatewayTestButton, GatewayTestStatus } from './GatewayTest'
+import { AllowedModelsField } from './AllowedModelsField'
 import {
   PROVIDER_LABELS,
   REASONING_LEVEL_LABELS,
   builtInReasoningLabel,
   parseTokenLimit,
+  type AllowedModelSuggestion,
 } from './modelForm'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
 import type { GatewayTestState } from './useGatewayTests'
@@ -60,7 +63,7 @@ const settingsWith = (
   model: AdminModelView,
   change: GatewayModelSettings,
 ): GatewayModelSettings => {
-  const { reasoning, compactionInputBudget } = { ...model.settings, ...change }
+  const { reasoning, compactionInputBudget, allowedModels } = { ...model.settings, ...change }
   // The server refuses a budget over the maximum, which a budget stored under a larger context
   // window can be. It goes along at the maximum, where the server caps it when a chat runs, and
   // not at all for a model whose window leaves a prompt no room.
@@ -68,17 +71,22 @@ const settingsWith = (
   return {
     ...(reasoning !== undefined && { reasoning }),
     ...(budget > 0 && { compactionInputBudget: budget }),
+    ...(allowedModels !== undefined && { allowedModels }),
   }
 }
 
 /** One gateway model in the Models tab: what it is, and the controls that change it. */
 export const GatewayModelRow = ({
-  model, defaultReasoning, behavesLikeName, busy, test, onModeChange, onSettingsChange, onTest,
-  onRemove,
+  model, defaultReasoning, behavesLikeName, poolProviders = [], poolSuggestions = [], busy, test,
+  onModeChange, onSettingsChange, onTest, onRemove,
 }: {
   model: AdminModelView
   /** The deployment's default reasoning level, or null while it sets none. */
   defaultReasoning: ReasoningLevel | null
+  /** The providers that are on, which the Auto Router model picks among while it lists none. */
+  poolProviders?: readonly AiModelProvider[]
+  /** The gateway model names the Auto Router model's allowed-models picker suggests. */
+  poolSuggestions?: readonly AllowedModelSuggestion[]
   /** The catalog's name for the model that `model.behavesLike` names, where the catalog has it. */
   behavesLikeName?: string
   busy: boolean
@@ -327,6 +335,18 @@ export const GatewayModelRow = ({
                     )}
                   </div>
                 </form>
+              )}
+
+              {model.provider === 'cloudflare-auto-router' && (
+                <AllowedModelsField
+                  modelName={model.name}
+                  allowedModels={model.settings?.allowedModels}
+                  providers={poolProviders}
+                  suggestions={poolSuggestions}
+                  busy={busy}
+                  onChange={(allowedModels) =>
+                    onSettingsChange(settingsWith(model, { allowedModels }))}
+                />
               )}
             </div>
           </Collapsible.DefaultPanel>

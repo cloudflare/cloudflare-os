@@ -1,0 +1,7 @@
+// The program capnweb-validate reads types from while bundling the runtime (`build/runtime.ts`):
+// only the file using `@validateRpc()`, so it does not type-check the whole runtime and its tests.
+{
+  "extends": "./tsconfig.json",
+  "files": ["src/runtime/frame.ts", "src/runtime/workers-types.d.ts"],
+  "include": []
+}

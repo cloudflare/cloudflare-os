@@ -32,8 +32,8 @@ let counter = 0;
  * AdminSettings namespace, so it is constructed on the state of an unrelated Durable Object: all
  * it needs from one is storage of its own. Its KV mirror is `mirror`, written through `put`.
  */
-function adminSettings(vars: object = GATEWAY) {
-  const stub = env.TEST_USER_DIRECTORY.getByName(`admin-settings-models-${++counter}`);
+function adminSettings(vars: object = GATEWAY, name = `admin-settings-models-${++counter}`) {
+  const stub = env.TEST_USER_DIRECTORY.getByName(name);
   const mirror = { current: null as string | null, fail: false };
   const put = vi.fn(async (_key: string, value: string) => {
     if (mirror.fail) throw new Error("KV unavailable");
@@ -50,7 +50,7 @@ function adminSettings(vars: object = GATEWAY) {
       });
   const settings = (): Promise<AdminConfig["modelSettings"]> =>
       inDo(admin => admin.getAdminConfig().modelSettings);
-  return { inDo, stored, settings, put, mirror };
+  return { inDo, stored, settings, put, mirror, name };
 }
 
 describe("AdminSettings gateway model modes", () => {
@@ -502,6 +502,62 @@ describe("AdminSettings gateway model settings", () => {
     expect(JSON.parse(mirror.current!).modelSettings).toStrictEqual(stored);
   });
 
+  it("stores the models Auto Router may pick, trimmed and once each, for its model alone",
+      async () => {
+    const AUTO = "cloudflare/auto";
+    const { inDo, settings } = adminSettings(
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare-auto-router" });
+    await inDo(admin => admin.setGatewayModelSettings(
+        AUTO, { allowedModels: [" anthropic/* ", "openai/gpt-6-luna", "anthropic/*"] }));
+    const stored = { [AUTO]: { allowedModels: ["anthropic/*", "openai/gpt-6-luna"] } };
+    expect(await settings()).toStrictEqual(stored);
+
+    const refused = async (modelId: string, allowedModels: string[], message: string) => {
+      await expect(inDo(admin => admin.setGatewayModelSettings(modelId, { allowedModels })))
+          .rejects.toThrow(message);
+    };
+    await refused(OPUS, ["anthropic/*"],
+        "Only the Auto Router model takes a list of allowed models.");
+    await refused(AUTO, [], "List at least one model for Auto Router to pick from");
+    await refused(AUTO, ["anthropic/*", "claude opus"],
+        '"claude opus" is not a gateway model name');
+    await refused(AUTO, ["anthropic"], '"anthropic" is not a gateway model name');
+    await refused(AUTO, ["anthropic/claude,openai/gpt"], 'is not a gateway model name');
+    // Nor may the list reach a provider the Models tab doesn't show, whether the gateway's
+    // Auto Router serves it (xAI) or the deployment merely has it off (Workers AI).
+    await refused(AUTO, ["anthropic/*", "xai/grok-4.7"], '"xai/grok-4.7" names a provider this ' +
+        "deployment hasn't turned on, and Auto Router picks only among those that are on: " +
+        "anthropic/…, openai/….");
+    await refused(AUTO, ["@cf/*/*"],
+        '"@cf/*/*" names a provider this deployment hasn\'t turned on');
+    expect(await settings()).toStrictEqual(stored);
+
+    // The list is unset like any other setting: by a write without it.
+    await inDo(admin => admin.setGatewayModelSettings(AUTO, {}));
+    expect(await settings()).toStrictEqual({});
+  });
+
+  it("keeps a stored name whose provider was turned off, so other settings still save",
+      async () => {
+    const AUTO = "cloudflare/auto";
+    const { inDo, settings } = adminSettings(
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" });
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    const listed = ["anthropic/*", "openai/*"];
+    await inDo(admin => admin.setGatewayModelSettings(AUTO, { allowedModels: listed }));
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", false));
+
+    // The UI sends the whole of the settings on each change, the stored list included.
+    await inDo(admin => admin.setGatewayModelSettings(
+        AUTO, { allowedModels: listed, compactionInputBudget: 50000 }));
+    expect(await settings())
+        .toStrictEqual({ [AUTO]: { allowedModels: listed, compactionInputBudget: 50000 } });
+    // A new name of the provider that is off is still refused.
+    await expect(inDo(admin => admin.setGatewayModelSettings(
+        AUTO, { allowedModels: [...listed, "openai/gpt-6-luna"] })))
+        .rejects.toThrow('"openai/gpt-6-luna" names a provider this deployment hasn\'t turned on');
+  });
+
   it("replaces a model's settings whole, and forgets them once empty", async () => {
     const { inDo, settings, mirror } = adminSettings();
     await inDo(admin => admin.setGatewayModelSettings(
@@ -793,15 +849,16 @@ describe("AdminSettings gateway providers", () => {
   const OPENAI_OFF = { provider: "openai", needsApiToken: false };
   const OPENAI_ON = { ...OPENAI_OFF, enabledBy: "admin" };
   const GOOGLE_OFF = { provider: "google", needsApiToken: false };
+  const AUTO_OFF = { provider: "cloudflare-auto-router", needsApiToken: false };
 
   it("turns a provider on and off, storing and mirroring each change", async () => {
     const { inDo, put, mirror } = adminSettings();
     expect(await providers(inDo)).toStrictEqual(
-        { stored: [], view: [...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
+        { stored: [], view: [AUTO_OFF, ...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
 
     await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
     expect(await providers(inDo)).toStrictEqual(
-        { stored: ["openai"], view: [...FLOOR, OPENAI_ON, GOOGLE_OFF] });
+        { stored: ["openai"], view: [AUTO_OFF, ...FLOOR, OPENAI_ON, GOOGLE_OFF] });
     expect(put).toHaveBeenCalledTimes(1);
     expect(put.mock.calls[0]![0]).toBe(".adminConfig");
     expect(JSON.parse(mirror.current!).addedProviders).toStrictEqual(["openai"]);
@@ -818,7 +875,7 @@ describe("AdminSettings gateway providers", () => {
 
     await inDo(admin => admin.setGatewayProviderEnabled("openai", false));
     expect(await providers(inDo)).toStrictEqual(
-        { stored: [], view: [...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
+        { stored: [], view: [AUTO_OFF, ...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
     expect(JSON.parse(mirror.current!).addedProviders).toStrictEqual([]);
     const off = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
     expect(off.providers).toEqual(["cloudflare", "anthropic"]);
@@ -838,7 +895,7 @@ describe("AdminSettings gateway providers", () => {
     await expect(inDo(admin => admin.setGatewayProviderEnabled("anthropic", false)))
         .rejects.toThrow(new Error('Provider "anthropic" is enabled by CF_AI_GATEWAY_PROVIDERS ' +
             "and can only be turned off there."));
-    expect((await providers(inDo)).view.slice(0, 2)).toStrictEqual(FLOOR);
+    expect((await providers(inDo)).view.slice(1, 3)).toStrictEqual(FLOOR);
     expect(put).not.toHaveBeenCalled();
 
     // Nor one that an admin had also turned on before the environment listed it.
@@ -853,7 +910,7 @@ describe("AdminSettings gateway providers", () => {
     await inDo(admin => admin.setGatewayProviderEnabled("anthropic", true));
     const { stored, view } = await providers(inDo);
     expect(stored).toStrictEqual([]);
-    expect(view.slice(0, 2)).toStrictEqual(FLOOR);
+    expect(view.slice(1, 3)).toStrictEqual(FLOOR);
   });
 
   it("refuses a provider AI Gateway does not serve, on or off", async () => {
@@ -910,7 +967,8 @@ describe("AdminSettings gateway providers", () => {
       await inDo(admin => admin.setGatewayProviderEnabled("google", true));
       const { gatewayModels } = await inDo(admin => admin.getSettings("admin"));
       expect(gatewayModels!.providerSettings).toStrictEqual([
-        ...FLOOR, OPENAI_OFF, { provider: "google", enabledBy: "admin", needsApiToken: true },
+        AUTO_OFF, ...FLOOR, OPENAI_OFF,
+        { provider: "google", enabledBy: "admin", needsApiToken: true },
       ]);
       expect(gatewayModels!.models.map(model => model.id)).toContain("gemini-3.6-flash");
 
@@ -1158,7 +1216,38 @@ describe("AdminSettings.testGatewayProvider", () => {
     expect((await test("cloudflare")).result).toStrictEqual({ model: KIMI, ok: true });
     const { stored, view } = await providers(inDo);
     expect(stored).toStrictEqual([]);
-    expect(view[0]).toStrictEqual({ provider: "cloudflare", needsApiToken: false });
+    expect(view[1]).toStrictEqual({ provider: "cloudflare", needsApiToken: false });
+  });
+
+  // The router rides the binding's /compat route, and names the model it picked in a response
+  // header.
+  it("names the model Auto Router answered with, and the pool it was given", async () => {
+    const { test, testModel, requests, inDo } = tested(() => {
+      const response = completion("OK");
+      response.headers.set("cf-aig-routed-model", "anthropic/claude-sonnet-5.5");
+      return response;
+    }, { CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" });
+    // With no allowed models, the provider's test and the model's both carry the enabled
+    // providers, which is the pool the model's chats are given.
+    expect((await test("cloudflare-auto-router")).result).toStrictEqual(
+        { model: "cloudflare/auto", ok: true, routedModel: "anthropic/claude-sonnet-5.5" });
+    expect(requests[0]!.url).toBe("https://workers-binding.ai/ai-gateway/gateways/" +
+        "platform-gateway/compat/chat/completions");
+    expect(requests[0]!.headers.get("cf-aig-allowed-providers")).toBe("anthropic");
+    expect((await testModel("cloudflare/auto")).result).toMatchObject({ ok: true });
+    expect(requests[1]!.headers.get("cf-aig-allowed-providers")).toBe("anthropic");
+    expect(requests[1]!.headers.get("cf-aig-skip-cache")).toBe("true");
+
+    // Allowed models narrow both tests' pool alike.
+    await inDo(admin => admin.setGatewayModelSettings(
+        "cloudflare/auto", { allowedModels: ["anthropic/claude-sonnet-5.5"] }));
+    await test("cloudflare-auto-router");
+    await testModel("cloudflare/auto");
+    for (const request of requests.slice(2)) {
+      expect(request.headers.get("cf-aig-allowed-models")).toBe("anthropic/claude-sonnet-5.5");
+      expect(request.headers.get("cf-aig-allowed-providers")).toBeNull();
+    }
+    expect(requests).toHaveLength(4);
   });
 
   it("throws for a provider AI Gateway does not serve", async () => {
@@ -1691,5 +1780,67 @@ describe("AdminSettings outside AI Gateway mode", () => {
     expect(await inDo(admin => admin.getAdminConfig().userModelsEnabled)).toBe(true);
     expect(await inDo(admin => admin.getAdminConfig().modelsDevSuggestions)).toBe(false);
     expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe("AdminSettings with ADMIN_CONFIG_SEED", () => {
+  const SEED = {
+    modelModes: { "claude-sonnet-5": "enabled" },
+    modelSettings: { "claude-opus-5-5": { compactionInputBudget: 300000 } },
+  };
+  const NEW_SEED = { modelSettings: { "claude-opus-5-5": { compactionInputBudget: 200000 } } };
+  // The same storage, deployed again with `seed`.
+  const redeployed = (name: string, seed: object) =>
+      adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: JSON.stringify(seed) }, name);
+
+  it("starts from the seed", async () => {
+    const { stored, settings, mirror } =
+        adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: JSON.stringify(SEED) });
+    expect(await stored()).toEqual({ modelModes: SEED.modelModes, addedModels: [] });
+    expect(await settings()).toEqual(SEED.modelSettings);
+    expect(mirror.current).toBeNull();
+  });
+
+  it("follows a changed seed after writes that change no model setting", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-bootstrap-${++counter}`, SEED);
+    // What the first request's bundled-format promotion does: a config write, no model change.
+    await inDo(admin => admin.updateAdminConfig({ siteName: "acme" }));
+    expect(parseAdminConfig(mirror.current).modelsSaved).toBe(false);
+
+    const again = redeployed(name, NEW_SEED);
+    expect(await again.settings()).toEqual(NEW_SEED.modelSettings);
+    expect((await again.stored()).modelModes).toEqual({});
+    expect(await again.inDo(admin => admin.getAdminConfig().siteName)).toBe("acme");
+  });
+
+  it("stores the seed with the first model change, and ignores it from then on", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-saved-${++counter}`, SEED);
+    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden"));
+    let expectedModes = { ...SEED.modelModes, "claude-fable-5-1": "hidden" };
+    let mirrored = parseAdminConfig(mirror.current);
+    expect(mirrored.modelsSaved).toBe(true);
+    expect(mirrored.modelModes).toEqual(expectedModes);
+    expect(mirrored.modelSettings).toEqual(SEED.modelSettings);
+
+    const again = redeployed(name, NEW_SEED);
+    expect((await again.stored()).modelModes).toEqual(expectedModes);
+    expect(await again.settings()).toEqual(SEED.modelSettings);
+  });
+
+  it("lets an admin clear a seeded setting", async () => {
+    const { inDo, settings } = adminSettings({ ...GATEWAY, ADMIN_CONFIG_SEED: SEED });
+    await inDo(admin => admin.setGatewayModelSettings("claude-opus-5-5", {}));
+    expect(await settings()).toEqual({});
+  });
+
+  it("keeps following the seed when the first write fails to reach KV", async () => {
+    const { inDo, name, mirror } = redeployed(`seed-failed-${++counter}`, SEED);
+    mirror.fail = true;
+    await expect(inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden")))
+        .rejects.toThrow("KV unavailable");
+    expect(await inDo(admin => admin.getAdminConfig().modelsSaved)).toBe(false);
+
+    const again = redeployed(name, NEW_SEED);
+    expect(await again.settings()).toEqual(NEW_SEED.modelSettings);
   });
 });

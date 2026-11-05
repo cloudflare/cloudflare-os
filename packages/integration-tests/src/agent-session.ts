@@ -61,10 +61,15 @@ export type StepUsage = {
   modelSteps?: number;
 };
 
+/** One compaction checkpoint of a chat: the summary that replaces its messages before `to`. */
+export type ChatCompaction = { to: number; summary: string };
+
 /** Canonical state observed after one agent activation ends. */
 export type AgentTurnResult = {
   outcome: AgentTurnOutcome;
   history: AiChatMessage[];
+  /** The chat's compaction checkpoints, oldest first. */
+  compactions: ChatCompaction[];
   workpieces: WorkpieceSummary[];
   usage: {
     lastStepTokens?: number;
@@ -456,6 +461,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   #terminal = false;
   #closed = false;
   #lastHistory: AiChatMessage[] = [];
+  #lastCompactions: ChatCompaction[] = [];
   #lastWorkpieces: WorkpieceSummary[] = [];
   #lastUsage: AgentTurnResult["usage"] = {};
 
@@ -499,7 +505,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
-  // #openGadgetInternal) and the browser reconnects (main.tsx); the DO itself resumes the
+  // #openWorkspaceInternal) and the browser reconnects (main.tsx); the DO itself resumes the
   // interrupted turn. This client does the same, so a turn is judged on what the product did
   // rather than on the socket. Without it the first eval run sat on a dead socket for the whole
   // 28-minute budget with zero model turns.
@@ -526,7 +532,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       try {
         await this.#beforeCancellationDeadline(async () => {
           const authenticated = await logIn(publicApi, this.username);
-          const workspace = await authenticated.openGadget(this.#workspaceId);
+          const workspace = await authenticated.openWorkspace(this.#workspaceId);
           this.#authenticatedApi = authenticated;
           this.#workspace = workspace;
           this.#publicApi = publicApi;
@@ -677,9 +683,9 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   async enableAmbientGatekeeper(vendorId: string): Promise<void> {
     await this.#ready();
     await this.#authenticatedApi.provisionAmbientAccount(vendorId);
-    (await this.#authenticatedApi.openGadget(this.#workspaceId))[Symbol.dispose]();
+    (await this.#authenticatedApi.openWorkspace(this.#workspaceId))[Symbol.dispose]();
     await waitFor(`the workspace's ${vendorId} gatekeeper`, async () =>
-      (await this.#workspace.listObserverRequirements("build"))
+      (await this.#workspace.listObserverRequirements("workspace"))
           .some(need => need.vendorId === vendorId) || null);
   }
 
@@ -863,10 +869,19 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       endSequence: number | undefined, cancellationDeadline?: number): Promise<AgentTurnResult> {
     const chatId = this.#chatId;
     if (chatId === undefined) {
-      return { outcome: observedOutcome, history: [], workpieces: [], usage: {} };
+      return { outcome: observedOutcome, history: [], compactions: [], workpieces: [], usage: {} };
     }
+    // Pages load newest first, each bounded below by the checkpoint before it.
+    const compactions: ChatCompaction[] = [];
+    const loadPage = async (before?: number) => {
+      const page = await this.#workspace.getChatHistory(chatId, before);
+      if (page.compacted !== undefined) {
+        compactions.unshift({ to: page.compacted.to, summary: page.compacted.summary });
+      }
+      return page;
+    };
     const loadState = () => Promise.all([
-      loadAllChatHistory(before => this.#workspace.getChatHistory(chatId, before)),
+      loadAllChatHistory(loadPage),
       this.#workspace.listChats(),
       this.#loadWorkpieces(),
     ]);
@@ -916,15 +931,17 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const steps = this.#chatSubscriber.steps(chatId);
     if (steps.length > 0) usage.steps = steps;
     this.#lastHistory = history;
+    this.#lastCompactions = compactions;
     this.#lastWorkpieces = workpieces;
     this.#lastUsage = usage;
-    return { outcome, history, workpieces, usage };
+    return { outcome, history, compactions, workpieces, usage };
   }
 
   #resultWithLastState(outcome: AgentTurnOutcome): AgentTurnResult {
     return {
       outcome,
       history: [...this.#lastHistory],
+      compactions: [...this.#lastCompactions],
       workpieces: [...this.#lastWorkpieces],
       usage: { ...this.#lastUsage },
     };
@@ -1052,7 +1069,7 @@ export async function openAgentSession(
       accounts.set(vendorId, account);
     }
 
-    workspace = await authenticated.newGadget();
+    workspace = await authenticated.newWorkspace();
     const { id: workspaceId } = await workspace.getMetadata();
     session = new WorkshopAgentSessionImpl({
       username,

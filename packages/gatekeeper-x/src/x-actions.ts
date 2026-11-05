@@ -645,23 +645,12 @@ async function publishAll(host: XActionHost, ctx: ActionContext, drafts: readonl
 }
 
 /**
- * Refuses to reject a publish that may already be on X: part of its thread went out, or X never
- * reported a send's outcome. Approving it again checks the account's recent posts before sending,
- * so nothing posts twice, and the result can then be reverted.
+ * Forgets a rejected publish's thread progress and send attempts. Rejecting withdraws the action
+ * without asking X, so any post X already published stays on the account.
  */
-function refuseIfSent(host: XActionHost, id: number, posts: number): void {
-  const published = host.progress.get(id).length;
-  const unconfirmed = Array.from({ length: posts }, (_, index) => host.attempts.get(`${id}:${index}`))
-    .some(attempt => attempt !== undefined);
-  if (published > 0) {
-    throw new Error(`${published} of this thread's ${posts} posts are already on X, so it can't be ` +
-      "rejected. Approve it again to finish the thread, then revert it to delete every post.");
-  }
-  if (unconfirmed) {
-    throw new Error("X never confirmed whether this post was published, so it may already be on X " +
-      "and can't be rejected. Approve it again -- that checks the account's recent posts first, so " +
-      "it is never posted twice -- then revert it if it shouldn't stay.");
-  }
+function forgetAttempts(host: XActionHost, id: number, posts: number): void {
+  host.progress.delete(id);
+  for (let index = 0; index < posts; index++) host.attempts.delete(`${id}:${index}`);
 }
 
 /** Deletes posts, newest first; one already gone counts as deleted. */
@@ -683,6 +672,8 @@ const postId = (host: XActionHost, target: PostTarget) => host.refs.requireResol
 export const actions = defineActions<XActionHost, XActions>({
   createPost: {
     kind: { tag: "x.post.create", label: "Publish X posts" },
+    // X's developer policy forbids automating posts.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     // Non-idempotent at X: a lost activation must not replay a post.
     claimBeforeApply: true,
@@ -711,13 +702,15 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdIds, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, payload.drafts.length);
+      forgetAttempts(host, ctx.id, payload.drafts.length);
       host.releaseImages(payload.drafts);
     },
   },
 
   reply: {
     kind: { tag: "x.post.reply", label: "Reply to X posts" },
+    // A reply is a public post, and X requires prior approval for AI-generated replies.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
@@ -740,13 +733,15 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, 1);
+      forgetAttempts(host, ctx.id, 1);
       host.releaseImages([payload.draft]);
     },
   },
 
   deletePost: {
     kind: { tag: "x.post.delete", label: "Delete X posts" },
+    // A deleted post can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -767,6 +762,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   like: {
     kind: { tag: "x.post.like", label: "Like X posts" },
+    // X's developer policy requires likes to be the user's own; unliking shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -792,6 +789,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   repost: {
     kind: { tag: "x.post.repost", label: "Repost X posts" },
+    // X's developer policy forbids automating reposts; undoing one shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -867,6 +866,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   follow: {
     kind: { tag: "x.user.follow", label: "Follow X accounts" },
+    // X's developer policy forbids automating follows; unfollowing shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -922,6 +923,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   createList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Lists can be public, and the kind also covers List deletion and privacy changes.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
@@ -971,17 +974,14 @@ export const actions = defineActions<XActionHost, XActions>({
       host.refs.bind(payload.ref, createdId);
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
-    reject: async (_payload, host, ctx) => {
-      if (host.attempts.get(`${ctx.id}:0`)) {
-        throw new Error("X never confirmed whether this List was created, so it may already exist and " +
-          "can't be rejected. Approve it again -- that checks the account's Lists first, so it is never " +
-          "created twice -- then revert it if it shouldn't stay.");
-      }
-    },
+    // A List X already created stays on the account.
+    reject: async (_payload, host, ctx) => host.attempts.delete(`${ctx.id}:0`),
   },
 
   updateList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Can make a private List public.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription("Change this List's details.");
@@ -1017,6 +1017,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   deleteList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // A deleted List can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => ({
       title: sanitizeTitle(`Delete the X List "${payload.list.info.name}"`),
@@ -1038,6 +1040,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   listMember: {
     kind: { tag: "x.list.members", label: "Manage X List members" },
+    // Changes List membership, and X may notify someone added to a public List.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription(payload.add

@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0",
-    "@earendil-works/pi-agent-core": "1.0.2",
-    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/observability": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
@@ -25,7 +25,7 @@
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
     "diff3": "0.0.3",
-    "jose": "^6.2.12",
+    "jose": "^6.2.13",
     "yjs": "^13.6.33",
     "zod": "catalog:"
   },
@@ -33,7 +33,7 @@
     "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/bundled-blueprints": "workspace:*",
     "@gadgets/scripts": "workspace:*",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "esbuild": "^0.28.2",
     "typescript": "catalog:",
     "vitest": "catalog:",

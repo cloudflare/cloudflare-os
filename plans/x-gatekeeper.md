@@ -212,8 +212,7 @@ touches `workshop-backend` or `workshop-shared`: gatekeepers are discovered from
 - **`gatekeeper-spotify`**: read-time overlays for library and follow state and provisional `~N`
   playlists (`spotify.ts:1493-1638`). Not its refresh path, which has no single-flight.
 - **Google Chat** (`gatekeeper-google/src/chat.ts`): posting with approvals — pending-message
-  identity, attempt markers, refusing rejection once a send was attempted, revert as delete,
-  per-kind `autoApprovable`.
+  identity, attempt markers, revert as delete, per-kind `autoApprovable`.
 - **`gatekeeper-confluence`**: agent-supplied bytes captured in an `ActionFileStore` and uploaded
   at apply (`confluence.ts:1176-1186`, `confluence-actions.ts:172-190`).
 - **Hooks**: `gatekeeper-github/src/github-hooks.ts` and `gatekeeper-gitlab/src/gitlab-hooks.ts` —
@@ -697,8 +696,8 @@ returns `{restart: true}` when anything was simulated on top of it.
 `{attemptedAt, textDigest}` before `POST /2/tweets`. An attempt whose outcome is unknown is
 reconciled on the next apply with `GET /2/users/:id/tweets?start_time=<attemptedAt>&max_results=5`
 — a read for the gatekeeper's own purposes, so not an observation — binding an exact text match
-and otherwise posting. Rejecting an attempted create is refused as Chat does ("this may already be
-on X — approve it again, then delete it").
+and otherwise posting. Rejecting an attempted create withdraws it and forgets the attempt; a post X
+already made stays on the account.
 
 **Simulation** — overlays replayed in submission order over each read:
 
@@ -1106,9 +1105,9 @@ departed from the design above:
   lookup X answers with errors in place of rows settles nothing, so it fails the apply and leaves
   the attempt for the next approval. A duplicate refusal says the send made nothing, so it is
   reconciled only against an earlier send X never confirmed, never against posts that were
-  already there; a first send refused that way fails. While a marker or thread progress exists,
-  `reject` is refused ("it may already be on X"). A terminal failure part-way through a
-  thread names the posts already published. `x.list.manage`'s creation is reconciled the same
+  already there; a first send refused that way fails. Rejecting withdraws the action and drops
+  its markers and thread progress, leaving whatever X already published. A terminal failure
+  part-way through a thread names the posts already published. `x.list.manage`'s creation is reconciled the same
   way, since `POST /2/lists` has no idempotency key either: against every page of the account's
   owned Lists (X cannot filter them by date), on name, description, privacy and a `created_at` in
   the window. Lists can share all of those, so the matching Lists already there are read before

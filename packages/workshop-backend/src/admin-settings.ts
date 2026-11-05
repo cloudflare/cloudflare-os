@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -6,10 +6,10 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
-import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { AgentTurnError, completeText } from './ai-invoke.js';
 import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
@@ -18,8 +18,14 @@ import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
+import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
+
+// How long a gatekeeper has to report its version tag (Workers RPC has no timeout of its own), and
+// how long a gatekeeper's answer is served before it is asked again.
+const VERSION_TAG_TIMEOUT_MS = 2_000;
+const VERSION_TAGS_TTL_MS = 60_000;
 
 // The entries of a record keyed by model ID (a model's mode, or its settings) other than
 // `modelId`'s. Callers rebuild the record with Object.fromEntries, which defines own properties:
@@ -43,6 +49,14 @@ function compactionBudgetRange(model: AdminModel): { builtIn: number, max: numbe
 // for it.
 function addedModel(model: GatewayModel): AdminModel {
   return { ...model, mode: "enabled", defaultMode: "enabled", added: true };
+}
+
+// `hours`, if an admin may set the update notice's `setting` to it.
+function updateHours(setting: string, hours: number): number {
+  if (!isUpdateHours(hours)) {
+    throw new Error(`The ${setting} must be a whole number of hours from 0 to ${MAX_UPDATE_HOURS}.`);
+  }
+  return hours;
 }
 
 // One of the tests an admin runs through the gateway: the event and the message of its log line,
@@ -278,13 +292,157 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  // --- Deployment updates ---
+
+  /**
+   * Whether a newer release is available, or null, with no request made, unless the deploy flow
+   * installed this deployment. Answered from the last update check for the running release, made
+   * again when updateCheckDue() says so while automatic checks are on.
+   */
+  async getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    let install = deployServiceInstall(this.env);
+    if (!install) return null;
+    let config = this.#config();
+    if (config.updateChecksEnabled && updateCheckDue(this.storage.updateCheck.get(),
+                                                     install.releaseId,
+                                                     config.updateCheckIntervalMinutes, Date.now())) {
+      await this.#checkForUpdate(install);
+    }
+    return this.#updateStatus(install);
+  }
+
+  /**
+   * Check for a newer release now, whatever the settings and the last check, and return the
+   * status it produces, or null, with no request made, unless the deploy flow installed this
+   * deployment. Throws when the check fails, without saying why: the failure is logged.
+   */
+  async checkForUpdates(): Promise<DeploymentUpdateStatus | null> {
+    let install = deployServiceInstall(this.env);
+    if (!install) return null;
+    if (!await this.#checkForUpdate(install)) throw new Error("The update check failed.");
+    return this.#updateStatus(install);
+  }
+
+  /** Set whether the deployment checks for a newer release by itself. */
+  async setUpdateChecksEnabled(enabled: boolean): Promise<void> {
+    await this.updateAdminConfig({ updateChecksEnabled: enabled });
+  }
+
+  /** Set how many minutes a successful update check is relied on before the deployment asks again. */
+  async setUpdateCheckIntervalMinutes(minutes: number): Promise<void> {
+    if (!isUpdateCheckInterval(minutes)) {
+      throw new Error("The check interval must be a whole number of minutes from 1 to " +
+          `${MAX_UPDATE_CHECK_INTERVAL_MINUTES}.`);
+    }
+    await this.updateAdminConfig({ updateCheckIntervalMinutes: minutes });
+  }
+
+  /** Set how many hours a newer release must have been available before admins are notified. */
+  async setUpdateMinimumAgeHours(hours: number): Promise<void> {
+    await this.updateAdminConfig({ updateMinimumAgeHours: updateHours("minimum age", hours) });
+  }
+
+  /** Set how many hours a dismissed update notice stays hidden in the browser that dismissed it. */
+  async setUpdateNoticeSnoozeHours(hours: number): Promise<void> {
+    await this.updateAdminConfig({ updateNoticeSnoozeHours: updateHours("notice snooze", hours) });
+  }
+
+  /** Record the version tag the router reported ("" for none); see ROUTER_VERSION_HEADER. */
+  async recordRouterTag(tag: string): Promise<void> {
+    if (this.storage.routerVersionTag.get() !== tag) this.storage.routerVersionTag.put(tag);
+  }
+
+  async #updateStatus(install: DeployServiceInstall): Promise<DeploymentUpdateStatus> {
+    let gatekeepers = await this.#gatekeeperVersionTags();
+    let versions = new Map<string, VersionAnswer>([
+      ["backend", this.env.CF_VERSION_METADATA?.tag],
+      ["router", this.storage.routerVersionTag.get() ?? NO_ANSWER],
+      ...gatekeepers,
+    ]);
+    return deploymentUpdateStatus(install, this.#config(), this.storage.updateCheck.get(),
+        versions, Date.now());
+  }
+
+  // What each bound gatekeeper answered when asked for its version tag, by install slug.
+  // Concurrent callers share each question. An answer is served for VERSION_TAGS_TTL_MS; a
+  // gatekeeper that did not answer is asked again by the next call, and only it.
+  #gatekeeperVersionTags(): Promise<[string, VersionAnswer][]> {
+    let now = Date.now();
+    return Promise.all([...this.vendors].map(
+        async ([id, vendor]): Promise<[string, VersionAnswer]> => {
+      let cached = this.#versionTags.get(id);
+      if (!cached || cached.expires <= now) {
+        let entry = { expires: now + VERSION_TAGS_TTL_MS, answer: this.#askVersionTag(id, vendor) };
+        this.#versionTags.set(id, entry);
+        void entry.answer.then(answer => {
+          if (answer === NO_ANSWER && this.#versionTags.get(id) === entry) {
+            this.#versionTags.delete(id);
+          }
+        });
+        cached = entry;
+      }
+      return [id, await cached.answer];
+    }));
+  }
+
+  #versionTags = new Map<string, { expires: number, answer: Promise<VersionAnswer> }>();
+
+  // Never throws. A gatekeeper that throws, takes too long, or has no versionTag() (which an RPC
+  // stub cannot tell from one that throws) did not answer.
+  async #askVersionTag(id: string, vendor: Service<GatekeeperVendor>): Promise<VersionAnswer> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("No version tag in time.")),
+          VERSION_TAG_TIMEOUT_MS);
+    });
+    try {
+      // Always true of an RPC stub, whose every property is callable: this only narrows the
+      // type, which also allows for the method's absence.
+      if (typeof vendor.versionTag !== "function") throw new Error("No versionTag().");
+      return await Promise.race([vendor.versionTag(), timeout]);
+    } catch (err) {
+      logger.warn("failed to read a gatekeeper's version tag", {
+        event: "gatekeeper.version-tag.read.failed", gatekeeperId: id, error: err,
+      });
+      return NO_ANSWER;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Concurrent callers share one check. Resolves whether it succeeded.
+  #checkForUpdate(install: DeployServiceInstall): Promise<boolean> {
+    return this.#updateCheckInFlight ??= this.#runUpdateCheck(install)
+        .finally(() => { this.#updateCheckInFlight = undefined; });
+  }
+
+  #updateCheckInFlight?: Promise<boolean>;
+
+  // Never throws. A failure keeps the last success only if it was for the running release.
+  async #runUpdateCheck({ releaseId, updateCheckUrl }: DeployServiceInstall): Promise<boolean> {
+    let attemptedAt = Date.now();
+    try {
+      let result = await fetchLatestRelease(updateCheckUrl, releaseId);
+      this.storage.updateCheck.put({ from: releaseId, attemptedAt, checkedAt: attemptedAt, result });
+      return true;
+    } catch (error) {
+      logger.warn("failed to check for a newer release", {
+        event: "deployment.update-check.failed", error,
+      });
+      let previous = this.storage.updateCheck.get();
+      this.storage.updateCheck.put(previous?.from === releaseId
+          ? { ...previous, attemptedAt } : { from: releaseId, attemptedAt });
+      return false;
+    }
+  }
+
   // --- Deployment admin config ---
 
   // Every read of the stored config goes through the same normalization as the KV mirror. A
   // config persisted before a field existed is missing that field entirely; in particular,
   // userSearchEnabled has a dependent default and cannot be restored by a simple defaults spread.
   #config(): AdminConfig {
-    return normalizeAdminConfig(this.storage.adminConfig.get());
+    return effectiveAdminConfig(this.storage.adminConfig.get(), adminConfigSeed(this.env));
   }
 
   getAdminConfig(): AdminConfig {
@@ -297,13 +455,19 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     this.adminConfigMutationTail = new Promise<void>(resolve => { release = resolve; });
     await previousMutation;
     try {
+      // The raw slot, null before the first write, is what a failed write restores: restoring the
+      // seeded config read from it would leave the seed in place as if it had been saved.
+      let stored = this.storage.adminConfig.get();
       let current = this.#config();
       let next = mutate(current);
+      if (!next.modelsSaved && changesModelSettings(current, next)) {
+        next = { ...next, modelsSaved: true };
+      }
       this.storage.adminConfig.put(next);
       try {
         await this.env.BLUEPRINTS.put(ADMIN_CONFIG_KEY, serializeAdminConfig(next));
       } catch (error) {
-        this.storage.adminConfig.put(current);
+        this.storage.adminConfig.put(stored);
         throw error;
       }
     } finally {
@@ -339,6 +503,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       announcement: config.announcement,
       banner: config.banner,
       accentColor: config.accentColor,
+      restrictedWebFetchHosts: config.restrictedWebFetchHosts,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -513,7 +678,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    */
   async setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {
     await this.#mutateAdminConfig(config => {
-      let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
+      let models = new GatewayModels(this.#requireGateway(), config);
+      let model = models.get(modelId);
       if (!model) throw new Error(`No such model: ${modelId}`);
       let budget = settings.compactionInputBudget;
       if (budget !== undefined) {
@@ -525,6 +691,38 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         if (!Number.isSafeInteger(budget) || budget <= 0 || budget > max) {
           throw new Error(`The compaction budget of the "${model.name}" model must be a whole ` +
               `number of tokens from 1 to ${max}.`);
+        }
+      }
+      let allowed = settings.allowedModels;
+      if (allowed !== undefined) {
+        if (model.provider !== "cloudflare-auto-router") {
+          throw new Error("Only the Auto Router model takes a list of allowed models.");
+        }
+        if (allowed.length === 0) {
+          throw new Error("List at least one model for Auto Router to pick from, or leave the " +
+              "list unset for the models of every enabled provider.");
+        }
+        if (allowed.length > MAX_ALLOWED_MODELS) {
+          throw new Error(`List at most ${MAX_ALLOWED_MODELS} models for Auto Router.`);
+        }
+        let malformed = allowed.find(name => !isAllowedModelName(name.trim()));
+        if (malformed !== undefined) {
+          throw new Error(`"${malformed}" is not a gateway model name: name a model as ` +
+              "provider/model, like anthropic/claude-sonnet-5.5, or a provider's every model, " +
+              "like anthropic/*.");
+        }
+        // The list narrows the pool; it must not reach a provider the Models tab doesn't show. A
+        // stored name whose provider was turned off since stays, as the pool leaves it out, so
+        // that the model's other settings can still be saved.
+        let stored = config.modelSettings[modelId]?.allowedModels ?? [];
+        let foreign = allowed.find(name =>
+            !models.enablesProviderOf(name.trim()) && !stored.includes(name.trim()));
+        if (foreign !== undefined) {
+          let prefixes = models.addableProviders
+              .flatMap(provider => AUTO_ROUTER_PROVIDER_NAMES[provider]?.prefix ?? []);
+          let among = prefixes.map(prefix => `${prefix}…`).join(", ");
+          throw new Error(`"${foreign}" names a provider this deployment hasn't turned on, and ` +
+              `Auto Router picks only among those that are on${among && `: ${among}`}.`);
         }
       }
       let entries = entriesWithout(config.modelSettings, modelId);
@@ -631,6 +829,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * Ask the first suggested model of a provider for a few tokens through the gateway, on behalf
    * of the admin `adminUserId`, and report what happened. A request that fails is a result. The
    * environment alone decides how the request is routed, so a provider that is off can be tested.
+   * Auto Router's request carries the pool its model picks from (see GatewayModels.autoRouterPool).
    *
    * Nothing is stored and the config mutation queue is not joined, so the other admin calls run
    * while the request is out.
@@ -643,7 +842,16 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (model === undefined) {
       throw new Error(`Provider "${provider}" has no suggested model to test.`);
     }
-    return this.#runTest(gateway, { provider, model, apiToken: "" }, adminUserId, PROVIDER_TEST);
+    let config: AiModelConfig = { provider, model, apiToken: "" };
+    if (provider === "cloudflare-auto-router") {
+      // Which model answers is the router's pick from its pool, so the test sends the pool the
+      // router's model is given, the admin's allowed models included, for its pass to say that
+      // one of those answered.
+      let stored = this.#config();
+      config.autoRouterPool = new GatewayModels(gateway, stored)
+          .autoRouterPool(stored.modelSettings[model]?.allowedModels);
+    }
+    return this.#runTest(gateway, config, adminUserId, PROVIDER_TEST);
   }
 
   /**
@@ -697,6 +905,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let signal = AbortSignal.timeout(test.timeoutMs);
     let startedAt = Date.now();
     let failure: { status?: number, message: string } | undefined;
+    // The gateway model Auto Router answered with, where the model is the router.
+    let routedModel: string | undefined;
     try {
       let handle = getModel(this.env, config,
           { type: "user", id: adminUserId, name: adminUserId });
@@ -710,6 +920,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         // answer without asking the provider.
         headers: { "cf-aig-skip-cache": "true" },
       });
+      routedModel = handle.lastResponse?.routedModel;
     } catch (error) {
       // The signal is this call's own, so nothing but the timeout aborts it.
       let message = signal.aborted
@@ -726,7 +937,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       event: test.event, modelId: model, outcome: failure ? "error" : "ok",
       statusCode: failure?.status, durationMs: Date.now() - startedAt,
     });
-    return failure ? { model, ok: false, ...failure } : { model, ok: true };
+    return failure
+        ? { model, ok: false, ...failure }
+        : { model, ok: true, ...(routedModel !== undefined && { routedModel }) };
   }
 
   /** Set whether users may add models of their own to the ones the gateway provides. */
@@ -879,8 +1092,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
 // gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
 // stub to the DO's internal methods. Covers branding, agent instructions, signups, gatekeeper
-// connector/resource availability, and AI Gateway models; authentication config stays env-var
-// driven.
+// connector/resource availability, AI Gateway models, and whether an update is available;
+// authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   /**
@@ -920,6 +1133,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       throw new Error(`Instructions too long (max ${MAX_INSTANCE_INSTRUCTIONS_LENGTH} characters).`);
     }
     await this.admin.updateAdminConfig({ instanceInstructions: text });
+  }
+
+  async setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]> {
+    let restrictedWebFetchHosts = parseRestrictedWebFetchHosts(hosts);
+    await this.admin.updateAdminConfig({ restrictedWebFetchHosts });
+    return restrictedWebFetchHosts;
   }
 
   setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
@@ -1023,5 +1242,29 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]> {
     return this.admin.testNewGatewayModel(model, this.adminUserId);
+  }
+
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    return this.admin.getUpdateStatus();
+  }
+
+  checkForUpdates(): Promise<DeploymentUpdateStatus | null> {
+    return this.admin.checkForUpdates();
+  }
+
+  setUpdateChecksEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setUpdateChecksEnabled(enabled);
+  }
+
+  setUpdateCheckIntervalMinutes(minutes: number): Promise<void> {
+    return this.admin.setUpdateCheckIntervalMinutes(minutes);
+  }
+
+  setUpdateMinimumAgeHours(hours: number): Promise<void> {
+    return this.admin.setUpdateMinimumAgeHours(hours);
+  }
+
+  setUpdateNoticeSnoozeHours(hours: number): Promise<void> {
+    return this.admin.setUpdateNoticeSnoozeHours(hours);
   }
 }

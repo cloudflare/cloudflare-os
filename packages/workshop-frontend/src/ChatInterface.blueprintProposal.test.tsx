@@ -144,6 +144,7 @@ async function renderProposalChat(options: {
       subscriber = next
       return { [Symbol.dispose]: () => {} }
     },
+    viewChat: () => ({ [Symbol.dispose]: () => {} }),
     readFilesAtCommit: async (commitId: string, paths: string[]) =>
       paths.map((path): [string, FileAtCommit] => {
         const text = options.commits?.[commitId]?.[path]

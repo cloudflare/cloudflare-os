@@ -1,698 +1,1220 @@
+/* =========================================================================
+ *  Slides -- the Durable Object
+ *  -----------------------------------------------------------------------
+ *  The deck document (its slides and the deck logo), its shared undo
+ *  history, the media asset store, the embedded cover artwork, and the
+ *  PowerPoint export. It broadcasts every
+ *  saved change to the connected browsers as a patch carrying only the
+ *  slides that changed, and is a generic store: it doesn't know what any
+ *  component does. The browser renderer (client.ts) and the pptx library
+ *  do; lib/pptx.ts adapts the deck for the latter.
+ * ========================================================================= */
+
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
-import { MAX_TOTAL_TEXT_LENGTH, deckToPptx, measureText } from "@gadgets/bundled-blueprints/libraries/pptx/server";
+import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
+import { LOGO_DEFAULT_TEXT } from "@gadgets/bundled-blueprints/libraries/pptx/server";
+import { COVER_ORANGE_PNG } from "./lib/branding.ts";
+import { pptxAssets } from "./lib/brand-rasters.ts";
+import { deckToSlidesPptx } from "./lib/pptx.ts";
+import { DEFAULT_LOGO_POSITION, isLogoImageData, isLogoPosition } from "./lib/logo.ts";
+import { SLIDE_LAYOUTS, SLIDE_LAYOUT_IDS, isSlideLayout } from "./lib/layouts.ts";
 import type {
   Block,
   BlockInput,
   BlockPatch,
+  BlockPatchEntry,
+  BlockProps,
+  BrandAssets,
   Deck,
   DeckCallbacks,
+  DeckLogo,
+  DeckLogoPatch,
+  DeckPatch,
   GadgetStub,
+  LegacyDeckCallbacks,
   Slide,
   SlideInput,
   SlidePatch,
+  SlideSummary,
+  SubscribeOptions,
   UndoState,
 } from "./lib/protocol.ts";
 
-/**
- * The Gadget stores a single "deck" document under the "deck" key:
- *
- *   { slides: [Slide] }
- *
- * Slide = {
- *   id: string,
- *   background: { color?: string, inset?: bool, dotGrid?: number },
- *   blocks: [Block],
- * }
- *
- * Block = {
- *   id: string,
- *   type: string,         // e.g. "title", "card", "arrow"
- *   x: number, y: number, // top-left in 1200x675 slide coords
- *   w?: number, h?: number,
- *   props: {...},         // type-specific (text, tone, etc.)
- * }
- *
- * Interactive rendering lives in client.ts and PowerPoint rendering in the shared PPTX library;
- * the server is a document store with realtime broadcast plus the export adapter. Mutations are
- * coarse: any change re-sends the whole deck, which keeps clients trivially in sync and makes undo
- * easy.
- *
- * The connected browsers are held by the sync library's SubscriberRegistry.
- * A deck has no presence — everyone sees the same slide data and cursors are
- * not shared — so the registry is built with no presence hooks and is a plain
- * fan-out: it keeps each subscriber's stub, drops and releases one whose
- * connection breaks or whose delivery fails, and isolates the rest from it.
- */
-
-const STORAGE_KEY = "deck";
-/** The schema marker a stored deck carries; a deck without it is reseeded (see getDeck). */
-const THEME_VERSION = "workspace.1";
+// ---------------------------------------------------------------------------
+// Storage (v2). The deck lives in memory and is written incrementally, so an
+// edit costs one small slide write instead of rewriting the whole deck:
+//   meta          { v: 2, themeVersion, order, rev, seq, undo: [seq], redo: [seq],
+//                   logo }  -- logo: the deck logo (its image an asset ref), or null
+//   s:<slideId>   one slide; big media in its blocks is an "asset:<hash>" ref
+//   h:<seq>       one undo/redo step: the earlier version of only the slides
+//                 it touched (+ the earlier slide order and deck logo, when
+//                 those changed); a step touching many slides spills them
+//                 into h:<seq>:<n>
+//   a:<hash>:<n>  asset data (inlined images, large SVG markup), chunked so
+//                 no single value nears the storage value-size limit
+//   assets        { <hash>: chunkCount } -- the asset index
+// Stored slides are never mutated: every change builds new slide and block
+// objects. History steps therefore share everything they didn't touch, and a
+// broadcast carries only the slides that changed. The v1 layout (the whole
+// deck as one "deck" value) is migrated on first load.
+// ---------------------------------------------------------------------------
+const LEGACY_KEY = "deck";
+const THEME_VERSION = "workspace.2";
 const MAX_UNDO = 50;
+const META_KEY = "meta";
+const ASSET_INDEX_KEY = "assets";
+// PNG stand-ins for SVG artwork, drawn by a browser (the server can't), for
+// PowerPoint viewers without SVG support: { <svgKey>: <assetHash> }.
+const RASTER_INDEX_KEY = "rasters";
+const MAX_RASTER_LENGTH = 6 * 1024 * 1024;
+// Editors draw rasters at most 1600px on a side; a larger one is refused, so
+// no one stand-in can pass the PowerPoint library's per-image limits.
+const MAX_RASTER_SIDE = 2048;
+// Together the stand-ins in one export get at most this many pixels, leaving
+// the rest of the library's 64M for the deck's photos and dot grids. An SVG
+// past it exports with the blank stand-in: PowerPoint 365 / 2019+ and Keynote
+// still draw the SVG itself.
+const MAX_EXPORT_RASTER_PIXELS = 24_000_000;
+const SLIDE_PREFIX = "s:";
+const HIST_PREFIX = "h:";
+const ASSET_PREFIX = "a:";
+const ASSET_REF = "asset:";
+// Keep in sync with client.ts (`shouldExternalize`): which prop values are
+// stored as assets rather than inline in the slide.
+const ASSET_MIN_LENGTH = 2048;
+const ASSET_CHUNK = 40000;
+const MAX_ASSET_LENGTH = 32 * 1024 * 1024;
+const STORAGE_BATCH = 128;
+// Values stay well under the smallest per-value limit (128 KiB), even for
+// text that encodes at more than a byte per character.
+const HIST_GROUP_CHARS = 40000;
+const SWEEP_DELAY_MS = 30000;
+const MAX_LOGO_ALT = 500;
+// What one edit may grow the deck to: the PowerPoint export's own limits, and a slide well under
+// the 2 MiB a stored value may be, even at two bytes a character.
+const MAX_SLIDES = 500;
+const MAX_BLOCKS_PER_SLIDE = 1000;
+const MAX_SLIDE_CHARS = 900_000;
 
-export class Gadget extends DurableObject<unknown> implements GadgetStub {
+/** The `meta` record. `legacyHash` is the hash of the v1 "deck" value it was migrated from. */
+interface StoredMeta {
+  v: 2;
+  themeVersion: string;
+  legacyHash: string | null;
+  order: string[];
+  rev: number;
+  seq: number;
+  undo: number[];
+  redo: number[];
+  /** Absent in decks saved before there was a deck logo. */
+  logo?: DeckLogo | null;
+}
+
+/** A slide's earlier version in a history step; null when the step created it. */
+type SlideVersions = Record<string, Slide | null>;
+
+/**
+ * One undo/redo step in memory: what it restores, and how many spill groups it was stored in.
+ * `logo` is there only when the step changed the deck logo (null: there was none).
+ */
+interface HistoryStep {
+  seq: number;
+  order?: string[];
+  logo?: DeckLogo | null;
+  slides: SlideVersions;
+  groups: number;
+}
+
+/** A step's head record (`h:<seq>`): its slides inline, or the number of `h:<seq>:<n>` groups. */
+interface StoredStepHead {
+  seq: number;
+  order?: string[];
+  logo?: DeckLogo | null;
+  slides?: SlideVersions;
+  groups?: number;
+}
+
+type StoragePuts = Record<string, unknown>;
+
+/** What a slide from storage or a caller may look like before it is checked. */
+type LooseSlide = Partial<Omit<Slide, "blocks" | "background">> & { background?: unknown; blocks?: unknown };
+
+function isAssetRef(v: unknown): v is string {
+  return typeof v === "string" && v.startsWith(ASSET_REF);
+}
+function shouldExternalize(key: string, v: unknown): v is string {
+  return typeof v === "string" && v.length >= ASSET_MIN_LENGTH && !v.startsWith(ASSET_REF) && (key === "src" || key === "markup" || v.startsWith("data:"));
+}
+async function hashString(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  let hex = "";
+  for (const byte of new Uint8Array(digest, 0, 16)) hex += byte.toString(16).padStart(2, "0");
+  return hex;
+}
+function inBatches<T>(list: T[], size = STORAGE_BATCH): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+function sameOrder(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+// The SVG artwork a slide shows: SVG block markup and SVG data-URL images.
+// Values may be asset refs.
+function svgSourcesOf(slide: Slide | null | undefined, out: Set<string>): Set<string> {
+  for (const b of slide?.blocks || []) {
+    const p = b?.props;
+    if (!p || typeof p !== "object") continue;
+    if (b.type === "svg" && typeof p.markup === "string" && p.markup.trim()) out.add(p.markup);
+    if (b.type === "image" || b.type === "logo") imageSvgSource(p.src, out);
+  }
+  return out;
+}
+// An image source that may be SVG (an asset ref may hold either).
+function imageSvgSource(src: unknown, out: Set<string>): void {
+  if (typeof src === "string" && (isAssetRef(src) || /^data:image\/svg\+xml/i.test(src))) out.add(src);
+}
+// A raster's key: the hash of the SVG source it stands in for. An asset ref
+// already is that hash (assets are stored under the hash of their data), so
+// client and server agree without either reading the other's copy.
+async function svgKey(value: string): Promise<string> {
+  return isAssetRef(value) ? value.slice(ASSET_REF.length) : hashString(value);
+}
+function assetHashesOf(slide: Slide | null | undefined, out: Set<string>): Set<string> {
+  for (const b of slide?.blocks || []) {
+    const p = b?.props;
+    if (!p || typeof p !== "object") continue;
+    for (const k in p) {
+      const v = p[k];
+      if (isAssetRef(v)) out.add(v.slice(ASSET_REF.length));
+    }
+  }
+  return out;
+}
+// The deck logo as a "slide" of one image, so the slide walks above cover it.
+function logoAsSlide(logo: DeckLogo | null | undefined): Slide | null {
+  return logo ? { id: "", background: {}, blocks: [{ id: "", type: "image", x: 0, y: 0, props: { src: logo.src } }] } : null;
+}
+// Deep equality of stored JSON, whatever order its keys were written in.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
+  const keys = Object.keys(x);
+  return keys.length === Object.keys(y).length && keys.every((k) => Object.hasOwn(y, k) && sameValue(x[k], y[k]));
+}
+// The width and height a PNG data URI's header gives, or null if it isn't a PNG.
+function pngSize(dataUri: string): { w: number; h: number } | null {
+  let head: string;
+  try { head = atob(dataUri.slice(dataUri.indexOf(",") + 1, dataUri.indexOf(",") + 33)); } catch { return null; }
+  if (!head.startsWith("\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR")) return null;
+  const at = (i: number) => ((head.charCodeAt(i) << 24) | (head.charCodeAt(i + 1) << 16) | (head.charCodeAt(i + 2) << 8) | head.charCodeAt(i + 3)) >>> 0;
+  return { w: at(16), h: at(20) };
+}
+function sameLogo(a: DeckLogo | null, b: DeckLogo | null): boolean {
+  return a === b || !!a && !!b && a.src === b.src && a.position === b.position && a.onCover === b.onCover && a.alt === b.alt;
+}
+function insertIndex(atIndex: unknown, length: number): number {
+  const n = atIndex == null ? NaN : Number(atIndex);
+  return Number.isInteger(n) && n >= 0 && n <= length ? n : length;
+}
+function moveIndex(toIndex: unknown, length: number): number {
+  return Math.max(0, Math.min(length, Math.trunc(Number(toIndex))));
+}
+// A block with `patch` merged in, as a new object (props merge too).
+function mergeBlock(b: Block, patch: BlockPatch & { id?: unknown }): Record<string, unknown> {
+  const { props, id, ...rest } = patch;
+  const loose: Record<string, unknown> = rest;
+  // A geometry value that isn't a number leaves the old one (null clears w/h).
+  for (const k of ["x", "y", "w", "h"]) {
+    const v = loose[k];
+    if (k in loose && !(v === null && (k === "w" || k === "h")) && !Number.isFinite(typeof v === "string" && v.trim() ? Number(v) : v)) delete loose[k];
+  }
+  const next: Record<string, unknown> = { ...b, ...loose };
+  if (props && typeof props === "object" && !Array.isArray(props)) next.props = { ...b.props, ...props };
+  return next;
+}
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+// A caller's list, refused when it isn't one or is longer than `max`.
+function boundedList(list: unknown, max: number, what: string): unknown[] {
+  if (!Array.isArray(list)) throw new Error(`${what} must be an array.`);
+  if (list.length > max) throw new Error(`Too many ${what} (at most ${max}).`);
+  return list;
+}
+// Props that are numbers wherever they appear; numeric strings are accepted.
+const NUMERIC_PROPS = ["fontSize", "lineHeight", "scale", "opacity", "strokeWidth", "radius", "width", "x1", "y1", "x2", "y2", "dotGrid"];
+// Blocks are stored in a shape every reader (client, exporter, agents) can
+// rely on: a string type, finite numeric x/y, w/h positive numbers or absent,
+// and a props object. Agents often send numbers as strings ("120"), which
+// would otherwise concatenate on the first nudge. Returns a new object, or
+// null for something that isn't a block. (The id is checked by the caller.)
+function normalizeBlock(b: unknown): (Omit<Block, "id"> & { id?: unknown }) | null {
+  if (!isPlainObject(b)) return null;
+  const num = (v: unknown) => {
+    const n = typeof v === "string" && v.trim() ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+  };
+  const out: Record<string, unknown> & { type: string; x: number; y: number } = { ...b, type: typeof b.type === "string" && b.type ? b.type : "text", x: num(b.x) ?? 0, y: num(b.y) ?? 0 };
+  for (const k of ["w", "h"]) {
+    const n = num(b[k]);
+    if (n === undefined || n <= 0) delete out[k];
+    else out[k] = n;
+  }
+  const props: BlockProps = isPlainObject(b.props) ? { ...b.props } as BlockProps : {};
+  for (const k of NUMERIC_PROPS) {
+    const v = props[k];
+    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) props[k] = Number(v);
+  }
+  return Object.assign(out, { props });
+}
+
+export class Gadget extends DurableObject implements GadgetStub {
   state: DurableObjectState;
   subscribers: SubscriberRegistry<DeckCallbacks>;
-  undoStack: Deck[];
-  redoStack: Deck[];
+  // Tabs still running the previous Slides client (see subscribe).
+  legacySubscribers: SubscriberRegistry<LegacyDeckCallbacks>;
+  #legacyFeed: Promise<void> = Promise.resolve();
+  #legacyQueued = false;
+  #order: string[] = [];
+  #slides = new Map<string, Slide>();
+  #rev = 0;
+  #seq = 0;
+  #undo: HistoryStep[] = [];
+  #redo: HistoryStep[] = [];
+  #assets = new Map<string, number>();
+  #rasters = new Map<string, string>();
+  #mutations = new MutationQueue();
+  #sweepTimer: ReturnType<typeof setTimeout> | null = null;
+  #legacyHash: string | null = null;
+  #logo: DeckLogo | null = null;
 
   constructor(state: DurableObjectState, env: unknown) {
-    super(state, env);
+    super(state, env as Cloudflare.Env);
     this.state = state;
     this.subscribers = new SubscriberRegistry();
-    // Undo/redo stacks live in memory only — they're transient and
-    // shared across every connected client (one global history for the
-    // whole deck). On DO restart history is lost, which we consider
-    // acceptable. Each entry is a full deck snapshot (deep clone).
-    this.undoStack = [];
-    this.redoStack = [];
+    this.legacySubscribers = new SubscriberRegistry();
+    state.blockConcurrencyWhile(() => this.#load());
+  }
+
+  // Mutations run one at a time, in arrival order. (Hashing an asset awaits
+  // something other than storage, which would otherwise let calls interleave.)
+  // One that fails may have stored assets nothing uses, so a sweep follows.
+  #run<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.#mutations.run(fn);
+    result.catch(() => this.#scheduleSweep());
+    return result;
+  }
+
+  // -------- load & persist ------------------------------------------------
+  // The v1 record is left where it was, so the previous version of this
+  // gadget still finds its deck. If that version saved to it after the
+  // migration (its hash no longer matches), it is migrated again.
+  async #load(): Promise<void> {
+    const st = this.state.storage;
+    const [meta, legacy] = await Promise.all([st.get<StoredMeta>(META_KEY), st.get<{ slides?: unknown }>(LEGACY_KEY)]);
+    const legacyHash = legacy ? await hashString(JSON.stringify(legacy)) : null;
+    this.#legacyHash = legacyHash;
+    // The theme version is only a marker: a deck from any earlier theme
+    // (including the "workspace.1" decks of the previous Slides blueprint) is
+    // kept and migrated, never reseeded, since it holds someone's work.
+    if (meta && meta.v === 2 && (meta.legacyHash ?? null) === legacyHash) {
+      return this.#loadV2(meta);
+    }
+    if (meta) await this.#clearV2();
+    const usable = legacy && Array.isArray(legacy.slides);
+    let slides: unknown[] = initialDeck().slides;
+    if (usable) {
+      slides = structuredClone(legacy.slides as unknown[]);
+      migrateLogoBlocks({ slides: slides as LooseSlide[] });
+    }
+    await this.#seed(slides);
+  }
+  // Deletes the v2 records but not the v1 one. Meta goes last, so a load
+  // after an interruption finds it stale and clears again.
+  async #clearV2(): Promise<void> {
+    const st = this.state.storage;
+    for (let after: string | undefined; ;) {
+      const keys = [...(await st.list({ startAfter: after, limit: 128 })).keys()];
+      if (!keys.length) break;
+      after = keys[keys.length - 1];
+      const doomed = keys.filter((k) => k !== LEGACY_KEY && k !== META_KEY);
+      if (doomed.length) await st.delete(doomed);
+    }
+    await st.delete(META_KEY);
+  }
+  async #loadV2(meta: StoredMeta): Promise<void> {
+    const st = this.state.storage;
+    const [slideMap, histMap, index, rasters] = await Promise.all([
+      st.list<Slide>({ prefix: SLIDE_PREFIX }),
+      st.list<StoredStepHead | SlideVersions>({ prefix: HIST_PREFIX }),
+      st.get<Record<string, number>>(ASSET_INDEX_KEY),
+      st.get<Record<string, string>>(RASTER_INDEX_KEY),
+    ]);
+    for (const [key, s] of slideMap) if (s && typeof s === "object") this.#slides.set(key.slice(SLIDE_PREFIX.length), s);
+    const seen = new Set<string>();
+    this.#order = (Array.isArray(meta.order) ? meta.order : []).filter((id) => this.#slides.has(id) && !seen.has(id) && seen.add(id));
+    this.#rev = Number(meta.rev) || 0;
+    this.#seq = Number(meta.seq) || 0;
+    this.#logo = isPlainObject(meta.logo) && typeof meta.logo.src === "string" ? meta.logo : null;
+    this.#assets = new Map(Object.entries(index || {}));
+    this.#rasters = new Map(Object.entries(rasters || {}).filter(([, hash]) => this.#assets.has(hash)));
+    const readStep = (seq: number): HistoryStep | null => {
+      const head = histMap.get(HIST_PREFIX + seq) as StoredStepHead | undefined;
+      if (!head) return null;
+      const slides: SlideVersions = { ...head.slides || {} };
+      for (let g = 0; g < (head.groups || 0); g++) Object.assign(slides, histMap.get(`${HIST_PREFIX}${seq}:${g}`) || {});
+      // A step saved by an earlier build can hold blocks the deck no longer has (a Gadgets
+      // mark): an undo must not bring them back.
+      migrateLogoBlocks({ slides: Object.values(slides).filter((s): s is Slide => !!s) });
+      const step: HistoryStep = { seq, order: head.order, slides, groups: head.groups || 0 };
+      if ("logo" in head) step.logo = head.logo ?? null;
+      return step;
+    };
+    const isStep = (step: HistoryStep | null): step is HistoryStep => !!step;
+    this.#undo = (meta.undo || []).map(readStep).filter(isStep);
+    this.#redo = (meta.redo || []).map(readStep).filter(isStep);
+    // Tidy anything an older or interrupted session left behind.
+    const puts: StoragePuts = {}, dels: string[] = [];
+    for (const id of this.#slides.keys()) {
+      if (!seen.has(id)) {
+        this.#slides.delete(id);
+        dels.push(SLIDE_PREFIX + id);
+      }
+    }
+    const live = new Set([...this.#undo, ...this.#redo].map((e) => String(e.seq)));
+    for (const key of histMap.keys()) if (!live.has(key.slice(HIST_PREFIX.length).split(":")[0])) dels.push(key);
+    if (!this.#order.length) {
+      const s = newBlankSlide();
+      this.#slides.set(s.id, s);
+      this.#order = [s.id];
+      puts[SLIDE_PREFIX + s.id] = s;
+      puts[META_KEY] = this.#meta();
+    }
+    for (const id of this.#order) {
+      const s = this.#slides.get(id);
+      if (s && migrateLogoBlocks({ slides: [s] })) puts[SLIDE_PREFIX + id] = s;
+    }
+    if (dels.length || Object.keys(puts).length) await this.#write(puts, dels);
+    this.#scheduleSweep();
+  }
+  // A fresh store from plain slides (first run, a migration, or a theme reset).
+  async #seed(rawSlides: unknown[]): Promise<void> {
+    const seen = new Set<string>();
+    for (const raw of rawSlides) {
+      if (!isPlainObject(raw)) continue;
+      const id = slideIdFrom(raw.id, (x) => seen.has(x));
+      seen.add(id);
+      this.#slides.set(id, await this.#prepareSlide({ ...raw, id }));
+      this.#order.push(id);
+    }
+    if (!this.#order.length) {
+      const s = newBlankSlide();
+      this.#slides.set(s.id, s);
+      this.#order.push(s.id);
+    }
+    const puts: StoragePuts = { [META_KEY]: this.#meta() };
+    for (const id of this.#order) puts[SLIDE_PREFIX + id] = this.#slides.get(id);
+    await this.#write(puts, []);
+  }
+  #meta(): StoredMeta {
+    return {
+      v: 2,
+      themeVersion: THEME_VERSION,
+      legacyHash: this.#legacyHash,
+      order: this.#order,
+      rev: this.#rev,
+      seq: this.#seq,
+      undo: this.#undo.map((e) => e.seq),
+      redo: this.#redo.map((e) => e.seq),
+      logo: this.#logo,
+    };
+  }
+  // Every put/delete is issued without an await in between, so storage
+  // coalesces them into one atomic write.
+  #write(puts: StoragePuts, dels: string[]): Promise<unknown[]> {
+    const st = this.state.storage;
+    const ops: Promise<unknown>[] = [];
+    for (const group of inBatches(Object.entries(puts))) ops.push(st.put(Object.fromEntries(group)));
+    for (const group of inBatches(dels)) ops.push(st.delete(group));
+    return Promise.all(ops);
+  }
+  #stepPuts(step: HistoryStep): StoragePuts {
+    const ids = Object.keys(step.slides);
+    const head: StoredStepHead = { seq: step.seq };
+    if (step.order) head.order = step.order;
+    if ("logo" in step) head.logo = step.logo ?? null;
+    if (ids.length <= 1) {
+      head.slides = step.slides;
+      step.groups = 0;
+      return { [HIST_PREFIX + step.seq]: head };
+    }
+    const puts: StoragePuts = {};
+    let group: SlideVersions = {}, size = 0, g = 0;
+    for (const id of ids) {
+      const s = step.slides[id];
+      const n = s ? JSON.stringify(s).length : 4;
+      if (size && size + n > HIST_GROUP_CHARS) {
+        puts[`${HIST_PREFIX}${step.seq}:${g++}`] = group;
+        group = {};
+        size = 0;
+      }
+      group[id] = s;
+      size += n;
+    }
+    puts[`${HIST_PREFIX}${step.seq}:${g++}`] = group;
+    head.groups = step.groups = g;
+    puts[HIST_PREFIX + step.seq] = head;
+    return puts;
+  }
+  #stepKeys(step: HistoryStep): string[] {
+    const keys = [HIST_PREFIX + step.seq];
+    for (let g = 0; g < (step.groups || 0); g++) keys.push(`${HIST_PREFIX}${step.seq}:${g}`);
+    return keys;
+  }
+
+  // -------- assets --------------------------------------------------------
+  async #putAsset(data: string): Promise<string> {
+    if (data.length > MAX_ASSET_LENGTH) throw new Error("That file is too large to store in a deck.");
+    const hash = await hashString(data);
+    if (!this.#assets.has(hash)) {
+      const n = Math.max(1, Math.ceil(data.length / ASSET_CHUNK));
+      this.#assets.set(hash, n);
+      const puts: StoragePuts = { [ASSET_INDEX_KEY]: Object.fromEntries(this.#assets) };
+      for (let i = 0; i < n; i++) puts[`${ASSET_PREFIX}${hash}:${i}`] = data.slice(i * ASSET_CHUNK, (i + 1) * ASSET_CHUNK);
+      await this.#write(puts, []);
+    }
+    return ASSET_REF + hash;
+  }
+  // A new or changed block, normalized (see normalizeBlock; null if it isn't
+  // a block at all), with its big media moved out to assets.
+  async #prepareBlock(raw: unknown): Promise<(Omit<Block, "id"> & { id?: unknown }) | null> {
+    const b = normalizeBlock(raw);
+    if (!b) return null;
+    const p = b.props;
+    let props: BlockProps | null = null;
+    for (const k of Object.keys(p)) {
+      const v = p[k];
+      if (!shouldExternalize(k, v)) continue;
+      props ??= { ...p };
+      props[k] = await this.#putAsset(v);
+    }
+    return props ? { ...b, props } : b;
+  }
+  // A whole block list: non-blocks dropped, ids unique on the slide.
+  async #prepareBlocks(blocks: unknown): Promise<Block[]> {
+    const out: Block[] = [], seen = new Set<string>();
+    for (const raw of Array.isArray(blocks) ? blocks : []) {
+      const b = await this.#prepareBlock(raw);
+      if (!b) continue;
+      const id = typeof b.id === "string" && b.id && !seen.has(b.id) ? b.id : genId();
+      seen.add(id);
+      out.push({ ...b, id });
+    }
+    return out;
+  }
+  async #prepareSlide(s: LooseSlide & { id: string }): Promise<Slide> {
+    const background = isPlainObject(s.background) ? s.background : {};
+    return { ...s, background, blocks: await this.#prepareBlocks(s.blocks) };
+  }
+  // An asset's first chunk, enough to tell what kind of data it holds ("" if there is none).
+  async #assetHead(hash: string): Promise<string> {
+    if (!this.#assets.has(hash)) return "";
+    return await this.state.storage.get<string>(`${ASSET_PREFIX}${hash}:0`) ?? "";
+  }
+  async #readAsset(hash: string): Promise<string | null> {
+    const n = this.#assets.get(hash);
+    if (!n) return null;
+    const keys = Array.from({ length: n }, (_, i) => `${ASSET_PREFIX}${hash}:${i}`);
+    const parts: string[] = [];
+    for (const group of inBatches(keys)) {
+      const got = await this.state.storage.get<string>(group);
+      for (const key of group) {
+        const v = got.get(key);
+        if (typeof v !== "string") return null;
+        parts.push(v);
+      }
+    }
+    return parts.join("");
+  }
+  // Assets no longer used by the deck or its history are deleted, a little
+  // while after history steps are dropped.
+  #scheduleSweep(): void {
+    if (this.#sweepTimer) return;
+    this.#sweepTimer = setTimeout(() => {
+      this.#sweepTimer = null;
+      this.#mutations.run(() => this.#sweep()).catch((e) => console.error("Asset sweep failed", e));
+    }, SWEEP_DELAY_MS);
+  }
+  async #sweep(): Promise<void> {
+    if (!this.#assets.size) return;
+    const used = new Set<string>();
+    // Everything the deck and its history show: slides and logos.
+    const shown: Array<Slide | null> = [...this.#slides.values(), logoAsSlide(this.#logo)];
+    for (const step of [...this.#undo, ...this.#redo]) {
+      shown.push(...Object.values(step.slides));
+      if (step.logo) shown.push(logoAsSlide(step.logo));
+    }
+    for (const s of shown) assetHashesOf(s, used);
+    // SVG rasters live as long as their artwork is in the deck or its history.
+    const svgs = new Set<string>();
+    for (const s of shown) svgSourcesOf(s, svgs);
+    const liveKeys = new Set<string>();
+    for (const v of svgs) liveKeys.add(await svgKey(v));
+    let rastersChanged = false;
+    for (const [key, hash] of this.#rasters) {
+      if (liveKeys.has(key)) used.add(hash);
+      else { this.#rasters.delete(key); rastersChanged = true; }
+    }
+    if (rastersChanged) await this.#write({ [RASTER_INDEX_KEY]: Object.fromEntries(this.#rasters) }, []);
+    const dels: string[] = [];
+    for (const [hash, n] of this.#assets) {
+      if (used.has(hash)) continue;
+      for (let i = 0; i < n; i++) dels.push(`${ASSET_PREFIX}${hash}:${i}`);
+      this.#assets.delete(hash);
+    }
+    if (dels.length) await this.#write({ [ASSET_INDEX_KEY]: Object.fromEntries(this.#assets) }, dels);
+  }
+
+  // -------- commit --------------------------------------------------------
+  // Apply one step. `changes` maps slide id -> new slide (or null to remove);
+  // `nextOrder` is the new slide order, or null if unchanged. `kind` is
+  // "edit" (a new undo step, clearing redo), "undo" or "redo"; `consumed` is
+  // the history step an undo/redo used up; `nextLogo` is the new deck logo,
+  // or undefined if unchanged.
+  // An edit that changes nothing is dropped (it would clear redo and leave
+  // an undo step that does nothing), and one that would grow the deck past
+  // its limits is refused before anything changes.
+  async #apply(changes: Map<string, Slide | null>, nextOrder: string[] | null, kind: "edit" | "undo" | "redo", consumed: HistoryStep | null = null, nextLogo?: DeckLogo | null): Promise<void> {
+    if (nextOrder && sameOrder(nextOrder, this.#order)) nextOrder = null;
+    const logoChanged = nextLogo !== undefined && !sameLogo(nextLogo, this.#logo);
+    if (kind === "edit") {
+      for (const [id, s] of changes) if (sameValue(s, this.#slides.get(id) ?? null)) changes.delete(id);
+      if (!changes.size && !nextOrder && !logoChanged) return;
+      this.#checkLimits(changes, nextOrder);
+    }
+    const inverse: HistoryStep = { seq: ++this.#seq, slides: {}, groups: 0 };
+    for (const id of changes.keys()) inverse.slides[id] = this.#slides.get(id) ?? null;
+    if (nextOrder) inverse.order = this.#order;
+    if (logoChanged) {
+      inverse.logo = this.#logo;
+      this.#logo = nextLogo;
+    }
+    const puts: StoragePuts = {}, dels: string[] = [], sent: Record<string, Slide> = {};
+    for (const [id, s] of changes) {
+      if (s) {
+        this.#slides.set(id, s);
+        puts[SLIDE_PREFIX + id] = s;
+        sent[id] = s;
+      } else {
+        this.#slides.delete(id);
+        dels.push(SLIDE_PREFIX + id);
+      }
+    }
+    if (nextOrder) this.#order = nextOrder;
+    let dropped: HistoryStep[] = [];
+    if (kind === "edit") {
+      this.#undo.push(inverse);
+      if (this.#undo.length > MAX_UNDO) dropped = this.#undo.splice(0, this.#undo.length - MAX_UNDO);
+      dropped.push(...this.#redo);
+      this.#redo = [];
+    } else if (kind === "undo") {
+      this.#redo.push(inverse);
+    } else {
+      this.#undo.push(inverse);
+    }
+    Object.assign(puts, this.#stepPuts(inverse));
+    for (const step of dropped) dels.push(...this.#stepKeys(step));
+    if (consumed) dels.push(...this.#stepKeys(consumed));
+    const base = this.#rev;
+    this.#rev = base + 1;
+    puts[META_KEY] = this.#meta();
+    await this.#write(puts, dels);
+    if (dropped.length) this.#scheduleSweep();
+    const patch: DeckPatch = { rev: this.#rev, base, slides: sent };
+    if (nextOrder) patch.order = this.#order;
+    if (logoChanged) patch.logo = this.#logo;
+    this.#broadcast(patch);
+  }
+  // Throws when an edit would take the deck past MAX_SLIDES, a slide past
+  // MAX_BLOCKS_PER_SLIDE (counts already past them, from older decks, may
+  // shrink but not grow), or a slide past what storage can hold.
+  #checkLimits(changes: Map<string, Slide | null>, nextOrder: string[] | null): void {
+    if (nextOrder && nextOrder.length > MAX_SLIDES && nextOrder.length > this.#order.length) {
+      throw new Error(`A deck can have at most ${MAX_SLIDES} slides.`);
+    }
+    for (const [id, s] of changes) {
+      if (!s) continue;
+      const count = (s.blocks || []).length;
+      if (count > MAX_BLOCKS_PER_SLIDE && count > (this.#slides.get(id)?.blocks || []).length) {
+        throw new Error(`A slide can have at most ${MAX_BLOCKS_PER_SLIDE} blocks.`);
+      }
+      if (JSON.stringify(s).length > MAX_SLIDE_CHARS) {
+        throw new Error("That slide is too large to save: shorten its text, or split it across slides.");
+      }
+    }
+  }
+  // Delivery is the registry's: issued at once and never awaited, so a slow or
+  // failing browser holds up neither the save nor the other subscribers.
+  #broadcast(patch: DeckPatch): void {
+    const meta: UndoState = {
+      canUndo: this.#undo.length > 0,
+      canRedo: this.#redo.length > 0,
+    };
+    this.subscribers.broadcast((sub) => sub.deckPatched(patch, meta));
+    this.#feedLegacy();
+  }
+  // A tab of the previous client wants the whole deck, with its media
+  // inlined (it can't read asset refs). Sent in order, and coalesced: each
+  // send carries the deck as it is by then.
+  #feedLegacy(): void {
+    if (!this.legacySubscribers.size || this.#legacyQueued) return;
+    this.#legacyQueued = true;
+    this.#legacyFeed = this.#legacyFeed.then(async () => {
+      this.#legacyQueued = false;
+      if (!this.legacySubscribers.size) return;
+      const deck = await this.getDeckInlined();
+      const meta = await this.getUndoState();
+      this.legacySubscribers.broadcast((sub) => sub.deckChanged(deck, meta));
+    }).catch((e) => console.error("Legacy deck broadcast failed", e));
+  }
+  #deckView(): Deck & { themeVersion: string; rev: number } {
+    return { themeVersion: THEME_VERSION, rev: this.#rev, slides: this.#order.map((id) => this.#slides.get(id)).filter((s): s is Slide => !!s), logo: this.#logo };
   }
 
   // -------- undo / redo ---------------------------------------------------
   async getUndoState(): Promise<UndoState> {
     return {
-      canUndo: this.undoStack.length > 0,
-      canRedo: this.redoStack.length > 0,
+      canUndo: this.#undo.length > 0,
+      canRedo: this.#redo.length > 0,
     };
   }
-
-  async undo(): Promise<boolean> {
-    if (this.undoStack.length === 0) return false;
-    const prev = this.undoStack.pop()!;
-    const current = await this.state.storage.get<Deck>(STORAGE_KEY);
-    if (current) this.redoStack.push(current);
-    await this.state.storage.put(STORAGE_KEY, prev);
-    this.#broadcast(prev);
-    return true;
+  undo(): Promise<boolean> {
+    return this.#run(async () => {
+      const step = this.#undo.pop();
+      if (!step) return false;
+      await this.#apply(new Map(Object.entries(step.slides)), step.order || null, "undo", step, "logo" in step ? step.logo ?? null : undefined);
+      return true;
+    });
   }
-
-  async redo(): Promise<boolean> {
-    if (this.redoStack.length === 0) return false;
-    const next = this.redoStack.pop()!;
-    const current = await this.state.storage.get<Deck>(STORAGE_KEY);
-    if (current) this.undoStack.push(current);
-    await this.state.storage.put(STORAGE_KEY, next);
-    this.#broadcast(next);
-    return true;
+  redo(): Promise<boolean> {
+    return this.#run(async () => {
+      const step = this.#redo.pop();
+      if (!step) return false;
+      await this.#apply(new Map(Object.entries(step.slides)), step.order || null, "redo", step, "logo" in step ? step.logo ?? null : undefined);
+      return true;
+    });
   }
 
   // -------- read ----------------------------------------------------------
-  async getDeck(): Promise<Deck> {
-    let d = await this.state.storage.get<Deck>(STORAGE_KEY);
-    // Defensive: if the storage was empty OR holds an older-schema document
-    // (the previous version of this Gadget stored field overrides under
-    // numeric keys rather than a `slides` array), wipe and seed.
-    if (!d || !Array.isArray(d.slides) || d.themeVersion !== THEME_VERSION) {
-      d = initialDeck();
-      await this.state.storage.put(STORAGE_KEY, d);
+  // The deck as stored: big media appears as "asset:<hash>" refs (read them
+  // with getAsset). `rev` counts saved changes. While a tab of the previous
+  // client is open, the media is inlined unless the caller passes
+  // `{ refs: true }` (as this client does): that client reads the deck back
+  // after some edits and can't resolve refs.
+  async getDeck(options?: { refs?: boolean }): Promise<Deck> {
+    if (this.legacySubscribers.size && !(isPlainObject(options) && options.refs === true)) return this.getDeckInlined();
+    return this.#deckView();
+  }
+  // The deck with every asset ref replaced by its data (used for export).
+  async getDeckInlined(): Promise<Deck> {
+    const view = this.#deckView();
+    const cache = new Map<string, string>();
+    const read = async (ref: string): Promise<string> => {
+      const hash = ref.slice(ASSET_REF.length);
+      let data = cache.get(hash);
+      if (data === undefined) cache.set(hash, data = await this.#readAsset(hash) ?? "");
+      return data;
+    };
+    const slides: Slide[] = [];
+    for (const s of view.slides) {
+      let blocks: Block[] | null = null;
+      const list = s.blocks || [];
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i]?.props;
+        if (!p || typeof p !== "object") continue;
+        let props: BlockProps | null = null;
+        for (const k of Object.keys(p)) {
+          const v = p[k];
+          if (!isAssetRef(v)) continue;
+          props ??= { ...p };
+          props[k] = await read(v);
+        }
+        if (props) {
+          blocks ??= [...list];
+          blocks[i] = { ...list[i], props };
+        }
+      }
+      slides.push(blocks ? { ...s, blocks } : s);
     }
-    return d;
+    const logo = view.logo && isAssetRef(view.logo.src) ? { ...view.logo, src: await read(view.logo.src) } : view.logo;
+    return { ...view, slides, logo };
+  }
+  // One asset's data (e.g. an image's data: URI), by "asset:<hash>" ref.
+  async getAsset(ref: string): Promise<string | null> {
+    const s = String(ref ?? "");
+    return this.#readAsset(s.startsWith(ASSET_REF) ? s.slice(ASSET_REF.length) : s);
+  }
+
+  // ---- SVG rasters (for PowerPoint) --------------------------------------
+  // Browsers draw a PNG of each piece of SVG artwork and save it here, so
+  // PowerPoint viewers that can't show SVG show the PNG instead. Keys are
+  // svgKey() of the SVG source. None of this touches the deck or its undo.
+
+  // The keys of the SVG artwork the deck shows now.
+  async #liveSvgKeys(): Promise<Set<string>> {
+    const live = new Set<string>();
+    for (const s of [...this.#slides.values(), logoAsSlide(this.#logo)]) for (const v of svgSourcesOf(s, new Set())) live.add(await svgKey(v));
+    return live;
+  }
+  // Which of `keys` have no raster yet (and are in the deck).
+  async missingSvgRasters(keys: string[]): Promise<string[]> {
+    const live = await this.#liveSvgKeys();
+    return (Array.isArray(keys) ? keys : []).filter((k) => typeof k === "string" && live.has(k) && !this.#rasters.has(k));
+  }
+  // Saves the PNG for artwork the deck shows (false for any other key).
+  saveSvgRaster(key: string, png: string): Promise<boolean> {
+    return this.#run(async () => {
+      if (typeof key !== "string" || !/^[0-9a-f]{32}$/.test(key)) return false;
+      if (typeof png !== "string" || !png.startsWith("data:image/png;base64,") || png.length > MAX_RASTER_LENGTH) return false;
+      const size = pngSize(png);
+      if (!size || !size.w || !size.h || size.w > MAX_RASTER_SIDE || size.h > MAX_RASTER_SIDE) return false;
+      if (this.#rasters.has(key)) return true;
+      if (!(await this.#liveSvgKeys()).has(key)) return false;
+      const ref = await this.#putAsset(png);
+      this.#rasters.set(key, ref.slice(ASSET_REF.length));
+      await this.#write({ [RASTER_INDEX_KEY]: Object.fromEntries(this.#rasters) }, []);
+      return true;
+    });
+  }
+  // { key: pngDataUri } for the keys that have one (used by the exporter).
+  async getSvgRasters(keys: string[]): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const k of Array.isArray(keys) ? keys : []) {
+      const hash = this.#rasters.get(k);
+      const png = hash ? await this.#readAsset(hash) : null;
+      if (png) out[k] = png;
+    }
+    return out;
+  }
+  // The orange cover artwork. One copy, shared by the browser renderer
+  // (which fetches it at boot) and the PowerPoint exporter.
+  async getBrandAssets(): Promise<BrandAssets> {
+    return { coverOrange: COVER_ORANGE_PNG };
+  }
+  // A compact map of the deck for agents: every slide with its id, position,
+  // a label, and each block's id, type, position and readable text. Read this
+  // first, then edit one block at a time (see README → "How agents should edit").
+  async listSlides(): Promise<SlideSummary[]> {
+    return this.#deckView().slides.map((s, index) => ({
+      id: s.id,
+      index,
+      label: slideLabelOf(s),
+      background: s.background || {},
+      blocks: (s.blocks || []).map((b) => ({
+        id: b.id,
+        type: b.type,
+        x: b.x,
+        y: b.y,
+        w: b.w,
+        h: b.h,
+        text: blockTextOf(b),
+      })),
+    }));
+  }
+  // One slide in full (every block with all of its props).
+  async getSlide(slideId: string): Promise<Slide | null> {
+    return this.#slides.get(slideId) || null;
+  }
+
+  // -------- deck logo -----------------------------------------------------
+  // Set, change or remove the deck logo (one undo step). The patch is merged
+  // into the current logo: { src } sets the image (a PNG, JPEG or SVG data:
+  // URI), { position }, { onCover } and { alt } adjust it, and null or an
+  // empty src removes it. Returns the logo as stored (its image an asset ref).
+  setLogo(logo: DeckLogoPatch | null): Promise<DeckLogo | null> {
+    return this.#run(async () => {
+      const next = await this.#prepareLogo(logo);
+      if (!sameLogo(next, this.#logo)) await this.#apply(new Map(), null, "edit", null, next);
+      return this.#logo;
+    });
+  }
+  // A logo patch merged into the current logo and checked, with a big image
+  // moved out to an asset. Throws on anything that isn't a logo.
+  async #prepareLogo(patch: DeckLogoPatch | null | undefined): Promise<DeckLogo | null> {
+    if (patch == null) return null;
+    if (!isPlainObject(patch)) throw new Error("setLogo takes { src, position, onCover, alt }, or null to remove the logo.");
+    const pick = <K extends keyof DeckLogo>(k: K): DeckLogo[K] | null | undefined => k in patch ? patch[k] : this.#logo?.[k];
+    const src = pick("src");
+    if (src == null || src === "") return null;
+    if (typeof src !== "string") throw new Error("The logo's src must be a string.");
+    if (!isLogoImageData(isAssetRef(src) ? await this.#assetHead(src.slice(ASSET_REF.length)) : src)) {
+      throw new Error("The logo must be a PNG, JPEG or SVG image, as a data: URI.");
+    }
+    const position = pick("position") ?? DEFAULT_LOGO_POSITION;
+    if (!isLogoPosition(position)) throw new Error("The logo's position must be top-left, top-right, bottom-left or bottom-right.");
+    const onCover = pick("onCover") ?? true;
+    if (typeof onCover !== "boolean") throw new Error("The logo's onCover must be true or false.");
+    const alt = pick("alt");
+    if (alt != null && typeof alt !== "string") throw new Error("The logo's alt text must be a string.");
+    const next: DeckLogo = { src: shouldExternalize("src", src) ? await this.#putAsset(src) : src, position, onCover };
+    const trimmed = alt?.trim().slice(0, MAX_LOGO_ALT);
+    if (trimmed) next.alt = trimmed;
+    return next;
   }
 
   // -------- slide ops -----------------------------------------------------
-  async addSlide(atIndex?: number | null, slide?: SlideInput): Promise<string> {
-    const d = await this.getDeck();
-    const s = slide || newBlankSlide();
-    if (!s.id) s.id = genId();
-    // Mint ids for any blocks that arrived without one. Caller-supplied
-    // slides (e.g. created over the GADGET binding) often omit ids, and
-    // a missing id breaks the client's selection model — every block
-    // with `id === undefined` would look "selected" at the same time
-    // when any one of them is selected.
-    s.blocks = (s.blocks || []).map(b => b.id ? b : { ...b, id: genId() });
-    const i = (atIndex == null || atIndex < 0 || atIndex > d.slides.length)
-      ? d.slides.length : atIndex;
-    // A caller-supplied slide is a Slide by now: its id and its blocks' ids were filled in above.
-    d.slides.splice(i, 0, s as Slide);
-    await this.#save(d);
-    return s.id;
+  // Insert a slide (at the end by default): { layout } builds it from a named
+  // layout, { background, blocks } as given; nothing at all, the cover slide.
+  addSlide(atIndex?: number | null, slide?: SlideInput): Promise<string> {
+    return this.#run(async () => {
+      const raw: LooseSlide = isPlainObject(slide) ? slideFromInput(slide) : newBlankSlide();
+      if (raw.blocks !== undefined) boundedList(raw.blocks, MAX_BLOCKS_PER_SLIDE, "blocks");
+      // Slide and block ids must be unique: keep a supplied one only if it is
+      // (#prepareSlide sees to the blocks).
+      const id = slideIdFrom(raw.id, (x) => this.#slides.has(x));
+      const s = await this.#prepareSlide({ ...raw, id });
+      const order = [...this.#order];
+      order.splice(insertIndex(atIndex, order.length), 0, s.id);
+      await this.#apply(new Map([[s.id, s]]), order, "edit");
+      return s.id;
+    });
   }
-
-  async removeSlide(slideId: string): Promise<void> {
-    const d = await this.getDeck();
-    d.slides = d.slides.filter(s => s.id !== slideId);
-    if (d.slides.length === 0) d.slides.push(newBlankSlide());
-    await this.#save(d);
+  removeSlide(slideId: string): Promise<void> {
+    return this.#run(async () => {
+      const changes = new Map<string, Slide | null>();
+      let order = this.#order.filter((id) => id !== slideId);
+      if (order.length !== this.#order.length) changes.set(slideId, null);
+      if (order.length === 0) {
+        const blank = newBlankSlide();
+        changes.set(blank.id, blank);
+        order = [blank.id];
+      }
+      await this.#apply(changes, order, "edit");
+    });
   }
-
-  async duplicateSlide(slideId: string): Promise<string | null> {
-    const d = await this.getDeck();
-    const i = d.slides.findIndex(s => s.id === slideId);
-    if (i < 0) return null;
-    const copy: Slide = JSON.parse(JSON.stringify(d.slides[i]));
-    copy.id = genId();
-    copy.blocks = (copy.blocks || []).map(b => ({ ...b, id: genId() }));
-    d.slides.splice(i + 1, 0, copy);
-    await this.#save(d);
-    return copy.id;
+  duplicateSlide(slideId: string): Promise<string | null> {
+    return this.#run(async () => {
+      const src = this.#slides.get(slideId);
+      if (!src) return null;
+      const copy: Slide = JSON.parse(JSON.stringify(src));
+      copy.id = genId();
+      copy.blocks = (copy.blocks || []).map((b) => ({ ...b, id: genId() }));
+      const order = [...this.#order];
+      order.splice(order.indexOf(slideId) + 1, 0, copy.id);
+      await this.#apply(new Map([[copy.id, copy]]), order, "edit");
+      return copy.id;
+    });
   }
-
-  async moveSlide(slideId: string, toIndex: number): Promise<void> {
-    const d = await this.getDeck();
-    const i = d.slides.findIndex(s => s.id === slideId);
-    if (i < 0) return;
-    const [s] = d.slides.splice(i, 1);
-    const j = Math.max(0, Math.min(d.slides.length, toIndex));
-    d.slides.splice(j, 0, s);
-    await this.#save(d);
+  moveSlide(slideId: string, toIndex: number): Promise<void> {
+    return this.#run(async () => {
+      const i = this.#order.indexOf(slideId);
+      if (i < 0 || !Number.isFinite(Number(toIndex))) return;
+      const order = [...this.#order];
+      order.splice(i, 1);
+      order.splice(moveIndex(toIndex, order.length), 0, slideId);
+      await this.#apply(new Map(), order, "edit");
+    });
   }
-
-  async updateSlide(slideId: string, patch: SlidePatch): Promise<void> {
-    const d = await this.getDeck();
-    const s = d.slides.find(s => s.id === slideId);
-    if (!s) return;
-    if (patch.background) s.background = { ...s.background, ...patch.background };
-    const { background, ...rest } = patch;
-    Object.assign(s, rest);
-    await this.#save(d);
+  updateSlide(slideId: string, patch: SlidePatch): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s || !isPlainObject(patch)) return;
+      const next: Slide = { ...s };
+      if (isPlainObject(patch.background)) next.background = { ...s.background, ...patch.background };
+      const { background, id, blocks, ...rest } = patch as SlidePatch & { id?: unknown };
+      Object.assign(next, rest);
+      if (blocks !== undefined) next.blocks = await this.#prepareBlocks(boundedList(blocks, MAX_BLOCKS_PER_SLIDE, "blocks"));
+      await this.#apply(new Map([[slideId, next]]), null, "edit");
+    });
   }
 
   // -------- block ops -----------------------------------------------------
-  async addBlock(slideId: string, block: BlockInput, atIndex?: number | null): Promise<string | null> {
-    const d = await this.getDeck();
-    const s = d.slides.find(s => s.id === slideId);
-    if (!s) return null;
-    const b: Block = { id: genId(), ...block };
-    if (!b.id) b.id = genId();
-    if (atIndex == null) s.blocks.push(b);
-    else s.blocks.splice(atIndex, 0, b);
-    await this.#save(d);
-    return b.id;
+  addBlock(slideId: string, block: BlockInput, atIndex?: number | null): Promise<string | null> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s) return null;
+      const blocks = [...s.blocks || []];
+      // Block ids must be unique on the slide: keep a supplied one only if it is.
+      const b = await this.#prepareBlock(block);
+      if (!b) return null;
+      const supplied = b.id;
+      const id = typeof supplied !== "string" || !supplied || blocks.some((x) => x.id === supplied) ? genId() : supplied;
+      blocks.splice(insertIndex(atIndex, blocks.length), 0, { ...b, id });
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+      return id;
+    });
+  }
+  updateBlock(slideId: string, blockId: string, patch: BlockPatch): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s) return;
+      const blocks = [...s.blocks || []];
+      const i = blocks.findIndex((b) => b.id === blockId);
+      if (i < 0 || !isPlainObject(patch)) return;
+      blocks[i] = await this.#preparePatched(blocks[i], patch);
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+    });
+  }
+  // A block with a patch applied, normalized. The merge keeps the block's
+  // id, so the result is always a block.
+  async #preparePatched(b: Block, patch: BlockPatch): Promise<Block> {
+    const next = await this.#prepareBlock(mergeBlock(b, patch));
+    return { ...next as Omit<Block, "id">, id: b.id };
+  }
+  removeBlock(slideId: string, blockId: string): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s) return;
+      const blocks = (s.blocks || []).filter((b) => b.id !== blockId);
+      if (blocks.length === (s.blocks || []).length) return;
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+    });
+  }
+  reorderBlock(slideId: string, blockId: string, toIndex: number): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s) return;
+      const blocks = [...s.blocks || []];
+      const i = blocks.findIndex((b) => b.id === blockId);
+      if (i < 0 || !Number.isFinite(Number(toIndex))) return;
+      const [b] = blocks.splice(i, 1);
+      const to = moveIndex(toIndex, blocks.length);
+      if (to === i) return;
+      blocks.splice(to, 0, b);
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+    });
   }
 
-  async updateBlock(slideId: string, blockId: string, patch: BlockPatch): Promise<void> {
-    const d = await this.getDeck();
-    const s = d.slides.find(s => s.id === slideId);
-    if (!s) return;
-    const b = s.blocks.find(b => b.id === blockId);
-    if (!b) return;
-    if (patch.props) {
-      b.props = { ...b.props, ...patch.props };
-    }
-    const { props, ...rest } = patch;
-    Object.assign(b, rest);
-    await this.#save(d);
+  // -------- multi-block ops (one save, one undo step) ---------------------
+  addBlocks(slideId: string, blocks: BlockInput[]): Promise<string[]> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s || !Array.isArray(blocks)) return [];
+      const next = [...s.blocks || []];
+      boundedList(blocks, Math.max(0, MAX_BLOCKS_PER_SLIDE - next.length), "blocks");
+      const ids: string[] = [];
+      for (const block of blocks) {
+        const b = await this.#prepareBlock(block);
+        if (!b) continue;
+        // As in addBlock: a supplied id is kept only if it is unique on the slide.
+        const supplied = b.id;
+        const id = typeof supplied !== "string" || !supplied || next.some((x) => x.id === supplied) ? genId() : supplied;
+        next.push({ ...b, id });
+        ids.push(id);
+      }
+      if (!ids.length) return ids;
+      await this.#apply(new Map([[slideId, { ...s, blocks: next }]]), null, "edit");
+      return ids;
+    });
   }
-
-  async removeBlock(slideId: string, blockId: string): Promise<void> {
-    const d = await this.getDeck();
-    const s = d.slides.find(s => s.id === slideId);
-    if (!s) return;
-    s.blocks = s.blocks.filter(b => b.id !== blockId);
-    await this.#save(d);
+  // patches: [{ id, patch }] — each patch merges like updateBlock's.
+  updateBlocks(slideId: string, patches: BlockPatchEntry[]): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s || !Array.isArray(patches)) return;
+      const blocks = [...s.blocks || []];
+      let changed = false;
+      for (const entry of patches) {
+        const { id, patch } = isPlainObject(entry) ? entry as Partial<BlockPatchEntry> : {};
+        const i = blocks.findIndex((b) => b.id === id);
+        if (i < 0 || !isPlainObject(patch)) continue;
+        blocks[i] = await this.#preparePatched(blocks[i], patch);
+        changed = true;
+      }
+      if (!changed) return;
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+    });
   }
-
-  async reorderBlock(slideId: string, blockId: string, toIndex: number): Promise<void> {
-    const d = await this.getDeck();
-    const s = d.slides.find(s => s.id === slideId);
-    if (!s) return;
-    const i = s.blocks.findIndex(b => b.id === blockId);
-    if (i < 0) return;
-    const [b] = s.blocks.splice(i, 1);
-    const j = Math.max(0, Math.min(s.blocks.length, toIndex));
-    s.blocks.splice(j, 0, b);
-    await this.#save(d);
+  removeBlocks(slideId: string, blockIds: string[]): Promise<void> {
+    return this.#run(async () => {
+      const s = this.#slides.get(slideId);
+      if (!s || !Array.isArray(blockIds)) return;
+      const gone = new Set(blockIds);
+      const blocks = (s.blocks || []).filter((b) => !gone.has(b.id));
+      if (blocks.length === (s.blocks || []).length) return;
+      await this.#apply(new Map([[slideId, { ...s, blocks }]]), null, "edit");
+    });
   }
 
   // -------- bulk ----------------------------------------------------------
-  async setDeck(deck: Deck): Promise<void> {
-    // Stamped as current: getDeck() reseeds a deck without the marker, which a caller building a
-    // whole deck from the public type would otherwise lose on the next read.
-    await this.#save({ ...deck, themeVersion: THEME_VERSION });
+  // `logo` replaces the deck logo too; undefined keeps it.
+  async #replaceAll(rawSlides: unknown, logo?: DeckLogoPatch | null): Promise<void> {
+    const list = boundedList(rawSlides, MAX_SLIDES, "slides");
+    for (const raw of list) if (isPlainObject(raw) && raw.blocks !== undefined) boundedList(raw.blocks, MAX_BLOCKS_PER_SLIDE, "blocks");
+    const nextLogo = logo === undefined ? undefined : await this.#prepareLogo(logo);
+    const changes = new Map<string, Slide | null>();
+    for (const id of this.#order) changes.set(id, null);
+    const order: string[] = [], seen = new Set<string>();
+    for (const raw of list) {
+      if (!isPlainObject(raw)) continue;
+      const id = slideIdFrom(raw.id, (x) => seen.has(x));
+      seen.add(id);
+      changes.set(id, await this.#prepareSlide({ ...raw, id }));
+      order.push(id);
+    }
+    if (!order.length) {
+      const blank = newBlankSlide();
+      changes.set(blank.id, blank);
+      order.push(blank.id);
+    }
+    await this.#apply(changes, order, "edit", null, nextLogo);
   }
-
-  async resetAll(): Promise<Deck> {
-    const d = initialDeck();
-    await this.#save(d);
-    return d;
+  // Replaces every slide, and the deck logo when `deck.logo` is given (null
+  // removes it); without one the logo stays.
+  setDeck(deck: { slides: SlideInput[]; logo?: DeckLogoPatch | null }): Promise<void> {
+    return this.#run(() => this.#replaceAll(deck?.slides, deck?.logo));
+  }
+  // Back to a new deck: the cover slide alone, and no logo.
+  resetAll(): Promise<Deck> {
+    return this.#run(async () => {
+      await this.#replaceAll(initialDeck().slides, null);
+      return this.#deckView();
+    });
   }
 
   // -------- realtime ------------------------------------------------------
-  async subscribe(cb: DeckCallbacks): Promise<void> {
-    this.subscribers.add(cb);
-  }
-
-  async #save(deck: Deck): Promise<void> {
-    // Snapshot the previous deck onto the undo stack before overwriting.
-    // The very first save (no prior deck in storage) doesn't push, and
-    // calls from undo/redo bypass this method so they don't recurse.
-    const prev = await this.state.storage.get<Deck>(STORAGE_KEY);
-    if (prev) {
-      this.undoStack.push(prev);
-      if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
-      // Any new mutation invalidates the redo branch.
-      this.redoStack = [];
+  // This client subscribes with { patches: true }. A tab still running the
+  // previous Slides client (open while the gadget took this update) passes
+  // nothing and implements only deckChanged(deck, meta): it is sent the whole
+  // deck, media inlined, now and after every change, so it keeps working
+  // until it reloads. (A stub answers to any method name; which callback the
+  // browser implements is what its subscribe call says.)
+  async subscribe(cb: DeckCallbacks & LegacyDeckCallbacks, options?: SubscribeOptions): Promise<void> {
+    if (isPlainObject(options) && options.patches === true) {
+      this.subscribers.add(cb);
+      return;
     }
-    await this.state.storage.put(STORAGE_KEY, deck);
-    this.#broadcast(deck);
-  }
-
-  // Delivery is the registry's: issued at once and never awaited, so a slow or
-  // failing browser holds up neither the save nor the other subscribers.
-  #broadcast(deck: Deck): void {
-    const meta: UndoState = {
-      canUndo: this.undoStack.length > 0,
-      canRedo: this.redoStack.length > 0,
-    };
-    this.subscribers.broadcast(sub => sub.deckChanged(deck, meta));
+    this.legacySubscribers.add(cb);
+    this.#feedLegacy();
   }
 }
 
+// A caller's slide id, unless it is missing, taken, or a name every object has
+// already: history steps and patches key slides by id, and `__proto__` would
+// vanish from them.
+function slideIdFrom(raw: unknown, taken: (id: string) => boolean): string {
+  return typeof raw === "string" && raw && !(raw in Object.prototype) && !taken(raw) ? raw : genId();
+}
 function genId(): string {
   return crypto.randomUUID().slice(0, 8);
 }
-
+// Readable text of a block: its string props, minus image data and SVG markup.
+function blockTextOf(b: Block): string {
+  const p = b.props || {};
+  const parts: string[] = [];
+  for (const k in p) {
+    if (k === "src" || k === "markup") continue;
+    const v = p[k];
+    if (typeof v !== "string" || !v.trim() || v.startsWith("data:") || v.startsWith(ASSET_REF) || v.length > 4000) continue;
+    if (/^#[0-9a-f]{3,8}$/i.test(v.trim())) continue;
+    parts.push(v);
+  }
+  return parts.join(" · ");
+}
+function slideLabelOf(s: Slide): string {
+  for (const type of ["title", "subtitle", "text", "sectionLabel"]) {
+    for (const b of s.blocks || []) {
+      if (b.type !== type) continue;
+      const t = String(b.props?.text || "").trim();
+      if (t) return t.replace(/\s+/g, " ");
+    }
+  }
+  return "Untitled";
+}
+// Logos still at an earlier template's top-right spot move to the current
+// one (a right-aligned box ending on the 36px margin, centred on the section
+// label), and a logo saved without a name gets the default one. Logos you
+// placed yourself are left alone. Gadgets marks are removed. Runs once,
+// quietly, with no undo step.
+// (It edits the slides it is given in place: they are freshly loaded.)
+function migrateLogoBlocks(deck: { slides: LooseSlide[] }): boolean {
+  let changed = false;
+  for (const s of deck.slides || []) {
+    // The platform's own "gadgets" mark, which the earlier starter deck put
+    // on its cover, is no longer a block type: decks drop it.
+    if (Array.isArray(s?.blocks)) {
+      const kept = s.blocks.filter((b) => (b as Partial<Block> | null)?.type !== "gadgetsMark");
+      if (kept.length !== s.blocks.length) { s.blocks = kept; changed = true; }
+    }
+    for (const b of (Array.isArray(s?.blocks) ? s.blocks : []) as Array<Partial<Block> | null>) {
+      if (b?.type !== "logo") continue;
+      const p: BlockProps = b.props && typeof b.props === "object" ? b.props : {};
+      const oldSpot = b.x === 1013 && b.y === 40 || b.x === 997 && b.y === 30;
+      if (oldSpot && p.variant === "dark" && Number(p.scale) === 0.62 && p.align == null) {
+        b.x = 964;
+        b.y = 31;
+        b.w = 200;
+        b.props = { ...p, scale: 0.75, align: "right" };
+        changed = true;
+      }
+      if (b.props?.text == null) {
+        b.props = { ...b.props, text: LOGO_DEFAULT_TEXT };
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+// The cover slide a new deck starts with: the title layout.
 function newBlankSlide(): Slide {
-  return {
-    id: genId(),
-    background: { color: "#F6821F", inset: false, coverOrange: true },
-    blocks: [
-      { id: genId(), type: "logo", x: 36, y: 56, w: 267, props: {} },
-      { id: genId(), type: "title", x: 33, y: 197, w: 687,
-        props: { text: "[TITLE]", fontSize: 58, weight: 700,
-          color: "#FFFFFF", letterSpacing: "-0.03em", lineHeight: 1.1,
-          highlight: "" } },
-      { id: genId(), type: "subtitle", x: 36, y: 533, w: 553,
-        props: { text: "[SUBTITLE]", fontSize: 17, weight: 600,
-          color: "#FFFFFF", lineHeight: 1.5 } },
-    ],
-  };
+  const { background, blocks } = SLIDE_LAYOUTS.title();
+  return { id: genId(), background, blocks: blocks.map((b) => ({ ...b, id: genId() })) };
 }
-
+// An `addSlide` input as the slide to store. A layout builds the slide from
+// its template. Otherwise the slide is flat (no inset surface) unless the
+// input asks for the inset, and white unless it names a colour, so a slide an
+// agent assembles itself never picks up the inset surface by accident. (The
+// renderer draws the inset whenever `inset` isn't false, which stored slides
+// rely on, so the default is set here rather than changed there.)
+function slideFromInput(input: SlideInput): LooseSlide {
+  const { layout, ...rest } = input;
+  const background = isPlainObject(rest.background) ? rest.background : {};
+  if (layout === undefined) return { ...rest, background: { color: "#FFFFFF", ...background, inset: background.inset === true } };
+  if (!isSlideLayout(layout)) throw new Error(`Unknown slide layout ${JSON.stringify(layout)}: use one of ${SLIDE_LAYOUT_IDS.join(", ")}.`);
+  if (rest.blocks !== undefined) throw new Error("addSlide takes a layout or blocks, not both: build the slide from the layout, then edit or add blocks.");
+  const template = SLIDE_LAYOUTS[layout]();
+  return { ...rest, background: { ...template.background, ...background }, blocks: template.blocks };
+}
 function initialDeck(): Deck {
-  // Build the four-slide starter deck. Clone all source objects so later
-  // edits cannot mutate the blueprint used by future instances or resetAll().
-  const deck = structuredClone(INITIAL_DECK);
-  deck.slides.push(structuredClone(KEY_TAKEAWAYS_SLIDE));
-  deck.slides.push(structuredClone(GET_STARTED_SLIDE));
-  return deck;
+  return { themeVersion: THEME_VERSION, slides: [newBlankSlide()] };
 }
-
-const GET_STARTED_SLIDE: Slide = {
-  id: "4f8c2d91",
-  background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
-  blocks: [
-    { id: "b8216c3a", type: "sectionLabel", x: 36, y: 35,
-      props: { text: "GET STARTED" } },
-    { id: "b63fe9a1", type: "title", x: 35, y: 76, w: 950,
-      props: { text: "Two ways to get started", fontSize: 32, weight: 600,
-        color: "#000000", letterSpacing: "-0.03em", lineHeight: 1.2,
-        highlight: "" } },
-    { id: "165a8f0c", type: "logo", x: 1013, y: 40,
-      props: { variant: "dark", scale: 0.62 } },
-    { id: "a1725e4f", type: "shape", x: 51, y: 199, w: 52, h: 52,
-      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
-    { id: "edit-input-frame", type: "shape", x: 63, y: 213, w: 28, h: 22,
-      props: { kind: "rect", fill: "", stroke: "#F6821F", strokeWidth: 2, radius: 2 } },
-    { id: "edit-input-line", type: "divider", x: 68, y: 224, w: 12, h: 2,
-      props: { color: "#F6821F", opacity: 1 } },
-    { id: "edit-input-caret", type: "divider", x: 83, y: 219, w: 2, h: 10,
-      props: { color: "#F6821F", opacity: 1 } },
-    { id: "edit-input-baseline", type: "divider", x: 70, y: 239, w: 14, h: 2,
-      props: { color: "#F6821F", opacity: 1 } },
-    { id: "db375e12", type: "text", x: 50, y: 282, w: 500,
-      props: { text: "Click Edit", fontSize: 22, weight: 600,
-        color: "#000000", family: "sans", align: "left", lineHeight: 1.3 } },
-    { id: "d0c451ab", type: "text", x: 50, y: 330, w: 500,
-      props: { text: "Click the pencil icon to add slides, insert components, edit content, and adjust the layout.",
-        fontSize: 18, weight: 400, color: "#747474", family: "sans",
-        align: "left", lineHeight: 1.55 } },
-    { id: "8cf12ea4", type: "divider", x: 594, y: 198, w: 1, h: 260,
-      props: { color: "#E5E5E5", opacity: 1 } },
-    { id: "02d7fc35", type: "shape", x: 647, y: 199, w: 52, h: 52,
-      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
-    { id: "agent-chat-frame", type: "shape", x: 659, y: 212, w: 28, h: 22,
-      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F6821F", strokeWidth: 2, radius: 4 } },
-    { id: "agent-chat-tail", type: "shape", x: 663, y: 231, w: 7, h: 8,
-      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F6821F", strokeWidth: 2, radius: 1 } },
-    { id: "agent-chat-tail-join", type: "shape", x: 665, y: 230, w: 3, h: 4,
-      props: { kind: "rect", fill: "#FFF8F2", strokeWidth: 0 } },
-    { id: "agent-chat-dot-1", type: "shape", x: 665, y: 221, w: 3, h: 3,
-      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
-    { id: "agent-chat-dot-2", type: "shape", x: 672, y: 221, w: 3, h: 3,
-      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
-    { id: "agent-chat-dot-3", type: "shape", x: 679, y: 221, w: 3, h: 3,
-      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
-    { id: "47a8d50c", type: "text", x: 646, y: 282, w: 500,
-      props: { text: "Ask the agent", fontSize: 22, weight: 600,
-        color: "#000000", family: "sans", align: "left", lineHeight: 1.3 } },
-    { id: "d941a7b6", type: "text", x: 646, y: 330, w: 500,
-      props: { text: "Ask the agent to create slides, add charts, connect approved internal data, or build your own components for a fully customized deck.",
-        fontSize: 18, weight: 400, color: "#747474", family: "sans",
-        align: "left", lineHeight: 1.55 } },
-    { id: "4aa013dc", type: "text", x: 36, y: 562, w: 1128,
-      props: { text: "Use either approach, or switch between them at any time.",
-        fontSize: 18, weight: 600, color: "#000000", family: "sans",
-        align: "center", lineHeight: 1.4 } },
-    { id: "50db219e", type: "shape", x: 0, y: 663, w: 1200, h: 12,
-      props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
-        opacity: 1 } },
-  ],
-};
-
-const KEY_TAKEAWAYS_SLIDE: Slide = {
-  id: "6a7e5ae2",
-  background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
-  blocks: [
-    { id: "e6fd515b", type: "sectionLabel", x: 36, y: 35,
-      props: { text: "CONNECTED CHARTS" } },
-    { id: "67fefcc4", type: "title", x: 35, y: 76, w: 950,
-      props: { text: "Turn internal data into presentation-ready charts",
-        fontSize: 32, weight: 600, color: "#000000",
-        letterSpacing: "-0.03em", lineHeight: 1.2, highlight: "" } },
-    { id: "16c8d805", type: "logo", x: 1013, y: 40,
-      props: { variant: "dark", scale: 0.62 } },
-    { id: "2b48e66e", type: "text", x: 36, y: 187, w: 730, h: 24,
-      props: { text: "Quarterly adoption", fontSize: 16, weight: 600, color: "#000000", lineHeight: 1.2 } },
-    { id: "adoption-subtitle", type: "text", x: 36, y: 215, w: 730, h: 18,
-      props: { text: "Illustrative data • refreshed from your system of record", fontSize: 12, color: "#747474", lineHeight: 1.2 } },
-    { id: "adoption-grid-1", type: "divider", x: 36, y: 323, w: 730, h: 1,
-      props: { color: "#EEEEEE", opacity: 1 } },
-    { id: "adoption-grid-2", type: "divider", x: 36, y: 393, w: 730, h: 1,
-      props: { color: "#EEEEEE", opacity: 1 } },
-    { id: "adoption-grid-3", type: "divider", x: 36, y: 463, w: 730, h: 1,
-      props: { color: "#EEEEEE", opacity: 1 } },
-    { id: "adoption-baseline", type: "divider", x: 36, y: 533, w: 730, h: 1,
-      props: { color: "#D9D9D9", opacity: 1 } },
-    { id: "adoption-q1-bar", type: "shape", x: 94, y: 426, w: 92, h: 107,
-      props: { kind: "rect", fill: "#FF6633", strokeWidth: 0, radius: 2 } },
-    { id: "adoption-q2-bar", type: "shape", x: 258, y: 372, w: 92, h: 161,
-      props: { kind: "rect", fill: "#F6821F", strokeWidth: 0, radius: 2 } },
-    { id: "adoption-q3-bar", type: "shape", x: 422, y: 328, w: 92, h: 205,
-      props: { kind: "rect", fill: "#FBAD41", strokeWidth: 0, radius: 2 } },
-    { id: "adoption-q4-bar", type: "shape", x: 586, y: 279, w: 92, h: 254,
-      props: { kind: "rect", fill: "#F6821F", strokeWidth: 0, radius: 2 } },
-    { id: "adoption-q1-label", type: "text", x: 94, y: 547, w: 92, h: 20,
-      props: { text: "Q1", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q2-label", type: "text", x: 258, y: 547, w: 92, h: 20,
-      props: { text: "Q2", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q3-label", type: "text", x: 422, y: 547, w: 92, h: 20,
-      props: { text: "Q3", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q4-label", type: "text", x: 586, y: 547, w: 92, h: 20,
-      props: { text: "Q4", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q1-value", type: "text", x: 94, y: 401, w: 92, h: 20,
-      props: { text: "38", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q2-value", type: "text", x: 258, y: 347, w: 92, h: 20,
-      props: { text: "57", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q3-value", type: "text", x: 422, y: 303, w: 92, h: 20,
-      props: { text: "73", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-q4-value", type: "text", x: 586, y: 254, w: 92, h: 20,
-      props: { text: "91", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
-    { id: "adoption-source-panel", type: "shape", x: 831, y: 270, w: 333, h: 245,
-      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
-    { id: "adoption-source-heading", type: "text", x: 855, y: 297, w: 285, h: 18,
-      props: { text: "LIVE DATA, READY TO PRESENT", fontSize: 11, weight: 600, letterSpacing: "1px", color: "#FF6633", lineHeight: 1.2 } },
-    { id: "adoption-source-title", type: "text", x: 855, y: 328, w: 285, h: 54,
-      props: { text: "Ask the agent to add chart\nfrom internal data source.", fontSize: 20, weight: 600, color: "#000000", lineHeight: 1.3 } },
-    { id: "adoption-source-copy", type: "text", x: 855, y: 401, w: 285, h: 66,
-      props: { text: "Or connect an approved internal\nsystem of record so an agent can\npull, shape, and refresh the data.", fontSize: 14, color: "#747474", lineHeight: 1.57 } },
-    { id: "adoption-source-status-dot", type: "shape", x: 854, y: 484, w: 8, h: 8,
-      props: { kind: "ellipse", fill: "#26A641", strokeWidth: 0 } },
-    { id: "adoption-source-status", type: "text", x: 872, y: 481, w: 268, h: 18,
-      props: { text: "Connected source", fontSize: 12, weight: 600, color: "#000000", lineHeight: 1.2 } },
-    { id: "39af0189", type: "shape", x: 0, y: 663, w: 1200, h: 12,
-      props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
-        opacity: 1 } },
-  ],
-};
-
-const INITIAL_DECK: Deck = {
-  themeVersion: THEME_VERSION,
-  slides: [
-    {
-      id: "a8dd8e44",
-      background: { color: "#F6821F", inset: false, coverOrange: true },
-      blocks: [
-        { id: "7d2196db", type: "logo", x: 36, y: 56, w: 267, props: {} },
-        { id: "44e96d7c", type: "title", x: 33, y: 197, w: 687,
-          props: { text: "Compose your deck or build with agent.\n", fontSize: 58,
-            weight: 700, color: "#FFFFFF", letterSpacing: "-0.03em",
-            lineHeight: 1.1, highlight: "" } },
-        { id: "2b69cd51", type: "subtitle", x: 36, y: 533, w: 553,
-          props: { text: "Press E to edit. Add slides, drop in components, drag to move, then F to present.\n",
-            fontSize: 17, weight: 600, color: "#FFFFFF", lineHeight: 1.5 } },
-      ],
-    },
-    {
-      id: "935d6824",
-      background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
-      blocks: [
-        { id: "a10324fe", type: "sectionLabel", x: 36, y: 35,
-          props: { text: "SLIDE BUILDER" } },
-        { id: "6457b707", type: "title", x: 35, y: 76, w: 984,
-          props: { text: "One canvas gives you everything you need to build and refine a deck",
-            fontSize: 28, weight: 600, color: "#000000", letterSpacing: "-0.03em",
-            lineHeight: 1.2, highlight: "" } },
-        { id: "7221dd20", type: "logo", x: 1013, y: 40,
-          props: { variant: "dark", scale: 0.62, text: "Workspace", accentDot: true } },
-        { id: "7a5a9052", type: "shape", x: 0, y: 663, w: 1200, h: 12,
-          props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
-            opacity: 1 } },
-        { id: "ac789ac0", type: "text", x: 36, y: 184, w: 55,
-          props: { text: "01", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "9ab784eb", type: "divider", x: 36, y: 218, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "c42d52f0", type: "text", x: 36, y: 242, w: 330,
-          props: { text: "Templates", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "b83685ca", type: "text", x: 36, y: 276, w: 320,
-          props: { text: "Start with title, narrative, two-column, or four-column layouts.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-        { id: "557dd2fd", type: "text", x: 425, y: 184, w: 55,
-          props: { text: "02", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "bc20fe5a", type: "divider", x: 425, y: 218, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "fd610310", type: "text", x: 425, y: 242, w: 330,
-          props: { text: "Components", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "aa3db0c3", type: "text", x: 425, y: 276, w: 320,
-          props: { text: "Add text, cards, media, shapes, and diagrams from one library.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-        { id: "57cf5870", type: "text", x: 814, y: 184, w: 55,
-          props: { text: "03", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "b64e4086", type: "divider", x: 814, y: 218, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "7c2fb36f", type: "text", x: 814, y: 242, w: 330,
-          props: { text: "Direct editing", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "30668753", type: "text", x: 814, y: 276, w: 320,
-          props: { text: "Edit copy inline and tune every block in the inspector.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-        { id: "4813a65d", type: "text", x: 36, y: 408, w: 55,
-          props: { text: "04", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "e434b278", type: "divider", x: 36, y: 442, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "630ea5b1", type: "text", x: 36, y: 466, w: 330,
-          props: { text: "Layout controls", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "fab3ac08", type: "text", x: 36, y: 500, w: 320,
-          props: { text: "Drag, resize, reorder, and snap blocks to precise guides.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-        { id: "56ff718c", type: "text", x: 425, y: 408, w: 55,
-          props: { text: "05", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "b52192c2", type: "divider", x: 425, y: 442, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "545fab77", type: "text", x: 425, y: 466, w: 330,
-          props: { text: "Live collaboration", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "c940701b", type: "text", x: 425, y: 500, w: 320,
-          props: { text: "Keep connected editors in sync with shared undo and redo.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-        { id: "6700f2e6", type: "text", x: 814, y: 408, w: 55,
-          props: { text: "06", fontSize: 16, color: "#FF6633", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "fb4710ef", type: "divider", x: 814, y: 442, w: 36, h: 3,
-          props: { color: "#F6821F", opacity: 1 } },
-        { id: "b903c07f", type: "text", x: 814, y: 466, w: 330,
-          props: { text: "Present anywhere", fontSize: 18, color: "#000000", weight: 600,
-            family: "sans", align: "left", lineHeight: 1.2 } },
-        { id: "8f8a19cf", type: "text", x: 814, y: 500, w: 320,
-          props: { text: "Go full screen, jump between slides, and navigate by keyboard.",
-            fontSize: 15, color: "#747474", weight: 400, family: "sans",
-            align: "left", lineHeight: 1.5 } },
-      ],
-    },
-  ],
-};
-
-// Retained for compatibility with older code paths and as a component demo.
-function defaultDeck(): Deck {
-  return {
-    slides: [
-      // ----- Slide 1: cover ------------------------------------------------
-      {
-        id: genId(),
-        background: { inset: true, dotGrid: 0.45 },
-        blocks: [
-          { id: genId(), type: "sectionLabel", x: 48, y: 38,
-            props: { text: "Slide builder" } },
-          { id: genId(), type: "logo", x: 1080, y: 38, props: {} },
-          { id: genId(), type: "gadgetsMark", x: 48, y: 240,
-            props: { size: "large" } },
-          { id: genId(), type: "title", x: 48, y: 340, w: 1040,
-            props: { text: "Compose your deck from primitives.",
-                     fontSize: 46, highlight: "primitives" } },
-          { id: genId(), type: "subtitle", x: 48, y: 430, w: 980,
-            props: { text: "Press E to edit. Add slides, drop in components, drag to move, then F to present." } },
-        ],
-      },
-      // ----- Slide 2: cards in 4 tones ------------------------------------
-      {
-        id: genId(),
-        background: { inset: true },
-        blocks: [
-          { id: genId(), type: "sectionLabel", x: 48, y: 38,
-            props: { text: "Components" } },
-          { id: genId(), type: "logo", x: 1080, y: 38, props: {} },
-          { id: genId(), type: "title", x: 48, y: 78, w: 1040,
-            props: { text: "Cards come in tones.", fontSize: 42,
-                     highlight: "tones" } },
-          { id: genId(), type: "subtitle", x: 48, y: 152, w: 1040,
-            props: { text: "Each card carries a tone, an optional top stripe, an eyebrow, a title, and body copy." } },
-          { id: genId(), type: "card", x: 48,  y: 268, w: 264, h: 296,
-            props: { tone: "orange", topStripe: true, eyebrow: "01",
-                     title: "Composable", body: "Every slide is just a list of blocks." } },
-          { id: genId(), type: "card", x: 328, y: 268, w: 264, h: 296,
-            props: { tone: "blue", topStripe: true, eyebrow: "02",
-                     title: "Themed", body: "Tones, fonts and spacing come from one set of tokens." } },
-          { id: genId(), type: "card", x: 608, y: 268, w: 264, h: 296,
-            props: { tone: "purple", topStripe: true, eyebrow: "03",
-                     title: "Live", body: "Edits sync across every connected viewer in real time." } },
-          { id: genId(), type: "card", x: 888, y: 268, w: 264, h: 296,
-            props: { tone: "green", topStripe: true, eyebrow: "04",
-                     title: "Yours", body: "Add or remove slides, drag blocks anywhere on the canvas." } },
-        ],
-      },
-      // ----- Slide 3: diagram (boxes + arrows) ----------------------------
-      {
-        id: genId(),
-        background: { inset: true },
-        blocks: [
-          { id: genId(), type: "sectionLabel", x: 48, y: 38,
-            props: { text: "Diagrams" } },
-          { id: genId(), type: "logo", x: 1080, y: 38, props: {} },
-          { id: genId(), type: "title", x: 48, y: 78, w: 1040,
-            props: { text: "Boxes and arrows, no Figma required.",
-                     fontSize: 40, highlight: "arrows" } },
-          { id: genId(), type: "subtitle", x: 48, y: 150, w: 1040,
-            props: { text: "Use the box and arrow blocks to sketch flows. Arrows take endpoints in slide coordinates." } },
-          { id: genId(), type: "box", x: 96,  y: 340, w: 220, h: 110,
-            props: { tone: "neutral", title: "Source",
-                     body: "Where it starts" } },
-          { id: genId(), type: "box", x: 490, y: 340, w: 220, h: 110,
-            props: { tone: "blue", title: "Gatekeeper",
-                     body: "Where it’s checked" } },
-          { id: genId(), type: "box", x: 884, y: 340, w: 220, h: 110,
-            props: { tone: "orange", title: "Destination",
-                     body: "Where it lands" } },
-          { id: genId(), type: "arrow", x: 0, y: 0,
-            props: { x1: 316, y1: 395, x2: 490, y2: 395,
-                     color: "blue", label: "request" } },
-          { id: genId(), type: "arrow", x: 0, y: 0,
-            props: { x1: 710, y1: 395, x2: 884, y2: 395,
-                     color: "orange", label: "approved" } },
-          { id: genId(), type: "tonePill", x: 96, y: 500,
-            props: { tone: "neutral", text: "EXTERNAL" } },
-          { id: genId(), type: "tonePill", x: 490, y: 500,
-            props: { tone: "blue", text: "POLICY" } },
-          { id: genId(), type: "tonePill", x: 884, y: 500,
-            props: { tone: "orange", text: "INTERNAL" } },
-        ],
-      },
-    ],
-  };
-}
-
 
 const SLIDES_EXPORT_FORMATS = [
+  { id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileExtension: ".pptx" },
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
-  { id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileExtension: ".pptx" },
 ];
 
 export class ExportHandler extends WorkerEntrypoint {
   async getExportFormats() {
     return SLIDES_EXPORT_FORMATS;
   }
-
-  async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
+  async export(gadget: Pick<GadgetStub, "getDeckInlined" | "getSvgRasters">, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id === "pptx") {
-      const deck = await gadget.getDeck();
-      const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
-      // The renderer validates every authored slide/block quota before expanding logos.
-      return deckToPptx(deck, (block) => isLogoBlock(block) ? logoBlocks(block, budget) : undefined);
+      const deck = await gadget.getDeckInlined();
+      // PNG stand-ins for SVG artwork, keyed by the inlined source.
+      const keyOf = new Map<string, string>();
+      for (const slide of [...deck.slides || [], logoAsSlide(deck.logo)]) for (const v of svgSourcesOf(slide, new Set())) keyOf.set(v, await svgKey(v));
+      const byKey = keyOf.size ? await gadget.getSvgRasters([...new Set(keyOf.values())]) : {};
+      const svgRasters = new Map<string, string>();
+      const counted = new Set<string>();
+      let pixels = 0;
+      for (const [v, k] of keyOf) {
+        const png = byKey[k], size = png ? pngSize(png) : null;
+        if (!size) continue;
+        if (!counted.has(k)) {
+          if (pixels + size.w * size.h > MAX_EXPORT_RASTER_PIXELS) continue;
+          pixels += size.w * size.h;
+          counted.add(k);
+        }
+        svgRasters.set(v, png);
+      }
+      return deckToSlidesPptx(deck, { ...await pptxAssets(deck), svgRasters });
     }
     throw new Error("Unsupported slides export format: " + id);
   }
-}
-
-
-function isLogoBlock(block: unknown): block is Record<string, unknown> & {type: "logo"} {
-  return block !== null && typeof block === "object" && !Array.isArray(block) &&
-    (block as Record<string, unknown>).type === "logo";
-}
-
-// The logo component's styling, from client.ts: a 24px bold wordmark tracked -0.02em at
-// line-height 1, then a 3px flex gap and a 6px dot whose bottom sits 1px above the baseline.
-const LOGO_FONT_PX = 24;
-const LOGO_TRACKING_EM = -0.02;
-const LOGO_GAP_PX = 3;
-const LOGO_DOT_PX = 6;
-
-function logoScale(value: unknown): number {
-  const scale = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
-  return scale && Number.isFinite(scale) ? Math.max(0.01, Math.min(20, scale)) : 1;
-}
-
-function logoBlocks(block: Record<string, unknown>, budget: {remaining: number}): Array<Record<string, unknown>> {
-  const rawProps = block.props;
-  const props = rawProps !== null && typeof rawProps === "object" && !Array.isArray(rawProps)
-    ? rawProps as Record<string, unknown>
-    : {};
-  const scale = logoScale(props.scale);
-  const x = Number(block.x);
-  const y = Number(block.y);
-  const fontSize = LOGO_FONT_PX * scale;
-  const tracking = LOGO_TRACKING_EM * fontSize;
-  const raw = props.text == null ? "Workspace" : typeof props.text === "object" ? "" : String(props.text);
-  budget.remaining -= raw.length;
-  if (budget.remaining < 0) return [{ type: "text", x, y, props: { text: raw } }];
-
-  const text = raw.replace(/[\t\n\r ]+/g, " ").trim();
-  const { width, ascent, lineHeight } = measureText(text, fontSize, 700, tracking);
-  const halfLeading = (lineHeight - fontSize) / 2;
-  const baseline = y + ascent - halfLeading;
-  const blocks: Array<Record<string, unknown>> = [{
-    type: "text",
-    x,
-    y: y - halfLeading,
-    w: Math.max(fontSize / 2, width * 1.02) + 8 * scale,
-    h: lineHeight,
-    props: {
-      text, fontSize, weight: 700, letterSpacing: `${LOGO_TRACKING_EM}em`,
-      lineHeight: lineHeight / fontSize, align: "left",
-      color: props.variant === "dark" ? "#000000" : "#FFFFFF",
-    },
-  }];
-  if (props.accentDot !== false) {
-    blocks.push({
-      type: "shape",
-      x: x + (text ? width + tracking : 0) + LOGO_GAP_PX * scale,
-      y: baseline - (LOGO_DOT_PX + 1) * scale,
-      w: LOGO_DOT_PX * scale,
-      h: LOGO_DOT_PX * scale,
-      props: { kind: "ellipse", fill: "#F6821F" },
-    });
-  }
-  return blocks;
 }

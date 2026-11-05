@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { openFakeOverseer } from "./fixtures";
 import type { FakeChatResponseTarget } from "./response-target";
 
@@ -81,8 +82,14 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
     instance["storage"].profile.put(USER);
     instance["storage"].aiModels.put(MODEL);
   });
+  await user.newWorkspace(stub.id.toString(), "Resume");
   const visit = <T>(fn: (impl: Impl) => T | Promise<T>) =>
     runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => fn(impl));
+  await visit(impl => {
+    impl.storage.version.put(OVERSEER_STORAGE_VERSION);
+    impl.storage.ownerId.put(user.id.toString());
+    impl.ownerId = user.id.toString();
+  });
   await visit(impl => {
     const timestamp = impl.getChatTimestamp();
     impl.storage.chatMeta.put({id: CHAT, title: "Resume", started: timestamp, lastActive: timestamp,
@@ -96,12 +103,22 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
   return {stub, user, visit};
 }
 
+async function reset(stub: DurableObjectStub<OverseerDurableObject>) {
+  // Crash the source even if owned-workspace background I/O is still in flight. Idle eviction
+  // waits for that I/O; these cases exercise recovery of the committed execution row instead.
+  await expect(runInDurableObject(env.TEST_OVERSEER.get(stub.id), (_, ctx) => {
+    ctx.abort("Injected decision recovery reset");
+  })).rejects.toThrow("Injected decision recovery reset");
+}
+
 function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
-  const userId = impl.storage.activeAgents.get(CHAT)?.initiatorUserId;
-  return openFakeOverseer(impl.storage, {impl: {
+  const userId = profile.id === USER.id ? impl.ownerId : env.TEST_USER.idFromName(profile.id).toString();
+  return openFakeOverseer(impl.storage, {ownerId: impl.ownerId, userId, impl: {
     users: {idFromString: (id: string) => id,
-      get: (id: string) => ({id: {toString: () => userId ?? id}, whoami: async () => profile,
-        getChatContext: async () => ({profile: USER, aiModel: MODEL})})},
+      get: (id: string) => ({id: {toString: () => id}, whoami: async () => profile,
+        getChatContext: async () => ({profile: USER, aiModel: MODEL}), recordSharedWorkspaceOpen: async () => {}})},
+    nextChatSequencePeek: impl.nextChatSequencePeek.bind(impl),
+    chatHead: impl.chatHead.bind(impl),
     rememberDecisionInitiator: impl.rememberDecisionInitiator.bind(impl),
     resumeAgentAfterDecision: impl.resumeAgentAfterDecision.bind(impl),
     getChatTimestamp: impl.getChatTimestamp.bind(impl),
@@ -116,9 +133,19 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
 
 function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, aiModel: typeof MODEL}>) {
   // Hold/fail the caller-side read, without an unrelated user-DO RPC keeping an eviction alive.
-  impl.users = {idFromString: (id: string) => id,
-    get: () => ({getChatContext: lookup, publishNotification: async () => {}})} as
-      unknown as typeof impl.users;
+  impl.users = new Proxy(impl.users, {
+    get(target, key) {
+      if (key === "idFromString") return (id: string) => target.idFromString(id);
+      if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
+        get(user, method) {
+          if (method === "getChatContext") return lookup;
+          if (method === "publishNotification") return async () => {};
+          return Reflect.get(user, method);
+        },
+      });
+      return Reflect.get(target, key);
+    },
+  });
 }
 
 function recordNotifications() {
@@ -138,7 +165,7 @@ describe("decision handoff using the existing execution row", () => {
         decide(impl, kind); // Simulate the boundary immediately before the resume claim.
         await impl.ctx.storage.sync();
       });
-      await evictDurableObject(s.stub);
+      await reset(s.stub);
       await s.visit(async impl => {
         await impl.waitForAllAgentsToComplete();
         expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
@@ -257,12 +284,16 @@ describe("decision handoff using the existing execution row", () => {
       if (legacy) impl.storage.activeAgents.delete(CHAT);
       const gate = Promise.withResolvers<void>();
       const approver = {...USER, id: "approver", name: "Approver"};
+      impl.storage.collaborators.put({profile: approver,
+        addedBy: [{type: "user", sharer: USER.id, role: "build", created: new Date()}]});
       modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
       using client = await decisionClient(impl, approver);
       await client.acceptConnectionRequest("1:connection", {gatekeeperId: 31});
       const record = impl.storage.activeAgents.get(CHAT)!;
       expect(record.initiator).toEqual(legacy ? approver : USER);
-      expect(record.initiatorUserId).toBe(legacy ? "owner-id" : s.user.id.toString());
+      expect(record.initiatorUserId).toBe(legacy
+        ? env.TEST_USER.idFromName(approver.id).toString() : s.user.id.toString());
+      expect(env.TEST_USER.idFromName(approver.id).toString()).not.toBe(s.user.id.toString());
       gate.resolve();
       await impl.waitForAllAgentsToComplete();
     });
@@ -276,7 +307,7 @@ describe("decision handoff using the existing execution row", () => {
       const authorize = vi.spyOn(impl, "authorizeCollaborator").mockResolvedValue(null);
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       await impl.waitForAllAgentsToComplete();
-      expect(authorize).toHaveBeenCalledWith(USER.id, expect.anything(), {requireRole: "build"});
+      expect(authorize).toHaveBeenCalledWith(USER.id, expect.anything(), {requireBuild: true});
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
       expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
         type: "error", message: expect.stringContaining("no longer has build access"),
@@ -318,17 +349,20 @@ describe("decision handoff using the existing execution row", () => {
       async ({kind, initiator}) => {
     const notifications = recordNotifications(), requests = inference();
     const s = await scenario(kind, true, initiator);
-    // A second eviction of an already-idle pause must not announce it again.
+    // Idle eviction after crash recovery must not announce the same pause again.
     for (let i = 0; i < 2; i++) {
-      await evictDurableObject(s.stub);
+      if (i === 0) await reset(s.stub);
+      else await evictDurableObject(s.stub);
       await s.visit(async impl => {
         await impl.waitForAllAgentsToComplete();
         expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
         expect(impl.storage.activeAgents.get(CHAT)?.initiatorUserId).toBe(s.user.id.toString());
+        await impl.deliverDirtyChats();
         expect(await impl.ctx.storage.getAlarm()).toBeNull();
       });
     }
-    await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+    await vi.waitFor(() => expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString()))
+      .toEqual([[s.user.id.toString(), expect.objectContaining({
       kind: "permissionRequested", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
     })]]));
     expect(requests()).toBe(0);
@@ -342,7 +376,7 @@ describe("decision handoff using the existing execution row", () => {
       decide(impl, "connection");
       impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
     });
-    await evictDurableObject(s.stub);
+    await reset(s.stub);
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
@@ -352,17 +386,56 @@ describe("decision handoff using the existing execution row", () => {
       }));
     });
     if (initiator.type === "user") {
-      await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+      await vi.waitFor(() => expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString()))
+        .toEqual([[s.user.id.toString(), expect.objectContaining({
         kind: "taskCompleted", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
       })]]));
     } else {
-      expect(notifications).toEqual([]);
+      expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString())).toEqual([]);
     }
     expect(requests()).toBe(0);
   });
 
+  it("recovers a final response with steers it never read by answering them", async () => {
+    const requests = inference(), s = await scenario("connection", true);
+    await s.visit(impl => {
+      decide(impl, "connection");
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(CHAT)!,
+        queuedSteers: [{text: "Make it dark.", author: USER}]});
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      const [steer, answer] = [...impl.storage.chats.list()].slice(-2);
+      expect(steer).toEqual(expect.objectContaining({type: "message", author: USER, message: "Make it dark."}));
+      expect(steer).not.toHaveProperty("steered");
+      expect(answer).toEqual(expect.objectContaining({type: "message", message: "Done."}));
+      expect(impl.storage.chatMeta.get(CHAT)?.queuedSteers).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("recovers a steer read after the final response without replaying an earlier approval", async () => {
+    const requests = inference(), s = await scenario("action", true);
+    await s.visit(impl => {
+      decide(impl, "action");
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Make it dark.", steered: true}]);
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      const log = [...impl.storage.chats.list()];
+      expect(log.filter(m => m.type === "agentNudge")).toEqual([]);
+      expect(log.at(-1)).toEqual(expect.objectContaining({type: "message", message: "Done."}));
+    });
+    expect(requests()).toBe(1);
+  });
+
   it.each(["final response", "pending decision"] as const)(
-      "recovers /compact after eviction without inheriting the preceding %s", async previous => {
+      "recovers /compact after reset without inheriting the preceding %s", async previous => {
     const s = await scenario("connection", true), requests = inference();
     await s.visit(impl => {
       if (previous === "final response") {
@@ -373,7 +446,7 @@ describe("decision handoff using the existing execution row", () => {
       impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
         request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
     });
-    await evictDurableObject(s.stub);
+    await reset(s.stub);
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
       // An unresolved decision still protects its history from compaction, but must not make
@@ -519,6 +592,8 @@ describe("decision handoff using the existing execution row", () => {
       impl.cancelAgent(CHAT);
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      // The shared alarm may still cover unread fanout, independently of the cancelled agent.
+      await impl.deliverDirtyChats();
       expect(await impl.ctx.storage.getAlarm()).toBeNull();
       await expect(impl.runAlarmTasks()).resolves.toBeUndefined();
     });
@@ -617,9 +692,11 @@ describe("decision handoff using the existing execution row", () => {
     await s.visit(async impl => {
       decide(impl, "connection");
       impl.addChatMessages(CHAT, USER, [{type: "agentNudge", text: "Continue."}]);
+      // Set the platform alarm after unrelated unread delivery has settled.
+      await impl.deliverDirtyChats();
       await impl.ctx.storage.setAlarm(scheduled);
     });
-    await evictDurableObject(s.stub);
+    await reset(s.stub);
     await s.visit(async impl => {
       await vi.waitFor(() => expect(requests()).toBe(1));
       expect(await impl.ctx.storage.getAlarm()).toBe(scheduled);

@@ -123,11 +123,93 @@ describe("descriptions", () => {
     expect(kinds).toEqual(["x.post.bookmark", "x.post.hide", "x.user.mute"]);
   });
 
+  it("declares a kind and verdict for every action, both ways of every toggle", async () => {
+    const post = { id: "50", info: theirPost };
+    const list = {
+      id: "70", info: {
+        id: "70", url: "https://x.com/i/lists/70", name: "Friends", description: "", private: true,
+        owner: theirPost.author, memberCount: 0, followerCount: 0,
+      },
+    };
+    const reply = { ref: "~1", draft: draft("Agreed"), parent: post, conversationId: "50", submittedAt: 0 };
+    const createList = { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 };
+    // Mapped over every kind, so a new action can't be added without declaring its verdict here.
+    const cases: { [K in keyof XActions]: { tag: string; autoApprovable: boolean; payloads: XActions[K][] } } = {
+      createPost: {
+        tag: "x.post.create", autoApprovable: false, payloads: [{ refs: ["~1"], drafts: [draft("Hi")], submittedAt: 0 }],
+      },
+      reply: { tag: "x.post.reply", autoApprovable: false, payloads: [reply] },
+      deletePost: { tag: "x.post.delete", autoApprovable: false, payloads: [{ post }] },
+      like: { tag: "x.post.like", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      repost: { tag: "x.post.repost", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      bookmark: { tag: "x.post.bookmark", autoApprovable: true, payloads: [{ post, on: true }, { post, on: false }] },
+      hide: { tag: "x.post.hide", autoApprovable: true, payloads: [{ post, hidden: true }, { post, hidden: false }] },
+      follow: { tag: "x.user.follow", autoApprovable: false, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      mute: { tag: "x.user.mute", autoApprovable: true, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      createList: { tag: "x.list.manage", autoApprovable: false, payloads: [createList, { ...createList, private: true }] },
+      updateList: {
+        tag: "x.list.manage", autoApprovable: false,
+        payloads: [{ list, changes: { name: "Pals" } }, { list, changes: { private: false } }],
+      },
+      deleteList: { tag: "x.list.manage", autoApprovable: false, payloads: [{ list }] },
+      listMember: {
+        tag: "x.list.members", autoApprovable: false,
+        payloads: [{ list, user: bob, add: true }, { list, user: bob, add: false }],
+      },
+    };
+    for (const [kind, { tag, autoApprovable, payloads }] of Object.entries(cases)) {
+      for (const payload of payloads) {
+        const description = await describeAction(kind as keyof XActions, payload as never);
+        expect({ kind, tag: description.actionKind?.tag, autoApprovable: description.autoApprovable })
+          .toEqual({ kind, tag, autoApprovable });
+      }
+    }
+  });
+
   it("refuses to stage an action without the X user it is fenced to", async () => {
     const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
     const set = actions.bind(journal, { me: async () => me } as unknown as XActionHost);
     await expect(set.submit({ submitAction: async () => {} } as never, "like", { post: { id: "50", info: theirPost }, on: true }))
       .rejects.toThrow(/authority-fenced/);
+  });
+});
+
+describe("rejection", () => {
+  /** A host recording what a reject leaves of a publish's progress and send attempts. */
+  function rejectingHost() {
+    const progress = new Map<number, string[]>();
+    const attempts = new Map<string, { at: number; mediaIds: string[] }>();
+    const released: StoredDraft[][] = [];
+    const host = {
+      me: async () => me,
+      progress: { get: (id: number) => progress.get(id) ?? [], put: progress.set.bind(progress), delete: progress.delete.bind(progress) },
+      attempts: { get: attempts.get.bind(attempts), put: attempts.set.bind(attempts), delete: attempts.delete.bind(attempts) },
+      releaseImages: (drafts: StoredDraft[]) => void released.push(drafts),
+      invalidate: async () => {},
+    } as unknown as XActionHost;
+    const set = actions.bind(new ActionJournal<XAction>(fakeKv(), { namespace: "x" }), host);
+    const submit = <K extends keyof XActions>(kind: K, payload: XActions[K]) =>
+      set.submit({ submitAction: async () => {} } as never, kind, payload, { fence: { generation: me.id } });
+    return { set, submit, progress, attempts, released };
+  }
+
+  it("withdraws a part-published thread, forgetting its progress and the send X never confirmed", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createPost", { refs: ["~1", "~2"], drafts: [draft("one"), draft("two")], submittedAt: 0 });
+    t.progress.set(id, ["100"]);
+    t.attempts.set(`${id}:1`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.progress.size).toBe(0);
+    expect(t.attempts.size).toBe(0);
+    expect(t.released).toHaveLength(1);
+  });
+
+  it("withdraws a List creation X never confirmed, forgetting the attempt", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createList", { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 });
+    t.attempts.set(`${id}:0`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.attempts.size).toBe(0);
   });
 });
 

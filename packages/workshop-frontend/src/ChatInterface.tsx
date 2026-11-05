@@ -41,6 +41,7 @@ import {
   Copy,
   Clipboard as ClipboardIcon,
   WarningCircle,
+  StopCircle,
   Code,
   File as FileIcon,
   PencilSimple,
@@ -553,6 +554,27 @@ function createCapsuleRemarkPlugin(mentionsByToken: Map<string, Mention>) {
   };
 }
 
+function replaceNewlinesWithBreaks(node: MarkdownAstNode) {
+  if (!node.children) return;
+  node.children = node.children.flatMap((child): MarkdownAstNode[] => {
+    if (child.type === "text" && child.value?.includes("\n")) {
+      return child.value.split(/\r?\n/).flatMap((line, index): MarkdownAstNode[] => [
+        ...(index > 0 ? [{ type: "break" }] : []),
+        ...(line ? [{ type: "text", value: line }] : []),
+      ]);
+    }
+    replaceNewlinesWithBreaks(child);
+    return [child];
+  });
+}
+
+// Renders a user's single newline as a hard break. Done in the tree rather than with
+// `white-space: pre-wrap`, which also shows the newlines Markdown puts between block elements,
+// adding a blank line between every list item.
+function lineBreaksRemarkPlugin() {
+  return replaceNewlinesWithBreaks;
+}
+
 // Names the binding edge a gadget-binding tool call touched, as `GADGET.BINDING` when the record
 // says which gadget owns it. (Records written before named chat bindings carry only the binding
 // name, and a still-streaming call may not have either yet.)
@@ -801,6 +823,8 @@ function getToolIcon(
       return Question;
   }
 }
+
+const userBubbleClassName = `themed-user-bubble-shadow w-fit max-w-[min(680px,78%)] rounded-[24px] rounded-br-lg border border-transparent bg-kumo-bubble-user px-4 py-2.5 text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`;
 
 function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undefined) {
   switch (toolName) {
@@ -1201,19 +1225,18 @@ function getMarkdownComponents(
   };
 }
 
-const REMARK_PLUGINS_NO_CAPSULES = [remarkGfm];
 const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
 
 /**
- * Exported for unit testing (see ChatInterface.markdown.test.tsx), which verifies that a
- * single newline in a user message survives to the DOM as a literal "\n" so the
- * `whitespace-pre-wrap` wrapper at the user-message render site renders it as a hard break.
+ * Exported for unit testing (see ChatInterface.markdown.test.ts). `preserveLineBreaks` renders
+ * single newlines as hard breaks, for text people typed rather than Markdown a model wrote.
  */
 export const MarkdownMessage = memo(function MarkdownMessage(
-  { message, capsules, formats }: {
+  { message, capsules, formats, preserveLineBreaks }: {
     message: string;
     capsules?: CapsuleSpecifier[];
     formats?: MessageFormatRef[];
+    preserveLineBreaks?: boolean;
   },
 ): ReactNode {
   const tokenizedMessage = useMemo(
@@ -1229,10 +1252,12 @@ export const MarkdownMessage = memo(function MarkdownMessage(
     [tokenizedMessage],
   );
   const remarkPlugins = useMemo(
-    () => tokenizedMessage
-      ? [remarkGfm, createCapsuleRemarkPlugin(tokenizedMessage.mentionsByToken)]
-      : REMARK_PLUGINS_NO_CAPSULES,
-    [tokenizedMessage],
+    () => [
+      remarkGfm,
+      ...(tokenizedMessage ? [createCapsuleRemarkPlugin(tokenizedMessage.mentionsByToken)] : []),
+      ...(preserveLineBreaks ? [lineBreaksRemarkPlugin] : []),
+    ],
+    [preserveLineBreaks, tokenizedMessage],
   );
 
   return (
@@ -2268,12 +2293,27 @@ export function buildChatDisplayEntries(
 
 // Transcript spacing helpers.
 
+/** Who sent `entry`, if it is a user's message. */
+function userMessageAuthor(entry: ChatDisplayEntry | undefined): AiChatAuthorInfo | null {
+  if (entry?.type !== "message") return null;
+  const msg = entry.message;
+  return msg.type === "slashCommand" || (msg.type === "message" && msg.author.type === "user")
+    ? msg.author
+    : null;
+}
+
 function isUserMessageEntry(entry: ChatDisplayEntry): boolean {
-  return (
-    entry.type === "message" &&
-    (entry.message.type === "slashCommand" ||
-      (entry.message.type === "message" && entry.message.author.type === "user"))
-  );
+  return userMessageAuthor(entry) !== null;
+}
+
+// Consecutive messages from one user read as one group, as in any chat app: a small gap between
+// them, and their name and time once, under the last.
+function continuesUserGroup(
+  prev: ChatDisplayEntry | undefined,
+  curr: ChatDisplayEntry | undefined,
+): boolean {
+  const author = userMessageAuthor(prev);
+  return author !== null && author.id === userMessageAuthor(curr)?.id;
 }
 
 // How close to the top of the transcript pulls in the previous page. Roughly a screenful of slack,
@@ -2321,6 +2361,7 @@ function rhythmTopClass(
   if (!prev) return "";
   if (curr.type === "modelChange") return "mt-4";
   if (prev.type === "modelChange") return "mt-2";
+  if (continuesUserGroup(prev, curr)) return "mt-2";
   if (isUserMessageEntry(prev) || isUserMessageEntry(curr)) return "mt-5";
   if (entryEndsInWorkRow(prev) && entryStartsWithWorkRow(curr)) return "mt-2";
   return "mt-4";
@@ -2412,6 +2453,7 @@ export function computeChatEpochChanges(
 }
 
 // The agent that last spoke in the chat: the author of the most recent agent message or agent error.
+// A steer was addressed to a running agent, so it never means the chat went on without one.
 function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -2423,7 +2465,7 @@ function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo
       continue;
     }
 
-    if (msg.type === "message") {
+    if (msg.type === "message" && !msg.steered) {
       return msg.author.type === "agent" ? msg.author : null;
     }
   }
@@ -2445,7 +2487,7 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData).
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // Latched actions are never auto-approved, so the always-approve affordance is hidden.
   restricted?: boolean;
   selectedChatId: number | null;
@@ -3102,19 +3144,25 @@ function ChatInterface({
     return out;
   }, [displayEntries]);
 
+  // Get metadata for selected chat
+  const currentChatMetadata =
+    selectedChatId !== null ? cacheRef.current.chats.get(selectedChatId) : null;
+  const queuedSteers = currentChatMetadata?.queuedSteers;
+
   // Hide the user name on user message rows when the only human in the chat is the
   // currently-logged-in user (it would just say "you" on every message). If anyone else has ever
-  // posted in this chat, names stay so it's clear who said what.
+  // posted in this chat, or has a steer queued, names stay so it's clear who said what.
   const hideOwnUserName = useMemo(() => {
     if (!currentUser) return false;
-    let sawSelf = false;
+    if (queuedSteers?.some((steer) => steer.author.id !== currentUser.id)) return false;
+    let sawSelf = !!queuedSteers?.length;
     for (const msg of currentMessages) {
       if (msg.type !== "message" || msg.author.type !== "user") continue;
       if (msg.author.id !== currentUser.id) return false;
       sawSelf = true;
     }
     return sawSelf;
-  }, [currentMessages, currentUser]);
+  }, [currentMessages, currentUser, queuedSteers]);
 
   const lastMessageSequence = currentMessages[currentMessages.length - 1]?.sequence;
 
@@ -3131,10 +3179,6 @@ function ChatInterface({
       setUsageModalOpen(true);
     }
   }, [lastMessage]);
-
-  // Get metadata for selected chat
-  const currentChatMetadata =
-    selectedChatId !== null ? cacheRef.current.chats.get(selectedChatId) : null;
 
   // Download a committed chat attachment. Image bytes are already inlined on the message; other
   // attachments are fetched on demand over the authenticated RPC connection.
@@ -3331,6 +3375,7 @@ function ChatInterface({
     currentMessages,
     hasVisibleProvisionalContent,
     isAgentActive,
+    queuedSteers?.length,
     scrollMessagesToBottom,
   ]);
 
@@ -3956,6 +4001,14 @@ function ChatInterface({
     // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [selectedChatId, overseer]);
 
+  // While the chat is shown, the workspace keeps the model provider's cache of it warm. Disposing
+  // the call's promise disposes the lease it resolves to, even if it hasn't resolved yet.
+  useEffect(() => {
+    if (selectedChatId === null) return;
+    const lease = overseer.viewChat(selectedChatId);
+    return () => lease[Symbol.dispose]();
+  }, [overseer, selectedChatId]);
+
   // Sequence of the oldest message loaded, or undefined once the thread's start is loaded. Paging
   // asks for what precedes it, so the control disappears exactly when there is nothing earlier.
   const oldestLoadedSequence = currentMessages[0]?.sequence;
@@ -4070,6 +4123,7 @@ function ChatInterface({
     } catch (err) {
       console.error("Failed to stop agent:", err);
       toasts.add({ title: "Failed to stop agent", variant: "error" });
+      throw err;
     }
   };
 
@@ -5284,11 +5338,11 @@ function ChatInterface({
                   onClick={() => setChatListScope(scope.value)}
                   className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                 >
-                  <span className="mr-2 inline-flex h-3 w-3 items-center justify-center text-kumo-default">
+                  <span className="inline-flex h-3 w-3 items-center justify-center text-kumo-default">
                     {active ? <Check size={11} weight="bold" /> : null}
                   </span>
                   <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-3 font-mono text-[11px] text-kumo-inactive">
+                  <span className="ml-1 font-mono text-[11px] text-kumo-inactive">
                     {scope.count}
                   </span>
                 </DropdownMenu.Item>
@@ -5373,9 +5427,18 @@ function ChatInterface({
                             className="min-w-0 flex-1 bg-transparent text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                           />
                         ) : (
-                          <span className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+                          // The row's click handler serves pointer users; this button is the keyboard entry point.
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onNavigateToChat(chat.id);
+                            }}
+                            aria-current={sidebarMode && chat.id === selectedChatId ? "true" : undefined}
+                            className="-my-1 min-w-0 cursor-pointer truncate rounded-sm py-1 text-left text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
+                          >
                             {chat.title}
-                          </span>
+                          </button>
                         )}
                         {!isRenaming && chat.activeAgent ? (
                           <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
@@ -5429,14 +5492,14 @@ function ChatInterface({
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
                           <DropdownMenu.Item
-                            icon={<Pencil size={12} className="mr-2" />}
+                            icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                           >
                             Rename
                           </DropdownMenu.Item>
                           <DropdownMenu.Item
-                            icon={<Trash size={12} className="mr-2" />}
+                            icon={<Trash className="size-3" />}
                             variant="danger"
                             onClick={() => handleDeleteChat(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"
@@ -5905,6 +5968,7 @@ function ChatInterface({
                       }
 
                       const msg = entry.message;
+                      const endsUserGroup = !continuesUserGroup(entry, displayEntries[entryIndex + 1]);
 
                       return (
                         <div key={entry.key} className={entryTopClass}>
@@ -5922,25 +5986,27 @@ function ChatInterface({
                                 />
                               </span>
                             </div>
-                            <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
-                              {!(hideOwnUserName && msg.author.id === currentUser?.id) && (
-                                <span className="font-medium">{msg.author.name}</span>
-                              )}
-                              <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
-                                <span className="font-mono">
-                                  {msg.timestamp.toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
-                                </span>
-                              </Tooltip>
-                            </div>
+                            {endsUserGroup && (
+                              <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
+                                {!(hideOwnUserName && msg.author.id === currentUser?.id) && (
+                                  <span className="font-medium">{msg.author.name}</span>
+                                )}
+                                <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
+                                  <span className="font-mono">
+                                    {msg.timestamp.toLocaleTimeString([], {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
+                                </Tooltip>
+                              </div>
+                            )}
                           </div>
                         )}
                         {msg.type === "message" && (
                           msg.author.type === "user" ? (
                             <div className="group/message relative flex flex-col items-end">
-                              <div className={`themed-user-bubble-shadow w-fit max-w-[min(680px,78%)] rounded-[24px] rounded-br-lg border border-transparent bg-kumo-bubble-user px-4 py-2.5 text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`}>
+                              <div className={userBubbleClassName}>
                                 {msg.attachments && msg.attachments.length > 0 && (
                                   <ChatAttachmentGrid
                                     attachments={msg.attachments}
@@ -5961,30 +6027,30 @@ function ChatInterface({
                                     />
                                   </div>
                                 ) : msg.message.trim() && (
-                                  // pre-wrap renders users' single newlines as hard breaks.
-                                  <div className="whitespace-pre-wrap">
-                                    <MarkdownMessage
-                                      message={msg.message}
-                                      capsules={msg.capsules}
-                                      formats={msg.formats}
-                                    />
-                                  </div>
+                                  <MarkdownMessage
+                                    message={msg.message}
+                                    capsules={msg.capsules}
+                                    formats={msg.formats}
+                                    preserveLineBreaks
+                                  />
                                 )}
                               </div>
-                              <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
-                                {/* hideOwnUserName implies currentUser is non-null (see memo). */}
-                                {!(hideOwnUserName && msg.author.id === currentUser?.id) && (
-                                  <span className="font-medium">{msg.author.name}</span>
-                                )}
-                                <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
-                                  <span className="font-mono">
-                                    {msg.timestamp.toLocaleTimeString([], {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
-                                    })}
-                                  </span>
-                                </Tooltip>
-                              </div>
+                              {endsUserGroup && (
+                                <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
+                                  {/* hideOwnUserName implies currentUser is non-null (see memo). */}
+                                  {!(hideOwnUserName && msg.author.id === currentUser?.id) && (
+                                    <span className="font-medium">{msg.author.name}</span>
+                                  )}
+                                  <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
+                                    <span className="font-mono">
+                                      {msg.timestamp.toLocaleTimeString([], {
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })}
+                                    </span>
+                                  </Tooltip>
+                                </div>
+                              )}
                             </div>
                           ) : (() => {
                             const messageToolGroups = entry.toolCallGroups;
@@ -6183,31 +6249,42 @@ function ChatInterface({
                             return (
                               <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
                                 <div className="flex w-full items-center gap-2 px-1.5 py-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleErrorExpansion(key)}
-                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
-                                    aria-expanded={expanded}
-                                  >
+                                  {msg.code === "stopped" ? (
                                     <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
                                       <span className="flex min-w-0 flex-1 items-center gap-2">
-                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
-                                          <WarningCircle size={16} weight="fill" />
+                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-inactive" aria-hidden="true">
+                                          <StopCircle size={16} weight="fill" />
                                         </span>
-                                        <span className="flex min-w-0 flex-1 items-center gap-1">
-                                          <span className="min-w-0 truncate">
-                                            <span className="font-medium text-kumo-danger">Error: </span>
-                                            <span className="text-kumo-subtle">{msg.message}</span>
-                                          </span>
-                                          <CaretRight
-                                            size={13}
-                                            weight="bold"
-                                            className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
-                                          />
-                                        </span>
+                                        <span className="min-w-0 truncate">Stopped</span>
                                       </span>
                                     </Tooltip>
-                                  </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleErrorExpansion(key)}
+                                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+                                      aria-expanded={expanded}
+                                    >
+                                      <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
+                                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                                          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
+                                            <WarningCircle size={16} weight="fill" />
+                                          </span>
+                                          <span className="flex min-w-0 flex-1 items-center gap-1">
+                                            <span className="min-w-0 truncate">
+                                              <span className="font-medium text-kumo-danger">Error: </span>
+                                              <span className="text-kumo-subtle">{msg.message}</span>
+                                            </span>
+                                            <CaretRight
+                                              size={13}
+                                              weight="bold"
+                                              className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
+                                            />
+                                          </span>
+                                        </span>
+                                      </Tooltip>
+                                    </button>
+                                  )}
                                   {isLast && msg.code === "usage_limit" && (
                                     <Tooltip content="Add credits to continue." asChild>
                                       <button
@@ -6221,7 +6298,7 @@ function ChatInterface({
                                     </Tooltip>
                                   )}
                                   {isLast && msg.code !== "usage_limit" && (
-                                    <Tooltip content="Retry the last action." asChild>
+                                    <Tooltip content={msg.code === "stopped" ? "Continue where the agent stopped." : "Retry the last action."} asChild>
                                       <button
                                         type="button"
                                         onClick={() => handleRetry()}
@@ -6229,7 +6306,7 @@ function ChatInterface({
                                         className="flex flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-[13px] leading-4 font-medium text-kumo-default transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default-hover focus-visible:text-kumo-default-hover focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                                       >
                                         <ArrowsClockwise size={12} weight="bold" />
-                                        Retry
+                                        {msg.code === "stopped" ? "Continue" : "Retry"}
                                       </button>
                                     </Tooltip>
                                   )}
@@ -6458,6 +6535,25 @@ function ChatInterface({
                         </div>
                       );
                     })()}
+                    {queuedSteers?.map((steer, index) => {
+                      const sameAuthorAsPrevious = steer.author.id === queuedSteers[index - 1]?.author.id;
+                      const next = queuedSteers[index + 1];
+                      return (
+                        <div key={index} className={`flex flex-col items-end ${sameAuthorAsPrevious ? "mt-2" : "mt-5"}`}>
+                          <div className={`${userBubbleClassName} opacity-60`}>
+                            <MarkdownMessage message={steer.text} preserveLineBreaks />
+                          </div>
+                          {next?.author.id !== steer.author.id && (
+                            <div className="mt-1 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive">
+                              {!(hideOwnUserName && steer.author.id === currentUser?.id) && (
+                                <span className="font-medium">{steer.author.name}</span>
+                              )}
+                              {!next && <span>Not read yet</span>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -6487,6 +6583,7 @@ function ChatInterface({
                     onConsumeConsoleLogs={onConsumeConsoleLogs}
                     onDiscardConsoleLogs={onDiscardConsoleLogs}
                     onStop={handleStop}
+                    queuedSteers={queuedSteers?.map((steer) => steer.text)}
                     showThinkingTraces={showThinkingTraces}
                     onToggleThinkingTraces={toggleShowThinkingTraces}
                     draftStorageKey={currentUser && workspaceId && selectedChatId !== null

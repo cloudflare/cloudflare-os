@@ -11,6 +11,7 @@ import { createLogger } from "@gadgets/observability/logger";
 import {
   matchesResourceUrlPattern,
   stripTrailingSlashes,
+  workerVersionTag,
   type AvatarImage,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -34,6 +35,8 @@ import { generateNonce } from "@gadgets/mcp-shared/connect-nonce";
 import { withClient, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
 import { McpSessionBase } from "@gadgets/mcp-shared/session";
 import { McpFacetBase } from "@gadgets/mcp-shared/facet";
+import { asVerifier, observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
+import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import {
   looksLikePortal,
   parsePortalServers,
@@ -288,6 +291,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     };
   }
 
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
+  }
+
   async connectAccount(
     callback: Fetcher<GatekeeperConnectCallback>,
     _options?: GatekeeperConnectOptions,
@@ -435,21 +442,28 @@ export class GatekeeperUserImpl
 
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
-    return this.ctx.exports.McpPortalVerifier({});
+    const props: McpPortalVerifierProps = { accountObjectId: this.ctx.props.accountObjectId };
+    return this.ctx.exports.McpPortalVerifier({ props });
   }
 }
 
 // ---------------------------------------------------------------------------
 // Verifier
 
-// Required by the `GatekeeperUser` contract but never interrogated, since `addObserver` refuses
-// everyone.
+/** The connected portal account a verifier stands for. */
+type McpPortalVerifierProps = { accountObjectId: string };
+
+// Stands for one connected portal account. A collaborator is admitted only through the account a
+// binding reads with, so the one thing a verifier answers is which account it is.
 @validateRpc()
 export class McpPortalVerifier
-  extends WorkerEntrypoint<Env>
+  extends WorkerEntrypoint<Env, McpPortalVerifierProps>
   implements GatekeeperUserVerifier
 {
-  verify(): void {}
+  /** The `McpAccount` this verifier was minted for. */
+  getAccountObjectId(): string {
+    return this.ctx.props.accountObjectId;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +540,8 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
 type McpGatekeeperImplProps = {
   accountObjectId: string;
   endpoint: string;
+  // The connected portal's own id (the account's `serverId`). The upstream server is
+  // `scope.serverId`.
   serverId: string;
   serverName: string;
   // Optional for facets minted before catalog-backed validation persisted the upstream display name.
@@ -533,6 +549,10 @@ type McpGatekeeperImplProps = {
   // How much of one upstream server this binding may call.
   scope: ToolScope & { serverId: string };
 };
+
+// The one kind of subresource this connector reports: `server/<upstreamServerId>`, the upstream
+// server a binding's grant names. No namespace, since the connector exposes one product.
+const SERVER_SUBRESOURCE = "server";
 
 export class McpGatekeeperImpl
   extends McpFacetBase<Env, McpGatekeeperImplProps, McpSessionImpl> {
@@ -560,6 +580,10 @@ export class McpGatekeeperImpl
 
   protected get observerName(): string {
     return this.#scopeLabel();
+  }
+
+  protected override get observerOpeners(): string {
+    return "its owner and by whoever added this connection";
   }
 
   // How this binding's breadth reads to a human, for approval prompts and the bindings list.
@@ -631,6 +655,68 @@ export class McpGatekeeperImpl
    */
   get serverName(): string {
     return this.#scopeLabel();
+  }
+
+  /**
+   * Every read through this binding depends on the one upstream server its grant names, so each
+   * reports `server/<upstreamServerId>`. Taken from `scope.serverId`, which every portal binding
+   * has persisted since portal grants existed, never from the portal's own `serverId`. It names no
+   * endpoint, account or tool: the Workshop records and checks subresources per connection, each
+   * connection's facet is pinned to one endpoint by its props, and the tool scope keeps
+   * constraining what the binding can call.
+   */
+  get observationSubresources(): string[] {
+    return [formatSubresourceId({
+      fragments: [{ name: SERVER_SUBRESOURCE, id: this.ctx.props.scope.serverId }],
+    })];
+  }
+
+  /**
+   * Admits only the account this binding reads with: every read through it, before and since reads
+   * reported subresources, was made with that account's credentials, so its holder sees nothing
+   * new. Anyone else is refused, another account of the same person or portal user included, since
+   * reaching an upstream server is not evidence of being allowed to see a particular tool result
+   * read on someone else's credentials.
+   */
+  override async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    if (await this.#isBindingAccount(asVerifier(user))) return;
+    return super.addObserver(id, user);
+  }
+
+  /**
+   * The same rule as `addObserver` for a valid `server/<upstreamServerId>`: only observers whose
+   * verifier stands for this binding's account are allowed. Any other ID, another server's
+   * included, fails the whole call, which denies everyone in it, rather than reading as
+   * unrestricted.
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    for (const id of subresources) {
+      const { namespace, fragments: [server, ...rest] } = parseSubresourceId(id);
+      if (namespace !== undefined || rest.length > 0 || server?.name !== SERVER_SUBRESOURCE) {
+        throw new Error("Not an MCP Server Portals subresource ID.");
+      }
+      if (server.id !== this.ctx.props.scope.serverId) {
+        throw new Error("This subresource ID names a different portal server than this binding.");
+      }
+    }
+    return this.#verifyAccess(observers, subresources);
+  }
+
+  // Every ID that reached it names this binding's server, so an observer's answer is the same for
+  // each: whether their verifier stands for the binding's account.
+  readonly #verifyAccess = observerAccessVerifier({
+    hasCollectionAccess: async (verifier: Fetcher<McpPortalVerifier>, subresources) => {
+      const admitted = await this.#isBindingAccount(verifier);
+      return subresources.map(() => admitted);
+    },
+  });
+
+  // Whether `verifier` stands for the account this binding reads with.
+  async #isBindingAccount(verifier: Fetcher<McpPortalVerifier>): Promise<boolean> {
+    return await verifier.getAccountObjectId() === this.ctx.props.accountObjectId;
   }
 }
 

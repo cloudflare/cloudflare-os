@@ -2,19 +2,27 @@ import { execFileSync } from "node:child_process";
 import {
   SUGGESTED_MODELS, type AiModelProvider, type SuggestedModelId,
 } from "@gadgets/workshop-shared/api";
+import type { JsonValue } from "vitest-evals";
+import { z } from "zod";
 
 /** A picker model resolved to the provider that serves it: SUGGESTED_MODELS is the eval catalog. */
 export type EvalModel = { provider: AiModelProvider; model: SuggestedModelId };
 
 /**
  * The model published baselines are measured on. Served only through an AI Gateway with an OpenAI
- * key; WORKSHOP_EVAL_MODELS selects another model, at the cost of comparability (see global-setup).
+ * key; WORKSHOP_EVAL_MODELS or WORKSHOP_EVAL_TASK_OVERRIDES selects another model, at the cost of
+ * comparability (see global-setup).
  */
 export const DEFAULT_MODEL: SuggestedModelId = "gpt-6-luna";
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export type EvalIdentity = { gitCommit: string; taskVersion: string };
 export type EvalMatrix = { models: SuggestedModelId[]; trials: number };
+
+const TaskOverridesSchema = z.record(z.string(), z.strictObject({
+  models: z.array(z.string()).min(1).optional(),
+  trials: z.int().positive().optional(),
+}));
 
 function commaList(value: string): string[] {
   return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -56,8 +64,7 @@ export function resolveEvalModel(modelId: string): EvalModel {
     `Unknown eval model ${JSON.stringify(modelId)}: eval models must be listed in SUGGESTED_MODELS`);
 }
 
-/** Parse the model and repetition controls before a trial can spend inference. */
-export function evalMatrix(environment: NodeJS.ProcessEnv = process.env): EvalMatrix {
+function runMatrix(environment: NodeJS.ProcessEnv): EvalMatrix {
   const models = commaList(environment.WORKSHOP_EVAL_MODELS ?? "")
       .map(modelId => resolveEvalModel(modelId).model);
   const rawTrials = environment.WORKSHOP_EVAL_TRIALS?.trim();
@@ -66,4 +73,42 @@ export function evalMatrix(environment: NodeJS.ProcessEnv = process.env): EvalMa
     throw new Error("WORKSHOP_EVAL_TRIALS must be a positive integer");
   }
   return { models: models.length > 0 ? models : [DEFAULT_MODEL], trials };
+}
+
+function taskOverrides(environment: NodeJS.ProcessEnv): Map<string, Partial<EvalMatrix>> {
+  const raw = environment.WORKSHOP_EVAL_TASK_OVERRIDES?.trim();
+  if (raw === undefined || raw === "") return new Map();
+  let json: JsonValue;
+  try {
+    json = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("WORKSHOP_EVAL_TASK_OVERRIDES is not valid JSON", { cause: error });
+  }
+  const parsed = TaskOverridesSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error(`WORKSHOP_EVAL_TASK_OVERRIDES is invalid: ${z.prettifyError(parsed.error)}`);
+  }
+  return new Map(Object.entries(parsed.data).map(([taskId, override]) => [taskId, {
+    models: override.models?.map(modelId => resolveEvalModel(modelId).model),
+    trials: override.trials,
+  }]));
+}
+
+/**
+ * Parse a task's models and trials before a trial can spend inference. WORKSHOP_EVAL_MODELS and
+ * WORKSHOP_EVAL_TRIALS apply to every task; WORKSHOP_EVAL_TASK_OVERRIDES, a JSON object from task
+ * id to `{ models?, trials? }`, replaces either for the tasks it names.
+ */
+export function evalMatrix(
+    taskId: string, environment: NodeJS.ProcessEnv = process.env): EvalMatrix {
+  const run = runMatrix(environment);
+  const override = taskOverrides(environment).get(taskId);
+  return { models: override?.models ?? run.models, trials: override?.trials ?? run.trials };
+}
+
+/** Every model the run-wide matrix or any task override names, validating both. */
+export function evalModels(environment: NodeJS.ProcessEnv = process.env): SuggestedModelId[] {
+  const run = runMatrix(environment);
+  const overrides = [...taskOverrides(environment).values()];
+  return [...new Set([run.models, ...overrides.map(override => override.models ?? [])].flat())];
 }

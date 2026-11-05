@@ -32,6 +32,9 @@ function fakeProject(): FakeGitLab {
   const gitlab = new FakeGitLab();
   gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json(project()));
   gitlab.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
+  // A commit read reports its CI; the documented commit has no pipeline, nor CI configuration.
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => json([]));
+  gitlab.on("HEAD", new RegExp(`^/api/v4/projects/${P}/repository/files/`), () => new Response(null, { status: 404 }));
   return gitlab;
 }
 
@@ -116,7 +119,7 @@ describe("issues", () => {
 
   it("reads confidential issues and internal notes like any other: observers must be Reporters, who see them on GitLab too", async () => {
     // Nothing here filters them, by design: the owner's token reads them, and the verifier admits
-    // an observer only at Reporter or above (see membershipGrantsFullRead), the role GitLab shows
+    // an observer only at Reporter or above (see hasProjectMembership), the role GitLab shows
     // them to. A change to either side has to be made with the other.
     const fake = fakeProject();
     const confidential = { ...fx.issueResponse.data, confidential: true };
@@ -351,7 +354,7 @@ describe("repository", () => {
       stats: { additions: 15, deletions: 10, total: 25 },
     });
     // The default branch came from project metadata.
-    expect(fake.requests.at(-1)!.url.pathname).toBe(`/api/v4/projects/${P}/repository/commits/main`);
+    expect(fake.requests.map(r => r.url.pathname)).toContain(`/api/v4/projects/${P}/repository/commits/main`);
 
     await expect(unwrap(await hooks().resolveRef("repo-refs", props, "nope"))).rejects.toThrow(/No commit found for ref "nope"/);
   });

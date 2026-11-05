@@ -14,7 +14,7 @@ import type { RpcStub } from "capnweb";
 import { parse } from "jsonc-parser";
 import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import { UPGRADE_BASE_DIR } from "../scripts/build-upgrade-base.js";
-import type { GatekeeperSpec, Harness, WorkerConfig } from "../src/harness.js";
+import { deploy, type GatekeeperSpec, type Harness, type WorkerConfig } from "../src/harness.js";
 import type { Handler } from "../src/network-interceptor.js";
 import { listConnectedAccounts, waitFor } from "../src/rpc-client.js";
 
@@ -35,6 +35,9 @@ const CHAT_MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
  */
 function configure(config: WorkerConfig): void {
   delete config.build;
+  // Workers AI has no local simulator, so wrangler would open a remote session that needs Cloudflare
+  // credentials; run-dev-server.ts drops it the same way, and nothing here reads a PDF.
+  delete config.ai;
   config.vars = {
     ...config.vars, BASE_URL: GOOGLE_BASE_URL, CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
     PUBSUB_TOPIC, PUBSUB_CHAT_TOPIC: PUBSUB_TOPIC, PUBSUB_GMAIL_TOPIC: PUBSUB_TOPIC,
@@ -75,26 +78,11 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   const google = parse(readFileSync(join(GOOGLE_DIR, "wrangler.jsonc"), "utf8")) as WorkerConfig;
   configure(google);
   google.main = main;
-  // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so
-  // that reload can still be running either one's earlier build, with another to come. Every
-  // Worker carries this upgrade's mark, and it is done once each reports it.
-  const upgrade = randomUUID();
-  const workers: string[] = [];
-  await harness.server.update(current => ({
+  await deploy(harness.server, current => ({
     ...current,
-    workers: current.workers.map(worker => {
-      if (!("config" in worker)) throw new Error("The harness boots inline configs only");
-      const config = worker.config.name === GOOGLE_WORKER ? google : worker.config;
-      workers.push(config.name!);
-      return { config: { ...config, vars: { ...config.vars, TEST_UPGRADE: upgrade } } };
-    }),
+    workers: current.workers.map(worker =>
+      "config" in worker && worker.config.name === GOOGLE_WORKER ? { config: google } : worker),
   }));
-  await waitFor("every Worker to run the upgrade", async () => {
-    for (const name of workers) {
-      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
-    }
-    return true;
-  });
 }
 
 type Row = Record<string, unknown>;

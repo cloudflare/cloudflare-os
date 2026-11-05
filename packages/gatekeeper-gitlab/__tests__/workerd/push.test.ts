@@ -128,6 +128,10 @@ function pktLines(...lines: string[]): Uint8Array {
 /** A GitLab with a project, live branches, commits, compare/merge_base, and captured git POSTs. */
 class GitFake extends FakeGitLab {
   readonly branches = new Map<string, string>();
+  /** Branches GitLab reports `protected` (wildcard rules applied, as GitLab applies them). */
+  readonly protectedBranches = new Set<string>();
+  /** The project's protected-branch rules, names or wildcards, as `/protected_branches` lists them. */
+  protectedRules: string[] = [];
   readonly commits = new Set<string>();
   readonly receivePackBodies: Uint8Array[] = [];
   readonly receivePackResponses: Uint8Array[] = [];
@@ -144,8 +148,10 @@ class GitFake extends FakeGitLab {
       const name = decodeURIComponent(request.url.pathname.split("/repository/branches/")[1]);
       const head = this.branches.get(name);
       return head === undefined ? json({ message: "404 Branch Not Found" }, { status: 404 })
-        : json({ name, protected: false, default: name === "main", commit: { id: head } });
+        : json({ name, protected: this.protectedBranches.has(name), default: name === "main", commit: { id: head } });
     });
+    this.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json(this.protectedRules.map((name, id) => ({ id, name }))));
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/branches\\?`), () =>
       json([...this.branches].map(([name, id]) => ({ name, protected: false, default: name === "main", commit: { id } }))));
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/commits/`), request => {
@@ -286,6 +292,126 @@ describe("queueing a push", () => {
     const cache = new TestGitCache().withCommit(OTHER, commitPayload(TREE1, [], "root"));
     const action = await queuePush(name, props, "feature", OTHER, false, cache);
     expect(action).toMatchObject({ branch: "feature", expectedOldSha: ZERO_OID, newSha: OTHER });
+  });
+});
+
+/** Each submitted action's kind and auto-approval verdict, in order. */
+async function verdicts(name: string) {
+  return (await hooks().queueLog(name)).submitted
+    .map(({ description }) => [description.actionKind?.tag, description.autoApprovable]);
+}
+
+/** A cache holding OTHER, a parentless commit: pushable anywhere by force, or as a new branch. */
+function root(): TestGitCache {
+  return new TestGitCache().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+}
+
+describe("auto-approval of a push", () => {
+  it("lets a push to an existing unprotected branch apply, never one to the default or a protected branch", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE).set("stable", BASE);
+    gitlab.protectedBranches.add("stable");
+    const cache = cacheWithChain();
+    expect(await queuePush(name, props, "feature", HEAD1, false, cache)).toMatchObject({ targetProtected: false });
+    expect(await queuePush(name, props, "main", HEAD1, false, cache)).toMatchObject({ targetProtected: true });
+    expect(await queuePush(name, props, "stable", HEAD1, false, cache)).toMatchObject({ targetProtected: true });
+    expect(await verdicts(name)).toEqual([["gitlab.push", true], ["gitlab.push", false], ["gitlab.push", false]]);
+    // GitLab answered for each existing branch: the rules were never read.
+    expect(gitlab.count("GET", /\/protected_branches/)).toBe(0);
+  });
+
+  it("never auto-approves a force push, even to an unprotected branch", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    expect(await queuePush(name, props, "feature", OTHER, true, root())).toMatchObject({ force: true, targetProtected: false });
+    expect(await verdicts(name)).toEqual([["gitlab.forcePush", false]]);
+  });
+
+  it("lets a push that creates a branch no rule covers apply", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.protectedRules = ["main", "release/*"];
+    expect(await queuePush(name, props, "feature/x", OTHER, false, root())).toMatchObject({ targetProtected: false });
+    expect(await verdicts(name)).toEqual([["gitlab.push", true]]);
+  });
+
+  it("keeps a push that creates a branch a protected rule's name or wildcard covers manual", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.protectedRules = ["main", "hotfix", "release/*"];
+    const cache = root();
+    expect(await queuePush(name, props, "release/9.9", OTHER, false, cache)).toMatchObject({ targetProtected: true });
+    expect(await queuePush(name, props, "hotfix", OTHER, false, cache)).toMatchObject({ targetProtected: true });
+    expect(await verdicts(name)).toEqual([["gitlab.push", false], ["gitlab.push", false]]);
+  });
+
+  it("reads every page of the rules", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), request =>
+      request.url.searchParams.get("page") === "1"
+        ? json([{ id: 1, name: "main" }], { headers: { "x-next-page": "2" } })
+        : json([{ id: 2, name: "prod-*" }], { headers: { "x-next-page": "" } }));
+    expect(await queuePush(name, props, "prod-eu", OTHER, false, root())).toMatchObject({ targetProtected: true });
+    expect(gitlab.count("GET", /\/protected_branches/)).toBe(2);
+  });
+
+  it("keeps a push to an existing branch GitLab reports without protected or default manual", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/branches/`), () =>
+      json({ name: "feature", commit: { id: BASE } }));
+    expect(await queuePush(name, props, "feature", HEAD1, false, cacheWithChain())).toMatchObject({ targetProtected: true });
+    expect(await verdicts(name)).toEqual([["gitlab.push", false]]);
+  });
+
+  it("keeps a push that creates a branch manual when the rules run past the pages it reads", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), request =>
+      json([{ id: 1, name: "main" }], { headers: { "x-next-page": String(Number(request.url.searchParams.get("page")) + 1) } }));
+    expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: true });
+    expect(await verdicts(name)).toEqual([["gitlab.push", false]]);
+    expect(gitlab.count("GET", /\/protected_branches/)).toBe(10);
+  });
+
+  it("keeps a push that creates a branch manual when the project leaves out empty_repo or has no default branch", async () => {
+    for (const fields of [{ empty_repo: undefined }, { default_branch: null }, { default_branch: "" }]) {
+      const { gitlab, props, name } = await setup();
+      gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json({
+        ...fx.projectResponse.data, path_with_namespace: PROJECT, default_branch: "main", empty_repo: false, ...fields,
+      }));
+      expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: true });
+      expect(await verdicts(name)).toEqual([["gitlab.push", false]]);
+      // Decided from the project alone: the rules were never read.
+      expect(gitlab.count("GET", /\/protected_branches/)).toBe(0);
+    }
+  });
+
+  it("keeps a push that creates the default branch, or the first branch of an empty repository, manual", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.delete("main");
+    expect(await queuePush(name, props, "main", OTHER, false, root())).toMatchObject({ targetProtected: true });
+
+    const empty = await setup();
+    empty.gitlab.branches.clear();
+    empty.gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json({
+      ...fx.projectResponse.data, path_with_namespace: PROJECT, default_branch: "main", empty_repo: true,
+    }));
+    expect(await queuePush(empty.name, empty.props, "trunk", OTHER, false, root())).toMatchObject({ targetProtected: true });
+    expect([...await verdicts(name), ...await verdicts(empty.name)]).toEqual([["gitlab.push", false], ["gitlab.push", false]]);
+  });
+
+  it("lets a push that creates a branch apply when GitLab refuses this account the rules", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json({ message: "403 Forbidden" }, { status: 403 }));
+    expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: false });
+    expect(await verdicts(name)).toEqual([["gitlab.push", true]]);
+  });
+
+  it("queues a push whose new branch's protection cannot be read for another reason, for a person to approve", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json({ message: "500 Internal Server Error" }, { status: 500 }));
+    expect(await queuePush(name, props, "feature", OTHER, false, root())).toMatchObject({ targetProtected: true });
+    expect(await verdicts(name)).toEqual([["gitlab.push", false]]);
   });
 });
 
@@ -545,6 +671,42 @@ describe("applying a push", () => {
     return { command, pack: body.slice(len + 4) };  // after the flush-pkt
   }
 
+  it("refuses an auto-approvable push whose branch became protected while it waited", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.protectedBranches.add("feature");
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/has become the default or a protected branch/);
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
+  it("asks for a retry when a new branch's protection cannot be read at apply", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/protected_branches\\?`), () =>
+      json({ message: "500 Internal Server Error" }, { status: 500 }));
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/Could not read whether branch "feature".*Try again/);
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
+  it("finds a push that landed before its reply was lost even once it made its branch protected", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+    expect(action).toMatchObject({ targetProtected: false });
+    gitlab.branches.set("feature", HEAD1);
+    gitlab.protectedBranches.add("feature");
+    await unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache)));
+    expect(gitlab.receivePackBodies).toHaveLength(0);
+  });
+
   it("streams the overseer-built pack behind the queue-time CAS command", async () => {
     const { gitlab, props, name } = await setup();
     const cache = cacheWithChain();
@@ -612,6 +774,19 @@ describe("applying a push", () => {
 });
 
 describe("rejecting a push", () => {
+  it("discards a push whose branches GitLab cannot read, cascading nothing", async () => {
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+    const push = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", OTHER, false, stubOf(cache)], DESC));
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "x", sourceBranch: "feature", targetBranch: "main" }], DESC));
+    gitlab.on("GET", /\/repository\/branches\//, () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+    expect(await unwrap(await hooks().rejectAction(name, props, push.approvalId))).toBeUndefined();
+    await expect(unwrap(await hooks().applyAction(name, props, push.approvalId))).rejects.toThrow();
+    // Not cascaded, so the user discards the merge request as its own decision.
+    expect(await unwrap(await hooks().rejectAction(name, props, mr.approvalId))).toEqual({ restart: true });
+  });
+
   it("cascades to a queued merge request whose source branch the push would have created", async () => {
     const { props, name } = await setup();
     const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));

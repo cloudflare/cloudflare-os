@@ -12,8 +12,11 @@ import {zeroUsage} from "./ai-invoke";
 // the UI can still page back through them, but agent replay starts at the boundary.
 
 // Target this share of the input budget for retained messages, leaving room for the summary and
-// the turns that follow.
+// the turns that follow, but target no more than COMPACTION_TAIL_TOKEN_LIMIT: on a large window a
+// share would keep hundreds of thousands of tokens, and compaction would free little of the prompt.
+// The cut lands at a record start, so the tail can pass the target by up to one record.
 const COMPACTION_TARGET_RATIO = 0.3;
+const COMPACTION_TAIL_TOKEN_LIMIT = 20_000;
 
 // Assumed window for a model that SUGGESTED_MODELS doesn't list. A model whose real window is
 // smaller still fails at the provider before compaction triggers.
@@ -75,6 +78,12 @@ export function isCompactionTurn(messages: AiChatMessage[]): boolean {
       last.request.id.commandId === "compact";
 }
 
+/** A user or gadget message that prompted a turn, rather than one that steered a running turn. */
+export function isTurnPrompt(message: AiChatMessage): boolean {
+  return message.type === "message" && !message.steered &&
+      (message.author.type === "user" || message.author.type === "gadget");
+}
+
 /**
  * A message that begins an agent turn: the user or a gadget prompted, a callback or nudge arrived,
  * or an accepted connection resumed the agent. Each produces a `user` model message, so cutting
@@ -82,7 +91,7 @@ export function isCompactionTurn(messages: AiChatMessage[]): boolean {
  */
 export function startsAgentTurn(message: AiChatMessage): boolean {
   switch (message.type) {
-    case "message": return message.author.type === "user" || message.author.type === "gadget";
+    case "message": return isTurnPrompt(message);
     case "agentCallback": case "agentNudge": return true;
     case "connectionRequest": return message.state === "accepted";
     default: return false;
@@ -285,7 +294,7 @@ export function findCompactionBoundary(
   // messages; the weights affect only where the cut lands.
   let weights = projection.map(({message}) => projectionMessageWeight(message));
   let tokensPerWeight = contextTokens / weights.reduce((sum, weight) => sum + weight, 0);
-  let tailBudget = inputBudget * COMPACTION_TARGET_RATIO;
+  let tailBudget = Math.min(inputBudget * COMPACTION_TARGET_RATIO, COMPACTION_TAIL_TOKEN_LIMIT);
   let keptTokens = 0;
   let keepFrom = projection.length - 1;
   for (; keepFrom >= 0; --keepFrom) {

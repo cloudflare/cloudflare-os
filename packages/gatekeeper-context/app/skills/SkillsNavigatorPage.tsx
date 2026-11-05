@@ -23,6 +23,8 @@ import {
   type NavigatorDeleteTarget,
 } from "./DeleteNavigatorNodeDialog";
 import { EditCollectionDialog } from "./EditCollectionDialog";
+import { LeaveCollectionDialog } from "./LeaveCollectionDialog";
+import { ShareCollectionDialog } from "./ShareCollectionDialog";
 import { buildSkillNavigator, filterSkillNavigator } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
 import { UploadSkillsDialog, type UploadSkillsTarget } from "./UploadSkillsDialog";
@@ -30,17 +32,18 @@ import { useSkillsNavigatorData } from "./useSkillsNavigatorData";
 
 type SkillsNavigatorPageProps = {
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
+  onOpenCollection: (collectionId: string) => void;
 };
 
-export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps) => {
+export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsNavigatorPageProps) => {
   const context = useContextApi();
   const [reloadKey, setReloadKey] = useState(0);
   const {
     collections,
     collectionMetadata,
+    collectionPermissions,
     documents,
     failedDocumentCollectionIds,
-    manageableCollectionIds,
     retryDocumentCollection,
     writableCollectionIds,
     viewerInfo,
@@ -53,6 +56,8 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
   const [pendingAddCollection, setPendingAddCollection] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<UploadSkillsTarget | null>(null);
   const [pendingEditCollection, setPendingEditCollection] = useState<ContextCollectionMetadata | null>(null);
+  const [pendingShare, setPendingShare] = useState<{ id: string; title: string } | null>(null);
+  const [pendingLeave, setPendingLeave] = useState<{ id: string; title: string } | null>(null);
   const [pendingRemove, setPendingRemove] = useState<NavigatorDeleteTarget | null>(null);
 
   const writableCollections = useMemo(
@@ -114,7 +119,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
                   content="Add an editable collection before adding a skill."
                   render={(
                     <DropdownMenu.Item
-                      icon={<PlusIcon size={13} className="mr-2" />}
+                      icon={<PlusIcon className="size-3.25" />}
                       disabled
                     />
                   )}
@@ -123,21 +128,21 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
                 </Tooltip>
               ) : (
                 <DropdownMenu.Item
-                  icon={<PlusIcon size={13} className="mr-2" />}
+                  icon={<PlusIcon className="size-3.25" />}
                   onClick={startAddSkillFromMenu}
                 >
                   Add skill
                 </DropdownMenu.Item>
               )}
               <DropdownMenu.Item
-                icon={<FolderPlus size={13} className="mr-2" />}
+                icon={<FolderPlus className="size-3.25" />}
                 onClick={() => setPendingAddCollection(true)}
               >
                 Add collection
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 disabled={writableCollections.length === 0}
                 onClick={() => setPendingUpload({
                   collectionId: "",
@@ -169,15 +174,18 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             <SkillsNavigatorTree
               navigator={navigator}
               collectionMetadata={collectionMetadata}
+              collectionPermissions={collectionPermissions}
               failedDocumentCollectionIds={failedDocumentCollectionIds}
-              manageableCollectionIds={manageableCollectionIds}
               writableCollectionIds={writableCollectionIds}
               supportsGitCollections={viewerInfo.supportsGitCollections}
               expandAll={deferredQuery.trim().length > 0}
               onSelectSkill={onSelectSkill}
+              onOpenCollection={onOpenCollection}
               onAddSkill={startAdd}
               onUploadSkills={setPendingUpload}
               onEditCollection={setPendingEditCollection}
+              onShareCollection={setPendingShare}
+              onLeaveCollection={setPendingLeave}
               onDelete={setPendingRemove}
               onRetryCollection={retryDocumentCollection}
               onChanged={reload}
@@ -204,7 +212,6 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       )}
       {pendingAddCollection && (
         <CreateCollectionDialog
-          collections={collections}
           viewerInfo={viewerInfo}
           onCreated={reload}
           onClose={() => setPendingAddCollection(false)}
@@ -223,10 +230,25 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       {pendingEditCollection && (
         <EditCollectionDialog
           collection={pendingEditCollection}
-          collections={collections}
           supportsGitCollections={viewerInfo.supportsGitCollections}
           onUpdated={reload}
           onClose={() => setPendingEditCollection(null)}
+        />
+      )}
+      {pendingShare && (
+        <ShareCollectionDialog
+          collection={pendingShare}
+          onChanged={reload}
+          onLeft={reload}
+          onClose={() => setPendingShare(null)}
+        />
+      )}
+      {pendingLeave && (
+        <LeaveCollectionDialog
+          collection={pendingLeave}
+          onChanged={reload}
+          onLeft={reload}
+          onClose={() => setPendingLeave(null)}
         />
       )}
       {pendingRemove && (

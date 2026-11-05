@@ -40,7 +40,7 @@ jobs:
       # No dependency cache in this workflow: restoring setup-vp's (~540 MB) takes longer than
       # letting `vp install` download the packages (setup p50 29 s cached, 20 s uncached).
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: false
@@ -96,6 +96,8 @@ jobs:
               --filter=!@gadgets/workshop-backend
               --filter=!@gadgets/workshop-frontend
               --filter=!@gadgets/integration-tests
+            # configurator-ui's browser suite and generated-frame test.
+            chromium: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -111,14 +113,16 @@ jobs:
       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
       # needed. No dependency cache, as `lint` explains.
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: false
           run-install: true
 
-      # The frontend's browser suite (`vitest.browser.config.ts`) runs in Chromium, which
-      # Playwright downloads outside node_modules; `--with-deps` adds the system libraries it needs.
+      # The frontend's and configurator-ui's browser suites (`vitest.browser.config.ts`), and
+      # configurator-ui's generated-frame test, run in Chromium, which Playwright downloads outside
+      # node_modules; both packages pin the catalog `playwright`, so one install serves them.
+      # `--with-deps` adds the system libraries it needs.
       - name: Install Chromium for the browser suite
         if: ${{ matrix.chromium }}
         run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium

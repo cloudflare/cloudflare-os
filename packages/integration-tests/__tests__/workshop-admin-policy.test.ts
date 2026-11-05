@@ -52,7 +52,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
   const account = (await listConnectedAccounts(bob))
       .find(candidate => candidate.vendorId === TEST_VENDOR_ID);
   if (account === undefined) throw new Error("Bob's test account was not provisioned");
-  using workspace = await bob.newGadget();
+  using workspace = await bob.newWorkspace();
   using bound = await workspace.newGatekeeper(
       account.id, "https://gadgets-test.example/things/bound");
   if (bound === null) throw new Error("The existing test connection was not created");
@@ -113,6 +113,16 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
           TEST_VENDOR_ID, "https://gadgets-test.example/things/*", true);
     }
   }
+});
+
+// The harness sets no CLOUDFLARE_OS_DEPLOYMENT, so this is a deployment the deploy flow did not
+// install. Non-admins get no AdminApi at all, which the gatekeeper policy case asserts.
+it("reports no update status, and asks no deploy service, for a self-hosted deployment", async () => {
+  // getUpdateStatus() awaits any check it makes, and no model handler answers a deploy service,
+  // so a request would be recorded as unmocked before the call resolves.
+  const escapedBefore = network.getUnmockedCalls();
+  await expect(admin.getUpdateStatus()).resolves.toBeNull();
+  expect(network.getUnmockedCalls()).toEqual(escapedBefore);
 });
 
 it("deployment instructions and format hints reach the agent but not the user", async () => {

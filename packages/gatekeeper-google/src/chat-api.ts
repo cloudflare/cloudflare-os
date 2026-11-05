@@ -12,6 +12,7 @@
 // user could reach in the Chat UI.
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
@@ -57,14 +58,19 @@ export const MAX_CHAT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 /** Chat's own documented message size ceiling. */
 export const MAX_CHAT_MESSAGE_BYTES = 32_000;
 
-/** A status-only provider error, safe to log and to base retry decisions on. */
+/**
+ * A provider error carrying only Google's status, its google.rpc code and the reasons it gave
+ * (`ErrorInfo.reason`), safe to log and to base retry and access decisions on.
+ */
 export class ChatApiError extends Error {
   constructor(
     public readonly status: number,
     operation: string,
     public readonly rpcCode?: string,
+    public readonly reasons: readonly string[] = [],
   ) {
-    super(`Google Chat API ${operation} failed [http=${status}${rpcCode ? ` ${rpcCode}` : ""}]`);
+    super(`Google Chat API ${operation} failed ` +
+      `[http=${[status, rpcCode, ...reasons].filter(Boolean).join(" ")}]`);
   }
 }
 
@@ -75,18 +81,27 @@ const RPC_STATUS_NAMES = new Set([
   "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS",
 ]);
 
+/** An `ErrorInfo.reason`, which google.rpc defines as an UPPER_SNAKE_CASE constant of at most 63. */
+const ERROR_INFO_REASON = /^[A-Z][A-Z0-9_]{0,61}[A-Z0-9]$/;
+
 export async function chatApiFailure(operation: string, response: Response): Promise<never> {
-  // Chat error prose can quote message text and filter values, so only the HTTP status and the
-  // canonical google.rpc code — whitelisted against the closed enum above — travel to the caller.
+  // Chat error prose can quote message text and filter values, so only the HTTP status, the
+  // canonical google.rpc code — whitelisted against the closed enum above — and the reasons, each
+  // a constant, travel to the caller.
   let rpcCode: string | undefined;
+  let reasons: string[] = [];
   try {
-    const body = await response.json<{ error?: { status?: string } }>();
+    const body = await response.json<{
+      error?: { status?: string; details?: ({ reason?: unknown } | null)[] };
+    }>();
     const status = body.error?.status;
     if (typeof status === "string" && RPC_STATUS_NAMES.has(status)) rpcCode = status;
+    reasons = (body.error?.details ?? []).map(detail => detail?.reason)
+      .filter((reason): reason is string => typeof reason === "string" && ERROR_INFO_REASON.test(reason));
   } catch {
     // Best effort; the status line is what matters.
   }
-  throw new ChatApiError(response.status, operation, rpcCode);
+  throw new ChatApiError(response.status, operation, rpcCode, reasons);
 }
 
 /** A deliberately omitted app-authored message with a viewer narrower than its space. */
@@ -290,11 +305,20 @@ export type ChatMessageRaw = {
   thread?: { name?: string };
   space?: { name?: string };
   attachment?: ChatAttachmentRaw[];
+  /** Cards a Chat app attached: untrusted and loosely shaped, so read only by `chatCardsFromRaw`. */
+  cardsV2?: { cardId?: string; card?: unknown }[];
+  /** The legacy card format, which older Chat apps still send. */
+  cards?: unknown[];
   emojiReactionSummaries?: { emoji?: ChatEmojiRaw; reactionCount?: number }[];
   threadReply?: boolean;
   deletionMetadata?: { deletionType?: string };
   /** Set only for an app-authored message visible to one user in an otherwise shared space. */
   privateMessageViewer?: ChatUserRaw;
+  /**
+   * Set only from the `messageId` its creator passed to `messages.create`, as every send from this
+   * gatekeeper does.
+   */
+  clientAssignedMessageId?: string;
   annotations?: { type?: string; userMention?: { user?: ChatUserRaw; type?: string } }[];
 };
 
@@ -424,6 +448,7 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
+    cards: chatCardsFromRaw(raw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
       count: summary.reactionCount ?? 0,

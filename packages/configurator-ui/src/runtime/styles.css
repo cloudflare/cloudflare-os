@@ -1,0 +1,21 @@
+/*
+ * Compiled by `build/runtime.ts` with the runtime bundle as its only source, so the frame ships just
+ * the utilities the runtime and the Kumo components it uses reference. A configurator module's own
+ * `className`s are not compiled in; modules compose the runtime's components instead.
+ */
+@import "tailwindcss" source(none);
+@import "@cloudflare/kumo/styles";
+
+@layer base {
+  html,
+  body {
+    background: transparent;
+  }
+
+  body {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--color-kumo-default);
+  }
+}

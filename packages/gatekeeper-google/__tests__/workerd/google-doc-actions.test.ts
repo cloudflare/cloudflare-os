@@ -711,6 +711,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Google Doc auto-approval", () => {
+  const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
+
+  it("reports document edits as the one auto-approvable kind", async () => {
+    expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([EDIT_DOCUMENT]);
+  });
+
+  it("lets appending and replacing text be auto-approved as document edits", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    docs.install();
+
+    await hooks().submitAppend("verdict-edit", "added");
+    expect(await hooks().lastActionVerdict)
+      .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
+    await hooks().submitReplace("verdict-edit", "Draft", "Final");
+    expect(await hooks().lastActionVerdict)
+      .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
+  });
+});
+
 describe("Google Doc tables", () => {
   it("returns table cells with their row structure", async () => {
     let docs = new DocsModel();
@@ -2037,8 +2058,10 @@ describe("creating a Google Doc", () => {
         title: "Create Google Doc: Plan",
         fields: [{ label: "Title", kind: "inline", value: "Plan" }],
         implementsRevert: false,
+        autoApprovable: false,
       },
     });
+    expect(created).not.toHaveProperty("action.actionKind");
     expect(await hooks().describe("create-doc"))
       .toMatchObject({ title: "Plan", url: "https://docs.google.com/document/" });
     expect(await hooks().readContent("create-doc")).toBe("\n");

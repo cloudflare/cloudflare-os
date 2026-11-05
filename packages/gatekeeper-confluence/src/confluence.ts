@@ -31,9 +31,11 @@ import {
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  workerVersionTag,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import {
   CONFLUENCE_SCOPES,
   ConfluenceApi,
@@ -62,6 +64,7 @@ import {
 import {
   ConfluenceStore,
   applyStoredAction,
+  autoApprovableKinds,
   observation,
   overlayChildPages,
   overlaySearch,
@@ -77,7 +80,7 @@ import {
   type ConfluenceAction,
   type ContentParent,
 } from "./confluence-actions";
-import { ConfluenceConfiguratorUI } from "./confluence-configurators";
+import { ConfluenceConfiguratorUI } from "./confluence-configurator";
 import {
   ConfluenceAccessChecker,
   ConfluenceObserverTracker,
@@ -111,9 +114,7 @@ import type {
 } from "./types";
 import CONFLUENCE_LOGO_SVG from "./confluence-logo.svg";
 import TYPES_CODE from "./types.txt";
-import SITE_CONFIGURATOR_HTML from "./generated/confluence-site-configurator-ui.txt";
-import SPACE_CONFIGURATOR_HTML from "./generated/confluence-space-configurator-ui.txt";
-import PAGE_CONFIGURATOR_HTML from "./generated/confluence-page-configurator-ui.txt";
+import CONFIGURATOR_HTML from "./generated/confluence-configurator-ui.txt";
 
 // ---------------------------------------------------------------------------------------------
 // Constants & helpers
@@ -142,7 +143,8 @@ type StoredNonce = {
    */
   reconnect?: true;
 };
-type StoredGrant = { accessToken: string; refreshToken?: string; expiresAt: number };
+/** `scopes` is absent from a grant stored before scopes were recorded, until its next refresh. */
+type StoredGrant = { accessToken: string; refreshToken?: string; expiresAt: number; scopes?: string[] };
 
 const getBaseUrl = (env: Env): string => env.BASE_URL || "http://localhost:8787/gatekeeper/confluence";
 const getBasePath = (env: Env): string => new URL(getBaseUrl(env)).pathname;
@@ -161,20 +163,23 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 const CONFLUENCE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(CONFLUENCE_LOGO_SVG)}`;
 
+// One connect card chooses among the three, so the site type, which leads it, is titled for the card.
 const SITE_RESOURCE: SupportedResource = {
   urlPattern: "https://*.atlassian.net/wiki",
-  title: "Confluence Site",
-  description: "Search, browse, and edit any space or page on a Confluence site.",
+  title: "Confluence",
+  description: "A whole Confluence site, one space, or one page or blog post.",
 };
 const SPACE_RESOURCE: SupportedResource = {
   urlPattern: "https://*.atlassian.net/wiki/spaces/:spaceKey",
   title: "Confluence Space",
   description: "Read and edit the pages and blog posts in a single Confluence space.",
+  groupedWith: SITE_RESOURCE.urlPattern,
 };
 const PAGE_RESOURCE: SupportedResource = {
   urlPattern: "https://*.atlassian.net/wiki/spaces/:spaceKey/pages/:pageId/*?",
   title: "Confluence Page or Blog Post",
   description: "Read and edit a specific Confluence page or blog post (and its child pages).",
+  groupedWith: SITE_RESOURCE.urlPattern,
 };
 const SUPPORTED_RESOURCES = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE];
 
@@ -258,6 +263,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     };
   }
 
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
+  }
+
   async connectAccount(
     callback: Fetcher<GatekeeperConnectCallback>, _options?: GatekeeperConnectOptions,
   ): Promise<{ url: string }> {
@@ -280,6 +289,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // UserAccount DO — OAuth credential management (multi-site, rotating refresh tokens).
 
 export class UserAccount extends DurableObject<Env> {
+  // Rotating refresh tokens: concurrent callers (a picker's parallel reads, say) share one refresh,
+  // so one new token is stored rather than the last of several.
+  readonly #refreshes = new SingleFlight<"refresh">();
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string) {
     if (!this.ctx.storage.kv.get<StoredGrant>("grant")) {
       this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
@@ -388,7 +401,11 @@ export class UserAccount extends DurableObject<Env> {
     return grant.accessToken;
   }
 
-  async refreshCredentials(): Promise<string> {
+  refreshCredentials(): Promise<string> {
+    return this.#refreshes.run("refresh", () => this.#refreshCredentials());
+  }
+
+  async #refreshCredentials(): Promise<string> {
     if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) {
       throw new Error("The Confluence Gatekeeper is not configured.");
     }
@@ -422,6 +439,11 @@ export class UserAccount extends DurableObject<Env> {
 
   async getIdentity(): Promise<AtlassianIdentity | null> {
     return this.ctx.storage.kv.get<AtlassianIdentity>("identity") ?? null;
+  }
+
+  /** The scopes the grant holds, or null for a grant stored before scopes were recorded. */
+  async getGrantedScopes(): Promise<string[] | null> {
+    return this.ctx.storage.kv.get<StoredGrant>("grant")?.scopes ?? null;
   }
 
   async alarm() {
@@ -506,18 +528,18 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    // The three types share one card, so each starts the same configurator.
+    if (!SUPPORTED_RESOURCES.some(resource => resource.urlPattern === resourceUrlPattern)) {
+      throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
+    }
     const account = this.#userAccount();
-    const ui = new ConfluenceConfiguratorUI(
-      async () => await account.getSites(),
-      async () => await account.getAccessToken(),
-    );
-    const html =
-      resourceUrlPattern === SITE_RESOURCE.urlPattern ? SITE_CONFIGURATOR_HTML
-      : resourceUrlPattern === SPACE_RESOURCE.urlPattern ? SPACE_CONFIGURATOR_HTML
-      : resourceUrlPattern === PAGE_RESOURCE.urlPattern ? PAGE_CONFIGURATOR_HTML
-      : null;
-    if (!html) throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
-    return { iframeHtml: html, ui: new RpcStub(ui) };
+    const ui = new ConfluenceConfiguratorUI({
+      getSites: async () => await account.getSites(),
+      getGrantedScopes: async () => await account.getGrantedScopes(),
+      getToken: async () => await account.getAccessToken(),
+      refresh: async () => await account.refreshCredentials(),
+    });
+    return { iframeHtml: CONFIGURATOR_HTML, ui: new RpcStub(ui) };
   }
 
   async revoke(): Promise<void> {
@@ -619,7 +641,7 @@ export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekee
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceSiteSession> {
     const identity: AtlassianIdentity | null =
@@ -667,7 +689,7 @@ export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatek
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceSpaceSession> {
     return new SpaceSessionImpl(
@@ -714,7 +736,7 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceContentSession> {
     return new ContentSessionImpl(

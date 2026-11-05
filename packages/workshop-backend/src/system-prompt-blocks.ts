@@ -59,6 +59,20 @@ export function hasGpt56PromptCaching(model: Model<Api>): boolean {
       compat.supportsExplicitPromptCacheMode === true;
 }
 
+/**
+ * Roughly how many tokens of a request built from `context` lead every request of the agent's
+ * kind: its tools and the static system text. The head is cached apart from the chat's own
+ * messages (for an hour on Anthropic) and every chat of the kind reads it, so a chat whose own
+ * cache expires usually pays to write only the rest of its prompt again.
+ */
+export function estimateSharedHeadTokens(context: Context): number {
+  const leading = getInitialSystemMessage(context.messages);
+  if (!leading) return 0;
+  const length =
+      contentText(leading.content).length + JSON.stringify(leading.toolsAdded ?? []).length;
+  return Math.ceil(length / 4);
+}
+
 function splitAnthropicSystem(payload: object, staticText: string): object | undefined {
   if (!("system" in payload) || !Array.isArray(payload.system)) return undefined;
   const system: unknown[] = payload.system;

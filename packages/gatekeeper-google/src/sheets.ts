@@ -11,7 +11,8 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
-import type { GoogleVerifierApi } from "./google-verifier-types";
+import { requireFileSubresources } from "./file-subresources";
+import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
@@ -212,7 +213,10 @@ export class GoogleSheetsGatekeeperImpl
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {
     let props = this.ctx.props;
     let queue = approvalQueue.dup();
-    let read = unguardedNativeRead(description => queue.authorizeObservation(description));
+    // Every read reports the spreadsheet, except one not created yet, which holds only what the
+    // caller wrote.
+    let read = unguardedNativeRead(description => queue.authorizeObservation(description),
+      isSimulated(props) ? [] : [{ kind: "spreadsheet", fileId: props.spreadsheetId }]);
     if (isSimulated(props)) {
       return new GoogleSpreadsheetSessionImpl(
         this.#api, UNCREATED_FILE_ID, queue, read, NOT_CREATED, new BlankSpreadsheet(props.creation.title));
@@ -286,6 +290,9 @@ export class GoogleSheetsGatekeeperImpl
    * Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
    * spreadsheet granularity, so an observer must be able to open this spreadsheet with their own
    * account. The overseer re-runs this check on every open, catching revoked access.
+   *
+   * Reads now also report the spreadsheet as a `sheets/spreadsheet/<spreadsheetId>` subresource,
+   * which verifyObserverAccess checks; this check stays for the reads made before they did.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
@@ -298,6 +305,19 @@ export class GoogleSheetsGatekeeperImpl
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the spreadsheet subresource every read reports, failing the whole call for any other ID.
+   * Each observer's UserAccount answers whether the Sheets API opens the spreadsheet for their own
+   * account, reusing recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(subresources, ["spreadsheet"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 /** A read with queued changes applied, and the first that no longer applies. */

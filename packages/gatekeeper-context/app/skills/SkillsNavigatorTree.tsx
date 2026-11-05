@@ -3,13 +3,18 @@ import {
   ArrowClockwise,
   Buildings,
   Clock,
+  FolderOpen,
   GitBranch,
   PencilSimple,
   PlusIcon,
   ScrollIcon,
+  ShareNetwork,
+  SignOut,
   TrashIcon,
   User,
+  Users,
   UploadSimple,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import {
   HierarchicalList,
@@ -17,10 +22,15 @@ import {
   type HierarchicalListItem,
 } from "@gadgets/ui/hierarchical-list";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ContextCollectionMetadata } from "../../src/context-types";
+import type {
+  ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  EnabledCollectionInfo,
+} from "../../src/context-types";
 import { useContextApi } from "../bridge";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
+import { COLLECTION_ROLE_LABELS } from "./collectionRole";
 import { RenameInput } from "./RenameInput";
 import {
   canMoveSkillNavigatorNode,
@@ -31,27 +41,33 @@ import {
 import { renamedSkillManifestPath, renameSkillNavigatorNode } from "./renameSkillNavigatorNode";
 import {
   countSkills,
+  skillDisplayName,
   type SkillNavigatorCollection,
   type SkillNavigatorDirectory,
   type SkillNavigatorNode,
   type SkillNavigatorSkill,
 } from "./skillNavigatorModel";
-import { humanizeSkillName, isValidSkillName } from "./skillName";
+import { isValidSkillName } from "./skillName";
 import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
 import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
   collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
+  /** Missing entries mean no permissions beyond reading. */
+  collectionPermissions: ReadonlyMap<string, ContextCollectionPermissions>;
   failedDocumentCollectionIds: ReadonlySet<string>;
-  manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
   supportsGitCollections: boolean;
   expandAll: boolean;
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
+  onOpenCollection: (collectionId: string) => void;
   onAddSkill: (target: AddSkillTarget) => void;
   onUploadSkills: (target: UploadSkillsTarget) => void;
   onEditCollection: (collection: ContextCollectionMetadata) => void;
+  onShareCollection: (collection: { id: string; title: string }) => void;
+  /** Owners leave from the Share dialog, which knows whether another owner remains. */
+  onLeaveCollection: (collection: { id: string; title: string }) => void;
   onDelete: (target: NavigatorDeleteTarget) => void;
   onRetryCollection: (collectionId: string) => Promise<void>;
   onChanged: () => void;
@@ -60,6 +76,25 @@ type SkillsNavigatorTreeProps = {
 type PendingRename = { collectionId: string; path: string; name: string };
 
 const skillCountLabel = (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`;
+
+const skillLessCollectionLabel = (documentCount: number) =>
+  `${documentCount} ${documentCount === 1 ? "file" : "files"}, no skills. Open collection`;
+
+// Ownership comes from the viewer's live role, not from which index lists the collection.
+const collectionAccess = ({ source, membership }: EnabledCollectionInfo) => {
+  if (source === "public") {
+    return { icon: <Buildings aria-hidden size={12} />, label: "Organization" };
+  }
+  if (!membership || membership.role === "owner") {
+    return membership?.shared
+      ? { icon: <Users aria-hidden size={12} />, label: "Shared" }
+      : { icon: <User aria-hidden size={12} />, label: "Private" };
+  }
+  return {
+    icon: <Users aria-hidden size={12} />,
+    label: `Shared with you · ${COLLECTION_ROLE_LABELS[membership.role]}`,
+  };
+};
 
 const relativeUpdatedAt = (date: Date, now: number) => {
   const age = formatSkillUpdatedAt(date, now);
@@ -89,8 +124,11 @@ const toListItem = (
     const name = renamed ? renamedSkill.name : node.name;
     const manifestPath = renamed ? renamedSkillManifestPath(node.manifestPath, renamedSkill.name) : node.manifestPath;
     const directoryPath = renamed ? manifestPath.slice(0, manifestPath.lastIndexOf("/")) : node.directoryPath;
-    skillsById.set(id, renamed ? { ...node, name, manifestPath, directoryPath } : node);
-    if (writable) {
+    const skill = renamed ? { ...node, name, manifestPath, directoryPath } : node;
+    skillsById.set(id, skill);
+    // moveContextSkill, like rename, validates the manifest first, so an invalid one cannot move.
+    const movable = writable && !node.invalid;
+    if (movable) {
       moveSourcesById.set(id, {
         collectionId,
         manifestPath,
@@ -99,9 +137,11 @@ const toListItem = (
     }
     return {
       id,
-      name: humanizeSkillName(name),
-      icon: <ScrollIcon aria-hidden size={17} className="text-kumo-subtle" />,
-      description: node.description,
+      name: skillDisplayName(skill),
+      icon: node.invalid
+        ? <WarningCircle aria-hidden size={17} className="text-kumo-danger" />
+        : <ScrollIcon aria-hidden size={17} className="text-kumo-subtle" />,
+      description: node.invalid ?? node.description,
       metadata: (
         <span
           className="flex items-center gap-1"
@@ -112,7 +152,7 @@ const toListItem = (
           <span aria-hidden>{relativeUpdatedAt(node.lastUpdated, now)}</span>
         </span>
       ),
-      draggable: writable,
+      draggable: movable,
     };
   }
 
@@ -140,19 +180,22 @@ const toListItem = (
   };
 };
 
-/** Interactive skill hierarchy with actions limited to writable collections. */
+/** Interactive skill hierarchy with actions limited by the viewer's collection permissions. */
 export const SkillsNavigatorTree = ({
   navigator,
   collectionMetadata,
+  collectionPermissions,
   failedDocumentCollectionIds,
-  manageableCollectionIds,
   writableCollectionIds,
   supportsGitCollections,
   expandAll,
   onSelectSkill,
+  onOpenCollection,
   onAddSkill,
   onUploadSkills,
   onEditCollection,
+  onShareCollection,
+  onLeaveCollection,
   onDelete,
   onRetryCollection,
   onChanged,
@@ -178,6 +221,7 @@ export const SkillsNavigatorTree = ({
   const moveTargetsById = new Map<string, SkillNavigatorMoveTarget>();
   const collectionIdsByItemId = new Map<string, string>();
   const failedCollectionIdsByItemId = new Map<string, string>();
+  const skillLessCollectionIdsByItemId = new Map<string, string>();
   const items: HierarchicalListItem[] = navigator.map(({ collection, children }) => {
     const id = `${collection.id}:collection`;
     const writable = writableCollectionIds.has(collection.id) && !moving;
@@ -196,6 +240,16 @@ export const SkillsNavigatorTree = ({
       listChildren = [{
         id: failureId,
         name: "Couldn't load contents, click to try again",
+        appearance: "message",
+        interactive: true,
+      }];
+    } else if (children.length === 0 && metadata && metadata.documentCount > 0) {
+      // The navigator lists only skills, so this is the way into a collection of plain documents.
+      const skillLessId = `${collection.id}:no-skills`;
+      skillLessCollectionIdsByItemId.set(skillLessId, collection.id);
+      listChildren = [{
+        id: skillLessId,
+        name: skillLessCollectionLabel(metadata.documentCount),
         appearance: "message",
         interactive: true,
       }];
@@ -219,19 +273,18 @@ export const SkillsNavigatorTree = ({
         now,
       ));
     }
+    const access = collectionAccess(collection);
     return {
       id,
       name: collection.title,
       icon: collection.icon ? <span aria-hidden>{collection.icon}</span> : undefined,
-      metadata: metadata ? (
+      metadata: (
         <span className="flex items-center gap-3">
           <span className="flex items-center gap-1">
-            {metadata.visibility === "public"
-              ? <Buildings aria-hidden size={12} />
-              : <User aria-hidden size={12} />}
-            {metadata.visibility === "public" ? "Organization" : "Private"}
+            {access.icon}
+            {access.label}
           </span>
-          {metadata.content.source === "git" && (
+          {metadata?.content.source === "git" && (
             <span className="flex items-center gap-1">
               <GitBranch aria-hidden size={12} />
               Git managed
@@ -248,7 +301,7 @@ export const SkillsNavigatorTree = ({
             </span>
           )}
         </span>
-      ) : undefined,
+      ),
       droppable: writable,
       children: listChildren,
     };
@@ -372,16 +425,30 @@ export const SkillsNavigatorTree = ({
 
     const collectionInfo = collectionsById.get(item.id);
     if (collectionInfo) {
-      if (!manageableCollectionIds.has(collectionId)) return null;
+      const { collection } = collectionInfo;
+      const permissions = collectionPermissions.get(collectionId);
       const metadata = collectionMetadata.get(collectionId);
       const writable = writableCollectionIds.has(collectionId);
-      const refreshable = metadata?.content.source === "git" && supportsGitCollections;
+      const refreshable = Boolean(permissions?.canEdit)
+        && metadata?.content.source === "git"
+        && supportsGitCollections;
+      const editableMetadata = permissions?.canEdit ? metadata : undefined;
+      const sharable = Boolean(permissions?.canShare);
+      const deletable = Boolean(permissions?.canDelete) && !failedDocumentCollectionIds.has(collectionId);
+      const leavable = collection.membership !== undefined && collection.membership.role !== "owner";
       return (
         <>
+          <DropdownMenu.Item
+            icon={<FolderOpen className="size-3.25" />}
+            onClick={() => onOpenCollection(collectionId)}
+          >
+            Open collection
+          </DropdownMenu.Item>
+          {(writable || refreshable) && <DropdownMenu.Separator />}
           {writable && (
             <>
               <DropdownMenu.Item
-                icon={<PlusIcon size={13} className="mr-2" />}
+                icon={<PlusIcon className="size-3.25" />}
                 onClick={() => onAddSkill({
                   collectionId,
                   directoryPath: "",
@@ -391,7 +458,7 @@ export const SkillsNavigatorTree = ({
                 Add skill
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 onClick={() => onUploadSkills({
                   collectionId,
                   directoryPath: "",
@@ -404,30 +471,47 @@ export const SkillsNavigatorTree = ({
           )}
           {refreshable && (
             <DropdownMenu.Item
-              icon={<ArrowClockwise size={13} className="mr-2" />}
+              icon={<ArrowClockwise className="size-3.25" />}
               disabled={refreshingCollectionId !== null}
               onClick={() => void handleRefresh(collectionId)}
             >
               Refresh
             </DropdownMenu.Item>
           )}
-          {(writable || refreshable) && <DropdownMenu.Separator />}
-          {metadata && (
+          {(editableMetadata || sharable || deletable || leavable) && <DropdownMenu.Separator />}
+          {editableMetadata && (
             <DropdownMenu.Item
-              icon={<PencilSimple size={13} className="mr-2" />}
-              onClick={() => onEditCollection(metadata)}
+              icon={<PencilSimple className="size-3.25" />}
+              onClick={() => onEditCollection(editableMetadata)}
             >
               Edit
             </DropdownMenu.Item>
           )}
-          {!failedDocumentCollectionIds.has(collectionId) && (
+          {sharable && (
             <DropdownMenu.Item
-              icon={<TrashIcon size={13} className="mr-2" />}
+              icon={<ShareNetwork className="size-3.25" />}
+              onClick={() => onShareCollection({ id: collectionId, title: collection.title })}
+            >
+              Share
+            </DropdownMenu.Item>
+          )}
+          {leavable && (
+            <DropdownMenu.Item
+              icon={<SignOut className="size-3.25" />}
+              variant="danger"
+              onClick={() => onLeaveCollection({ id: collectionId, title: collection.title })}
+            >
+              Leave
+            </DropdownMenu.Item>
+          )}
+          {deletable && (
+            <DropdownMenu.Item
+              icon={<TrashIcon className="size-3.25" />}
               variant="danger"
               onClick={() => onDelete({
                 type: "collection",
                 collectionId,
-                name: collectionInfo.collection.title,
+                name: collection.title,
               })}
             >
               Delete
@@ -443,19 +527,24 @@ export const SkillsNavigatorTree = ({
     if (skill) {
       return (
         <>
+          {/* Renaming rewrites the manifest's name, which needs frontmatter that parses. */}
+          {!skill.invalid && (
+            <>
+              <DropdownMenu.Item
+                icon={<PencilSimple className="size-3.25" />}
+                onClick={() => setPendingRename({
+                  collectionId,
+                  path: skill.manifestPath,
+                  name: skill.name,
+                })}
+              >
+                Rename
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator />
+            </>
+          )}
           <DropdownMenu.Item
-            icon={<PencilSimple size={13} className="mr-2" />}
-            onClick={() => setPendingRename({
-              collectionId,
-              path: skill.manifestPath,
-              name: skill.name,
-            })}
-          >
-            Rename
-          </DropdownMenu.Item>
-          <DropdownMenu.Separator />
-          <DropdownMenu.Item
-            icon={<TrashIcon size={13} className="mr-2" />}
+            icon={<TrashIcon className="size-3.25" />}
             variant="danger"
             onClick={() => onDelete({
               type: "skill",
@@ -475,7 +564,7 @@ export const SkillsNavigatorTree = ({
       return (
         <>
           <DropdownMenu.Item
-            icon={<PlusIcon size={13} className="mr-2" />}
+            icon={<PlusIcon className="size-3.25" />}
             onClick={() => onAddSkill({
               collectionId,
               directoryPath: directory.path,
@@ -485,7 +574,7 @@ export const SkillsNavigatorTree = ({
             Add skill
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            icon={<UploadSimple size={13} className="mr-2" />}
+            icon={<UploadSimple className="size-3.25" />}
             onClick={() => onUploadSkills({
               collectionId,
               directoryPath: directory.path,
@@ -496,7 +585,7 @@ export const SkillsNavigatorTree = ({
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item
-            icon={<TrashIcon size={13} className="mr-2" />}
+            icon={<TrashIcon className="size-3.25" />}
             variant="danger"
             onClick={() => onDelete({
               type: "directory",
@@ -535,6 +624,11 @@ export const SkillsNavigatorTree = ({
       onItemClick={(item) => {
         if (failedCollectionIdsByItemId.has(item.id)) {
           void handleRetry(failedCollectionIdsByItemId.get(item.id)!);
+          return;
+        }
+        const skillLessCollectionId = skillLessCollectionIdsByItemId.get(item.id);
+        if (skillLessCollectionId) {
+          onOpenCollection(skillLessCollectionId);
           return;
         }
         const skill = skillsById.get(item.id);

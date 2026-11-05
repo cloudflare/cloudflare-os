@@ -12,6 +12,11 @@ export type SkillNavigatorSkill = {
   name: string;
   description: string;
   lastUpdated: Date;
+  /**
+   * Why the `SKILL.md` frontmatter failed validation. Such a skill is unusable by agents but is
+   * still listed, named after its directory (the collection, at the root), so it can be fixed.
+   */
+  invalid?: string;
 };
 
 export type SkillNavigatorDirectory = {
@@ -76,7 +81,7 @@ export const buildSkillNavigator = (
     };
 
     for (const document of documentsByCollection.get(collection.id) ?? []) {
-      if (!document.skillName) continue;
+      if (!document.skillName && !document.skillError) continue;
 
       const skillDirectory = directoryName(document.path);
       const parentDirectory = directoryName(skillDirectory);
@@ -85,9 +90,10 @@ export const buildSkillNavigator = (
         collectionId: collection.id,
         manifestPath: document.path,
         directoryPath: skillDirectory,
-        name: document.skillName,
+        name: document.skillName ?? (baseName(skillDirectory) || collection.title),
         description: document.description,
         lastUpdated: document.lastUpdated,
+        ...(document.skillError && !document.skillName ? { invalid: document.skillError } : {}),
       };
 
       if (parentDirectory) getDirectory(parentDirectory).children.push(skill);
@@ -98,6 +104,13 @@ export const buildSkillNavigator = (
   })
   .toSorted((left, right) => left.collection.title.localeCompare(right.collection.title));
 
+/**
+ * A valid skill's metadata name as a title. An invalid skill has no metadata name, so it shows its
+ * directory name or collection title verbatim, as directory rows do.
+ */
+export const skillDisplayName = (skill: SkillNavigatorSkill) =>
+  skill.invalid ? skill.name : humanizeSkillName(skill.name);
+
 const includesQuery = (value: string, query: string) => value.toLowerCase().includes(query);
 
 const filterNodes = (
@@ -107,8 +120,9 @@ const filterNodes = (
   const matches: SkillNavigatorNode[] = [];
   for (const node of nodes) {
     if (node.type === "skill") {
-      if (includesQuery(humanizeSkillName(node.name), query)
-        || includesQuery(node.description, query)) {
+      if (includesQuery(skillDisplayName(node), query)
+        // An invalid skill's description is not shown, so it cannot explain a match.
+        || (!node.invalid && includesQuery(node.description, query))) {
         matches.push(node);
       }
       continue;

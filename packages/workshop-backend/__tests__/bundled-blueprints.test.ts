@@ -83,7 +83,7 @@ async function snapshotContent(files: Iterable<[string, string]>): Promise<Uint8
 let workspaces = 0;
 
 /**
- * Instantiates a blueprint in a fresh workspace, as AuthenticatedApi.newGadgetFromBlueprint() has
+ * Instantiates a blueprint in a fresh workspace, as AuthenticatedApi.newWorkspaceFromBlueprint() has
  * the Overseer do it, and returns the files of the gadget that results. The owner's user DO is
  * faked.
  */
@@ -94,7 +94,7 @@ async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
     let impl = (instance as unknown as { impl: any }).impl;
     let owner = {
       whoami: async () => ({ type: "user", id: "olive@example.com", name: "Olive" }),
-      setGadgetLastActive: async () => {},
+      setWorkspaceLastActive: async () => {},
     };
     impl.ownerId = "owner-user-do";
     impl.users = { idFromString: (id: string) => id, get: () => owner };
@@ -278,7 +278,7 @@ describe("bundled blueprints", () => {
     expect(client).toContain('["html", "pdf"].includes(');
     expect(client).toContain("gadgetExportFormatId");
     expect(client).toContain('document.documentElement.classList.add("document-export")');
-    expect(client).toContain("app.replaceChildren(canvas)");
+    expect(client).toContain("bar.remove();");
   });
 
   it("declares the intended export formats for every standard output format", () => {
@@ -287,6 +287,7 @@ describe("bundled blueprints", () => {
         'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+        'id: "docx", label: "Word", mode: "server", contentType: DOCX_CONTENT_TYPE',
       ],
       "format.slides": [
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',

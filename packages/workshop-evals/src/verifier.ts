@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
-import type { WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
+import type { AgentTurnResult, WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
 import type {
   AiChatMessage, GadgetClient, WorkpieceId, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
@@ -10,6 +10,9 @@ const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
 export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
+
+/** The chat as the Workshop recorded it when the turn ended. */
+export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
 
 function truncate(value: string): string {
   return value.length > EVIDENCE_LIMIT ? `${value.slice(0, EVIDENCE_LIMIT)}...` : value;
@@ -35,14 +38,6 @@ export function resolveGadget(
   return match.id;
 }
 
-/** The agent's chat messages after `sinceSequence`, in order. */
-export function agentReplies(
-    history: readonly AiChatMessage[], sinceSequence: number): string[] {
-  return history.flatMap(message =>
-    message.sequence > sinceSequence && message.type === "message" &&
-    message.author.type === "agent" ? [message.message] : []);
-}
-
 /** A reply's non-empty lines, trimmed, without the code fences agents often wrap answers in. */
 export function replyLines(reply: string): string[] {
   return reply.split("\n").map(line => line.trim())
@@ -52,18 +47,25 @@ export function replyLines(reply: string): string[] {
 /** Runs independent functional checks against the agent's provisional Gadget branch. */
 export class EvalVerifier {
   readonly workpieces: readonly WorkpieceSummary[];
+  /** This turn's chat messages, oldest first: what the agent said and did, and the cards it made. */
+  readonly messages: readonly AiChatMessage[];
   /** What the agent said in chat during this turn, oldest first. Empty when it only acted. */
   readonly replies: readonly string[];
+  readonly chat: VerifierChat;
   readonly #session: VerifierSession;
   readonly #checks: EvalCheck[] = [];
   readonly #pending: Promise<void>[] = [];
 
   constructor(
       session: VerifierSession, workpieces: readonly WorkpieceSummary[],
-      replies: readonly string[] = []) {
+      messages: readonly AiChatMessage[] = [],
+      chat: VerifierChat = { history: [], compactions: [], usage: {} }) {
     this.#session = session;
     this.workpieces = workpieces;
-    this.replies = replies;
+    this.messages = messages;
+    this.replies = messages.flatMap(message =>
+      message.type === "message" && message.author.type === "agent" ? [message.message] : []);
+    this.chat = chat;
   }
 
   async check(id: string, body: () => Promise<EvalCheckOutcome>): Promise<void> {

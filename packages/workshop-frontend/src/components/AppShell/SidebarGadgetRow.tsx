@@ -1,9 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, DotsThree, Star, ShareNetwork, Trash, Pencil } from '@phosphor-icons/react'
+import { BellSlash, DotsThree, Star, Trash, Pencil, UserPlus } from '@phosphor-icons/react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
 import { useState, useEffect, useRef } from 'react'
-import type { GadgetMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../../features/notifications/notificationMute'
 import { isImeComposing } from '../../keyboardEvent'
@@ -29,13 +29,13 @@ export default function SidebarGadgetRow({
   onNotificationMuteChange,
   onDelete,
 }: {
-  gadget: GadgetMetadataWithTimestamps
+  gadget: WorkspaceMetadataWithTimestamps
   collapsed?: boolean
-  onTogglePin: (g: GadgetMetadataWithTimestamps) => void
-  onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
-  onShare: (g: GadgetMetadataWithTimestamps) => void
-  onNotificationMuteChange: (g: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) => void
-  onDelete: (g: GadgetMetadataWithTimestamps) => void
+  onTogglePin: (g: WorkspaceMetadataWithTimestamps) => void
+  onRename: (g: WorkspaceMetadataWithTimestamps, newTitle: string) => void
+  onShare: (g: WorkspaceMetadataWithTimestamps) => void
+  onNotificationMuteChange: (g: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  onDelete: (g: WorkspaceMetadataWithTimestamps) => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
@@ -119,21 +119,24 @@ export default function SidebarGadgetRow({
                   onClick={startRename}
                   className={MENU_ITEM}
                 >
-                  <Pencil size={13} className="mr-2" /> Rename
+                  <Pencil size={13} /> Rename
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={() => onTogglePin(gadget)}
                   className={MENU_ITEM}
                 >
-                  <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
+                  <Star size={13} weight={gadget.pinned ? 'fill' : 'regular'} />
                   {gadget.pinned ? 'Unfavorite' : 'Favorite'}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  onClick={() => onShare(gadget)}
-                  className={MENU_ITEM}
-                >
-                  <ShareNetwork size={13} className="mr-2" /> Share
-                </DropdownMenu.Item>
+                {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+                {gadget.role !== 'use' && (
+                  <DropdownMenu.Item
+                    onClick={() => onShare(gadget)}
+                    className={MENU_ITEM}
+                  >
+                    <UserPlus size={13} /> Invite to workspace
+                  </DropdownMenu.Item>
+                )}
                 <WorkspaceNotificationsMenu
                   workspaceId={gadget.id}
                   mute={gadget.notificationMute}
@@ -145,7 +148,7 @@ export default function SidebarGadgetRow({
                   onClick={() => onDelete(gadget)}
                   className={MENU_ITEM_DANGER}
                 >
-                  <Trash size={13} className="mr-2" />
+                  <Trash size={13} />
                   {gadget.owner ? 'Dismiss' : 'Delete'}
                 </DropdownMenu.Item>
               </DropdownMenu.Content>

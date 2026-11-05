@@ -4,10 +4,12 @@ import {
   GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, GatekeeperUserVerifier, VendorDescription,
   GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription,
   SupportedResource, ResourceConfiguratorFrame, ResourceDescription, ApprovalQueue, ActionKind,
-  GitCache, stripTrailingSlashes, type ConnectHandoff,
+  GitCache, stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
   getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens, isGrantDeath,
@@ -22,6 +24,8 @@ import {
   accountObservabilityUrl,
   workerObservabilityUrl,
   parseObservabilityResourceUrl,
+  observabilitySubresourceId,
+  parseObservabilitySubresourceId,
 } from "./resources.js";
 import { CloudflareObservabilityApi, deniesAccess } from "./observability-api.js";
 import { CloudflareObservabilitySessionImpl } from "./observability-session.js";
@@ -65,6 +69,13 @@ const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const OAUTH_NONCE_LIFETIME_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
+
+// How long an observer's account reuses its answer about reading an account's telemetry, counted
+// from when it asked Cloudflare. Cloudflare doesn't say when access changes: a revoked role is
+// noticed only once the answer that allowed it expires, while a denial is kept briefly so that a
+// new grant is noticed soon.
+const TELEMETRY_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const TELEMETRY_ACCESS_DENIED_TTL_MS = 15_000;
 
 // Official Cloudflare logomark (orange cloud on a transparent background), as a data URI so it can
 // be rendered directly as the vendor/account avatar.
@@ -190,6 +201,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     };
   }
 
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
+  }
+
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>,
                        options?: GatekeeperConnectOptions): Promise<{ url: string }> {
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
@@ -217,6 +232,11 @@ export class UserAccount extends DurableObject<Env> {
   // Bumped by every grant write. It keys and fences refreshes, so a replaced grant is detected even
   // when the new grant reuses the refresh token.
   #grantGeneration = 0;
+  // This account's answers about reading accounts' telemetry (see checkTelemetryAccess). One
+  // partition while connected: every install of credentials invalidates it instead (#writeGrant),
+  // so no answer outlives the grant that learned it.
+  readonly #access = new KvTtlCache(this.ctx.storage.kv,
+    () => this.hasRefreshToken() ? "connected" : undefined, { name: "access" });
 
   #config() {
     const config = getOAuthConfig(this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env));
@@ -352,10 +372,45 @@ export class UserAccount extends DurableObject<Env> {
     this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", grant.accessToken);
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
+    this.#access.invalidateAll();
   }
 
   hasRefreshToken() {
     return this.ctx.storage.kv.get<string>("refreshToken") !== undefined;
+  }
+
+  /**
+   * Whether these credentials can read telemetry in each account, in order, as
+   * CloudflareVerifier.hasObservabilityAccess asks it of one account, reusing an allowed answer for
+   * up to TELEMETRY_ACCESS_ALLOWED_TTL_MS and a denial for up to TELEMETRY_ACCESS_DENIED_TTL_MS. A
+   * connection with no usable credentials, or whose grant lacks telemetry, is denied without
+   * reusing anything. Throws when Cloudflare can't answer, which is never reused, or when the
+   * account is reconnected mid-check.
+   */
+  async checkTelemetryAccess(accountIds: string[]): Promise<boolean[]> {
+    // Every answer must come from the grant installed when the check began, or one principal's
+    // answer for one account could be paired with another's for the next.
+    const generation = this.#grantGeneration;
+    const token = await this.getAccessToken();
+    // Read after the token, since a refresh records the scopes it returned, which may have narrowed.
+    const scopes = await this.getGrantedScopes();
+    const allowed: boolean[] = [];
+    if (!token || !grantedObservabilityResourcePatterns(scopes)
+        .includes(ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern)) {
+      allowed.push(...accountIds.map(() => false));
+    } else {
+      // Asked one at a time, so a long list doesn't trip Cloudflare's per-user rate limit. Each
+      // probe reads the token live, so an answer is stored only under the grant that gave it.
+      for (const accountId of accountIds) {
+        allowed.push(await this.#access.cached(accountId,
+          granted => granted ? TELEMETRY_ACCESS_ALLOWED_TTL_MS : TELEMETRY_ACCESS_DENIED_TTL_MS,
+          () => canReadTelemetry(() => this.getAccessToken(), accountId)));
+      }
+    }
+    if (this.#grantGeneration !== generation) {
+      throw new Error("This Cloudflare connection was reconnected while its access was being checked.");
+    }
+    return allowed;
   }
 
   /**
@@ -548,10 +603,37 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 }
 
+/**
+ * Whether a telemetry read with these credentials succeeds, in the account or only for one Worker
+ * in it: false when Cloudflare denies access, throwing when it can't tell.
+ */
+async function canReadTelemetry(
+    getToken: () => Promise<string | null>, accountId: string, workerName?: string): Promise<boolean> {
+  try {
+    await new CloudflareObservabilityApi(getToken, accountId, workerName).listKeys({ limit: 1 });
+    return true;
+  } catch (error) {
+    if (deniesAccess(error)) {
+      logger.info("observer denied access to bound telemetry", {
+        event: "observer.denied", status: error.status,
+      });
+      return false;
+    }
+    throw error;
+  }
+}
+
 /** Vendor-specific verifier methods trusted only after the overseer's same-vendor handoff. */
 export interface CloudflareVerifierApi extends GatekeeperUserVerifier {
   /** Check whether this connected Cloudflare account can read the bound telemetry resource. */
   hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean>;
+
+  /**
+   * Whether this connected Cloudflare account can read telemetry in each account, in order,
+   * reusing recent answers (see UserAccount.checkTelemetryAccess). Throws when access can't be
+   * determined.
+   */
+  checkTelemetryAccess(accountIds: string[]): Promise<boolean[]>;
 }
 
 /** Verifies an observer's access using that observer's own Cloudflare credentials. */
@@ -561,22 +643,22 @@ export class CloudflareVerifier extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean> {
     const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     const account = this.ctx.exports.UserAccount.get(id);
-    try {
-      await new CloudflareObservabilityApi(
-        () => account.getAccessToken(), accountId, workerName,
-      ).listKeys({ limit: 1 });
-      return true;
-    } catch (error) {
-      if (deniesAccess(error)) {
-        logger.info("observer denied access to bound telemetry", {
-          event: "observer.denied", status: error.status,
-        });
-        return false;
-      }
-      throw error;
-    }
+    return canReadTelemetry(() => account.getAccessToken(), accountId, workerName);
+  }
+
+  async checkTelemetryAccess(accountIds: string[]): Promise<boolean[]> {
+    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
+    return this.ctx.exports.UserAccount.get(id).checkTelemetryAccess(accountIds);
   }
 }
+
+// Admits an observer only if a telemetry read through their own connection succeeds in every
+// account the reads reported, as their UserAccount last learned (see checkTelemetryAccess). Each
+// ID is parsed before anything is asked, so one this gatekeeper never reports fails the whole call.
+const verifyObservabilityAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<CloudflareVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkTelemetryAccess(subresources.map(parseObservabilitySubresourceId)),
+});
 
 type CloudflareObservabilityGatekeeperProps = {
   userObjectId: string;
@@ -624,7 +706,8 @@ export class CloudflareObservabilityGatekeeper
     const target = this.ctx.props.workerName
       ? `Worker ${this.ctx.props.workerName}`
       : `Cloudflare account ${this.ctx.props.accountId}`;
-    return new CloudflareObservabilitySessionImpl(this.#api(), approvalQueue.dup(), target);
+    return new CloudflareObservabilitySessionImpl(this.#api(), approvalQueue.dup(), target,
+      observabilitySubresourceId(this.ctx.props.accountId));
   }
 
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
@@ -638,6 +721,16 @@ export class CloudflareObservabilityGatekeeper
 
   async removeObserver(_id: string): Promise<void> {
     // Strategy B verifies on each admission and retains no observer state to remove.
+  }
+
+  /**
+   * Every read, through an account or a Worker binding alike, reports `account/<accountId>`, which
+   * this checks as addObserver() checks an account binding; any other ID fails the whole call.
+   */
+  async verifyObserverAccess(
+      observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+      subresources: string[]): Promise<{allowedObserverIds: string[]}> {
+    return verifyObservabilityAccess(observers, subresources);
   }
 
   /**

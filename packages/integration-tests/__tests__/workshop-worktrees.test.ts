@@ -36,7 +36,7 @@ it.concurrent("a worktree stays private to its chat; merge, revert and delete ke
   const [username] = nextUsernames("worktree");
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username!);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);

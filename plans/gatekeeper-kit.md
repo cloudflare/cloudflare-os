@@ -772,8 +772,11 @@ export function escapeObservationValue(value: string): string;
 export type ObservationScope =
   | { kind: "baseline" }                        // admission already covers this disclosure
   | { kind: "collections"; ids: readonly string[] }    // per-set verification; an empty array is refused
-  | { kind: "withholdFromObservers" };          // withhold from every admitted observer
-export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
+  | { kind: "withholdFromObservers" }           // withhold from every admitted observer
+  | { kind: "subresources"; ids: readonly string[] };  // the Workshop checks these; `[]` is accepted
+export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
+export function observerAccessVerifier<V>(opts: Pick<ObserverTrackerOptions<V>,
+  "hasCollectionAccess" | "concurrency">): VerifyObserverAccess;   // Gatekeeper.verifyObserverAccess
 export class ObservationGate {
   constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy);
   authorize(input: ObservationInput, scope: ObservationScope): Promise<void>;
@@ -808,6 +811,20 @@ observer sees everything read here — a truthful owner-only read under them mea
 belongs on C, and a read the premise covers should say `baseline`. Because the gate is the only
 source of that field, there is no set-union merge left to do. Sessions call the gate for every read
 instead of the raw queue.
+
+**`subresources` bypasses the strategy.** When an observation reports `subresources`, the Workshop
+attributes the read to its chat or gadget, checks that context's audience through
+`verifyObserverAccess()`, and rechecks the recorded ids at admission (`docs/observers.md` §10). A
+gatekeeper that also ran `prepare` for such a read would keep growing the binding-wide history
+whose admission refusals the per-context check exists to replace, so the arm calls no strategy
+method, and the gate owns `subresources` as it owns `excludeObservers`. The kernel decides per
+observation, so this is a scope rather than a strategy or gate mode: a binding converts read by
+read, and the strategy keeps `addObserver()` enforcing its baseline, the history recorded before
+conversion and every read not yet converted. `observerAccessVerifier` reuses the tracker's oracle
+shape but not its error policy: the tracker excludes an observer whose stored verifier throws, so
+one dead stub cannot fail every read, while the Workshop asks with fresh verifiers and expects a
+throw when access cannot be determined, so the throw propagates. It stores nothing, since the same
+observer id may arrive with another account's verifier.
 
 **A proven refusal reclaims only this read's reservations.** For withheld reads, `discard()` deletes
 the read's `observer-withhold:` marker. For set-scoped reads it releases the check's per-storage
@@ -1077,8 +1094,9 @@ these actions — the kit does, so it is the only one that both strands dependen
 The one terminal failure that does **not** cascade is an orphaned claim: its stored answer says the
 effect is unknown, so "was not applied" cannot be asserted over its dependents — the argument that
 keeps `claimed` out of `listUndecided` below, which converting the claim makes no more decidable.
-They stay pending, fail at the provider if the effect never landed, and clear by rejection —
-exactly a corpus dependent whose creator never resolved.
+They stay pending while it is, failing their applies on the unresolved reference. Rejecting the
+claim withdraws it, and nothing can bind its reference after that, so the rejection strands the
+dependents whose references it never bound, as rejecting a pending action does.
 
 **A dependent is refused at submit once nothing can provide its reference.** The cascade scans
 submitted records, so a dependent submitted *after* its provider was rejected escaped it, and every
@@ -1264,7 +1282,7 @@ the leaf contract that closed or deliberately adjudicated the finding.
 | **The expiry latch re-arms with two writes.** `clearCredentialExpiryLatch` clears the boolean and writes a fresh arm. Were the second to fail alone, an in-flight notification for the replaced credentials would match the surviving arm and latch the new ones — the one *silencing* failure in a module whose every other window fails toward a harmless duplicate notification. | every port with a refresh flow | Both writes are adjacent, awaitless and constant-size, so one implicit transaction carries them and no trigger separates them; the function's doc comment states that adjacency as the invariant to preserve. Every candidate fix is worse than the window: swapping the order makes the silence deterministic, and one combined record breaks the plain-boolean compatibility every shipped gatekeeper reads. **Narrowed:** every credential *replacement* re-arms through `#commit`, not only `connect()` — a successful refresh racing a notification for the credentials it replaces can no longer let that notification latch it, which was the same silencing class reachable with no storage failure at all. The legacy migration publishes without re-arming (`#publish`), since moving a grant between layouts replaces nothing and would otherwise re-announce a death the account already reported. |
 | **A crash mid-withheld-read closes admission for good.** The `observer-withhold:<nonce>` marker goes down before the overseer is asked, and an activation can die before settling it. | every strategy-C port using `withholdFromObservers` | **Resolved without weakening the fence:** a per-storage in-memory set owns markers for genuinely active reads. `addObserver` promotes every durable marker not owned by the current activation into the permanent `observer-withheld` latch, then deletes it; a marked refusal still removes its own marker. A crash or lost reply therefore remains fail-closed, but stranded markers no longer accumulate or remain a second indefinite state. No age heuristic: a legitimately slow authorization stays active however long it takes. |
 | **A lost `authorizeObservation` reply no longer reopens admission over a standing fence.** `ObservationGate.authorize` calls `discard` only for a marked refusal; an unmarked transport or service error calls `abandon`, releasing in-memory bookkeeping while retaining durable set and withheld-read fences (`observers.ts:238-251`; `observer-tracker.ts:38-51,304-323,437-453`). | every strategy-C port | **Kit side shipped; kernel mark outstanding.** The kit reclaims prepared state only for a marked refusal and treats every other failure as an unknown outcome, which is the fail-closed half. The mark itself does not exist yet: `workshop-shared` defines no transport-stable refusal code, and both of the overseer's pre-recording refusal paths still throw plain `Error`s, so *every* real refusal takes the unknown-outcome path -- a legitimate policy refusal latches `observer-withheld` permanently and leaves tracked-collection markers holding capacity. Closing it is a kernel change (define the code and factory in `workshop-shared`, throw it from both paths, re-export from the kit) and is deliberately outside this branch. *Trigger:* the kernel PR that adds the mark. |
-| **A first-time observer is not yet in the overseer's observer table while its gatekeeper admissions are in flight.** A gatekeeper can already name the fresh id in `excludeObservers`, but the former lookup treated the unknown id as stale and admitted the observation; after every admission completed, the observer record became durable without rechecking that read. | every collaborator opening a workspace for the first time | **Resolved in the kernel:** `OverseerImpl` registers each fresh id in an in-memory pending set before any admission await. Forward exclusion treats a matching pending id as an active blocker, then the successful promotion or terminal rollback removes it. A restart needs no durable marker because it aborts both the parked admission and the concurrent observation. |
+| **A first-time observer is not yet in the overseer's observer table while its gatekeeper admissions are in flight.** A gatekeeper can already name the fresh id in `excludeObservers`, but the former lookup treated the unknown id as stale and admitted the observation; after every admission completed, the observer record became durable without rechecking that read. | every collaborator opening a workspace for the first time | **Resolved in the kernel:** `OverseerImpl.ensureObserver` reserves the observer record, with no account choices, before any admission await, so forward exclusion resolves the fresh id as an active blocker from the moment any connection can name it. Concurrent admissions by the same profile share that id, and a failed admission keeps its registrations; the record goes only when the profile loses access. |
 | **A dropped action kind strands its dependents silently.** `provides`/`dependsOn` are evaluated from the live definition, so an action staged under a kind a later deploy removed reports no refs, and the dependents it was holding open are not retired with it. | any port that removes a shipped action kind | The dependent stays pending and fails at the provider instead of naming the parent it needed, so what is lost is an error message, not an effect — a ref a gatekeeper declares in `dependsOn` is by definition an identifier the provider validates. Closing it means storing the refs on the record, which puts staging metadata inside the journaled action identity and threads it through every state transition. No corpus gatekeeper stores its graph either (§4.8), so the six that cascade port without this. *Trigger:* the first port to remove a shipped action kind. |
 | **A read during an in-flight apply can overlay an effect the provider already made real.** Simulated reads project `pending` and `claimed` records, and an apply is a provider round trip followed by the journal write, so a read landing between the two fetches the real effect and overlays the same action again — a transient duplicate in the *view*, never a second provider effect (resolution is serialized). | every port with continue-with-simulation actions | Inherent to overlaying local pending state onto remote reads: no atomic instant flips both, and it holds for every projected state, so dropping `claimed` from projection would only make the action vanish mid-apply instead. Serializing reads with resolution would stall the agent for the length of a provider call on every read — the trade submission already refuses — and `runExclusive` is the opt-in for a consumer that needs a consistent snapshot. Self-healing: the next read after the journal write is correct. *Trigger:* an agent observed acting on the duplicate, e.g. staging a corrective action against it. |
 | **Refused reads reclaim their pending observed-set markers.** `prepareObservation` can remove the `"pending"` rows a read wrote once nothing is left to account for them. | every strategy-C port | **Resolved in Layer 1:** each disclosed key carries a per-storage in-memory claim recording how many reads still owe it, whether this generation of claims created its marker, and whether every claimant so far refused. The last claimant to settle reclaims the marker when all of them refused and storage still says `"pending"` (`observer-tracker.ts:88-136,424-473`). One isolate owns a Durable Object, so in-memory tracking is sound; `perStorage` shares it across trackers over the same storage object. Two markers stay by design: one whose claimants include an unknown outcome, since a lost reply may have followed a durable record, and one stranded by a crash, which a later read can never prove was refused because it did not create it. |
@@ -2370,6 +2388,33 @@ lands, so a failed page is advertised in full when re-offered. `withhold` names 
 cannot supply yet — simulated heads of queued pushes — and is consulted per batch, so a push queued
 mid-walk is honoured.
 
+### 4.23 `./subresource-ids`
+
+```ts
+export type SubresourceFragment = { name: string; id: string };   // both non-empty
+export type SubresourceId = { namespace?: string;                // non-empty when present
+  fragments: readonly SubresourceFragment[] };                     // at least one
+export function formatSubresourceId(value: SubresourceId): string;
+export function parseSubresourceId(id: string): SubresourceId;   // canonical spelling only
+```
+
+One encoding for `ObservationDescription.subresources`, so gatekeepers do not each invent a
+delimiter scheme. The Workshop treats the IDs as opaque, so the format belongs to the kit, not
+`workshop-shared`. Every component is `encodeURIComponent`-escaped and joined by `/`. Escaping keeps
+`/` out of every component, and each fragment contributes two, so an odd component count marks the
+leading namespace without a separate marker.
+
+**Fragments name resources, not predicates.** `gmail/inbox/<address>` identifies a mailbox. That
+no collaborator may ever see it is the verifier's mapping from that kind of resource to a check,
+not something the ID asserts. That keeps one vocabulary across gatekeepers whose policies differ.
+The namespace is a product family (Google's `gmail`, `drive`, `bigquery`), never the
+gatekeeper's own name; a single-product gatekeeper omits it.
+
+**One spelling per value.** The Workshop deduplicates and indexes requirements by string, so
+`parseSubresourceId` refuses any spelling `formatSubresourceId` would not produce, such as a
+lowercase or needless escape, instead of decoding it to a nearby resource. The 512-code-unit ID
+bound stays the overseer's to enforce; the kit does not keep a second copy.
+
 ## 5. Layer 2: the assembly
 
 **Layer-1 reconciliation, 2026-09-05 — the leaf contracts this section now builds on.** Observation
@@ -2935,7 +2980,7 @@ These are load-bearing; the fixture suite (§7 step 11) exists to prove each one
 - **workerd for nonce tests.** `crypto.subtle.timingSafeEqual` does not exist in Node, so the
   kit runs two vitest projects: `vitest.config.ts` (Node, pure modules: actions, observers,
   credentials, auth-retry, simulation, cache, connect-pages, endpoint, http-errors,
-  response-body, spec, http routing) and
+  response-body, subresource-ids, spec, http routing) and
   `vitest.worker.config.ts` (workerd: connect-nonce, connect-handshake, credential-expiry,
   cursors, the action queue, and the fixture). The workerd project loads
   `scripts/assert-workerd.ts` so a broken pool fails loudly. `connect-pages` and `endpoint` are
@@ -3103,8 +3148,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    refused at the type level; `claimBeforeApply` plus a plain throw restores `pending` and a second apply
    reaches the provider; an `ActionApplyError` records the failure, answers every replay from the
    record with no provider call, and is cleared only by `reject`; a claim a second bind finds
-   over the same journal is converted to `APPLY_OUTCOME_UNKNOWN_MESSAGE` by both verbs without
-   running a handler; and a journal write that fails *after* the handler succeeded leaves the
+   over the same journal is converted to `APPLY_OUTCOME_UNKNOWN_MESSAGE` by apply and removed as
+   `rejected` by the first reject, neither verb running a handler; and a journal write that fails *after* the handler succeeded leaves the
    record `claimed`, fires no hook, and is reported unknown on the next attempt rather than being
    rolled back to `pending`. `SerialTaskQueue`
    ordering and rejection isolation live in the **workerd** project
