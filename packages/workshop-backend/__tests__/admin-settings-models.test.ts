@@ -60,7 +60,12 @@ function adminSettings(vars: object = GATEWAY, name = `admin-settings-models-${+
       });
   const settings = (): Promise<AdminConfig["modelSettings"]> =>
       inDo(admin => admin.getAdminConfig().modelSettings);
-  return { inDo, stored, settings, put, mirror, name };
+  const order = (): Promise<Pick<AdminConfig, "providerOrder" | "modelOrder">> =>
+      inDo(admin => {
+        let { providerOrder, modelOrder } = admin.getAdminConfig();
+        return { providerOrder, modelOrder };
+      });
+  return { inDo, stored, settings, order, put, mirror, name };
 }
 
 describe("AdminSettings gateway model modes", () => {
@@ -1003,6 +1008,96 @@ describe("AdminSettings gateway providers", () => {
   });
 });
 
+// The providers and models the admin panel is shown, in order.
+const listed = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async admin => {
+  let { providerSettings, models } = (await admin.getSettings("admin")).gatewayModels!;
+  return { providerIds: providerSettings.map(({ provider }) => provider), models };
+});
+
+describe("AdminSettings gateway order", () => {
+  // The providers AI Gateway serves, in catalog order.
+  const SERVED = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"] as const;
+
+  it("lists a provider's models, added ones among them, in the order set", async () => {
+    const { inDo, order } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+    const anthropic = [...Object.keys(SUGGESTED_MODELS.anthropic), ADDED.id];
+    const reordered = [ADDED.id, ...anthropic.slice(0, -1).toReversed()];
+    await inDo(admin => admin.setGatewayModelOrder("anthropic", reordered, ACTOR));
+
+    expect(await order()).toStrictEqual(
+        { providerOrder: [], modelOrder: { anthropic: reordered } });
+    const { models } = await listed(inDo);
+    expect(models.filter(model => model.provider === "anthropic").map(model => model.id))
+        .toEqual(reordered);
+    // Another provider's order stays its own.
+    expect(models.filter(model => model.provider === "cloudflare").map(model => model.id))
+        .toEqual(Object.keys(SUGGESTED_MODELS.cloudflare));
+  });
+
+  it("gives a model added again under a removed ID its old place", async () => {
+    const { inDo } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+    await inDo(admin => admin.setGatewayModelOrder(
+        "anthropic", [ADDED.id, ...Object.keys(SUGGESTED_MODELS.anthropic)], ACTOR));
+    await inDo(admin => admin.removeGatewayModel(ADDED.id, ACTOR));
+    await inDo(admin => admin.addGatewayModel(ADDED, ACTOR));
+
+    const { models } = await listed(inDo);
+    expect(models.find(model => model.provider === "anthropic")?.id).toBe(ADDED.id);
+  });
+
+  it("lists the providers, and so their models, in the order set", async () => {
+    const { inDo, order } = adminSettings();
+    const reordered = ["anthropic", ...SERVED.filter(provider => provider !== "anthropic")];
+    await inDo(admin => admin.setGatewayProviderOrder(reordered, ACTOR));
+
+    expect(await order()).toStrictEqual({ providerOrder: reordered, modelOrder: {} });
+    const { providerIds, models } = await listed(inDo);
+    expect(providerIds).toEqual(reordered);
+    expect(models.map(model => model.provider)).toEqual([
+      ...Object.keys(SUGGESTED_MODELS.anthropic).map(() => "anthropic"),
+      ...Object.keys(SUGGESTED_MODELS.cloudflare).map(() => "cloudflare"),
+    ]);
+  });
+
+  it.each([
+    ["leaves a model out", (ids: string[]) => ids.slice(1)],
+    ["lists a model twice", (ids: string[]) => [ids[0]!, ...ids.slice(0, -1)]],
+    ["lists a model the provider lacks", (ids: string[]) => [...ids.slice(1), "gpt-6-sol"]],
+  ])("refuses a model order that %s, storing nothing", async (_, reorder) => {
+    const { inDo, order, put } = adminSettings();
+    const ids = Object.keys(SUGGESTED_MODELS.anthropic);
+    await expect(inDo(admin => admin.setGatewayModelOrder("anthropic", reorder(ids), ACTOR)))
+        .rejects.toThrow(
+            'The order of the "anthropic" models must list each of them exactly once.');
+    expect(await order()).toStrictEqual({ providerOrder: [], modelOrder: {} });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("refuses a model order for a provider that is off or not served", async () => {
+    const { inDo } = adminSettings();
+    await expect(inDo(admin => admin.setGatewayModelOrder(
+        "openai", Object.keys(SUGGESTED_MODELS.openai), ACTOR)))
+        .rejects.toThrow('Provider "openai" is off.');
+    await expect(inDo(admin => admin.setGatewayModelOrder("ollama", [], ACTOR)))
+        .rejects.toThrow('Provider "ollama" is not served through AI Gateway.');
+  });
+
+  it.each([
+    ["leaves a provider out", SERVED.slice(1)],
+    ["lists a provider twice", [SERVED[1], ...SERVED.slice(1)]],
+    ["lists a provider AI Gateway doesn't serve", [...SERVED.slice(1), "ollama"]],
+  ] as const)("refuses a provider order that %s, storing nothing", async (_, providers) => {
+    const { inDo, order, put } = adminSettings();
+    await expect(inDo(admin => admin.setGatewayProviderOrder([...providers], ACTOR)))
+        .rejects.toThrow(
+            "The provider order must list each provider AI Gateway serves exactly once.");
+    expect(await order()).toStrictEqual({ providerOrder: [], modelOrder: {} });
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
 // The first of Workers AI's suggested models, which is the one a test of that provider asks.
 const DEEPSEEK_FLASH = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 
@@ -1799,6 +1894,10 @@ describe("AdminSettings outside AI Gateway mode", () => {
     await expect(inDo(admin => admin.setDefaultReasoning("low", ACTOR)))
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setGatewayProviderEnabled("openai", true, ACTOR)))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayProviderOrder(["openai"], ACTOR)))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayModelOrder("openai", [], ACTOR)))
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.testGatewayProvider("anthropic", "admin")))
         .rejects.toThrow(NOT_GATEWAY);

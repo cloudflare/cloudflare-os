@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -911,6 +911,31 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     });
   }
 
+  /** List the providers the gateway serves, and so their models, in the order `providers` gives. */
+  async setGatewayProviderOrder(providers: AiModelProvider[], actor: AdminSettingActor)
+      : Promise<void> {
+    await this.#mutateAdminConfig(actor, config => {
+      let served = new GatewayModels(this.#requireGateway(), config).providerSettings;
+      assertPermutation(providers, served.map(({ provider }) => provider),
+          "The provider order must list each provider AI Gateway serves exactly once.");
+      return { ...config, providerOrder: providers };
+    });
+  }
+
+  /** List an enabled provider's gateway models, in any mode, in the order `modelIds` gives. */
+  async setGatewayModelOrder(provider: AiModelProvider, modelIds: string[],
+                             actor: AdminSettingActor): Promise<void> {
+    await this.#mutateAdminConfig(actor, config => {
+      let models = new GatewayModels(this.#requireGateway(), config);
+      assertGatewayProvider(provider);
+      if (!models.providers.has(provider)) throw new Error(`Provider "${provider}" is off.`);
+      let ids = models.all.filter(model => model.provider === provider).map(model => model.id);
+      assertPermutation(modelIds, ids,
+          `The order of the "${provider}" models must list each of them exactly once.`);
+      return { ...config, modelOrder: { ...config.modelOrder, [provider]: modelIds } };
+    });
+  }
+
   /**
    * Ask the first suggested model of a provider for a few tokens through the gateway, on behalf
    * of the admin `adminUserId`, and report what happened. A request that fails is a result. The
@@ -1378,6 +1403,15 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
     return this.admin.setGatewayProviderEnabled(
         provider, enabled, this.#actor("setGatewayProviderEnabled"));
+  }
+
+  setGatewayProviderOrder(providers: AiModelProvider[]): Promise<void> {
+    return this.admin.setGatewayProviderOrder(providers, this.#actor("setGatewayProviderOrder"));
+  }
+
+  setGatewayModelOrder(provider: AiModelProvider, modelIds: string[]): Promise<void> {
+    return this.admin.setGatewayModelOrder(
+        provider, modelIds, this.#actor("setGatewayModelOrder"));
   }
 
   testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest> {

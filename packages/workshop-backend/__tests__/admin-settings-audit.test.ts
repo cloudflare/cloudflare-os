@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_VALUE_LENGTH,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_VALUE_LENGTH, SUGGESTED_MODELS,
   type AdminAuditRecord, type AdminSettingRecord, type GatewayModel,
 } from "@gadgets/workshop-shared/api";
 import type { AdminSettingActor } from "../src/admin-access.js";
@@ -164,6 +164,20 @@ describe("AdminSettings records each admin's change before making it", () => {
       before: '["bp-a","bp-b","bp-c","bp-d"]',
       after: '["bp-d","bp-a","bp-b","bp-c"]',
     }]);
+  });
+
+  it("records a model order per provider, and a provider order whole", async () => {
+    const { inDo, records } = adminSettings(GATEWAY);
+    const anthropic = Object.keys(SUGGESTED_MODELS.anthropic);
+    await inDo(admin => admin.setGatewayModelOrder("anthropic", anthropic.toReversed(), ACTOR));
+    expect(records()[0]!.changes).toStrictEqual([{
+      setting: "modelOrder", key: "anthropic", after: JSON.stringify(anthropic.toReversed()),
+    }]);
+
+    const providers = ["anthropic", "cloudflare-auto-router", "cloudflare", "openai", "google"];
+    await inDo(admin => admin.setGatewayProviderOrder(providers, ACTOR));
+    expect(records()[1]!.changes).toStrictEqual(
+        [{ setting: "providerOrder", before: "[]", after: JSON.stringify(providers) }]);
   });
 
   it("records an added model alone, however many there are", async () => {

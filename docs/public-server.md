@@ -72,24 +72,28 @@ works where it is already in use) or **Disabled** (stops working everywhere, inc
 chats, gadget model bindings and scheduled tasks). The tab also sets reasoning levels and
 compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
 one real request. A decision model (Clef) has only a mode there: the settings and the test
-apply to language models.
+apply to language models. The tab also orders the providers, and each provider's models, added
+ones among them; the pickers list them in that order, and the first enabled model is the default
+for a new user or chat. A provider or model left out of an order, such as one a later release adds,
+follows the ordered ones in catalog order, the added models last.
 
 A deployment can start with Models tab settings already in place: `ADMIN_CONFIG_SEED` is a JSON
-object of the admin config's model fields (`modelModes`, `addedProviders`, `addedModels`,
-`modelSettings`, `defaultReasoning`, `userModelsEnabled` and `modelsDevSuggestions`), set as a
-secret or a JSON var. It decides those settings until an admin changes one of them on the Models
-tab. Until then, a changed seed applies on the next deploy, and other admin settings leave it in
-force. The first change stores the seeded values with it, and from then on the tab alone decides.
-A deployment that had a stored config before the seed was supported counts as changed already, so
-a seed never overrides its admins' choices. A seed that is not a JSON object, or that names any
-other field, is ignored whole and logged. Previews take theirs from the
+object of the admin config's model fields (`modelModes`, `addedProviders`, `providerOrder`,
+`addedModels`, `modelOrder`, `modelSettings`, `defaultReasoning`, `userModelsEnabled` and
+`modelsDevSuggestions`), set as a secret or a JSON var. It decides those settings until an admin
+changes one of them on the Models tab. Until then, a changed seed applies on the next deploy, and
+other admin settings leave it in force. The first change stores the seeded values with it, and from
+then on the tab alone decides. A deployment that had a stored config before the seed was supported
+counts as changed already, so a seed never overrides its admins' choices. A seed that is not a JSON
+object, or that names any other field, is ignored whole and logged. Previews take theirs from the
 `PREVIEW_ADMIN_CONFIG_SEED` repository secret, and fail to deploy if it is not a JSON object.
 
 The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
 which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
 pick the model behind each request by its difficulty and each candidate's cost. While the
 provider is on and the model enabled, Auto leads the model pickers and is the default for a new
-user or chat. It picks among the models of the other providers that are on, from
+user or chat, unless an admin moves another provider above it. It picks among the models of the
+other providers that are on, from
 [the Gateway's pool](https://developers.cloudflare.com/ai-gateway/features/auto-router/#models),
 which can include models this catalog doesn't list. The model's settings can instead list the
 models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,

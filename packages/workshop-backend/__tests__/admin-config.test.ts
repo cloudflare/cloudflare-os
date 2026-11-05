@@ -387,6 +387,34 @@ describe("admin config gateway models", () => {
         .toStrictEqual(config.addedProviders);
   });
 
+  it("keeps the provider order's providers, once each", () => {
+    expect(DEFAULT_ADMIN_CONFIG.providerOrder).toStrictEqual([]);
+    for (let stored of ["{}", '{"providerOrder":null}', '{"providerOrder":"openai"}']) {
+      expect(parseAdminConfig(stored).providerOrder, stored).toStrictEqual([]);
+    }
+    let config = parseAdminConfig(JSON.stringify(
+        { providerOrder: ["openai", "mistral", 3, "openai", "constructor", "cloudflare"] }));
+    expect(config.providerOrder).toStrictEqual(["openai", "cloudflare"]);
+    expect(parseAdminConfig(serializeAdminConfig(config)).providerOrder)
+        .toStrictEqual(config.providerOrder);
+  });
+
+  it("keeps each provider's model order as its IDs, once each", () => {
+    expect(DEFAULT_ADMIN_CONFIG.modelOrder).toStrictEqual({});
+    for (let stored of ["{}", '{"modelOrder":null}', '{"modelOrder":"openai"}']) {
+      expect(parseAdminConfig(stored).modelOrder, stored).toStrictEqual({});
+    }
+    let config = parseAdminConfig(JSON.stringify({ modelOrder: {
+      openai: ["gpt-6-luna", 3, "gpt-6-sol", "gpt-6-luna"],
+      anthropic: "claude-opus-5-5",
+      mistral: ["mistral-large"],
+    } }));
+    expect(config.modelOrder).toStrictEqual(
+        { openai: ["gpt-6-luna", "gpt-6-sol"], anthropic: [] });
+    expect(parseAdminConfig(serializeAdminConfig(config)).modelOrder)
+        .toStrictEqual(config.modelOrder);
+  });
+
   it("lets users add their own models unless that is stored as off", () => {
     expect(DEFAULT_ADMIN_CONFIG.userModelsEnabled).toBe(true);
     expect(parseAdminConfig(null).userModelsEnabled).toBe(true);
@@ -489,6 +517,8 @@ describe("ADMIN_CONFIG_SEED", () => {
     defaultReasoning: "medium",
     userModelsEnabled: false,
     modelsDevSuggestions: true,
+    providerOrder: ["cloudflare", "anthropic"],
+    modelOrder: { cloudflare: ["@cf/test/added"] },
   } as const;
   const seeded = (seed: unknown = SEED) =>
       effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED: JSON.stringify(seed) }));
@@ -562,6 +592,8 @@ describe("ADMIN_CONFIG_SEED", () => {
     expect(changesModelSettings(config, reordered)).toBe(false);
     expect(changesModelSettings(config, { ...config, modelModes: {} })).toBe(true);
     expect(changesModelSettings(config, { ...config, userModelsEnabled: true })).toBe(true);
+    expect(changesModelSettings(config, { ...config, providerOrder: ["anthropic"] })).toBe(true);
+    expect(changesModelSettings(config, { ...config, modelOrder: {} })).toBe(true);
   });
 
   it("is what the KV hot path reads, under the same rules", async () => {
@@ -648,6 +680,17 @@ describe("diffAdminConfig", () => {
         ]);
     expect(diffAdminConfig(configWith(), configWith({ banner: { text: "Hi", color: "info" } })))
         .toEqual([{ setting: "banner", key: "text", before: "", after: "Hi" }]);
+  });
+
+  it("records the model order per provider, and the provider order whole", () => {
+    let before = configWith({ modelOrder: { anthropic: ["a", "b"], openai: ["c"] } });
+    let after = configWith({
+      modelOrder: { anthropic: ["b", "a"], openai: ["c"] }, providerOrder: ["openai"],
+    });
+    expect(diffAdminConfig(before, after)).toEqual([
+      { setting: "providerOrder", before: "[]", after: '["openai"]' },
+      { setting: "modelOrder", key: "anthropic", before: '["a","b"]', after: '["b","a"]' },
+    ]);
   });
 
   it("records model modes per key, own keys only", () => {

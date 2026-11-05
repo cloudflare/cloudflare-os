@@ -91,8 +91,20 @@ export type AdminConfig = {
    * (see GatewayModels in ai-gateway.ts).
    */
   addedProviders: AiModelProvider[];
-  /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
+  /**
+   * The order an admin gave the AI Gateway providers, which their models are listed in. A provider
+   * left out follows the listed ones, in SUGGESTED_MODELS order.
+   */
+  providerOrder: AiModelProvider[];
+  /** Models added to the ones the deployment provides through AI Gateway, in the order added. */
   addedModels: GatewayModel[];
+  /**
+   * The order an admin gave each AI Gateway provider's models: provider -> model IDs, suggested
+   * and added alike. A model left out follows the listed ones in its own place, the suggested
+   * models in SUGGESTED_MODELS order and then the added ones in `addedModels` order. An ID that
+   * names none of the provider's models is ignored.
+   */
+  modelOrder: Partial<Record<AiModelProvider, string[]>>;
   /**
    * What an admin set for each AI Gateway model: model id -> settings, for the models that have
    * any. Absent ⇒ the model's built-in behaviour, at `defaultReasoning` where that is set. Only
@@ -178,7 +190,9 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   formats: [],
   modelModes: {},
   addedProviders: [],
+  providerOrder: [],
   addedModels: [],
+  modelOrder: {},
   modelSettings: {},
   defaultReasoning: null,
   userModelsEnabled: true,
