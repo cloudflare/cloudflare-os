@@ -2735,11 +2735,6 @@ function ChatInterface({
   const toasts = useKumoToastManager();
   const { currentUser } = useAuthenticatedApi();
   const unread = useUnreadState();
-  const readStateFor = (chatId: number) => {
-    if (!workspaceId || !unread?.state) return undefined;
-    return unread.state.chats.find(chat => chat.workspaceId === workspaceId && chat.chatId === chatId) ??
-      {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
-  };
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
     chats: new Map(),
@@ -5501,10 +5496,8 @@ function ChatInterface({
                       </div>
                     </div>
                     {!isRenaming && (
-                      <UnreadBadge count={(() => {
-                        const state = readStateFor(chat.id);
-                        return state?.unreadMessageCount ?? 0;
-                      })()} />
+                      <UnreadBadge count={unread?.state?.chats.find(item =>
+                        item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0} />
                     )}
                     {!isRenaming && (
                       <DropdownMenu>
@@ -5523,10 +5516,10 @@ function ChatInterface({
                           onClick={(event) => event.stopPropagation()}
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
-                          <DropdownMenu.Item disabled={!unread} onClick={() => {
+                          <DropdownMenu.Item onClick={() => {
                             void unread?.markRead(overseer, chat.id).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item disabled={!unread} onClick={() => {
+                          <DropdownMenu.Item onClick={() => {
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <DropdownMenu.Item

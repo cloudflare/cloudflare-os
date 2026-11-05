@@ -205,6 +205,7 @@ export const NotificationBridge = ({
       const previous = subscription;
       subscription = undefined;
       previous?.[Symbol.dispose]();
+      if (document.visibilityState !== "visible") return;
 
       let live = false;
       let released = false;
@@ -246,8 +247,10 @@ export const NotificationBridge = ({
       });
     };
 
+    document.addEventListener("visibilitychange", updateSubscription);
     updateSubscription();
     return () => {
+      document.removeEventListener("visibilitychange", updateSubscription);
       clearTimeout(retryTimer);
       const previous = subscription;
       subscription = undefined;

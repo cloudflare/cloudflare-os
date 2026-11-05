@@ -70,3 +70,17 @@ it("keeps bookkeeping and reasoning after a read response out of unread navigati
     {start: 5, end: 5, unreadEnd: 5, previousUnreadEnd: 0},
   ]);
 });
+
+it("counts attachment-only messages but excludes slash-command output", () => {
+  expect(timelineReadRanges([0, 1, 2], [
+    message(0),
+    message(1, {type: "message", message: "Generated", generatedBySlashCommandSequence: 0}),
+    message(2, {type: "message", message: "", attachments: [
+      {id: "attachment", mimeType: "text/plain", name: "notes.txt", size: 1},
+    ]}),
+  ])).toEqual([
+    {start: 0, end: 0, unreadEnd: 0, previousUnreadEnd: -1},
+    {start: 1, end: 1, unreadEnd: null, previousUnreadEnd: 0},
+    {start: 2, end: 2, unreadEnd: 2, previousUnreadEnd: 0},
+  ]);
+});

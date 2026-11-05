@@ -131,7 +131,7 @@ function RootComponent() {
         <TooltipProvider>
           <Toasty>
             <UnreadStateBridge authenticatedApi={authenticatedApi}
-              scope={workspace ? {workspaceId: workspace.params.id} : pathname === '/unread' ? 'unread' : 'summary'}>
+              scope={workspace ? {workspaceId: workspace.params.id} : 'summary'}>
               <NotificationBridge authenticatedApi={authenticatedApi} />
               <BrowserPushBridge />
               <NativeAppBridge />

@@ -152,7 +152,7 @@ flowchart LR
     User[User Durable Object]
     Cursor[(chatReadCursors: visible horizons, count, delivery receipt)]
     Outbox[(notificationOutbox: accepted alert payloads)]
-    Browser[Browser subscriber, visible or hidden]
+    Browser[Visible browser subscriber]
     Key[Install signing private key]
   end
 
@@ -207,8 +207,8 @@ during a send, plus the headers every signed request carries: install id, key id
 body digest, and signature. Permission details, chat content, gatekeeper grants, and provider
 credentials do not. Every subscribed browser tab is offered the notification at once; only visible
 tabs acknowledge it. Push is sent to every registered device if no tab acknowledges it within
-three seconds. Tabs retain their subscriptions while hidden,
-but hidden clients reject `notify()` without presenting a toast, preserving push as the fallback.
+three seconds. Hidden tabs release their alert subscriptions so they cannot delay push; a client
+that becomes hidden during delivery rejects `notify()` without presenting a toast.
 A tab resubscribes if a User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps the subscription and

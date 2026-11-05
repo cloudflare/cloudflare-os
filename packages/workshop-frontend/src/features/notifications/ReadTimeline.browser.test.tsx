@@ -15,6 +15,11 @@ import { TimelineReadItem } from "./TimelineReadItem";
 import { UnreadStateBridge } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 import { timelineReadRanges } from "./timelineReadRanges";
+
+vi.mock("@cloudflare/kumo", async importOriginal => ({
+  ...await importOriginal<typeof import("@cloudflare/kumo")>(),
+  useKumoToastManager: () => ({ add: () => {} }),
+}));
 import "../../styles.css";
 
 let root: Root | undefined, host: HTMLDivElement | undefined;
@@ -70,6 +75,10 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       },
     ],
   };
+  const updateChat = () => subscriber!.chatUpdated("workspace", 1, state.chats[0], {
+    unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount,
+    workspace: {workspaceId: "workspace", unreadChatCount: state.unreadChatCount, unreadMessageCount: state.unreadMessageCount},
+  });
   const markChatRead = vi.fn<Overseer["markChatRead"]>(async (_chatId, throughSequence = -1) => {
     state = {
       ...state,
@@ -77,7 +86,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       unreadChatCount: throughSequence === 2 ? 0 : 1, unreadMessageCount: throughSequence === 2 ? 0 : 1,
       chats: [{ ...state.chats[0], readThroughSequence: throughSequence, unreadMessageCount: throughSequence < 2 ? 1 : 0 }],
     };
-    await subscriber!.updated(state);
+    await updateChat();
   });
   const markChatUnread = vi.fn<Overseer["markChatUnread"]>(
     async (_chat, from = 0) => {
@@ -87,7 +96,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
         unreadChatCount: 1, unreadMessageCount: 1,
         chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, }],
       };
-      if (!ackFirst) await subscriber!.updated(state);
+      if (!ackFirst) await updateChat();
       return true;
     },
   );
@@ -138,7 +147,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
   );
   expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 0);
-  if (ackFirst) await act(async () => subscriber!.updated(state));
+  if (ackFirst) await act(async () => updateChat());
   await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
   const calls = markChatRead.mock.calls.length;
   await new Promise((resolve) => setTimeout(resolve, 400));
@@ -364,4 +373,43 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
     viewport.dispatchEvent(new Event("scroll"));
   });
   await vi.waitFor(() => expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
+});
+
+it("keeps a live reply stable in a caught-up viewport without inserting unread controls", async () => {
+  let subscriber!: RpcStub<UnreadStateSubscriber>;
+  let state: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: 0}]};
+  const api = {
+    markChatRead: vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined),
+    markChatUnread: async () => false,
+    subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
+      subscriber = next;
+      void next.updated(state);
+      return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
+    },
+  };
+  withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  const render = (sequences: number[]) => act(async () => root!.render(
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+      <View overseer={api} sequences={sequences} />
+    </UnreadStateBridge>,
+  ));
+  await render([0]);
+  await act(async () => userEvent.click(page.getByRole("button", {name: "Focus chat"})));
+  await render([0, 1]);
+  const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;
+  viewport.scrollTop = viewport.scrollHeight;
+  const before = viewport.scrollTop;
+  state = {...state, unreadChatCount: 1, unreadMessageCount: 1,
+    chats: [{...state.chats[0], unreadMessageCount: 1}]};
+  await act(() => subscriber.chatUpdated("workspace", 1, state.chats[0], {
+    unreadChatCount: 1, unreadMessageCount: 1,
+    workspace: {workspaceId: "workspace", unreadChatCount: 1, unreadMessageCount: 1},
+  }));
+  expect(host.querySelector("[data-unread-divider]")).toBeNull();
+  expect(host.textContent).not.toContain("Unread activity");
+  expect(viewport.scrollTop).toBe(before);
+  await vi.waitFor(() => expect(api.markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
 });

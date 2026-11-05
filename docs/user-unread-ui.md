@@ -7,7 +7,7 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 ## Web experience
 
 - One User DO subscription follows the active view: rollups only on ordinary pages, one workspace's
-  thread statuses in its editor, or unread-only rows in the inbox. Global/sidebar workspace badges
+  thread statuses in its editor, and rollup changes that refresh the inbox. Global/sidebar workspace badges
   use rollups, not the user's historical thread rows. Returning, reconnecting or changing views
   replaces the subscription with the same explicit scope; stale callbacks cannot replace new data.
 - Unread threads opens a live, newest-first inbox with a one-line latest-message preview, direct
@@ -30,23 +30,21 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   receipts then apply. The independently streamed history tail is never a substitute for that horizon.
   Bookkeeping can extend an item's receipt range, but divider placement and first-unread navigation
   use its countable text/attachment boundary, not trailing observations or checkpoints.
-- The visit's divider stays after reading, showing where new activity began. Explicit mark-unread
+- Live replies in a focused, caught-up pane do not insert an unread divider or toolbar.
+  The visit's divider stays after reading, showing where new activity began. Explicit mark-unread
   pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
   marking it read. This prevents immediate accidental acknowledgement, but does not cancel
   already-dispatched reads; a later-processed read can clear the manual unread.
-  The mark-unread result distinguishes a changed horizon from a no-op, so a missing local echo
-  cannot mask a later remote rewind. If the subscription reconnects while that command is pending,
-  refresh it once after the ACK before relying on its replacement snapshot; ordinary deltas do not
-  cause another request.
+  A local unread command pauses the visit immediately. Only the latest local action can restore
+  its previous UI after failure; overlapping failures do not reconstruct an action history.
 - Failed read commands display an error without pretending the state advanced. An inbox query
   failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
 
 `UnreadStateBridge` releases its live callback while hidden, and refreshes on return or transport/DO
 reset. Unread support therefore adds no hidden-tab callback keeping the User DO resident. Background native badges use the
 separate push-service path; hidden windows never issue automatic read receipts.
-`NotificationBridge` also retains its independent alert subscription while hidden, but rejects
-hidden toast delivery so the existing mobile-push fallback still works. Receiving an unread
-snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
+`NotificationBridge` also releases its independent alert subscription while hidden so unavailable
+tabs cannot delay mobile push. Receiving an unread snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
 page visibility.
 
 ## Native integration scope

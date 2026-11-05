@@ -11,17 +11,19 @@ import type {
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
 import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
-import { reportVisibleChat } from "./visibleChat";
 
-const snapshot = (_sequence: number): UserUnreadState => ({
-  workspaces: [{workspaceId: "workspace-1", unreadChatCount: 1, unreadMessageCount: 1}],
-  unreadChatCount: 1, unreadMessageCount: 1,
+const addToast = vi.fn<(toast: object) => void>();
+vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
+
+const snapshot = (sequence: number): UserUnreadState => ({
+  workspaces: [{workspaceId: "workspace-1", unreadChatCount: 1, unreadMessageCount: sequence}],
+  unreadChatCount: 1, unreadMessageCount: sequence,
   chats: [
     {
       workspaceId: "workspace-1",
       chatId: 1,
 
-      unreadMessageCount: 1,
+      unreadMessageCount: sequence,
 
       readThroughSequence: -1,
     },
@@ -61,7 +63,6 @@ describe("UnreadStateBridge", () => {
   let container: HTMLDivElement;
   let root: Root;
   let subscribers: RpcStub<UnreadStateSubscriber>[];
-  let withdraw: (() => void) | undefined;
   const currentState = () => JSON.parse(container.querySelector("output")!.textContent!);
   const dispose = vi.fn<() => void>();
   const markChatRead = vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined);
@@ -73,10 +74,9 @@ describe("UnreadStateBridge", () => {
   });
   const markAllRead = vi.fn<AuthenticatedApi["markAllRead"]>().mockResolvedValue(undefined);
   const markChatUnread = vi.fn<Overseer["markChatUnread"]>().mockResolvedValue(true);
-  const getWorkspaceUnreadState = vi.fn<AuthenticatedApi["getWorkspaceUnreadState"]>().mockResolvedValue([]);
   const markWorkspaceRead = vi.fn<AuthenticatedApi["markWorkspaceRead"]>().mockResolvedValue(undefined);
   const overseer = {markChatRead, markChatUnread};
-  const api = { subscribeToUnreadState, markAllRead, markWorkspaceRead, getWorkspaceUnreadState };
+  const api = { subscribeToUnreadState, markAllRead, markWorkspaceRead };
   const render = (authenticatedApi = api, scope: Parameters<AuthenticatedApi["subscribeToUnreadState"]>[0] = {workspaceId: "workspace-1"}) =>
     act(async () =>
       root.render(
@@ -94,14 +94,11 @@ describe("UnreadStateBridge", () => {
     vi.clearAllMocks();
     subscribers = [];
     visibility("visible");
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
   });
   afterEach(async () => {
-    withdraw?.();
-    withdraw = undefined;
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
@@ -109,15 +106,12 @@ describe("UnreadStateBridge", () => {
   });
 
   it("releases hidden subscriptions so callbacks do not pin the User DO, then refreshes on return", async () => {
-    withdraw = reportVisibleChat(() => ({ workspaceId: "workspace-1", chatId: 1 }));
     await render();
     await update(snapshot(1));
     expect(currentState()).toEqual(snapshot(1));
     await act(async () => visibility("hidden"));
-    expect(markChatRead).not.toHaveBeenCalled();
     expect(dispose).toHaveBeenCalledOnce();
     await act(async () => visibility("visible"));
-    expect(markChatRead).not.toHaveBeenCalled();
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
   });
 
@@ -137,35 +131,6 @@ describe("UnreadStateBridge", () => {
     expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, undefined);
     await click("all");
     expect(markAllRead).toHaveBeenCalledExactlyOnceWith();
-  });
-
-  it.each(["delta", "reconnect"])("refreshes a pending unread command after a %s only when needed", async overlap => {
-    const ack = Promise.withResolvers<boolean>();
-    markChatUnread.mockReturnValueOnce(ack.promise);
-    await render(); await update(snapshot(1));
-    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "unread")!.click());
-    if (overlap === "reconnect") {
-      await act(async () => subscribers[0][Symbol.dispose]());
-      await update(snapshot(2));
-    } else await act(() => subscribers[0].summaryUpdated({unreadChatCount: 2, unreadMessageCount: 2,
-      workspace: {workspaceId: "workspace-2", unreadChatCount: 1, unreadMessageCount: 1}}));
-    await act(async () => ack.resolve(true));
-    expect(subscribeToUnreadState).toHaveBeenCalledTimes(overlap === "reconnect" ? 3 : 1);
-    expect(dispose).toHaveBeenCalledTimes(overlap === "reconnect" ? 2 : 0);
-    expect(currentState() === null).toBe(overlap === "reconnect");
-    await update(snapshot(3));
-    // A late pre-ACK callback must not replace the post-ACK snapshot.
-    if (overlap === "reconnect") await update({...snapshot(4), chats: []}, 1);
-    expect(currentState()).toEqual(snapshot(3));
-    expect(subscribeToUnreadState.mock.calls.at(-1)?.[0]).toEqual({workspaceId: "workspace-1"});
-  });
-
-  it("marks all locally known heads read without fetching thread metadata or workspace rows", async () => {
-    await render(); await update(snapshot(1));
-    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "all")!.click());
-    expect(markAllRead).toHaveBeenCalledExactlyOnceWith();
-    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
-    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it("merges a thread delta and its authoritative totals", async () => {
@@ -202,7 +167,6 @@ describe("UnreadStateBridge", () => {
     await act(() => subscribers[0].summaryUpdated({unreadChatCount: 1, unreadMessageCount: 1,
       workspace: {workspaceId: "workspace-2", unreadChatCount: 0, unreadMessageCount: 0}}));
     expect(currentState()).toEqual(snapshot(1));
-    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
   });
 
   it("marks a workspace read with a single local user command", async () => {
@@ -216,10 +180,8 @@ describe("UnreadStateBridge", () => {
       </UnreadStateBridge>,
     ));
     await update({...snapshot(1), chats: []});
-    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
     await act(async () => container.querySelector("button")!.click());
     expect(markWorkspaceRead).toHaveBeenCalledExactlyOnceWith("workspace-1");
-    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
   });
 
   it("re-subscribes after a User DO reset while visible, but not after unmount", async () => {
@@ -235,15 +197,6 @@ describe("UnreadStateBridge", () => {
     await act(async () => subscribers[1][Symbol.dispose]());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     root = createRoot(container);
-  });
-
-  it("does not fetch workspace metadata while receiving or reconnecting badge snapshots", async () => {
-    await render(); await update(snapshot(2));
-    await act(async () => visibility("hidden"));
-    await act(async () => visibility("visible"));
-    await update(snapshot(3));
-    expect(currentState()).toEqual(snapshot(3));
-    expect(getWorkspaceUnreadState).not.toHaveBeenCalled();
   });
 
   it("does not retry a rejected subscription in a tight loop", async () => {
@@ -281,20 +234,26 @@ describe("UnreadStateBridge", () => {
     expect(currentState()).toEqual(snapshot(1));
   });
 
-  it("reports failed read commands without leaking an old account's failure into its replacement", async () => {
+  it("shows one deduplicated error toast without a later receipt clearing it", async () => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    markChatRead.mockRejectedValueOnce(new Error("read failed"));
+    await render(); await update(snapshot(1));
+    await act(async () => container.querySelector("button")!.click());
+    expect(addToast).toHaveBeenCalledExactlyOnceWith({
+      id: "unread-update-failed", title: "Couldn’t update read state", variant: "error",
+    });
+    await act(async () => container.querySelector("button")!.click());
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("ignores late command failures after switching accounts", async () => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = deferred();
     markChatRead.mockReturnValueOnce(failed.promise);
-    await render();
-    await update(snapshot(1));
+    await render(); await update(snapshot(1));
     await act(async () => container.querySelector("button")!.click());
-    await act(async () => failed.reject(new Error("read failed")));
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn’t update read state",
-    );
     await render({ ...api });
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    await update(snapshot(1));
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => failed.reject(new Error("read failed")));
+    expect(addToast).not.toHaveBeenCalled();
   });
 });

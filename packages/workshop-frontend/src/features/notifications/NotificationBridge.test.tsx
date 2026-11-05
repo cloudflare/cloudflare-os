@@ -17,7 +17,6 @@ const router = { navigate: vi.fn<(options: object) => void>() };
 
 vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
-vi.mock("./UnreadStateBridge", () => ({ UnreadStateBridge: () => null }));
 
 const notification: UserNotification = {
   id: "notification-1",
@@ -257,7 +256,7 @@ describe("NotificationBridge", () => {
     Reflect.deleteProperty(window, "webkit");
   });
 
-  it("keeps one subscription across rerenders and declines while hidden", async () => {
+  it("keeps one subscription across rerenders and releases it while hidden", async () => {
     await render();
     // Kumo returns a new toast manager whenever its consumer renders; resubscribing on each one
     // would fan a single notification out through accumulated subscribers.
@@ -265,7 +264,7 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
 
     await act(async () => setVisibility("hidden"));
-    expect(dispose).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
     await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
     expect(addToast).not.toHaveBeenCalled();
   });
@@ -279,25 +278,36 @@ describe("NotificationBridge", () => {
     await act(() => subscribers[1].notify(notification));
     expect(addToast).toHaveBeenCalledTimes(1);
 
-    // A DO reset while hidden also re-subscribes; visibility itself does not churn the listener.
+    // Hidden pages cannot delay push or restart a released subscription.
     await act(async () => setVisibility("hidden"));
     await release(1);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
     await act(async () => setVisibility("visible"));
     await act(async () => root.unmount());
+    expect(dispose).toHaveBeenCalledTimes(3);
     await release(2);
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(3);
     root = createRoot(container);
   });
 
-  it("subscribes when mounted hidden without treating an unseen toast as delivered", async () => {
+  it("waits for visibility before subscribing", async () => {
     setVisibility("hidden");
     await render();
-    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
-    await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
+    expect(authenticatedApi.subscribeToNotifications).not.toHaveBeenCalled();
     await act(async () => setVisibility("visible"));
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
     await act(() => subscribers[0].notify(notification));
     expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("releases the old session on replacement and unmount", async () => {
+    await render();
+    authenticatedApi = {...authenticatedApi};
+    await render();
+    expect(dispose).toHaveBeenCalledOnce();
+    await act(async () => root.unmount());
+    expect(dispose).toHaveBeenCalledTimes(2);
+    root = createRoot(container);
   });
 
   it("recovers when the subscriber is released before a successful setup ACK", async () => {
@@ -329,7 +339,7 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
   });
 
-  it("retries failed setup with capped backoff, then keeps the recovered subscription while hidden", async () => {
+  it("bounds recovery attempts and cancels retries while hidden", async () => {
     vi.useFakeTimers();
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     let unavailable = true;
@@ -340,28 +350,18 @@ describe("NotificationBridge", () => {
     });
     try {
       await render();
-      for (const [index, delay] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000].entries()) {
-        await act(async () => vi.advanceTimersByTime(delay - 1));
-        expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(index + 1);
-        if (index === 6) unavailable = false;
-        await act(async () => vi.advanceTimersByTime(1));
-        expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(index + 2);
-      }
+      await act(async () => vi.advanceTimersByTimeAsync(120_000));
+      const attempts = authenticatedApi.subscribeToNotifications.mock.calls.length;
+      expect(attempts).toBeGreaterThan(1);
+      expect(attempts).toBeLessThan(12);
+      await act(async () => setVisibility("hidden"));
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(attempts);
+      unavailable = false;
+      await act(async () => setVisibility("visible"));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(attempts + 1);
       await act(() => subscribers.at(-1)!.notify(notification));
       expect(addToast).toHaveBeenCalledOnce();
-      const calls = authenticatedApi.subscribeToNotifications.mock.calls.length;
-      await act(async () => setVisibility("hidden"));
-      await act(async () => vi.advanceTimersByTime(60_000));
-      await act(async () => setVisibility("visible"));
-      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls);
-
-      // A later setup failure starts at the short delay again, not the previous outage's cap.
-      unavailable = true;
-      await release(subscribers.length - 1);
-      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls + 1);
-      unavailable = false;
-      await act(async () => vi.advanceTimersByTime(1_000));
-      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(calls + 2);
     } finally {
       vi.useRealTimers();
     }

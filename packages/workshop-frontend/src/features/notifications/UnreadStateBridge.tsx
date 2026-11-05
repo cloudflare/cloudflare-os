@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Button } from "@cloudflare/kumo";
+import { useKumoToastManager } from "@cloudflare/kumo";
 import { RpcStub, RpcTarget } from "capnweb";
 import type {
   AuthenticatedApi,
@@ -34,13 +34,11 @@ class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   }
 }
 
-type UnreadUpdateListener = (state: UserUnreadState, replacement: UserUnreadState) => void;
+type UnreadUpdateListener = (state: UserUnreadState) => void;
 
 type UnreadContextValue = {
   state?: UserUnreadState;
-  /** Last full replacement, retaining its identity across deltas so visits can recognize reconnects. */
-  replacementSnapshot?: UserUnreadState;
-  /** Reconcile command echoes on receipt, before React can batch consecutive state updates. */
+  /** Process server transitions before React can batch consecutive state updates. */
   subscribeToUpdates: (listener: UnreadUpdateListener) => () => void;
   markRead: (overseer: Pick<Overseer, "markChatRead">, chatId: number, throughSequence?: number) => Promise<void>;
   markAllRead: () => Promise<void>;
@@ -72,15 +70,18 @@ export const UnreadStateBridge = ({
     api: RpcStub<AuthenticatedApi>;
     scopeKey: string;
     state: UserUnreadState;
-    replacement: UserUnreadState;
   }>();
-  const [failure, setFailure] = useState<{ api: RpcStub<AuthenticatedApi> }>();
+  const toasts = useKumoToastManager();
+  const currentApi = useRef<RpcStub<AuthenticatedApi> | undefined>(authenticatedApi);
+  useEffect(() => {
+    currentApi.current = authenticatedApi;
+    return () => { currentApi.current = undefined; };
+  }, [authenticatedApi]);
   const updateListeners = useRef(new Set<UnreadUpdateListener>());
   const subscribeToUpdates = useCallback((listener: UnreadUpdateListener) => {
     updateListeners.current.add(listener);
     return () => { updateListeners.current.delete(listener); };
   }, []);
-  const refreshAfterReconnect = useRef<(() => void) | undefined>(undefined);
   // Don't display another authenticated session's state while its replacement is connecting.
   const scopeKey = typeof scope === "string" ? scope : `workspace:${scope.workspaceId}`;
   const state = snapshot?.api === authenticatedApi && snapshot.scopeKey === scopeKey ? snapshot.state : undefined;
@@ -94,7 +95,7 @@ export const UnreadStateBridge = ({
     let retryDelay = 1_000;
     const publish = () => {
       if (!latest) return;
-      for (const listener of updateListeners.current) listener(latest.state, latest.replacement);
+      for (const listener of updateListeners.current) listener(latest.state);
       setSnapshot(latest);
     };
     const subscribe = () => {
@@ -102,11 +103,6 @@ export const UnreadStateBridge = ({
       retryTimer = undefined;
       if (!active || document.visibilityState === "hidden") return;
       const currentGeneration = ++generation;
-      refreshAfterReconnect.current = () => {
-        // A replacement received during a mutation need not include its effect. Fence that
-        // subscription and fetch once after the ACK; a still-hidden web view waits for foreground.
-        if (active && currentGeneration !== generation) subscribe();
-      };
       latest = undefined;
       // Cached horizons cannot authorize receipts while the replacement snapshot is pending.
       setSnapshot(undefined);
@@ -118,7 +114,7 @@ export const UnreadStateBridge = ({
       const subscriber = new UnreadSubscriber(
         (next) => {
           if (!active || currentGeneration !== generation) return;
-          latest = {api: authenticatedApi, scopeKey, state: next, replacement: next};
+          latest = {api: authenticatedApi, scopeKey, state: next};
           publish();
           clearTimeout(retryTimer);
           retryTimer = undefined;
@@ -187,11 +183,11 @@ export const UnreadStateBridge = ({
 
   const perform = async <T,>(operation: Promise<T>): Promise<T> => {
     try {
-      const result = await operation;
-      setFailure((previous) => (previous?.api === authenticatedApi ? undefined : previous));
-      return result;
+      return await operation;
     } catch (cause) {
-      setFailure({ api: authenticatedApi });
+      if (currentApi.current === authenticatedApi) {
+        toasts.add({ id: "unread-update-failed", title: "Couldn’t update read state", variant: "error" });
+      }
       logRpcFailure("Failed to update read state:", cause);
       throw cause;
     }
@@ -201,34 +197,14 @@ export const UnreadStateBridge = ({
     <UnreadContext.Provider
       value={{
         state,
-        replacementSnapshot: state ? snapshot?.replacement : undefined,
         subscribeToUpdates,
         markRead: (overseer, chatId, through) => perform(overseer.markChatRead(chatId, through)),
         markAllRead: () => perform(authenticatedApi.markAllRead()),
         markWorkspaceRead: (workspaceId) => perform(authenticatedApi.markWorkspaceRead(workspaceId)),
-        markUnread: (overseer, chatId, from) =>
-          perform((async () => {
-            const refresh = refreshAfterReconnect.current;
-            const changed = await overseer.markChatUnread(chatId, from);
-            refresh?.();
-            return changed;
-          })()),
+        markUnread: (overseer, chatId, from) => perform(overseer.markChatUnread(chatId, from)),
       }}
     >
-      <div className="flex h-full min-h-0 flex-col">
-        {failure?.api === authenticatedApi && (
-          <div
-            role="alert"
-            className="flex shrink-0 items-center justify-center gap-2 bg-kumo-danger-tint p-2 text-sm text-kumo-danger"
-          >
-            Couldn’t update read state. Please try again.
-            <Button size="xs" variant="ghost" onClick={() => setFailure(undefined)}>
-              Dismiss
-            </Button>
-          </div>
-        )}
-        <div className="min-h-0 flex-1">{children}</div>
-      </div>
+      {children}
     </UnreadContext.Provider>
   );
 };
