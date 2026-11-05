@@ -876,7 +876,7 @@ its resource types.
 
 | Gatekeeper | Resource type / binding | Strategy | `addObserver` behavior |
 |---|---|---|---|
-| **cloudflare** | (no resources — auth only) | **N** | Never in scope; nothing to implement. |
+| **cloudflare** | Workers Observability (account / one Worker) | **B**, kernel-checked (§10) | Every read, through either binding, reports the account it queried as `account/<accountId>`; no Worker is a subresource. `verifyObserverAccess` allows an observer only if an account-wide telemetry read through their own connection succeeds in that account: 400/401/403/404 deny, anything else fails the call. The observer's `UserAccount` reuses an allowed answer for up to 15 minutes and a denial for up to 15 seconds, counted from when it asked Cloudflare and only until its credentials are next installed; a connection with no usable credentials, or whose grant lacks `workers-observability.read`, is denied without asking, and a check a reconnect overtakes fails. `addObserver` still checks live, for reads made before reads reported a subresource, the same read for an account binding and one filtered to the Worker's name for a Worker binding. |
 | **email** | Email Mailbox | **D** | No-op. Synthetic per-gadget inbound address; the gadget's collaborators are the intended audience. |
 | **spotify** | Account / Playlist | **D** | No-op. Personal, low-stakes; no corp-security concern. |
 | **homeassistant** | Instance / Area / Label / Device / Entity | **D** | No-op. Self-hosted personal; the pasted long-lived token is all-or-nothing and HA exposes no per-user/per-entity ACL oracle to check against. |
