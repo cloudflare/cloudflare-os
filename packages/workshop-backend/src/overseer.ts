@@ -26,7 +26,7 @@ import {
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
-import { GitCacheImpl, WorkspaceGitCache, commitIdentityForAuthor } from "./git-cache";
+import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
 import type { BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
@@ -3237,10 +3237,12 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
   }
 
-  // All publication paths validate durable sources before ACK; text-only gadgets cannot
-  // acquire byte state that their runtime cannot compile or display.
+  // All publication paths validate durable sources before ACK. No text may hold a NUL, which
+  // the git store reads back as binary; and text-only gadgets cannot acquire byte state, which
+  // their runtime cannot compile or display.
   #validateByteChanges(change: CodeChange): void {
-    for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
+    for (const [id, entries] of Object.entries(change)) for (const [path, file] of entries) {
+      assertNoNul(path, file);
       if (!("setBytes" in file)) continue;
       if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
       this.gitCache.assertBlob(file.setBytes.oid, file.setBytes.byteLength);
@@ -4382,6 +4384,8 @@ class OverseerImpl implements AgentHooks {
       }
       let commitId: string;
       try {
+        // Ingestion refuses NUL (#validateByteChanges); a chat may hold rows from before it did.
+        for (let [path, text] of files) assertNoNul(path, {set: text});
         commitId = await this.gitCache.writeFilesAsCommit(files, {
           parents,
           author: identity,
