@@ -1683,10 +1683,9 @@ async function runAgentPass(
   // the file at the head it pins. Pinned workpieces -- and gadgets with no committed code, whose
   // files exist only in the chat's change stream -- read from the session content, unstamped: it
   // is never stale within an epoch (a byte-backed file is read from its blob, as unpinned reads
-  // are). Worktree session content is lazy: a path not yet touched or read resolves against the
-  // pinned base commit, decoded whole into the session text so that edits apply against it (with
-  // descriptive errors for symlinks, submodules, and binary content). A removed path stays
-  // removed (readWorktreeBase).
+  // are). Worktree session content is lazy: a path not yet touched resolves against the pinned
+  // base commit, read from its blob and stamped like an unpinned read; only an edit decodes it
+  // whole into the session text (readWorktreeBase). A removed path stays removed.
   let readToolFile = async (id: WorkpieceId, filename: string)
       : Promise<{source: LineSource, oid?: string} | undefined> => {
     if (!pinnedGadgets.has(id)) {
@@ -1700,8 +1699,15 @@ async function runAgentPass(
     if (value !== undefined && typeof value !== "string") {
       return {source: {kind: "blob", reader: await hooks.openBlob(value.oid)}};
     }
-    let text = value ?? await readWorktreeBase(id, filename);
-    return text === undefined ? undefined : {source: {kind: "text", text}};
+    if (value === undefined) {
+      // A pinned worktree's untouched path, read from its pin base by blob, never faulted into
+      // the session: only an edit needs the whole text (readWorktreeBase).
+      let base = worktreeBase(id);
+      if (base === undefined || worktreeRemovedPaths.get(id)?.has(filename)) return undefined;
+      let file = await hooks.openFileAtCommit(base, filename);
+      return file && {source: {kind: "blob", reader: file.reader}, oid: file.oid};
+    }
+    return {source: {kind: "text", text: value}};
   };
 
   // Seeds the base texts a change's worktree edits need before it applies to the session
@@ -2341,8 +2347,9 @@ async function runAgentPass(
                     };
                   } else if (toolCall.observedOid !== undefined ||
                              toolCall.observedCommit !== undefined) {
-                    // The read was served from committed code (the workpiece was unpinned; see
-                    // the live tool): reproduce exactly the text the model saw, from the blob
+                    // The read was served from committed code (the workpiece was unpinned, or
+                    // it was a pinned worktree's untouched path; see the live tool): reproduce
+                    // exactly the text the model saw, from the blob
                     // the read stamped -- whatever the commit holds now. Deliberately no
                     // staleness check: the model's context must not change from one turn to
                     // the next on account of other chats' accepts (that breaks prompt caching

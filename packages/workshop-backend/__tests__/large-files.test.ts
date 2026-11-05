@@ -99,6 +99,33 @@ describe("large files in the agent's file tools", () => {
     expect(counter.reads).toBeLessThanOrEqual(4);
   }), 60_000);
 
+  it("reads a window of an untouched large file the same way once the worktree is pinned",
+      () => inKernel(async impl => {
+    const lines = Array.from({length: 1_000_000}, (_, i) => `line ${i + 1}`);
+    const {user, chatId, commit, create} = await chatWithWorktree(impl, new Map([
+      // A NUL outside the window, which a whole-file decode would refuse as binary.
+      ["big.txt", lines.join("\n") + "\n\0\n"], ["small.txt", "small\n"],
+    ]));
+    const counter = await countChunkReads(impl, commit, "big.txt");
+
+    const results = await scriptedTurn(impl, chatId, [[create], [
+      // Pins the worktree.
+      fauxToolCall("writeFile", {workpiece: "REPO", filename: "small.txt", content: "changed\n"}),
+    ], [
+      fauxToolCall("readFile", {workpiece: "REPO", filename: "big.txt", startLine: 500_000,
+                                lineCount: 2}),
+    ]]);
+    expect(results.map(result => result.isError)).toEqual([false, false, false]);
+    expect(results[2].text).toBe("line 500000\nline 500001\n\n" +
+        "[lines 500000-500001 of 1000001; next startLine: 500002]");
+    expect(counter.reads).toBeLessThanOrEqual(4);
+
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Follow up");
+    counter.reads = 0;
+    expect(await scriptedTurn(impl, chatId, [])).toEqual(results);
+    expect(counter.reads).toBeLessThanOrEqual(4);
+  }), 60_000);
+
   it("edits a 9 MB file with a change carrying only the span", () => inKernel(async impl => {
     const big = "0123456789abcdef\n".repeat(9_000_000 / 17) + "the end\n";
     const {chatId, create} = await chatWithWorktree(impl, new Map([["big.txt", big]]));
