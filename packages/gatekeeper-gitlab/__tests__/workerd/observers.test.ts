@@ -596,6 +596,21 @@ describe("addObserver", () => {
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
   });
 
+  it.each(["redirect", "reused path"])("admits a new binding by its pinned project after a rename with %s", async scenario => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
+    gitlab.member("alice", { [PROJECT_ID]: REPORTER });
+    gitlab.member("bob", { [OTHER_ID]: MAINTAINER_LEVEL });
+    const gk = await binding({ pinned: true, reportsSubresources: true });
+    gitlab.projects.set(PROJECT_ID, "acme/renamed");
+    if (scenario === "redirect") gitlab.formerPaths.set(PATH, PROJECT_ID);
+    else gitlab.projects.set(OTHER_ID, PATH);
+
+    expect(await gk.admit(alice)).toEqual({ ok: undefined });
+    expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
+  });
+
   it("keeps legacy admission closed on a freed path's redirect after a plain rename", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();

@@ -146,12 +146,12 @@ can still hold confidential issues and internal notes; job logs and test reports
   membership can still admit them for 15 minutes; it asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
   grant dead: the check fails. Each open also asks, uncached and never with the binding owner's
-  token, for what the workspace read before reads reported the project: the same question of the
-  project the binding's path names now, as releases that read by path asked, and, once the binding
-  has pinned an id, of that id, since what those releases read may have come from a project that
-  took the path. A binding with no id yet has read nothing by id, so the path is all it is checked
-  by. Job logs and test reports those releases read still need their role the same way. Caches
-  those releases filled are discarded on upgrade.
+  token, for the stored project id when there is one. Bindings created before subresource reporting
+  additionally require the project their original path names now, since earlier path-addressed
+  reads may have disclosed a project that later took it. For those older bindings, no stored id
+  means the path is all they are checked by; recorded CI data still needs its role the same way.
+  Newly minted `reportsSubresources: true` bindings have no path-addressed history and never check
+  that original path at admission. Caches filled before conversion are discarded on upgrade.
 - **Historical export.** Newly created bindings are marked `reportsSubresources: true` in their
   immutable props and return `[]` from the read-only `getHistoricalSubresources()`: all their reads
   already reported their requirements. Older bindings fail the export rather than inventing an
@@ -286,13 +286,14 @@ receives them.
 ### "The GitLab project has been renamed or transferred"
 
 An owner sees this if the project moved before the connection pinned its id (see
-[Sharing with collaborators](#sharing-with-collaborators)). Collaborator admission can fail after
-**any** rename or transfer, even when the id was already pinned and the owner's reads still work:
-the retained legacy check always asks for access by the original path as well as the stored id.
-GitLab redirects a freed path, and the gatekeeper deliberately refuses that redirect. Legacy
-history cannot prove which project earlier path-addressed reads disclosed, so a redirect cannot
-safely waive that check. Re-bind the connection at the new path for future use; the old binding's
-legacy requirements remain enforced until the kernel can import complete historical requirements.
+[Sharing with collaborators](#sharing-with-collaborators)). Collaborator admission on a binding
+created before subresource reporting can fail after **any** rename or transfer, even when its id
+was already pinned and the owner's reads still work: its retained legacy check asks for the
+original path as well as the stored id. GitLab redirects a freed path, and the gatekeeper refuses
+that redirect because it cannot prove earlier path-addressed history. Re-bind at the new path for
+future use; the old binding's legacy requirements remain enforced until the kernel can import
+complete history. A newly minted `reportsSubresources: true` binding checks only its stored id,
+so sharing follows a pinned project through renames and old-path reuse.
 
 ### "GitLab credentials have expired or been revoked"
 

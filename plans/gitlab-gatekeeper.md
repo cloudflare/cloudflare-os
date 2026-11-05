@@ -1028,7 +1028,9 @@ instead throw: no stored state identifies every project previously read by path,
 The exporter neither probes the current path nor modifies history; retained admission checks
 continue to enforce it until a complete history can be imported by the kernel. In particular,
 legacy admission still refuses a freed path's redirect after any rename or transfer, including
-bindings pinned under this release. Waiving that path check would silently drop unproven history.
+older bindings first pinned under this release. Waiving that path check would drop unproven history.
+Newly minted `reportsSubresources: true` bindings have no such history and check only the stored id
+at admission, so sharing follows that project through renames and reuse of its old path.
 Returned issue and merge request references follow GitLab's current `web_url`, not the old path
 used as the REST ID-rewrite key; same-project simulation compares their current source and target.
 

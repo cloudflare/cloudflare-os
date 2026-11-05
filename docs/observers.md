@@ -917,10 +917,12 @@ its resource types.
 GitLab's read-only historical exporter returns `[]` only for bindings minted with
 `reportsSubresources: true`; older bindings throw rather than guess the identities behind past
 path-addressed reads. A later numeric project pin and the CI role markers cannot establish a
-complete history. Until the kernel imports complete requirements, its legacy admission checks
-remain, including refusing a freed path's redirect after any rename or transfer even when modern
-reads by pinned id still succeed. A redirect is not evidence that no earlier read reached a
-replacement project that subsequently moved away.
+complete history. Until the kernel imports complete requirements, older bindings' legacy admission
+checks remain, including refusing a freed path's redirect after a rename or transfer even when
+reads by pinned id still succeed. A redirect cannot prove that no earlier read reached a replacement
+project that subsequently moved away. Newly minted `reportsSubresources: true` bindings have no
+path-addressed history and check only their stored project id at admission, so renames and old-path
+reuse do not prevent sharing them.
 
 ### 9.3 The "broad binding" lens
 

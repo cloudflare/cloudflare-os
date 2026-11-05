@@ -1979,10 +1979,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * membership reaches Reporter on the project the binding's path names, as releases that addressed
    * it by path asked, and on the project the binding is pinned to, by its stored id, when it has
    * one: those releases followed the path, so what they read may have come from a project that
-   * took it, and nothing stored can tell which bindings read that way. Admission never pins the
-   * project, which would ask with the binding owner's token, so a binding whose owner's grant has
-   * lapsed still admits observers on their own; a binding with no stored id has read nothing by id
-   * (every read pins it first), so the path is all its reads followed. The CI-data sets those reads
+   * took it. Bindings minted with reportsSubresources have no path-addressed history and check
+   * only the stored id. Admission never pins the project, which would ask with the binding owner's
+   * token, so a binding whose owner's grant has lapsed still admits observers on their own; no
+   * stored id means no data has been read by id (every read pins it first). The CI-data sets those reads
    * marked (strategy C) need their role the same way (`CI_DATA_ACCESS_LEVELS`): `ci-logs`
    * (Developer) for job logs and test reports read below Maintainer, `ci-test-reports` (Maintainer)
    * for test reports read as one. Reads no longer mark sets, so the observers the tracker stores are
@@ -1991,12 +1991,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   #observerStrategy: ObserverStrategy | undefined;
 
   #observers(): ObserverStrategy {
-    // One level, checked by the binding's path and by its stored id, if any.
+    // New bindings have only ID-addressed reads; older history also requires the original path.
     const hasLevel = async (verifier: Fetcher<GitLabVerifierApi>, level?: number) => {
       const id = this.ctx.storage.kv.get<number>("projectId");
       const [byId, byPath] = await Promise.all([
         id === undefined || verifier.hasProjectAccess(id, level),
-        verifier.hasProjectPathAccess(this.#projectPath(), level),
+        this.#props().reportsSubresources === true || verifier.hasProjectPathAccess(this.#projectPath(), level),
       ]);
       return byId && byPath;
     };
