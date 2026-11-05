@@ -2958,7 +2958,8 @@ async function runAgentPass(
             "for example by splitting it into several files, or by writing part of it and then " +
             "adding the rest with edits. To write content this large to a worktree file in one " +
             "go, use the worktree binding's writeBytes() in executeCode, which takes content of " +
-            "any size."
+            "any size. A file written that way cannot be changed with editFile until the change " +
+            "is accepted, only replaced whole, so write its final content."
           : "Too many code changes in one step. End this response; the changes made so far " +
             "are being saved, and you can continue the work in your next step.");
     }
@@ -3440,7 +3441,11 @@ async function runAgentPass(
           if (before === undefined) {
             throw new Error("File does not exist.");
           }
-          if (typeof before !== "string") throw new Error("Binary content requires byte operations.");
+          if (typeof before !== "string") {
+            throw new Error("This file's content was set as raw bytes (by writeBytes() or an " +
+                "upload), so editFile cannot change it until the change is accepted. Replace it " +
+                "whole with writeFile, or with writeBytes() in executeCode.");
+          }
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);

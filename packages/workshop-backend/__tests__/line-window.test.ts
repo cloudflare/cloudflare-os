@@ -235,7 +235,7 @@ describe("readFile windows", () => {
     let content = `short\n${long}\nafter\n`;
     let shown = render(blob(content), { startLine: 2 });
     expect(shown.length).toBeLessThanOrEqual(MAX);
-    let match = /^(y*)\n\n\[line 2 of 3 is (\d+) bytes; showing the first (\d+) characters\. Use readBytes for byte ranges\.\]$/
+    let match = /^(y*)\n\n\[line 2 of 3 is (\d+) bytes; showing the first (\d+) characters\. For a worktree file, readBytes\(\) reads byte ranges\.\]$/
         .exec(shown);
     expect(match).not.toBeNull();
     expect(Number(match![2])).toBe(long.length);

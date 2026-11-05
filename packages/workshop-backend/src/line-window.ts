@@ -91,7 +91,7 @@ function cutLine(prefix: string, byteLength: number, line: number, total: number
                  maxChars: number, checkBinary: (text: string, a: number, b: number) => void)
     : string {
   let note = (shown: number) => `[line ${line} of ${total} is ${byteLength} bytes; showing the ` +
-      `first ${shown} characters. Use readBytes for byte ranges.]`;
+      `first ${shown} characters. For a worktree file, readBytes() reads byte ranges.]`;
   let shown = Math.max(0, Math.min(prefix.length, maxChars - 2 - note(maxChars).length));
   // Never split a surrogate pair.
   let code = prefix.charCodeAt(shown - 1);
