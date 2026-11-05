@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { BoundHookInfo, GadgetClient } from '@gadgets/workshop-shared/api'
+import { createGatekeeperError, GATEKEEPER_ERROR_CODES, type BoundHookInfo, type GadgetClient } from '@gadgets/workshop-shared/api'
 import type { GatekeeperModalProps } from './GatekeeperModal'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -146,28 +146,44 @@ const gadgetStub = (bind: GadgetClient['bindWithSuggestedName']) => ({
   bindWithSuggestedName: vi.fn<GadgetClient['bindWithSuggestedName']>(bind),
 })
 
+const renderWithGadget = (stub: object, chatId: number, onConnectionsChange?: () => void) => view.render(
+  <Connections overseer={workspace().overseer as never} gadget={stub as never} chatId={chatId}
+    authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
+    onConnectionsChange={onConnectionsChange} />,
+)
+
 it('binds a connection whose creation restarted the workspace once the session is replaced, without creating another', async () => {
   const dying = gadgetStub(async () => {
-    throw new Error('The workspace is restarting to apply a connection change. Please retry.')
+    throw createGatekeeperError(GATEKEEPER_ERROR_CODES.pendingRestart)
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
   const onConnectionsChange = vi.fn<() => void>()
-  const render = (stub: typeof dying, chatId: number) => view.render(
-    <Connections overseer={workspace().overseer as never} gadget={stub as never} chatId={chatId}
-      authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
-      onConnectionsChange={onConnectionsChange} />,
-  )
 
-  await render(dying, 1)
+  await renderWithGadget(dying, 1, onConnectionsChange)
   // Resolving is what closes the modal rather than leaving it to create a second connection.
   await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).resolves.toBeUndefined())
 
   // A chat switch while the old session goes down must not spend the retry on it.
-  await render(dying, 2)
+  await renderWithGadget(dying, 2, onConnectionsChange)
   expect(dying.bindWithSuggestedName).toHaveBeenCalledOnce()
 
-  await render(reconnected, 2)
+  await renderWithGadget(reconnected, 2, onConnectionsChange)
   await act(async () => {})
   expect(reconnected.bindWithSuggestedName).toHaveBeenCalledWith(9, 1)
   expect(onConnectionsChange).toHaveBeenCalledOnce()
+})
+
+it('leaves a bind failure a new session cannot cure with the modal instead of retrying it', async () => {
+  const failing = gadgetStub(async () => {
+    throw new Error('No such chat: 1')
+  })
+  const reconnected = gadgetStub(async () => 'KIBANA')
+
+  await renderWithGadget(failing, 1)
+  // Rejecting keeps the modal open with the error.
+  await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).rejects.toThrow('No such chat: 1'))
+
+  await renderWithGadget(reconnected, 1)
+  await act(async () => {})
+  expect(reconnected.bindWithSuggestedName).not.toHaveBeenCalled()
 })

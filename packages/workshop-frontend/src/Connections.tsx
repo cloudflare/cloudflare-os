@@ -8,7 +8,7 @@ import {
   X,
 } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { Overseer, GadgetClient, GadgetBindingInfo, BoundHookInfo, AuthenticatedApi, WorkpieceId } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetClient, GadgetBindingInfo, BoundHookInfo, AuthenticatedApi, WorkpieceId, GATEKEEPER_ERROR_CODES, getGatekeeperErrorCode } from '@gadgets/workshop-shared/api'
 import GatekeeperModal from './GatekeeperModal'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
@@ -21,7 +21,7 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
-import { rpcFailureDescription } from './rpcErrors'
+import { isTransientRpcError, rpcFailureDescription } from './rpcErrors'
 import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
@@ -56,9 +56,9 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [annotationTarget, setAnnotationTarget] = useState<GadgetBindingInfo | null>(null)
   const toasts = useKumoToastManager()
-  // A connection created here whose bind failed. Creating a vendor connection restarts the
-  // workspace while any "build" collaborator is live, the creator's own session included, and the
-  // doomed session refuses to bind it ("Please retry"), so it is bound once the session is replaced.
+  // A connection created here whose bind the restart interrupted. Creating a vendor connection
+  // restarts the workspace while any "build" collaborator is live, the creator's own session
+  // included, and the doomed session refuses to bind it, so it is bound once the session is replaced.
   const pendingBind = useRef<{ gatekeeperId: WorkpieceId; chatId?: number }>(undefined)
 
   const loadGatekeepers = async () => {
@@ -493,6 +493,10 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           try {
             await bindConnection(gatekeeperId, chatId)
           } catch (err) {
+            // The refusal and the restart's own disconnect are cured by the replacement session;
+            // any other failure stays with the modal.
+            const pendingRestart = getGatekeeperErrorCode(err) === GATEKEEPER_ERROR_CODES.pendingRestart
+            if (!pendingRestart && !isTransientRpcError(err)) throw err
             console.debug('Binding the new connection once the session is replaced:', err)
             pendingBind.current = { gatekeeperId, chatId }
           }
