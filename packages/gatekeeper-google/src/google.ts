@@ -3417,11 +3417,12 @@ export class GoogleDriveGatekeeperImpl
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
   // whose metadata it returned, each folder it listed, and each native file whose content it read,
   // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
-  // empty search, a folder it cannot list, or a file it cannot see) reports `[]`. Account-binding
-  // invisible-file 403/404 probes return one generic error without Google's per-file reason.
-  // The tracker no longer records what reads reveal. It keeps what addObserver() still enforces:
-  // a Drive grant, the bound folder or file (seeded below), and the units reads recorded before
-  // they reported subresources.
+  // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
+  // a folder binding's search reports its folders even when empty. Account-binding invisible-file
+  // 403/404 probes return one generic error without Google's per-file reason. The tracker no
+  // longer records what reads reveal. It keeps what addObserver() still enforces: a Drive grant,
+  // the bound folder or file (seeded below), the units reads recorded before they reported
+  // subresources, and the admission fence earlier releases latched after owner-relative reads.
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
