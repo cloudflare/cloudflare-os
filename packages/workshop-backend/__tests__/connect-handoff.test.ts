@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
-import { RpcStub } from "capnweb";
-import type { ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
 import { runInDurableObject } from "cloudflare:test";
-import type { AccountDescription, GatekeeperUser, GatekeeperVendor } from "@gadgets/workshop-shared/gatekeeper";
+import type { GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { GatekeeperConnectCallbackImpl, UserDurableObject } from "../src/user.js";
 import {
   CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashSecret, PENDING_HANDOFF_LIFETIME_MS,
@@ -40,10 +38,7 @@ type UserInternals = UserDurableObject & {
   };
 };
 
-type FakeAccountProps = {
-  name: string; failRevoke?: boolean; failDescribe?: boolean; omitIdentity?: boolean;
-  grantedResourceUrlPatterns?: string[]; supportedResourceUrlPatterns?: string[];
-};
+type FakeAccountProps = { name: string; failRevoke?: boolean; failDescribe?: boolean };
 
 let userCounter = 0;
 function freshUser() {
@@ -373,67 +368,6 @@ describe("connect handoff", () => {
     await inDo(async user => {
       expect(user.storage.connectedAccounts.get(0)?.description)
         .toEqual({ displayName: "already-granted", uniqueName: "already-granted" });
-    });
-  });
-
-  it.each([
-    { mode: "live identity", failDescribe: false, omitIdentity: false, noGrants: false },
-    { mode: "partial identity", failDescribe: false, omitIdentity: true, noGrants: false },
-    { mode: "partial identity without grants", failDescribe: false, omitIdentity: true, noGrants: true },
-    { mode: "rejected description", failDescribe: true, omitIdentity: false, noGrants: true },
-  ])("checks live grants before publishing a pre-upgrade description ($mode)", async ({
-    mode, failDescribe, omitIdentity, noGrants,
-  }) => {
-    const { inDo } = freshUser();
-    // Before Worker metadata was needed, this exact stored snapshot advertised both types even
-    // though the token only had workers-observability.read. Both connect and observer UIs use it.
-    const accountPattern = "https://dash.cloudflare.com/:accountId/workers-and-pages/observability";
-    const workerPattern = "https://dash.cloudflare.com/:accountId/workers/services/view/:workerName/production/observability";
-    await inDo(async user => {
-      const name = `pre-upgrade-${mode}`;
-      const { account } = fakeAccount(user, name, {
-        failDescribe, omitIdentity,
-        grantedResourceUrlPatterns: noGrants ? [] : [accountPattern],
-        supportedResourceUrlPatterns: [accountPattern, workerPattern],
-      });
-      user["vendors"].set("cloudflare", {
-        describe: async () => ({ displayName: "Cloudflare", url: "https://cloudflare.com" }),
-      } as Service<GatekeeperVendor>);
-      user["env"] = { ...user["env"], BLUEPRINTS: { get: async () => null } as KVNamespace };
-      user.storage.nextAccountId.put(1);
-      const storedDescription = {
-        displayName: "Saved identity", uniqueName: "saved@example.com", avatar: { url: "https://example.com/avatar" },
-        grantedResourceUrlPatterns: [accountPattern, workerPattern],
-      };
-      user.storage.connectedAccounts.put({ id: 0, account, vendorId: "cloudflare", description: storedDescription });
-
-      const descriptions: AccountDescription[] = [];
-      let ready!: () => void;
-      const initial = new Promise<void>(resolve => { ready = resolve; });
-      using subscriber = new RpcStub<ConnectedAccountsSubscriber>({
-        add(_id, description) { descriptions.push(description); },
-        remove() {},
-        ready() { ready(); },
-      });
-      using _subscription = await user.subscribeConnectedAccounts(subscriber);
-      await initial;
-
-      expect(descriptions).toHaveLength(1);
-      expect(descriptions[0]).toEqual({
-        displayName: failDescribe || omitIdentity ? storedDescription.displayName : name,
-        uniqueName: failDescribe || omitIdentity ? storedDescription.uniqueName : name,
-        avatar: storedDescription.avatar,
-        grantedResourceUrlPatterns: noGrants ? [] : [accountPattern],
-      });
-      // Drive the existing consumer flow, not just describe(): the missing Worker grant must
-      // reach ensureResources and return a nonce-bound consent flow rather than a Worker lookup.
-      const missing = [workerPattern].filter(pattern =>
-        !descriptions[0].grantedResourceUrlPatterns?.includes(pattern));
-      expect(missing).toEqual([workerPattern]);
-      const flow = await user.ensureAccountResources(0, missing);
-      expect(flow).toMatchObject({ url: `https://gk.example/expand/${name}`, nonce: expect.stringMatching(/^[0-9a-f]{64}$/) });
-      expect(await fakeAccount(user, name).calls()).toContain(`ensureResources(${workerPattern})`);
-      expect(flowCount(user)).toBe(1);
     });
   });
 

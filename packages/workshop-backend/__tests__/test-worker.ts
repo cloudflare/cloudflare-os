@@ -8,7 +8,6 @@ import type {
   GatekeeperUiFrame,
   GatekeeperUserSelection,
   GatekeeperUserVerifier,
-  SupportedResource,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
@@ -96,8 +95,7 @@ const stashedTickets = new Map<string, string>();
  * `failRevoke` / `failDescribe`, that method rejects after being recorded.
  */
 export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
-  name: string; failRevoke?: boolean; failDescribe?: boolean; omitIdentity?: boolean; providesUi?: boolean;
-  grantedResourceUrlPatterns?: string[]; supportedResourceUrlPatterns?: string[];
+  name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
 }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
@@ -109,11 +107,8 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record("describe");
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
     return {
-      displayName: this.ctx.props.omitIdentity ? undefined : this.ctx.props.name,
-      uniqueName: this.ctx.props.omitIdentity ? undefined : this.ctx.props.name,
-      ...(this.ctx.props.grantedResourceUrlPatterns === undefined ? {} : {
-        grantedResourceUrlPatterns: this.ctx.props.grantedResourceUrlPatterns,
-      }),
+      displayName: this.ctx.props.name,
+      uniqueName: this.ctx.props.name,
       ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
     };
   }
@@ -140,12 +135,6 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record(`ensureResources(${resourceUrlPatterns.join(",")})`);
     if (resourceUrlPatterns.length === 0) return {};
     return { url: `https://gk.example/expand/${this.ctx.props.name}` };
-  }
-
-  async getSupportedResources(): Promise<SupportedResource[]> {
-    return (this.ctx.props.supportedResourceUrlPatterns ?? []).map(urlPattern => ({
-      urlPattern, title: urlPattern, description: "Test resource", grantable: true,
-    }));
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {

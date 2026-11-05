@@ -2348,25 +2348,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         return;
       }
 
-      // Scope requirements can change after connection. Never let a stored description overstate
-      // today's grants and skip the consent flow for a newly-required scope.
-      let description: AccountDescription;
-      try {
-        description = await record.account.describe();
-        // Identity lookup can fail independently of grants. Only preserve saved identity fields,
-        // never saved grants that the live description no longer advertises.
-        description.displayName ??= record.description.displayName;
-        description.uniqueName ??= record.description.uniqueName;
-        description.avatar ??= record.description.avatar;
-      } catch (err) {
-        // Keep the account available for reconnecting, but don't assert grants we couldn't check.
-        description = { ...record.description, grantedResourceUrlPatterns: [] };
-        logger.warn("failed to refresh connected account grants", {
-          event: "connected.account.grants.refresh.failed",
-          accountId: record.id, vendorId: record.vendorId, error: err,
-        });
-      }
-
       let supportedResources: SupportedResource[] = [];
       try {
         supportedResources = await record.account.getSupportedResources();
@@ -2382,7 +2363,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let credentialsValid = areCredentialsValid(record);
 
       seenIds.add(record.id);
-      subscriber.add(record.id, description, vendorDescription,
+      subscriber.add(record.id, record.description, vendorDescription,
           supportedResources, credentialsValid, record.vendorId).catch(unsubscribe)
     }
 
