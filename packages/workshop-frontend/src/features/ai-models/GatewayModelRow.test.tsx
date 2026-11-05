@@ -198,6 +198,7 @@ describe('GatewayModelRow', () => {
             poolSuggestions={poolSuggestions}
             busy={busy}
             test={test}
+            move={{}}
             onModeChange={onModeChange}
             onSettingsChange={onSettingsChange}
             onTest={onTest}

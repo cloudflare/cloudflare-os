@@ -41,6 +41,12 @@ const ORDERED_SETTING_NAMES = new Map([
   ['addedModels', 'added models'],
 ])
 
+// The settings that are an order themselves, by what they order.
+const ORDER_SETTING_NAMES = new Map([
+  ['providerOrder', 'providers'],
+  ['modelOrder', 'models'],
+])
+
 const NUMBER = new Intl.NumberFormat('en')
 
 // A UTC day (YYYY-MM-DD), named as a date. The stats count UTC days, so it is read in UTC.
@@ -61,7 +67,10 @@ type Activity =
   }
 
 const changeName = (change: AdminSettingChange) => {
-  if (change.key !== undefined) return `${change.setting} · ${change.key}`
+  const order = ORDER_SETTING_NAMES.get(change.setting)
+  const setting = order === undefined ? change.setting : `Order of ${order}`
+  if (change.key !== undefined) return `${setting} · ${change.key}`
+  if (order !== undefined) return setting
   const ordered = ORDERED_SETTING_NAMES.get(change.setting)
   return ordered === undefined ? change.setting : `Order of ${ordered}`
 }
