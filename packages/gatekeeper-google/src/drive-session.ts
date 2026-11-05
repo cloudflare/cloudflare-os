@@ -373,6 +373,7 @@ abstract class DriveCoreBase {
     try {
       return await this.api.getFile(fileId);
     } catch (error) {
+      if (isInsufficientScope(error)) throw error;
       if (isFileInvisible(error)) return undefined;
       throw error;
     }

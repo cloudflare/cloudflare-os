@@ -748,6 +748,24 @@ describe("positioned Drive folder session", () => {
     expectReported(invisible.authorizations[0], []);
   });
 
+  it("propagates a missing Drive scope instead of recording an invisible child", async () => {
+    const authorizations: ObservationDescription[] = [];
+    const session = new DriveFolderSessionCore({
+      api: {
+        getScopeNodes: tree([root]).getScopeNodes,
+        getFile: async () => { throw new DriveApiRequestError(403, "insufficientPermissions"); },
+        listFiles: async () => ({ files: [] }),
+      },
+      location: { folderIds: ["R"] },
+      authorize: async description => { authorizations.push(description); },
+    });
+
+    await expect(session.getEntry("D0")).rejects.toMatchObject({
+      status: 403, reason: "insufficientPermissions",
+    });
+    expect(authorizations).toEqual([]);
+  });
+
   it("authorizes an empty folder search against the positioned folder", async () => {
     const { session, authorizations, events } =
       positioned([root], undefined, async () => ({ files: [] }));
