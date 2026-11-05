@@ -16,11 +16,10 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { authorizeRead, isProvisional, OutsideBindingError } from "./binding";
+import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api";
 import { graphInstant } from "./calendar-time";
 import { organizationDomains } from "./directory";
-import type { StoredIdentity } from "./microsoft-credentials";
 import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
 import {
   MAX_SUBJECT_CHARS, attachmentBytes, checkBody, checkSubject, mailToMarkdown, markdownToMailHtml, parseRecipients, senderKind,
@@ -72,12 +71,11 @@ const MAX_FORWARDED_CHARS = 20_000;
 const NAMED_FOLDERS = new Set<NonNullable<FolderInfo["wellKnownName"]>>(["inbox", "drafts", "sentitems", "deleteditems", "archive", "junkemail", "outbox"]);
 const isNamedFolder = (name: string): name is NonNullable<FolderInfo["wellKnownName"]> => (NAMED_FOLDERS as ReadonlySet<string>).has(name);
 
-/** What the gatekeeper gives every session. */
-export type OutlookSessionHost = {
+/** What the gatekeeper gives every session: whose binding it is (see ReadAuthority) and the rest. */
+export type OutlookSessionHost = ReadAuthority & {
   scope: OutlookScope;
   /** What the binding may do: its own level, never more than the deployment and grant allow. */
   access: OutlookAccessLevel;
-  owner(): Promise<StoredIdentity>;
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
   pending(): JournalEntry<OutlookAction>[];
@@ -245,7 +243,7 @@ export class OutlookContext implements Disposable {
 
   /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
   async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
-    await authorizeRead(gate, () => this.host.owner(), { title, description }, revealed);
+    await authorizeRead(gate, this.host, { title, description }, revealed);
   }
 
   /** The pending actions, as reads see them. */

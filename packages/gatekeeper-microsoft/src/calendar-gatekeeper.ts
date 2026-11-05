@@ -17,7 +17,7 @@ import TYPES_CODE from "./calendar-types.txt";
 import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
-import { effectiveCalendarAccess, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
+import { effectiveCalendarAccess, fixedTenant, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
 import {
   actions, dependedRefs, providedRefs, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type EventVersion, type RevertOutcome,
 } from "./calendar-actions";
@@ -79,6 +79,7 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
       scope: this.ctx.props.scope,
       access,
       owner: () => this.#user.get(),
+      fixesTenant: fixedTenant(this.env) !== null,
       read: op => this.#graph(op, true),
       cached: (key, ttlMs, load) => this.#cache.cached(key, ttlMs, load),
       pending: () => this.#journal.listPending(),
@@ -189,21 +190,21 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
   }
 
   /**
-   * Checks the tenant and Calendar subresources: one calendar's events by the owner's sharing list,
+   * Checks Calendar subresources and the tenant: one calendar's events by the owner's sharing list,
    * the rest against the observer's own account, which must also be in the owner's tenant; any
-   * other ID fails the whole call.
+   * other ID, or one of another tenant, fails the whole call.
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[], subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
     return await verifyMicrosoftObserverAccess(observers, subresources, {
-      resource: "calendar", owner: () => this.#user.get(), acl: this.#acl,
+      resource: "calendar", owner: () => this.#user.get(), fixesTenant: fixedTenant(this.env) !== null, acl: this.#acl,
     });
   }
 
   /** What reads recorded before they reported subresources, as subresource IDs (see legacyHistory). */
   async getHistoricalSubresources(): Promise<string[]> {
-    return legacyHistory(this.ctx.storage.kv, unit => {
+    return legacyHistory(this.ctx.storage.kv, fixedTenant(this.env) !== null, unit => {
       const decoded = decodeCalendarUnit(unit);
       return decoded && calendarSubresourceId(decoded);
     });

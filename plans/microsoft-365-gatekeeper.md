@@ -248,7 +248,9 @@ one container's ACL never vouches for its contents. Every read therefore names t
 **access units** (`sharepoint-observers.ts`), reported as subresource IDs (`subresources.ts`) that the Workshop
 checks through `verifyObserverAccess()`, and an observer sees the read only if their account can open every unit.
 Units are probed by ID, twenty to a `$batch`; a 403 or 404 means no access, and anything else (throttling, an
-outage) fails the check rather than admitting.
+outage) fails the check rather than admitting. Unless the deployment fixes its tenant by ID, each ID also names its
+tenant right after its namespace (`sharepoint/tenant/<tenantId>/drive/<driveId>`), so it names one object whichever
+account checks it.
 
 Seeing an object is weaker than reading it, so a read names what it needed:
 

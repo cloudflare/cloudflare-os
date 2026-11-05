@@ -10,7 +10,7 @@ import { GraphApiError } from "./graph-api";
 import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
-import { tenantSubresourceId } from "./subresources";
+import { qualifiedSubresourceId, tenantSubresourceId } from "./subresources";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.microsoft.binding", vendorId: VENDOR_ID });
 
@@ -89,35 +89,50 @@ function userKey(identity: StoredIdentity): string {
 }
 
 /**
+ * Whose binding a session's reads are made through: the owner, whose tenant every reported resource
+ * is in, and whether the deployment fixes that tenant (`fixedTenant` in microsoft-env.ts), which IDs
+ * then leave out.
+ */
+export type ReadAuthority = { owner(): Promise<StoredIdentity>; fixesTenant: boolean };
+
+/**
  * Authorizes a read through `gate`, reporting `revealed`, the subresource IDs (subresources.ts) of
- * what it revealed. A read that revealed nothing narrower names the owner's tenant.
+ * what it revealed, named relative to the binding's tenant: each is qualified with the tenant unless
+ * the deployment fixes it. A read that revealed nothing narrower names the owner's tenant.
  */
 export async function authorizeRead(
-  gate: ObservationGate, owner: () => Promise<StoredIdentity>, input: ObservationInput, revealed: readonly string[],
+  gate: ObservationGate, host: ReadAuthority, input: ObservationInput, revealed: readonly string[],
 ): Promise<void> {
-  const ids = revealed.length > 0 ? revealed : [tenantSubresourceId((await owner()).tenantId)];
+  let ids = revealed;
+  if (revealed.length === 0 || !host.fixesTenant) {
+    const { tenantId } = await host.owner();
+    ids = revealed.length === 0 ? [tenantSubresourceId(tenantId)] : revealed.map(id => qualifiedSubresourceId(id, tenantId));
+  }
   await gate.authorize(input, { kind: "subresources", ids });
 }
 
 /**
  * A binding's `getHistoricalSubresources()`: each access unit its reads recorded before they
- * reported subresources, as the subresource ID naming it now, and the owner's tenant, which
- * admission required of every collaborator before any of those reads, the ones that named nothing
- * narrower and so recorded nothing included. Every Graph call pins the user first, so a binding
- * with no pin read nothing and has no history. Reads storage only.
- * @param toSubresource The subresource ID a recorded unit names, or null for one this version can't read.
+ * reported subresources, as the subresource ID naming it now (qualified with the owner's tenant
+ * unless the deployment fixes it), and the owner's tenant, which admission required of every
+ * collaborator before any of those reads, the ones that named nothing narrower and so recorded
+ * nothing included. Every Graph call pins the user first, so a binding with no pin read nothing and
+ * has no history. Reads storage only.
+ * @param toSubresource The subresource ID a recorded unit names relative to the binding's tenant,
+ * or null for one this version can't read.
  * @throws Error rather than leave out a unit it can't name.
  */
-export function legacyHistory(kv: SyncKvStorage, toSubresource: (unit: string) => string | null): string[] {
+export function legacyHistory(kv: SyncKvStorage, fixesTenant: boolean, toSubresource: (unit: string) => string | null): string[] {
   const pinned = kv.get<string>(PINNED_USER_KEY);
   const recorded = [...kv.list({ prefix: OBSERVED_UNIT_PREFIX })].map(([key]) => key.slice(OBSERVED_UNIT_PREFIX.length));
   if (pinned === undefined && recorded.length === 0) return [];
   if (pinned === undefined) throw new Error("This binding recorded what it read without pinning its user, so its history can't be exported.");
-  const history = new Set([tenantSubresourceId(pinned.slice(0, pinned.indexOf("/")))]);
+  const tenantId = pinned.slice(0, pinned.indexOf("/"));
+  const history = new Set([tenantSubresourceId(tenantId)]);
   for (const unit of recorded) {
     const id = toSubresource(unit);
     if (id === null) throw new Error("This binding recorded an access unit this version can't read, so its history can't be exported.");
-    history.add(id);
+    history.add(fixesTenant ? id : qualifiedSubresourceId(id, tenantId));
   }
   return [...history];
 }

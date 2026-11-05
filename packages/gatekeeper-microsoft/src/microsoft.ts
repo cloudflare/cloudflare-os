@@ -67,6 +67,7 @@ import {
   calendarAccess,
   effectiveCalendarAccess,
   effectiveOutlookAccess,
+  fixedTenant,
   getBasePath,
   getBaseUrl,
   getRedirectUri,
@@ -762,41 +763,46 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Whether this connection's user can see each subresource (subresources.ts), in order: the tenant
-   * and someone's whole calendars by who the user is, and SharePoint and Outlook units and other
-   * people's free/busy by asking Graph with this connection's token, as the legacy probes do
-   * (sharepoint-, outlook- and calendar-observers.ts). A binding's subresources are its tenant's, so
-   * asked alongside a tenant this user isn't in, everything is denied without asking Graph, as
-   * admission's tenant check spares the legacy probes. Graph's answer is reused for up to
+   * Whether this connection's user can see each subresource (subresources.ts), in order, each
+   * answered by the ID alone: the user must be in the tenant it names, or the one the deployment
+   * fixes, and an ID of another tenant is denied without asking Graph. Then the tenant itself, and
+   * someone's whole calendars, by who the user is; SharePoint and Outlook units and other people's
+   * free/busy by asking Graph with this connection's token, as the legacy probes do (sharepoint-,
+   * outlook- and calendar-observers.ts). Graph's answer is reused, keyed by the ID, for up to
    * SUBRESOURCE_ACCESS_ALLOWED_TTL_MS when it allowed and SUBRESOURCE_ACCESS_DENIED_TTL_MS when it
    * denied, while this connection lasts. A calendar's events are decided by its owner's sharing list,
    * not here, so asking about them fails the whole call, as does any other ID this account can't
-   * check, and access it can't determine (an unusable connection, an outage, a reconnect mid-check),
-   * which is never reused.
+   * check (one leaving its tenant implicit, where the deployment fixes none, included), and access
+   * it can't determine (an unusable connection, an outage, a reconnect mid-check), which is never
+   * reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    const fixed = fixedTenant(this.env);
     // Parsed before anything is asked, so an ID this account can't check fails the whole call.
     const parsed = subresources.map(id => {
       const resource = parseMicrosoftSubresource(id);
       if (resource.kind === "calendar" && resource.unit.kind === "calendar") {
         throw new Error("A calendar's events are decided by its owner's sharing list, not by an observer's account.");
       }
+      if (resource.tenantId === undefined && fixed === null) {
+        throw new Error("This subresource ID names no tenant, and this deployment admits several.");
+      }
       return resource;
     });
     // Every answer must come from the connection the check began under.
     const generation = this.#creds.connectionGeneration();
     const identity = await this.verifiedIdentity();
-    const tenantId = identity?.tenantId.toLowerCase();
-    if (identity === null || parsed.some(resource => resource.kind === "tenant" && resource.tenantId !== tenantId)) {
-      return subresources.map(() => false);
-    }
+    if (identity === null) return subresources.map(() => false);
+    const tenantId = identity.tenantId.toLowerCase();
     const answers = new Map<string, boolean>();
     const files = new Map<string, AccessUnit>();
     const mail = new Map<string, MailUnit>();
     const schedules = new Map<string, string>();
     parsed.forEach((resource, index) => {
       const id = subresources[index]!;
-      if (resource.kind === "tenant") answers.set(id, true);
+      // An implicit tenant is the one the deployment fixes, as parsing confirmed there is one.
+      if ((resource.tenantId ?? fixed) !== tenantId) answers.set(id, false);
+      else if (resource.kind === "tenant") answers.set(id, true);
       else if (resource.kind === "sharepoint") files.set(id, resource.unit);
       else if (resource.kind === "outlook") mail.set(id, resource.unit);
       else if (resource.unit.kind === "calendars") answers.set(id, resource.unit.ownerId === identity.objectId.toLowerCase());

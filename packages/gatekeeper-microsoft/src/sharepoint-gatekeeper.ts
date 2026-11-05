@@ -24,7 +24,7 @@ import TYPES_CODE from "./types.txt";
 import { DESCRIPTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
 import { GraphApi, GraphApiError } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
-import { effectiveSharePoint, type Env, type SharePointAccess, type SharePointGatekeeperProps, type SharePointSites } from "./microsoft-env";
+import { effectiveSharePoint, fixedTenant, type Env, type SharePointAccess, type SharePointGatekeeperProps, type SharePointSites } from "./microsoft-env";
 import {
   actions,
   dependedRefs,
@@ -138,6 +138,7 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
       access,
       sites,
       owner: () => this.#user.get(),
+      fixesTenant: fixedTenant(this.env) !== null,
       read: op => this.#graph(op, true),
       cached: (key, ttlMs, load) => this.#cache.cached(key, ttlMs, load),
       pending: () => this.#journal.listPending(),
@@ -260,18 +261,20 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
   }
 
   /**
-   * Checks the tenant and SharePoint subresources, each against the observer's own account, which
-   * must also be in the owner's tenant; any other ID fails the whole call.
+   * Checks SharePoint subresources and the tenant, each against the observer's own account, which
+   * must also be in the owner's tenant; any other ID, or one of another tenant, fails the whole call.
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[], subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    return await verifyMicrosoftObserverAccess(observers, subresources, { resource: "sharepoint", owner: () => this.#user.get() });
+    return await verifyMicrosoftObserverAccess(observers, subresources, {
+      resource: "sharepoint", owner: () => this.#user.get(), fixesTenant: fixedTenant(this.env) !== null,
+    });
   }
 
   /** What reads recorded before they reported subresources, as subresource IDs (see legacyHistory). */
   async getHistoricalSubresources(): Promise<string[]> {
-    return legacyHistory(this.ctx.storage.kv, unit => {
+    return legacyHistory(this.ctx.storage.kv, fixedTenant(this.env) !== null, unit => {
       const decoded = decodeUnit(unit);
       return decoded && sharePointSubresourceId(decoded);
     });

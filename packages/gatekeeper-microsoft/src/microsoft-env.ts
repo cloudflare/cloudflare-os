@@ -133,6 +133,18 @@ export function acceptsTenant(policy: TenantPolicy, tenantId: string, pinnedTena
   return pinnedTenantId === undefined || pinnedTenantId === tenantId;
 }
 
+/**
+ * The tenant ID this deployment permanently fixes for every connection, which subresource IDs then
+ * leave implicit (subresources.ts), or null, so that every ID names its tenant. Only an authority
+ * named by GUID fixes one: `organizations` admits several, and a verified domain can move to
+ * another tenant, whose `tid` acceptsTenant can't compare.
+ * @throws MicrosoftConfigurationError for a setting that cannot work.
+ */
+export function fixedTenant(env: Env): string | null {
+  const policy = tenantPolicy(env);
+  return policy.kind === "single" && TENANT_GUID.test(policy.authority) ? policy.authority.toLowerCase() : null;
+}
+
 /** The OAuth endpoints for an authority. */
 export function oauthEndpoints(authority: string): { authorize: string; token: string } {
   const base = `${LOGIN_ORIGIN}/${encodeURIComponent(authority)}/oauth2/v2.0`;

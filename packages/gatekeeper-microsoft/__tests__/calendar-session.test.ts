@@ -161,6 +161,7 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
   const host: CalendarSessionHost = {
     scope, access,
     owner: async () => ME,
+    fixesTenant: true,
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as CalendarAction })) as never,

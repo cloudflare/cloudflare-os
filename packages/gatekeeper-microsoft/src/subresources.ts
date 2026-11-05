@@ -19,8 +19,13 @@
 //   `privateCalendar` (private events in detail); and someone's free/busy as
 //   `calendar/availability/<address>`.
 //
-// No other ID names the tenant: a binding is pinned to one, which its verifyObserverAccess()
-// requires of every collaborator alongside whatever they are asked about.
+// A resource's ID names its tenant as a `tenant/<tenantId>` fragment right after the namespace, as
+// in `outlook/tenant/<tenantId>/user/<userId>/message/<messageId>`, unless the deployment permanently
+// fixes the tenant (`fixedTenant` in microsoft-env.ts), when it is left implicit. A binding is pinned
+// to one tenant, but that is no reason to leave it out: a deployment that admits several would then
+// record IDs naming nobody's resource in particular. Reads name resources relative to their
+// binding's tenant, and `authorizeRead` (binding.ts) qualifies them. Either way an ID names one
+// resource whoever checks it, so an observer's account keys its answers by the ID unchanged.
 
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
 import type { CalendarUnit } from "./calendar-observers";
@@ -29,12 +34,14 @@ import { isMailId } from "./outlook-graph";
 import type { MailUnit } from "./outlook-observers";
 import type { AccessUnit } from "./sharepoint-observers";
 
-/** The resource a subresource ID names. */
+/** The resource a subresource ID names, and the tenant it names it in, when it names one. */
 export type MicrosoftSubresource =
   | { kind: "tenant"; tenantId: string }
-  | { kind: "sharepoint"; unit: AccessUnit }
-  | { kind: "outlook"; unit: MailUnit }
-  | { kind: "calendar"; unit: CalendarUnit };
+  | ({ tenantId?: string } & (
+    | { kind: "sharepoint"; unit: AccessUnit }
+    | { kind: "outlook"; unit: MailUnit }
+    | { kind: "calendar"; unit: CalendarUnit }
+  ));
 
 /** The resources a binding's reads name besides the tenant. */
 export type BindingResource = Exclude<MicrosoftSubresource["kind"], "tenant">;
@@ -68,6 +75,13 @@ const PROJECTIONS: Record<RevealLevel, string> = {
 /** The subresource ID of the owner's tenant. */
 export function tenantSubresourceId(tenantId: string): string {
   return formatSubresourceId({ fragments: [{ name: "tenant", id: tenantId.toLowerCase() }] });
+}
+
+/** `id`, which names a resource relative to its binding's tenant, naming that tenant as well. */
+export function qualifiedSubresourceId(id: string, tenantId: string): string {
+  const { namespace, fragments } = parseSubresourceId(id);
+  if (namespace === undefined) throw new Error("Only a resource's subresource ID names the tenant it is in.");
+  return formatSubresourceId({ namespace, fragments: [{ name: "tenant", id: tenantId.toLowerCase() }, ...fragments] });
 }
 
 /** The subresource ID of a SharePoint access unit. */
@@ -110,10 +124,14 @@ export function calendarSubresourceId(unit: CalendarUnit): string {
 /**
  * What a subresource ID names, with every component checked as the probe that reads it needs.
  * @throws Error for any ID {@link tenantSubresourceId}, {@link sharePointSubresourceId},
- * {@link outlookSubresourceId} or {@link calendarSubresourceId} doesn't spell.
+ * {@link outlookSubresourceId}, {@link calendarSubresourceId} and {@link qualifiedSubresourceId}
+ * don't spell.
  */
 export function parseMicrosoftSubresource(id: string): MicrosoftSubresource {
-  const { namespace, fragments } = parseSubresourceId(id);
+  const { namespace, fragments: path } = parseSubresourceId(id);
+  // A resource's tenant, when its ID names one, comes first.
+  const tenantId = namespace !== undefined && path[0]?.name === "tenant" ? path[0].id : undefined;
+  const fragments = tenantId === undefined ? path : path.slice(1);
   const shape = fragments.map(({ name }) => name).join("/");
   const ids = fragments.map(({ id: value }) => value);
   const parsed = ((): MicrosoftSubresource | null => {
@@ -137,8 +155,10 @@ export function parseMicrosoftSubresource(id: string): MicrosoftSubresource {
         return null;
     }
   })();
-  if (parsed === null) throw new Error("Not a Microsoft 365 subresource ID.");
-  return parsed;
+  if (parsed === null || (tenantId !== undefined && (!isObjectId(tenantId) || tenantId !== tenantId.toLowerCase()))) {
+    throw new Error("Not a Microsoft 365 subresource ID.");
+  }
+  return tenantId === undefined ? parsed : { ...parsed, tenantId };
 }
 
 function sharePointUnit(shape: string, ids: string[]): AccessUnit | null {
@@ -184,14 +204,21 @@ function calendarUnit(shape: string, ids: string[]): CalendarUnit | null {
 }
 
 /**
- * Parses what a binding of `resource` was asked about, refusing every ID its reads never report,
- * which would otherwise be checked as if they had.
- * @throws Error for an ID that names neither the tenant nor a `resource` resource.
+ * Parses what a binding of `binding.resource` was asked about, refusing every ID its reads never
+ * report, which would otherwise be checked as if they had: another resource's, or another
+ * tenant's. An ID leaves the binding's tenant implicit only where the deployment fixes it.
+ * @throws Error for an ID that names neither the binding's tenant nor one of its resources in it.
  */
-export function parseBindingSubresources(subresources: readonly string[], resource: BindingResource): MicrosoftSubresource[] {
+export function parseBindingSubresources(
+  subresources: readonly string[], binding: { resource: BindingResource; tenantId: string; fixesTenant: boolean },
+): MicrosoftSubresource[] {
+  const tenantId = binding.tenantId.toLowerCase();
   return subresources.map(id => {
     const parsed = parseMicrosoftSubresource(id);
-    if (parsed.kind !== "tenant" && parsed.kind !== resource) throw new Error("Not a subresource ID this Microsoft 365 binding reports.");
+    const tenant = parsed.tenantId ?? (binding.fixesTenant ? tenantId : undefined);
+    if ((parsed.kind !== "tenant" && parsed.kind !== binding.resource) || tenant !== tenantId) {
+      throw new Error("Not a subresource ID this Microsoft 365 binding reports.");
+    }
     return parsed;
   });
 }

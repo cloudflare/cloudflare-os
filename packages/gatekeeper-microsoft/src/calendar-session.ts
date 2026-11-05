@@ -16,10 +16,9 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { authorizeRead, isProvisional, OutsideBindingError } from "./binding";
+import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import type { GraphApi } from "./graph-api";
 import { organizationDomains } from "./directory";
-import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
 import { type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
@@ -68,12 +67,11 @@ const MAX_MESSAGE_CHARS = 10_000;
 const SHOW_AS_VALUES: readonly ShowAs[] = ["free", "tentative", "busy", "oof", "workingElsewhere"];
 const SENSITIVITY_VALUES = ["normal", "personal", "private", "confidential"] as const;
 
-/** What the facet gives every session. */
-export type CalendarSessionHost = {
+/** What the facet gives every session: whose binding it is (see ReadAuthority) and the rest. */
+export type CalendarSessionHost = ReadAuthority & {
   scope: CalendarScope;
   /** What the binding may do: its own level, never more than the deployment and grant allow. */
   access: CalendarAccessLevel;
-  owner(): Promise<StoredIdentity>;
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
   pending(): JournalEntry<CalendarAction>[];
@@ -170,7 +168,7 @@ export class CalendarContext implements Disposable {
 
   /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
   async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
-    await authorizeRead(gate, () => this.host.owner(), { title, description }, revealed);
+    await authorizeRead(gate, this.host, { title, description }, revealed);
   }
 
   overlay(): CalendarOverlay {

@@ -3,11 +3,12 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  calendarSubresourceId, outlookSubresourceId, parseBindingSubresources, parseMicrosoftSubresource, sharePointSubresourceId,
-  tenantSubresourceId, type MicrosoftSubresource,
+  calendarSubresourceId, outlookSubresourceId, parseBindingSubresources, parseMicrosoftSubresource, qualifiedSubresourceId,
+  sharePointSubresourceId, tenantSubresourceId, type MicrosoftSubresource,
 } from "../src/subresources";
 
 const TENANT = "aaaaaaaa-0000-0000-0000-00000000000a";
+const OTHER_TENANT = "cccccccc-0000-0000-0000-00000000000c";
 const USER = "bbbbbbbb-0000-0000-0000-00000000000b";
 const SITE = "contoso.sharepoint.com,11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222";
 const DRIVE = "b!abc_DEF-123";
@@ -62,6 +63,15 @@ describe("subresource IDs", () => {
     }
   });
 
+  it("names a resource's tenant right after its namespace, where the deployment doesn't fix it", () => {
+    const message = outlookSubresourceId({ kind: "mail", userId: USER, messageId: MAIL_ID });
+    expect(qualifiedSubresourceId(message, TENANT.toUpperCase())).toBe(`outlook/tenant/${TENANT}/user/${USER}/message/AAMk%2Fx%2By%3D`);
+    for (const [resource, id] of every.filter(([resource]) => resource.kind !== "tenant")) {
+      expect(parseMicrosoftSubresource(qualifiedSubresourceId(id, TENANT))).toEqual({ ...resource, tenantId: TENANT });
+    }
+    expect(() => qualifiedSubresourceId(`tenant/${TENANT}`, TENANT)).toThrow();
+  });
+
   it("names people the same whatever case Graph gave them in", () => {
     expect(tenantSubresourceId(TENANT.toUpperCase())).toBe(`tenant/${TENANT}`);
     expect(outlookSubresourceId({ kind: "mailbox", userId: USER.toUpperCase() })).toBe(`outlook/user/${USER}`);
@@ -87,17 +97,28 @@ describe("subresource IDs", () => {
       "calendar/availability/Sarah%40contoso.com",
       `tenant/${TENANT.toUpperCase()}`,
       `tenant/${TENANT}/user/${USER}`,
+      `outlook/tenant/${TENANT.toUpperCase()}/user/${USER}`,
+      `outlook/tenant/not-a-guid/user/${USER}`,
+      `outlook/tenant/${TENANT}`,
+      `sharepoint/tenant/${TENANT}/tenant/${TENANT}/drive/${encodeURIComponent(DRIVE)}`,
       "sharepoint/site/a%2fb",
     ]) {
       expect(() => parseMicrosoftSubresource(id), id).toThrow();
     }
   });
 
-  it("refuses, for a binding, IDs that only another resource's reads report", () => {
+  it("refuses, for a binding, IDs that only another resource's reads report, or another tenant's", () => {
     const tenant = `tenant/${TENANT}`;
     const mailbox = `outlook/user/${USER}`;
-    expect(parseBindingSubresources([tenant, mailbox], "outlook")).toHaveLength(2);
-    expect(() => parseBindingSubresources([tenant, mailbox], "sharepoint")).toThrow("Not a subresource ID this Microsoft 365 binding reports.");
-    expect(() => parseBindingSubresources([`calendar/user/${USER}`], "outlook")).toThrow();
+    const fixed = { resource: "outlook" as const, tenantId: TENANT, fixesTenant: true };
+    expect(parseBindingSubresources([tenant, mailbox], fixed)).toHaveLength(2);
+    expect(() => parseBindingSubresources([tenant, mailbox], { ...fixed, resource: "sharepoint" })).toThrow("Not a subresource ID this Microsoft 365 binding reports.");
+    expect(() => parseBindingSubresources([`calendar/user/${USER}`], fixed)).toThrow();
+    // Where the deployment admits several tenants, every resource names its own.
+    const named = { ...fixed, fixesTenant: false };
+    expect(parseBindingSubresources([tenant, qualifiedSubresourceId(mailbox, TENANT)], named)).toHaveLength(2);
+    expect(() => parseBindingSubresources([mailbox], named)).toThrow("Not a subresource ID this Microsoft 365 binding reports.");
+    expect(() => parseBindingSubresources([qualifiedSubresourceId(mailbox, OTHER_TENANT)], named)).toThrow();
+    expect(() => parseBindingSubresources([`tenant/${OTHER_TENANT}`], named)).toThrow();
   });
 });

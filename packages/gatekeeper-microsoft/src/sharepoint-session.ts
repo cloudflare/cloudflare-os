@@ -15,11 +15,10 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { ArrayCursor, TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { authorizeRead, isProvisional } from "./binding";
+import { authorizeRead, isProvisional, type ReadAuthority } from "./binding";
 import { convertToText } from "./content/index";
 import { GraphApiError, type GraphApi } from "./graph-api";
 import { parseCanvas, splitSiteId, type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphSite, type GraphSitePage } from "./graph-parse";
-import type { StoredIdentity } from "./microsoft-credentials";
 import type { SharePointAccess, SharePointSites } from "./microsoft-env";
 import { editDocx } from "./content/docx-edit";
 import { editPptx } from "./content/pptx-edit";
@@ -74,13 +73,12 @@ const MAX_SLIDE_IMAGE_BYTES = 10 * 1024 * 1024;
 /** The most cells one `updateCells` call sets. */
 const MAX_UPDATED_CELLS = 10_000;
 
-/** What the facet gives every session: its connection, its journal, and its storage. */
-export type SessionHost = {
+/** What the facet gives every session: whose binding it is (see ReadAuthority), its connection, its journal, and its storage. */
+export type SessionHost = ReadAuthority & {
   scope: SharePointScope;
   access: SharePointAccess;
   /** Whether the grant reaches every site the user can open, or only those granted to the app. */
   sites: SharePointSites;
-  owner(): Promise<StoredIdentity>;
   /** Runs a read as the connection, replayed once on a credential refresh. */
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
@@ -162,7 +160,7 @@ export class SessionContext extends ScopeReader implements Disposable {
 
   /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
   async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
-    await authorizeRead(gate, () => this.host.owner(), { title, description }, revealed);
+    await authorizeRead(gate, this.host, { title, description }, revealed);
   }
 }
 

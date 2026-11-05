@@ -386,6 +386,13 @@ and admits whoever can see their free/busy themselves, and an every-calendar bin
 (`calendar/user/<userId>`) are the user's alone. A read that reveals nothing narrower reports the
 owner's tenant (`tenant/<tenantId>`).
 
+Every other ID also names its tenant right after its namespace, as in
+`outlook/tenant/<tenantId>/user/<userId>/message/<messageId>`, so that it names one resource
+whichever account checks it, unless `MICROSOFT_TENANT_ID` is a tenant ID: a deployment fixed to one
+tenant that way leaves the tenant out. A domain doesn't fix one, since it can move to another tenant.
+Changing `MICROSOFT_TENANT_ID` from a tenant ID to anything else needs a migration of what workspaces
+recorded: their IDs name resources in the tenant the deployment had fixed.
+
 Each collaborator's own account answers these checks, and reuses an answer Graph gave for up to 15
 minutes when it allowed and 15 seconds when it denied, across every workspace, until it is next
 reconnected: a share revoked in Microsoft 365 can still admit a collaborator for up to 15 minutes. A

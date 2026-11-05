@@ -6,9 +6,9 @@
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SHAREPOINT_RESOURCE, scopesFor, type Env } from "../../src/microsoft-env";
-import { calendarSubresourceId, sharePointSubresourceId, tenantSubresourceId } from "../../src/subresources";
+import { calendarSubresourceId, qualifiedSubresourceId, sharePointSubresourceId, tenantSubresourceId } from "../../src/subresources";
 import {
-  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, MALLORY, PHILLIP, SARAH, SPECS, TENANT,
+  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, MALLORY, OTHER_TENANT, PHILLIP, SARAH, SPECS, TENANT,
   facet, failure, folderProps, hooks, json, props, reconnectAs, ref, seedAccount, unwrap,
 } from "./fake-graph";
 
@@ -154,6 +154,15 @@ describe("an observer's own account", () => {
     ];
     expect(unwrap(await hooks().account(sarah, "checkSubresourceAccess", asked))).toEqual([true, true, false, true]);
     expect(graph.requests.filter(request => request.url.origin !== "https://login.microsoftonline.com")).toEqual([]);
+  });
+
+  it("answers an ID by the tenant it names, asking Graph only about its user's own", async () => {
+    const graph = new FakeGraph().install();
+    const sarah = await seedAccount(graph, SARAH);
+    const own = qualifiedSubresourceId(item(BRIEF), TENANT);
+    const foreign = qualifiedSubresourceId(item(BRIEF), OTHER_TENANT);
+    expect(unwrap(await hooks().account(sarah, "checkSubresourceAccess", [own, foreign]))).toEqual([true, false]);
+    expect(graph.probedItems(SARAH)).toEqual([BRIEF]);
   });
 
   it("leaves a calendar's events to its owner's sharing list", async () => {

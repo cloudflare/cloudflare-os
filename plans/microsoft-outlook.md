@@ -213,7 +213,8 @@ An observer is shown a read only if their own Microsoft 365 account, in the owne
 everything it revealed, which each read reports as subresource IDs (`subresources.ts`):
 `outlook/user/<userId>` for the mailbox (probed by listing the whole mailbox's messages),
 `…/folder/<folderId>`, and `…/message/<messageId>` (the message itself), each probed by immutable
-ID with the observer's token. Reads made before reads reported subresources recorded them as
+ID with the observer's token. Unless the deployment fixes its tenant by ID, each ID also names its tenant
+right after its namespace (`outlook/tenant/<tenantId>/user/<userId>`). Reads made before reads reported subresources recorded them as
 `mailbox:`, `mailFolder:` and `mail:` units in the binding's legacy tracker, which admission still checks.
 Someone shared a single folder opens that folder and its messages but gets 404 listing the mailbox
 (verified live with an Inbox-only Reviewer), so they observe reads of that folder and nothing that

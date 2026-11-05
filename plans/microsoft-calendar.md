@@ -143,6 +143,9 @@ which the Workshop checks through `verifyObserverAccess()` (`observer-access.ts`
 - `calendar/user/<ownerId>`: anything an all-calendars binding revealed.
 - `calendar/availability/<address>`: a person's free/busy.
 
+Unless the deployment fixes its tenant by ID, each also names its tenant right after its namespace
+(`calendar/tenant/<tenantId>/user/<ownerId>`), so it names one resource whichever account checks it.
+
 Reads made before reads reported subresources recorded the same units as `calendar:`, `calendars:`
 and `availability:` in the binding's legacy tracker, which admission still checks.
 
