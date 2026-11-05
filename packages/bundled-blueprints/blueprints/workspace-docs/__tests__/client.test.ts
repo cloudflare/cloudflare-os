@@ -147,9 +147,12 @@ describe("editing", () => {
   });
 
   // A cell or list item holds the code, never the table or list: a selection across two is left alone.
-  // So is one across a soft line break, whose lines the code would join.
-  it("makes no inline code of a selection across cells, list items or lines", () => {
-    for (const [id, html] of [["c3", "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>"], ["c4", "<ul><li>one</li><li>two</li></ul>"], ["c5", "<p>one<br>two</p>"]]) {
+  // So is one across a soft line break, whose lines the code would join, or a picture, which it would drop.
+  it("makes no inline code of a selection across cells, list items, lines or pictures", () => {
+    for (const [id, html] of [
+      ["c3", "<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>"], ["c4", "<ul><li>one</li><li>two</li></ul>"], ["c5", "<p>one<br>two</p>"],
+      ["c6", '<p>one<img class="doc-image" src="data:image/png;base64,AA" alt="shot">two</p>'],
+    ]) {
       const block = show(id!, html!);
       const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       const first = walker.nextNode()!;
