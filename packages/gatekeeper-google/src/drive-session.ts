@@ -2,7 +2,7 @@ import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper
 import { CursorPager, type Pager } from "./cursor";
 import {
   FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, SHORTCUT_MIME_TYPE,
-  DriveApiRequestError, isFileInvisible, isListableFolderFile, isListableFolderNode,
+  isFileInvisible, isListableFolderFile, isListableFolderNode,
   type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -532,23 +532,19 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   /**
-   * Like {@link tryFetchFile}, but an account binding records the invisible answer before
-   * rethrowing Google's error. A 404 is the same for a file that doesn't exist and one this
-   * account can't see, so it is relative to the account alone. A per-file 403 can show that the
-   * file exists (in a shared drive the account isn't a member of), so it reports the file.
+   * Report an account-relative refusal without retaining an unsatisfiable file requirement.
+   * Hide Google's per-file reason so a failed probe discloses no file metadata.
    */
   async #fetchFile(fileId: string): Promise<DriveFile> {
     try {
       return await this.api.getFile(fileId);
     } catch (error) {
       if (this.#scope.kind === "account" && isFileInvisible(error)) {
-        let title = "Check Google Drive file access";
-        let description = `Check whether the connected account can access Drive file ${fileId}.`;
-        if (error instanceof DriveApiRequestError && error.status === 404) {
-          await this.authorizeAccountRelative(title, description);
-        } else {
-          await this.authorizeFiles([fileId], title, description);
-        }
+        await this.authorizeAccountRelative("Check Google Drive file access",
+          `Check whether the connected account can access Drive file ${fileId}.`);
+        // Do not expose the provider's file-specific reason through the RPC error's cause.
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error("The requested Drive file is unavailable to the connected account.");
       }
       throw error;
     }
