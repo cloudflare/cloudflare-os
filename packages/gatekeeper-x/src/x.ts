@@ -24,7 +24,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
 } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -296,7 +296,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     const initiationNonce = generateNonce();
     await this.ctx.exports.UserAccount.get(userObjectId)
-      .setCallback(callback, initiationNonce, scopesFor(options?.resourceUrlPatterns));
+      .setCallback(callback, initiationNonce, scopesFor(requestedResourceUrlPatterns(options, ALL_RESOURCES)));
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
   }
 
@@ -607,11 +607,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async describe(): Promise<AccountDescription> {
     const account = this.#account();
     const identity = await account.getIdentity();
+    const grantedResourceUrlPatterns = grantedResourcePatterns(await account.getGrantedScopes());
     return {
       displayName: identity.name,
       uniqueName: `@${identity.username}`,
       avatar: { url: identity.profileImageUrl ?? "" },
-      grantedResourceUrlPatterns: grantedResourcePatterns(await account.getGrantedScopes()),
+      grantedResourceUrlPatterns,
+      grantedResourceTypeIds: getGrantedResourceTypeIds({ grantedResourceUrlPatterns }, ALL_RESOURCES),
     };
   }
 
@@ -645,6 +647,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const kind = kindOfPattern(resourceUrlPattern);
     switch (kind) {
       case "account":
@@ -678,6 +681,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+    resourceUrlPatterns = resourceUrlPatterns.map(value => resourceTypeUrlPattern(ALL_RESOURCES, value));
     const granted = grantedResourcePatterns(await this.#account().getGrantedScopes());
     if (resourceUrlPatterns.every(pattern => granted.includes(pattern))) return {};
     return await this.#beginReconnect([...new Set([...granted, ...resourceUrlPatterns])]);

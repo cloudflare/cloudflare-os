@@ -960,6 +960,7 @@ export function formatMissingBlueprintBindings(
     switch (binding.type) {
       case "gatekeeper":
         details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
+            (binding.resourceTypeId ? `resource type ID ${JSON.stringify(binding.resourceTypeId)}; ` : ``) +
             `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
             (binding.resourceUrl
                 ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
@@ -1304,11 +1305,11 @@ ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
-List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's URL pattern with requestConnection to connect something already present; use a New resource's resourceUrlPattern with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
+List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's resourceTypeId with requestConnection to connect something already present; use a New resource's resourceTypeId with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
 `.trim();
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
-Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: pass vendorId and the resourceTypeId from listConnectableResources, plus resourceUrl when you can infer it to prefill the picker. The stable ID selects the type even if its URL pattern changes. When resourceTypeId is omitted, selection falls back to the supplied URL, a whole-instance option, or a sole type; an ambiguous request is rejected with guidance and no card is shown. Fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
 
 For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
@@ -3153,7 +3154,7 @@ async function runAgentPass(
     let standardFormats = await hooks.describeStandardFormats();
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
-    // vendor's resource URL patterns on demand via listConnectableResources.
+    // vendor's resource types on demand via listConnectableResources.
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
@@ -3162,7 +3163,7 @@ async function runAgentPass(
       systemPromptConnections =
           `\n\nIf you need access to an external resource that isn't already a binding, you can ask ` +
           `the user to connect one with the requestConnection tool (pre-configure it as much as you ` +
-          `can; use listConnectableResources to learn a vendor's resource URL patterns first). The ` +
+          `can; use listConnectableResources to learn a vendor's resource type IDs first). The ` +
           `user accepts or denies in the chat. If they accept, you'll be resumed and the resource ` +
           `becomes available as a binding in your env; if they deny, your turn ends and you wait ` +
           `for the user's next message.\n` +
@@ -3884,6 +3885,9 @@ async function runAgentPass(
           description: "Vendor id, as listed in the system prompt (e.g. 'github'), or " +
               `'${AGENT_SPAWNER_CONNECTION_ID}' for an agent spawner.`,
         }),
+        resourceTypeId: Type.Optional(Type.String({
+          description: "Stable type ID from listConnectableResources; selects the type independently of its URL pattern.",
+        })),
         resourceUrl: Type.Optional(Type.String({
           description:
               "The specific resource URL, if known (matching a pattern from " +
@@ -3945,8 +3949,8 @@ async function runAgentPass(
         vendorId: Type.String({
           description: "Vendor id, as listed in the system prompt (e.g. 'google').",
         }),
-        resourceUrlPattern: Type.String({
-          description: "urlPattern of a creatable resource type, from listConnectableResources.",
+        resourceTypeId: Type.String({
+          description: "Stable ID of a creatable resource type, from listConnectableResources.",
         }),
         title: Type.String({
           description: "Title of the new resource, e.g. the document's title.",

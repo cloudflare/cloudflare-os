@@ -16,6 +16,7 @@ import {
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -178,6 +179,7 @@ const ZOOMINFO_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(ZOOMINFO_LOGO
 
 // Whole-account catch-all resource (matches any URL), like other single-tenant gatekeepers.
 const ACCOUNT_RESOURCE: SupportedResource = {
+  id: "account",
   urlPattern: "https://*",
   title: "ZoomInfo Account",
   description:
@@ -688,6 +690,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     if (resourceUrlPattern !== ACCOUNT_RESOURCE.urlPattern) {
       throw new Error(`Unsupported ZoomInfo resource configurator type: ${resourceUrlPattern}`);
     }

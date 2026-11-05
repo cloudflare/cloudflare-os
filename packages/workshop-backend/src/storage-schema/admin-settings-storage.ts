@@ -44,8 +44,10 @@ export type AdminConfig = {
   banner: BannerConfig;
   /** Accent (brand) color hex, or "" for the default theme. */
   accentColor: string;
-  /** Disabled gatekeeper resources: vendorId -> disabled resource urlPatterns. */
+  /** Legacy pattern restrictions. Unknown patterns keep the vendor blocked until explicitly cleared. */
   disabledResources: Record<string, string[]>;
+  /** Disabled stable resource type IDs, keyed by vendor. */
+  disabledResourceTypeIds?: Record<string, string[]>;
   /** Fully-disabled gatekeeper vendor ids. */
   disabledGatekeepers: string[];
   /**

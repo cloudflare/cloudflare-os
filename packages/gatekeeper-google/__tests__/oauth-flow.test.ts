@@ -52,6 +52,17 @@ describe("stored OAuth flow", () => {
       GOOGLE_DOC_RESOURCE.urlPattern,
       BIGQUERY_RESOURCE.urlPattern,
     ]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["document", "bigquery"]);
+  });
+
+  it("migrates exact legacy grants without reviving patterns excluded by an ID record", () => {
+    const kv = new FakeKv();
+    kv.put("grantedResources", [GOOGLE_DOC_RESOURCE.urlPattern, "https://retired.example/*"]);
+    mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["document", "bigquery"]);
+    kv.put("grantedResourceTypeIds", []);
+    mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["bigquery"]);
   });
 
   // Regression: the shared-drive resource's urlPattern was retired, and a reconnect feeds the
