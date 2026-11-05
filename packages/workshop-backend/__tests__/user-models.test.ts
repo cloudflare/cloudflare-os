@@ -376,9 +376,9 @@ describe("UserDurableObject gateway model modes", () => {
     expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
         .toBe(first.id);
 
-    await user.setPreferredModel("claude-haiku-4-5");
+    await user.setPreferredModel("claude-haiku-5-5");
     expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
-        .toBe("claude-haiku-4-5");
+        .toBe("claude-haiku-5-5");
   }, DISABLED));
 
   describe("once users may not add their own models", () => {

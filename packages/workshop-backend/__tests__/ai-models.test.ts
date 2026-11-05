@@ -1066,6 +1066,7 @@ describe("gateway model reasoning levels", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", LOW_TO_MAX],
     ["anthropic", "claude-sonnet-5-5", LOW_TO_MAX],
+    ["anthropic", "claude-haiku-5-5", LOW_TO_MAX],
     ["anthropic", "claude-fable-5-1", ["minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-opus-5", ["minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-sonnet-5", ["off", "minimal", ...LOW_TO_MAX]],
@@ -1098,6 +1099,7 @@ describe("gateway model reasoning levels", () => {
   const BUILT_IN: [AiModelConfig["provider"], string, BuiltInReasoning][] = [
     ["anthropic", "claude-opus-5-5", "adaptive"],
     ["anthropic", "claude-sonnet-5-5", "adaptive"],
+    ["anthropic", "claude-haiku-5-5", "adaptive"],
     ["anthropic", "claude-fable-5-1", "adaptive"],
     ["anthropic", "claude-opus-5", "adaptive"],
     ["anthropic", "claude-sonnet-5", "adaptive"],

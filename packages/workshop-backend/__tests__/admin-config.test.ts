@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -476,5 +476,105 @@ describe("admin config update notice", () => {
       expect(parseAdminConfig(kv).updateCheckIntervalMinutes).toBe(stored);
       expect(isUpdateCheckInterval(stored)).toBe(true);
     }
+  });
+});
+
+describe("ADMIN_CONFIG_SEED", () => {
+  const SEED = {
+    modelModes: { "claude-fable-5-1": "hidden" },
+    modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "high", compactionInputBudget: 200000 } },
+    addedModels: [
+      { provider: "cloudflare", id: "@cf/test/added", name: "Added", contextWindow: 131072 },
+    ],
+    defaultReasoning: "medium",
+    userModelsEnabled: false,
+    modelsDevSuggestions: true,
+  } as const;
+  const seeded = (seed: unknown = SEED) =>
+      effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED: JSON.stringify(seed) }));
+
+  it("is nothing while unset or empty", () => {
+    expect(effectiveAdminConfig(null, adminConfigSeed({}))).toEqual(DEFAULT_ADMIN_CONFIG);
+    expect(effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED: "" })))
+        .toEqual(DEFAULT_ADMIN_CONFIG);
+  });
+
+  it("sets the Models tab's fields over the defaults, as a secret's string or a JSON var", () => {
+    for (let ADMIN_CONFIG_SEED of [JSON.stringify(SEED), structuredClone(SEED)]) {
+      expect(effectiveAdminConfig(null, adminConfigSeed({ ADMIN_CONFIG_SEED })))
+          .toEqual({ ...DEFAULT_ADMIN_CONFIG, ...SEED });
+    }
+  });
+
+  it("checks the values the way a stored config's are checked", () => {
+    let config = seeded({
+      modelModes: { kept: "disabled", dropped: "sometimes" },
+      defaultReasoning: "loud",
+    });
+    expect(config.modelModes).toEqual({ kept: "disabled" });
+    expect(config.defaultReasoning).toBeNull();
+  });
+
+  it("is ignored whole when it sets a field outside the Models tab", () => {
+    // Half of a seed is never applied: a typo in one field name must not leave the rest in force.
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, signupsEnabled: false }))).toEqual({});
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelSetting: {} }))).toEqual({});
+    expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelsSaved: true }))).toEqual({});
+  });
+
+  it("is ignored when it is not a JSON object", () => {
+    for (let raw of ["{", "[]", "null", "\"text\"", "3", [SEED]]) {
+      expect(parseAdminConfigSeed(raw), JSON.stringify(raw)).toEqual({});
+    }
+  });
+
+  it("still decides a stored config's model fields until an admin changes one", () => {
+    // What promoting the bundled formats on the first request stores: other settings, written
+    // over the seeded config, with modelsSaved still false.
+    let bootstrapped = { ...seeded(), siteName: "acme" };
+    let newSeed = { modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "max" } } };
+    let config = effectiveAdminConfig(bootstrapped, newSeed);
+    expect(config.siteName).toBe("acme");
+    expect(config.modelSettings).toEqual(newSeed.modelSettings);
+    // A field the old seed set and the new one leaves out is back to its default, not left over.
+    expect(config.addedModels).toEqual([]);
+    expect(config.modelModes).toEqual({});
+  });
+
+  it("decides nothing once an admin has changed a model setting, or in a config stored before it existed", () => {
+    let saved = { ...seeded(), modelsSaved: true, modelModes: {} };
+    expect(effectiveAdminConfig(saved, SEED).modelModes).toEqual({});
+    // A legacy config has no flag at all.
+    let { modelsSaved: _, ...legacy } = { ...DEFAULT_ADMIN_CONFIG, siteName: "acme" };
+    let config = effectiveAdminConfig(legacy, SEED);
+    expect(config.modelsSaved).toBe(true);
+    expect(config.modelSettings).toEqual({});
+  });
+
+  it("ends with a change to any Models tab field, compared by value", () => {
+    let config = seeded({ ...SEED, modelSettings: {
+      ...SEED.modelSettings, "claude-opus-5-5": { compactionInputBudget: 300000 } } });
+    expect(changesModelSettings(config, { ...config, siteName: "acme" })).toBe(false);
+    // Rebuilt in a different key order, but the same settings.
+    let reordered = { ...config, modelSettings: Object.fromEntries(
+        Object.entries(config.modelSettings).toReversed()) };
+    expect(Object.keys(reordered.modelSettings)).not.toEqual(Object.keys(config.modelSettings));
+    expect(changesModelSettings(config, reordered)).toBe(false);
+    expect(changesModelSettings(config, { ...config, modelModes: {} })).toBe(true);
+    expect(changesModelSettings(config, { ...config, userModelsEnabled: true })).toBe(true);
+  });
+
+  it("is what the KV hot path reads, under the same rules", async () => {
+    const ADMIN_CONFIG_SEED = JSON.stringify(SEED);
+    const withMirror = (value: string | null) => ({
+      ADMIN_CONFIG_SEED, BLUEPRINTS: { get: async () => value },
+    }) as unknown as Cloudflare.Env;
+
+    expect((await readAdminConfig(withMirror(null))).modelSettings).toEqual(SEED.modelSettings);
+    let bootstrapped = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, siteName: "acme" });
+    expect((await readAdminConfig(withMirror(bootstrapped))).modelSettings)
+        .toEqual(SEED.modelSettings);
+    let saved = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, modelsSaved: true });
+    expect((await readAdminConfig(withMirror(saved))).modelSettings).toEqual({});
   });
 });

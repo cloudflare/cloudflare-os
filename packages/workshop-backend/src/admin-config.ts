@@ -14,6 +14,9 @@ import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import { createWorkshopLogger } from "./observability.js";
+
+const logger = createWorkshopLogger("workshop.admin.config");
 
 /**
  * Longest `agentHint` a promoted format may carry. Every enabled format's hint goes into the
@@ -412,6 +415,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
       ? p.modelsDevSuggestions
       : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
+    // A config stored before the flag existed counts as saved, so a seed set on an existing
+    // deployment never overrides what its admins chose.
+    modelsSaved: typeof p.modelsSaved === "boolean" ? p.modelsSaved : true,
     updateChecksEnabled: typeof p.updateChecksEnabled === "boolean"
       ? p.updateChecksEnabled
       : DEFAULT_ADMIN_CONFIG.updateChecksEnabled,
@@ -427,13 +433,115 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
   };
 }
 
-export function parseAdminConfig(raw: string | null): AdminConfig {
-  if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
+/**
+ * The fields ADMIN_CONFIG_SEED may set: the Models tab's. The rest of the config is what an admin
+ * curates for the people using a deployment, which nothing outside the admin UI should decide.
+ */
+export const ADMIN_CONFIG_SEED_FIELDS = [
+  "modelModes", "addedProviders", "addedModels", "modelSettings", "defaultReasoning",
+  "userModelsEnabled", "modelsDevSuggestions",
+] as const satisfies readonly (keyof AdminConfig)[];
+
+/** What ADMIN_CONFIG_SEED may hold. */
+export type AdminConfigSeed =
+    Partial<Pick<AdminConfig, typeof ADMIN_CONFIG_SEED_FIELDS[number]>>;
+
+/**
+ * Parse an ADMIN_CONFIG_SEED value: a JSON object, or that object as a JSON string, which is what
+ * a secret can carry. A value that is not one, or that names a field ADMIN_CONFIG_SEED_FIELDS
+ * leaves out, gives no seed at all rather than part of one, so that a typo cannot apply half of
+ * what was meant. The fields' values are checked later, by normalizeAdminConfig(), the same way
+ * as a stored config's.
+ */
+export function parseAdminConfigSeed(raw: unknown): AdminConfigSeed {
+  if (raw === undefined || raw === null || raw === "") return {};
+  let value: unknown;
   try {
-    return normalizeAdminConfig(JSON.parse(raw) as Partial<AdminConfig>);
+    value = typeof raw === "string" ? JSON.parse(raw) : raw;
   } catch {
-    return { ...DEFAULT_ADMIN_CONFIG };
+    logger.error("ADMIN_CONFIG_SEED is not JSON; ignoring it", {event: "admin.seed.invalid"});
+    return {};
   }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    logger.error("ADMIN_CONFIG_SEED is not a JSON object; ignoring it", {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  let allowed: readonly string[] = ADMIN_CONFIG_SEED_FIELDS;
+  let unknown = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unknown.length > 0) {
+    logger.error(`ADMIN_CONFIG_SEED sets fields it may not (${unknown.join(", ")}); ignoring it`, {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  return value as AdminConfigSeed;
+}
+
+// The last seed parsed, by the value it was parsed from, so the hot path parses (and logs a bad
+// seed) once per isolate rather than once per read.
+let parsedSeed: { raw: unknown, seed: AdminConfigSeed } | undefined;
+
+/** The deployment's ADMIN_CONFIG_SEED, parsed (see parseAdminConfigSeed). */
+export function adminConfigSeed(env: Pick<Cloudflare.Env, "ADMIN_CONFIG_SEED">): AdminConfigSeed {
+  let raw = env.ADMIN_CONFIG_SEED;
+  if (parsedSeed === undefined || parsedSeed.raw !== raw) {
+    parsedSeed = { raw, seed: parseAdminConfigSeed(raw) };
+  }
+  return parsedSeed.seed;
+}
+
+// The Models tab fields of a config no admin has changed them in: the defaults, under the seed.
+function unsavedModelFields(seed: AdminConfigSeed): AdminConfigSeed {
+  let defaults = Object.fromEntries(ADMIN_CONFIG_SEED_FIELDS.map(
+      field => [field, DEFAULT_ADMIN_CONFIG[field]])) as AdminConfigSeed;
+  return { ...defaults, ...seed };
+}
+
+/**
+ * The config a deployment runs on, from the one stored (in the AdminSettings DO or its KV mirror;
+ * null when there is none) and its ADMIN_CONFIG_SEED. Until an admin changes a Models tab setting
+ * (`modelsSaved`), those fields are the defaults under the seed, whatever is stored for them: the
+ * deployment's own writes, such as promoting its bundled formats on its first request, store a
+ * config without ending the seed, and a changed seed applies on the next deploy.
+ *
+ * Without a seed the stored config is read as it is, as it was before seeds existed; so a
+ * deployment whose seed is removed keeps the values the seed last gave it.
+ */
+export function effectiveAdminConfig(
+    stored: Partial<AdminConfig> | null, seed: AdminConfigSeed): AdminConfig {
+  let config = normalizeAdminConfig(stored ?? { ...DEFAULT_ADMIN_CONFIG });
+  if (config.modelsSaved || Object.keys(seed).length === 0) return config;
+  return normalizeAdminConfig({ ...config, ...unsavedModelFields(seed) });
+}
+
+/**
+ * Whether a write from `current` to `next` changes a Models tab setting, which is what ends a
+ * seed (see effectiveAdminConfig). Compared by value, so a setter that rebuilds a record without
+ * changing it does not count.
+ */
+export function changesModelSettings(current: AdminConfig, next: AdminConfig): boolean {
+  return ADMIN_CONFIG_SEED_FIELDS.some(
+      field => canonicalJson(current[field]) !== canonicalJson(next[field]));
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v)
+          ? Object.fromEntries(Object.entries(v).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+          : v);
+}
+
+export function parseAdminConfig(raw: string | null, seed: AdminConfigSeed = {}): AdminConfig {
+  if (!raw) return effectiveAdminConfig(null, seed);
+  let stored: Partial<AdminConfig>;
+  try {
+    stored = JSON.parse(raw) as Partial<AdminConfig>;
+  } catch {
+    return effectiveAdminConfig(null, seed);
+  }
+  return effectiveAdminConfig(stored, seed);
 }
 
 export function serializeAdminConfig(config: AdminConfig): string {
@@ -442,7 +550,7 @@ export function serializeAdminConfig(config: AdminConfig): string {
 
 /** Read the admin config from the KV mirror. Cheap enough for the hot path (a single KV get). */
 export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig> {
-  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY));
+  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY), adminConfigSeed(env));
 }
 
 // --- Resource-disable helpers ---
