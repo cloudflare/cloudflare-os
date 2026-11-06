@@ -4,22 +4,24 @@ import { Autocomplete } from '@cloudflare/kumo'
 /**
  * A filter typed as a user id, with `suggestions` offered as it is typed in. It applies on Enter or
  * once a suggestion is picked; applying nothing clears it. Once `value` changes from elsewhere (a
- * name picked in the log), the field shows it, whatever was typed over the old one.
+ * name picked in the log), or `clears` grows (every filter cleared), the field shows `value`,
+ * whatever was typed and not applied.
  */
-export const TypedFilterField = ({ label, placeholder, value, suggestions, onApply }: {
+export const TypedFilterField = ({ label, placeholder, value, clears, suggestions, onApply }: {
   label: string
   placeholder: string
   value: string | undefined
+  clears: number
   suggestions: string[]
   onApply: (value: string | undefined) => void
 }) => {
-  // What is typed, for the value it was typed over.
-  const [typed, setTyped] = useState({ over: value, text: value ?? '' })
-  const shown = typed.over === value ? typed.text : (value ?? '')
+  // What is typed, for the value and the clear it was typed over.
+  const [typed, setTyped] = useState({ over: value, clears, text: value ?? '' })
+  const shown = typed.over === value && typed.clears === clears ? typed.text : (value ?? '')
 
   const apply = (text: string) => {
     const applied = text.trim() || undefined
-    setTyped({ over: applied, text: applied ?? '' })
+    setTyped({ over: applied, clears, text: applied ?? '' })
     onApply(applied)
   }
   // Base UI gives the Autocomplete a hidden text input of its own, and a form of several text
@@ -39,7 +41,7 @@ export const TypedFilterField = ({ label, placeholder, value, suggestions, onApp
         items={suggestions}
         value={shown}
         onValueChange={(text, { reason }) => {
-          setTyped({ over: value, text })
+          setTyped({ over: value, clears, text })
           if (reason === 'item-press') apply(text)
         }}
       >

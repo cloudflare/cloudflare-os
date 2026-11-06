@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Button, Combobox, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import {
@@ -38,6 +38,9 @@ export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilte
   // workspace chip and Clear filters remove themselves, and give focus to the admin field rather
   // than drop it.
   const adminField = useRef<HTMLDivElement>(null)
+  // How many times every filter was cleared: text typed in the admin and owner fields and not
+  // applied is cleared with them.
+  const [clears, setClears] = useState(0)
   const focusAdminField = () =>
     adminField.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus()
 
@@ -49,6 +52,7 @@ export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilte
             label="Admin"
             placeholder="Any admin (press Enter)"
             value={filter.admin}
+            clears={clears}
             suggestions={adminSuggestions}
             onApply={(admin) => onFilterChange({ ...filter, admin })}
           />
@@ -97,6 +101,7 @@ export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilte
           label="Workspace owner"
           placeholder="Any owner (press Enter)"
           value={filter.owner}
+          clears={clears}
           suggestions={[]}
           onApply={(owner) => onFilterChange({ ...filter, owner })}
         />
@@ -122,6 +127,7 @@ export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilte
             size="sm"
             icon={X}
             onClick={() => {
+              setClears((n) => n + 1)
               onFilterChange({})
               focusAdminField()
             }}

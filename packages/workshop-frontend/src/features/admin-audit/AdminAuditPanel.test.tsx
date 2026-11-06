@@ -499,6 +499,18 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'setSignupsEnabled' }))
     })
 
+    it('clears text typed and not applied in the admin and owner fields with every filter', async () => {
+      await render(settingsWith(), fakeAdmin(), { method: 'getChat' })
+      const [admin, , owner] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+      await type(admin, 'alice')
+      await type(owner, 'bob')
+
+      await click(button('Clear filters'))
+
+      expect(admin.value).toBe('')
+      expect(owner.value).toBe('')
+    })
+
     it('shows the admin filter set from elsewhere in the admin field', async () => {
       await render()
       const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
