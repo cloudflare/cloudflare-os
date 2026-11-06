@@ -128,6 +128,12 @@ export interface ObserverLedgerHost {
    * and any gadget that reaches it through an agent spawner.
    */
   gadgetsReaching(gadgetId: WorkpieceId): WorkpieceId[];
+
+  /**
+   * The collaborators holding a live session, by profile id: a client interface, a capability
+   * minted into one, or an admission in flight.
+   */
+  liveCollaborators(): string[];
 }
 
 /**
@@ -274,9 +280,14 @@ export class ObserverLedger {
     }
   }
 
-  // Everyone who can see what `context` reads: "build" collaborators always, anyone with access
-  // for a workspace read (which every chat and gadget includes), and for a gadget's read, those
-  // whose access includes a gadget that reaches it -- whether or not they have opened that gadget.
+  // Everyone who can see what `context` reads right now, counting only collaborators who hold a
+  // live session, whatever their role: "build" collaborators for any read, anyone with access for
+  // a workspace read (which every chat and gadget includes), and for a gadget's read, those whose
+  // access includes a gadget that reaches it -- whether or not they have opened that gadget. One
+  // without a session sees nothing until they open again, and that admission checks every
+  // requirement this read records, so an offline collaborator's lapsed account cannot block the
+  // read. An admission counts as a session from before it verifies, so a read either checks it or
+  // commits before it rescopes.
   //
   // Observers without a choice for this connection have had no session holding anything whose
   // verification scope it entered since (every widening restarts the sessions holding what
@@ -286,22 +297,24 @@ export class ObserverLedger {
   // refuse more.
   #audience(sharing: SharingManager, context: ObserverContext,
             gatekeeperId: WorkpieceId): ObservationRecipient[] {
+    let live = this.host.liveCollaborators();
+    if (live.length === 0) return [];
     let effective = sharing.computeEffectiveAccess();
     // Who can read a gadget's state is needed only for a "use" observer of a gadget's read, and
     // finding out walks every gadget's reach, so it is resolved at most once, on demand.
     let readers: WorkpieceId[] | undefined;
     let audience: ObservationRecipient[] = [];
-    // Listed up front: resolving readers lists other collections, which would end this listing.
-    for (let observer of Array.from(this.#storage.observers.list())) {
-      let access = effective.get(observer.profileId);
-      let accountId = observer.accountChoices[gatekeeperId];
-      if (access === undefined || accountId === undefined) continue;
+    for (let profileId of live) {
+      let access = effective.get(profileId);
+      let observer = this.#storage.observers.get(profileId);
+      let accountId = observer?.accountChoices[gatekeeperId];
+      if (access === undefined || observer === undefined || accountId === undefined) continue;
       if (access.role !== "build" && context.type !== "workspace") {
         if (context.type === "chat") continue;
         readers ??= this.host.gadgetsReaching(context.gadgetId);
         if (!readers.some(gadgetId => accessIncludesGadget(access, gadgetId))) continue;
       }
-      let {profileId, observerId} = observer;
+      let {observerId} = observer;
       audience.push({
         profileId, observerId, accountId,
         key: JSON.stringify([profileId, observerId, accountId]),
