@@ -14,7 +14,7 @@ import { AuditValue } from './AuditValue'
 import { SensitivityBadge } from './SensitivityBadge'
 
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
-export const AUDIT_LOG_COLUMNS = 8
+export const AUDIT_LOG_COLUMNS = 6
 
 const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI' }
 
@@ -71,13 +71,12 @@ const SettingChanges = ({ changes }: { changes: AdminSettingChange[] }) => (
   </ul>
 )
 
-const summaryOf = (record: AdminAuditRecord) => {
-  if (record.kind === 'workspace') return record.workspaceTitle || record.workspaceId
-  if (record.changes.length === 0) return ''
-  const more = record.changes.length - 1
-  const first = changeName(record.changes[0])
-  return more === 0 ? first : `${first} + ${NUMBER.format(more)} more`
-}
+// A user's name that filters the log by them, shown whole: the action is cut instead.
+const NameFilter = ({ name, label, onFilter }: { name: string; label: string; onFilter: () => void }) => (
+  <Button variant="ghost" size="sm" className="-ml-2 text-sm" aria-label={label} onClick={onFilter}>
+    {name}
+  </Button>
+)
 
 const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
   <div className="grid gap-x-4 gap-y-0.5 sm:grid-cols-[10rem_minmax(0,1fr)]">
@@ -105,21 +104,6 @@ const AccessDetails = ({ record, onFilterBy }: {
         </Button>
         <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
       </Detail>
-      <Detail term="Owner">
-        {record.workspaceOwner
-          ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="-ml-2 max-w-full text-sm"
-              aria-label={`Show only calls into workspaces ${record.workspaceOwner} owns`}
-              onClick={() => onFilterBy({ owner: record.workspaceOwner })}
-            >
-              <span className="truncate">{record.workspaceOwner}</span>
-            </Button>
-          )
-          : <span className="text-kumo-subtle">Unknown</span>}
-      </Detail>
       <Detail term="Reason">{record.reason}</Detail>
       <Detail term="Access">
         {ACCESS_LEVEL_NAMES[record.access]}
@@ -133,15 +117,18 @@ const AccessDetails = ({ record, onFilterBy }: {
           </span>
         </Detail>
       )}
+      <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
     </dl>
   )
 }
 
 /**
- * One record of the Audit tab's log: a summary row, with a toggle that shows what the record holds
- * in full in a row below it. An access record's target user is its workspace's owner, the user the
- * call reached. The admin's name and the target user, and in an access record's details its
- * workspace, filter the log by `onFilterBy`.
+ * One record of the Audit tab's log: a summary row (time, admin, action, sensitivity, target user),
+ * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
+ * changes or an access record's workspace, reason, level and arguments. An access record's target
+ * user is its workspace's owner, the user the call reached. The admin's name and the target user,
+ * and in an access record's details its workspace, filter the log by `onFilterBy`. Names are never
+ * cut: an action too long for the space left is, whole in its tooltip.
  */
 export const AuditLogRow = ({ record, onFilterBy }: {
   record: AdminAuditRecord
@@ -173,27 +160,26 @@ export const AuditLogRow = ({ record, onFilterBy }: {
         <Table.Cell className="whitespace-nowrap text-sm text-kumo-subtle">
           <time dateTime={record.at.toISOString()} title={record.at.toISOString()}>{time}</time>
         </Table.Cell>
-        <Table.Cell className="max-w-56">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ml-2 max-w-full text-sm"
-            aria-label={`Show only ${record.admin}’s activity`}
-            onClick={() => onFilterBy({ admin: record.admin })}
-          >
-            <span className="truncate">{record.admin}</span>
-          </Button>
+        <Table.Cell>
+          <NameFilter
+            name={record.admin}
+            label={`Show only ${record.admin}’s activity`}
+            onFilter={() => onFilterBy({ admin: record.admin })}
+          />
         </Table.Cell>
-        <Table.Cell className="font-mono text-xs text-kumo-default">{record.method}</Table.Cell>
-        <Table.Cell className="whitespace-nowrap">
-          <span className="flex items-center gap-1.5">
+        {/* Takes what the other columns leave (w-full), and no more (max-w-0), cutting the action. */}
+        <Table.Cell className="w-full max-w-0 font-mono text-xs text-kumo-default">
+          <span className="block truncate" title={record.method}>{record.method}</span>
+        </Table.Cell>
+        <Table.Cell>
+          <span className="flex flex-wrap items-center gap-1.5">
             <SensitivityBadge sensitivity={sensitivityOf(record)} />
             {record.kind === 'workspace' && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
         </Table.Cell>
-        <Table.Cell className="max-w-48">
+        <Table.Cell>
           {record.kind === 'setting'
             ? (
               // A setting change reaches every user, not one: no user is its target.
@@ -204,28 +190,25 @@ export const AuditLogRow = ({ record, onFilterBy }: {
             )
             : record.workspaceOwner
               ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-2 max-w-full text-sm"
-                  aria-label={`Show only calls into workspaces ${record.workspaceOwner} owns`}
-                  onClick={() => onFilterBy({ owner: record.workspaceOwner })}
-                >
-                  <span className="truncate">{record.workspaceOwner}</span>
-                </Button>
+                <NameFilter
+                  name={record.workspaceOwner}
+                  label={`Show only calls into workspaces ${record.workspaceOwner} owns`}
+                  onFilter={() => onFilterBy({ owner: record.workspaceOwner })}
+                />
               )
               : <span className="text-sm text-kumo-subtle">Unknown</span>}
         </Table.Cell>
-        <Table.Cell className={`max-w-72 text-xs text-kumo-subtle${record.kind === 'setting' ? ' font-mono' : ''}`}>
-          <span className="block truncate" title={summaryOf(record)}>{summaryOf(record)}</span>
-        </Table.Cell>
-        <Table.Cell className="text-sm text-kumo-subtle">{VIA_NAMES[record.via]}</Table.Cell>
       </Table.Row>
       <Table.Row id={detailsId} hidden={!expanded}>
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">
           {expanded && (record.kind === 'workspace'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
-            : <SettingChanges changes={record.changes} />)}
+            : (
+              <div className="space-y-4">
+                <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+                <SettingChanges changes={record.changes} />
+              </div>
+            ))}
         </Table.Cell>
       </Table.Row>
     </>

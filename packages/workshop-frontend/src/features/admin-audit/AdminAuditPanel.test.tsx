@@ -357,24 +357,17 @@ describe('AdminAuditPanel', () => {
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
         formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'Setting change', '—Deployment-wide',
-        'siteName', 'API',
       ])
       expect(logRows()[0].querySelector('time')?.getAttribute('dateTime')).toBe(SETTING_AT.toISOString())
     })
 
-    it('summarizes several changes as the first and how many more', async () => {
-      const admin = fakeAdmin()
-      admin.listAdminAudit.mockResolvedValue(testPage([settingRecord({
-        method: 'setBanner',
-        changes: [
-          { setting: 'banner', key: 'message', after: 'Maintenance tonight' },
-          { setting: 'banner', key: 'color', before: 'blue', after: 'red' },
-        ],
-      })]))
+    it('shows how a setting change came, and its action whole however long, from its row', async () => {
+      await render()
 
-      await render(settingsWith(), admin)
-
-      expect(logRows()[0].textContent).toContain('banner · message + 1 more')
+      const action = logRows()[0].querySelectorAll('td')[3].querySelector('span')!
+      expect(action.getAttribute('title')).toBe('setSiteName')
+      expect(action.className).toContain('truncate')
+      expect((await expand()).textContent).toContain('ViaAPI')
     })
 
     it('shows a record’s changes, before and after, from a toggle', async () => {
@@ -629,17 +622,17 @@ describe('AdminAuditPanel', () => {
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
         formatFullTimestamp(ACCESS_AT), 'admin', 'getChat', 'Workspace metadataRefused', 'owner@example.test',
-        'Quarterly report', 'CLI',
       ])
       const details = await expand()
+      expect(details.textContent).toContain('Quarterly report')
       expect(details.textContent).toContain('ws-titled')
-      expect(details.textContent).toContain('owner@example.test')
+      expect(details.textContent).toContain('ViaCLI')
       expect(details.textContent).toContain('Ticket 42: agent stuck')
       expect(details.textContent).toContain('Metadata only (Full requested) · refused: Content withheld')
       expect(details.textContent).toContain('chatId: 3')
     })
 
-    it('marks a content read as one, and names an untitled workspace by its id', async () => {
+    it('marks a content read as one, and names an untitled workspace in its details', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
         accessRecord({ exposed: 'content', access: 'full', refused: undefined, workspaceId: 'ws-untitled', workspaceTitle: '' }),
@@ -647,7 +640,10 @@ describe('AdminAuditPanel', () => {
       await render(settingsWith(), admin)
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
-      expect(cells.slice(4, 7)).toEqual(['Content read', 'owner@example.test', 'ws-untitled'])
+      expect(cells.slice(4)).toEqual(['Content read', 'owner@example.test'])
+      const details = await expand()
+      expect(details.textContent).toContain('Untitled')
+      expect(details.textContent).toContain('ws-untitled')
     })
 
     it('filters by sensitivity: a content read by what it exposed, a setting change by its kind', async () => {
@@ -700,9 +696,7 @@ describe('AdminAuditPanel', () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
       const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
-      const details = await expand()
-
-      await click(within(details, 'Show only calls into workspaces owner@example.test owns'))
+      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
       expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'owner@example.test' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'owner@example.test' }))
 

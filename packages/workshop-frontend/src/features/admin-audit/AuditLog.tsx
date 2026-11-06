@@ -134,8 +134,6 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
                   <Table.Head>Action</Table.Head>
                   <Table.Head>Sensitivity</Table.Head>
                   <Table.Head className="whitespace-nowrap">Target user</Table.Head>
-                  <Table.Head>Details</Table.Head>
-                  <Table.Head>Via</Table.Head>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
