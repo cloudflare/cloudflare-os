@@ -309,7 +309,7 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       phoneNotificationSubscriptions: <Record<string, string>>{},
       browserNotificationSubscriptions: <Record<string, string>>{},
       // Latest-value push outbox. its version belongs only to the push replacement protocol.
-      notificationBadge: <{version: number; count: number | null; retryAt?: number}>
+      notificationBadge: <{version: number; count: number | null; retryAt?: number; expiresAt?: number}>
           {version: 0, count: null},
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index

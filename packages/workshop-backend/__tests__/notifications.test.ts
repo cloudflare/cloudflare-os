@@ -503,6 +503,64 @@ describe("UserDurableObject notifications", () => {
     });
   });
 
+  it("does not start phone badge work when a browser registers", async () => {
+    const fetcher = stubService();
+    await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      storage.phoneNotificationSubscriptions.put({phone: ONE});
+      await user.registerNotificationDevice(browser(1));
+      expect(storage.notificationBadge.get()).toEqual({version: 0, count: null});
+      expect(await ctx.storage.getAlarm()).toBeNull();
+    });
+    expect(bodies(fetcher, "/v1/badges")).toEqual([]);
+  });
+
+  it.each(["count change", "phone enrollment"] as const)(
+    "expires failed badge retries after eviction and starts a fresh window on %s", async trigger => {
+      vi.useFakeTimers();
+      const now = Date.parse("2030-01-01T00:00:00Z"), lifetime = 10 * 60_000;
+      vi.setSystemTime(now);
+      const fetcher = stubService();
+      const service = fetcher.getMockImplementation()!;
+      const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+      await runInDurableObject(stub, async (user, ctx) => {
+        Object.defineProperty(user, "env", {value: installEnv});
+        await user.registerNotificationDevice("a".repeat(64));
+        const storage = makeUserStorage(ctx.storage);
+        expect(storage.notificationBadge.get()).toMatchObject({expiresAt: now + lifetime});
+        vi.setSystemTime(now + lifetime - 20_000);
+        fetcher.mockResolvedValue(new Response(null, {status: 503}));
+        await user.alarm();
+        expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0,
+          retryAt: now + lifetime, expiresAt: now + lifetime});
+        expect(await ctx.storage.getAlarm()).toBe(now + lifetime);
+      });
+      await evictDurableObject(stub);
+      vi.setSystemTime(now + lifetime);
+      fetcher.mockClear();
+      await runInDurableObject(stub, async (user, ctx) => {
+        Object.defineProperty(user, "env", {value: installEnv});
+        const storage = makeUserStorage(ctx.storage);
+        await user.alarm();
+        expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0});
+        expect(await ctx.storage.getAlarm()).toBeNull();
+        expect(bodies(fetcher, "/v1/badges")).toEqual([]);
+        fetcher.mockImplementation(service);
+        if (trigger === "phone enrollment") {
+          await user.registerNotificationDevice("b".repeat(64));
+        } else {
+          const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
+          await user.newWorkspace(workspaceId, "Workspace");
+          await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+            firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
+        }
+        expect(storage.notificationBadge.get()).toMatchObject({version: 2,
+          count: trigger === "phone enrollment" ? 0 : 1,
+          retryAt: now + lifetime + 1_000, expiresAt: now + 2 * lifetime});
+      });
+    });
+
   it("keeps the first badge deadline while more messages arrive", async () => {
     vi.useFakeTimers();
     stubService();
@@ -606,6 +664,7 @@ describe("UserDurableObject notifications", () => {
   it("recovers a pending badge after reset and retries a lost ACK without replaying an alert", async () => {
     const fetcher = stubService();
     let stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+    let expiresAt: number | undefined;
     const reset = async () => {
       await expect(runInDurableObject(stub, async (_user, ctx) => {
         await ctx.storage.sync();
@@ -631,13 +690,16 @@ describe("UserDurableObject notifications", () => {
       await user.alarm();
       expect(storage.notificationBadge.get()).toMatchObject({version: 7, count: 8});
       expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
+      expiresAt = storage.notificationBadge.get().expiresAt;
+      expect(expiresAt).toBeGreaterThan(Date.now());
       expect(await ctx.storage.getAlarm()).not.toBeNull();
     });
     await reset();
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
-      storage.notificationBadge.put({version: 7, count: 8, retryAt: 0});
+      expect(storage.notificationBadge.get().expiresAt).toBe(expiresAt);
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
       await user.alarm();
       expect(storage.notificationBadge.get()).toEqual({version: 7, count: 8});
     });

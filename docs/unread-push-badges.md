@@ -21,7 +21,7 @@ Explicit logout invokes optional `sessionEnded()` so the shell can remove that i
 
 1. A message fanout or read-horizon change updates the User DO's existing unread view.
 2. With registered phone notification devices, a complete changed total writes `notificationBadge`:
-   `{version, count, retryAt}`. This scalar is a durable outbox, not a second unread cache.
+   `{version, count, retryAt, expiresAt}`. This scalar is a durable outbox, not a second unread cache.
 3. The existing User DO alarm signs `POST /v1/badges` to the notification service, with body
    `{subscriptionId, version, count}`. The signing canonicalization is the same as deliveries,
    with `/v1/badges` as the signed path. Count is an absolute integer in `0..2147483647`.
@@ -41,8 +41,14 @@ durable and must not reset at eviction. New device
 enrollment forces an initial complete snapshot. Dead subscriptions are removed only if they have
 not been replaced while the request was in flight.
 
+Each replacement retries for at most ten minutes, matching the alert retry lifetime. Expiry clears
+the pending retry while retaining its version and count; eviction and failed attempts do not extend
+the deadline. After a longer outage, a sleeping device's badge can remain stale until the next count
+change or phone enrollment starts a fresh replacement. Browser push registration does not queue
+badge work, and browser subscriptions receive alerts only.
+
 The notification service needs the matching `/v1/badges` implementation before deploying this
 producer. Foreground badge updates work without push.
 
-Tests cover message-to-outbox propagation, read-to-zero, real User DO eviction, lost ACK retry,
+Tests cover message-to-outbox propagation, read-to-zero, real User DO eviction, lost ACK retry and expiry,
 request signing and confirmed sign-out versus transient reconnect.

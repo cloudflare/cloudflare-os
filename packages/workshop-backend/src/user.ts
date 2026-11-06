@@ -691,7 +691,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let others = Object.entries(store.get()).filter(([key]) => key !== deviceKey);
       store.put(Object.fromEntries(
           [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES_PER_KIND)));
-      this.#queueBadge(store === this.storage.phoneNotificationSubscriptions);
+      if (store === this.storage.phoneNotificationSubscriptions) this.#queueBadge(true);
     });
     this.#notificationRegistration = registered.catch(() => {});
     return registered;
@@ -974,15 +974,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let {unreadMessageCount} = this.#unreadSummary();
     if (!force && previous.count === unreadMessageCount) return;
     this.storage.notificationBadge.put({version: previous.version + 1,
-      count: unreadMessageCount, retryAt: Math.min(previous.retryAt ?? Infinity, Date.now() + 1_000)});
+      count: unreadMessageCount, retryAt: Math.min(previous.retryAt ?? Infinity, Date.now() + 1_000),
+      expiresAt: Date.now() + NOTIFICATION_RETRY_LIFETIME_MS});
     this.ctx.waitUntil(this.#armExpirySweep());
   }
 
   async #flushBadge(): Promise<void> {
     let pending = this.storage.notificationBadge.get();
-    if (pending.count === null || pending.retryAt === undefined || pending.retryAt > Date.now()) return;
+    if (pending.count === null || pending.retryAt === undefined) return;
+    let now = Date.now();
+    // Pending replacements from before expiry was introduced get one bounded retry window.
+    let expiresAt = pending.expiresAt ?? now + NOTIFICATION_RETRY_LIFETIME_MS;
+    if (expiresAt <= now) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+      await this.#armExpirySweep();
+      return;
+    }
+    if (pending.retryAt > now) return;
     // Persist the retry before dispatch, so eviction or a lost ACK replays the same replacement.
-    this.storage.notificationBadge.put({...pending, retryAt: Date.now() + 30_000});
+    this.storage.notificationBadge.put({...pending, expiresAt, retryAt: Math.min(expiresAt, now + 30_000)});
     await this.#armExpirySweep();
     let store = this.storage.phoneNotificationSubscriptions;
     let {version, count} = pending;
