@@ -256,13 +256,14 @@ provider's API, whether fetched by this read or earlier and cached.
 
 - A simulated read reports every real resource its data came from, in the provider's current
   (unapplied) state, plus every container the simulated view places it in.
-- Provider data stored in pending-action state (previous values, copied or quoted content) keeps
-  its source's IDs when replayed.
+- Content the gatekeeper itself fetched for an action (previous values or a server-side copy source)
+  keeps its source's IDs when stored in pending-action state and replayed.
 - Pending permission changes never relax what a read reports, and `verifyObserverAccess()` checks
   live provider state only.
-- Only content that never came from the provider adds no IDs: action arguments and provisional IDs
-  you generated. A read returning only such content still authorizes, reporting `[]` plus any
-  container or account requirement.
+- Caller-supplied content and generated provisional IDs add no source IDs by themselves. The kernel
+  does not propagate source requirements with text an agent quotes into an action argument. A read
+  returning only such content still authorizes, reporting `[]` plus any container or account
+  requirement.
 - Do not invent IDs for pending actions or simulated resources.
 
 Keep simulation and cached state in the connection's facet storage, never in the account Durable
@@ -345,9 +346,11 @@ use the same explicit-`subresources` protocol:
 service instance every account connects to, and any account connected to it may read everything
 disclosed, report `[GLOBAL_SUBRESOURCE_ID]` from `@gadgets/gatekeeper-kit/subresource-ids`, not `[]`.
 When accounts choose their instance, report a structured instance ID and compare it with the
-observer's instance instead. Check that the observer's grant covers the disclosure, not only that it
-is live, and document how long a removal from the instance goes unnoticed. Per-resource ACLs,
-per-user roles, or private account data need stronger checks. See the kit's
+observer's instance instead. Check a fixed, deployment-defined read entitlement covering every
+disclosure reported as `global`, not the owner's role or scopes; use distinct resource kinds when
+reads need different entitlements. Check that the grant is live and document how long a removal
+from the instance goes unnoticed. Per-resource ACLs, role differences affecting read visibility,
+or private account data need stronger checks. See the kit's
 [connection-only recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 Keep three decisions separate: **what the binding grants**, **what this answer discloses**, and

@@ -696,13 +696,14 @@ Simulation doesn't change what a read reports:
 - A simulated read reports every real resource its data came from, in the provider's current
   (unapplied) state, plus every container the simulated view places it in. A pending move from P
   to Q reports both until it applies.
-- Provider data stored in pending-action state (previous values, copied or quoted content) keeps
-  its source's IDs when replayed.
+- Content the gatekeeper itself fetched for an action (previous values or a server-side copy source)
+  keeps its source's IDs when stored in pending-action state and replayed.
 - Pending permission changes (sharing, visibility, membership) never relax what a read reports.
   `verifyObserverAccess()` checks live provider state only, never simulated state.
-- Only content that never came from the provider adds no IDs: action arguments and provisional IDs
-  you generated. A read returning only such content still authorizes, reporting `[]` plus any
-  container or account requirement.
+- Caller-supplied content and generated provisional IDs add no source IDs by themselves. The kernel
+  does not propagate source requirements with text an agent quotes into an action argument. A read
+  returning only such content still authorizes, reporting `[]` plus any container or account
+  requirement.
 - Do not invent IDs for pending actions or simulated resources.
 
 While a Workshop `createExternalResource` creation is pending, the kernel records nothing its
@@ -837,8 +838,8 @@ and limits of the existing implementations.
 
 Use `GLOBAL_SUBRESOURCE_ID` only when the deployed Worker's configuration fixes the one service
 instance every account of this vendor connects to, and any account connected to it may read
-everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, per-user
-roles or scopes, and private account data in the answer disqualify it.
+everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, role or scope
+differences that change read visibility, and private account data in the answer disqualify it.
 
 `"global"` names no instance; the deployment supplies its meaning. When accounts choose their
 instance (a self-hosted URL, a cloud or site ID, an Access team domain, a directory tenant), report
@@ -864,8 +865,11 @@ Report it on every read that returns information, including empty results, cache
 pages, simulated reads, and hooks. Bindings still enforce their project/item scope; observer access
 does not expand the caller's grant.
 
-The observer's verifier delegates to its own account. Because every account here connects to the
-`env`-fixed origin, the account's oracle needs only its own grant, using `getCredentials()` from the
+The observer's verifier delegates to its own account. Check a fixed, deployment-defined catalog-read
+entitlement, not whether the observer's grant matches the owner's. That entitlement must cover every
+read reporting `global`; if different reads need different entitlements, use distinct resource kinds
+instead. Because every account here connects to the `env`-fixed origin, the account's oracle checks
+its own grant, using `getCredentials()` from the
 [credential sequence](#2-expose-the-account-rpc-methods):
 
 ```ts
@@ -875,7 +879,7 @@ async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
   }
   // Throws when the grant is expired, dead on refresh, or disconnected.
   const { creds } = await this.getCredentials();
-  // A live grant with narrower scopes or role than the owner's is a definite denial.
+  // Check the fixed catalog-read entitlement, independently of the owner's role or scopes.
   return ids.map(() => grantCoversCatalogReads(creds));
 }
 ```
