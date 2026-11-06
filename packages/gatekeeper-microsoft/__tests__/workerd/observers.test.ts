@@ -9,7 +9,7 @@ import { SHAREPOINT_RESOURCE, scopesFor, type Env } from "../../src/microsoft-en
 import { calendarSubresourceId, qualifiedSubresourceId, sharePointSubresourceId, tenantSubresourceId } from "../../src/subresources";
 import {
   BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, MALLORY, NOTES, OTHER_TENANT, PHILLIP, SARAH, SPECS, TENANT,
-  facet, failure, folderProps, hooks, json, props, reconnectAs, ref, seedAccount, unwrap,
+  facet, failure, folderProps, hooks, json, props, reconnectAs, ref, seedAccount, storedGrant, unwrap,
 } from "./fake-graph";
 
 afterEach(() => {
@@ -150,6 +150,44 @@ describe("verifyObserverAccess", () => {
     down = false;
     expect(unwrap(await hooks().verifyObserverAccess(facet("outage-over"), binding, { sarah }, [item(BRIEF)]))).toEqual(["sarah"]);
     expect(graph.probedItems(SARAH)).toEqual([BRIEF]);
+  });
+
+  /** Answers every `$batch` entry 401 while `rejecting(token)`, as Graph does for a credential a workload refused. */
+  function rejectInsideBatches(graph: FakeGraph, rejecting: (token: string) => boolean): void {
+    graph.on("POST", /^\/v1\.0\/\$batch$/, request => {
+      if (!rejecting(request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "")) return undefined;
+      const { requests } = JSON.parse(request.body!) as { requests: Array<{ id: string }> };
+      return json({ responses: requests.map(sub => ({ id: sub.id, status: 401, body: { error: { code: "InvalidAuthenticationToken" } } })) });
+    });
+  }
+
+  it("heals a credential Graph rejects inside a batch, then answers, remembering no denial for it", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const sarah = await seedAccount(graph, SARAH);
+    const stale = (await storedGrant(sarah))!.accessToken;
+    rejectInsideBatches(graph, token => token === stale);
+    const binding = folderProps(id);
+
+    expect(unwrap(await hooks().verifyObserverAccess(facet("rejected"), binding, { sarah }, [item(BRIEF)]))).toEqual(["sarah"]);
+    expect(graph.tokenRequests().map(form => form.get("grant_type"))).toEqual(["refresh_token"]);
+    expect(unwrap(await hooks().verifyObserverAccess(facet("rejected-again"), binding, { sarah }, [item(BRIEF)]))).toEqual(["sarah"]);
+    expect(graph.probedItems(SARAH)).toEqual([BRIEF]);
+  });
+
+  it("stops answering, earlier grants included, once Graph rejects a credential that can't be healed", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const sarah = await seedAccount(graph, SARAH);
+    let rejecting = false;
+    rejectInsideBatches(graph, () => rejecting);
+    const binding = folderProps(id);
+    expect(unwrap(await hooks().verifyObserverAccess(facet("dead-before"), binding, { sarah }, [item(BRIEF)]))).toEqual(["sarah"]);
+
+    rejecting = true;
+    graph.tokens.delete((await storedGrant(sarah))!.refreshToken!);
+    expect(failure(await hooks().verifyObserverAccess(facet("dead-new"), binding, { sarah }, [item(NOTES)]))).toMatch(/expired or was revoked/);
+    expect(failure(await hooks().verifyObserverAccess(facet("dead-cached"), binding, { sarah }, [item(BRIEF)]))).toMatch(/expired or was revoked/);
   });
 });
 

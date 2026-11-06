@@ -12,7 +12,7 @@
 
 import { trackedCollectionObservers, type ObserverKv, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import { OBSERVED_UNIT_PREFIX } from "./binding";
-import { MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi } from "./graph-api";
+import { GraphApiError, MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi } from "./graph-api";
 import { isMailId } from "./outlook-graph";
 import type { MicrosoftVerifierApi, StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
@@ -67,8 +67,8 @@ function probePath(unit: MailUnit): string {
 
 /**
  * Whether `api`'s user can open each mail unit, in order. A unit this version could not parse
- * (null) is denied, as is one Graph says is missing or forbidden; anything else throws: the check
- * could not be made.
+ * (null) is denied, as is one Graph says is missing or forbidden; a rejected credential, and
+ * anything else, throws: the check could not be made.
  */
 export async function probeMailUnits(api: GraphApi, units: readonly (MailUnit | null)[]): Promise<boolean[]> {
   const verdicts = Array.from({ length: units.length }, () => false);
@@ -84,8 +84,10 @@ export async function probeMailUnits(api: GraphApi, units: readonly (MailUnit | 
     for (const { index, request } of chunk) {
       const answer = answers.get(request.id);
       if (answer === undefined) throw new AccessProbeError(502);
+      // A 401 here is Graph refusing the credential, as in `probeUnits`.
       if (answer.status >= 200 && answer.status < 300) verdicts[index] = true;
-      else if (![400, 401, 403, 404].includes(answer.status)) throw new AccessProbeError(answer.status);
+      else if (answer.status === 401) throw new GraphApiError(401, "Microsoft 365 did not accept this connection's credentials.");
+      else if (![400, 403, 404].includes(answer.status)) throw new AccessProbeError(answer.status);
     }
   }
   return verdicts;

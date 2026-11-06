@@ -20,7 +20,7 @@
 
 import { trackedCollectionObservers, type ObserverKv, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import { OBSERVED_UNIT_PREFIX } from "./binding";
-import type { GraphApi } from "./graph-api";
+import { isGraphAuthError, type GraphApi } from "./graph-api";
 import { CalendarApi, isCalendarId, type GraphSchedule } from "./calendar-graph";
 import { DETAIL_LEVELS, roleSees, type RevealLevel, type SharingRole } from "./calendar-scope";
 import { DAY_MS } from "./calendar-time";
@@ -60,7 +60,8 @@ export function isAvailabilityUnit(id: string): boolean {
 /**
  * Whether `api`'s user is given each person's free/busy, in order. No address (null) denies, as
  * does a person whose schedule came back with an error (`parseSchedule` makes "no information"
- * one); a failure of the whole request throws: the check could not be made.
+ * one); a failure of the whole request throws: the check could not be made. A rejected credential
+ * stays Graph's auth error, for the connection's credential source to heal or expire.
  */
 export async function probeAvailability(api: GraphApi, addresses: readonly (string | null)[]): Promise<boolean[]> {
   const wanted = [...new Set(addresses.filter((address): address is string => address !== null))];
@@ -69,6 +70,7 @@ export async function probeAvailability(api: GraphApi, addresses: readonly (stri
     const now = Date.now();
     schedules = await new CalendarApi(api, { kind: "me" }).schedules(wanted, now, now + DAY_MS);
   } catch (error) {
+    if (isGraphAuthError(error)) throw error;
     throw new AccessProbeError(error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 502);
   }
   const visible = new Set(schedules.filter(schedule => schedule.error === undefined).map(schedule => schedule.address));

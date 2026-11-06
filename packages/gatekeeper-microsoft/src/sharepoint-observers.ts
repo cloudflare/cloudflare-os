@@ -22,7 +22,7 @@
 
 import { trackedCollectionObservers, type ObserverKv, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import { OBSERVED_UNIT_PREFIX } from "./binding";
-import { MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi } from "./graph-api";
+import { GraphApiError, MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi } from "./graph-api";
 import type { MicrosoftVerifierApi, StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import type { ItemRef, ListRef, PageRef } from "./sharepoint-scope";
@@ -166,8 +166,8 @@ export class AccessProbeError extends Error {
 
 /**
  * Whether `api`'s user can open each unit, in order. A unit this version could not parse (null) is
- * denied, as is one Graph says is missing or forbidden. Anything else (throttling that outlasted
- * the batch's own retries, an outage) throws: the check could not be made.
+ * denied, as is one Graph says is missing or forbidden. A rejected credential, and anything else
+ * (throttling that outlasted the batch's own retries, an outage), throws: the check could not be made.
  */
 export async function probeUnits(api: GraphApi, asked: readonly (AccessUnit | null)[]): Promise<boolean[]> {
   const verdicts = Array.from({ length: asked.length }, () => false);
@@ -183,8 +183,11 @@ export async function probeUnits(api: GraphApi, asked: readonly (AccessUnit | nu
       if (answer === undefined) throw new AccessProbeError(502);
       const { status } = answer;
       const opens = status >= 200 && status < 300 || (unit.kind === "content" && status === 302);
+      // A 401 inside a batch the credential otherwise passed is still Graph refusing the credential:
+      // it stays Graph's auth error, for the credential source to heal or expire before any verdict.
       if (opens) verdicts[index] = shows(unit, answer.body);
-      else if (status !== 401 && status !== 403 && status !== 404 && status !== 400) throw new AccessProbeError(status);
+      else if (status === 401) throw new GraphApiError(401, "Microsoft 365 did not accept this connection's credentials.");
+      else if (status !== 403 && status !== 404 && status !== 400) throw new AccessProbeError(status);
     }
   }
   return verdicts;
