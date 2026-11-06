@@ -190,8 +190,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** The counts getAdminAuditStats() reports for the last `days` UTC days of this object's clock.
    * The content reads are the access records whose `exposed` is "content", counted in all and for
-   * each top admin and workspace; each top workspace is titled with the newest non-empty title any
-   * of its rows in the window carries. */
+   * each top admin. */
   stats(query: Pick<AdminAuditStatsQuery, "kind"> & { days: number }, retentionDays: number)
       : AdminAuditStats {
     let days = adminAuditStatsDays(query.days);
@@ -226,13 +225,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       count: counts.get(firstDay + i) ?? 0,
     }));
 
-    // Only access records can name a workspace, so the "setting" kind has none.
-    return {
-      days, totalEvents, byDay,
-      topAdmins: this.#topAdmins(where, params),
-      topWorkspaces: query.kind === "setting" ? [] : this.#topWorkspaces(from),
-      contentReads,
-    };
+    return { days, totalEvents, byDay, topAdmins: this.#topAdmins(where, params), contentReads };
   }
 
   // The admins with the most rows matching `where`, most first, with their content reads.
@@ -242,24 +235,6 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       `SELECT admin, COUNT(*) AS count, ${CONTENT_READS} AS contentReads FROM admin_audit
        WHERE ${where}
        GROUP BY admin ORDER BY count DESC, admin ASC LIMIT ${TOP_LIMIT}`, ...params).toArray();
-  }
-
-  // The workspaces with the most access records since `from`, most first, with their content reads,
-  // each titled from all of its rows since `from`, so that a title is found even when the newest
-  // rows carry none.
-  #topWorkspaces(from: number)
-      : { workspaceId: string; title: string; count: number; contentReads: number }[] {
-    return this.ctx.storage.sql.exec<
-        { workspaceId: string; title: string | null; count: number; contentReads: number }>(
-      `SELECT workspace_id AS workspaceId, COUNT(*) AS count, ${CONTENT_READS} AS contentReads,
-         (SELECT newest.workspace_title FROM admin_audit AS newest
-          WHERE newest.workspace_id = a.workspace_id AND newest.at >= ?
-            AND newest.workspace_title != ''
-          ORDER BY newest.at DESC, newest.seq DESC LIMIT 1) AS title
-       FROM admin_audit AS a WHERE kind = 'workspace' AND at >= ?
-       GROUP BY workspace_id ORDER BY count DESC, workspace_id ASC LIMIT ${TOP_LIMIT}`,
-      from, from).toArray().map(({ workspaceId, title, count, contentReads }) =>
-          ({ workspaceId, title: title ?? "", count, contentReads }));
   }
 
   // Delete up to PRUNE_BATCH rows older than the retention and return the cutoff every read

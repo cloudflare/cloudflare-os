@@ -366,22 +366,16 @@ it("counts the log across two admins", async () => {
         entry => entry.count);
     expect(admins.get(ADMIN_USERNAME)).toBe(5);
     expect(admins.get(AUDITOR_USERNAME)).toBe(2);
-    // Setting records name no workspace, so A counts its four access records alone.
-    const workspaces = growth(before.topWorkspaces, after.topWorkspaces,
-        entry => entry.workspaceId, entry => entry.count);
-    expect(workspaces.get(a.id)).toBe(4);
-    expect(workspaces.get(b.id)).toBe(2);
-    expect(after.topWorkspaces)
-        .toContainEqual({ workspaceId: a.id, title: a.title, count: 4, contentReads: 0 });
-    expect(after.topWorkspaces)
-        .toContainEqual({ workspaceId: b.id, title: b.title, count: 2, contentReads: 0 });
+    // Setting records name no workspace, so A lists its four access records alone.
+    for (const [workspace, count] of [[a.id, 4], [b.id, 2]] as const) {
+      expect((await admin.listAdminAudit({ workspace, limit: 200 })).records).toHaveLength(count);
+    }
 
     const settingsAfter = await admin.getAdminAuditStats({ kind: "setting" });
     expect(settingsAfter.totalEvents)
         .toBe(settingsBefore.totalEvents + 1 - droppedDays(settingsBefore, settingsAfter));
     expect(growth(settingsBefore.topAdmins, settingsAfter.topAdmins, entry => entry.admin,
         entry => entry.count).get(ADMIN_USERNAME)).toBe(1);
-    expect(settingsAfter.topWorkspaces).toEqual([]);
   } finally {
     await admin.setUserSearchEnabled(false);
   }
@@ -422,10 +416,11 @@ it("counts content reads, by admin and by workspace", async () => {
     expect(admins.get(ADMIN_USERNAME)).toBe(2);
     expect(admins.get(AUDITOR_USERNAME)).toBe(1);
     // The open, the two getChat() calls and listChats(); only the getChat() calls read content.
-    expect(after.topWorkspaces)
-        .toContainEqual({ workspaceId: a.id, title: a.title, count: 4, contentReads: 2 });
-    expect(after.topWorkspaces)
-        .toContainEqual({ workspaceId: b.id, title: b.title, count: 2, contentReads: 1 });
+    for (const [workspace, count, reads] of [[a.id, 4, 2], [b.id, 2, 1]] as const) {
+      expect((await admin.listAdminAudit({ workspace, limit: 200 })).records).toHaveLength(count);
+      expect((await admin.listAdminAudit({ workspace, exposed: "content", limit: 200 })).records)
+          .toHaveLength(reads);
+    }
 
     // Each workspace's records, found by its owner.
     const owned = (await admin.listAdminAudit({ owner: a.ownerName, limit: 200 })).records;
@@ -437,7 +432,6 @@ it("counts content reads, by admin and by workspace", async () => {
     const settings = await admin.getAdminAuditStats({ kind: "setting" });
     expect(settings.contentReads).toBe(0);
     expect(settings.topAdmins.every(entry => entry.contentReads === 0)).toBe(true);
-    expect(settings.topWorkspaces).toEqual([]);
     expect((await admin.getAdminAuditStats({ kind: "workspace" })).contentReads)
         .toBe(after.contentReads);
 

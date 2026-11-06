@@ -400,15 +400,15 @@ may be one an admin has since raised; the next listing, statistics read or setti
 ### Statistics
 
 `getAdminAuditStats({ days, kind })` counts the last `days` UTC days, today included (7 by default,
-at most 366): the total, one count per day (empty days included), the ten admins and the ten
-workspaces with the most records, each with its content reads, and the content reads in all
-(`contentReads`, the records whose `exposed` is `"content"`). An admin outside the top ten who reads
-content is not ranked there, but `listAdminAudit({ exposed: "content" })` lists every content read.
-A top workspace takes the newest non-empty title among its records in the window. Only access
-records name a workspace or read content, so for the `"setting"` kind the content reads are 0 and
-the workspace list is empty. A window reaching past the retention counts nothing there.
+at most 366): the total, one count per day (empty days included), the ten admins with the most
+records, each with its content reads, and the content reads in all (`contentReads`, the records
+whose `exposed` is `"content"`). An admin outside the top ten who reads content is not ranked there,
+but `listAdminAudit({ exposed: "content" })` lists every content read, as
+`listAdminAudit({ workspace })` lists every call into a workspace. Only access records read content,
+so for the `"setting"` kind the content reads are 0. A window reaching past the retention counts
+nothing there.
 
-The Audit tab shows the week's content reads in all and for each top admin and workspace, a
+The Audit tab shows the week's content reads in all and for each top admin, a
 sensitivity on each record (Content read, Workspace metadata, Setting change), the level an
 inspection asked for where its view got less, each call's target user (the workspace's owner) in a
 column of its own, and filters its log by admin, action, sensitivity, workspace and target user.
