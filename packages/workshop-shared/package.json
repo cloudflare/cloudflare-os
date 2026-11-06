@@ -31,6 +31,10 @@
       "types": "./src/code-change.ts",
       "import": "./src/code-change.ts"
     },
+    "./gatekeeper-app": {
+      "types": "./src/gatekeeper-app.ts",
+      "import": "./src/gatekeeper-app.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"

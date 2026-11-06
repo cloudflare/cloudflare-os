@@ -8,6 +8,11 @@ import type {
 } from '@gadgets/workshop-shared/gatekeeper'
 import { isHexColor } from '@gadgets/workshop-shared/api'
 import type {
+  GatekeeperAppNavigateOptions,
+  GatekeeperAppNavigation,
+  GatekeeperAppPathReceiver,
+} from '@gadgets/workshop-shared/gatekeeper-app'
+import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
@@ -18,6 +23,7 @@ import { forwardTrustedFrameError } from './errorReporting'
 import { useAuthenticatedApi } from './AuthContext'
 import {
   normalizeGatekeeperAppPrompt,
+  parseGatekeeperAppPath,
   parseGatekeeperAppWorkspaceTarget,
   type GatekeeperAppWorkspaceTarget,
 } from './gatekeeperAppNavigation'
@@ -39,6 +45,8 @@ type OpenTarget = (target: GatekeeperAppWorkspaceTarget) => void
 // can no longer see. Deliberately a lookup, not an enumeration: the app learns nothing new.
 type ResolveWorkspaceTitles = (ids: string[]) => Promise<(string | null)[]>
 type OpenPrompt = (prompt: string) => void
+// Commits navigation to an app-local path under this app's own /gatekeepers/<appId> prefix.
+type NavigatePath = (path: string, replace: boolean) => Promise<void>
 // Opening throws synchronously if refused; returning transfers receiver ownership to the picker.
 type OpenUserPicker = (receiver: RpcStub<GatekeeperUserSelectionReceiver>) => Promise<void>
 type CancelUserPicker = () => void
@@ -94,7 +102,7 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
 // The host capability exposed to the sandboxed app (the gatekeeper's iframe UI) over the MessagePort
 // RPC session. The app uses `ui` to reach the gatekeeper's own capability, which Workshop relays and
 // rate-limits. `setPresenting` stays in Workshop and only grows/restores the iframe's layout.
-class GatekeeperAppHostImpl extends RpcTarget {
+class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation {
   readonly #ui: RpcStub<RpcTarget>
   readonly #disposeRateLimiter: () => void
   readonly #present: PresentController
@@ -103,9 +111,13 @@ class GatekeeperAppHostImpl extends RpcTarget {
   readonly #resolveWorkspaceTitles: ResolveWorkspaceTitles
   readonly #openUserPicker: OpenUserPicker
   readonly #cancelUserPicker: CancelUserPicker
+  readonly #navigatePath: NavigatePath
   #presenting = false
   #theme: GatekeeperAppTheme
   #themeReceiver: RpcStub<GatekeeperAppThemeReceiver> | null = null
+  // The app-local path from the address bar, and the app's receiver for it (see subscribePath).
+  #path: string
+  #pathReceiver: RpcStub<GatekeeperAppPathReceiver> | null = null
   // Presentation changes are coalesced to a single apply per animation frame (see #applyPending).
   #pendingActive: boolean | null = null
   #pendingResolvers: ((ack: PresentAck) => void)[] = []
@@ -120,9 +132,12 @@ class GatekeeperAppHostImpl extends RpcTarget {
     resolveWorkspaceTitles: ResolveWorkspaceTitles,
     openUserPicker: OpenUserPicker,
     cancelUserPicker: CancelUserPicker,
+    path: string,
+    navigatePath: NavigatePath,
   ) {
     super()
     this.#theme = theme
+    this.#path = path
     const { capability: ui, dispose } = createRateLimitedCapability(capability, {
       maxConcurrency: 8,
       maxCallsPerMinute: 600,
@@ -138,6 +153,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#resolveWorkspaceTitles = resolveWorkspaceTitles
     this.#openUserPicker = openUserPicker
     this.#cancelUserPicker = cancelUserPicker
+    this.#navigatePath = navigatePath
   }
 
   get ui(): RpcStub<RpcTarget> {
@@ -216,6 +232,50 @@ class GatekeeperAppHostImpl extends RpcTarget {
     }
   }
 
+  // The app calls this once to learn its path from the address bar and every later change to it,
+  // including Back/Forward, which moves the URL without remounting the iframe.
+  subscribePath(receiver: RpcStub<GatekeeperAppPathReceiver>): Promise<void> {
+    this.#pathReceiver?.[Symbol.dispose]?.()
+    // The argument stub is disposed when this call returns, so keep our own dup (released in dispose).
+    const retained = receiver.dup()
+    this.#pathReceiver = retained
+    return this.#deliverPath(retained)
+  }
+
+  // The app is untrusted: the path is validated here, and the caller pins it under the app's prefix,
+  // so the frame can't navigate the Workshop anywhere else.
+  navigatePath(path: string, options?: GatekeeperAppNavigateOptions): Promise<void> {
+    const target = parseGatekeeperAppPath(path)
+    if (target === this.#path) return Promise.resolve()
+    return this.#navigatePath(target, options?.replace === true)
+  }
+
+  // Push the committed path to a subscribed app; a no-op until (and unless) the app subscribes.
+  updatePath(path: string) {
+    if (path === this.#path) return
+    this.#path = path
+    const receiver = this.#pathReceiver
+    if (receiver) this.#deliverPath(receiver).catch(() => {})
+  }
+
+  #deliverPath(receiver: RpcStub<GatekeeperAppPathReceiver>): Promise<void> {
+    try {
+      return Promise.resolve(receiver.setPath(this.#path)).catch((error: unknown) => {
+        this.#dropPathReceiver(receiver)
+        throw error
+      })
+    } catch (error) {
+      this.#dropPathReceiver(receiver)
+      return Promise.reject(error)
+    }
+  }
+
+  #dropPathReceiver(receiver: RpcStub<GatekeeperAppPathReceiver>) {
+    if (this.#pathReceiver !== receiver) return
+    receiver[Symbol.dispose]?.()
+    this.#pathReceiver = null
+  }
+
   // Queue a presentation change; the latest requested state is applied on the next frame.
   setPresenting(active: boolean): Promise<PresentAck> {
     return new Promise((resolve) => {
@@ -245,6 +305,8 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#cancelUserPicker()
     this.#themeReceiver?.[Symbol.dispose]?.()
     this.#themeReceiver = null
+    this.#pathReceiver?.[Symbol.dispose]?.()
+    this.#pathReceiver = null
     if (this.#frameId !== null) {
       cancelAnimationFrame(this.#frameId)
       this.#frameId = null
@@ -262,11 +324,13 @@ class GatekeeperAppHostImpl extends RpcTarget {
 /**
  * Hosts a gatekeeper's full-page management SPA in a sandboxed, network-isolated iframe. The app
  * talks to the gatekeeper only through the `ui` capability carried over the MessagePort RPC session.
- * The iframe fills its parent container.
+ * `path` is the app-local path from the address bar, delivered to the app as it changes; the app
+ * navigates by asking the host to change it. The iframe fills its parent container.
  */
-export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
+export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path }: {
   frame: GatekeeperUiFrame,
   gatekeeperVendorId: string,
+  path: string,
 }) {
   const navigate = useNavigate()
   const { authenticatedApi } = useAuthenticatedApi()
@@ -294,6 +358,12 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   useEffect(() => {
     hostRef.current?.updateTheme({ mode: resolvedThemeMode, accentColor })
   }, [resolvedThemeMode, accentColor])
+  // Read at handshake time and pushed on change, so a path change never re-establishes the session.
+  const pathRef = useRef(path)
+  pathRef.current = path
+  useEffect(() => {
+    hostRef.current?.updatePath(path)
+  }, [path])
 
   const setOverlayPhase = useCallback((next: OverlayState) => {
     if (overlayRef.current === next) return
@@ -348,6 +418,11 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   const openPrompt = useCallback<OpenPrompt>((prompt) => {
     navigate({ to: '/', search: { prompt } })
   }, [navigate])
+  const navigatePath = useCallback<NavigatePath>((target, replace) => navigate({
+    to: '/gatekeepers/$appId/$',
+    params: { appId: gatekeeperVendorId, _splat: target.slice(1) },
+    replace,
+  }), [navigate, gatekeeperVendorId])
   const openUserPicker = useCallback<OpenUserPicker>((receiver) => {
     if (openPickerRef.current) {
       throw new Error('A person picker is already open.')
@@ -410,6 +485,8 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
         resolveWorkspaceTitles,
         openUserPicker,
         cancelUserPicker,
+        pathRef.current,
+        navigatePath,
       )
       hostRef.current = host
       sessionRef.current = newMessagePortRpcSession(port, host)
@@ -442,8 +519,8 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
     }
     // Re-establish the session if either the HTML or the `ui` capability changes, so a new frame
     // carrying a fresh stub (even with identical HTML) never keeps talking through the stale one.
-  }, [frame.iframeHtml, frame.ui, gatekeeperVendorId, cancelUserPicker, openPrompt, openTarget,
-      openUserPicker, present, resolveWorkspaceTitles, setOverlayPhase])
+  }, [frame.iframeHtml, frame.ui, gatekeeperVendorId, cancelUserPicker, navigatePath, openPrompt,
+      openTarget, openUserPicker, present, resolveWorkspaceTitles, setOverlayPhase])
 
   return (
     <>

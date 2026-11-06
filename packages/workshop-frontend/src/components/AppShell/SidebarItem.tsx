@@ -28,12 +28,15 @@ export default function SidebarItem({
   matchPrefix = false,
 }: SidebarItemProps) {
   // Resolve the active path manually so we can style the icon as well as the row. For parameterized
-  // routes (e.g. "/gatekeepers/$appId"), substitute the params so the resolved path can match.
+  // routes (e.g. "/gatekeepers/$appId/$"), substitute the params so the resolved path can match; a
+  // splat (`_splat`) fills the trailing "/$".
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   let target = typeof to === 'string' ? to : ''
   if (params) {
     for (const [key, value] of Object.entries(params as Record<string, string>)) {
-      target = target.replaceAll(`$${key}`, String(value))
+      target = key === '_splat'
+        ? target.replace(/\/\$$/, value ? `/${value}` : '')
+        : target.replaceAll(`$${key}`, String(value))
     }
   }
   const isActive = matchPrefix
