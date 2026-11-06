@@ -35,6 +35,9 @@ declare module "cloudflare:workers" {
 // The pool's ADMINS.
 const ADMIN = "deployment-admin@example.test";
 const OWNER_USER_ID = "owner-user-do";
+// A view that outlives its open by a margin a slow runner keeps (the open reads the config twice
+// and awaits its record), then expires within the test.
+const SHORT_LIFETIME_MS = 1000;
 const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.test", name: "Owner" };
 const REASON = "Support ticket 42";
 // The pool sets no ADMIN_AUDIT_RETENTION_MIN_DAYS, so retention is at least 90 days.
@@ -462,9 +465,9 @@ describe("a live view's checks", () => {
 
   it("refuses, unrecorded, a call after expiry or demotion, or on a deleted workspace",
       () => withWorkspace(async ws => {
-    let shortLived = await open(ws, { expiresAt: new Date(Date.now() + 300) });
+    let shortLived = await open(ws, { expiresAt: new Date(Date.now() + SHORT_LIFETIME_MS) });
     let view = await open(ws);
-    await scheduler.wait(400);
+    await scheduler.wait(SHORT_LIFETIME_MS + 100);
     expect(await codeOf(shortLived.listChats())).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
 
     setEnv(ws, { ADMINS: ["someone-else@example.test"] });
@@ -504,7 +507,7 @@ describe("a live view's checks", () => {
 
   it("writes nothing for a call that expires while it reads the setting",
       () => withWorkspace(async ws => {
-    let view = await open(ws, { expiresAt: new Date(Date.now() + 300) });
+    let view = await open(ws, { expiresAt: new Date(Date.now() + SHORT_LIFETIME_MS) });
     let reached!: () => void;
     let atRead = new Promise<void>(resolve => { reached = resolve; });
     let release!: () => void;
@@ -517,7 +520,7 @@ describe("a live view's checks", () => {
 
     let call = view.listChats();
     await atRead;
-    await scheduler.wait(400);
+    await scheduler.wait(SHORT_LIFETIME_MS + 100);
     release();
 
     expect(await codeOf(call)).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
@@ -555,12 +558,12 @@ describe("a call overtaken while it reads its answer", () => {
   }));
 
   it("writes nothing when the view expires", () => withWorkspace(async ws => {
-    let view = await open(ws, { expiresAt: new Date(Date.now() + 300) });
+    let view = await open(ws, { expiresAt: new Date(Date.now() + SHORT_LIFETIME_MS) });
     let hold = holdDescribe(ws);
 
     let call = view.describe();
     await hold.reached;
-    await scheduler.wait(400);
+    await scheduler.wait(SHORT_LIFETIME_MS + 100);
     hold.release();
 
     expect(await codeOf(call)).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
