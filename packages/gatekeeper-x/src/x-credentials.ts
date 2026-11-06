@@ -1,12 +1,15 @@
 // What the account Durable Object shares with the rest of the Worker: the public view of a grant,
-// the pinned identity, the read reservation, and a credential source over one account. Kept apart
-// from x.ts so the facet and configurator modules can use them without an import cycle.
+// the pinned identity and the subresource naming it, the read reservation, and a credential source
+// over one account. Kept apart from x.ts so the facet and configurator modules can use them without
+// an import cycle.
 
 import { CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
+import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
 import { XTransportError, billableResources, isXAuthError, type XEnvelope } from "./x-api";
 import { VENDOR_ID } from "./x-env";
+import { SNOWFLAKE } from "./x-urls";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.x", vendorId: VENDOR_ID });
 
@@ -37,12 +40,37 @@ export type ReadReservation =
 
 /** The X gatekeeper's own methods on its verifier, which the overseer hands back only to us. */
 export interface XVerifierApi extends GatekeeperUserVerifier {
-  /** The X user the observer's connection belongs to, or null when it is unusable. */
+  /**
+   * The X user the observer's connection is pinned to, read from the account without asking X, or
+   * null once the connection can no longer vouch for anyone: a grant X refused for good, or a
+   * disconnect. Any other failure throws, since it says nothing about who the observer is.
+   */
   getXUserId(): Promise<string | null>;
-  /** Whether the observer's X account can see a post. */
-  canViewPost(postId: string): Promise<boolean>;
-  /** Whether the observer's X account can see a List. */
-  canViewList(listId: string): Promise<boolean>;
+}
+
+const USER_FRAGMENT = "user";
+
+/**
+ * The subresource ID a read private to the account reports: `user/<id>`, the X user the connection
+ * is pinned to, named by the numeric ID X assigned them, which never changes, rather than a handle,
+ * which can. Only an observer connected as that same X user may see such a read.
+ * @throws Error when `userId` is not a numeric X user ID.
+ */
+export function xUserSubresourceId(userId: string): string {
+  if (!SNOWFLAKE.test(userId)) throw new Error("Expected a numeric X user ID.");
+  return formatSubresourceId({ fragments: [{ name: USER_FRAGMENT, id: userId }] });
+}
+
+/**
+ * The X user ID an {@link xUserSubresourceId} ID names.
+ * @throws Error for any other ID, or a spelling other than the canonical one.
+ */
+export function parseXUserSubresource(id: string): string {
+  const { namespace, fragments: [user, ...rest] } = parseSubresourceId(id);
+  if (namespace !== undefined || rest.length > 0 || user?.name !== USER_FRAGMENT || !SNOWFLAKE.test(user.id)) {
+    throw new Error("Not an X user subresource ID.");
+  }
+  return user.id;
 }
 
 /** Credentials for the account behind `userObjectId`, as a facet or entrypoint reads them. */

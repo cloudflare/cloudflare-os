@@ -3,8 +3,8 @@
 // proof-actions: a Dependabot github-actions pull request that only moves existing SHA pins of
 // allowlisted publishers to the commit their new release tag names.
 //
-// Holds when Dependabot opened it and wrote every commit; every change is a `uses:` line in a
-// workflow that swaps one full 40-character SHA pin of the same action for another, with a
+// Holds when Dependabot opened it from its github-actions branch; every change is a `uses:` line
+// in a workflow that swaps one full 40-character SHA pin of the same action for another, with a
 // `# <tag>` comment; the publisher is on PUBLISHERS; the tag resolves to that SHA in the action's
 // own repository (so the pin cannot name a commit that exists only in a fork); every touched
 // workflow, as it stands at the base, holds no credential, is not a reusable workflow and runs on
@@ -14,7 +14,8 @@
 // one.
 //
 // Which workflows are producers or the gate, and so always go to a person, is the gate's list,
-// not this proof's.
+// not this proof's, and so is whether Dependabot wrote every commit: the gate checks each commit's
+// author, committer and signature through the API, which a commit email cannot show.
 //
 //   node scripts/automerge/proofs/actions.ts
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_PR_AUTHOR, AUTOMERGE_HEAD_REF
@@ -23,8 +24,8 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
-import { commitAuthors, git, mergeBase, pullRequestDiff } from "./git.ts";
-import { DEPENDABOT_EMAIL, DEPENDABOT_LOGIN } from "./deps.ts";
+import { git, pullRequestDiff } from "./git.ts";
+import { DEPENDABOT_LOGIN } from "./deps.ts";
 import { cacheReasons, workflowReasons } from "./workflow.ts";
 
 const ACTIONS_BRANCH_PREFIX = "dependabot/github_actions/";
@@ -47,7 +48,6 @@ export interface PinMove {
 export interface ActionsInput {
   author: string;
   headRef: string;
-  commitEmails: string[];
   files: FileDiff[];
   /** What each `owner/repo@tag` resolves to in that repository: the tag object and the commit. */
   tagTargets: Record<string, string[]>;
@@ -93,10 +93,6 @@ export function evaluateActions(input: ActionsInput): Outcome {
       { author: input.author, head_ref: input.headRef });
   }
   const { moves, reasons } = pinMoves(input.files);
-  const strangers = input.commitEmails.filter((email) => email !== DEPENDABOT_EMAIL);
-  if (input.commitEmails.length === 0 || strangers.length > 0) {
-    reasons.push(`commits not written by Dependabot: ${strangers.length} of ${input.commitEmails.length}`);
-  }
   if (moves.length === 0) reasons.push("moves no pin");
   for (const move of moves) {
     const targets = input.tagTargets[`${move.repo}@${move.tag}`];
@@ -136,7 +132,6 @@ export function tagTargetsFromLsRemote(output: string, tag: string): string[] {
 
 async function main(): Promise<void> {
   await runProducer("proof", "proof-actions", async ({ head, base }) => {
-    const from = mergeBase(base, head);
     const files = pullRequestDiff(base, head);
     const tagTargets: Record<string, string[]> = {};
     for (const move of pinMoves(files).moves) {
@@ -147,7 +142,6 @@ async function main(): Promise<void> {
     return evaluateActions({
       author: process.env.AUTOMERGE_PR_AUTHOR ?? "",
       headRef: process.env.AUTOMERGE_HEAD_REF ?? "",
-      commitEmails: commitAuthors(from, head),
       files,
       tagTargets,
       baseWorkflows: Object.fromEntries(git(["ls-tree", "--name-only", base, "--", ".github/workflows/"]).split("\n")

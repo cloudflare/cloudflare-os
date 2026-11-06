@@ -4,8 +4,8 @@ import { describe, it } from "node:test";
 import type { FileDiff } from "./diff.ts";
 import { asObject, parseJson, type JsonObject } from "./json.ts";
 import {
-  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, importedSources, killedMutants, OverBudget,
-  planScope, runBounded,
+  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, OverBudget,
+  planScope, runBounded, sourceGraph,
 } from "./tests.ts";
 
 // Stryker JSON reports from real proof runs on packages/error-reporting (2026-11-02), cut down to
@@ -44,6 +44,9 @@ describe("proof-tests verdict", () => {
   });
 });
 
+/** A package's files by path, as `sourceGraph` reads them. */
+const files = (entries: Record<string, string>) => (path: string) => entries[path];
+
 describe("proof-tests scope", () => {
   it("takes tests in one package", () => {
     assert.deepEqual(planScope([file("packages/error-reporting/src/index.test.ts"), file("packages/error-reporting/src/__tests__/fixtures/a.json")]), {
@@ -61,18 +64,75 @@ describe("proof-tests scope", () => {
     assert.ok("outOfScope" in planScope([file("scripts/automerge/proofs/tests.test.ts")]));
   });
 
-  it("finds the source a test imports, but not other tests, fixtures or declarations", () => {
-    const present = new Set(["packages/p/src/index.ts", "packages/p/src/util.tsx", "packages/p/src/types.d.ts", "packages/p/src/helpers.test.ts"]);
-    const text = [
-      'import { a } from "./index.js";',
-      'import { b } from "./util";',
-      'import type { T } from "./types.d.ts";',
-      'import { c } from "./helpers.test.ts";',
-      'import { d } from "vitest";',
-      'const e = await import("./index.ts");',
-    ].join("\n");
-    assert.deepEqual(importedSources("packages/p/src/x.test.ts", text, (path) => present.has(path)),
-      ["packages/p/src/index.ts", "packages/p/src/util.tsx", "packages/p/src/index.ts"]);
+  // Bonk's case on #987: the test imports an index that defines identity() and re-exports
+  // double() from double.ts, so double.ts's mutants must be made too.
+  it("follows a re-export from the module a test imports", () => {
+    const read = files({
+      "packages/p/src/index.ts": 'export const identity = (x: number) => x;\nexport { double } from "./double.ts";\n',
+      "packages/p/src/double.ts": "export const double = (x: number) => x * 2;\n",
+    });
+    const test = { path: "packages/p/src/index.test.ts", text: 'import { double, identity } from "./index.ts";\n' };
+    assert.deepEqual(sourceGraph([test], "packages/p", read), { sources: ["packages/p/src/double.ts", "packages/p/src/index.ts"], problems: [] });
+  });
+
+  it("follows imports through helpers and side-effect imports, but mutates neither tests nor data", () => {
+    const read = files({
+      "packages/p/src/index.ts": 'import "./setup";\nimport data from "./data.json";\nexport { b } from "./util";\n',
+      "packages/p/src/setup.ts": 'import { c } from "./deep/index.js";\n',
+      "packages/p/src/deep/index.ts": "export const c = 1;\n",
+      "packages/p/src/util.tsx": "export const b = 2;\n",
+      "packages/p/src/data.json": "{}",
+      "packages/p/src/types.d.ts": "export type T = 1;\n",
+      "packages/p/__tests__/helpers.ts": 'export * from "../src/index.ts";\nimport type { T } from "../src/types.d.ts";\n',
+    });
+    const text = 'import { x } from "../__tests__/helpers.ts";\nimport { d } from "vitest";\nconst e = await import("./index.ts");\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read), {
+      sources: ["packages/p/src/deep/index.ts", "packages/p/src/index.ts", "packages/p/src/setup.ts", "packages/p/src/util.tsx"],
+      problems: [],
+    });
+  });
+
+  it("names a specifier it cannot resolve and an import that leaves the package", () => {
+    const read = files({
+      "packages/p/src/index.ts": 'export { gone } from "./gone.ts";\nexport { other } from "../../q/src/other.ts";\n',
+      "packages/q/src/other.ts": "export const other = 1;\n",
+    });
+    const test = { path: "packages/p/src/index.test.ts", text: 'import { gone } from "./index.ts";\n' };
+    assert.deepEqual(sourceGraph([test], "packages/p", read).problems, [
+      "packages/p/src/index.ts: cannot resolve ./gone.ts",
+      "packages/p/src/index.ts: imports packages/q/src/other.ts, outside packages/p",
+    ]);
+  });
+
+  // From the review of #987's fix: bundled-blueprints' xlsx.server.test.ts imports its package's
+  // own zip and sync libraries by name, through package.json `exports` (recorded 2026-11-06).
+  it("follows the package's imports of itself by name through its exports", () => {
+    const read = files({
+      "packages/bundled-blueprints/package.json": JSON.stringify({
+        name: "@gadgets/bundled-blueprints",
+        exports: { ".": "./src/index.ts", "./libraries/*/server": "./libraries/*/server.ts" },
+      }),
+      "packages/bundled-blueprints/libraries/zip/server.ts": 'export { crc32 } from "./src/zip.ts";\n',
+      "packages/bundled-blueprints/libraries/zip/src/zip.ts": "export const crc32 = () => 0;\n",
+      "packages/bundled-blueprints/src/index.ts": "export const index = 1;\n",
+    });
+    const test = { path: "packages/bundled-blueprints/blueprints/workspace-sheets/__tests__/xlsx.server.test.ts",
+      text: 'import { crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";\nimport "@gadgets/bundled-blueprints";\n' +
+        'import { other } from "@gadgets/bundled-blueprints-extra";\nimport { gone } from "@gadgets/bundled-blueprints/nowhere";\n' };
+    assert.deepEqual(sourceGraph([test], "packages/bundled-blueprints", read), {
+      sources: ["packages/bundled-blueprints/libraries/zip/server.ts", "packages/bundled-blueprints/libraries/zip/src/zip.ts",
+        "packages/bundled-blueprints/src/index.ts"],
+      problems: [`${test.path}: @gadgets/bundled-blueprints/nowhere is not in packages/bundled-blueprints/package.json exports`],
+    });
+  });
+
+  it("names an import whose argument is not a string literal, and follows require()", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/..odd.ts": "export const odd = 1;\n" });
+    const text = 'const a = require("./a.ts");\nconst b = await import(`./${name}.ts`);\nimport "./..odd.ts";\nthis.#require("x");\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read), {
+      sources: ["packages/p/src/..odd.ts", "packages/p/src/a.ts"],
+      problems: ['packages/p/src/x.test.ts: cannot follow "import(", whose argument is not one string literal'],
+    });
   });
 
   it("flags edited helpers and fixtures, which unchanged tests may import", () => {

@@ -8,7 +8,8 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.drive", v
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
-const MAX_BATCH_FILES = 100;
+/** The most files one Drive batch request asks about. */
+export const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
 /** Per-attempt budget for a file download, which carries far more than a metadata read. */

@@ -20,6 +20,7 @@ const HAND_DECLARED_CONFIGS = [
   "packages/workshop-backend/vite.config.ts",
   "packages/integration-tests/vite.config.ts",
   "scripts/vite.config.ts",
+  "packages/api-cli/vite.config.ts",
 ];
 
 const [DISABLE_VAR] = TESTS_WITH_TIMEOUT_ENV;

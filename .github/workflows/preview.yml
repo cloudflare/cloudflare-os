@@ -123,6 +123,9 @@ jobs:
           # uploaded as CF_AI_GATEWAY_ACCOUNT_ID.
           CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_OS_AI_GATEWAY_ACCOUNT_ID }}
           CF_AI_GATEWAY_PROVIDERS: ${{ secrets.CF_AI_GATEWAY_PROVIDERS }}
+          # Optional: the Models tab's admin settings each preview starts with, a JSON object
+          # uploaded as the backend's ADMIN_CONFIG_SEED (see resolveAdminConfigSeed).
+          PREVIEW_ADMIN_CONFIG_SEED: ${{ secrets.PREVIEW_ADMIN_CONFIG_SEED }}
           # The gateway above lives in a different account from the one these previews deploy to,
           # and the backend's WORKERS_AI binding only reaches gateways in its own account. So
           # inference and cost-log reads go over HTTPS with this AI Gateway Run + Read token,

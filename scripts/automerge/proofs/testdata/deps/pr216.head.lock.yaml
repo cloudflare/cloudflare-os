@@ -1,0 +1,269 @@
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/backend-utils:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      '@cloudflare/workers-types':
+        specifier: ^5.20260808.1
+        version: 5.20260808.1
+
+  packages/gatekeeper-cloudflare:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-confluence:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-context:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-email:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-github:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-google:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-homeassistant:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-linear:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-mcp-portal:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-mcp:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-notion:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-scheduler:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-slack:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-spotify:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-supabase:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/gatekeeper-zoominfo:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/integration-tests:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260808.1
+        version: 5.20260808.1
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/router:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/typed-storage:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      '@cloudflare/workers-types':
+        specifier: ^5.20260808.1
+        version: 5.20260808.1
+
+  packages/workshop-backend:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+
+  packages/workshop-shared:
+    dependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260808.1
+        version: 5.20260808.1
+
+packages:
+
+  '@cloudflare/kumo@2.9.2':
+    resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==}
+    hasBin: true
+    peerDependencies:
+      '@phosphor-icons/react': ^2.1.10
+      echarts: ^6.0.0
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
+      zod: ^4.0.0
+    peerDependenciesMeta:
+      echarts:
+        optional: true
+      zod:
+        optional: true
+
+  '@cloudflare/kv-asset-handler@0.5.0':
+    resolution: {integrity: sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==}
+    engines: {node: '>=22.0.0'}
+
+  '@cloudflare/puppeteer@1.3.0':
+    resolution: {integrity: sha512-NBrJEUnqe082nopLh0eqnTXK4DjwsTsZGzoAcs71NFnBgzWU6Yb/ibUJHveCHV4AyAkM+mE/DChFev5gwaKZEg==}
+    engines: {node: '>=18'}
+
+  '@cloudflare/unenv-preset@2.16.1':
+    resolution: {integrity: sha512-ECxObrMfyTl5bhQf/lZCXwo5G6xX9IAUo+nDMKK4SZ8m4Jvvxp52vilxyySSWh2YTZz8+HQ07qGH/2rEom1vDw==}
+    peerDependencies:
+      unenv: 2.0.0-rc.24
+      workerd: '>1.20260305.0 <2.0.0-0'
+    peerDependenciesMeta:
+      workerd:
+        optional: true
+
+  '@cloudflare/vitest-pool-workers@0.20.3':
+    resolution: {integrity: sha512-aCMvM5zQ3MTz8SorSZB6ZxjVK2Gof6UhIc2Z1z9zbX/obucSYwDUkx8A0MUOod4I7clfB0QLarKBjRdIczK3vg==}
+    peerDependencies:
+      '@vitest/runner': ^4.1.0
+      '@vitest/snapshot': ^4.1.0
+      vitest: ^4.1.0
+
+  '@cloudflare/workerd-darwin-64@1.20260801.1':
+    resolution: {integrity: sha512-wuJWbXpKvncJi1P0GKS+iYpN5tHdb7JPJJ/+6ZQe8zzovHHVMkLJPNBsgWpqeUhpM3g9qTwEKd2rglNKejuh5A==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@cloudflare/workerd-darwin-arm64@1.20260801.1':
+    resolution: {integrity: sha512-kwoZiTpnhNrF3+APx84Q/oAqvJ3sU9yefGagwm/ASaH/2W19x0vghkW/r4qCoHCK0WW7EPugZ+aXjgPMRtlq1Q==}
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@cloudflare/workerd-linux-64@1.20260801.1':
+    resolution: {integrity: sha512-r0vAxCZH+Jih9Unm1yoyiByPNWNgawcKciOHDm5Q37ZVGOkKLsT9AtLe3yLSaul76WrKqtf+JP2n0WW32VBLJg==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [linux]
+
+  '@cloudflare/workerd-linux-arm64@1.20260801.1':
+    resolution: {integrity: sha512-zWgpdZtSozvIgzQNmQiDSF8yEOQJUkRAWNsDXXzAAoy+fCn8YUoSibj3mpFSbZRvbUldeBEaW6SCdC2VEMkhNQ==}
+    engines: {node: '>=16'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@cloudflare/workerd-windows-64@1.20260801.1':
+    resolution: {integrity: sha512-2oQz+Ksu4ji6e/+ZoYX+tWQEcxAii2p7l+iR8kx48W1llMalaufAsmVxTlk+3/vrM7D3/2c0iK448e0UQTcIMg==}
+    engines: {node: '>=16'}
+    cpu: [x64]
+    os: [win32]
+
+  '@cloudflare/workers-types@5.20260808.1':
+    resolution: {integrity: sha512-DN7G9SMyeOq031YhQexoExFAK78ms74cFiFF1teDlTK4+LjHgIc5Z8VbvXQtcCIP//o38btxzxW0b9MGPA83CA==}
+
+snapshots:
+
+  '@cloudflare/vitest-pool-workers@0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)':
+    dependencies:
+      '@vitest/runner': 4.1.10
+      '@vitest/snapshot': 4.1.10
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.1
+      miniflare: 5.20260801.1-alpha
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler: 4.120.0(@cloudflare/workers-types@5.20260808.1)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/workers-types@5.20260808.1': {}
+
+  wrangler@4.120.0(@cloudflare/workers-types@5.20260808.1):
+    dependencies:
+      '@cloudflare/kv-asset-handler': 0.5.0
+      '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260801.1)
+      blake3-wasm: 2.1.5
+      esbuild: 0.28.1
+      miniflare: 5.20260801.1-alpha
+      path-to-regexp: 6.3.0
+      unenv: 2.0.0-rc.24
+      workerd: 1.20260801.1
+    optionalDependencies:
+      '@cloudflare/workers-types': 5.20260808.1
+      fsevents: 2.3.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate

@@ -165,7 +165,7 @@ describe("ScheduleSessionImpl", () => {
     expect(bindHook).not.toHaveBeenCalled();
   });
 
-  it("authorizes workspace-scoped listing before returning schedules", async () => {
+  it("authorizes workspace-scoped listing, restricted by nothing, before returning schedules", async () => {
     const authorizeObservation = vi.fn(async () => {});
     const driver = {
       listWorkspace: vi.fn(async () => [activeSummary("schedule-a")]),
@@ -180,7 +180,9 @@ describe("ScheduleSessionImpl", () => {
 
     await expect(session.list()).resolves.toEqual([activeSummary("schedule-a")]);
     expect(driver.listWorkspace).toHaveBeenCalledWith("workspace-a");
-    expect(authorizeObservation).toHaveBeenCalledOnce();
+    expect(authorizeObservation).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ subresources: [] }),
+    );
   });
 
   it("does not bind a hook when schedule validation fails", async () => {

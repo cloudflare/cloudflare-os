@@ -5,7 +5,9 @@ import {
   accountObservabilityUrl,
   grantedObservabilityResourcePatterns,
   observabilityScopesForResources,
+  observabilitySubresourceId,
   parseObservabilityResourceUrl,
+  parseObservabilitySubresourceId,
   workerObservabilityUrl,
 } from "../src/resources";
 import { BILLING_SCOPES, persistentScopesForResources } from "../src/oauth";
@@ -52,6 +54,32 @@ describe("Cloudflare observability resources", () => {
     expect(() => parseObservabilityResourceUrl(
       "https://dash.cloudflare.com/%EA/workers-and-pages/observability",
     )).toThrow("Unsupported Cloudflare observability URL");
+  });
+});
+
+describe("Cloudflare observability subresource IDs", () => {
+  it("names an account by one spelling however its ID was entered", () => {
+    // Requirements are deduplicated and indexed by the ID string, so two spellings of one account
+    // would be two resources an observer must be granted separately.
+    const id = observabilitySubresourceId(ACCOUNT_ID.toUpperCase());
+
+    expect(id).toBe(`account/${ACCOUNT_ID}`);
+    expect(parseObservabilitySubresourceId(id)).toBe(ACCOUNT_ID);
+  });
+
+  it("refuses every ID it would not have made", () => {
+    // Read back from an observation, an ID is untrusted input: anything other than the canonical
+    // spelling is refused rather than read as some nearby account.
+    for (const id of [
+      `account/${ACCOUNT_ID.toUpperCase()}`,
+      `observability/account/${ACCOUNT_ID}`,
+      `account/${ACCOUNT_ID}/worker/${"a".repeat(32)}`,
+      `accounts/${ACCOUNT_ID}`,
+      `account/account-id`,
+      `%61ccount/${ACCOUNT_ID}`,
+    ]) {
+      expect(() => parseObservabilitySubresourceId(id), id).toThrow();
+    }
   });
 });
 

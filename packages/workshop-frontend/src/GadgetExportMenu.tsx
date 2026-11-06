@@ -126,7 +126,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
             ) : formats?.map(format => (
               <DropdownMenu.Item
                 key={format.id}
-                icon={<DownloadSimple size={12} className="mr-2" />}
+                icon={<DownloadSimple className="size-3" />}
                 onClick={() => { void download(format) }}
                 className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
               >

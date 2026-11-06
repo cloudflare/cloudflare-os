@@ -65,7 +65,8 @@ A query goes only to the provider that `search.ts` pins. The agent cannot choose
 it can with a `webFetch` URL, so a workspace that has observed restricted data can still search,
 as it can search GitHub or Slack through their gatekeepers.
 
-- **Observers.** `addObserver` admits every collaborator, because search results are public.
+- **Observers.** Each query reports `subresources: []`, and `addObserver` and
+  `verifyObserverAccess` admit every collaborator, because search results are public.
 - **Ambience.** The gatekeeper declares only that it can mint an account and that the account has
   a singleton. The admin's mode and the user's opt-in decide who gets it.
 
@@ -115,6 +116,11 @@ outside AI Gateway.
   it on in onboarding gets it.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
+
+## Testing
+
+`pnpm --filter @gadgets/gatekeeper-websearch test:run` runs search and observer-access tests in
+workerd with RPC validation enabled. No live provider calls or Cloudflare login are needed.
 
 ## Known limits
 

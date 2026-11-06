@@ -4,9 +4,6 @@
   "head": "fc95af86f81bb797ea02498534a73ea454b62f30",
   "recorded": "2026-11-02T17:22:33.790Z",
   "now": "2026-08-13T16:04:09-05:00",
-  "commit_emails": [
-    "49699333+dependabot[bot]@users.noreply.github.com"
-  ],
   "minimum_release_age_minutes": 1440,
   "manifests": [
     {
@@ -28,12 +25,21 @@
   },
   "osv_queries": [
     "terser@5.49.2",
-    "terser@5.49.0"
+    "terser@5.49.0",
+    "@jridgewell/source-map@0.3.11",
+    "acorn@8.18.0",
+    "commander@2.20.3",
+    "source-map-support@0.5.21"
   ],
   "osv_response": {
     "results": [
       {},
+      {},
+      {},
+      {},
+      {},
       {}
     ]
-  }
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
 }

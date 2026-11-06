@@ -25,8 +25,3 @@ export function fileAt(sha: string, path: string, cwd?: string): string | undefi
   if (listed !== path) return undefined;
   return git(["show", `${sha}:${path}`], cwd);
 }
-
-/** `author email` for every commit in `base..head`. */
-export function commitAuthors(base: string, head: string, cwd?: string): string[] {
-  return git(["log", "--format=%ae", `${base}..${head}`], cwd).split("\n").filter((line) => line !== "");
-}

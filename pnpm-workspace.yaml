@@ -7,17 +7,17 @@ packages:
 # The toolchain versions every package shares. Declared once here so a bump is one edit rather than
 # needing to hand edit a bunch of different package.json files.
 catalog:
-  '@cloudflare/vitest-plugin': ^1.4.3
-  '@cloudflare/workers-types': ^5.20261001.1
+  '@cloudflare/vitest-plugin': ^1.4.9
+  '@cloudflare/workers-types': ^5.20261027.1
   capnweb: ^0.12.0
   # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-kit's git-diff (the
   # simulated PR/MR diff's hunks, used by the git-host gatekeepers). One catalog entry so the two
   # can't drift apart.
-  diff: ^8.0.4
+  diff: ^9.0.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
-  miniflare: 5.20261001.0-alpha
+  miniflare: 5.20261023.1-beta
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the "typescript6" npm alias below instead; capnweb-validate
@@ -33,13 +33,18 @@ catalog:
   # differ from the Stage-3 lowering wrangler deploys, so it only works while capnweb-validate's
   # decorators ignore their `context` argument.
   vite: 7.3.6
-  vite-plus: ^1.2.0
+  vite-plus: ^1.4.0
+  # Also a root devDependency. vite-plus pins this same vitest version for its own `vp test` (on its
+  # bundled vite core) and has `@vitest/browser-playwright` as a peer, so with no vitest at the root
+  # that peer is auto-installed against vite-plus's vitest. pnpm then shares that browser provider
+  # with the packages' browser suites, `@vitest/browser`'s `declare module 'vitest'` augments the
+  # wrong copy, and `expect.element` disappears from their type-check.
   vitest: ^5.0.5
   # Vitest's browser-mode provider, which must match vitest's version, and the Playwright it
   # drives. Playwright's browsers are not dependencies: `playwright install chromium` fetches them.
   '@vitest/browser-playwright': ^5.0.5
-  playwright: ^1.64.0
-  wrangler: ^4.147.0
+  playwright: ^1.64.1
+  wrangler: ^4.154.0
   zod: ^4.6.7
 
 overrides:
@@ -59,6 +64,10 @@ overrides:
   # - @lezer/markdown is a deep transitive of @codemirror/lang-markdown.
   '@types/node': 26.1.0
   '@lezer/markdown': 1.6.4
+  # pi-agent-core asks for pi-ai by a caret range, which resolves to the newest pi-ai rather than
+  # the one workshop-backend pins. The agent loop and the backend's model handles must share one
+  # pi-ai (its model registry and types), so the agent core gets the backend's.
+  '@earendil-works/pi-agent-core>@earendil-works/pi-ai': 1.5.0
 
 peerDependencyRules:
   allowedVersions:

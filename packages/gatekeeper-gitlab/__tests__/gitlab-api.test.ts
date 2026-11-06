@@ -59,6 +59,7 @@ afterEach(() => {
 });
 
 const api = (instance = INSTANCE) => new GitLabApi(instance, async () => "tok-1");
+const pinned = () => new GitLabApi(INSTANCE, async () => "tok-1", { path: "group/sub/project", id: 42 });
 
 describe("path encoding", () => {
   it("encodes a nested project path as one segment", () => {
@@ -128,12 +129,34 @@ describe("redirect refusal", () => {
     // hostname the rename redirect is cross-origin to the request -- still a rename.
     fakeFetch([new Response(null, {
       status: 301,
-      headers: { location: "https://gitlab.example.com/api/v4/projects/81" },
+      headers: { location: "https://gitlab.example.com/api/v4/projects/81/issues/1" },
     })]);
-    const error = await api(ACCESS_INSTANCE).getProject("old/path").catch(e => e);
+    const error = await api(ACCESS_INSTANCE).getIssue("old/path", 1).catch(e => e);
     expect(error).toBeInstanceOf(GitLabApiError);
     expect(error.message).toMatch(/renamed or transferred/);
-    expect(error.movedTo).toBe("https://gitlab.example.com/api/v4/projects/81");
+    expect(error.movedTo).toBe("https://gitlab.example.com/api/v4/projects/81/issues/1");
+  });
+
+  it("follows a moved project's root to its id once, on the API origin, as GitHub's repository root", async () => {
+    const calls = fakeFetch([
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/81" } }),
+      json({ ...fx.projectResponse.data, id: 81 }),
+    ]);
+    expect(await api(ACCESS_INSTANCE).getProject("old/path")).toMatchObject({ id: 81 });
+    expect(calls.map(call => call.url.toString())).toEqual([
+      "https://gitlab-access.example.com/api/v4/projects/old%2Fpath",
+      "https://gitlab-access.example.com/api/v4/projects/81",
+    ]);
+    expect(calls[1].headers.get("CF-Access-Client-Id")).toBe("id.access");
+
+    // Anywhere but another project's root by id, or a second redirect, is refused.
+    fakeFetch([new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/groups/9" } })]);
+    await expect(api().getProject("old/path")).rejects.toMatchObject({ status: 301 });
+    fakeFetch([
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/81" } }),
+      new Response(null, { status: 301, headers: { location: "https://gitlab.example.com/api/v4/projects/82" } }),
+    ]);
+    await expect(api().getProject("old/path")).rejects.toMatchObject({ status: 301 });
   });
 
   it("names the access proxy, not a rename, when the redirect is to a login page", async () => {
@@ -147,6 +170,35 @@ describe("redirect refusal", () => {
     expect(error.message).not.toMatch(/renamed/);
     expect(error.message).toMatch(/redirected to https:\/\/team\.cloudflareaccess\.com/);
     expect(error.message).toMatch(/Cloudflare Access/);
+  });
+});
+
+describe("pinned project addressing", () => {
+  it("sends a pinned project's requests to its id, with the same method, body and query", async () => {
+    const calls = fakeFetch([json(fx.issueResponse.data), json([]), new Response(null, { status: 404 })]);
+    await pinned().createIssue("group/sub/project", { title: "t" });
+    await pinned().listIssues("group/sub/project", { state: "opened", page: 2, perPage: 10 });
+    // A request sent outside the JSON helpers is addressed the same way.
+    await pinned().fileExists("group/sub/project", ".gitlab-ci.yml", "main");
+    expect(calls.map(call => [call.init.method, call.url.pathname])).toEqual([
+      ["POST", "/api/v4/projects/42/issues"],
+      ["GET", "/api/v4/projects/42/issues"],
+      ["HEAD", "/api/v4/projects/42/repository/files/.gitlab-ci.yml"],
+    ]);
+    expect(JSON.parse(calls[0].body!)).toMatchObject({ title: "t" });
+    expect(calls[1].url.searchParams.get("state")).toBe("opened");
+    expect(calls[1].url.searchParams.get("page")).toBe("2");
+  });
+
+  it("sends a path outside the pinned project as it is", async () => {
+    const calls = fakeFetch([json(fx.projectResponse.data), json(fx.projectResponse.data), json(fx.currentUserResponse.data)]);
+    // A project whose path merely starts with the pinned one's is another project.
+    await pinned().getProject("group/sub/project2");
+    await pinned().getProjectById(81);
+    await pinned().getCurrentUser();
+    expect(calls.map(call => call.url.pathname)).toEqual([
+      "/api/v4/projects/group%2Fsub%2Fproject2", "/api/v4/projects/81", "/api/v4/user",
+    ]);
   });
 });
 

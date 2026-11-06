@@ -100,6 +100,8 @@ export default defineConfig({
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
           // Likewise only reached through `ctx.exports`, by the overseer deleting a blueprint.
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
+          // AdminSettings also reaches it through `ctx.exports`.
+          TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },
       },

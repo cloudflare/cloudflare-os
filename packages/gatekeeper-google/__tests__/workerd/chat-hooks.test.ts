@@ -335,7 +335,12 @@ it("a thread's hook receives only that thread's messages", async () => {
   await push("ada", [chatMessage("bob", `${SPACE}/threads/T2`), inThread]);
   await deliver();
 
-  expect((await ada.hooks.readHook()).received.map(info => info.id)).toEqual([inThread.name]);
+  const {received, observations} = await ada.hooks.readHook();
+  expect(received.map(info => info.id)).toEqual([inThread.name]);
+  // A firing reports the thread's conversation, whose access control covers its threads.
+  expect(observations).toContainEqual(expect.objectContaining({
+    title: "Receive a new Google Chat message", subresources: [`chat/space/${SPACE.slice("spaces/".length)}`],
+  }));
 });
 
 it.each([

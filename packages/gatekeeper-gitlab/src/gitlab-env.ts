@@ -5,7 +5,7 @@
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
-import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance } from "./gitlab-api";
+import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance, type PinnedProject } from "./gitlab-api";
 
 /**
  * The Worker's environment. `PreviewOAuthEnv` adds the kit's three optional preview-relay
@@ -132,20 +132,21 @@ export type AccountCredentials = {
 export type GitLabApiRunner = <T>(fn: (api: GitLabApi) => Promise<T>) => Promise<T>;
 
 /**
- * Runs `fn` against GitLab as `account`. GitLab's refusal of the token a request presented (a 401
- * from the probe or the git endpoints -- see `GitLabApiError.isAuthError`) is the account's to
- * adjudicate: GitLab invalidates an access token when it issues the next one, so a token a refresh
- * replaced while the request was in flight fails as retryable rather than retiring the account.
- * With `replayable`, which only calls safe to run twice may pass, such a failure instead reruns
- * `fn` once with the replacement token.
+ * Runs `fn` against GitLab as `account`, addressing `project` by its id (see GitLabApi). GitLab's
+ * refusal of the token a request presented (a 401 from the probe or the git endpoints -- see
+ * `GitLabApiError.isAuthError`) is the account's to adjudicate: GitLab invalidates an access token
+ * when it issues the next one, so a token a refresh replaced while the request was in flight fails
+ * as retryable rather than retiring the account. With `replayable`, which only calls safe to run
+ * twice may pass, such a failure instead reruns `fn` once with the replacement token.
  */
 export async function withAccountApi<T>(
   env: Env, account: AccountCredentials, fn: (api: GitLabApi) => Promise<T>,
-  options: { replayable?: true } = {},
+  options: { replayable?: true; project?: PinnedProject } = {},
 ): Promise<T> {
   for (let replays = options.replayable ? 1 : 0; ; replays--) {
     let presented: string | undefined;
-    const api = new GitLabApi(gitlabInstance(env), async () => (presented = await account.getAccessToken()));
+    const api = new GitLabApi(gitlabInstance(env), async () => (presented = await account.getAccessToken()),
+      options.project);
     try {
       return await fn(api);
     } catch (error) {
@@ -158,6 +159,77 @@ export async function withAccountApi<T>(
       throw new Error("GitLab credentials were renewed during this request. Please retry it.", { cause: error });
     }
   }
+}
+
+/**
+ * The lowest role that sees everything a binding can disclose: the repository, confidential
+ * issues, and internal notes.
+ */
+const REPORTER_ACCESS_LEVEL = 20;
+/** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
+export const DEVELOPER_ACCESS_LEVEL = 30;
+/** GitLab's Maintainer role, below which a member cannot read artifacts a job restricts to it. */
+export const MAINTAINER_ACCESS_LEVEL = 40;
+
+/** An account as the membership probe reaches it: its token, and the GitLab user behind it. */
+export type MemberAccount = AccountCredentials & {
+  getUser(): Promise<{ id: number; generation: string }>;
+};
+
+/**
+ * Whether `account`'s GitLab user holds an effective membership of at least `minAccessLevel`
+ * (never below Reporter) on the project, named by its numeric id or its path. See
+ * `projectMembershipLevel()`, and the verifier in `gitlab.ts` for why membership, not the
+ * project's `permissions`.
+ */
+export async function hasProjectMembership(
+  env: Env, account: MemberAccount, project: number | string, minAccessLevel = REPORTER_ACCESS_LEVEL,
+): Promise<boolean> {
+  const level = await projectMembershipLevel(env, account, project);
+  return level !== null && level >= Math.max(REPORTER_ACCESS_LEVEL, minAccessLevel);
+}
+
+/**
+ * The access level of `account`'s GitLab user's effective membership of the project, named by its
+ * numeric id or its path, read with the account's own token, or `null` when none is confirmed:
+ * nothing (`[]`) for a non-member, 404 for a project the token cannot see at all (GitLab hides
+ * existence) -- the same answer here. A path is first resolved to the project it names, following
+ * a rename's or transfer's redirect from a path the project left (see GitLabApi's redirectTarget),
+ * as the GitHub gatekeeper's name check does. `null` is not "below Reporter": an instance admin
+ * who is no member reads as `null` and sees everything. The user id comes from the account, fenced
+ * to the connection that answered it: if a reconnect (possibly as another GitLab user) lands
+ * between the two reads, the membership row would be one user's and the token another's, so the
+ * answer is discarded as `null`.
+ */
+export async function projectMembershipLevel(
+  env: Env, account: MemberAccount, project: number | string,
+): Promise<number | null> {
+  try {
+    const user = await account.getUser();
+    const member = await withAccountApi(env, account, async api => await api.getProjectMember(
+      typeof project === "number" ? project : (await api.getProject(project)).id, user.id), { replayable: true });
+    if ((await account.getUser()).generation !== user.generation) return null;
+    return effectiveAccessLevel(member);
+  } catch (error) {
+    // 403 in some policy cases; the user lacks access either way.
+    if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) return null;
+    throw error;
+  }
+}
+
+/**
+ * The access level a user's effective membership (or its absence) grants: none for an invitation
+ * still awaiting acceptance, nor once expired -- GitLab documents that from `expires_at` onward the
+ * user can no longer access the project, and a row it has not yet swept may still be listed with
+ * the date passed. The date is a day (`2026-09-18`), read as its UTC midnight; a date that does not
+ * parse expires too.
+ */
+function effectiveAccessLevel(
+  member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
+): number | null {
+  if (member === null || member.membership_state === "awaiting") return null;
+  if (member.expires_at != null && !(Date.parse(member.expires_at) > Date.now())) return null;
+  return member.access_level;
 }
 
 /**
@@ -204,4 +276,9 @@ export type GitLabGatekeeperImplProps = {
   projectPath: string;
   /** The issue or merge request number, for those resource kinds. */
   iid?: number;
+  /**
+   * Present only on bindings minted since every read reported its subresources, which therefore
+   * have no legacy reads for addObserver to check (see GitLabGatekeeperImpl.addObserver).
+   */
+  reportsSubresources?: true;
 };

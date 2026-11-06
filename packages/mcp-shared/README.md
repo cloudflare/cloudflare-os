@@ -70,8 +70,13 @@ Annotations are optional in MCP and most servers publish none. Every hint is com
 auto-apply, on either tier. That matches the spec's own defaults (`readOnlyHint: false`,
 `destructiveHint: true`, `idempotentHint: false`).
 
-Neither tier can be shared. A Gadget bound to any MCP endpoint is owner-only, for reasons unrelated
-to provenance — see [`sharing-policy.ts`](src/sharing-policy.ts).
+Neither tier can be shared. A Gadget bound to any MCP endpoint is shared with nobody beyond the
+account it reads with, for reasons unrelated to provenance — see
+[`sharing-policy.ts`](src/sharing-policy.ts). Each connector declares, through
+`McpSessionHost.observationSubresources`, what every read the session makes reports as
+`subresources`: the portal connector its upstream server (`server/<upstreamServerId>`), which its
+`verifyObserverAccess()`, like its `addObserver()`, grants only to the account the binding reads
+with; the bare connector nothing, leaving its reads to an `addObserver` that refuses everyone.
 
 What an account records instead of a tier is `provenance`, `"user"` or `"deployment"`, settled when
 it connects. Provenance decides whether a server may rename itself over an administrator's chosen
@@ -123,7 +128,7 @@ Fixed rather than configurable.
 | Tool description | 4 KB | `client.ts` | As above, per tool, before it reaches storage |
 | Tool input schema | 20 KB | `client.ts` | Dropped rather than clipped; half a schema is not a schema |
 | `tools/list` pages | 50 | `client.ts` | Stops a cursor that never ends; exhaustion truncates catalogs and fails exact/search discovery as a scan limit |
-| Response body | 1 MiB | `fetch.ts` | Every response is buffered whole before it can be parsed, and a `tools/call` result is otherwise unbounded |
+| Response body | 2 MiB | `fetch.ts` | Every response is buffered whole before it can be parsed, and a `tools/call` result is otherwise unbounded |
 | Bounded outbound operation | 30 seconds | `fetch.ts` | OAuth and discovery callers opt into one deadline covering redirects, pagination, body streaming, and session retry |
 | Retained result | 128 KB | `action-store.ts` | Held until the Gadget collects it; oversized ones are replaced by a note |
 | Retained actions | 100 | `action-store.ts` | Records are for collecting a result, not an audit log |

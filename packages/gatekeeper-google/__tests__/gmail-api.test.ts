@@ -761,7 +761,7 @@ describe("Gmail recipient and MIME construction", () => {
       id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
     });
 
-    expect(parsed.text).toBe("Default text body\n");
+    expect(parsed.text).toBe("Default text body");
     expect(parsed.attachments[0].contentType).toBe(
       "application/octet-stream; x-format=opaque");
   });

@@ -4,9 +4,6 @@
   "head": "348d62df4d489c7f6c32d3a0e08d987b5fcfd1a6",
   "recorded": "2026-11-02T17:22:35.068Z",
   "now": "2026-10-01T11:58:32-05:00",
-  "commit_emails": [
-    "49699333+dependabot[bot]@users.noreply.github.com"
-  ],
   "minimum_release_age_minutes": 1440,
   "manifests": [
     {
@@ -27,14 +24,17 @@
     "entities@8.1.0",
     "node-html-parser@9.0.4",
     "he@1.2.0",
-    "node-html-parser@7.1.0"
+    "node-html-parser@7.1.0",
+    "css-select@5.2.2"
   ],
   "osv_response": {
     "results": [
       {},
       {},
       {},
+      {},
       {}
     ]
-  }
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
 }

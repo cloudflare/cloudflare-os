@@ -15,10 +15,11 @@ const models = scriptedModelRouter();
 
 const TRUSTED_HOST = "gadgets-test.example";
 const TARGET = `https://${TRUSTED_HOST}/restricted-web-fetch`;
+const OTHER_HOST = "other.example";
 const PAGE = "The trusted page.";
 const webRequests: string[] = [];
 const web: Handler = url => {
-  if (url.host !== TRUSTED_HOST) return null;
+  if (url.host !== TRUSTED_HOST && url.host !== OTHER_HOST) return null;
   webRequests.push(url.href);
   return new Response(PAGE, { headers: { "content-type": "text/plain" } });
 };
@@ -96,5 +97,54 @@ it("fetches only from trusted hosts once the workspace has read restricted data"
     expect(webRequests).toEqual([TARGET]);
   } finally {
     await admin.setRestrictedWebFetchHosts([]);
+  }
+});
+
+it("fetches a URL the trusted hosts refuse once the user approves it, if the admin allows that", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const approved = `https://${OTHER_HOST}/approved?ref=docs`;
+    const denied = `https://${OTHER_HOST}/another`;
+    const model = models.script([
+      READ_RESTRICTED,
+      fetchStep("ask", approved),
+      fetchStep("fetch-approved", approved),
+      fetchStep("ask-again", denied),
+      fetchStep("ask-after-prompt", approved),
+    ]);
+    await using session = await openSession(model);
+    const asked = await session.runTurn("Read the restricted value, then fetch the page.");
+
+    expect(asked.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(2);
+    const requests = asked.history.filter(msg => msg.type === "webFetchRequest");
+    expect(requests).toEqual([expect.objectContaining({ url: approved, state: "pending" })]);
+    expect(webRequests).not.toContain(approved);
+
+    const resumed = await session.approveWebFetchRequestsAndWait([requests[0].requestId]);
+
+    expect(resumed.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(4);
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-approved", PAGE));
+    expect(webRequests).toContain(approved);
+    const pending = resumed.history.filter(msg => msg.type === "webFetchRequest")
+        .filter(msg => msg.state === "pending");
+    expect(pending).toEqual([expect.objectContaining({ url: denied })]);
+
+    // A denial leaves the turn ended, and an approval ends with the turn it was given in.
+    await session.denyWebFetchRequest(pending[0].requestId);
+    const next = await session.runTurn("Fetch the first page again.");
+
+    expect(next.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(5);
+    expect(model.requests[4]).toMatchObject({ messages: expect.arrayContaining([
+      expect.objectContaining({ role: "user", content: expect.stringContaining(`The user denied fetching ${denied}`) }),
+    ]) });
+    expect(next.history.filter(msg => msg.type === "webFetchRequest").at(-1))
+      .toEqual(expect.objectContaining({ url: approved, state: "pending" }));
+    expect(webRequests.filter(url => url === approved)).toHaveLength(1);
+    expect(webRequests).not.toContain(denied);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
   }
 });

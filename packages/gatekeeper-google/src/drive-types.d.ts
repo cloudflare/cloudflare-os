@@ -154,8 +154,7 @@ export interface GoogleDriveReadSession {
   /**
    * Search the connected account with structured values. At least one filter other than `order`
    * is required, and omitting `order` for a full-text search preserves Drive's relevance order.
-   * Exact-file bindings cannot be searched. An empty result is withheld because it is
-   * owner-relative and cannot be shared safely.
+   * Exact-file bindings cannot be searched.
    */
   search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>>;
 
@@ -192,8 +191,7 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
   /**
    * Search the positioned folder's direct children, or those of the folders named by
    * `childFolderIds`, using provider-side filters. At least one filter other than `order` is
-   * required, and omitting `order` for a full-text search preserves Drive's relevance order. An
-   * empty result is withheld because it is owner-relative and cannot be shared safely.
+   * required, and omitting `order` for a full-text search preserves Drive's relevance order.
    */
   search(query: DriveFolderSearchQuery): Promise<Cursor<DriveEntry>>;
 
