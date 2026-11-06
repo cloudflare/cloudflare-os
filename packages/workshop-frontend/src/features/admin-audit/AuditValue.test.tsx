@@ -43,7 +43,7 @@ describe('AuditValue', () => {
     await render(long)
     const value = document.getElementById(toggle()!.getAttribute('aria-controls')!)
     expect(value?.textContent).toBe(long)
-    expect(value?.className).toContain('line-clamp-3')
+    expect(value?.className).toContain('line-clamp-6')
     expect(toggle()!.getAttribute('aria-expanded')).toBe('false')
     expect(toggle()!.getAttribute('aria-label')).toBe('Show all of siteName, before')
 
@@ -51,12 +51,26 @@ describe('AuditValue', () => {
     expect(toggle()!.textContent).toBe('Show less')
     expect(toggle()!.getAttribute('aria-label')).toBe('Show less of siteName, before')
     expect(toggle()!.getAttribute('aria-expanded')).toBe('true')
-    expect(value?.className).not.toContain('line-clamp-3')
+    expect(value?.className).not.toContain('line-clamp-6')
   })
 
   it('treats a value of more lines than the clamp as long', async () => {
-    await render('a\nb\nc\nd')
+    await render('a\nb\nc\nd\ne\nf\ng')
     expect(toggle()?.textContent).toBe('Show all')
+  })
+
+  it('says a value is empty rather than show nothing', async () => {
+    await render('')
+    expect(container.textContent).toBe('empty')
+  })
+
+  it('lays out an object or a list one field per line, and leaves other JSON as recorded', async () => {
+    await render('{"reasoning":"high","compactionInputBudget":300000}')
+    expect(container.textContent).toBe('{\n  "reasoning": "high",\n  "compactionInputBudget": 300000\n}')
+    await render('42')
+    expect(container.textContent).toBe('42')
+    await render('{"cut off')
+    expect(container.textContent).toBe('{"cut off')
   })
 
   it('announces an absent side as none', async () => {
