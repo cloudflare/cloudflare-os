@@ -39,6 +39,26 @@ interface WorkpiecePickerProps {
   onOpenActivity: () => void
 }
 
+// A group of the rail's rows, named by a heading when expanded and set apart by a divider when
+// collapsed below other rows.
+const RailGroup = ({ label, expanded, divider, children }: {
+  label: string
+  expanded: boolean
+  divider: boolean
+  children: ReactNode
+}) => (
+  <div role="group" aria-label={label} className="flex flex-col gap-0.5">
+    {expanded ? (
+      <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
+        {label}
+      </span>
+    ) : divider && (
+      <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
+    )}
+    {children}
+  </div>
+)
+
 export default function WorkpiecePicker({
   gadgets,
   worktrees,
@@ -317,28 +337,6 @@ export default function WorkpiecePicker({
           </button>
         </Tooltip>
       </div>
-    </div>
-  )
-}
-
-// A group of the rail's rows, named by a heading when expanded and set apart by a divider when
-// collapsed below other rows.
-function RailGroup({ label, expanded, divider, children }: {
-  label: string
-  expanded: boolean
-  divider: boolean
-  children: ReactNode
-}) {
-  return (
-    <div role="group" aria-label={label} className="flex flex-col gap-0.5">
-      {expanded ? (
-        <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
-          {label}
-        </span>
-      ) : divider && (
-        <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
-      )}
-      {children}
     </div>
   )
 }
