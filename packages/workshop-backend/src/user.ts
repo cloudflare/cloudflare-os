@@ -691,7 +691,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let others = Object.entries(store.get()).filter(([key]) => key !== deviceKey);
       store.put(Object.fromEntries(
           [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES_PER_KIND)));
-      this.#queueBadge(true);
+      this.#queueBadge(store === this.storage.phoneNotificationSubscriptions);
     });
     this.#notificationRegistration = registered.catch(() => {});
     return registered;

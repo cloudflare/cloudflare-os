@@ -474,6 +474,35 @@ describe("UserDurableObject notifications", () => {
     expect(bodies(fetcher, "/v1/badges")).toEqual([]);
   });
 
+  it("resends an unchanged badge for phone enrollment but not browser registration", async () => {
+    const fetcher = stubService();
+    await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      await user.registerNotificationDevice("a".repeat(64));
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
+      await user.alarm();
+      const delivered = storage.notificationBadge.get();
+      expect(delivered).toEqual({version: 1, count: 0});
+
+      for (let i = 0; i < 2; i++) {
+        await user.registerNotificationDevice(browser(1));
+        expect(storage.notificationBadge.get()).toEqual(delivered);
+        expect(await ctx.storage.getAlarm()).toBeNull();
+      }
+      expect(bodies(fetcher, "/v1/badges")).toEqual([{subscriptionId: ONE, version: 1, count: 0}]);
+
+      await user.registerNotificationDevice("b".repeat(64));
+      expect(storage.notificationBadge.get()).toMatchObject({version: 2, count: 0, retryAt: expect.any(Number)});
+      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
+      await user.alarm();
+      expect(bodies(fetcher, "/v1/badges").slice(1)).toEqual([
+        {subscriptionId: ONE, version: 2, count: 0},
+        {subscriptionId: mintedId(4), version: 2, count: 0},
+      ]);
+    });
+  });
+
   it("keeps the first badge deadline while more messages arrive", async () => {
     vi.useFakeTimers();
     stubService();
