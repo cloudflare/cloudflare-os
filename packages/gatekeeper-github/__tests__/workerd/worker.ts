@@ -95,6 +95,7 @@ export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name
 /** Mirrors github.ts's (unexported) `GitHubGatekeeperImplProps`. */
 export type GatekeeperProps = {
   userObjectId: string;
+  instance?: string;
   resourceKind: "repo" | "issue" | "pull";
   owner: string;
   repo: string;

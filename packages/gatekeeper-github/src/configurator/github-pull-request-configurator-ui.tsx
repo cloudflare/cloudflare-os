@@ -15,8 +15,8 @@ export default {
     return { repoFullName: `${owner}/${repo}`, pullNumber: number ?? null };
   },
 
-  resourceUrl({ values }) {
-    return `https://github.com/${values.repoFullName}/pull/${values.pullNumber}`;
+  async resourceUrl({ values, ui }) {
+    return `${await ui.instanceUrl()}/${values.repoFullName}/pull/${values.pullNumber}`;
   },
 
   render({ values, setValues, ui }) {

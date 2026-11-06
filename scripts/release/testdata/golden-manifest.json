@@ -264,6 +264,7 @@
       "inputs": [
         {
           "consoleUrl": "https://github.com/settings/developers",
+          "help": "For GitHub Enterprise Server, register the OAuth App on your instance and configure GITHUB_URL on the worker.",
           "kind": "secret",
           "label": "OAuth client ID",
           "name": "CLIENT_ID",

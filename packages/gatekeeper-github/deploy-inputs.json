@@ -3,6 +3,7 @@
     "name": "CLIENT_ID",
     "kind": "secret",
     "label": "OAuth client ID",
+    "help": "For GitHub Enterprise Server, register the OAuth App on your instance and configure GITHUB_URL on the worker.",
     "consoleUrl": "https://github.com/settings/developers",
     "setupSteps": [
       "In GitHub Developer settings, create a new OAuth App (an OAuth App, not a GitHub App — GitHub Apps ignore OAuth scopes).",

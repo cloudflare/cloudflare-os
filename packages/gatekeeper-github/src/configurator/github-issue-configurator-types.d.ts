@@ -11,6 +11,7 @@ export type GitHubIssueConfiguratorValues = {
 }
 
 export interface GitHubIssueConfiguratorRpc {
+  instanceUrl(): Promise<string>;
   listRepos(query: string): Promise<ConfiguratorOption[]>;
   listIssues(repoFullName: string | null | undefined, query: string): Promise<ConfiguratorOption[]>;
 }

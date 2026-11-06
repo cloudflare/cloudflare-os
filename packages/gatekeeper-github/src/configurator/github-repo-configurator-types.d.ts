@@ -10,5 +10,6 @@ export type GitHubRepoConfiguratorValues = {
 }
 
 export interface GitHubRepoConfiguratorRpc {
+  instanceUrl(): Promise<string>;
   listRepos(query: string): Promise<ConfiguratorOption[]>;
 }

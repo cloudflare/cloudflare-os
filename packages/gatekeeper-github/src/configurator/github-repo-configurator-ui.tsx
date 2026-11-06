@@ -13,8 +13,8 @@ export default {
     return owner && repo ? { repoFullName: `${owner}/${repo}` } : {};
   },
 
-  resourceUrl({ values }) {
-    return `https://github.com/${values.repoFullName}`;
+  async resourceUrl({ values, ui }) {
+    return `${await ui.instanceUrl()}/${values.repoFullName}`;
   },
 
   render({ values, setValues, ui }) {

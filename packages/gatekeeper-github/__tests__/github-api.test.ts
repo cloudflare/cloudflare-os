@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GitHubApi,
+  exchangeAuthCode,
   revokeOAuthToken,
   type GitHubIssueResponse,
 } from "../src/github-api";
@@ -8,6 +9,8 @@ import {
   assertIssueSearchResultsInRepo,
   buildIssueSearchQuery,
 } from "../src/github-search";
+import { githubInstance, type Env } from "../src/github-env";
+import { parseRepoSubresource, repoSubresourceId } from "../src/repo-subresources";
 
 function issueAt(htmlUrl: string): Pick<GitHubIssueResponse, "html_url"> {
   return { html_url: htmlUrl };
@@ -17,7 +20,68 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("GitHub Enterprise endpoints", () => {
+  const instance = githubInstance({ GITHUB_URL: "https://git.example.com", GITHUB_API_URL: "https://api.example.com" } as Env);
+
+  it("sends REST, GraphQL, git and OAuth requests to the worker origin", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const req = new Request(input, init);
+      requests.push(req);
+      if (req.url.endsWith("/login/oauth/access_token")) {
+        return Response.json({ access_token: "oauth-token", token_type: "bearer", scope: "repo" });
+      }
+      if (req.url.endsWith("/api/graphql")) return Response.json({ data: { viewer: { login: "octo" } } });
+      return Response.json({ id: 42 });
+    }));
+    const api = new GitHubApi(async () => "token", { instance, repo: { owner: "acme", repo: "app", id: 42 } });
+    await api.getRepo("acme", "app");
+    await api.graphql("query { viewer { login } }", {});
+    await api.fetchGitUploadPack("acme", "app", new Uint8Array());
+    await exchangeAuthCode("code", "client", "secret", "https://workshop.example/oauth", instance);
+    expect(requests.map(r => r.url)).toEqual([
+      "https://api.example.com/api/v3/repositories/42", "https://api.example.com/api/graphql",
+      "https://api.example.com/acme/app.git/git-upload-pack", "https://api.example.com/login/oauth/access_token",
+    ]);
+    expect(requests[0].headers.get("authorization")).toBe("Bearer token");
+  });
+
+  it("follows only same-instance repository-root redirects under the Enterprise REST prefix", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      requests.push(String(input));
+      return requests.length === 1
+        ? new Response(null, { status: 301, headers: { location: "https://git.example.com/api/v3/repositories/42" } })
+        : Response.json({ id: 42 });
+    }));
+    await new GitHubApi(async () => "token", { instance }).getRepo("acme", "old");
+    expect(requests).toEqual(["https://api.example.com/api/v3/repos/acme/old", "https://api.example.com/api/v3/repositories/42"]);
+  });
+
+  it("never follows a repository redirect outside the configured instance", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 301,
+      headers: { location: "https://attacker.example/api/v3/repositories/42" } }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(new GitHubApi(async () => "token", { instance }).getRepo("acme", "old")).rejects.toThrow(/not followed/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("keeps repository observation IDs distinct across GitHub instances", () => {
+  const enterprise = repoSubresourceId(42, "https://git.example.com");
+  expect(parseRepoSubresource(enterprise, "https://git.example.com")).toBe(42);
+  expect(repoSubresourceId(42)).toBe("repo/42");
+  expect(() => parseRepoSubresource(enterprise, "https://elsewhere.example.com")).toThrow();
+  expect(() => parseRepoSubresource("repo/42", "https://git.example.com")).toThrow();
+  expect(() => parseRepoSubresource(enterprise)).toThrow();
+});
+
 describe("assertIssueSearchResultsInRepo", () => {
+  it("validates search results against the configured enterprise origin", () => {
+    const origin = "https://git.example.com";
+    expect(() => assertIssueSearchResultsInRepo("acme", "repo", [issueAt(`${origin}/acme/repo/issues/1`)], origin)).not.toThrow();
+    expect(() => assertIssueSearchResultsInRepo("acme", "repo", [issueAt("https://github.com/acme/repo/issues/1")], origin)).toThrow();
+  });
   it("accepts exact repository path segments case-insensitively", () => {
     expect(() => assertIssueSearchResultsInRepo("Cloudflare", "Workerd", [
       issueAt("https://github.com/cloudflare/workerd/issues/1"),

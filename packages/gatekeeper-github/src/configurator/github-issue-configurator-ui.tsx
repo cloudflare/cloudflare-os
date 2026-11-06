@@ -15,8 +15,8 @@ export default {
     return { repoFullName: `${owner}/${repo}`, issueNumber: number ?? null };
   },
 
-  resourceUrl({ values }) {
-    return `https://github.com/${values.repoFullName}/issues/${values.issueNumber}`;
+  async resourceUrl({ values, ui }) {
+    return `${await ui.instanceUrl()}/${values.repoFullName}/issues/${values.issueNumber}`;
   },
 
   render({ values, setValues, ui }) {

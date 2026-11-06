@@ -16,6 +16,7 @@ export function assertIssueSearchResultsInRepo(
   owner: string,
   repo: string,
   results: readonly Pick<GitHubIssueResponse, "html_url">[],
+  origin = "https://github.com",
 ): void {
   const expectedOwner = owner.toLowerCase();
   const expectedRepo = repo.toLowerCase();
@@ -29,7 +30,7 @@ export function assertIssueSearchResultsInRepo(
     }
 
     const [resultOwner, resultRepo, resultKind] = url?.pathname.split("/").filter(Boolean) ?? [];
-    if (url?.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com"
+    if (url?.origin !== origin
         || resultOwner?.toLowerCase() !== expectedOwner || resultRepo?.toLowerCase() !== expectedRepo) {
       throw new Error("GitHub returned an issue outside the connected repository.");
     }

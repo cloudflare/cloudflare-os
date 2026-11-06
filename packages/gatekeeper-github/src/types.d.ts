@@ -165,7 +165,7 @@ export interface GitHubRepo {
 
   /**
    * Opens a check run in this repository. `id` is a `GitHubCheckRunSummary.id`, or the number at
-   * the end of a check run URL (`https://github.com/<owner>/<repo>/runs/<id>`) or of an Actions
+   * the end of a check run URL (`<GitHub origin>/<owner>/<repo>/runs/<id>`) or of an Actions
    * job URL (`.../actions/runs/<run>/job/<id>`). Commit statuses cannot be opened.
    */
   getCheckRun(id: string): Promise<GitHubCheckRun>;
@@ -181,7 +181,7 @@ export interface GitHubRepo {
   /**
    * Opens a GitHub Actions workflow run in this repository. `id` is a
    * `GitHubWorkflowRunSummary.id`, or the number in a run URL
-   * (`https://github.com/<owner>/<repo>/actions/runs/<id>`).
+   * (`<GitHub origin>/<owner>/<repo>/actions/runs/<id>`).
    */
   getWorkflowRun(id: string): Promise<GitHubWorkflowRun>;
 
@@ -516,7 +516,7 @@ export type GitHubCheckRunSummary = {
   workflowRun?: { id: string; name: string };
   startedAt?: Date;
   completedAt?: Date;
-  /** The check run's page on github.com. */
+  /** The check run's page on GitHub. */
   url: string;
   /** Where the app shows more detail, if it says. */
   detailsUrl?: string;
@@ -547,7 +547,7 @@ export type GitHubCheckRunDetails = GitHubCheckRunSummary & {
   steps?: { number: number; name: string; state: GitHubCheckState; phase: GitHubCiPhase }[];
   /**
    * Set while a `waiting` job is held by a deployment environment: whether a reviewer must
-   * approve it on github.com, and when its wait timer, if any, runs out.
+   * approve it on GitHub, and when its wait timer, if any, runs out.
    */
   pendingDeployment?: { environment: string; needsReviewers: boolean; waitTimerEndsAt?: Date };
 };
@@ -783,7 +783,7 @@ export type GitHubCommitSummary = {
   authorAccount: GitHubActor | null;
   /** Commit ids of this commit's parents: empty for a root commit, two or more for a merge. */
   parents: string[];
-  /** The github.com web page where this commit can be viewed in a browser. */
+  /** The GitHub web page where this commit can be viewed in a browser. */
   url: string;
 }
 

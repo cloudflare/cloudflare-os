@@ -16,13 +16,15 @@ This gatekeeper uses Durable Object KV storage only. It does not use SQLite tabl
 Keys:
 
 - `callback` -> stored `GatekeeperConnectCallback` fetcher for the connected Workshop account.
+- `instance` -> the browser-facing origin at connection time; missing on older GitHub.com accounts.
+  Credentials and reconnects are refused when it differs from the configured `GITHUB_URL`.
 - `nonce` -> `{ value: string, expiresAt: number, stage: "initiation" | "oauth" }`.
 - `credentials` -> the live `GitHubOAuthGrant`, `{ accessToken, scopes, refreshToken?, expiresAt? }`, owned by the kit's `CredentialCoordinator` along with its `credentials:*` fence keys. `refreshToken` and `expiresAt` are present only for an expiring grant (GitHub's default for OAuth apps since August 2026): its access token lasts eight hours and is refreshed shortly before it expires, and each refresh rotates both tokens.
 - `accessToken`, `scopes` -> the layout from before expiring grants were supported, migrated into `credentials` on first read and then deleted.
 - `expiredNotified`, `expiredNotifiedArm` -> the kit's expiry latch, so `credentialsExpired()` is only sent once per dead grant. Every credential replacement re-arms it.
 - `reconnecting` -> boolean flag indicating an in-progress reconnect flow.
 - `cache:@access:*` -> the kit's `KvTtlCache` of this account's own answers about repository
-  access, keyed by `repo/<repoId>` subresource and partitioned by the connection generation, which
+  access, keyed by repository subresource (Enterprise IDs include the instance origin) and partitioned by the connection generation, which
   every connect and reconnect replaces: `GET /repositories/<id>` asked with this account's token
   when it observes another's binding. A grant is reused for 15 minutes and a denial for 15
   seconds, and only while the grant is live: the partition is read through it on every use, so a
@@ -31,6 +33,10 @@ Keys:
 No per-user SQL tables are used.
 
 ## GitHubGatekeeperImpl Durable Object
+
+New binding props carry their instance origin; older props without it name GitHub.com. A binding
+refuses to start under a different configured instance so stored IDs and cached data cannot be
+reinterpreted as belonging to another server.
 
 ### Counters
 
@@ -47,7 +53,8 @@ No per-user SQL tables are used.
   redirect to `/repositories/<id>` (a renamed or transferred repo) is the only one followed. Every
   REST request beneath the repository is then sent beneath `/repositories/<repoId>` and follows no
   redirect, issue search and git fetches and pushes go to the name that id has now (see
-  `cache:repo-name`), and every read reports `repo/<repoId>` as its subresource. Absent until
+  `cache:repo-name`), and every read reports its repository subresource (`repo/<repoId>` on
+  GitHub.com, instance-qualified on Enterprise). Absent until
   first use, and nothing is read or written until it is stored. `addObserver` reads it as stored
   and never stores it: without it, the binding has read nothing by id, and admission checks the
   name alone. A binding that read before ids were pinned was pinned to whichever repository its

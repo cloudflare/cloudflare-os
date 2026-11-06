@@ -111,7 +111,8 @@ passing doesn't mean GitHub shows that account everything the binding's account 
   freshness rules still apply.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   one served from a cache or from queued actions, and each hook delivery, reports
-  `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it
+  the repository as its subresource (`repo/<repoId>` on GitHub.com, instance-qualified on
+  Enterprise), so the Workshop checks everyone who can see it before it
   is returned (see [docs/observers.md](../../docs/observers.md) §10). A hook bound by an earlier
   release reports the id its binding stored.
 - **Checks.** A collaborator's account is asked `GET /repositories/<id>` with its own token: 200
@@ -138,6 +139,9 @@ passing doesn't mean GitHub shows that account everything the binding's account 
 
 If you're running this project locally and want to use GitHub integrations, you'll need to create
 your own GitHub OAuth app. This guide walks you through the process.
+
+For GitHub Enterprise Server, create the OAuth App on your own instance and configure its URL as
+described in [Self-hosted instances](#self-hosted-instances).
 
 ### Step 1: Create a GitHub OAuth App
 
@@ -200,6 +204,33 @@ Users are keyed by their GitHub primary verified email, so the OAuth App must be
 10. Create the connection. The Gadget now has access only to the selected GitHub resource scope.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Self-hosted instances
+
+By default the gatekeeper connects to `https://github.com`. Configure these variables on the worker
+to use one GitHub Enterprise Server instance instead:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GITHUB_URL` | Browser-facing origin: OAuth authorization, resource URLs and links. | `https://github.com` |
+| `GITHUB_API_URL` | Worker-facing origin for OAuth token exchange, REST, GraphQL and Git over HTTPS. | `GITHUB_URL` |
+
+URLs must be HTTPS origins without credentials, paths, queries or fragments. HTTP is accepted only
+on `localhost`, `127.0.0.1` or `[::1]` for local development. Enterprise Server uses `/api/v3` for
+REST and `/api/graphql` for GraphQL; the default GitHub.com configuration uses `api.github.com`.
+For local development, set the variables in the root `.dev.vars` or your shell.
+
+Register an **OAuth App on the Enterprise instance**, with the callback
+`{PUBLIC_BASE_URL}/gatekeeper/github/oauth`, and configure its client ID and secret as above. The
+browser must reach `GITHUB_URL`, and the Worker must reach `GITHUB_API_URL`. For event hooks, the
+Enterprise instance must also reach `WEBHOOK_ORIGIN`.
+
+One deployment uses one instance. Accounts and bindings are tied to their original instance;
+changing `GITHUB_URL` does not migrate them and they refuse access until the original URL is
+restored. Disconnect old accounts and remove old bindings before changing instances. Repository
+observation IDs for Enterprise include the instance origin, so the same numeric repository ID on
+another server cannot grant access. Enterprise Server version and feature availability can affect
+CI, rulesets, GraphQL and webhook functionality; verify those against your instance.
 
 ## Event hooks (optional)
 

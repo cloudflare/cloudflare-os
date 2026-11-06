@@ -11,6 +11,7 @@ export type GitHubPullRequestConfiguratorValues = {
 }
 
 export interface GitHubPullRequestConfiguratorRpc {
+  instanceUrl(): Promise<string>;
   listRepos(query: string): Promise<ConfiguratorOption[]>;
   listPullRequests(repoFullName: string | null | undefined, query: string): Promise<ConfiguratorOption[]>;
 }

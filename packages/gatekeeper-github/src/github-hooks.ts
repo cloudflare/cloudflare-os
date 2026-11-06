@@ -29,7 +29,7 @@ import {
   GitHubApiError, isConnectionExpired, withAccountApi,
   type GitHubApi, type GitHubRepoWebhookResponse, type GitHubWebhookDeliveryResponse, type PinnedRepo,
 } from "./github-api";
-import { getBasePath, webhookOrigin, type Env } from "./github-env";
+import { getBasePath, githubInstance, webhookOrigin, type Env } from "./github-env";
 import { parseWebhookEvent, type GitHubWebhookEvent, type WebhookPayload } from "./github-webhook-events";
 import { obsContext } from "./observability";
 import type { GitHubEventHook, GitHubEventKind } from "./types";
@@ -562,14 +562,15 @@ export class GitHubHookDriver extends DurableObject<Env> {
   async #readViewer(account: string): Promise<void> {
     await this.#viewerReads.run(async () => {
       const { UserAccount } = this.ctx.exports;
-      const { user } = await withAccountApi(UserAccount.get(UserAccount.idFromString(account)), api => api.getViewer());
+      const { user } = await withAccountApi(UserAccount.get(UserAccount.idFromString(account)), api => api.getViewer(),
+        { instance: githubInstance(this.env) });
       this.ctx.storage.kv.put("viewer", user.id);
     });
   }
 
   #api<T>(account: string, repo: PinnedRepo, fn: (api: GitHubApi) => Promise<T>): Promise<T> {
     const { UserAccount } = this.ctx.exports;
-    return withAccountApi(UserAccount.get(UserAccount.idFromString(account)), fn, { repo });
+    return withAccountApi(UserAccount.get(UserAccount.idFromString(account)), fn, { repo, instance: githubInstance(this.env) });
   }
 
   /** Where this driver's webhooks deliver, unless this deployment has not configured hooks. */

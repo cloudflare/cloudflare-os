@@ -61,7 +61,7 @@ import {
   type GitHubWorkflowRunResponse,
   type PinnedRepo,
 } from "./github-api";
-import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
+import { getBasePath, getBaseUrl, githubInstance, instanceUrl, webhookOrigin, type Env } from "./github-env";
 import {
   ACTIONS_APP_SLUG,
   MAX_CHECK_ENTRIES,
@@ -238,6 +238,7 @@ type EntityKind = "issue" | "pull";
 
 type GitHubGatekeeperImplProps = {
   userObjectId: string;
+  instance?: string;
   resourceKind: ResourceKind;
   owner: string;
   repo: string;
@@ -689,29 +690,26 @@ const OAUTH_SCOPES = ["repo", "read:user", "user:email"];
 // the resulting grant is transient.
 const AUTH_SCOPES = ["read:user", "user:email"];
 
-const REPO_RESOURCE: SupportedResource = {
-  urlPattern: "https://github.com/:owner/:repo",
-  title: "GitHub Repository",
-  description: "Read and manage issues, pull requests, reviews, and discussions in a GitHub repository.",
-};
-
-const ISSUE_RESOURCE: SupportedResource = {
-  urlPattern: "https://github.com/:owner/:repo/issues/:number",
-  title: "GitHub Issue",
-  description: "Read and manage a specific GitHub issue.",
-};
-
-const PULL_REQUEST_RESOURCE: SupportedResource = {
-  urlPattern: "https://github.com/:owner/:repo/pull/:number",
-  title: "GitHub Pull Request",
-  description: "Read and manage a specific GitHub pull request and its review threads.",
-};
-
-const SUPPORTED_RESOURCES: SupportedResource[] = [
-  REPO_RESOURCE,
-  ISSUE_RESOURCE,
-  PULL_REQUEST_RESOURCE,
-];
+function supportedResources(env: Env) {
+  const origin = instanceUrl(env);
+  const REPO_RESOURCE: SupportedResource = {
+    urlPattern: `${origin}/:owner/:repo`,
+    title: "GitHub Repository",
+    description: "Read and manage issues, pull requests, reviews, and discussions in a GitHub repository.",
+  };
+  const ISSUE_RESOURCE: SupportedResource = {
+    urlPattern: `${origin}/:owner/:repo/issues/:number`,
+    title: "GitHub Issue",
+    description: "Read and manage a specific GitHub issue.",
+  };
+  const PULL_REQUEST_RESOURCE: SupportedResource = {
+    urlPattern: `${origin}/:owner/:repo/pull/:number`,
+    title: "GitHub Pull Request",
+    description: "Read and manage a specific GitHub pull request and its review threads.",
+  };
+  return { REPO_RESOURCE, ISSUE_RESOURCE, PULL_REQUEST_RESOURCE,
+    all: [REPO_RESOURCE, ISSUE_RESOURCE, PULL_REQUEST_RESOURCE] };
+}
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -775,31 +773,32 @@ function ensureConfigured(env: Env): void {
   }
 }
 
-function canonicalRepoUrl(owner: string, repo: string): string {
-  return `https://github.com/${owner}/${repo}`;
+function canonicalRepoUrl(owner: string, repo: string, origin: string): string {
+  return `${origin}/${owner}/${repo}`;
 }
 
-function issueUrl(owner: string, repo: string, id: string): string {
-  return `${canonicalRepoUrl(owner, repo)}/issues/${id}`;
+function issueUrl(owner: string, repo: string, id: string, origin: string): string {
+  return `${canonicalRepoUrl(owner, repo, origin)}/issues/${id}`;
 }
 
-function pullUrl(owner: string, repo: string, id: string): string {
-  return `${canonicalRepoUrl(owner, repo)}/pull/${id}`;
+function pullUrl(owner: string, repo: string, id: string, origin: string): string {
+  return `${canonicalRepoUrl(owner, repo, origin)}/pull/${id}`;
 }
 
-function repoRef(owner: string, repo: string): GitHubRepoRef {
+function repoRef(owner: string, repo: string, origin: string): GitHubRepoRef {
   return {
     owner,
     name: repo,
     fullName: `${owner}/${repo}`,
-    url: canonicalRepoUrl(owner, repo),
+    url: canonicalRepoUrl(owner, repo, origin),
   };
 }
 
 /** GitHub's returned URL carries the current repository name, unlike the binding's props. */
 function repoRefFromUrl(url: string): GitHubRepoRef {
-  const [, owner, repo] = new URL(url).pathname.split("/");
-  return repoRef(owner, repo);
+  const parsed = new URL(url);
+  const [, owner, repo] = parsed.pathname.split("/");
+  return repoRef(owner, repo, parsed.origin);
 }
 
 /**
@@ -829,10 +828,10 @@ function actorsFromUsers(
   return result;
 }
 
-function actorFromLogin(login: string): GitHubActor {
+function actorFromLogin(login: string, origin: string): GitHubActor {
   return {
     login,
-    url: `https://github.com/${login}`,
+    url: `${origin}/${login}`,
   };
 }
 
@@ -926,6 +925,7 @@ function normalizePullBranchRef(
   fallbackOwner: string,
   fallbackRepo: string,
   response: GitHubPullRequestResponse["head"],
+  origin: string,
 ): GitHubPullRequestBranchRef {
   const branchRepo = response.repo;
   const owner = branchRepo?.owner.login ?? fallbackOwner;
@@ -933,7 +933,7 @@ function normalizePullBranchRef(
   return {
     ref: response.ref,
     sha: response.sha,
-    repo: repoRef(owner, repo),
+    repo: repoRef(owner, repo, origin),
   };
 }
 
@@ -961,8 +961,8 @@ function normalizePullSummary(response: GitHubPullRequestResponse): GitHubPullRe
     ...summary,
     draft: response.draft,
     merged: !!response.merged_at,
-    head: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.head),
-    base: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.base),
+    head: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.head, new URL(summary.repo.url).origin),
+    base: normalizePullBranchRef(summary.repo.owner, summary.repo.name, response.base, new URL(summary.repo.url).origin),
   };
 }
 
@@ -1393,7 +1393,7 @@ export default {
         });
       }
 
-      const redirectUrl = new URL("https://github.com/login/oauth/authorize");
+      const redirectUrl = new URL(`${instanceUrl(env)}/login/oauth/authorize`);
       redirectUrl.searchParams.set("client_id", env.CLIENT_ID);
       redirectUrl.searchParams.set("redirect_uri", `${getBaseUrl(env)}/oauth`);
       redirectUrl.searchParams.set("scope", begun.scopes.join(" "));
@@ -1443,7 +1443,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   async describe(): Promise<VendorDescription> {
     return {
       displayName: "GitHub",
-      url: "https://github.com",
+      url: instanceUrl(this.env),
       logo: { url: GITHUB_LOGO_URL },
       color: "#f0f0f0",
       tagline: "Triage issues, review PRs, and manage repos",
@@ -1473,7 +1473,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return SUPPORTED_RESOURCES;
+    return supportedResources(this.env).all;
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -1519,7 +1519,8 @@ export class UserAccount extends DurableObject<Env> {
     refresh: async (grant: GitHubOAuthGrant): Promise<GitHubOAuthGrant> => {
       const { CLIENT_ID, CLIENT_SECRET } = this.env;
       if (!CLIENT_ID || !CLIENT_SECRET) throw new Error("GitHub OAuth is not configured.");
-      return await refreshGitHubGrant(CLIENT_ID, CLIENT_SECRET, CREDENTIALS_EXPIRED_MESSAGE)(grant);
+      this.#assertInstance();
+      return await refreshGitHubGrant(CLIENT_ID, CLIENT_SECRET, CREDENTIALS_EXPIRED_MESSAGE, githubInstance(this.env))(grant);
     },
     notify: () => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
       this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID),
@@ -1531,11 +1532,20 @@ export class UserAccount extends DurableObject<Env> {
   // as getAccessToken() reads it, so a disconnected account, or one whose grant GitHub has
   // confirmed dead, serves no answer but throws: its access can no longer be determined.
   readonly #access = new KvTtlCache(this.ctx.storage.kv,
-    async () => (await this.#creds.snapshot(this.#recovery.refresh, this.#recovery)).generation,
+    async () => { this.#assertInstance(); return (await this.#creds.snapshot(this.#recovery.refresh, this.#recovery)).generation; },
     { name: "access" });
+
+  #assertInstance(): void {
+    const stored = this.ctx.storage.kv.get<string>("instance") ?? "https://github.com";
+    if (stored !== instanceUrl(this.env)) {
+      throw new Error("This GitHub account belongs to a different GitHub instance.");
+    }
+  }
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
                     requestedScopes?: string[], ephemeral?: boolean): Promise<void> {
+    if (this.#creds.stored()) this.#assertInstance();
+    else this.ctx.storage.kv.put("instance", instanceUrl(this.env));
     if (!this.#creds.stored()) {
       await this.ctx.storage.setAlarm(Date.now() + 3600 * 1000);
     }
@@ -1553,6 +1563,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
+    this.#assertInstance();
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -1562,6 +1573,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async beginOAuthFlow(initiationNonce: string): Promise<{ oauthNonce: string; scopes: string[] } | null> {
+    this.#assertInstance();
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, initiationNonce)) {
       return null;
@@ -1583,6 +1595,7 @@ export class UserAccount extends DurableObject<Env> {
    * null when the callback's nonce doesn't match.
    */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
+    this.#assertInstance();
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
       return null;
@@ -1601,7 +1614,7 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Took too long to complete authorization. Please try again.");
     }
 
-    const grant = await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`);
+    const grant = await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`, githubInstance(this.env));
 
     let handoff: ConnectHandoff;
     if (stored.reconnect) {
@@ -1635,6 +1648,7 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
+    this.#assertInstance();
     const grant = commitStagedCredentials<GitHubOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.#creds.connect(grant);
@@ -1652,11 +1666,13 @@ export class UserAccount extends DurableObject<Env> {
    * notifying the Workshop of a death.
    */
   async getAccessToken(): Promise<string> {
+    this.#assertInstance();
     const { creds } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
     return creds.accessToken;
   }
 
   getScopes(): string[] {
+    this.#assertInstance();
     return this.#creds.stored()?.scopes ?? [];
   }
 
@@ -1669,7 +1685,7 @@ export class UserAccount extends DurableObject<Env> {
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
-    const repoIds = subresources.map(parseRepoSubresource);
+    const repoIds = subresources.map(id => parseRepoSubresource(id, instanceUrl(this.env)));
     // GitHub answers for one repository per request, so each is cached on its own, and a later
     // failure keeps what earlier requests learned. One at a time, though a binding's reads all
     // report the same one repository.
@@ -1677,7 +1693,7 @@ export class UserAccount extends DurableObject<Env> {
     for (const [index, subresource] of subresources.entries()) {
       answers.push(await this.#access.cached(subresource,
         allowed => allowed ? REPO_ACCESS_ALLOWED_TTL_MS : REPO_ACCESS_DENIED_TTL_MS,
-        () => withAccountApi(this, api => hasRepoIdAccess(api, repoIds[index]), { replayable: true })));
+        () => withAccountApi(this, api => hasRepoIdAccess(api, repoIds[index]), { replayable: true, instance: githubInstance(this.env) })));
     }
     return answers;
   }
@@ -1704,6 +1720,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async revoke(): Promise<void> {
+    this.#assertInstance();
     const grant = this.#creds.stored();
     // Fence before the first await: a refresh landing later is then discarded and its tokens
     // revoked (see discardMint), rather than stored after this capture and deleted unrevoked.
@@ -1716,7 +1733,7 @@ export class UserAccount extends DurableObject<Env> {
   async #revokeToken(accessToken: string): Promise<void> {
     if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) return;
     try {
-      await revokeOAuthToken(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
+      await revokeOAuthToken(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET, githubInstance(this.env));
     } catch (error) {
       logger.error("failed to revoke GitHub OAuth token", {
         event: "oauth.token.revoke.failed", error,
@@ -1727,11 +1744,11 @@ export class UserAccount extends DurableObject<Env> {
 
 /** Runs replay-safe GitHub reads as the account behind `userObjectId`; see withAccountApi. */
 function accountReader(
-  exports: Cloudflare.Exports, userObjectId: string,
+  env: Env, exports: Cloudflare.Exports, userObjectId: string,
 ): GitHubApiRunner {
   // The stub is made per call: a configurator outlives the request that created it.
   return fn => withAccountApi(
-    exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId)), fn, { replayable: true });
+    exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId)), fn, { replayable: true, instance: githubInstance(env) });
 }
 
 type GatekeeperUserImplProps = {
@@ -1744,7 +1761,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     const account = this.ctx.exports.UserAccount.get(id);
     const scopes = await account.getScopes();
-    return await withAccountApi(account, api => fn(api, scopes));
+    return await withAccountApi(account, api => fn(api, scopes), { instance: githubInstance(this.env) });
   }
 
   async describe(): Promise<AccountDescription> {
@@ -1764,7 +1781,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return SUPPORTED_RESOURCES;
+    return supportedResources(this.env).all;
   }
 
   async getGatekeeperClassFor(url: string): Promise<{
@@ -1772,7 +1789,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     resource: SupportedResource;
   }> {
     const parsed = new URL(url);
-    if (parsed.hostname !== "github.com") {
+    if (parsed.origin !== instanceUrl(this.env)) {
       throw new Error(`Unsupported GitHub URL: ${url}`);
     }
 
@@ -1784,11 +1801,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const [owner, repo, kind, number] = segments;
     const props: GitHubGatekeeperImplProps = {
       userObjectId: this.ctx.props.userObjectId,
+      instance: instanceUrl(this.env),
       owner,
       repo,
       resourceKind: "repo",
     };
 
+    const { REPO_RESOURCE, ISSUE_RESOURCE, PULL_REQUEST_RESOURCE } = supportedResources(this.env);
     let resource = REPO_RESOURCE;
     if (kind === "issues" || kind === "pull") {
       // Never widen a malformed issue or PR URL (`/issues/new`, `/pull/12abc`) to the whole repo.
@@ -1809,26 +1828,28 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async startResourceConfigurator(
     resourceUrlPattern: string,
   ): Promise<ResourceConfiguratorFrame> {
-    const read = accountReader(this.ctx.exports, this.ctx.props.userObjectId);
+    const read = accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId);
+    const origin = instanceUrl(this.env);
+    const { REPO_RESOURCE, ISSUE_RESOURCE, PULL_REQUEST_RESOURCE } = supportedResources(this.env);
 
     if (resourceUrlPattern === REPO_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_REPO_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubRepoConfiguratorUI(read)),
+        ui: new RpcStub(new GitHubRepoConfiguratorUI(read, origin)),
       };
     }
 
     if (resourceUrlPattern === ISSUE_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_ISSUE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubIssueConfiguratorUI(read)),
+        ui: new RpcStub(new GitHubIssueConfiguratorUI(read, origin)),
       };
     }
 
     if (resourceUrlPattern === PULL_REQUEST_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_PULL_REQUEST_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubPullRequestConfiguratorUI(read)),
+        ui: new RpcStub(new GitHubPullRequestConfiguratorUI(read, origin)),
       };
     }
 
@@ -1837,6 +1858,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   async revoke(): Promise<void> {
     const { userObjectId } = this.ctx.props;
+    await this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId)).getScopes();
     // A stub of its own for each call: one to a driver that has restarted is broken.
     const driver = () => this.ctx.exports.GitHubHookDriver.getByName(userObjectId);
     let webhooksGone = true;
@@ -1977,11 +1999,11 @@ export interface GitHubVerifierApi extends GatekeeperUserVerifier {
 export class GitHubVerifier extends WorkerEntrypoint<Env, GitHubVerifierProps>
     implements GitHubVerifierApi {
   async hasRepoAccess(repoId: number): Promise<boolean> {
-    return await accountReader(this.ctx.exports, this.ctx.props.userObjectId)(api => hasRepoIdAccess(api, repoId));
+    return await accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId)(api => hasRepoIdAccess(api, repoId));
   }
 
   async hasRepoNameAccess(owner: string, repo: string): Promise<boolean> {
-    return await accountReader(this.ctx.exports, this.ctx.props.userObjectId)(
+    return await accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId)(
       api => hasRepoNameAccess(api, owner, repo));
   }
 
@@ -2002,9 +2024,10 @@ const verifyRepoAccess = observerAccessVerifier({
 /** Refuses issue search results from outside the repository named `current`, logging why. */
 function assertSearchScope(
   current: { owner: string; repo: string }, results: readonly Pick<GitHubIssueResponse, "html_url">[],
+  origin: string,
 ): void {
   try {
-    assertIssueSearchResultsInRepo(current.owner, current.repo, results);
+    assertIssueSearchResultsInRepo(current.owner, current.repo, results, origin);
   } catch (error) {
     logger.warn("GitHub issue search scope validation failed", {
       event: "issue.search.scope.validation.failed", error,
@@ -2031,6 +2054,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   constructor(ctx: DurableObjectState<GitHubGatekeeperImplProps>, env: Env) {
     super(ctx, env);
+    if ((ctx.props.instance ?? "https://github.com") !== instanceUrl(env)) {
+      throw new Error("This GitHub binding belongs to a different GitHub instance.");
+    }
     this.#discardNameAddressedCaches();
   }
 
@@ -2077,7 +2103,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       if (id === undefined) {
         try {
           ({ id } = await withAccountApi(this.#userAccount(), api => api.getRepo(owner, repo),
-            { replayable: true }));
+            { replayable: true, instance: githubInstance(this.env) }));
           if (!Number.isSafeInteger(id) || id < 1) throw new Error(`GitHub answered ${owner}/${repo} without its id.`);
           this.ctx.storage.kv.put("repoId", id);
         } catch (error) {
@@ -2095,7 +2121,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #withApi<T>(fn: (api: GitHubApi) => Promise<T>): Promise<T> {
-    return await withAccountApi(this.#userAccount(), fn, { repo: await this.#pinnedRepo() });
+    return await withAccountApi(this.#userAccount(), fn, { repo: await this.#pinnedRepo(), instance: githubInstance(this.env) });
   }
 
   /**
@@ -2105,7 +2131,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   async #readApi<T>(fn: (api: GitHubApi) => Promise<T>): Promise<T> {
     return await withAccountApi(this.#userAccount(), fn,
-      { replayable: true, repo: await this.#pinnedRepo() });
+      { replayable: true, repo: await this.#pinnedRepo(), instance: githubInstance(this.env) });
   }
 
   /**
@@ -2118,7 +2144,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     approvalQueue: RpcStub<ApprovalQueue>, observation: Omit<ObservationDescription, "subresources">,
   ): Promise<void> {
     const { id } = await this.#pinnedRepo();
-    await approvalQueue.authorizeObservation({ ...observation, subresources: [repoSubresourceId(id)] });
+    await approvalQueue.authorizeObservation({ ...observation, subresources: [repoSubresourceId(id, instanceUrl(this.env))] });
   }
 
   /**
@@ -2968,7 +2994,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         status: 200,
         headers: result.headers,
         data: {
-          ...repoRef(result.data.owner.login, result.data.name),
+          ...repoRef(result.data.owner.login, result.data.name, instanceUrl(this.env)),
           description: result.data.description ?? undefined,
           visibility: result.data.visibility ?? (result.data.private ? "private" : "public"),
           defaultBranch: result.data.default_branch,
@@ -3200,14 +3226,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const viewer = await this.#getViewerActor();
     const { owner, name: repo } = await this.#getRepoMetadata();
     return {
-      repo: repoRef(owner, repo),
+      repo: repoRef(owner, repo, instanceUrl(this.env)),
       id: action.provisionalId,
-      url: issueUrl(owner, repo, action.provisionalId),
+      url: issueUrl(owner, repo, action.provisionalId, instanceUrl(this.env)),
       title: action.options.title,
       state: "open",
       labels: (action.options.labels ?? []).map(name => ({ name })),
       author: viewer,
-      assignees: (action.options.assignees ?? []).map(actorFromLogin),
+      assignees: (action.options.assignees ?? []).map(login => actorFromLogin(login, instanceUrl(this.env))),
       createdAt: new Date(action.submittedAt),
       updatedAt: new Date(action.submittedAt),
       commentCount: 0,
@@ -3263,9 +3289,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
 
     return {
-      repo: repoRef(owner, repo),
+      repo: repoRef(owner, repo, instanceUrl(this.env)),
       id: action.provisionalId,
-      url: pullUrl(owner, repo, action.provisionalId),
+      url: pullUrl(owner, repo, action.provisionalId, instanceUrl(this.env)),
       title: action.options.title,
       state: "open",
       labels: [],
@@ -3280,12 +3306,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       head: {
         ref: action.options.head,
         sha: headSha,
-        repo: repoRef(owner, repo),
+        repo: repoRef(owner, repo, instanceUrl(this.env)),
       },
       base: {
         ref: action.options.base,
         sha: baseSha,
-        repo: repoRef(owner, repo),
+        repo: repoRef(owner, repo, instanceUrl(this.env)),
       },
       mergeable: undefined,
       mergeState: "unknown",
@@ -3467,7 +3493,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             return raw;
           }
 
-          assertSearchScope(current, raw.data.items);
+          assertSearchScope(current, raw.data.items, instanceUrl(this.env));
           // And had it still once GitHub answered: a name it left during the search may already
           // name another repository, whose issues the search would have found instead.
           const after = await this.#currentRepoName();
@@ -3483,7 +3509,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             })),
           };
         });
-        assertSearchScope(current, results);
+        assertSearchScope(current, results, instanceUrl(this.env));
         return results.map(item => item.summary);
       },
       // Search scope was validated before results entered the cursor. Re-check the structured
@@ -3685,7 +3711,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           author: viewer,
           bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
           createdAt: new Date(action.submittedAt),
-          url: `${kind === "issue" ? issueUrl(owner, repo, logicalId) : pullUrl(owner, repo, logicalId)}#comment-${action.provisionalCommentId}`,
+          url: `${kind === "issue" ? issueUrl(owner, repo, logicalId, instanceUrl(this.env)) : pullUrl(owner, repo, logicalId, instanceUrl(this.env))}#comment-${action.provisionalCommentId}`,
         });
       } else if (action.type === "postReview") {
         provisionals.push({
@@ -3694,7 +3720,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           author: viewer,
           bodyMarkdown: this.#rewriteKnownReferences(action.review.bodyMarkdown ?? "", false),
           createdAt: new Date(action.submittedAt),
-          url: `${pullUrl(owner, repo, logicalId)}#review-${action.provisionalReviewId}`,
+          url: `${pullUrl(owner, repo, logicalId, instanceUrl(this.env))}#review-${action.provisionalReviewId}`,
           decision: action.review.decision,
           diffComments: (action.review.diffComments ?? []).map(comment => ({
             id: comment.provisionalCommentId,
@@ -3703,7 +3729,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             author: viewer,
             bodyMarkdown: this.#rewriteKnownReferences(comment.bodyMarkdown, false),
             createdAt: new Date(action.submittedAt),
-            url: `${pullUrl(owner, repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
+            url: `${pullUrl(owner, repo, logicalId, instanceUrl(this.env))}#discussion-${comment.provisionalCommentId}`,
           })),
         });
       }
@@ -3929,7 +3955,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
               author: viewer,
               bodyMarkdown: this.#rewriteKnownReferences(comment.bodyMarkdown, false),
               createdAt: new Date(action.submittedAt),
-              url: `${pullUrl(owner, repo, logicalId)}#discussion-${comment.provisionalCommentId}`,
+              url: `${pullUrl(owner, repo, logicalId, instanceUrl(this.env))}#discussion-${comment.provisionalCommentId}`,
             }],
           });
         }
@@ -3943,7 +3969,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
             author: viewer,
             bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
             createdAt: new Date(action.submittedAt),
-            url: `${pullUrl(owner, repo, logicalId)}#discussion-${action.provisionalCommentId}`,
+            url: `${pullUrl(owner, repo, logicalId, instanceUrl(this.env))}#discussion-${action.provisionalCommentId}`,
           });
         }
       }
@@ -4303,7 +4329,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   #eventSubject(owner: string, repo: string, number: number, { title, pullRequest }: { title: string; pullRequest: boolean }) {
     const id = String(number);
-    return { repo: repoRef(owner, repo), id, url: (pullRequest ? pullUrl : issueUrl)(owner, repo, id), title };
+    const origin = instanceUrl(this.env);
+    return { repo: repoRef(owner, repo, origin), id, url: (pullRequest ? pullUrl : issueUrl)(owner, repo, id, origin), title };
   }
 
   /**
@@ -5047,7 +5074,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         }
         commits.push({
           summary: commitDetailsFromGitObject(
-            current, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo)),
+            current, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo, instanceUrl(this.env))),
           tree: parsed.tree,
         });
       }
@@ -5260,7 +5287,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const payload = await gitObjectBytes(await gitCache.get(oid), "commit");
     if (payload === null) return null;
     return commitDetailsFromGitObject(
-      oid, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo));
+      oid, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo, instanceUrl(this.env)));
   }
 
   async listBranches(filter: GitHubBranchFilter | undefined, pageSize: number): Promise<Cursor<GitHubBranchSummary>> {
@@ -6491,7 +6518,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    for (const subresource of subresources) parseRepoSubresource(subresource);
+    for (const subresource of subresources) parseRepoSubresource(subresource, instanceUrl(this.env));
     return await verifyRepoAccess(observers, subresources);
   }
 }

@@ -20,6 +20,7 @@ const GITHUB_REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 export type GitHubApiRunner = <T>(fn: (api: GitHubApi) => Promise<T>) => Promise<T>;
 
 const githubRunners = new WeakMap<object, GitHubApiRunner>();
+const githubOrigins = new WeakMap<object, string>();
 // Per-instance cache of the authenticated user's login. Used to scope `searchRepos` to repos
 // the user can access. Fetched lazily on first need and reused for the configurator's lifetime.
 const githubViewerLogins = new WeakMap<object, Promise<string>>();
@@ -52,13 +53,13 @@ function repoToOption(repo: GitHubRepoResponse): ConfiguratorOption {
   };
 }
 
-function splitRepoFullName(input: string): { owner: string; repo: string } | null {
+function splitRepoFullName(input: string, origin: string): { owner: string; repo: string } | null {
   let fullName = input.trim();
 
   if (/^https?:\/\//i.test(fullName)) {
     try {
       const url = new URL(fullName);
-      if (url.hostname.toLowerCase() !== "github.com") return null;
+      if (url.origin !== origin) return null;
       fullName = url.pathname.replace(/^\/+|\/+$/g, "");
     } catch {
       return null;
@@ -123,9 +124,14 @@ function pullRequestSearchOption(pullRequest: GitHubIssueResponse) {
 // Capability exposed to the configurator iframe.
 @validateRpc()
 export class GitHubRepoConfiguratorUI extends RpcTarget implements GitHubRepoConfiguratorRpc {
-  constructor(run: GitHubApiRunner) {
+  constructor(run: GitHubApiRunner, origin = "https://github.com") {
     super();
     githubRunners.set(this, run);
+    githubOrigins.set(this, origin);
+  }
+
+  async instanceUrl(): Promise<string> {
+    return githubOrigins.get(this)!;
   }
 
   async listRepos(query: string): Promise<ConfiguratorOption[]> {
@@ -144,7 +150,7 @@ export class GitHubRepoConfiguratorUI extends RpcTarget implements GitHubRepoCon
     }
 
     // Query: hit GitHub's /search/repositories scoped to the authenticated user.
-    const exactRepo = splitRepoFullName(trimmedQuery);
+    const exactRepo = splitRepoFullName(trimmedQuery, githubOrigins.get(this)!);
     const normalizedQuery = exactRepo ? `${exactRepo.owner}/${exactRepo.repo}` : trimmedQuery;
     const login = await viewerLogin(this);
     const repos = await withGitHub(this, api => api.searchRepos({
@@ -176,7 +182,7 @@ export class GitHubIssueConfiguratorUI extends GitHubRepoConfiguratorUI implemen
   async listIssues(repoFullName: string | null | undefined, query: string): Promise<ConfiguratorOption[]> {
     if (!repoFullName) return [];
 
-    const parsed = splitRepoFullName(repoFullName);
+    const parsed = splitRepoFullName(repoFullName, githubOrigins.get(this)!);
     if (!parsed) return [];
     const trimmedQuery = query.trim();
 
@@ -220,7 +226,7 @@ export class GitHubPullRequestConfiguratorUI extends GitHubRepoConfiguratorUI im
   async listPullRequests(repoFullName: string | null | undefined, query: string): Promise<ConfiguratorOption[]> {
     if (!repoFullName) return [];
 
-    const parsed = splitRepoFullName(repoFullName);
+    const parsed = splitRepoFullName(repoFullName, githubOrigins.get(this)!);
     if (!parsed) return [];
     const trimmedQuery = query.trim();
 
