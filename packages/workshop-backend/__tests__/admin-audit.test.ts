@@ -324,9 +324,6 @@ describe("AdminAuditDurableObject schema", () => {
     let [record] = (await log.list({ limit: 1 }, RETENTION)).records as AdminAccessRecord[];
     expect(record.workspaceTitle).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
     expect(record.workspaceTitle.endsWith("…")).toBe(true);
-    let stats = await log.stats({ days: 1 }, RETENTION);
-    expect(stats.topWorkspaces).toEqual(
-        [{ workspaceId: "w1", title: record.workspaceTitle, count: 1, contentReads: 0 }]);
     let [{ size }] = await sql<{ size: number }>(log,
         "SELECT length(record) + length(workspace_title) AS size FROM admin_audit");
     expect(size).toBeLessThan(10_000);
@@ -373,22 +370,6 @@ describe("AdminAuditDurableObject.stats", () => {
       { admin: "ada", count: 2, contentReads: 0 }, { admin: "grace", count: 2, contentReads: 0 },
       { admin: "linus", count: 1, contentReads: 0 },
     ]);
-    expect(stats.topWorkspaces.map(w => [w.workspaceId, w.count]))
-        .toEqual([["w2", 2], ["w1", 1], ["w3", 1]]);
-  });
-
-  it("titles a workspace with its newest non-empty title", async () => {
-    let log = auditLog();
-    await log.append(access({ workspaceTitle: "First", at: daysAgo(1) }), RETENTION);
-    await log.append(access({ workspaceTitle: "Renamed" }), RETENTION);
-    await log.append(access({ workspaceTitle: "" }), RETENTION);
-    await log.append(access({ workspaceId: "w2", workspaceTitle: "" }), RETENTION);
-
-    let stats = await log.stats({ days: 7 }, RETENTION);
-    expect(stats.topWorkspaces).toEqual([
-      { workspaceId: "w1", title: "Renamed", count: 3, contentReads: 0 },
-      { workspaceId: "w2", title: "", count: 1, contentReads: 0 },
-    ]);
   });
 
   it("filters by kind", async () => {
@@ -400,13 +381,10 @@ describe("AdminAuditDurableObject.stats", () => {
     let settings = await log.stats({ days: 7, kind: "setting" }, RETENTION);
     expect(settings.totalEvents).toBe(2);
     expect(settings.topAdmins).toEqual([{ admin: "grace", count: 2, contentReads: 0 }]);
-    expect(settings.topWorkspaces).toEqual([]);
 
     let workspaces = await log.stats({ days: 7, kind: "workspace" }, RETENTION);
     expect(workspaces.totalEvents).toBe(1);
     expect(workspaces.topAdmins).toEqual([{ admin: "ada", count: 1, contentReads: 0 }]);
-    expect(workspaces.topWorkspaces)
-        .toEqual([{ workspaceId: "w1", title: "Plans", count: 1, contentReads: 0 }]);
   });
 
   it("counts nothing past the retention, however long the window", async () => {
@@ -421,8 +399,6 @@ describe("AdminAuditDurableObject.stats", () => {
     expect(stats.topAdmins).toEqual([
       { admin: "ada", count: 1, contentReads: 0 }, { admin: "grace", count: 1, contentReads: 1 },
     ]);
-    expect(stats.topWorkspaces)
-        .toEqual([{ workspaceId: "w1", title: "Plans", count: 2, contentReads: 1 }]);
   });
 
   it("counts the content reads in the window", async () => {
@@ -440,7 +416,7 @@ describe("AdminAuditDurableObject.stats", () => {
     expect((await log.stats({ days: 30 }, RETENTION)).contentReads).toBe(3);
   });
 
-  it("counts each top admin's and workspace's content reads, ranking by every record", async () => {
+  it("counts each top admin's content reads, ranking by every record", async () => {
     let log = auditLog();
     let records: AdminAuditRecord[] = [
       access({ admin: "grace", workspaceId: "w2", exposed: "content" }),
@@ -459,12 +435,6 @@ describe("AdminAuditDurableObject.stats", () => {
       { admin: "zed", count: 5, contentReads: 0 }, { admin: "ada", count: 2, contentReads: 1 },
       { admin: "grace", count: 2, contentReads: 2 }, { admin: "linus", count: 1, contentReads: 1 },
     ]);
-    expect(stats.topWorkspaces).toEqual([
-      { workspaceId: "w9", title: "Plans", count: 5, contentReads: 0 },
-      { workspaceId: "w2", title: "Plans", count: 2, contentReads: 2 },
-      { workspaceId: "w1", title: "Plans", count: 1, contentReads: 1 },
-      { workspaceId: "w3", title: "Plans", count: 1, contentReads: 1 },
-    ]);
 
     let many = auditLog();
     for (let i = 0; i < 12; i++) {
@@ -476,8 +446,6 @@ describe("AdminAuditDurableObject.stats", () => {
     expect(capped.contentReads).toBe(12);
     expect(capped.topAdmins.map(a => a.admin))
         .toEqual(Array.from({ length: 10 }, (_, i) => `a${String(i).padStart(2, "0")}`));
-    expect(capped.topWorkspaces.map(w => w.workspaceId))
-        .toEqual(Array.from({ length: 10 }, (_, i) => `w${String(i).padStart(2, "0")}`));
   });
 
   it("filters the content reads by kind", async () => {
@@ -500,6 +468,5 @@ describe("AdminAuditDurableObject.stats", () => {
     expect(workspaces.topAdmins).toEqual([
       { admin: "ada", count: 1, contentReads: 1 }, { admin: "grace", count: 1, contentReads: 0 },
     ]);
-    expect(workspaces.topWorkspaces).toEqual(all.topWorkspaces);
   });
 });

@@ -2067,10 +2067,9 @@ export type AdminAuditStatsQuery = {
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (both kinds when none is given), except `topWorkspaces`
- * and the content reads. Only AdminAccessRecords can make those, so they are empty or zero for the
- * "setting" kind. A record older than the retention is gone, so a window reaching past it counts
- * nothing there.
+ * covers the records of the queried kind (both kinds when none is given). Only AdminAccessRecords
+ * can be content reads, so those are zero for the "setting" kind. A record older than the retention
+ * is gone, so a window reaching past it counts nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2084,11 +2083,6 @@ export type AdminAuditStats = {
    * with how many of those records are content reads. Every content read is listed by
    * listAdminAudit({ exposed: "content" }), an admin's who is not among these included. */
   topAdmins: { admin: string; count: number; contentReads: number }[];
-  /** The workspaces with the most access records in the window, most first (ties by id), at most
-   * 10, each with how many of those records are content reads, and the newest non-empty title
-   * among its records in the window, as they hold it (see AdminAccessRecord.workspaceTitle; ""
-   * when none has one). */
-  topWorkspaces: { workspaceId: string; title: string; count: number; contentReads: number }[];
   /** The calls into a workspace in the window whose answer exposed content
    * (AdminAccessRecord.exposed is "content"). */
   contentReads: number;
