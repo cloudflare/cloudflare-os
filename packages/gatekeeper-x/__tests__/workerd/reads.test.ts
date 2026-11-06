@@ -37,7 +37,7 @@ describe("account reads", () => {
     expect(profile).toMatchObject({ id: ALICE.id, username: "alice", followersCount: 10 });
     expect(profile.relationship).toBeUndefined();
     const { observations } = await hooks().queueLog(name);
-    expect(observations).toEqual([{ title: "Read the connected X profile", description: "Read @alice's profile." }]);
+    expect(observations).toEqual([{ title: "Read the connected X profile", description: "Read @alice's profile.", subresources: [] }]);
   });
 
   it("walks a listing one X request per page", async () => {
@@ -210,48 +210,44 @@ describe("the daily read limit", () => {
   });
 });
 
+/** What each observation the facet authorized reported as the subresources restricting it. */
+async function subresources(name: string): Promise<(string[] | undefined)[]> {
+  return (await hooks().queueLog(name)).observations.map(o => o.subresources);
+}
+
 describe("what a read discloses", () => {
-  /** A binding with an observer connected as `observer`'s X account. */
-  async function observed(observer = BOB) {
-    const context = await setup();
-    const observerAccount = await seedAccount(context.x, observer);
-    unwrap(await hooks().addObserver(context.name, context.props, "observer", observerAccount));
-    return context;
-  }
+  /** What every read private to Alice's account reports: her X user, whom only she may see. */
+  const OWNER = [`user/${ALICE.id}`];
 
-  async function exclusions(name: string): Promise<(string[] | undefined)[]> {
-    return (await hooks().queueLog(name)).observations.map(o => o.excludeObservers);
-  }
-
-  it("shares public reads with any observer", async () => {
-    const { x, props, name } = await observed();
+  it("reports nothing restricting a public read", async () => {
+    const { x, props, name } = await setup();
     x.post(BOB, "hey @alice");
     unwrap(await hooks().run(name, props, [["getProfile"]]));
     unwrap(await hooks().run(name, props, [["listMentions"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([undefined, undefined]);
+    expect(await subresources(name)).toEqual([[], []]);
   });
 
-  it("withholds the account's private reads from another X user", async () => {
-    const { x, props, name } = await observed();
+  it("reports the account's private reads as its X user's", async () => {
+    const { x, props, name } = await setup();
     const post = x.post(BOB, "saved");
     x.bookmarks.add(`${ALICE.id}:${post.id}`);
     x.likes.add(`${ALICE.id}:${post.id}`);
     unwrap(await hooks().run(name, props, [["listBookmarks"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["listLikedPosts"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["getUser", "bob"], ["isMuted"]]));
-    expect(await exclusions(name)).toEqual([["observer"], ["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER, OWNER, OWNER]);
   });
 
-  it("withholds a page that discloses a protected account's post", async () => {
-    const { x, props, name } = await observed();
+  it("reports a page that discloses a protected account's post as private", async () => {
+    const { x, props, name } = await setup();
     x.following.add(`${ALICE.id}:${CAROL.id}`);
     x.post(CAROL, "for followers only, @alice");
     unwrap(await hooks().run(name, props, [["listMentions"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER]);
   });
 
-  it("withholds posts whose authors X didn't say were public", async () => {
-    const { x, props, name } = await observed();
+  it("reports posts whose authors X didn't say were public as private", async () => {
+    const { x, props, name } = await setup();
     // A 200 that failed to hydrate the author expansion, as X may answer.
     const post = x.post(CAROL, "for followers only, @alice");
     const unhydrated = { data: [post], errors: [{ title: "Partial Error", resource_id: CAROL.id }], meta: { result_count: 1 } };
@@ -260,25 +256,24 @@ describe("what a read discloses", () => {
     const [page] = unwrap(await hooks().run(name, props, [["listMentions"]], { pages: 1 })) as XPostInfo[][];
     expect(page[0].author.protected).toBe(false);
     unwrap(await hooks().run(name, props, [["getPost", post.id], ["getInfo"]]));
-    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER, OWNER]);
   });
 
-  it("withholds a pending repost of a post whose author X didn't describe", async () => {
-    const { x, props, name } = await observed();
+  it("reports a pending repost of a post whose author X didn't describe as private", async () => {
+    const { x, props, name } = await setup();
     const post = x.post(CAROL, "for followers only");
     x.on("GET", new RegExp(`^/2/tweets/${post.id}\\b`), () => json({ data: post }));
     unwrap(await hooks().run(name, props, [["getPost", post.id], ["repost"]]));
     unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER]);
   });
 
-  it("withholds a protected account's relationships, as it does its follow lists", async () => {
+  it("reports a protected account's relationships as private, as it does its follow lists", async () => {
     const x = new FakeX().install();
     const props: GatekeeperProps = {
       userObjectId: await seedAccount(x, ALICE, { identity: { protected: true } }), resourceKind: "account",
     };
     const name = crypto.randomUUID();
-    unwrap(await hooks().addObserver(name, props, "observer", await seedAccount(x, BOB)));
     x.following.add(`${ALICE.id}:${BOB.id}`);
     const bob = unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]])) as XUserInfo;
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
@@ -287,11 +282,11 @@ describe("what a read discloses", () => {
     // Its home timeline shows whom it follows, whatever the posts.
     x.post(BOB, "public words");
     unwrap(await hooks().run(name, props, [["listHomeTimeline"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([["observer"], undefined, ["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER, [], OWNER]);
   });
 
   it("decides a List's privacy for each page, as X described it within a minute", async () => {
-    const { x, props, name } = await observed();
+    const { x, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 2 });
     x.listMembers.set("77", new Set([BOB.id, CAROL.id]));
@@ -306,11 +301,11 @@ describe("what a read discloses", () => {
       return undefined;
     });
     unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers", { pageSize: 1 }]], { pages: 2 }));
-    expect(await exclusions(name)).toEqual([undefined, ["observer"]]);
+    expect(await subresources(name)).toEqual([[], OWNER]);
   });
 
   it("looks a List up at most once a minute while its posts are polled", async () => {
-    const { x, props, name } = await observed();
+    const { x, props, name } = await setup();
     x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 1 });
     x.listMembers.set("77", new Set([BOB.id]));
     x.post(BOB, "listed");
@@ -320,8 +315,8 @@ describe("what a read discloses", () => {
     expect(x.count("GET", /^\/2\/lists\/77(\?|$)/)).toBe(1);
   });
 
-  it("withholds a List's page X couldn't vouch for, rather than failing it", async () => {
-    const { x, props, name } = await observed();
+  it("reports a List's page X couldn't vouch for as private, rather than failing it", async () => {
+    const { x, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 1 });
     x.listMembers.set("77", new Set([BOB.id]));
@@ -330,11 +325,11 @@ describe("what a read discloses", () => {
     x.on("GET", /^\/2\/lists\/77(\?|$)/, () => json({ title: "Too Many Requests" }, { status: 429 }));
     const [page] = unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers"]], { pages: 1 })) as XUserInfo[][];
     expect(page.map(user => user.username)).toEqual(["bob"]);
-    expect(await exclusions(name)).toEqual([undefined, ["observer"]]);
+    expect(await subresources(name)).toEqual([[], OWNER]);
   });
 
   it("judges the follow graph by the account's protection as X described it within a minute", async () => {
-    const { x, props, name } = await observed();
+    const { x, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     x.following.add(`${ALICE.id}:${BOB.id}`);
     x.post(BOB, "public words");
@@ -346,22 +341,22 @@ describe("what a read discloses", () => {
     unwrap(await hooks().run(name, props, [["listFollowers"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]]));
     unwrap(await hooks().run(name, props, [["listHomeTimeline"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([undefined, ["observer"], ["observer"], ["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([[], OWNER, OWNER, OWNER, OWNER]);
   });
 
-  it("withholds the follow graph while X can't say whether the account is protected", async () => {
-    const { x, props, name } = await observed();
+  it("reports the follow graph as private while X can't say whether the account is protected", async () => {
+    const { x, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     x.following.add(`${ALICE.id}:${BOB.id}`);
     vi.setSystemTime(Date.now() + 61 * 1000);
     x.on("GET", /^\/2\/users\/me/, () => json({ title: "Service Unavailable" }, { status: 503 }));
     const [page] = unwrap(await hooks().run(name, props, [["listFollowing"]], { pages: 1 })) as XUserInfo[][];
     expect(page.map(user => user.username)).toEqual(["bob"]);
-    expect(await exclusions(name)).toEqual([["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER]);
   });
 
-  it("withholds a List's rows once another binding of the connection made it private, within a minute", async () => {
-    const { x, props, name } = await observed();
+  it("reports a List's rows as private once another binding of the connection made it private, within a minute", async () => {
+    const { x, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 1 });
     x.listMembers.set("77", new Set([BOB.id]));
@@ -378,35 +373,44 @@ describe("what a read discloses", () => {
     x.post(CAROL, "listed since");
     unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["getList", "77"], ["listPosts"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([undefined, ["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([[], OWNER, OWNER]);
   });
 
-  it("shares private reads with an observer connected as the same X user", async () => {
-    const { x, props, name } = await observed(ALICE);
-    x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
-    unwrap(await hooks().run(name, props, [["listBookmarks"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([undefined]);
+  it("reports a page served from the cache as it reported the read that filled it", async () => {
+    const { x, props, name } = await setup();
+    x.following.add(`${ALICE.id}:${CAROL.id}`);
+    x.post(CAROL, "for followers only");
+    for (let poll = 0; poll < 3; poll++) unwrap(await hooks().run(name, props, [["getUser", "carol"], ["listPosts"]], { pages: 1 }));
+    expect(x.count("GET", new RegExp(`^/2/users/${CAROL.id}/tweets`))).toBe(1);
+    expect(await subresources(name)).toEqual([OWNER, OWNER, OWNER]);
   });
 
-  it("withholds a private List's details", async () => {
-    const { x, props, name } = await observed();
+  it("reports an empty page of a private source as private", async () => {
+    const { props, name } = await setup();
+    const [page] = unwrap(await hooks().run(name, props, [["listBookmarks"]], { pages: 1 })) as XPostInfo[][];
+    expect(page).toEqual([]);
+    expect(await subresources(name)).toEqual([OWNER]);
+  });
+
+  it("reports a private List's details as private", async () => {
+    const { x, props, name } = await setup();
     x.lists.set("77", { id: "77", name: "Secret", private: true, owner_id: ALICE.id, member_count: 0 });
     const list = unwrap(await hooks().run(name, props, [["getList", "77"], ["getInfo"]])) as XListInfo;
     expect(list).toMatchObject({ name: "Secret", private: true });
-    expect(await exclusions(name)).toEqual([["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER]);
   });
 
-  it("withholds a List whose privacy X didn't report", async () => {
-    const { x, props, name } = await observed();
+  it("reports a List whose privacy X didn't report as private", async () => {
+    const { x, props, name } = await setup();
     // A 200 that failed to hydrate the List's `private` field.
     x.lists.set("78", { id: "78", name: "Unclear", owner_id: ALICE.id, member_count: 0 });
     expect(unwrap(await hooks().run(name, props, [["getList", "78"], ["getInfo"]]))).toMatchObject({ private: true });
     unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER, OWNER]);
   });
 
-  it("keeps withholding a private List while a change making it public waits", async () => {
-    const { x, props, name } = await observed();
+  it("keeps reporting a private List as private while a change making it public waits", async () => {
+    const { x, props, name } = await setup();
     x.lists.set("77", { id: "77", name: "Secret", private: true, owner_id: ALICE.id, member_count: 1 });
     x.listMembers.set("77", new Set([BOB.id]));
     x.post(BOB, "listed");
@@ -417,7 +421,7 @@ describe("what a read discloses", () => {
     unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["getList", "77"], ["listPosts"]], { pages: 1 }));
     unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
-    expect(await exclusions(name)).toEqual([["observer"], ["observer"], ["observer"], ["observer"]]);
+    expect(await subresources(name)).toEqual([OWNER, OWNER, OWNER, OWNER]);
   });
 });
 
@@ -431,6 +435,14 @@ describe("pending actions in reads", () => {
     expect(page.map(post => post.id)).toEqual(["~1"]);
     // Nothing was sent to X but reads.
     expect(x.requests.every(r => r.method === "GET")).toBe(true);
+  });
+
+  it("walks the session's own pending posts without an observation, since nothing comes from X", async () => {
+    const { props, name } = await setup();
+    unwrap(await hooks().run(name, props, [["createThread", [{ text: "Draft one" }, { text: "Draft two" }]]]));
+    const [page] = unwrap(await hooks().run(name, props, [["getPost", "~1"], ["listConversation"]], { pages: 1 })) as XPostInfo[][];
+    expect(page.map(post => post.text)).toEqual(["Draft two", "Draft one"]);
+    expect((await hooks().queueLog(name)).observations).toEqual([]);
   });
 
   it("shows posts waiting for approval only where a listing's bounds take them in", async () => {
@@ -529,8 +541,9 @@ describe("pending actions in reads", () => {
     await hooks().refuseObservations(name, false);
     const [members] = unwrap(await hooks().run(name, props, [["getList", "~1"], ["listMembers"]], { pages: 1 })) as XUserInfo[][];
     expect(members.map(member => member.username)).toEqual(["bob"]);
-    expect((await hooks().queueLog(name)).observations.at(-1))
-      .toEqual({ title: "Read an X List's members", description: 'Read 1 member of the List "Friends".' });
+    expect((await hooks().queueLog(name)).observations.at(-1)).toEqual({
+      title: "Read an X List's members", description: 'Read 1 member of the List "Friends".', subresources: [],
+    });
   });
 
   it("tells drafts apart by where their links point", async () => {
