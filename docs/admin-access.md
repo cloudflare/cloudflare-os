@@ -280,7 +280,7 @@ typed, so type the number of days you want kept, even the minimum.
 - **`AdminAccessRecord`** (`kind: "workspace"`): one admin call into a workspace, the open or a view
   method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `workspaceId`,
   the workspace's owner (`workspaceOwner`, resolved when the view opens; from the directory for an
-  open refused before it reaches the workspace), the workspace's title at the time, `method`, the call's arguments by name, the `reason` given at
+  open refused before it reaches the workspace; cut like the title, since a username is unbounded), the workspace's title at the time, `method`, the call's arguments by name, the `reason` given at
   the open, the level the open asked for (`requested`), the `access` level the call ran at (never
   above `requested`), what its answer exposed (`exposed`), and `refused` when the level refused
   it.
