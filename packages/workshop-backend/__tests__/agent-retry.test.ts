@@ -128,7 +128,8 @@ describe("the request a turn leaves to keep cached", () => {
       model: faux.getModel(),
       stream: (model, context, options) => {
         handle.lastRequest = {
-          sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 0,
+          sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, ownTokens: 0,
+          expiryCost: 0, prefixes: () => false,
           resend: () => Promise.reject(new Error("Not resent in this test.")),
         };
         requests.push(handle.lastRequest);

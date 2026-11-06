@@ -19,6 +19,14 @@ export type WorkshopObservabilityFields = {
   changeEmptyPathCount: number;
   claimedType: string;
   commitCount: number;
+  /**
+   * Why an idle chat's compaction (chat.cache_warm.compaction) didn't publish its
+   * checkpoint: an unsupported model, too few own tokens, a running or starting turn, a turn that
+   * didn't end with the model's answer, no valid cut, a request that wouldn't read the cached
+   * prompt or would come too late, a failed request, or a change to the chat while it ran.
+   */
+  compactionSkip: "model" | "small" | "busy" | "unfinished" | "cut" | "mismatch" | "late" |
+      "failed" | "changed";
   costUsd: number;
   credentialKind: "workshop" | "cloudflare-access";
   durableObjectId: string;
@@ -30,6 +38,7 @@ export type WorkshopObservabilityFields = {
   gatekeeperId: number | string;
   handoffKind: "connect" | "restore";
   hookId: number;
+  idleMs: number;
   logBytes: number;
   missCostUsd: number;
   modelId: string;
@@ -38,6 +47,7 @@ export type WorkshopObservabilityFields = {
   oidPrefix: string;
   operation: string;
   outcome: "ok" | "error" | "stopped" | "usage_limit" | "no_email" | "signups_disabled";
+  ownTokens: number;
   path: string;
   pauseEnd: "turn" | "left" | "revert" | "deleted";
   recordedType: string;

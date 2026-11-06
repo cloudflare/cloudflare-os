@@ -18,6 +18,8 @@ type Warming = {
   // What the pings have cost so far, in dollars.
   spent: number;
   timer?: ReturnType<typeof setTimeout>;
+  // Called if warming stops at its limit or cost cap (see ChatCacheWarmer.start).
+  onExpiring?: (expiresAt: number) => void;
 };
 
 // A viewed chat's wait for its next turn after a turn ends, logged when it ends to learn how long
@@ -49,6 +51,9 @@ type ChatViewers = {
  * when a ping fails or finds the cache gone, and on end(). The viewers' open connections keep
  * the Durable Object in memory meanwhile. Warming is held in memory only, like the request it
  * resends, so a restart ends it.
+ *
+ * When warming stops an hour after the turn or at its cost cap, it can hand the cached copy's last
+ * half minute to whoever started it (see start()).
  *
  * Each pause after such a turn is logged when it ends, with how long it lasted and what a ping and
  * a miss cost, to show how long warming should run.
@@ -88,16 +93,19 @@ export class ChatCacheWarmer {
 
   /**
    * Starts keeping `request`'s prompt cached while someone views `chatId`, replacing any earlier
-   * warming. Called when a turn ends, with its last request and the turn's model.
+   * warming. Called when a turn ends, with its last request and the turn's model. If warming
+   * stops an hour after the turn or at its cost cap, `onExpiring` is called once, when the next
+   * ping would have gone out, with when the cached copy expires.
    */
-  start(chatId: number, request: CachedRequest, modelId: string): void {
+  start(chatId: number, request: CachedRequest, modelId: string,
+        onExpiring?: (expiresAt: number) => void): void {
     this.#stopWarming(chatId);
     let chat = this.#chats.get(chatId);
     // A turn that ended with nobody viewing the chat, such as a callback's, isn't warmed.
     if (!chat) return;
     let {sentAt, cacheLifetime, resendCost, expiryCost} = request;
     chat.pause = {modelId, sentAt, cacheLifetime, resendCost, expiryCost};
-    chat.warming = {request, sentAt, spent: 0};
+    chat.warming = {request, sentAt, spent: 0, onExpiring};
     this.#schedule(chatId, chat.warming);
   }
 
@@ -126,14 +134,18 @@ export class ChatCacheWarmer {
   }
 
   // Schedules the next ping, unless the cached copy would expire first, the ping would come after
-  // the warming limit, or it could take the pings past what the cache miss they avoid costs.
+  // the warming limit, or it could take the pings past what the cache miss they avoid costs. In
+  // the last two cases, onExpiring gets the ping's time instead.
   #schedule(chatId: number, warming: Warming) {
     let due = expiry(warming) - PING_LEAD_MS;
-    if (due <= Date.now() || due > warming.request.sentAt + WARMING_LIMIT_MS ||
-        !worthPinging(warming)) {
-      return this.#stopWarming(chatId);
-    }
-    warming.timer = setTimeout(() => void this.#ping(chatId, warming), due - Date.now());
+    if (due <= Date.now()) return this.#stopWarming(chatId);
+    let pings = due <= warming.request.sentAt + WARMING_LIMIT_MS && worthPinging(warming);
+    if (!pings && !warming.onExpiring) return this.#stopWarming(chatId);
+    warming.timer = setTimeout(() => {
+      if (pings) return void this.#ping(chatId, warming);
+      this.#stopWarming(chatId);
+      if (Date.now() < expiry(warming)) warming.onExpiring?.(expiry(warming));
+    }, due - Date.now());
   }
 
   async #ping(chatId: number, warming: Warming) {

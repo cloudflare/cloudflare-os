@@ -88,6 +88,12 @@ export type ModelStreamOptions = SimpleStreamOptions & {
    * quick, and none of them benefit from cross-step reasoning. Default: true.
    */
   thinking?: boolean;
+
+  /**
+   * Called with the request exactly as it will be sent, after the handle's own rewrites, if
+   * prompt caching is on. A throw fails the request without sending it.
+   */
+  beforeSend?: (payload: unknown) => void;
 };
 
 /**
@@ -149,11 +155,22 @@ export type CachedRequest = {
    */
   resendCost: number;
 
+  /** The prompt's tokens past the head it shares with other chats (see estimateSharedHeadTokens). */
+  ownTokens: number;
+
   /**
    * What the chat's next request pays extra, in dollars, if the cached copy expires first: a
-   * write instead of a read of the chat's own part of the prompt (see estimateSharedHeadTokens).
+   * write instead of a read of the chat's own tokens.
    */
   expiryCost: number;
+
+  /**
+   * Whether `payload`, a request to the same Anthropic model as it would be sent, reads this
+   * request's prompt from the cache: it has the same system prompt, tools and options, and its
+   * messages start with this request's. Its response cap, cache markers, betas and compaction
+   * instructions may differ. False for other APIs.
+   */
+  prefixes(payload: unknown): boolean;
 
   /**
    * Sends the request again with the smallest response cap its API takes, through the handle's
@@ -552,7 +569,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const handle: ModelHandle = {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
-    stream: (model, context, { thinking = true, ...options } = {}) => {
+    stream: (model, context, { thinking = true, beforeSend, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata, or leave the
       // previous request to be resent in its place.
       handle.lastResponse = undefined;
@@ -615,6 +632,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
           const final = split === undefined
               ? signed
               : withoutPromptCacheKey(args.model, split) ?? split;
+          beforeSend?.(final ?? payload);
           sent = { payload: final ?? payload, at: Date.now() };
           return final;
         },
@@ -680,7 +698,9 @@ function cachedRequest(
     cacheLifetime: resent.cacheLifetime,
     // Prices are per million tokens.
     resendCost: (prompt * cacheRead + resent.responseCap * output) / 1e6,
+    ownTokens: own,
     expiryCost: own * (cacheWrite - cacheRead) / 1e6,
+    prefixes: payload => model.api === "anthropic-messages" && readsPrompt(resent.payload, payload),
     resend: async () => {
       let aiGatewayLogId: string | undefined;
       // pi builds a request from the context and then replaces it with the payload.
@@ -698,6 +718,32 @@ function cachedRequest(
     },
   };
 }
+
+// The fields of an Anthropic request that don't change what it reads from the cache, besides its
+// messages, which readsPrompt compares one by one.
+const UNCACHED_FIELDS: Record<string, true> = {
+  messages: true, max_tokens: true, betas: true, compaction: true,
+};
+
+// Whether the Anthropic request `payload` reads the prompt of the request `cached` from the cache
+// (see CachedRequest.prefixes).
+function readsPrompt(cached: object, payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const cachedFields = new Map(Object.entries(cached));
+  const fields = new Map(Object.entries(payload));
+  const cachedMessages: unknown = cachedFields.get("messages");
+  const messages: unknown = fields.get("messages");
+  if (!Array.isArray(cachedMessages) || !Array.isArray(messages)) return false;
+  return [...new Set([...cachedFields.keys(), ...fields.keys()])].every(key =>
+      Object.hasOwn(UNCACHED_FIELDS, key) ||
+      withoutCacheMarkers(cachedFields.get(key)) === withoutCacheMarkers(fields.get(key))) &&
+    cachedMessages.every((message: unknown, index) =>
+      withoutCacheMarkers(message) === withoutCacheMarkers(messages[index]));
+}
+
+// A part of a request as JSON, without the markers that say where to cache the prompt.
+const withoutCacheMarkers = (value: unknown): string | undefined =>
+    JSON.stringify(value, (key, field: unknown) => key === "cache_control" ? undefined : field);
 
 // The cache lifetime of `payload`'s API, and `payload` with the smallest response cap it takes.
 // Undefined where a resend isn't known to keep the cache.

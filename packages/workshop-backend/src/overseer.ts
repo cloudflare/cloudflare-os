@@ -45,7 +45,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, compactChat, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -54,7 +54,8 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
-import type { CachedRequest } from "./ai-models";
+import type { CachedRequest, ModelHandle } from "./ai-models";
+import { supportsAnthropicCompaction } from "./anthropic-compaction";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
@@ -83,7 +84,7 @@ import {
 } from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
-import { createWorkshopLogger, obsContext } from "./observability";
+import { createWorkshopLogger, obsContext, type WorkshopObservabilityFields } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
@@ -275,6 +276,11 @@ type LiveChatContext = {
   // Abort controller for the running agent.
   cancelController: AbortController;
 };
+
+// The fewest own tokens (see CachedRequest.ownTokens) a chat must have to be compacted when its
+// warming stops: Claude Code's default for its idle compaction. Below it, a summary costs too large
+// a share of the miss it avoids for the chats that never come back.
+const IDLE_COMPACTION_MIN_TOKENS = 200_000;
 
 type PreparedChatMessage = {
   slashCommand?: SlashCommandRequest;
@@ -786,6 +792,8 @@ class OverseerImpl implements AgentHooks {
   #liveChats = new Map<number, LiveChatContext>();
   #chatSubscribers: Set<RpcStub<AiChatSubscriber>> = new Set();
   readonly cacheWarmer: ChatCacheWarmer;
+  // Aborts each idle chat's compaction while it runs (see #compactIdleChat).
+  #idleCompactions = new Map<number, AbortController>();
 
   #autoApprovalDrainer: AutoApprovalDrainer;
 
@@ -986,7 +994,7 @@ class OverseerImpl implements AgentHooks {
   // (Undelivered calls to the agent live in storage -- `pendingAgentCalls` -- not here; deleteChat
   // removes them itself.)
   destroyLiveChat(chatId: number) {
-    this.cacheWarmer.end(chatId, "deleted");
+    this.#endPause(chatId, "deleted");
     this.#resumeErrors.delete(chatId);
     this.#unregisterRunningAgent(chatId);
     let meta = this.storage.chatMeta.get(chatId);
@@ -1019,7 +1027,14 @@ class OverseerImpl implements AgentHooks {
     this.#runningAgents.add(chatId);
     this.#updateAlarm();
     // The turn's own requests keep the cache warm, and its end warms its last request instead.
-    this.cacheWarmer.end(chatId, "turn");
+    this.#endPause(chatId, "turn");
+  }
+
+  // Ends the chat's pause between turns (see ChatCacheWarmer.end), and any compaction of the chat
+  // still running in it, whose checkpoint the turn, revert or deletion would leave stale.
+  #endPause(chatId: number, reason: "turn" | "revert" | "deleted") {
+    this.cacheWarmer.end(chatId, reason);
+    this.#idleCompactions.get(chatId)?.abort();
   }
 
   // Release a running execution and recompute the alarm. A decision pause or retryable model
@@ -4844,7 +4859,7 @@ class OverseerImpl implements AgentHooks {
     this.proposedChangesChanged(chatId);
     // Replay hides the results of reads of reverted content (see agent.ts), so the next request
     // no longer starts with the one being kept warm.
-    this.cacheWarmer.end(chatId, "revert");
+    this.#endPause(chatId, "revert");
 
     // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
     // message is also how the agent learns of the rejection on its next turn (revert messages
@@ -7733,12 +7748,14 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Publishes a checkpoint: stores it and points the chat at it. `runAgent` produces the checkpoint,
-  // for both automatic compaction and `/compact`, so there is one path here rather than two.
+  // for both automatic compaction and `/compact`, so there is one path here rather than two, and
+  // so does `compactChat` for an idle chat.
   //
   // Safe to call after the summary's model I/O even though that releases the input gate: the turn
   // that produced this checkpoint is still the chat's active agent, and every operation that could
   // invalidate it -- merge and revert -- refuses while a turn is active. So the checkpoint cannot
-  // be stale by the time it lands.
+  // be stale by the time it lands. An idle chat's compaction has no turn, so it checks the chat
+  // itself before calling this (see #compactIdleChat).
   commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void {
     this.ctx.storage.transactionSync(() => {
       let meta = this.storage.chatMeta.get(chatId);
@@ -7827,8 +7844,10 @@ class OverseerImpl implements AgentHooks {
     let finished = false;
     // Why the turn ended early, posted in the `finally`.
     let failure: {message: string, code?: string} | undefined;
-    // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer).
+    // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer), and
+    // the handle that sent it.
     let lastRequest: CachedRequest | undefined;
+    let chosenModel: ModelHandle | undefined;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -7888,7 +7907,7 @@ class OverseerImpl implements AgentHooks {
         }
 
         let sessionAffinity = await computeSessionAffinity(this.ctx.id.toString(), chatId);
-        let chosenModel = getModel(
+        chosenModel = getModel(
             this.env, aiModel.config, initiator, {
               sessionAffinity,
               userGateway: byokRouting,
@@ -7999,7 +8018,12 @@ class OverseerImpl implements AgentHooks {
               finished && !liveChat.cancelController.signal.aborted && !!meta && !!wait && !wait.denied);
 
           // Without `meta`, the chat was deleted while the turn was ending.
-          if (lastRequest && meta) this.cacheWarmer.start(chatId, lastRequest, aiModel.profile.id);
+          if (lastRequest && chosenModel && meta) {
+            let request = lastRequest, handle = chosenModel;
+            this.cacheWarmer.start(chatId, request, aiModel.profile.id, expiresAt => {
+              void this.#compactIdleChat(chatId, request, expiresAt, handle, aiModel, initiator);
+            });
+          }
 
           if (finished && meta) {
             // Classified here, past the turn's last await, so a decision made as it ended counts.
@@ -8011,6 +8035,93 @@ class OverseerImpl implements AgentHooks {
           this.#finishAgentTurn(chatId, {aiModel, initiator, initiatorUserId});
         }
       }
+    }
+  }
+
+  // Compacts an idle chat as its warming stops (see ChatCacheWarmer.start), while the turn's last
+  // request, `request`, stays cached until `expiresAt`: the summary reads the chat from the cache
+  // once, where the user's next message, should one come, would write it all again. Only a large
+  // chat whose turn ended with the model's answer is compacted, after that answer, and only by a
+  // request that reads `request`'s prompt. This is no turn: the chat logs nothing, and nothing
+  // resumes it after a restart. A turn, revert or deletion meanwhile aborts it (see #endPause), and
+  // any other change to the chat meanwhile discards its checkpoint.
+  async #compactIdleChat(chatId: number, request: CachedRequest, expiresAt: number,
+                         handle: ModelHandle, aiModel: UserAiModelRecord,
+                         initiator: AiChatAuthorInfo): Promise<void> {
+    let fields = {
+      event: "chat.cache_warm.compaction", chatId, modelId: aiModel.profile.id,
+      ownTokens: request.ownTokens, idleMs: Date.now() - request.sentAt,
+    };
+    let log = (outcome: Partial<Pick<WorkshopObservabilityFields, "costUsd" | "compactionSkip">>) =>
+      this.logger.info("idle chat compaction", {...fields, ...outcome});
+    if (!supportsAnthropicCompaction(handle.model)) return log({compactionSkip: "model"});
+    if (request.ownTokens < IDLE_COMPACTION_MIN_TOKENS) return log({compactionSkip: "small"});
+
+    let controller = new AbortController();
+    this.#idleCompactions.set(chatId, controller);
+    let refusal: "mismatch" | "late" | undefined;
+    let costUsd = 0;
+    // Charged as pings are, also when it answered without a summary.
+    let priced: ModelHandle = {
+      model: handle.model,
+      aiGatewayLogRoute: handle.aiGatewayLogRoute,
+      get lastResponse() { return handle.lastResponse; },
+      stream: (model, context, options) => {
+        let response = handle.stream(model, context, options);
+        void response.result().then(({usage}) => {
+          costUsd += usage.cost.total;
+          this.#addRequestCost(chatId, usage, handle.lastResponse?.aiGatewayLogId,
+              handle.aiGatewayLogRoute, false);
+        });
+        return response;
+      },
+    };
+    try {
+      // Read under the lock, so that no merge or revert is midway, but the request runs outside
+      // it, so that none waits for it.
+      let snapshot = await this.withChatLock<WorkshopObservabilityFields["compactionSkip"] |
+          {history: ChatHistory, compactTo: number, nextSequence: number}>(chatId, async () => {
+        let meta = this.storage.chatMeta.get(chatId);
+        if (!meta) return "changed";
+        if (meta.activeAgent || this.isPreparingChatMessage(chatId)) return "busy";
+        let history = this.loadChatHistory(chatId);
+        let last = history.chatMessages.at(-1);
+        // Not a turn that awaits a decision or failed, nor one followed by other records.
+        if (last?.type !== "message" || last.author.type !== "agent" || last.toolCalls?.length) {
+          return "unfinished";
+        }
+        return {history, compactTo: last.sequence, nextSequence: this.nextChatSequencePeek(chatId)};
+      });
+      if (typeof snapshot === "string") return log({compactionSkip: snapshot});
+      let {history, compactTo, nextSequence} = snapshot;
+
+      let checkpoint = await compactChat(this, priced, chatId, aiModel.profile, history,
+          controller.signal, initiator, aiModel.config, {compactTo, beforeSend: payload => {
+        // Either would write the whole prompt to the cache instead of reading it.
+        refusal = !request.prefixes(payload) ? "mismatch"
+            : Date.now() >= expiresAt ? "late" : undefined;
+        if (refusal) throw new Error(`The compaction would not read the cached prompt (${refusal}).`);
+      }});
+      if (!checkpoint) return log({compactionSkip: "cut"});
+      let committed = await this.withChatLock(chatId, async () => {
+        let meta = this.storage.chatMeta.get(chatId);
+        if (!meta || meta.activeAgent || this.isPreparingChatMessage(chatId) ||
+            this.nextChatSequencePeek(chatId) !== nextSequence ||
+            meta.compactedTo !== history.checkpoint?.compactedTo) {
+          return false;
+        }
+        this.commitChatCompaction(chatId, checkpoint);
+        return true;
+      });
+      log(committed ? {costUsd} : {costUsd, compactionSkip: "changed"});
+    } catch (error) {
+      if (refusal || controller.signal.aborted) {
+        return log({costUsd, compactionSkip: refusal ?? "changed"});
+      }
+      this.logger.warn("idle chat compaction failed",
+          {...fields, costUsd, compactionSkip: "failed", error});
+    } finally {
+      if (this.#idleCompactions.get(chatId) === controller) this.#idleCompactions.delete(chatId);
     }
   }
 
@@ -8490,8 +8601,8 @@ class OverseerImpl implements AgentHooks {
   //     (via the quick model when configured, else the gatekeeper's suggested name) and stamped,
   //     so history replay always sees named resources. Stamped = permanent; a crash before
   //     stamping just means naming reruns next turn.
-  async prepareChatBindings(chatId: number, chatMessages: AiChatMessage[])
-      : Promise<SeedBindingInfo[]> {
+  async prepareChatBindings(chatId: number, chatMessages: AiChatMessage[],
+                            abortSignal?: AbortSignal): Promise<SeedBindingInfo[]> {
     let context = this.getChatAgentContext(chatId);
     let dirty = false;
 
@@ -8811,7 +8922,7 @@ class OverseerImpl implements AgentHooks {
       // The work above is async, so the chat could have been deleted meanwhile. Don't resurrect
       // its per-chat storage: deleteChat is the single cleanup point (see its comment) and
       // removes chatMeta, so a missing chatMeta means the chat is gone.
-      if (this.storage.chatMeta.get(chatId)) {
+      if (this.storage.chatMeta.get(chatId) && !abortSignal?.aborted) {
         this.storage.chatContext.put(context);
       }
     }
