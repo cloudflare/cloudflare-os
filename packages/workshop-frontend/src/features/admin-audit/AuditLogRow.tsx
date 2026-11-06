@@ -63,7 +63,6 @@ const SettingChanges = ({ changes }: { changes: AdminSettingChange[] }) => (
   </ul>
 )
 
-// What a record changed, in one line: its first change, and how many more it made.
 const changesSummary = (changes: AdminSettingChange[]) => {
   if (changes.length === 0) return ''
   const more = changes.length - 1

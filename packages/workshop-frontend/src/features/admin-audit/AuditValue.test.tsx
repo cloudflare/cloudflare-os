@@ -73,6 +73,12 @@ describe('AuditValue', () => {
     expect(container.textContent).toBe('{"cut off')
   })
 
+  it('shows JSON an admin wrote as text, spaced or on several lines, as written', async () => {
+    const written = '{ "steps": [1, 2] }'
+    await render(written)
+    expect(container.textContent).toBe(written)
+  })
+
   it('announces an absent side as none', async () => {
     await render(undefined)
     expect(container.querySelector('[aria-hidden="true"]')?.textContent).toBe('—')

@@ -8,8 +8,10 @@ const CLAMP_LINES = 6
 const mayOverflow = (value: string) =>
   value.length > CLAMP_CHARACTERS || value.split('\n').length > CLAMP_LINES
 
-// A value recorded as JSON (an object or a list) laid out one field per line. Anything else,
-// excerpts and strings among them, is shown as recorded: a string such as "42" parses too.
+// A value recorded as JSON (an object or a list) laid out one field per line. A string setting is
+// recorded as itself and may hold JSON too, so only the compact form a non-string value is recorded
+// in is laid out: text an admin wrote as JSON, spaced or on several lines, is shown as written.
+// Excerpts, and scalars such as "42", are shown as recorded.
 const layOut = (value: string) => {
   let parsed: unknown
   try {
@@ -17,7 +19,8 @@ const layOut = (value: string) => {
   } catch {
     return value
   }
-  return typeof parsed === 'object' && parsed !== null ? JSON.stringify(parsed, null, 2) : value
+  if (typeof parsed !== 'object' || parsed === null || JSON.stringify(parsed) !== value) return value
+  return JSON.stringify(parsed, null, 2)
 }
 
 /**
