@@ -4,18 +4,21 @@
 // advisory-free minor or patch versions.
 //
 // Holds when every rule below passes:
-//   - Dependabot opened it and wrote every commit.
+//   - Dependabot opened it from its npm branch. Whether Dependabot wrote every commit is the
+//     gate's check (author, committer and signature, through the API), not this proof's.
 //   - It changes only package.json files, pnpm-lock.yaml, and catalog version lines in
 //     pnpm-workspace.yaml (any other workspace key is on the never-AI list), and nothing under
 //     packages/workshop-backend (the kernel).
 //   - A manifest keeps its dependency names and changes only exact, caret or tilde versions, each a
 //     minor or patch move (0.x moves count as breaking when the minor changes).
-//   - The lockfile names no package that the base did not, changes no integrity hash of a version
-//     it keeps, and touches no section beyond importers, catalogs, packages and snapshots.
+//   - The lockfile names no package that the base did not, and touches no section beyond
+//     importers, catalogs, packages and snapshots. Every package version present at both base and
+//     head keeps its integrity and resolution, read from the whole lockfile on each side.
 //   - Every version the lockfile adds was published at least `minimumReleaseAge` (read from the
 //     base pnpm-workspace.yaml) before now, by the registry's `time` map.
-//   - OSV lists no advisory for any version the lockfile adds or removes. An advisory on the old
-//     version is a security fix, and those go to a person.
+//   - OSV lists no advisory for any version the lockfile adds or removes, or that an importer or
+//     catalog entry now resolves to or stopped resolving to (advisoryTargets). An advisory on the
+//     old version is a security fix, and those go to a person.
 //
 // The preview smoke is its own artifact (`preview-smoke`, from the `preview-smoke` job in
 // automerge-evidence.yml, which builds and runs the workers locally); the gate needs both.
@@ -26,12 +29,11 @@
 import { pathToFileURL } from "node:url";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff, Hunk } from "./diff.ts";
-import { commitAuthors, fileAt, mergeBase, pullRequestDiff } from "./git.ts";
+import { fileAt, mergeBase, pullRequestDiff } from "./git.ts";
 import { asArray, asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
 import { isMinorOrPatch, rangeVersion } from "./semver.ts";
 
 export const DEPENDABOT_LOGIN = "dependabot[bot]";
-export const DEPENDABOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com";
 const NPM_BRANCH_PREFIX = "dependabot/npm_and_yarn/";
 const KERNEL = "packages/workshop-backend/";
 const DEPENDENCY_MAPS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
@@ -46,7 +48,6 @@ export interface PackageVersion {
 export interface DepsInput {
   author: string;
   headRef: string;
-  commitEmails: string[];
   files: FileDiff[];
   /** Each changed package.json at the merge base and at head. */
   manifests: { path: string; base: string | undefined; head: string | undefined }[];
@@ -55,15 +56,16 @@ export interface DepsInput {
   minimumReleaseAgeMinutes: number;
   /** Publish time of each added version, from the registry. Missing means unknown. */
   published: Record<string, string>;
-  /** OSV advisory ids for each added and removed version. Missing means not checked. */
+  /** OSV advisory ids for each of advisoryTargets. Missing means not checked. */
   advisories: Record<string, string[]>;
+  /** The whole pnpm-lock.yaml at the merge base and at head. */
+  lockfiles: { base: string; head: string };
   now: Date;
 }
 
 const LOCK_KEY = /^ {2}'?((?:@[^/@\s']+\/)?[^@\s'(/]+)@([^(':\s]+)(?:\(.*\))?'?:(?: \{\})?$/;
 const LOCK_VERSION_LINE = /^ +(?:specifier|version): \S/;
 const LOCK_INTEGRITY = /^ {4}resolution: /;
-const LOCK_INTEGRITY_VALUE = /integrity: ([^,}\s]+)/;
 const CATALOG_ENTRY = /^ {2,4}('?)([^'\s#][^':]*)\1: (\S+)$/;
 
 /** `name@version`, the key the registry and OSV results are filed under. */
@@ -109,19 +111,154 @@ export function lockfileChanges(hunks: Hunk[]): LockfileChanges {
     };
     collect(hunk.removed, removed);
     collect(hunk.added, added);
-    // A hunk that changes no key may still rewrite a resolution line, for example dropping the
-    // `tarball:` field pnpm writes for the default registry. The integrity hash must not move.
-    const keyChanged = lines.some((line) => LOCK_KEY.test(line));
-    const integrities = (source: string[]) => source.filter((line) => LOCK_INTEGRITY.test(line))
-      .map((line) => LOCK_INTEGRITY_VALUE.exec(line)?.[1] ?? line).toSorted();
-    if (!keyChanged && !jsonEqual(integrities(hunk.removed), integrities(hunk.added))) {
-      reasons.push("pnpm-lock.yaml: an integrity hash changed for a version that did not change");
-    }
   }
   for (const key of added.keys()) {
     if (removed.delete(key)) added.delete(key);
   }
   return { added: [...added.values()], removed: [...removed.values()], reasons };
+}
+
+/** One importer or catalog dependency: its name, specifier and locked version. */
+interface Pin {
+  name: string;
+  specifier: string;
+  version: string;
+}
+
+/** A lockfile, as far as the whole-file rules read it. */
+export interface LockfileView {
+  /** Each `packages:` entry's resolution, keyed by `name@version`. */
+  resolutions: Map<string, string>;
+  /** Each importer and catalog dependency, keyed by where it is declared. */
+  pins: Map<string, Pin>;
+  /** Package keys listed twice, which no rule could then read as one entry. */
+  duplicates: string[];
+}
+
+const NESTED_KEY = /^( *)('?)([^']+?)\2:(?: (.*))?$/;
+
+function unquote(value: string): string {
+  return /^'.*'$/.test(value) ? value.slice(1, -1).replaceAll("''", "'") : value;
+}
+
+/** Reads the importers, catalogs and packages sections of a whole pnpm-lock.yaml. */
+export function readLockfile(text: string): LockfileView {
+  const view: LockfileView = { resolutions: new Map(), pins: new Map(), duplicates: [] };
+  let section = "";
+  const path: string[] = [];
+  let pkg = "";
+  for (const line of text.split("\n")) {
+    if (/^\S/.test(line)) {
+      section = line.replace(/:.*$/, "");
+      continue;
+    }
+    if (section === "packages") {
+      const key = /^ {2}\S/.test(line) ? LOCK_KEY.exec(line) : null;
+      if (key) {
+        pkg = `${key[1]}@${key[2]}`;
+        if (view.resolutions.has(pkg)) view.duplicates.push(pkg);
+        view.resolutions.set(pkg, "");
+      } else if (LOCK_INTEGRITY.test(line) && pkg !== "") {
+        view.resolutions.set(pkg, line.replace(LOCK_INTEGRITY, "").trim());
+      }
+      continue;
+    }
+    if (section !== "importers" && section !== "catalogs") continue;
+    const match = NESTED_KEY.exec(line);
+    if (!match) continue;
+    // importers: <importer>/<group>/<name> at indents 2, 4, 6; catalogs: <catalog>/<name> at 2, 4.
+    const depth = match[1].length / 2 - 1;
+    const fieldDepth = section === "importers" ? 3 : 2;
+    if (depth < fieldDepth) {
+      path.length = depth;
+      path[depth] = match[3];
+      continue;
+    }
+    if (depth !== fieldDepth || path.length !== fieldDepth) continue;
+    const where = `${section}/${path.join("/")}`;
+    const pin = view.pins.get(where) ?? { name: path[fieldDepth - 1], specifier: "", version: "" };
+    if (match[3] === "specifier") pin.specifier = unquote(match[4] ?? "");
+    if (match[3] === "version") pin.version = unquote(match[4] ?? "");
+    view.pins.set(where, pin);
+  }
+  return view;
+}
+
+/** The registry version a pin locks, or undefined for a workspace link or a local file. */
+function pinnedVersion(pin: Pin): PackageVersion | undefined {
+  const version = pin.version.replace(/\(.*$/, "");
+  if (/^(link|file|workspace):/.test(version)) return undefined;
+  const alias = /^((?:@[^/@]+\/)?[^@]+)@(.+)$/.exec(version);
+  if (alias) return { name: alias[1], version: alias[2] };
+  const npm = /^npm:((?:@[^/@]+\/)?[^@]+)@/.exec(pin.specifier);
+  return { name: npm ? npm[1] : pin.name, version };
+}
+
+/**
+ * A resolution with pnpm's default-registry `tarball:` field dropped, which pnpm writes or leaves
+ * out without the package changing (#216).
+ */
+function normalResolution(key: string, resolution: string): string {
+  const at = key.lastIndexOf("@");
+  const name = key.slice(0, at);
+  const tarball = `https://registry.npmjs.org/${name}/-/${name.replace(/^@[^/]+\//, "")}-${key.slice(at + 1)}.tgz`;
+  return resolution.replace(`, tarball: ${tarball}}`, "}");
+}
+
+/** Every package version at both base and head whose resolution or integrity is not the same. */
+export function retainedPackageReasons(base: LockfileView, head: LockfileView): string[] {
+  const reasons = [...base.duplicates, ...head.duplicates].map((key) => `pnpm-lock.yaml: ${key} is listed twice`);
+  for (const [key, after] of head.resolutions) {
+    const before = base.resolutions.get(key);
+    if (before !== undefined && normalResolution(key, before) !== normalResolution(key, after)) {
+      reasons.push(`pnpm-lock.yaml: ${key} keeps its version but its resolution changed`);
+    }
+  }
+  return reasons;
+}
+
+/** The registry versions importer and catalog entries stopped and started resolving to. */
+export interface PinMoves {
+  from: PackageVersion[];
+  to: PackageVersion[];
+  reasons: string[];
+}
+
+/**
+ * What a pin locks, compared by `name@version`: a version string's peer suffix can change while the
+ * package version stays the same. A non-registry version compares as written.
+ */
+function locked(pin: Pin | undefined): string | undefined {
+  const version = pin === undefined ? undefined : pinnedVersion(pin);
+  return version === undefined ? pin?.version : versionKey(version);
+}
+
+/** Where an importer or catalog entry locks a different version at head, the version each side locks. */
+export function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
+  const from = new Map<string, PackageVersion>();
+  const to = new Map<string, PackageVersion>();
+  const reasons: string[] = [];
+  const record = (where: string, pin: Pin | undefined, into: Map<string, PackageVersion>) => {
+    if (pin === undefined) return;
+    const version = pinnedVersion(pin);
+    if (version === undefined) reasons.push(`pnpm-lock.yaml ${where}: moves to or from ${pin.version}, not a registry version`);
+    else into.set(versionKey(version), version);
+  };
+  for (const where of new Set([...base.pins.keys(), ...head.pins.keys()])) {
+    const before = base.pins.get(where);
+    const after = head.pins.get(where);
+    if (locked(before) === locked(after)) continue;
+    record(where, before, from);
+    record(where, after, to);
+  }
+  return { from: [...from.values()], to: [...to.values()], reasons };
+}
+
+/** The versions OSV must be asked about: every version added, removed, or moved to or from. */
+export function advisoryTargets(lock: LockfileChanges, moves: PinMoves): PackageVersion[] {
+  const targets = new Map<string, PackageVersion>();
+  for (const entry of [...lock.added, ...lock.removed, ...moves.from, ...moves.to]) targets.set(versionKey(entry), entry);
+  return [...targets.values()];
 }
 
 /** Every rule a pnpm-workspace.yaml diff breaks: anything but a catalog entry's version. */
@@ -205,10 +342,6 @@ export function evaluateDeps(input: DepsInput): Outcome {
     return notApplicable("not a Dependabot npm pull request", { author: input.author, head_ref: input.headRef });
   }
   const reasons: string[] = [];
-  const strangers = input.commitEmails.filter((email) => email !== DEPENDABOT_EMAIL);
-  if (input.commitEmails.length === 0 || strangers.length > 0) {
-    reasons.push(`commits not written by Dependabot: ${strangers.length} of ${input.commitEmails.length}`);
-  }
 
   let lock: LockfileChanges = { added: [], removed: [], reasons: [] };
   for (const file of input.files) {
@@ -224,6 +357,11 @@ export function evaluateDeps(input: DepsInput): Outcome {
     }
   }
   for (const { path, base, head } of input.manifests) reasons.push(...manifestReasons(path, base, head));
+  const baseLock = readLockfile(input.lockfiles.base);
+  const headLock = readLockfile(input.lockfiles.head);
+  reasons.push(...retainedPackageReasons(baseLock, headLock));
+  const moves = pinMoves(baseLock, headLock);
+  reasons.push(...moves.reasons);
 
   const removedNames = new Set(lock.removed.map((entry) => entry.name));
   const ageMs = input.minimumReleaseAgeMinutes * 60_000;
@@ -246,7 +384,7 @@ export function evaluateDeps(input: DepsInput): Outcome {
     }
   }
   const osv: JsonObject = {};
-  for (const entry of [...lock.added, ...lock.removed]) {
+  for (const entry of advisoryTargets(lock, moves)) {
     const key = versionKey(entry);
     const ids = input.advisories[key];
     if (ids === undefined) {
@@ -259,6 +397,8 @@ export function evaluateDeps(input: DepsInput): Outcome {
   return decide(reasons, {
     added: lock.added.map(versionKey),
     removed: lock.removed.map(versionKey),
+    moved_from: moves.from.map(versionKey),
+    moved_to: moves.to.map(versionKey),
     age_hours: ages,
     advisories: osv,
     minimum_release_age_minutes: input.minimumReleaseAgeMinutes,
@@ -335,12 +475,14 @@ async function main(): Promise<void> {
     const lock = lockfileChanges(lockFile?.hunks ?? []);
     const workspace = fileAt(from, "pnpm-workspace.yaml");
     const baseLock = fileAt(from, "pnpm-lock.yaml");
+    const headLock = fileAt(head, "pnpm-lock.yaml");
     if (workspace === undefined || baseLock === undefined) throw new Error("base has no pnpm workspace");
+    if (headLock === undefined) throw new Error("head has no pnpm-lock.yaml");
     const baseNames = lockfileNames(baseLock);
+    const lockfiles = { base: baseLock, head: headLock };
     return evaluateDeps({
       author: process.env.AUTOMERGE_PR_AUTHOR ?? "",
       headRef: process.env.AUTOMERGE_HEAD_REF ?? "",
-      commitEmails: commitAuthors(from, head),
       files,
       manifests: files
         .filter((file) => file.path === "package.json" || file.path.endsWith("/package.json"))
@@ -348,7 +490,8 @@ async function main(): Promise<void> {
       baseLockHasName: (name) => baseNames.has(name),
       minimumReleaseAgeMinutes: minimumReleaseAge(workspace),
       published: await fetchPublishTimes(lock.added),
-      advisories: await fetchAdvisories([...lock.added, ...lock.removed]),
+      advisories: await fetchAdvisories(advisoryTargets(lock, pinMoves(readLockfile(baseLock), readLockfile(headLock)))),
+      lockfiles,
       now: new Date(),
     });
   });

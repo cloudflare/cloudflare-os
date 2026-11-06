@@ -3,7 +3,8 @@
 // proof-tests: a test-only pull request whose tests kill at least the mutants the base tests did.
 //
 // Applies when every changed file is a test file (TEST_PATH) in one package. The proof mutates the
-// source files those tests import, with Stryker and the package's own vitest config narrowed to
+// package source those tests reach through imports and re-exports (sourceGraph), with Stryker and
+// the package's own vitest config narrowed to
 // the changed test files, once with the base version of those files and once with the head
 // version. Source is identical on both sides, so the two runs make the same mutants. It holds when
 // every mutant the base tests killed (or timed out) is still killed at head: an edit that weakens
@@ -29,7 +30,7 @@
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_MUTATION_BUDGET_MINUTES
 
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, normalize, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -107,19 +108,58 @@ export function planScope(files: FileDiff[]): TestsScope {
   return { packageDir: `packages/${[...packages][0]}`, tests: files.map((file) => file.path) };
 }
 
-const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"](\.[^'"]+)['"]|(?:^|[\s;])import\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+const SOURCE = /\.[cm]?tsx?$/;
 
-/** The repo-relative source files a test file imports through relative specifiers. */
-export function importedSources(testPath: string, text: string, exists: (path: string) => boolean): string[] {
-  const found: string[] = [];
-  for (const match of text.matchAll(IMPORT)) {
-    const specifier = match[1] ?? match[2];
-    const base = normalize(join(dirname(testPath), specifier));
-    const candidates = [base, base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx"), `${base}.ts`, `${base}.tsx`, join(base, "index.ts")];
-    const hit = candidates.find((candidate) => /\.tsx?$/.test(candidate) && exists(candidate));
-    if (hit && !TEST_PATH.test(hit) && !hit.endsWith(".d.ts")) found.push(hit);
+/** The source a set of tests reaches, and the imports that could not be followed. */
+export interface SourceGraph {
+  /** Source files to mutate (repo-relative), sorted. */
+  sources: string[];
+  problems: string[];
+}
+
+/**
+ * Every source file `roots` reach through relative imports and re-exports, followed transitively
+ * within `packageDir`: a test that imports an index which re-exports another module exercises that
+ * module too. Bare specifiers (other packages, node_modules) are not followed. A relative specifier
+ * that resolves to no file, or to a file outside the package, is a problem, since its mutants would
+ * go unmade. `read` gives a file's text, or undefined when there is no such file.
+ */
+export function sourceGraph(
+  roots: { path: string; text: string }[], packageDir: string, read: (path: string) => string | undefined,
+): SourceGraph {
+  const sources = new Set<string>();
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  const queue = [...roots];
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    for (const match of next.text.matchAll(IMPORT)) {
+      const specifier = match[1] ?? match[2] ?? match[3];
+      const base = normalize(join(dirname(next.path), specifier));
+      const candidates = [base, base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx"), `${base}.ts`, `${base}.tsx`,
+        join(base, "index.ts"), join(base, "index.tsx")];
+      const hit = candidates.map((path) => ({ path, text: read(path) })).find((file) => file.text !== undefined);
+      if (hit?.text === undefined) {
+        problems.push(`${next.path}: cannot resolve ${specifier}`);
+        continue;
+      }
+      if (relative(packageDir, hit.path).startsWith("..")) {
+        problems.push(`${next.path}: imports ${hit.path}, outside ${packageDir}`);
+        continue;
+      }
+      // Data files (JSON, text, styles) and declarations hold no mutants and import nothing.
+      if (!SOURCE.test(hit.path) || hit.path.endsWith(".d.ts") || seen.has(hit.path)) continue;
+      seen.add(hit.path);
+      if (!TEST_PATH.test(hit.path)) sources.add(hit.path);
+      queue.push({ path: hit.path, text: hit.text });
+    }
   }
-  return found;
+  return { sources: [...sources].toSorted(), problems };
+}
+
+/** A file's text, or undefined when the path is not a file. */
+function readFile(path: string): string | undefined {
+  return existsSync(path) && statSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
 }
 
 /** A step was still running when the proof's budget ran out. */
@@ -256,8 +296,6 @@ async function runSide(
 
 /** Runs both sides of the proof, base tests and head tests, against the same source. */
 async function prove(plan: TestsPlan, tests: string[], from: string, deadline: number, details: JsonObject): Promise<Outcome> {
-  // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
-  await runBounded("pnpm", ["build"], ".", deadline);
   let config: string;
   try {
     config = await configFor(plan.packageDir, plan.headTests, deadline);
@@ -299,22 +337,28 @@ async function main(): Promise<void> {
 
     const baseTests = scope.tests.filter((path) => fileAt(from, path) !== undefined);
     const headTests = scope.tests.filter((path) => existsSync(path));
-    const mutate = new Set<string>();
-    for (const path of headTests) for (const source of importedSources(path, readFileSync(path, "utf8"), existsSync)) mutate.add(source);
-    for (const path of baseTests) {
-      for (const source of importedSources(path, fileAt(from, path) ?? "", existsSync)) mutate.add(source);
-    }
-    const plan: TestsPlan = { packageDir: scope.packageDir, baseTests, headTests, mutate: [...mutate].toSorted() };
-    const details = { package: plan.packageDir, tests: scope.tests, mutate: plan.mutate, budget_minutes: minutes };
+    const scoped = { package: scope.packageDir, tests: scope.tests, budget_minutes: minutes };
     const support = editedSupportFiles(baseTests);
     if (support.length > 0) {
-      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, details);
+      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, scoped);
     }
-    if (plan.mutate.length === 0) return errored("the changed tests import no source file to mutate", details);
     try {
+      // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
+      // Built before the imports are followed, so generated modules resolve.
+      await runBounded("pnpm", ["build"], ".", deadline);
+      const graph = sourceGraph([
+        ...headTests.map((path) => ({ path, text: readFileSync(path, "utf8") })),
+        ...baseTests.map((path) => ({ path, text: fileAt(from, path) ?? "" })),
+      ], scope.packageDir, readFile);
+      const plan: TestsPlan = { packageDir: scope.packageDir, baseTests, headTests, mutate: graph.sources };
+      const details = { ...scoped, mutate: plan.mutate };
+      if (graph.problems.length > 0) {
+        return errored(`cannot follow every import of the changed tests: ${graph.problems.slice(0, 5).join("; ")}`, details);
+      }
+      if (plan.mutate.length === 0) return errored("the changed tests import no source file to mutate", details);
       return await prove(plan, scope.tests, from, deadline, details);
     } catch (error) {
-      if (error instanceof OverBudget) return errored(`ran past the ${minutes}-minute budget: ${error.message}`, details);
+      if (error instanceof OverBudget) return errored(`ran past the ${minutes}-minute budget: ${error.message}`, scoped);
       throw error;
     }
   });

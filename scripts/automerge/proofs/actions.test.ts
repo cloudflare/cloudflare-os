@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { evaluateActions, tagTargetsFromLsRemote, type ActionsInput } from "./actions.ts";
-import { DEPENDABOT_EMAIL, DEPENDABOT_LOGIN } from "./deps.ts";
+import { DEPENDABOT_LOGIN } from "./deps.ts";
 import { parseDiff } from "./diff.ts";
 
 // Real Dependabot github-actions pull requests merged into main (`git diff -U0` of the squash
@@ -26,7 +26,6 @@ function input(diff: string, baseWorkflows: Record<string, string>): ActionsInpu
   return {
     author: DEPENDABOT_LOGIN,
     headRef: "dependabot/github_actions/github-actions-recorded",
-    commitEmails: [DEPENDABOT_EMAIL],
     files: parseDiff(testdata(diff)),
     tagTargets: {
       "actions/upload-artifact@v7.0.2":

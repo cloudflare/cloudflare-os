@@ -4,9 +4,6 @@
   "head": "e82afa360804c3716506a580b2b54b05db130343",
   "recorded": "2026-11-02T17:22:39.806Z",
   "now": "2026-10-16T12:41:56-05:00",
-  "commit_emails": [
-    "49699333+dependabot[bot]@users.noreply.github.com"
-  ],
   "minimum_release_age_minutes": 1440,
   "manifests": [
     {

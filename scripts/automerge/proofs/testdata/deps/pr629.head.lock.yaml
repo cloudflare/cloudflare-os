@@ -1,0 +1,18 @@
+lockfileVersion: '9.0'
+
+importers:
+
+  packages/gatekeeper-confluence:
+    dependencies:
+      node-html-parser:
+        specifier: ^9.0.4
+        version: 9.0.4
+
+packages:
+
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
+    engines: {node: '>=20.19.0'}
+
+  node-html-parser@9.0.4:
+    resolution: {integrity: sha512-reUSrZkF1rO7hEYe5mJwtbVcQ6mB5QrViCZH6Wv+iz3er/PA9Q50gol15dMLQRDfdli4VzqPMPR24HNRFgVKFw==}
