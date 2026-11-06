@@ -37,7 +37,8 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
 Methods that take a user accept an email or a PagerDuty ID. `getMetadata().you` is the connected
 user, so "my incidents" is `listIncidents({ assignedToMe: true })`.
 
-Event hooks are not available yet: `subscribe()` throws on every binding.
+Account, Team, Service and Incident bindings can also `subscribe()` a gadget's hook to incident
+events; see [Event hooks](#event-hooks).
 
 ## Actions
 
@@ -88,12 +89,64 @@ Export `PAGERDUTY_CLIENT_ID` and `PAGERDUTY_CLIENT_SECRET` in your shell or the 
 `pnpm dev-server` maps them into the worker's `CLIENT_ID` and `CLIENT_SECRET`. Register
 `http://localhost:8787/gatekeeper/pagerduty/oauth` as a redirect URL.
 
+## Event hooks
+
+A gadget subscribes through an account, team, service or incident binding (or one opened from
+it), for some or all of these events: triggered, acknowledged, unacknowledged, resolved, reopened,
+reassigned, escalated, delegated, priority updated, note added, responder added and status update
+published. PagerDuty delivers them through one account-wide webhook that an admin sets up by hand.
+Until the deployment has its signing secret, `subscribe()` throws "PagerDuty hooks are not
+configured on this deployment." and everything else works as before.
+
+1. Sign in as a Manager, Global Admin or Account Owner, and open **Integrations > Generic Webhooks
+   (v3)**. Select **New Webhook**.
+2. Set **Webhook URL** to `$PUBLIC_BASE_URL/gatekeeper/pagerduty/webhook`, **Scope Type** to
+   **Account**, and give it a description, e.g. "Gadgets".
+3. Under **Event Subscription**, tick exactly these: `incident.acknowledged`,
+   `incident.annotated`, `incident.delegated`, `incident.escalated`, `incident.priority_updated`,
+   `incident.reassigned`, `incident.reopened`, `incident.resolved`, `incident.responder.added`,
+   `incident.status_update_published`, `incident.triggered` and `incident.unacknowledged`. Others
+   are accepted and ignored.
+4. Select **Add Webhook**, and copy the signing secret PagerDuty then shows. It is shown only once.
+5. Set it as this worker's `PAGERDUTY_WEBHOOK_SECRET` secret, e.g. `wrangler secret put
+   PAGERDUTY_WEBHOOK_SECRET` in this package, or in the worker's settings in the Cloudflare
+   dashboard. It is not a deploy-wizard input, so a deployment without hooks installs as before.
+6. If the deployment sits behind Cloudflare Access, add a bypass for
+   `/gatekeeper/pagerduty/webhook`; the worker accepts only deliveries signed with the secret.
+
+The worker checks each delivery's `X-PagerDuty-Signature` (any of several, so the secret can be
+rotated), ignores an event it has already received or one more than a day old, and answers at
+once. Each enabled hook whose binding could hold the incident is then called in the background: the
+incident is read again as the hook's owner, and the event is dropped if they can't see it or it lies
+outside the binding (another team's or service's incident). A hook's event carries the incident's
+summary as it is at delivery and a capability to read and change it; its observation reports the
+binding's resources plus the incident and its service.
+
+Limits:
+
+- **Events can be missed.** A hook that is disabled, or that fails eight attempts, misses them;
+  so does everything PagerDuty sent while the webhook was misconfigured. A gadget that must see
+  every incident should also list them now and then.
+- **PagerDuty disables the webhook for 24 hours after three refused deliveries in a row**, as
+  when the secret is wrong (each is refused with 401) or Cloudflare Access turns PagerDuty away,
+  and drops what it had queued. It shows as **Needs Attention** in PagerDuty; fix the cause and
+  enable it there again.
+- **Order is not kept**, and an event may arrive more than once; hooks key their work on the
+  event's `id`.
+- **Every delivery costs a REST read** as the hook's owner, against their rate limit.
+
+For local development, PagerDuty can't reach `localhost`: run a tunnel to the dev server (e.g.
+`cloudflared tunnel --url http://localhost:8787`), point a webhook at
+`https://<tunnel host>/gatekeeper/pagerduty/webhook`, and set `PAGERDUTY_WEBHOOK_SECRET` to its
+secret in your shell or the root `.dev.vars`; `pnpm dev-server` passes it to the worker.
+
 ## Sharing a workspace
 
 Every read reports what it disclosed as subresource IDs, qualified by region and account, such as
 `region/us/account/PABC123/service/PXYZ789`: the account, plus the bound team, service, incident or
 schedule, plus every service, schedule or escalation policy a filter named or a page contained.
-An incident read also reports its service. Empty pages and cached reads report the same.
+An incident read, and a hook's event, also reports the incident and its service. Empty pages and
+cached reads report the same.
 
 A collaborator may observe a read only if their own PagerDuty connection can see every one of
 those, checked with their login: the account by being the same account in the same region, with a

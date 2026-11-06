@@ -925,7 +925,8 @@
         {
           "new_sqlite_classes": [
             "UserAccount",
-            "PagerDutyGatekeeperImpl"
+            "PagerDutyGatekeeperImpl",
+            "PagerDutyHookDriver"
           ],
           "tag": "v0"
         }

@@ -1,8 +1,8 @@
-// The PagerDuty gatekeeper's main module: the HTTP entrypoint (connect link and OAuth callback), the
-// vendor and per-account entrypoints, the account Durable Object that holds the OAuth grant, and
-// the observer verifier. The per-binding gatekeeper Durable Object and its sessions live in
-// pagerduty-gatekeeper.ts and pagerduty-sessions.ts, re-exported here so wrangler finds every class
-// on the main module.
+// The PagerDuty gatekeeper's main module: the HTTP entrypoint (connect link, OAuth callback and
+// webhook), the vendor and per-account entrypoints, the account Durable Object that holds the OAuth
+// grant, and the observer verifier. The per-binding gatekeeper Durable Object, its sessions and its
+// hooks live in pagerduty-gatekeeper.ts, pagerduty-sessions.ts and pagerduty-hooks.ts, re-exported
+// here so wrangler finds every class on the main module.
 //
 // A connection is a Scoped OAuth user grant: PagerDuty access tokens live a day and refresh tokens
 // rotate, so `UserAccount` keeps the grant in the kit's `CredentialCoordinator`. The token
@@ -77,6 +77,7 @@ import {
   type Tenant,
 } from "./pagerduty-env";
 import { PagerDutyConfiguratorUI } from "./pagerduty-configurator";
+import { handleWebhook } from "./pagerduty-hooks";
 import type { WireUser } from "./pagerduty-normalize";
 import { parseResourceUrl, sameTenant } from "./pagerduty-urls";
 import { obsContext } from "./observability";
@@ -85,6 +86,7 @@ import TYPES_CODE from "./types.txt";
 import CONFIGURATOR_HTML from "./generated/pagerduty-configurator-ui.txt";
 
 export { PagerDutyGatekeeperImpl } from "./pagerduty-gatekeeper";
+export { PagerDutyHookController, PagerDutyHookDeliveryImpl, PagerDutyHookDriver } from "./pagerduty-hooks";
 export {
   PagerDutyAccountImpl, PagerDutyIncidentImpl, PagerDutyScheduleImpl, PagerDutyServiceImpl, PagerDutyTeamImpl,
 } from "./pagerduty-sessions";
@@ -268,6 +270,8 @@ export default {
       if ("refused" in result) return htmlResponse(errorPageHtml(result.refused.title, result.refused.detail), 409);
       return htmlResponse(connectHandoffPageHtml(result.handoff));
     }
+
+    if (relPath === "/webhook" && req.method === "POST") return await handleWebhook(req, env, ctx.exports);
 
     return new Response("Not Found", { status: 404 });
   },

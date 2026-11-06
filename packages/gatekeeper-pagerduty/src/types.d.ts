@@ -329,7 +329,7 @@ export type PagerDutyEvent = {
   occurredAt: string;
   /** Who caused it, or `null` when PagerDuty did (an escalation timeout, an integration). */
   actor: (PagerDutyUserRef & { isYou: boolean }) | null;
-  /** The incident as of the event. */
+  /** The incident as it is when the event is delivered, which may be after later changes. */
   info: PagerDutyIncidentSummary;
   /** The incident, to read and change. */
   incident: PagerDutyIncident;

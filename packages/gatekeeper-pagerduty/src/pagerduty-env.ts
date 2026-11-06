@@ -8,7 +8,7 @@ import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 /** The vendor id: the router's `/gatekeeper/pagerduty/` path segment, and the log attribution. */
 export const VENDOR_ID = "pagerduty";
 
-/** The Worker's environment. The OAuth client is required; everything else has a default. */
+/** The Worker's environment. The OAuth client is required; everything else is optional. */
 export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   /** This Worker's public base URL, ending in `/gatekeeper/pagerduty`. */
   BASE_URL?: string;
@@ -16,6 +16,11 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   CLIENT_ID?: string;
   /** The Scoped OAuth app's client secret. */
   CLIENT_SECRET?: string;
+  /**
+   * The signing secret of the account's Generic Webhook (v3) subscription, which delivers to
+   * `{BASE_URL}/webhook`. Hooks are refused while it is unset.
+   */
+  PAGERDUTY_WEBHOOK_SECRET?: string;
 };
 
 /** The browser-facing authorization page, shared by every region. */
