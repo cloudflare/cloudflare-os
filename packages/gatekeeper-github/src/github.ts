@@ -2033,6 +2033,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   #servedSimulatedCommitIds = new Set<GitOid>();
 
+  /**
+   * Whether the bound repository is public, as its owner's account last found it (see
+   * #reportsPublicRepo). Each answer is dated from when its request started and overlapping checks
+   * share one request, so a late answer can't outlast a newer one. Visibility is the repository's
+   * own, whoever asks, so the cache needs no partition by connection.
+   */
+  readonly #repoVisibility = new KvTtlCache(this.ctx.storage.kv, () => "repo",
+    { name: "repo-visibility" });
+
   constructor(ctx: DurableObjectState<GitHubGatekeeperImplProps>, env: Env) {
     super(ctx, env);
     this.#discardNameAddressedCaches();
@@ -6506,25 +6515,26 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /**
    * Whether `repoIds` name only the repository this binding is pinned to, and its owner's account
-   * finds it public now, reusing an answer for up to REPO_VISIBILITY_TTL_MS. Visibility is the
-   * repository's own, whoever's token reads it, and every read through the binding uses the owner's
-   * token, so that token has just worked whenever a read is checked. Anything else -- no pin, another
-   * repository, a private or internal one, or an answer that says nothing either way (expired owner
-   * credentials, a rate limit, an outage) -- is false, leaving observers to their own accounts.
-   * Never pins: the pin is taken by the first read, before any read can be checked.
+   * finds it public now, reusing an answer for up to REPO_VISIBILITY_TTL_MS from when its request
+   * started. Visibility is the repository's own, whoever's token reads it, and every read through
+   * the binding uses the owner's token, so that token has just worked whenever a read is checked.
+   * Anything else -- no pin, another repository, a private or internal one, or an answer that says
+   * nothing either way (expired owner credentials, a rate limit, an outage), which is not cached --
+   * is false, leaving observers to their own accounts. Never pins: the pin is taken by the first
+   * read, before any read can be checked.
    */
   async #reportsPublicRepo(repoIds: number[]): Promise<boolean> {
     const id = this.ctx.storage.kv.get<number>("repoId");
     if (id === undefined || repoIds.length === 0 || !repoIds.every(repoId => repoId === id)) return false;
     try {
-      return await this.#loadCachedWithEtag(this.#cacheKey("repo-visibility", String(id)),
-        REPO_VISIBILITY_TTL_MS, async etag => {
-          const result = await withAccountApi(this.#userAccount(),
-            api => api.getRepoByIdConditional(id, { ifNoneMatch: etag }), { replayable: true });
-          if (result.status === 304) return result;
-          if (result.data.id !== id) throw new Error(`GitHub answered for repository ${id} with another.`);
-          return { ...result, data: result.data.visibility === "public" && result.data.private === false };
-        });
+      return await this.#repoVisibility.cached(String(id), REPO_VISIBILITY_TTL_MS, async () => {
+        const result = await withAccountApi(this.#userAccount(),
+          api => api.getRepoByIdConditional(id), { replayable: true });
+        if (result.status !== 200 || result.data.id !== id) {
+          throw new Error(`GitHub answered for repository ${id} with another.`);
+        }
+        return result.data.visibility === "public" && result.data.private === false;
+      });
     } catch (error) {
       logger.warn("could not learn whether the GitHub repository is public; checking observers' accounts",
         { event: "observers.public_check.failed", error });

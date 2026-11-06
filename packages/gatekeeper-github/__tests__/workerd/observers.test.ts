@@ -77,8 +77,19 @@ class FakeGitHub {
   /** Runs as a git request reaches GitHub, before it is answered. */
   onGit: (() => void) | undefined;
 
+  /**
+   * Runs once the answer to a request made with `token` is computed and before it is returned, as
+   * the time an answer spends in flight: what it changes isn't reflected in that answer.
+   */
+  onAnswered: ((token: string) => void) | undefined;
+
   constructor() {
-    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => this.#handle(new Request(input, init)));
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const response = this.#handle(request);
+      this.onAnswered?.(request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
+      return response;
+    });
   }
 
   /** The requests made with `token`, by path. */
@@ -562,6 +573,29 @@ describe("verifyObserverAccess", () => {
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
       expect(github.requestsWith("owner-token")).toHaveLength(2);
       expect(github.requestsWith("bob-token")).toEqual([`/repositories/${REPO_ID}`]);
+    });
+
+    it("dates the owner's answer from when it asked, so a late public answer can't outlast it", async () => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      const bob = await account("bob-token");
+      const gk = await binding({ pinned: true });
+      const start = Date.now();
+      // GitHub answers public, then the repository goes private while the answer is in flight, and
+      // the answer arrives 20 seconds after it was asked for.
+      github.onAnswered = token => {
+        if (token !== "owner-token") return;
+        github.onAnswered = undefined;
+        github.publicRepos.delete(REPO_ID);
+        vi.setSystemTime(start + 20_000);
+      };
+
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
+
+      // Already older than 15 seconds when it landed, it isn't reused: asked again, the owner finds
+      // the repository private, and bob's own account denies him.
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
+      expect(github.requestsWith("owner-token")).toHaveLength(2);
     });
 
     it.each([

@@ -190,7 +190,8 @@ Implemented TTL cache families:
   search or fetch, unless the search's answer is a 304 or a cached page, which the name it was
   cached under already scopes; a push, which GitHub has applied once it answers, is not checked
   again
-- `cache:repo-visibility:<repoId>` -> whether the binding's owner found the pinned repository
+@:entry (with `cache:@repo-visibility:generation`, a
+  `KvTtlCache` named `repo-visibility`)fromwhenrequest started- `cache:repo-visibility:<repoId>` -> whether the binding's owner found the pinned repository
   public (`visibility: "public"`, not `private`), reused by `verifyObserverAccess` for up to 15
   seconds and then revalidated with its ETag; an answer that says nothing is not stored
 - `cache:list-pulls-v2:<encodedQuery>:p<page>` -> `GitHubPullRequestSummary[]`, unfiltered (v2: v1
