@@ -4,9 +4,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type { PagerDutyIncidentSummary } from "../../src/types";
+import type { PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SERVICE, PRIORITY, SCHEDULE, SERVICE, failure, hooks, seedAccount, sub, unwrap,
+  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, PRIORITY, SCHEDULE, SERVICE, TEAM, failure, hooks, seedAccount, sub,
+  unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -243,6 +244,14 @@ describe("simulation", () => {
     expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: t.incident.id }]]);
   });
 
+  it("lists and reports, in a team binding, an incident a pending action opens on one of its services", async () => {
+    const t = await setup({ resourceKind: "team", id: TEAM.id });
+    await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
+    const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
+    expect([opened.id, opened.team?.id, existing.id]).toEqual(["~1", TEAM.id, t.incident.id]);
+    expect(await t.reported()).toEqual([new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)])]);
+  });
+
   it("shows pending overrides in a schedule's overrides and shifts, and hides one pending removal", async () => {
     const t = await setup(schedule);
     t.pd.overrides.set(SCHEDULE.id, [{ id: "POVR001", start: START, end: END, user: { id: ALICE.id, summary: "Alice" } }]);
@@ -257,5 +266,32 @@ describe("simulation", () => {
       { user: { id: BOB.id, name: "Bob" }, start: START, end: END },
       { user: { id: ALICE.id, name: "Alice" }, start: END, end: "2026-11-11T00:00:00.000Z" },
     ]);
+  });
+
+  it("shows an override already under way ending when its removal was staged, and tells the approver", async () => {
+    const t = await setup(schedule);
+    const hour = 60 * 60_000;
+    const start = new Date(Date.now() - hour).toISOString();
+    const end = new Date(Date.now() + hour).toISOString();
+    t.pd.overrides.set(SCHEDULE.id, [{ id: "POVR001", start, end, user: { id: BOB.id, summary: "Bob" } }]);
+    const staging = Date.now();
+    await t.run([["deleteOverride", "POVR001"]]);
+    const window = { since: new Date(Date.now() - 2 * hour).toISOString() };
+    const [override] = await t.run([["listOverrides", window]]) as PagerDutyOverride[];
+    expect(override).toMatchObject({ id: "POVR001", start });
+    expect(Date.parse(override.end)).toBeGreaterThanOrEqual(staging);
+    expect(Date.parse(override.end)).toBeLessThan(Date.parse(end));
+    const [{ description }] = await t.submitted();
+    expect(description.description).toMatch(/or ends it now if it has already begun/);
+  });
+
+  it("removes an override another action is adding only through the schedule it is adding it to", async () => {
+    const t = await setup();
+    expect(await t.run([["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, START, END]])).toBe("~1");
+    expect(await t.attempt([["getSchedule", OTHER_SCHEDULE.id], ["deleteOverride", "~1"]]))
+      .toMatch(/isn't one this gadget is adding to this schedule/);
+    await t.run([["getSchedule", SCHEDULE.id], ["deleteOverride", "~1"]]);
+    expect((await t.submitted()).map(({ description }) => description.actionKind?.tag)).toEqual(["manage-overrides", "delete-overrides"]);
+    expect(await t.run([["getSchedule", SCHEDULE.id], ["listOverrides", { since: START, until: END }]])).toEqual([]);
   });
 });

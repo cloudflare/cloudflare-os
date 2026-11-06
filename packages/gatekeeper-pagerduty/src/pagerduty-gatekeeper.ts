@@ -2,8 +2,9 @@
 // whether to the whole account, a team, a service, an incident or a schedule. It owns the
 // binding's action journal, the temporary IDs of incidents and overrides not yet created, and a
 // read cache partitioned by connection. It pins the user and account the connection belongs to,
-// and mints the capabilities gadgets hold (pagerduty-sessions.ts) and the delivery stubs of their
-// hooks (pagerduty-hooks.ts). Every PagerDuty request runs through the account's credential source.
+// and mints the capabilities gadgets hold (the pagerduty-*session*.ts modules) and the delivery
+// stubs of their hooks (pagerduty-hooks.ts). Every PagerDuty request runs through the account's
+// credential source.
 
 import { DurableObject, restore, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -27,10 +28,10 @@ import {
   HOOKS_NOT_CONFIGURED, PagerDutyHookDeliveryImpl, driverName, hookDescription, hooksConfigured, watchedKinds,
   type PagerDutyHookDelivery,
 } from "./pagerduty-hooks";
-import {
-  PagerDutyAccountImpl, PagerDutyIncidentImpl, PagerDutyScheduleImpl, PagerDutyServiceImpl, PagerDutyTeamImpl,
-  SessionContext, type HookScope, type ObjectRef, type SessionHost,
-} from "./pagerduty-sessions";
+import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
+import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
+import { SessionContext, type HookScope, type ObjectRef, type SessionHost } from "./pagerduty-session-shared";
+import { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
 import { resourceUrl, sameTenant } from "./pagerduty-urls";
 import type { PagerDutyAccount, PagerDutyIncident, PagerDutySchedule, PagerDutyService, PagerDutyTeam } from "./types";
 import TYPES_CODE from "./types.txt";
@@ -55,13 +56,17 @@ const BINDINGS: Record<ResourceKind, { noun: string; bindingName: string; tsType
 };
 
 const SCHEDULE_TAGS = ["manage-overrides", "delete-overrides"];
+const notSchedule = (tag: string) => !SCHEDULE_TAGS.includes(tag);
 
-/** Which action tags each kind of binding can submit, for the auto-approval catalog. */
+/**
+ * Which action tags each kind of binding can submit, for the auto-approval catalog. Opening an
+ * incident, which an incident binding can't, is never auto-approvable, so it needn't be excluded.
+ */
 const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
   account: () => true,
   team: () => true,
-  service: tag => !SCHEDULE_TAGS.includes(tag),
-  incident: tag => !SCHEDULE_TAGS.includes(tag) && tag !== "create-incidents",
+  service: notSchedule,
+  incident: notSchedule,
   schedule: tag => SCHEDULE_TAGS.includes(tag),
 };
 
@@ -178,7 +183,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     const record = this.#journal.get(actionId);
     const provided = record ? providedRefs(record.action) : [];
     const builtOn = provided.length > 0 && this.#journal.listUndecided().some(({ id, action }) =>
-      id !== actionId && dependedRefs(action).some(ref => provided.includes(ref)));
+      id !== actionId && dependedRefs(action.payload).some(ref => provided.includes(ref)));
     await this.#actions.reject(actionId);
     return builtOn ? { restart: true } : undefined;
   }

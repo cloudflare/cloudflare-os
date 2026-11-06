@@ -125,7 +125,7 @@ describe("an account binding", () => {
 describe("a team binding", () => {
   const team = { resourceKind: "team", id: TEAM.id } as const;
 
-  it("covers what the team owns with the team, and its incidents' services per page", async () => {
+  it("reports each service and schedule it lists besides the team, and its incidents' services per page", async () => {
     const t = await setup(team);
     t.pd.incident(SERVICE);
     await t.run([["getMetadata"]]);
@@ -134,7 +134,12 @@ describe("a team binding", () => {
     await t.run([["listSchedules"]], 5);
     await t.run([["listIncidents"]], 5);
     const scope = ids(sub("team", TEAM.id));
-    expect(await t.reported()).toEqual([scope, scope, scope, scope, ids(sub("team", TEAM.id), sub("service", SERVICE.id))]);
+    expect(await t.reported()).toEqual([
+      scope, scope,
+      ids(sub("team", TEAM.id), sub("service", SERVICE.id)),
+      ids(sub("team", TEAM.id), sub("schedule", SCHEDULE.id)),
+      ids(sub("team", TEAM.id), sub("service", SERVICE.id)),
+    ]);
     expect(t.pd.matching("GET", /^\/incidents\?/)[0].url.searchParams.getAll("team_ids[]")).toEqual([TEAM.id]);
   });
 
@@ -209,6 +214,18 @@ describe("an incident binding", () => {
     const t = await setup({ resourceKind: "incident", id: String(incident.incident_number) }, pd);
     expect(await t.run([["getDetails"]])).toMatchObject({ id: incident.id });
     expect(await t.reported()).toEqual([ids(sub("incident", incident.id), sub("service", SERVICE.id))]);
+  });
+
+  it("reads the timeline a page at a time, oldest first, rather than the whole log up front", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE);
+    pd.logEntries.set(incident.id, Array.from({ length: 300 }, (_, n) => ({
+      id: `PLOG${n}`, type: "notify_log_entry", summary: `Entry ${n}`, created_at: new Date(Date.UTC(2026, 10, 1, 0, n)).toISOString(),
+    })));
+    const t = await setup({ resourceKind: "incident", id: incident.id }, pd);
+    const [first, second] = await t.run([["getTimeline", { pageSize: 10 }]], 2) as { id: string }[][];
+    expect([...first, ...second].map(entry => entry.id)).toEqual(Array.from({ length: 20 }, (_, n) => `PLOG${n}`));
+    expect(pd.matching("GET", /\/log_entries\?/)).toHaveLength(1);
   });
 });
 

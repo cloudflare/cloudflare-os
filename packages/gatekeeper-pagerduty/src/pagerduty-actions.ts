@@ -1,7 +1,7 @@
 // What a gadget can change in PagerDuty, as kit actions: each kind's approval text, auto-approval
-// verdict and REST call. Sessions validate and stage them (pagerduty-sessions.ts); nothing here runs
-// until a user approves. Incidents and overrides a pending action creates have temporary `~N` IDs,
-// which later actions can name and which apply resolves to PagerDuty's.
+// verdict and REST call. Sessions validate and stage them (the pagerduty-*session*.ts modules);
+// nothing here runs until a user approves. Incidents and overrides a pending action creates have
+// temporary `~N` IDs, which later actions can name and which apply resolves to PagerDuty's.
 
 import {
   ActionApplyError, ActionOutcomeUnknownError, defineActions, type ActionPresentation, type TaggedAction,
@@ -69,7 +69,8 @@ export type PagerDutyActions = {
   createOverride: NewOverride;
   /** As `createOverride`, for an override putting someone other than the connected user on call. */
   createOverrideForOthers: NewOverride;
-  deleteOverride: { scheduleId: string; overrideId: string };
+  /** `stagedAt` is when a simulated read says an override already under way ended. */
+  deleteOverride: { scheduleId: string; overrideId: string; stagedAt: string };
 };
 
 export type PagerDutyAction = TaggedAction<PagerDutyActions>;
@@ -91,9 +92,14 @@ export const isProvisional = (id: string): boolean => id.startsWith("~");
 const incidentId = (host: PagerDutyActionHost, target: IncidentTarget): string =>
   host.refs.requireResolved(target.id, { expectedKind: "incident" });
 
-/** The temporary references a payload depends on, for `dependsOn`. */
-const dependsOnIncident = ({ incident }: { incident: IncidentTarget }): string[] =>
-  isProvisional(incident.id) ? [incident.id] : [];
+/**
+ * The temporary reference a payload builds on, if any: its incident's, or the override it removes.
+ * Every definition's `dependsOn`.
+ */
+export function dependedRefs(payload: PagerDutyActions[keyof PagerDutyActions]): string[] {
+  const ref = "incident" in payload ? payload.incident.id : "overrideId" in payload ? payload.overrideId : undefined;
+  return ref !== undefined && isProvisional(ref) ? [ref] : [];
+}
 
 /** How the approval text names an incident: a link once it exists. */
 function incidentLabel(host: PagerDutyActionHost, target: IncidentTarget): string {
@@ -190,7 +196,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: ACKNOWLEDGE,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Acknowledge a PagerDuty incident",
       buildDescription(`Acknowledges ${incidentLabel(host, payload.incident)} as you, which stops its escalation.`)),
     apply: (payload, host) => updateIncident(host, payload.incident, { status: "acknowledged" }),
@@ -199,7 +205,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: ACKNOWLEDGE,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Snooze a PagerDuty incident",
       buildDescription(`Snoozes ${incidentLabel(host, payload.incident)}: it triggers again after the time below ` +
         "unless it is resolved first.").inline("Seconds", String(payload.seconds))),
@@ -212,7 +218,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: RESOLVE,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => {
       const description = buildDescription(`Resolves ${incidentLabel(host, payload.incident)}.`);
       if (payload.resolution !== undefined) description.verbatim("Resolution note", payload.resolution);
@@ -225,7 +231,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: EDIT,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Set a PagerDuty incident's priority",
       buildDescription(`Sets the priority of ${incidentLabel(host, payload.incident)}.`)
         .inline("Priority", payload.priority?.name ?? "(none)")),
@@ -235,7 +241,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: EDIT,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Retitle a PagerDuty incident",
       buildDescription(`Replaces the title of ${incidentLabel(host, payload.incident)}.`).inline("Title", payload.title)),
     apply: (payload, host) => updateIncident(host, payload.incident, { title: payload.title }),
@@ -244,7 +250,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: EDIT,
     autoApprovable: true,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present(`Set a PagerDuty incident's urgency to ${payload.urgency}`,
       buildDescription(`Sets the urgency of ${incidentLabel(host, payload.incident)} to ${payload.urgency}` +
         (payload.urgency === "high" ? ", which may notify its assignees again." : "."))),
@@ -255,7 +261,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Add a note to a PagerDuty incident",
       buildDescription(`Adds a note to ${incidentLabel(host, payload.incident)}.`).verbatim("Note", payload.content)),
     apply: async (payload, host) => {
@@ -268,7 +274,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     // Notifies the new assignees, who may be outside the bound resource (rule 2).
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => {
       const description = buildDescription(`Reassigns ${incidentLabel(host, payload.incident)}, replacing its ` +
         "assignees and notifying the new ones.");
@@ -285,7 +291,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     // Notifies whoever the level names, who may be outside the bound resource (rule 2).
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Escalate a PagerDuty incident",
       buildDescription(`Escalates ${incidentLabel(host, payload.incident)} to this level of its escalation ` +
         "policy, notifying whoever is on call there.").inline("Level", String(payload.level))),
@@ -297,7 +303,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => {
       const description = buildDescription(`Asks more people to help with ${incidentLabel(host, payload.incident)}, ` +
         "paging each with the message below.").verbatim("Message", payload.message);
@@ -324,7 +330,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    dependsOn: dependsOnIncident,
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Post a PagerDuty status update",
       buildDescription(`Publishes a status update on ${incidentLabel(host, payload.incident)}, which PagerDuty ` +
         "sends to its subscribers and stakeholders.").verbatim("Message", payload.message)),
@@ -374,12 +380,13 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
   createOverrideForOthers: overrideDefinition(false),
   deleteOverride: {
     kind: DELETE_OVERRIDES,
-    // Removes an override (rule 1).
+    // Removes or cuts short an override (rule 1).
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    dependsOn: payload => isProvisional(payload.overrideId) ? [payload.overrideId] : [],
+    dependsOn: dependedRefs,
     describe: (payload, host) => present("Remove a PagerDuty schedule override",
-      buildDescription(`Removes an override from [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: payload.scheduleId })}).`)
+      buildDescription(`Removes an override from [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: payload.scheduleId })}), ` +
+        "or ends it now if it has already begun.")
         .inline("Override", payload.overrideId)),
     apply: async (payload, host) => {
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: "override" });
@@ -406,12 +413,4 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
 export function providedRefs(action: PagerDutyAction): string[] {
   return action.kind === "createIncident" || action.kind === "createOverride" || action.kind === "createOverrideForOthers"
     ? [action.payload.ref] : [];
-}
-
-/** The temporary references an action builds on. */
-export function dependedRefs(action: PagerDutyAction): string[] {
-  const { payload } = action;
-  if ("incident" in payload) return dependsOnIncident(payload);
-  if (action.kind === "deleteOverride" && isProvisional(action.payload.overrideId)) return [action.payload.overrideId];
-  return [];
 }

@@ -7,24 +7,21 @@
 // answer before the built-in ones, latest first. Anything unrouted, or sent elsewhere, fails.
 
 import { env, runInDurableObject } from "cloudflare:test";
-import { SignJWT, importJWK, type JWK } from "jose";
+import { SignJWT, base64url, type JWK } from "jose";
 import { vi } from "vitest";
 import { identityOf } from "../../src/pagerduty-credentials";
 import { ID_TOKEN_ISSUER, SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
 import type {
-  WireIncident, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule, WireService, WireShift,
+  WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule, WireService, WireShift,
   WireTeam, WireUser,
 } from "../../src/pagerduty-normalize";
+import SIGNING_JWK from "./id-token-key.json";
 
 export const IDENTITY = "https://identity.pagerduty.com";
 
-// A fixed signing key, so the gatekeeper's cached key set stays valid across every suite.
-const SIGNING_KEY: JWK = {
-  kty: "EC", crv: "P-256", kid: "test",
-  x: "AcsMwshrsi4kZrZtPB6a2RuG1SoKJf5G7WFAUgJ5oWs",
-  y: "ZmzG1xvWwGG1T9dx4FIjPQQ2hb8os12EpFbrSWkuhko",
-  d: "CTIFxWDkJ7t3WMpmK5nB7o365c5ANKIk0iOJkCkXXGE",
-};
+// A fixed RS256 signing key, as PagerDuty signs with, so the gatekeeper's cached key set stays valid
+// across every suite.
+const SIGNING_KEY: JWK = SIGNING_JWK;
 
 export type Account = { id: string; region: Region; subdomain: string };
 export type FakeUser = WireUser & { account: Account };
@@ -92,18 +89,25 @@ export class FakePagerDuty {
   ]);
   readonly incidents = new Map<string, WireIncident>();
   readonly notes = new Map<string, WireNote[]>();
+  /** Each incident's log, oldest first, as PagerDuty lists it. */
+  readonly logEntries = new Map<string, WireLogEntry[]>();
   readonly shifts = new Map<string, WireShift[]>();
   readonly overrides = new Map<string, WireOverride[]>();
   readonly priorities: WirePriority[] = [PRIORITY, { id: "PPRI002", name: "P2" }];
   oncalls: WireOnCall[] = [];
   /** The scopes the token endpoint grants. */
   grantedScopes = SCOPES.join(" ");
-  /** Adjusts the ID token's claims, for tests of what the gatekeeper reads from them. */
+  /**
+   * Adjusts the ID token's claims, `iss`, `aud` and `exp` among them, for tests of what the
+   * gatekeeper reads from them.
+   */
   claims: (user: FakeUser, claims: Record<string, unknown>) => Record<string, unknown> = (_user, claims) => claims;
+  /** The key the ID token is signed with; a test may swap in one PagerDuty never published. */
+  idTokenKey: JWK | CryptoKey = SIGNING_KEY;
   /** Which user each access or refresh token belongs to. */
   readonly tokens = new Map<string, string>();
-  /** Which user each authorization code authorizes. */
-  readonly codes = new Map<string, string>();
+  /** Which user each authorization code authorizes, and the PKCE challenge its authorize request carried. */
+  readonly codes = new Map<string, { userId: string; codeChallenge: string }>();
   /** `user:object` pairs PagerDuty refuses to open, and with which status. */
   readonly #hidden = new Map<string, number>();
   #routes: Array<{ method: string; pattern: RegExp; handler: Handler }> = [];
@@ -185,29 +189,35 @@ export class FakePagerDuty {
   async #identity(request: FakeRequest): Promise<Response> {
     const { method, url } = request;
     if (method === "GET" && url.pathname === "/global/oauth/anonymous/jwks") {
-      const { d: _private, ...publicKey } = SIGNING_KEY;
-      return json({ keys: [{ ...publicKey, alg: "ES256", use: "sig" }] });
+      const { kty, kid, n, e } = SIGNING_KEY;
+      return json({ keys: [{ kty, kid, n, e, alg: "RS256", use: "sig" }] });
     }
     if (method !== "POST" || url.pathname !== "/oauth/token") throw new Error(`fake PagerDuty: ${method} ${url} is not routed`);
     const form = new URLSearchParams(request.body);
     if (form.get("client_id") !== "test-client-id" || form.get("client_secret") !== "test-client-secret") {
       return json({ error: "invalid_client" }, { status: 401 });
     }
-    const grantee = form.get("grant_type") === "authorization_code"
-      ? this.codes.get(form.get("code") ?? "") : this.tokens.get(form.get("refresh_token") ?? "");
+    let grantee: string | undefined;
+    if (form.get("grant_type") === "authorization_code") {
+      const code = this.codes.get(form.get("code") ?? "");
+      // PKCE (S256): the verifier must hash to the challenge the authorize request committed to.
+      const verifier = new TextEncoder().encode(form.get("code_verifier") ?? "");
+      const challenge = base64url.encode(new Uint8Array(await crypto.subtle.digest("SHA-256", verifier)));
+      if (code?.codeChallenge === challenge) grantee = code.userId;
+    } else {
+      grantee = this.tokens.get(form.get("refresh_token") ?? "");
+    }
     if (grantee === undefined) return json({ error: "invalid_grant" }, { status: 400 });
     const who = this.users.get(grantee)!;
+    const now = Math.floor(Date.now() / 1000);
     const claims = this.claims(who, {
       user_id: who.id, account_id: who.account.id, subdomain: who.account.subdomain,
       region: who.account.region === "eu" ? "EU" : "UnitedStates",
+      iss: ID_TOKEN_ISSUER, aud: [apiOrigin(who.account.region), "test-client-id"], iat: now, exp: now + 3600,
     });
     const idToken = await new SignJWT(claims)
-      .setProtectedHeader({ alg: "ES256", kid: SIGNING_KEY.kid })
-      .setIssuer(ID_TOKEN_ISSUER)
-      .setAudience([apiOrigin(who.account.region), "test-client-id"])
-      .setIssuedAt()
-      .setExpirationTime("1h")
-      .sign(await importJWK(SIGNING_KEY, "ES256"));
+      .setProtectedHeader({ alg: "RS256", kid: SIGNING_KEY.kid })
+      .sign(this.idTokenKey);
     return json({ ...this.grant(grantee), id_token: idToken });
   }
 
@@ -319,7 +329,7 @@ export class FakePagerDuty {
       if (!incident) return error(404, "Not found");
       if (method === "GET" && !sub) return json({ incident });
       if (method === "GET" && sub === "alerts") return page(url, "alerts", []);
-      if (method === "GET" && sub === "log_entries") return page(url, "log_entries", []);
+      if (method === "GET" && sub === "log_entries") return page(url, "log_entries", this.logEntries.get(incident.id) ?? []);
       if (method === "GET" && sub === "notes") return json({ notes: this.notes.get(incident.id) ?? [] });
       if (method === "PUT" && !sub) {
         const { incident: change } = body();

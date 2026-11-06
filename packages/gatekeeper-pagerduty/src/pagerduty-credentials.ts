@@ -76,13 +76,12 @@ const JWKS = createRemoteJWKSet(new URL(ID_TOKEN_JWKS_URL));
 
 /**
  * Which user, account and region an ID token, as the token endpoint returned it, names. Its
- * signature and issuer are checked against PagerDuty's published keys; its audience is not, since
- * the token came straight from the token endpoint and PagerDuty does not document the audience's
- * exact form.
+ * signature (RS256, against PagerDuty's published keys), issuer, expiry and audience, which
+ * includes the app's client ID, are checked.
  * @throws Error for a token that does not verify or lacks a claim.
  */
-export async function verifyIdToken(idToken: string): Promise<GrantIdentity> {
-  const { payload } = await jwtVerify(idToken, JWKS, { issuer: ID_TOKEN_ISSUER });
+export async function verifyIdToken(idToken: string, clientId: string): Promise<GrantIdentity> {
+  const { payload } = await jwtVerify(idToken, JWKS, { issuer: ID_TOKEN_ISSUER, audience: clientId, algorithms: ["RS256"] });
   const { user_id: userId, account_id: accountId, subdomain } = payload;
   const region = regionOf(payload as { aud?: string | string[]; region?: unknown });
   if (typeof userId !== "string" || typeof accountId !== "string" || typeof subdomain !== "string"

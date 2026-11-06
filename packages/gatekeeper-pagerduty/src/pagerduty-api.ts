@@ -15,6 +15,15 @@ export const MAX_LIMIT = 100;
 /** PagerDuty refuses a listing whose `offset + limit` exceeds this. */
 export const MAX_OFFSET = 10_000;
 
+/** Where the REST API keeps one object of each kind; it answers with the object under a key named for its kind. */
+export const OBJECT_PATHS = {
+  team: "/teams/",
+  service: "/services/",
+  incident: "/incidents/",
+  schedule: "/schedules/",
+  escalation_policy: "/escalation_policies/",
+} as const;
+
 /** A query value; arrays are sent as PagerDuty's `name[]=a&name[]=b`. */
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
 export type Query = Record<string, QueryValue>;

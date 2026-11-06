@@ -24,9 +24,8 @@ import type { HookController, HookDescription, HookInitiator, HookTargetMetadata
 import { isDenial } from "./pagerduty-api";
 import { VENDOR_ID, webOrigin, type Env, type Tenant } from "./pagerduty-env";
 import { toIncidentSummary, type WireIncident, type WireRef } from "./pagerduty-normalize";
-import {
-  PagerDutyIncidentImpl, SessionContext, outsideOf, type HookScope, type SessionHost,
-} from "./pagerduty-sessions";
+import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
+import { SessionContext, outsideOf, type HookScope, type SessionHost } from "./pagerduty-session-shared";
 import { overlayIncident } from "./pagerduty-simulation";
 import { OBJECT_ID, parseResourceUrl } from "./pagerduty-urls";
 import { obsContext } from "./observability";

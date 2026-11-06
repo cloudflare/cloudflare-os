@@ -74,3 +74,17 @@ describe("the configurator's copy of the resource URL patterns", () => {
       expect(chosen).toMatchObject({ selectable: true });
     });
 });
+
+describe("choosing", () => {
+  it("takes what a choice is from its ref, so a container reached only through a breadcrumb can be chosen", () => {
+    const setValues = vi.fn();
+    const ui = { getStatus: () => ready, loadItems: async () => ({ items: [] }) };
+    const tree = spec.render({ values: {}, setValues, ui, acceptedResourceUrlPatterns: undefined });
+    const { onChange } = find(tree, "HierarchyPicker")!.props as { onChange(next: string | null): void };
+    // Never listed: a search result's path names it, and the picker hands back only its ref.
+    onChange("service:PCRUMB1");
+    const values = setValues.mock.lastCall![0];
+    expect(values).toEqual({ ref: "service:PCRUMB1", kind: "service" });
+    expect(spec.isReady({ values, acceptedResourceUrlPatterns: [patternOf("service")] })).toBe(true);
+  });
+});
