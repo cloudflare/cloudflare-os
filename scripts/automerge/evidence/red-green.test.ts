@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -136,12 +136,18 @@ describe("evaluateRedGreen", () => {
   });
 });
 
+/** A fresh git repository in a temporary folder, and a git runner for it. */
+function repo(): { root: string; sh: (...args: string[]) => string } {
+  const root = mkdtempSync(join(tmpdir(), "red-green-revert-"));
+  const sh = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root, encoding: "utf8" }).trim();
+  sh("init", "-q");
+  return { root, sh };
+}
+
 describe("revertSources", () => {
   it("restores a base file whose folder the pull request removed", () => {
-    const root = mkdtempSync(join(tmpdir(), "red-green-revert-"));
-    const sh = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root, encoding: "utf8" }).trim();
+    const { root, sh } = repo();
     try {
-      sh("init", "-q");
       mkdirSync(join(root, "packages/typed-storage/src/legacy"), { recursive: true });
       writeFileSync(join(root, "packages/typed-storage/src/legacy/keys.ts"), "export const keys = 1;\n");
       sh("add", ".");
@@ -152,6 +158,30 @@ describe("revertSources", () => {
       assert.equal(existsSync(join(root, "packages/typed-storage/src/legacy")), false);
       revertSources(base, ["packages/typed-storage/src/legacy/keys.ts"], root);
       assert.equal(readFileSync(join(root, "packages/typed-storage/src/legacy/keys.ts"), "utf8"), "export const keys = 1;\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restores a binary file byte for byte and an executable's mode", () => {
+    const { root, sh } = repo();
+    // Bytes that are not valid UTF-8, as in a wasm module or an image.
+    const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0xff, 0xfe, 0x80, 0xc3]);
+    try {
+      mkdirSync(join(root, "packages/typed-storage/bin"), { recursive: true });
+      writeFileSync(join(root, "packages/typed-storage/bin/codec.wasm"), wasm);
+      writeFileSync(join(root, "packages/typed-storage/bin/build.sh"), "#!/bin/sh\necho base\n");
+      chmodSync(join(root, "packages/typed-storage/bin/build.sh"), 0o755);
+      sh("add", ".");
+      sh("commit", "-qm", "base");
+      const base = sh("rev-parse", "HEAD");
+      writeFileSync(join(root, "packages/typed-storage/bin/codec.wasm"), Buffer.from([0x01]));
+      writeFileSync(join(root, "packages/typed-storage/bin/build.sh"), "#!/bin/sh\necho head\n");
+      chmodSync(join(root, "packages/typed-storage/bin/build.sh"), 0o644);
+      sh("commit", "-qam", "head");
+      revertSources(base, ["packages/typed-storage/bin/codec.wasm", "packages/typed-storage/bin/build.sh"], root);
+      assert.deepEqual(readFileSync(join(root, "packages/typed-storage/bin/codec.wasm")), wasm);
+      assert.equal(statSync(join(root, "packages/typed-storage/bin/build.sh")).mode & 0o777, 0o755);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

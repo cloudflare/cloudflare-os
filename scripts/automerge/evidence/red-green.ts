@@ -19,8 +19,8 @@
 //
 //   node scripts/automerge/evidence/red-green.ts   (env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA)
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "../proofs/artifact.ts";
 import type { FileDiff } from "../proofs/diff.ts";
@@ -103,18 +103,13 @@ export function evaluateRedGreen(tests: string[], head: TestRun[], base: TestRun
 
 /**
  * Puts each of `sources` (relative to `root`) back to its version at `from`, removing those that
- * did not exist there. A file whose folder the pull request removed gets the folder back.
+ * did not exist there. `git checkout` restores the base's bytes and file mode, and the folder of a
+ * file the pull request removed it from.
  */
 export function revertSources(from: string, sources: string[], root = process.cwd()): void {
-  for (const path of sources) {
-    const text = fileAt(from, path, root);
-    if (text === undefined) {
-      rmSync(join(root, path), { force: true });
-    } else {
-      mkdirSync(dirname(join(root, path)), { recursive: true });
-      writeFileSync(join(root, path), text);
-    }
-  }
+  const atBase = sources.filter((path) => fileAt(from, path, root) !== undefined);
+  for (const path of sources) if (!atBase.includes(path)) rmSync(join(root, path), { force: true });
+  if (atBase.length > 0) git(["checkout", from, "--", ...atBase], root);
 }
 
 async function main(): Promise<void> {

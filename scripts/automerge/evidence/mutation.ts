@@ -33,6 +33,8 @@ const CONFIG = "vitest.config.ts";
 const STRYKER_CONFIG = "stryker.automerge.json";
 const REPORT = "reports/automerge-mutation-changed-lines.json";
 const SOURCE = /\.tsx?$/;
+/** Build and test configuration (`vite.config.ts`, `vitest.*.config.ts`, `cloudflare.config.ts`): no test imports it, so its mutants would only go uncovered. */
+const CONFIG_FILE = /(^|\/)[^/]+\.config\.[cm]?tsx?$/;
 const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
 const DETECTED = ["Killed", "Timeout"];
 const UNDETECTED = ["Survived", "NoCoverage"];
@@ -45,7 +47,7 @@ export function changedRanges(diffText: string): Map<string, [number, number][]>
     // Content lines start with "+", "-" or " ", so only a real header matches.
     const file = /^diff --git a\/.+ b\/(.+)$/.exec(line);
     if (file) {
-      path = SOURCE.test(file[1]) && !file[1].endsWith(".d.ts") && !TEST_PATH.test(file[1]) ? file[1] : undefined;
+      path = SOURCE.test(file[1]) && !file[1].endsWith(".d.ts") && !TEST_PATH.test(file[1]) && !CONFIG_FILE.test(file[1]) ? file[1] : undefined;
       continue;
     }
     const hunk = path ? HUNK.exec(line) : null;

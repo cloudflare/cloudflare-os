@@ -16,6 +16,11 @@ describe("changedRanges", () => {
     assert.deepEqual([...changedRanges(diff)], [["packages/typed-storage/src/index.ts", [[83, 93], [698, 700]]]]);
   });
 
+  it("leaves out #602's vitest.config.ts and keeps its source (a5cd4f3bb)", () => {
+    const text = readFileSync(new URL("./testdata/red-green/diff-a5cd4f3bb.diff", import.meta.url), "utf8");
+    assert.deepEqual([...changedRanges(text).keys()], ["packages/observability/src/tracing.ts"]);
+  });
+
   it("skips pure deletions and declaration files", () => {
     const text = [
       "diff --git a/packages/x/src/a.ts b/packages/x/src/a.ts", "--- a/packages/x/src/a.ts", "+++ b/packages/x/src/a.ts",

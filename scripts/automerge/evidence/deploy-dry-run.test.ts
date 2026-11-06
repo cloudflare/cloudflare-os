@@ -43,6 +43,10 @@ describe("affectedDeployables", () => {
     assert.deepEqual(affectedDeployables(packages, changed("91f4e7073")), ["gatekeeper-google"]);
   });
 
+  it("a gatekeeper-google declaration and source change reaches only that Worker (040529935)", () => {
+    assert.deepEqual(affectedDeployables(packages, changed("040529935")), ["gatekeeper-google"]);
+  });
+
   it("a workshop-frontend change reaches the router through its assets", () => {
     assert.deepEqual(affectedDeployables(packages, changed("65922355a")), ["router"]);
   });
