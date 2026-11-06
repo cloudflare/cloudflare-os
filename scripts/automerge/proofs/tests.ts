@@ -108,8 +108,15 @@ export function planScope(files: FileDiff[]): TestsScope {
 }
 
 const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
-/** A dynamic import or require whose argument is not one string literal, which cannot be followed. */
-const UNREADABLE_IMPORT = /(?<![\w$#.])(?:import|require)\((?!\s*['"][^'"]+['"]\s*\))/g;
+/** A type-only import or re-export, which brings no behavior with it. */
+const TYPE_ONLY = /^[\s;]*(?:import|export)\s+type\s/;
+/**
+ * Every `import` or `require` call, however spelled: spaces or comments may sit between the name
+ * and its parenthesis.
+ */
+const CALL = /(?<![\w$#.])(?:import|require)(?=\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*\()/g;
+/** The one call spelling IMPORT reads: the name, then `(` and a single string literal. */
+const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
 
 /** The source a set of tests reaches, and the imports that could not be followed. */
@@ -127,8 +134,8 @@ function exportTarget(value: Json | undefined): string | undefined {
 }
 
 /**
- * The file a package's import of itself by name resolves to through its `exports` map (one `*`
- * allowed), or undefined when it names none.
+ * The file a package's import of itself by name resolves to through its `exports` map (one `*` in
+ * the key, each `*` in the target replaced), or undefined when it names none.
  */
 export function selfImportPath(packageDir: string, manifest: JsonObject, specifier: string): string | undefined {
   const name = typeof manifest.name === "string" ? manifest.name : "";
@@ -143,23 +150,31 @@ export function selfImportPath(packageDir: string, manifest: JsonObject, specifi
     const target = exportTarget(value);
     if (suffix === undefined || rest.length > 0 || target === undefined) continue;
     if (subpath.startsWith(prefix) && subpath.endsWith(suffix) && subpath.length >= prefix.length + suffix.length) {
-      return join(packageDir, target.replace("*", subpath.slice(prefix.length, subpath.length - suffix.length)));
+      return join(packageDir, target.replaceAll("*", subpath.slice(prefix.length, subpath.length - suffix.length)));
     }
   }
   return undefined;
+}
+
+/** Whether `specifier` names the package `pkg` or a subpath of it. */
+function names(specifier: string, pkg: string): boolean {
+  return specifier === pkg || specifier.startsWith(`${pkg}/`);
 }
 
 /**
  * Every source file `roots` reach through imports and re-exports, followed transitively within
  * `packageDir`: a test that imports an index which re-exports another module exercises that module
  * too. Relative specifiers and the package's imports of itself by name (through its package.json
- * `exports`) are followed; other bare specifiers (other packages, node_modules) are not. A specifier
- * that resolves to no file, a file outside the package, or an import whose argument is not a string
- * literal is a problem, since its mutants would go unmade. `read` gives a file's text, or undefined
- * when there is no such file.
+ * `exports`) are followed; other bare specifiers (node_modules) are not. A problem, since mutants
+ * would go unmade, is: a specifier that resolves to no file or to a file outside the package; a
+ * value import of another package in `workspace` (names of the workspace's packages), whose source
+ * this proof does not mutate; and an `import`/`require` call spelled other than with one string
+ * literal straight after the parenthesis. `read` gives a file's text, or undefined when there is
+ * no such file.
  */
 export function sourceGraph(
   roots: { path: string; text: string }[], packageDir: string, read: (path: string) => string | undefined,
+  workspace: ReadonlySet<string>,
 ): SourceGraph {
   const sources = new Set<string>();
   const problems: string[] = [];
@@ -170,15 +185,18 @@ export function sourceGraph(
   const name = typeof manifest.name === "string" ? manifest.name : undefined;
   const queue = [...roots];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    for (const unreadable of next.text.matchAll(UNREADABLE_IMPORT)) {
-      problems.push(`${next.path}: cannot follow "${unreadable[0]}", whose argument is not one string literal`);
+    for (const call of next.text.matchAll(CALL)) {
+      READABLE_CALL.lastIndex = call.index;
+      if (READABLE_CALL.test(next.text)) continue;
+      const shown = next.text.slice(call.index, call.index + 40).split("\n")[0];
+      problems.push(`${next.path}: cannot follow "${shown}", not a call with one string literal`);
     }
     for (const match of next.text.matchAll(IMPORT)) {
       const specifier = match[1] ?? match[2] ?? match[3];
       let base: string;
       if (specifier.startsWith(".")) {
         base = normalize(join(dirname(next.path), specifier));
-      } else if (name !== undefined && (specifier === name || specifier.startsWith(`${name}/`))) {
+      } else if (name !== undefined && names(specifier, name)) {
         const target = selfImportPath(packageDir, manifest, specifier);
         if (target === undefined) {
           problems.push(`${next.path}: ${specifier} is not in ${packageDir}/package.json exports`);
@@ -186,6 +204,10 @@ export function sourceGraph(
         }
         base = normalize(target);
       } else {
+        const other = [...workspace].find((pkg) => pkg !== name && names(specifier, pkg));
+        if (other !== undefined && !TYPE_ONLY.test(match[0])) {
+          problems.push(`${next.path}: imports ${specifier} from the workspace package ${other}, whose source is not mutated`);
+        }
         continue;
       }
       const candidates = [base, base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx"), `${base}.ts`, `${base}.tsx`,
@@ -213,6 +235,15 @@ export function sourceGraph(
 /** A file's text, or undefined when the path is not a file. */
 function readFile(path: string): string | undefined {
   return existsSync(path) && statSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
+}
+
+/** The names of the workspace's packages (pnpm-workspace.yaml: `packages/*` and `scripts`). */
+function workspacePackages(): Set<string> {
+  const manifests = git(["ls-files", "--", "packages/*/package.json", "scripts/package.json"]).split("\n").filter((path) => path !== "");
+  return new Set(manifests.flatMap((path) => {
+    const parsed = parseJson(readFileSync(path, "utf8"));
+    return isObject(parsed) && typeof parsed.name === "string" ? [parsed.name] : [];
+  }));
 }
 
 /** A step was still running when the proof's budget ran out. */
@@ -318,16 +349,31 @@ async function configFor(packageDir: string, tests: string[], deadline: number):
   return matches[0];
 }
 
+/**
+ * The wrapper config that narrows `configImport` (a path relative to the wrapper) to `include`. It
+ * resolves a config exported as a function or a promise, and throws for one with `test.projects`:
+ * Vitest merges a root `include` into each project's own globs rather than replacing them, so the
+ * run would not be narrowed and could pick up projects the tests do not belong to. The throw fails
+ * the Stryker run, which the proof records as `error`.
+ */
+export function narrowedConfig(configImport: string, include: string[]): string {
+  return [
+    `import config from ${JSON.stringify(configImport)};`,
+    "export default async (env) => {",
+    '  const resolved = await (typeof config === "function" ? config(env) : config);',
+    '  if (resolved.test?.projects) throw new Error("automerge: a vitest config with test.projects is not supported");',
+    `  return { ...resolved, test: { ...resolved.test, include: ${JSON.stringify(include)} } };`,
+    "};",
+    "",
+  ].join("\n");
+}
+
 async function runSide(
   plan: TestsPlan, runner: Runner, config: string, side: "base" | "head", tests: string[], deadline: number,
 ): Promise<JsonObject> {
   const pkg = plan.packageDir;
   const include = tests.filter((path) => RUNNABLE_TEST.test(path)).map((path) => relative(pkg, path));
-  writeFileSync(join(pkg, VITEST_CONFIG), [
-    `import config from "./${relative(pkg, config)}";`,
-    `export default { ...config, test: { ...config.test, include: ${JSON.stringify(include)} } };`,
-    "",
-  ].join("\n"));
+  writeFileSync(join(pkg, VITEST_CONFIG), narrowedConfig(`./${relative(pkg, config)}`, include));
   writeFileSync(join(pkg, STRYKER_CONFIG), JSON.stringify({
     testRunner: "vitest",
     // Stryker finds plugins next to its own package, which pnpm's layout does not share.
@@ -402,7 +448,7 @@ async function main(): Promise<void> {
       const graph = sourceGraph([
         ...headTests.map((path) => ({ path, text: readFileSync(path, "utf8") })),
         ...baseTests.map((path) => ({ path, text: fileAt(from, path) ?? "" })),
-      ], scope.packageDir, readFile);
+      ], scope.packageDir, readFile, workspacePackages());
       const plan: TestsPlan = { packageDir: scope.packageDir, baseTests, headTests, mutate: graph.sources };
       const details = { ...scoped, mutate: plan.mutate };
       if (graph.problems.length > 0) {

@@ -21,7 +21,9 @@ export function mergeBase(base: string, head: string, cwd?: string): string {
 
 /** A file's content at a commit, or undefined when the path does not exist there. */
 export function fileAt(sha: string, path: string, cwd?: string): string | undefined {
-  const listed = git(["ls-tree", "--name-only", sha, "--", path], cwd).trim();
+  // `-z` prints the name as it is: without it git quotes a path with non-ASCII bytes, quotes or
+  // backslashes, which would then not equal `path`.
+  const listed = git(["ls-tree", "-z", "--name-only", sha, "--", path], cwd).replace(/\0$/, "");
   if (listed !== path) return undefined;
   return git(["show", `${sha}:${path}`], cwd);
 }
