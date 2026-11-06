@@ -2236,6 +2236,31 @@ describe("local-only reads", () => {
     }
   });
 
+  it("stream a file over MAX_BUFFERED_BLOB_SIZE, as readFilesAtCommit() does, and buffer one at it",
+      async () => {
+    let t = makeCache();
+    let exact = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x62);
+    let over = new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x63);
+    over[0] = 0;  // not text, but streams carry bytes unchecked
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([
+        { mode: "100644", name: "exact.txt", oid: await storeLocal(t.storage, { type: "blob", payload: exact }) },
+        { mode: "100644", name: "over.bin", oid: await storeLocal(t.storage, { type: "blob", payload: over }) },
+      ]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "sizes") });
+
+    expect(t.cache.readLocalFileAtCommit(commit, "exact.txt"))
+        .toStrictEqual({ kind: "text", text: "b".repeat(MAX_BUFFERED_BLOB_SIZE) });
+    let file = t.cache.readLocalFileAtCommit(commit, "over.bin");
+    if (file.kind !== "stream") throw new Error("expected a stream");
+    expect(file.byteLength).toBe(over.length);
+    expect(sameBytes(await contentBytes(file.content), over)).toBe(true);
+    expect(t.pulls).toStrictEqual([]);
+  });
+
   it("report content that is not text as unreadable", async () => {
     let t = makeCache();
     let binary = await storeLocal(t.storage,

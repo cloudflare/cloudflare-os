@@ -1518,11 +1518,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     // The committed authoritative config rather than readAdminConfig()'s KV mirror: a mirror still
     // saying "full" after an admin lowered the level must not mint a view at the old one. The view's
     // calls then read the mirror, which reaches them within about a minute.
-    let { access, retentionDays } =
-        adminAccessPolicy(await this.admin.committedAdminConfig(), this.env);
+    let { access } = adminAccessPolicy(await this.admin.committedAdminConfig(), this.env);
     let expiresAt = new Date(Date.now() + lifetimeMs);
     if (access === "off") {
       // Refused before any workspace is reached, so its title and owner come from the directory.
+      // Appended without a retention, as a view's records are: the directory read awaits, and a
+      // retention an admin raised meanwhile must not be pruned to the one read above.
       let listing = await this.#directoryListing(id.toString());
       let workspaceTitle = cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH);
       await this.audits.getByName("").append({
@@ -1530,7 +1531,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
         via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId, workspaceTitle,
         method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason,
         requested, access: "off", exposed: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
-      }, retentionDays);
+      });
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
     }
 

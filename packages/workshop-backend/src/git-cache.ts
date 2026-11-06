@@ -1277,9 +1277,10 @@ export class WorkspaceGitCache {
 
   /**
    * One file of a commit, as readFilesAtCommit() reports it ("absent" for a path naming nothing or
-   * a directory, "unreadable" for a submodule, a symlink or content that is not text, else
-   * "text"), read only from objects this store holds: never pulls. Throws for an invalid path and
-   * when an object along the path, or the file's blob, is missing.
+   * a directory, "unreadable" for a submodule, a symlink or content that is not text, "stream" for
+   * a regular file over MAX_BUFFERED_BLOB_SIZE, never read whole here, else "text"), read only from
+   * objects this store holds: never pulls. Throws for an invalid path and when an object along the
+   * path, or the file's blob, is missing.
    */
   readLocalFileAtCommit(commitOid: GitOid, path: string): FileAtCommit {
     let segments = splitTreePath(path);
@@ -1301,7 +1302,14 @@ export class WorkspaceGitCache {
         return { kind: "unreadable",
                  message: symlinkMessage(path, this.#localObject(entry.oid, "blob").payload) };
       default: {
-        let payload = this.#localObject(entry.oid, "blob").payload;
+        let reader = this.openLocalBlob(entry.oid);
+        if (reader === undefined) {
+          throw new Error(`git object ${entry.oid} is not stored in this workspace`);
+        }
+        if (reader.size > MAX_BUFFERED_BLOB_SIZE) {
+          return { kind: "stream", byteLength: reader.size, content: blobByteStream(reader) };
+        }
+        let payload = reader.read(0, reader.size);
         try {
           return { kind: "text", text: decodeBlobText(payload, path) };
         } catch (err) {
