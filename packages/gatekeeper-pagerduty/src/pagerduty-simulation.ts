@@ -1,8 +1,9 @@
 // Reads as if every pending action had been applied: an incident shows the status, title,
-// priority, urgency and assignees its pending changes give it, incidents and overrides a pending
-// action creates are listed, an override pending removal is gone (or, if under way, ends when the
-// removal was staged), and a note waiting to be added is among the incident's notes. Every
-// function is pure over the journal's pending entries.
+// priority, urgency and assignees its pending changes give it (raising an acknowledged incident's
+// urgency returns it to triggered, as PagerDuty does), incidents and overrides a pending action
+// creates are listed, an override pending removal is gone (or, if under way, ends when the removal
+// was staged), and a note waiting to be added is among the incident's notes. Every function is pure
+// over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { NewIncident, PagerDutyAction } from "./pagerduty-actions";
@@ -48,8 +49,16 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
       case "setTitle":
         result = { ...result, title: action.payload.title };
         break;
-      case "setUrgency":
-        result = { ...result, urgency: action.payload.urgency };
+      case "lowerUrgency":
+        result = { ...result, urgency: "low" };
+        break;
+      case "raiseUrgency":
+        // Raising a low-urgency incident someone acknowledged un-acknowledges it, and escalation resumes.
+        if (result.urgency === "low" && result.status === "acknowledged") {
+          result = { ...result, status: "triggered" };
+          if ("acknowledgers" in result) result = { ...result, acknowledgers: [] };
+        }
+        result = { ...result, urgency: "high" };
         break;
       case "reassign":
         if ("users" in action.payload.to) {
@@ -123,46 +132,47 @@ export function pendingNotes(id: string, pending: Pending, resolve: Resolve, me:
     ? [{ id: action.payload.ref, content: action.payload.content, author: me, createdAt: action.payload.stagedAt }] : []);
 }
 
-/** The pending overrides on schedule `scheduleId` PagerDuty doesn't have yet. */
-function pendingOverrides(scheduleId: string, pending: Pending, resolve: Resolve): PagerDutyOverride[] {
-  return pending.flatMap(({ action }) =>
+/**
+ * `overrides` on schedule `scheduleId` as if pending ones were made and removed: those pending
+ * creation added, and those pending removal gone. As PagerDuty does, a removal cuts one already
+ * under way short at the time it was staged, and leaves one already over.
+ */
+function withPending(overrides: readonly PagerDutyOverride[], scheduleId: string, pending: Pending,
+                     resolve: Resolve): PagerDutyOverride[] {
+  const created = pending.flatMap(({ action }) =>
     (action.kind === "createOverride" || action.kind === "createOverrideForOthers")
       && action.payload.scheduleId === scheduleId && resolve(action.payload.ref) === action.payload.ref
       ? [{ id: action.payload.ref, user: { id: action.payload.user.id, name: action.payload.user.name },
         start: action.payload.start, end: action.payload.end }]
       : []);
+  const removedAt = new Map(pending.flatMap(({ action }) =>
+    action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId
+      ? [[resolve(action.payload.overrideId), action.payload.stagedAt] as const] : []));
+  return [...overrides, ...created].flatMap(override => {
+    const at = removedAt.get(override.id);
+    if (at === undefined || Date.parse(override.end) <= Date.parse(at)) return [override];
+    return Date.parse(override.start) < Date.parse(at) ? [{ ...override, end: at }] : [];
+  });
 }
 
 /** Whether two ISO 8601 spans overlap. */
 const overlaps = (a: { start: string; end: string }, b: { start: string; end: string }): boolean =>
   Date.parse(a.start) < Date.parse(b.end) && Date.parse(b.start) < Date.parse(a.end);
 
-/**
- * A schedule's overrides in `window` as if pending ones were made and removed, ordered by start:
- * those pending creation added, and those pending removal gone. As PagerDuty does, a removal cuts
- * one already under way short at the time it was staged, and leaves one already over.
- */
+/** A schedule's overrides in `window` as if pending ones were made and removed, ordered by start. */
 export function overlayOverrides(
   overrides: readonly PagerDutyOverride[], scheduleId: string, window: { since: string; until: string },
   pending: Pending, resolve: Resolve,
 ): PagerDutyOverride[] {
-  const removedAt = new Map(pending.flatMap(({ action }) =>
-    action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId
-      ? [[resolve(action.payload.overrideId), action.payload.stagedAt] as const] : []));
-  return [...overrides, ...pendingOverrides(scheduleId, pending, resolve)]
-    .flatMap(override => {
-      const at = removedAt.get(override.id);
-      if (at === undefined || Date.parse(override.end) <= Date.parse(at)) return [override];
-      return Date.parse(override.start) < Date.parse(at) ? [{ ...override, end: at }] : [];
-    })
+  return withPending(overrides, scheduleId, pending, resolve)
     .filter(override => overlaps(override, { start: window.since, end: window.until }))
     .toSorted((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
 
 /**
- * A schedule's shifts as if the overrides pending creation were made: each covers whatever it
- * overlaps, cut at its ends. An override pending removal can't be undone from the shifts alone,
- * since they don't say who it displaced.
+ * A schedule's shifts as if the overrides pending creation were made, less any pending removal
+ * takes back: each covers whatever it overlaps, cut at its ends. Removing an override PagerDuty
+ * already has can't be undone from the shifts alone, since they don't say who it displaced.
  */
 export function overlayShifts(
   shifts: readonly PagerDutyShift[], scheduleId: string, window: { since: string; until: string },
@@ -170,7 +180,7 @@ export function overlayShifts(
 ): PagerDutyShift[] {
   let result = [...shifts];
   const iso = (ms: number) => new Date(ms).toISOString();
-  for (const override of pendingOverrides(scheduleId, pending, resolve)) {
+  for (const override of withPending([], scheduleId, pending, resolve)) {
     const start = Math.max(Date.parse(override.start), Date.parse(window.since));
     const end = Math.min(Date.parse(override.end), Date.parse(window.until));
     if (!(start < end)) continue;

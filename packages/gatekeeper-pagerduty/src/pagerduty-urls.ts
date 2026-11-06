@@ -1,7 +1,7 @@
 // PagerDuty's web addresses: which resource a link names, the link for a resource, and the ID
 // grammar every agent-supplied ID is held to before it reaches a request path.
 
-import { RESOURCES, webOrigin, type Region, type ResourceKind, type Tenant } from "./pagerduty-env";
+import { RESOURCES, apiOrigin, webOrigin, type Region, type ResourceKind, type Tenant } from "./pagerduty-env";
 
 /** The resource a link names: an account, or one object in it. */
 export type ResourceRef = Tenant & (
@@ -67,11 +67,14 @@ export function sameTenant(a: Tenant, b: Tenant): boolean {
   return a.region === b.region && a.subdomain === b.subdomain;
 }
 
-/** The region an ID token's claims put the account in, or `undefined` when they don't say. */
+/**
+ * The region an ID token's claims put the account in, or `undefined` when they don't say. PagerDuty
+ * lists the account's REST origin, exactly, among the audiences beside the client ID.
+ */
 export function regionOf(claims: { aud?: string | string[]; region?: unknown }): Region | undefined {
   const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud ?? [];
-  if (audiences.some(aud => aud.startsWith("https://api.eu.pagerduty.com"))) return "eu";
-  if (audiences.some(aud => aud.startsWith("https://api.pagerduty.com"))) return "us";
+  if (audiences.includes(apiOrigin("eu"))) return "eu";
+  if (audiences.includes(apiOrigin("us"))) return "us";
   if (typeof claims.region !== "string") return undefined;
   if (/^(us|unitedstates)$/i.test(claims.region)) return "us";
   if (/^(eu|europe|europeanunion)$/i.test(claims.region)) return "eu";

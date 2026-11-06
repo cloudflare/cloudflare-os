@@ -8,7 +8,9 @@ import type { Query } from "./pagerduty-api";
 import { isProvisional, overrideKind } from "./pagerduty-actions";
 import { toOverride, toScheduleDetails, toShift, type WireOverride, type WireSchedule } from "./pagerduty-normalize";
 import { overlayOverrides, overlayShifts } from "./pagerduty-simulation";
-import { countOf, requireTeam, text, time, usersNamed, windowOf, type SessionContext } from "./pagerduty-session-shared";
+import {
+  countOf, readSchedule, requireTeam, text, time, usersNamed, windowOf, type SessionContext,
+} from "./pagerduty-session-shared";
 import { OBJECT_ID } from "./pagerduty-urls";
 import type { PagerDutyOverride, PagerDutySchedule, PagerDutyScheduleDetails, PagerDutyShift, PagerDutyTimeWindow } from "./types";
 
@@ -30,8 +32,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
   }
 
   async #read(query: Query = {}): Promise<WireSchedule> {
-    const { schedule: wire } = await this.#ctx.host.read(api =>
-      api.get<{ schedule: WireSchedule }>(`/schedules/${this.#id}`, query));
+    const wire = await readSchedule(this.#ctx, this.#id, query);
     requireTeam(wire, this.#teamId, "schedule");
     return wire;
   }

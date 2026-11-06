@@ -3,9 +3,9 @@
 Connects PagerDuty users to Gadgets. A gadget can read incidents, services, teams, schedules and
 who is on call, and act on incidents and schedules as the connected user: acknowledge, resolve,
 add notes, reassign, open incidents, put people on call. Nothing reaches PagerDuty until a user
-approves it. Every pending change is shown to the gadget as if it had already happened, so a gadget
-keeps working while it waits. Everything a gadget sees is what the connected user can see in
-PagerDuty.
+approves it, or an auto-approval rule the user enabled for its kind applies it. Every pending
+change is shown to the gadget as if it had already happened, so a gadget keeps working while it
+waits. Everything a gadget sees is what the connected user can see in PagerDuty.
 
 Five resource types, each its own grant, all picked from one connect card:
 
@@ -28,7 +28,9 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
   last 30 days), list who is on call, look up users by name or email, and list priorities. Account
   and Team also list and open services and schedules; a Team lists its members; a Service opens
   new incidents. Opening something from a broader binding returns the same interface a narrower
-  binding gets, and a narrower binding refuses IDs outside it, such as another team's incident.
+  binding gets, and a narrower binding refuses IDs outside it, such as another team's incident. An
+  incident a change targets, or a listing walks, that has since moved out of a team or service
+  binding is refused too.
 - **Incident** reads its details, log, notes and alerts, and acknowledges, snoozes, resolves,
   reassigns, escalates, requests responders, sets the title, priority or urgency, adds notes and
   posts status updates.
@@ -49,7 +51,7 @@ the binding, or delete, are never auto-approved.
 |---|---|---|
 | Acknowledge and snooze incidents | `acknowledge`, `snooze` | Yes |
 | Resolve incidents | `resolve` | Yes |
-| Change incidents' title, priority and urgency | `setTitle`, `setPriority`, `setUrgency` | Yes |
+| Change incidents' title, priority and urgency | `setTitle`, `setPriority`, `setUrgency` | Yes, except `setUrgency("high")`: pages responders, and resumes an acknowledged incident's escalation |
 | Add notes to incidents | `addNote` | Yes |
 | Reassign and escalate incidents | `reassign`, `escalate` | No: notifies the new assignees |
 | Ask more people to respond to incidents | `requestResponders` | No: pages each responder |

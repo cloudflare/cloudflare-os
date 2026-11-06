@@ -11,7 +11,7 @@ import { validateRpc } from "capnweb-validate";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
@@ -30,7 +30,9 @@ import {
 } from "./pagerduty-hooks";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
-import { SessionContext, type HookScope, type ObjectRef, type SessionHost } from "./pagerduty-session-shared";
+import {
+  SessionContext, objectOutside, type HookScope, type ObjectRef, type SessionHost, type Within,
+} from "./pagerduty-session-shared";
 import { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
 import { resourceUrl, sameTenant } from "./pagerduty-urls";
 import type { PagerDutyAccount, PagerDutyIncident, PagerDutySchedule, PagerDutyService, PagerDutyTeam } from "./types";
@@ -94,6 +96,15 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     write: async op => {
       const me = await this.#me();
       return await this.#creds.run(creds => op(new PagerDutyApi(creds.accessToken, me.region, me.email), me));
+    },
+    // PagerDuty can move an incident to another service, or a service or schedule to another team,
+    // after the action was staged: a team or service binding checks again that it still reaches it.
+    requireInScope: async object => {
+      const props = this.ctx.props;
+      const within: Within = props.resourceKind === "team" ? { teamId: props.id }
+        : props.resourceKind === "service" ? { serviceId: props.id } : {};
+      const outside = await objectOutside({ host: this.#sessionHost }, object, within);
+      if (outside) throw new ActionApplyError(outside);
     },
     invalidate: () => this.#cache.invalidateAll(),
   };

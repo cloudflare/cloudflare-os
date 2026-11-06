@@ -73,8 +73,8 @@ export interface PagerDutyAccount {
    * Have `hook.receiveEvent()` called with each incident event of the kinds in `options.events`
    * (by default, all of them) on any incident in the account; see {@link PagerDutyEventKind}.
    *
-   * Every event is delivered, whoever caused it, including the changes a hook makes once they
-   * are approved; `event.actor.isYou` tells those apart. The hook starts disabled, and nothing is
+   * Every event is delivered, whoever caused it, including those of this gadget's own changes;
+   * `event.actor.isYou` tells those apart. The hook starts disabled, and nothing is
    * delivered until the user enables it. Every call creates a distinct hook, so subscribe once
    * for each set of events to watch. Throws if this deployment has not configured PagerDuty
    * hooks.
@@ -228,15 +228,18 @@ export interface PagerDutyIncident {
 
   /**
    * Asks more people to help, notifying each with `message`: users by email or id, and escalation
-   * policies by id. If the account's plan doesn't include responder requests, PagerDuty refuses
-   * the request once it is approved; this call doesn't fail for it.
+   * policies by id. If the account's plan doesn't include responder requests, PagerDuty doesn't
+   * send the request, though this call doesn't fail for it.
    */
   requestResponders(options: PagerDutyResponderRequest): Promise<void>;
 
   /** Sets the priority by name (see `listPriorities()`), or clears it with `null`. */
   setPriority(priority: string | null): Promise<void>;
 
-  /** Sets the urgency. Raising it to `"high"` may notify the assignees again. */
+  /**
+   * Sets the urgency. Raising it to `"high"` pages responders by their high-urgency rules, and
+   * returns an acknowledged incident to triggered, resuming its escalation.
+   */
   setUrgency(urgency: PagerDutyUrgency): Promise<void>;
 
   /** Replaces the incident's title. */
@@ -273,8 +276,8 @@ export interface PagerDutySchedule {
   createOverride(user: string, start: string, end: string): Promise<string>;
 
   /**
-   * Removes an override by id. One already under way is cut short instead, ending once the removal
-   * is approved; one already over can't be removed.
+   * Removes an override by id. One already under way is cut short instead, ending now; one
+   * already over can't be removed.
    */
   deleteOverride(id: string): Promise<void>;
 }
@@ -430,9 +433,8 @@ export type PagerDutyCreateIncidentOptions = {
   /** Assign to these users (emails or ids) instead of the service's escalation policy. */
   assignTo?: string[];
   /**
-   * De-duplication key: PagerDuty refuses to open a second incident with the same key on the
-   * service while the first is open. That refusal comes once the incident is approved, not from
-   * `createIncident()`, and reads show the incident as pending until then.
+   * De-duplication key: PagerDuty doesn't open a second incident with the same key on the service
+   * while the first is open, though `createIncident()` doesn't fail for it.
    */
   incidentKey?: string;
 };
@@ -524,7 +526,7 @@ export type PagerDutyServiceDetails = PagerDutyServiceSummary & {
 /** An incident, as lists return it. */
 export type PagerDutyIncidentSummary = {
   id: string;
-  /** The account-wide incident number, e.g. `12345`; 0 until PagerDuty opens a pending incident. */
+  /** The account-wide incident number, e.g. `12345`; 0 until PagerDuty numbers one `createIncident()` opened. */
   number: number;
   title: string;
   status: PagerDutyIncidentStatus;
@@ -536,7 +538,7 @@ export type PagerDutyIncidentSummary = {
   createdAt: string;
   /** When its status last changed. */
   updatedAt: string;
-  /** Empty until PagerDuty opens a pending incident. */
+  /** Empty while `number` is 0. */
   htmlUrl: string;
 };
 
@@ -583,6 +585,8 @@ export type PagerDutyTimelineEntry = {
   /** PagerDuty's one-line description, e.g. "Notified Jane Doe via SMS". */
   summary: string;
   actor: PagerDutyUserRef | null;
+  /** The note recorded with the entry, such as a resolve's `resolution`, or `null`. */
+  note: string | null;
 };
 
 export type PagerDutyNote = {

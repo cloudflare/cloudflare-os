@@ -17,8 +17,8 @@ import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 import {
   CATALOG_TTL_MS, MAX_NOTE_LENGTH, cachedService, countOf, escalationPolicy, findUsers, ids, listIncidents, listOnCalls,
-  listPriorities, namedListing, priorityNamed, readService, requireTeam, schedule, service, subscribed, team, text,
-  urgency, usersNamed, type SessionContext, type Within,
+  listPriorities, namedListing, priorityNamed, readSchedule, readService, requireTeam, schedule, service, subscribed, team,
+  text, urgency, usersNamed, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -173,9 +173,7 @@ export class PagerDutyTeamImpl extends RpcTarget implements PagerDutyTeam {
   }
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {
-    const { schedule: wire } = await this.#ctx.host.read(api =>
-      api.get<{ schedule: WireSchedule }>(`/schedules/${objectId(id, "id")}`));
-    requireTeam(wire, this.#id, "schedule");
+    requireTeam(await readSchedule(this.#ctx, objectId(id, "id")), this.#id, "schedule");
     return new PagerDutyScheduleImpl(this.#ctx.within(schedule(id)), id, { teamId: this.#id });
   }
 
