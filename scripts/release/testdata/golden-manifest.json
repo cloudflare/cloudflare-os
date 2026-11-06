@@ -878,6 +878,79 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/notion"
       }
     },
+    "gatekeeper-pagerduty": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://app.pagerduty.com/developer/apps",
+          "help": "A Scoped OAuth app registered on your own PagerDuty account. Only users of that account can connect, and each sees only what PagerDuty shows them.",
+          "kind": "secret",
+          "label": "OAuth Client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/pagerduty/oauth",
+          "setupSteps": [
+            "Sign in to your PagerDuty account as a Manager, Global Admin or Account Owner, and open Integrations > Developer Tools > App Registration.",
+            "Select New App, and leave its App Type as Private. Under Functionality, add OAuth and choose \"Scoped OAuth\".",
+            "Grant it these permissions: Incidents (read and write), Schedules (read and write), and read access to Services, Teams, Users, On-Calls, Priorities and Escalation Policies.",
+            "Add the Redirect URL below, and save.",
+            "Copy the Client ID and Client Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth Client Secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "pagerduty.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "PagerDutyGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "pagerduty.js",
+          "r2Key": "blobs/modules/71be11a59a8968cca5a7609ca0dda18e4aba2bb3778c9f393ddb37660c0d9eac",
+          "sha256": "71be11a59a8968cca5a7609ca0dda18e4aba2bb3778c9f393ddb37660c0d9eac",
+          "size": 62,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "pagerduty",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/pagerduty"
+      }
+    },
     "gatekeeper-scheduler": {
       "bindings": [],
       "compatibilityDate": "2026-09-04",

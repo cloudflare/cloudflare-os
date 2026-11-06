@@ -497,6 +497,7 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
   "gatekeeper-x": { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
   "gatekeeper-microsoft": { id: "MICROSOFT_CLIENT_ID", secret: "MICROSOFT_CLIENT_SECRET" },
+  "gatekeeper-pagerduty": { id: "PAGERDUTY_CLIENT_ID", secret: "PAGERDUTY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
