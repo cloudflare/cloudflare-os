@@ -27,9 +27,9 @@ export type PriorityTarget = { id: string; name: string };
 export type NewIncident = {
   /** The `~N` the pending incident goes by until PagerDuty assigns its ID. */
   ref: string;
-  /** The service, and the escalation policy it would notify, as staging read them. */
+  /** The service, its teams, and the escalation policy it would notify, as staging read them. */
   service: PagerDutyRef;
-  team: PagerDutyRef | null;
+  teams: PagerDutyRef[];
   escalationPolicy: PagerDutyRef;
   title: string;
   details?: string;
@@ -101,6 +101,17 @@ export function dependedRefs(payload: PagerDutyActions[keyof PagerDutyActions]):
   return ref !== undefined && isProvisional(ref) ? [ref] : [];
 }
 
+/**
+ * The temporary reference a payload creates, if any: the incident or override it opens (a note's
+ * is not one later actions name). Every definition's `provides`.
+ */
+export function providedRefs(payload: PagerDutyActions[keyof PagerDutyActions]): string[] {
+  return "ref" in payload && !("incident" in payload) ? [payload.ref] : [];
+}
+
+/** The kind a temporary override ID is allocated with, which ties it to the override's schedule. */
+export const overrideKind = (scheduleId: string) => `override:${scheduleId}` as const;
+
 /** How the approval text names an incident: a link once it exists. */
 function incidentLabel(host: PagerDutyActionHost, target: IncidentTarget): string {
   if (isProvisional(target.id)) return "the incident this gadget is opening";
@@ -171,7 +182,7 @@ function overrideDefinition(autoApprovable: boolean) {
     autoApprovable,
     delivery: "continue-with-simulation" as const,
     claimBeforeApply: true,
-    provides: (payload: NewOverride) => [payload.ref],
+    provides: providedRefs,
     describe: (payload: NewOverride, host: PagerDutyActionHost) => present("Add a PagerDuty schedule override",
       buildDescription(`Puts a user on call on [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: payload.scheduleId })}), ` +
         "over whoever it would otherwise have.")
@@ -345,7 +356,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    provides: payload => [payload.ref],
+    provides: providedRefs,
     describe: (payload, host) => {
       const service = resourceUrl({ ...host.tenant, kind: "service", id: payload.service.id });
       const description = buildDescription(`Opens an incident on [this service](${service}), which notifies ` +
@@ -389,7 +400,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "or ends it now if it has already begun.")
         .inline("Override", payload.overrideId)),
     apply: async (payload, host) => {
-      const id = host.refs.requireResolved(payload.overrideId, { expectedKind: "override" });
+      const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });
       await idempotent(host, async api => {
         try {
           await api.write("DELETE", `/schedules/${payload.scheduleId}/overrides/${id}`);
@@ -408,9 +419,3 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
   isResolvedReference: (host, ref) => host.refs.isResolved(ref),
   vendorId: VENDOR_ID,
 });
-
-/** The temporary references an action creates. */
-export function providedRefs(action: PagerDutyAction): string[] {
-  return action.kind === "createIncident" || action.kind === "createOverride" || action.kind === "createOverrideForOthers"
-    ? [action.payload.ref] : [];
-}

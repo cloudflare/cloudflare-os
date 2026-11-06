@@ -104,7 +104,7 @@ export interface PagerDutyAccount {
    * }
    *
    * // executeCode, where `hook` is a persistent stub for the params `{ type: "triage" }`
-   * await env.PAGERDUTY_ACCOUNT.subscribe(hook, { events: ["triggered"] });
+   * await env.PAGERDUTY.subscribe(hook, { events: ["triggered"] });
    */
   subscribe(hook: RpcStub<PagerDutyEventHook>, options?: PagerDutySubscribeOptions): Promise<void>;
 }
@@ -161,7 +161,8 @@ export interface PagerDutyService {
 
   /**
    * Opens a new incident on this service, which notifies whoever its escalation policy names.
-   * Returns the new incident.
+   * Returns the new incident. Until PagerDuty opens it, it goes by a temporary id such as `"~1"`,
+   * with `number` 0 and an empty `htmlUrl`.
    */
   createIncident(options: PagerDutyCreateIncidentOptions): Promise<PagerDutyIncident>;
 
@@ -227,7 +228,8 @@ export interface PagerDutyIncident {
 
   /**
    * Asks more people to help, notifying each with `message`: users by email or id, and escalation
-   * policies by id. Throws if the account's plan doesn't include responder requests.
+   * policies by id. If the account's plan doesn't include responder requests, PagerDuty refuses
+   * the request once it is approved; this call doesn't fail for it.
    */
   requestResponders(options: PagerDutyResponderRequest): Promise<void>;
 
@@ -341,7 +343,7 @@ export type PagerDutyEvent = {
   incident: PagerDutyIncident;
   /**
    * For `noteAdded`: the note. A note too long for PagerDuty to send whole is read in full on
-   * delivery, and left unset if deleted by then; `incident.listNotes()` lists the rest.
+   * delivery, and left unset if it was deleted by then.
    */
   note?: string;
   /**
@@ -428,8 +430,9 @@ export type PagerDutyCreateIncidentOptions = {
   /** Assign to these users (emails or ids) instead of the service's escalation policy. */
   assignTo?: string[];
   /**
-   * De-duplication key: opening a second incident with the same key on the service while the
-   * first is open throws instead.
+   * De-duplication key: PagerDuty refuses to open a second incident with the same key on the
+   * service while the first is open. That refusal comes once the incident is approved, not from
+   * `createIncident()`, and reads show the incident as pending until then.
    */
   incidentKey?: string;
 };
@@ -521,7 +524,7 @@ export type PagerDutyServiceDetails = PagerDutyServiceSummary & {
 /** An incident, as lists return it. */
 export type PagerDutyIncidentSummary = {
   id: string;
-  /** The account-wide incident number, e.g. `12345`. */
+  /** The account-wide incident number, e.g. `12345`; 0 until PagerDuty opens a pending incident. */
   number: number;
   title: string;
   status: PagerDutyIncidentStatus;
@@ -533,6 +536,7 @@ export type PagerDutyIncidentSummary = {
   createdAt: string;
   /** When its status last changed. */
   updatedAt: string;
+  /** Empty until PagerDuty opens a pending incident. */
   htmlUrl: string;
 };
 

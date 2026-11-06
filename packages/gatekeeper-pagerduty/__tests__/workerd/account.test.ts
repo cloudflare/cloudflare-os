@@ -24,14 +24,20 @@ async function connect(pd: FakePagerDuty, who: FakeUser, codeChallenge?: string)
   return { userObjectId, result: await authorize(pd, userObjectId, who, initiation, codeChallenge) };
 }
 
-/** Reconnects `who`'s account as PagerDuty authorizing `as`, committing the grant it stages. */
-async function reconnect(pd: FakePagerDuty, who: FakeUser, as = who) {
+/** Reconnects `who`'s account as PagerDuty authorizing `as`, up to the grant it stages. */
+async function stageReconnect(pd: FakePagerDuty, who: FakeUser, as = who) {
   const userObjectId = await seedAccount(pd, who);
   await hooks().installCallback(userObjectId, generateNonce());
   const { url } = unwrap(await hooks().user(userObjectId, "reconnect")) as { url: string };
-  const result = await authorize(pd, userObjectId, as, url.split("/").at(-1)!);
+  return { userObjectId, result: await authorize(pd, userObjectId, as, url.split("/").at(-1)!) };
+}
+
+/** As `stageReconnect`, committing the grant. */
+async function reconnect(pd: FakePagerDuty, who: FakeUser, as = who) {
+  const staged = await stageReconnect(pd, who, as);
+  const { userObjectId, result } = staged;
   if ("handoff" in result!) unwrap(await hooks().user(userObjectId, "commitReconnect", result.handoff.ticket));
-  return { userObjectId, result };
+  return staged;
 }
 
 /**
@@ -126,6 +132,19 @@ describe("connecting", () => {
       refused: { title: "The PagerDuty app is missing permissions", detail: expect.stringMatching(/incidents\.write, services\.read/) },
     });
     expect(failure(await hooks().user(userObjectId, "describe"))).toMatch(/Reconnect the PagerDuty account/);
+  });
+
+  it("keeps a reconnect's grant inactive until the Workshop commits it", async () => {
+    const pd = new FakePagerDuty().install();
+    pd.users.get(ALICE.id)!.name = "Alice Liddell";
+    const { userObjectId, result } = await stageReconnect(pd, ALICE);
+    const account = accountStub(userObjectId);
+    const before = (await account.getCredentials()).creds.accessToken;
+    expect(await account.getIdentity()).toMatchObject({ name: "Alice" });
+    if (!result || !("handoff" in result)) throw new Error("the reconnect staged no grant");
+    unwrap(await hooks().user(userObjectId, "commitReconnect", result.handoff.ticket));
+    expect((await account.getCredentials()).creds.accessToken).not.toBe(before);
+    expect(await account.getIdentity()).toMatchObject({ name: "Alice Liddell" });
   });
 
   it("refuses a reconnect that comes back as another user", async () => {
