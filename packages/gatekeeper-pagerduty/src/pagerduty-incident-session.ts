@@ -14,8 +14,8 @@ import {
 } from "./pagerduty-normalize";
 import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
-  MAX_NOTE_LENGTH, countOf, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed, service, subscribed,
-  text, urgency, usersNamed, type ObjectRef, type SessionContext, type Within,
+  MAX_NOTE_LENGTH, countOf, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed, readIncident, service,
+  subscribed, text, urgency, usersNamed, youOf, type ObjectRef, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -76,9 +76,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       }
       loaded = { pending: created.action.payload };
     } else {
-      const { incident: wire } = await host.read(api =>
-        api.get<{ incident: WireIncident }>(`/incidents/${id}`, includes.length ? { include: includes } : {}));
-      loaded = { wire };
+      loaded = { wire: await readIncident(this.#ctx, id, includes) };
     }
     const why = await outsideOf(this.#ctx, loaded.wire ? loaded.wire.service.id : loaded.pending.service.id, this.#within);
     if (why) throw new Error(why);
@@ -91,8 +89,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   async #you() {
-    const me = await this.#ctx.host.me();
-    return { id: me.userId, name: me.name };
+    return youOf(await this.#ctx.host.me());
   }
 
   async getDetails(): Promise<PagerDutyIncidentDetails> {

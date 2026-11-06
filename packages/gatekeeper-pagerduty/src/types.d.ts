@@ -339,9 +339,15 @@ export type PagerDutyEvent = {
   info: PagerDutyIncidentSummary;
   /** The incident, to read and change. */
   incident: PagerDutyIncident;
-  /** For `noteAdded`: the note. */
+  /**
+   * For `noteAdded`: the note. A note too long for PagerDuty to send whole is read in full on
+   * delivery, and left unset if deleted by then; `incident.listNotes()` lists the rest.
+   */
   note?: string;
-  /** For `statusUpdatePublished`: the message. */
+  /**
+   * For `statusUpdatePublished`: the message. Unset if it was too long for PagerDuty to send whole,
+   * as PagerDuty offers no way to read it in full.
+   */
   statusUpdate?: string;
 };
 

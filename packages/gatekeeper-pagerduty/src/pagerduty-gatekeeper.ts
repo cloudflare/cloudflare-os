@@ -25,7 +25,7 @@ import {
 } from "./pagerduty-credentials";
 import { webOrigin, type Env, type PagerDutyGatekeeperImplProps, type ResourceKind } from "./pagerduty-env";
 import {
-  HOOKS_NOT_CONFIGURED, PagerDutyHookDeliveryImpl, driverName, hookDescription, hooksConfigured, watchedKinds,
+  HOOKS_NOT_CONFIGURED, PagerDutyHookDeliveryImpl, hookDescription, hooksConfigured, watchedKinds,
   type PagerDutyHookDelivery,
 } from "./pagerduty-hooks";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
@@ -46,12 +46,12 @@ const PINNED_KEY = "pinned";
 /** The user and account a binding is pinned to at its first use. */
 type Pinned = AccountKey & { userId: string };
 
-/** How each kind of binding is described, and the interface it implements. */
-const BINDINGS: Record<ResourceKind, { noun: string; bindingName: string; tsType: string }> = {
-  account: { noun: "account", bindingName: "PAGERDUTY", tsType: "PagerDutyAccount" },
-  team: { noun: "team", bindingName: "PAGERDUTY_TEAM", tsType: "PagerDutyTeam" },
-  service: { noun: "service", bindingName: "PAGERDUTY_SERVICE", tsType: "PagerDutyService" },
-  incident: { noun: "incident", bindingName: "PAGERDUTY_INCIDENT", tsType: "PagerDutyIncident" },
+/** How each kind of binding is described, and the interfaces it and its hooks implement. */
+const BINDINGS: Record<ResourceKind, { noun: string; bindingName: string; tsType: string; hookTsType?: string }> = {
+  account: { noun: "account", bindingName: "PAGERDUTY", tsType: "PagerDutyAccount", hookTsType: "PagerDutyEventHook" },
+  team: { noun: "team", bindingName: "PAGERDUTY_TEAM", tsType: "PagerDutyTeam", hookTsType: "PagerDutyEventHook" },
+  service: { noun: "service", bindingName: "PAGERDUTY_SERVICE", tsType: "PagerDutyService", hookTsType: "PagerDutyEventHook" },
+  incident: { noun: "incident", bindingName: "PAGERDUTY_INCIDENT", tsType: "PagerDutyIncident", hookTsType: "PagerDutyEventHook" },
   schedule: { noun: "schedule", bindingName: "PAGERDUTY_SCHEDULE", tsType: "PagerDutySchedule" },
 };
 
@@ -113,11 +113,11 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     subscribe: async (queue, hook, options, scope) => {
       if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
       const events = watchedKinds(options);
-      // Pins the binding's account, which its driver is named by, before the user is asked.
+      // Refuses a binding its connection no longer matches before the user is asked.
       await this.#me();
       using delivery: RpcStub<PagerDutyHookDelivery> = await this.ctx.restore(scope);
       const controller = this.ctx.exports.PagerDutyHookController({ props: {
-        key: crypto.randomUUID(), account: driverName(this.ctx.props), events, delivery,
+        key: crypto.randomUUID(), events, delivery,
         ...(scope.incidentId ? { incidentId: scope.incidentId } : {}),
         ...(scope.within.serviceId ? { serviceId: scope.within.serviceId } : {}),
       } });
@@ -128,18 +128,15 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
 
   async describe(): Promise<ResourceDescription> {
     const props = this.ctx.props;
-    const { noun, bindingName, tsType } = BINDINGS[props.resourceKind];
+    const { noun, bindingName, tsType, hookTsType } = BINDINGS[props.resourceKind];
     const host = new URL(webOrigin(props)).host;
+    const types = { suggestedBindingName: bindingName, tsType, ...(hookTsType ? { hookTsType } : {}) };
     // Descriptions are visible outside observation authorization, so they name objects by ID only.
     return props.resourceKind === "account"
-      ? {
-        url: resourceUrl({ ...props, kind: "account" }), title: host, snippet: "PagerDuty account",
-        suggestedBindingName: bindingName, tsType, hookTsType: "PagerDutyEventHook",
-      }
+      ? { url: resourceUrl({ ...props, kind: "account" }), title: host, snippet: "PagerDuty account", ...types }
       : {
-        url: resourceUrl({ ...props, kind: props.resourceKind }), title: `PagerDuty ${noun} ${props.id}`,
-        snippet: host, suggestedBindingName: bindingName, tsType,
-        ...(props.resourceKind === "schedule" ? {} : { hookTsType: "PagerDutyEventHook" }),
+        url: resourceUrl({ ...props, kind: props.resourceKind }), title: `PagerDuty ${noun} ${props.id}`, snippet: host,
+        ...types,
       };
   }
 

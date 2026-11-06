@@ -100,7 +100,7 @@ type GatekeeperFacet = {
     Promise<{ allowedObserverIds: string[] }>;
   getHistoricalSubresources(): Promise<string[]>;
   testRestoreThrough(hooks: string, facetName: string, props: GatekeeperProps): Promise<void>;
-  testDeliver(scope: HookScope, initiator: unknown, event: unknown): Promise<void>;
+  testDeliver(scope: HookScope, callback: unknown, approvalQueue: unknown, event: unknown): Promise<void>;
 };
 
 class NullGitCache extends RpcTarget {}
@@ -258,8 +258,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** What a delivery stub the facet minted reaches: the facet's own `[restore]()` target. */
-  async deliverHook(facetName: string, props: GatekeeperProps, scope: HookScope, initiator: unknown, event: unknown): Promise<void> {
-    await this.#gatekeeper(facetName, props).testDeliver(scope, initiator, event);
+  async deliverHook(facetName: string, props: GatekeeperProps, scope: HookScope, callback: unknown,
+                    approvalQueue: unknown, event: unknown): Promise<void> {
+    await this.#gatekeeper(facetName, props).testDeliver(scope, callback, approvalQueue, event);
   }
 
   /** Makes the hook's next `count` deliveries throw, as a failing gadget's would. */
@@ -317,9 +318,9 @@ export class TestHookInitiator extends WorkerEntrypoint<Cloudflare.Env, { hooks:
  * target through TestHooks.
  */
 export class TestHookDelivery extends WorkerEntrypoint<Cloudflare.Env, TestHookDeliveryProps> {
-  deliver(initiator: unknown, event: unknown) {
+  deliver(callback: unknown, approvalQueue: unknown, event: unknown) {
     const { hooks, facetName, props, scope } = this.ctx.props;
-    return testHooks(this.ctx.exports, hooks).deliverHook(facetName, props, scope, initiator, event);
+    return testHooks(this.ctx.exports, hooks).deliverHook(facetName, props, scope, callback, approvalQueue, event);
   }
 }
 
@@ -383,6 +384,6 @@ testPrototype.testRestoreThrough = async function(hooks, facetName, props) {
 };
 
 /** Delivers through the target the facet's `[restore]()` returns for a hook's delivery stub. */
-testPrototype.testDeliver = function(scope, initiator, event) {
-  return this[restore](scope).deliver(initiator as never, event as never);
+testPrototype.testDeliver = function(scope, callback, approvalQueue, event) {
+  return this[restore](scope).deliver(callback as never, approvalQueue as never, event as never);
 };
