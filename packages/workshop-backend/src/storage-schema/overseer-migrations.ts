@@ -12,14 +12,13 @@
 // bump of OVERSEER_STORAGE_VERSION.
 
 import type {
-  AgentSpawnerConfig, CommitIdentity, GadgetUpstream, WorkpieceId,
+  AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
   type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
-import { freezeWorkspaceWideGrants } from "../sharing";
 import { retryOnDoReset } from "../do-retry";
 import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
 import type { createWorkshopLogger } from "../observability";
@@ -380,12 +379,20 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
 }
 
+// A pre-v7 grant of every gadget, before use grants named individual gadgets.
+function isWorkspaceWide(grant: {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[];
+}): boolean {
+  return grant.role === "use" && grant.gadgetId === undefined && grant.gadgetIds === undefined;
+}
+
 /**
  * Version 6 -> 7: each grant of every gadget, made before gadgets were shared individually, is
- * frozen to the gadgets that can be shared now (see freezeWorkspaceWideGrants()), so that a gadget
- * created later is shared only on purpose. Like every migration it runs before anything reads the
- * sharing graph, so nobody is ever listed or authorized with a grant of every gadget. Synchronous
- * and atomic, like migrateToWorkpieceTypes.
+ * frozen to the gadgets that can be shared now, so that a gadget created later is shared only on
+ * purpose. An edge keeps its source, timestamp and note; a link keeps its keys, creator and note.
+ * Inactive grants are frozen too, since they can confer access again when their sharer regains
+ * build. Like every migration this runs before anything reads the sharing graph. Synchronous and
+ * atomic, like migrateToWorkpieceTypes.
  */
 export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
   if (host.storage.version.get() !== 6) return;
@@ -395,7 +402,26 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
         .filter(record => record.type === "gadget" && !record.pending)
         .map(record => record.id)
         .toSorted((a, b) => a - b);
-    freezeWorkspaceWideGrants(host.storage, gadgetIds);
+    // Listed up front, so that nothing below writes while a listing is open.
+    for (let link of Array.from(host.storage.shareKeys.list())) {
+      if (link.alias !== undefined || !isWorkspaceWide(link)) continue;
+      if (gadgetIds.length === 0) {
+        link.revoked = true;
+        host.storage.shareKeys.byAlias.delete(link.id);
+      } else if (gadgetIds.length === 1) {
+        link.gadgetId = gadgetIds[0];
+      } else {
+        link.gadgetIds = gadgetIds;
+      }
+      host.storage.shareKeys.put(link);
+    }
+
+    for (let record of Array.from(host.storage.collaborators.list())) {
+      if (!record.addedBy.some(isWorkspaceWide)) continue;
+      record.addedBy = record.addedBy.flatMap(edge =>
+          isWorkspaceWide(edge) ? gadgetIds.map(gadgetId => ({...edge, gadgetId})) : [edge]);
+      host.storage.collaborators.put(record);
+    }
     host.storage.version.put(7);
   });
   host.logger.info("froze grants of every gadget", {

@@ -1154,7 +1154,7 @@ export type ShareLinkRecord = {
   /**
    * The gadgets a "use" link to several gadgets grants: what a link to every gadget, made before
    * gadgets were shared individually, was frozen to by the schema version 7 migration (see
-   * freezeWorkspaceWideGrants()). No such link is created anymore.
+   * migrateToFrozenGadgetGrants() in overseer-migrations.ts). No such link is created anymore.
    */
   gadgetIds?: WorkpieceId[];
 
@@ -1385,7 +1385,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       config no longer carries `env`.
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
-      //       held when it was migrated (see freezeWorkspaceWideGrants() in sharing.ts).
+      //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)

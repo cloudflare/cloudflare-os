@@ -135,46 +135,6 @@ function asLink(record: ShareKeyRecord | undefined): ShareLinkRecord | undefined
   return record !== undefined && record.alias === undefined ? record : undefined;
 }
 
-// Whether `grant` is of every gadget: a "use" grant naming none, as stored before schema version 7.
-function isWorkspaceWide(grant: GrantFields): boolean {
-  return grant.role === "use" && grant.gadgetId === undefined && grant.gadgetIds === undefined;
-}
-
-/**
- * Freezes each grant of every gadget -- a "use" edge or link naming no gadget, made before gadgets
- * were shared individually -- to `gadgetIds`, the gadgets that can be shared now, so that it no
- * longer reaches gadgets created later. This is the schema version 7 migration (see
- * migrateToFrozenGadgetGrants()). Nothing else about a grant changes: an edge keeps its sharer or
- * link, timestamp and note, becoming one edge per gadget, and a link keeps its keys, creator and
- * note, naming its one gadget as any gadget's link does, or several in `gadgetIds`. Grants that
- * confer nothing now are frozen as well, since they confer again once their sharer regains
- * "build". A link left with no gadget can never grant anything again, so it is revoked.
- */
-export function freezeWorkspaceWideGrants(storage: SharingStorage, gadgetIds: WorkpieceId[])
-    : void {
-  // Listed up front, so that nothing below writes while a listing is open.
-  for (let record of Array.from(storage.shareKeys.list())) {
-    let link = asLink(record);
-    if (!link || !isWorkspaceWide(link)) continue;
-    if (gadgetIds.length === 0) {
-      link.revoked = true;
-      storage.shareKeys.byAlias.delete(link.id);
-    } else if (gadgetIds.length === 1) {
-      link.gadgetId = gadgetIds[0];
-    } else {
-      link.gadgetIds = gadgetIds;
-    }
-    storage.shareKeys.put(link);
-  }
-
-  for (let record of Array.from(storage.collaborators.list())) {
-    if (!record.addedBy.some(isWorkspaceWide)) continue;
-    record.addedBy = record.addedBy.flatMap(edge =>
-        isWorkspaceWide(edge) ? gadgetIds.map(gadgetId => ({...edge, gadgetId})) : [edge]);
-    storage.collaborators.put(record);
-  }
-}
-
 /**
  * Per-session caller identity. Mirrors the fields the OverseerClientInterface holds for the
  * connected client.
