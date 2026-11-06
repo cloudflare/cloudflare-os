@@ -1490,7 +1490,7 @@ const REPO_ACCESS_DENIED_TTL_MS = 15_000;
 
 // How long a binding reuses its owner's answer that the bound repository is public, or not. A
 // repository made private is treated as public by observer checks for at most this long.
-const REPO_VISIBILITY_TTL_MS = 15_000;
+const REPO_VISIBILITY_TTL_MS = 15 * 60_000;
 
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's

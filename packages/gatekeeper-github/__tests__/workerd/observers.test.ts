@@ -555,7 +555,7 @@ describe("verifyObserverAccess", () => {
       expect(github.requestsWith("owner-token")).toEqual([`/repositories/${REPO_ID}`]);
     });
 
-    it("reuses the owner's answer for 15 seconds, then follows the repository going private", async () => {
+    it("reuses the owner's answer for 15 minutes, then follows the repository going private", async () => {
       const github = new FakeGitHub();
       github.publicRepos.add(REPO_ID);
       const bob = await account("bob-token");
@@ -564,12 +564,12 @@ describe("verifyObserverAccess", () => {
 
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
       github.publicRepos.delete(REPO_ID);
-      vi.setSystemTime(start + 14_000);
+      vi.setSystemTime(start + 14 * MINUTE);
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
       expect(github.requestsWith("owner-token")).toHaveLength(1);
 
       // Asked again, the owner finds it private, so bob's own account decides: he can't read it.
-      vi.setSystemTime(start + 16_000);
+      vi.setSystemTime(start + 16 * MINUTE);
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
       expect(github.requestsWith("owner-token")).toHaveLength(2);
       expect(github.requestsWith("bob-token")).toEqual([`/repositories/${REPO_ID}`]);
@@ -582,17 +582,17 @@ describe("verifyObserverAccess", () => {
       const gk = await binding({ pinned: true });
       const start = Date.now();
       // GitHub answers public, then the repository goes private while the answer is in flight, and
-      // the answer arrives 20 seconds after it was asked for.
+      // the answer arrives 20 minutes after it was asked for.
       github.onAnswered = token => {
         if (token !== "owner-token") return;
         github.onAnswered = undefined;
         github.publicRepos.delete(REPO_ID);
-        vi.setSystemTime(start + 20_000);
+        vi.setSystemTime(start + 20 * MINUTE);
       };
 
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
 
-      // Already older than 15 seconds when it landed, it isn't reused: asked again, the owner finds
+      // Already older than 15 minutes when it landed, it isn't reused: asked again, the owner finds
       // the repository private, and bob's own account denies him.
       expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
       expect(github.requestsWith("owner-token")).toHaveLength(2);

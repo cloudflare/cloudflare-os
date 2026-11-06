@@ -193,7 +193,7 @@ Implemented TTL cache families:
 - `cache:@repo-visibility:entry:<repoId>` (with `cache:@repo-visibility:generation`, a
   `KvTtlCache` named `repo-visibility`) -> whether the binding's owner found the pinned repository
   public (`visibility: "public"`, not `private`), reused by `verifyObserverAccess` for up to 15
-  seconds from when its request started and then asked again; an answer that says nothing is not
+  minutes from when its request started and then asked again; an answer that says nothing is not
   stored
 - `cache:list-pulls-v2:<encodedQuery>:p<page>` -> `GitHubPullRequestSummary[]`, unfiltered (v2: v1
   dropped rows with pending actions)

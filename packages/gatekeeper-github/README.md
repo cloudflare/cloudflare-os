@@ -118,7 +118,7 @@ passing doesn't mean GitHub shows that account everything the binding's account 
   `GET /repositories/<id>`, a read is allowed for every collaborator without asking their
   accounts: anyone can read a public repository, so a collaborator whose credentials have expired
   doesn't block it. Visibility is the repository's own, whoever's token reads it, and every read
-  uses the owner's token, so it has just worked. The answer is reused for up to 15 seconds, so a
+  uses the owner's token, so it has just worked. The answer is reused for up to 15 minutes, so a
   repository made private is still treated as public for at most that long. An owner answer that
   says nothing (expired credentials, a rate limit, an outage) counts as not public, leaving
   collaborators to their own accounts. Opening the workspace doesn't take this shortcut: each open
