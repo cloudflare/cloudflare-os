@@ -6,18 +6,53 @@ import {replicaCommitPack} from "./replica-git";
 import type {WorkspaceGitCache} from "./git-cache";
 import type {FileChangeByPath} from "@gadgets/workshop-shared/agent-integration";
 
-/** Workspace-owned object selection; the container sees only Git smart HTTP. */
+/**
+ * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer. The
+ * overseer decides where each object comes from; the client (e.g. Git in a container) only ever
+ * sees one smart-HTTP repository.
+ */
 export interface WorktreeGitSource {
+  /** The worktree's latest commit (WorktreeRecord.headCommit): advertised as HEAD. */
   head: string;
+
+  /**
+   * Other commits stored in the workspace that a client may fetch by ID, besides `head`: the
+   * worktree's base commit (`pinBase`) and the bases replicas have been told about.
+   */
   localHeads?: string[];
+
+  /**
+   * For a worktree that came from a connected repository, the commit it was created at: the
+   * history boundary, as in a shallow clone. Its objects are streamed from `upstream()`, not
+   * read from the workspace. Null when all of the worktree's history is in the workspace.
+   */
   shallowCommit: string | null;
+
+  /**
+   * Uncommitted edits replicas may still need. Only their `setBytes` blob references matter:
+   * those blobs may be fetched by ID.
+   */
   pending: FileChangeByPath[];
+
+  /** Throws if access has ended (e.g. the chat or connection was removed). Called repeatedly. */
   check(): void;
+
+  /** Streams the raw pack (no protocol framing) for `shallowCommit`, at depth 1. */
   upstream(): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * Forwards a fetch for objects the workspace doesn't have (e.g. another commit of the
+   * connected repository) to that repository's connection. Absent if there is none.
+   */
   remotePull?(request: Request): Promise<Response>;
 }
 
-/** Serve one worktree's Git metadata and raw packs without importing remote blobs into the DO. */
+/**
+ * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `WorktreeIntegration.gitPull()`.
+ * The worktree's own commits are built from workspace storage, while the base commit's files
+ * from a connected repository are streamed through from the provider rather than loaded into
+ * the workspace.
+ */
 export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
     request: Request): Promise<Response> {
   const path = gitPullPath(request);

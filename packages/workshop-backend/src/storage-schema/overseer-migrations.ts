@@ -379,10 +379,16 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
 }
 
-/** Versions 6/7 -> 8: mounted sync capabilities replace the unreleased command-lease prototype. */
+/**
+ * Versions 6/7 -> 8: introduces worktree replica syncing (see the `worktreeSync*` collections).
+ * Its collections start empty, so there is nothing to backfill. Version 7 exists only in
+ * workspaces that ran an earlier, unreleased design for running commands against worktrees;
+ * this skips past it too.
+ */
 export function migrateToWorktreeSync(host: OverseerMigrationHost): void {
   const version = host.storage.version.get();
   if (version !== 6 && version !== 7) return;
-  // Keep historical prototype bookkeeping for diagnosis; never revive its expired authority.
+  // Leave any data the version-7 design stored in place, for diagnosis. Nothing reads it, so the
+  // access it once granted cannot be used again.
   host.storage.version.put(8);
 }

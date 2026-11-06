@@ -4,7 +4,7 @@ import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
-  requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
+  requireTextFiles, type BytesRef, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -7301,6 +7301,16 @@ class OverseerImpl implements AgentHooks {
       }));
     }
     this.#updateAlarm();
+  }
+
+  /** Cache a raw postimage under mounted-worktree authority, without publishing a file change. */
+  async putWorktreeBlob(sessionId: string, bytes: Uint8Array): Promise<BytesRef> {
+    this.requireWorktreeSync(sessionId);
+    if (!(bytes instanceof Uint8Array)) throw new Error("Expected raw Git blob bytes.");
+    if (bytes.byteLength > 8_000_000) throw new Error("Worktree Git blob is too large to upload.");
+    const ref = await this.gitCache.writeBlob(bytes);
+    this.requireWorktreeSync(sessionId);
+    return ref;
   }
 
   async submitWorktreeChanges(sessionId: string, batchId: string, baseRevision: string,
@@ -14767,7 +14777,12 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   }));
 }
 
-/** Persistent Worktree facade; file tools retain their original execution guard. */
+/**
+ * The Worktree stub handed to an agent's code (restored from "worktree" params). The file
+ * methods work only while the code execution it was handed to is running. The replica methods
+ * (WorktreeIntegration) keep working afterwards, so that a gatekeeper the stub was passed to can
+ * keep syncing the worktree.
+ */
 @validateRpc()
 class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeIntegration {
   constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
@@ -14816,7 +14831,10 @@ class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeInte
   }
 }
 
-/** Persisted batch receipts and callback positions outlive an individual DO invocation. */
+/**
+ * A replica's sync session stub (restored from "worktree-sync" params). All of its state is in
+ * storage (WorktreeSyncRecord and related records), so it survives Durable Object restarts.
+ */
 @validateRpc()
 class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSession {
   constructor(private impl: OverseerImpl, private sessionId: string) { super(); }
@@ -14827,12 +14845,18 @@ class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSessio
         (after !== undefined && typeof after !== "string")) throw new Error("Invalid worktree subscription.");
     return this.impl.subscribeWorktree(this.sessionId, subscriber, after);
   }
+  async putBlob(bytes: Uint8Array): Promise<BytesRef> {
+    return this.impl.putWorktreeBlob(this.sessionId, bytes);
+  }
   async submitChanges(batchId: string, revision: string, changes: FileChangeByPath[]) {
     return this.impl.submitWorktreeChanges(this.sessionId, batchId, revision, changes);
   }
 }
 
-/** A stale handle can never unsubscribe a replacement registration. */
+/**
+ * The handle for one subscription (restored from "worktree-subscription" params). It names the
+ * subscription's own ID, so once the session has subscribed again, an old handle does nothing.
+ */
 @validateRpc()
 class WorktreeSubscriptionEndpoint extends NativeRpcTarget implements WorktreeSubscription {
   constructor(private impl: OverseerImpl, private sessionId: string, private subscriptionId: string) { super(); }

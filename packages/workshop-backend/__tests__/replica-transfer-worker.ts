@@ -42,6 +42,9 @@ export class TestReplicaTransfer extends DurableObject {
     await subscription?.unsubscribe();
     this.ctx.storage.kv.delete("subscription");
   }
+  async putBlob(bytes: Uint8Array) {
+    return this.ctx.storage.kv.get<RpcStub<WorktreeSyncSession>>("session")!.putBlob(bytes);
+  }
   async submit(id: string, revision: string, changes: FileChangeByPath[]) {
     return this.ctx.storage.kv.get<RpcStub<WorktreeSyncSession>>("session")!.submitChanges(id, revision, changes);
   }
