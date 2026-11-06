@@ -282,7 +282,13 @@ export type AccountDescription = {
 
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
-  /** HTTPS clone URL when this binding grants read access to the whole Git repository. */
+  /**
+   * The repository's HTTPS clone URL (e.g. "https://github.com/owner/repo"), if this resource is
+   * a whole Git repository that the connection can read. Set it only if `gitPull()` with an
+   * observer can serve any of the repository's refs and objects. The workspace matches this URL
+   * against the one passed to `GitCache.gitPull()` to find which connection should serve a
+   * fetch, so it must name the same repository the connection reads.
+   */
   gitRepositoryUrl?: string;
   /**
    * The resource's canonical URL. This can differ from the one passed to `newGatekeeper()`, if the
@@ -1131,20 +1137,32 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Read this resource's Git repository through smart HTTP (protocol v2). Accept only
-   * GET /info/refs?service=git-upload-pack and POST /git-upload-pack; the request URL must
-   * never select the upstream repository. Return the streamed Git protocol response.
+   * Fetch from this resource's Git repository, using Git's smart-HTTP protocol (version 2,
+   * read-only). The request is what native `git fetch` would send to the repository; forward it
+   * to the provider (adding this connection's credentials, which never leave the gatekeeper)
+   * and return the provider's streamed response. Accept only the two fetch requests --
+   * GET `/info/refs?service=git-upload-pack` and POST `/git-upload-pack` (see `gitPullPath()`
+   * in gatekeeper-kit) -- and ignore the rest of the URL: the repository is always the one this
+   * connection is for, never one named by the request.
    *
-   * Without observer, the overseer requests only objects already observed from this binding:
+   * The workspace calls this in two situations, told apart by `observer`:
+   *
+   * Without `observer`, the workspace is fetching objects it already knows this connection can
+   * see, so no new observation needs to be authorized. This happens when it fills its Git
+   * cache, and when it gives a container a copy of a worktree that came from this repository.
+   * It requests only objects it learned of from this connection:
    * * The object is a commit this gatekeeper advertised via `GitCache.advertiseCommit()`.
    * * The object was referenced by another object populated by this gatekeeper (e.g. it is the
    *   parent of another commit from this gatekeeper).
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * With observer, this is a new repository observation: require whole-repository access
-   * (describe().gitRepositoryUrl) and await observer.authorizeObservation before returning data.
-   * The overseer, not the guest, selects whether observer is required. Credentials stay here.
+   * With `observer`, the fetch may read anything in the repository -- e.g. a build script
+   * running in a container fetched a commit by ID (see `GitCache.gitPull()`). Treat it as a new
+   * read of the repository: serve it only if the connection covers the whole repository (see
+   * `ResourceDescription.gitRepositoryUrl`), and call `observer.authorizeObservation()`, waiting
+   * for it to succeed, before returning any data. Only the workspace decides whether to pass an
+   * observer; code running in a container cannot skip it.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
@@ -1874,10 +1892,20 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  */
 export interface GitCache extends RpcTarget {
   /**
-   * Read-only Git smart HTTP for an already-connected repository URL. Resolves the source
-   * through workspace authorization at request time; credentials remain in its gatekeeper.
-   * Does not create a Worktree or import the returned pack into the workspace object cache.
-   * A missing connection rejects; connecting a new repository requires a separate user flow.
+   * Fetch from a Git repository that the workspace is already connected to, using Git's
+   * smart-HTTP protocol (version 2, read-only). Intended for gatekeepers that run code, like a
+   * container gatekeeper: when a command runs `git fetch` against some repository URL, the
+   * gatekeeper forwards the requests here, and the workspace relays them to the connection for
+   * that repository (via its `Gatekeeper.gitPull()`), so the container never holds credentials.
+   *
+   * `repositoryUrl` must be a credential-free HTTPS URL, e.g. "https://github.com/owner/repo".
+   * It is matched against `ResourceDescription.gitRepositoryUrl` of the connections the caller
+   * can use: the chat's connections for an agent, or a gadget's own bindings. Each fetch is
+   * recorded as an observation, like any other read. If no such connection exists, this throws;
+   * the user must connect the repository first.
+   *
+   * The response is passed through; nothing is stored in the workspace's Git cache. The stream
+   * stops if the connection is removed while it is being read.
    */
   gitPull(repositoryUrl: string, request: Request): Promise<Response>;
 
@@ -1981,10 +2009,13 @@ export interface GitCache extends RpcTarget {
 }
 
 /**
- * Hints the cache's Git fetch composer uses to decide how much to pull.
+ * Hints describing how much to fetch along with the objects the workspace's Git cache needs. The
+ * cache turns them into the fetch request it sends to `Gatekeeper.gitPull()` (e.g. a depth or an
+ * object filter).
  *
- * Filters may over-fetch, but must not omit objects when no filter is requested. Cache pulls
- * request self-contained packs (no haves); native Git consumers negotiate their own packs.
+ * Filters may over-fetch, but must not omit objects when no filter is requested. The cache's
+ * fetches ask for a self-contained pack (they claim to have no objects already, so the response
+ * never depends on earlier fetches); native Git clients, by contrast, negotiate what they have.
  *
  * The options are designed with the details of the standard git protocol in mind.
  */

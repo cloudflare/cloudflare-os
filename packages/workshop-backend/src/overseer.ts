@@ -14039,7 +14039,12 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   }));
 }
 
-/** Persistent Worktree facade; file tools retain their original execution guard. */
+/**
+ * The Worktree stub handed to an agent's code (restored from "worktree" params). The file
+ * methods work only while the code execution it was handed to is running. The replica methods
+ * (WorktreeIntegration) keep working afterwards, so that a gatekeeper the stub was passed to can
+ * keep syncing the worktree.
+ */
 @validateRpc()
 class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeIntegration {
   constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
@@ -14088,7 +14093,10 @@ class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeInte
   }
 }
 
-/** Persisted batch receipts and callback positions outlive an individual DO invocation. */
+/**
+ * A replica's sync session stub (restored from "worktree-sync" params). All of its state is in
+ * storage (WorktreeSyncRecord and related records), so it survives Durable Object restarts.
+ */
 @validateRpc()
 class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSession {
   constructor(private impl: OverseerImpl, private sessionId: string) { super(); }
@@ -14104,7 +14112,10 @@ class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSessio
   }
 }
 
-/** A stale handle can never unsubscribe a replacement registration. */
+/**
+ * The handle for one subscription (restored from "worktree-subscription" params). It names the
+ * subscription's own ID, so once the session has subscribed again, an old handle does nothing.
+ */
 @validateRpc()
 class WorktreeSubscriptionEndpoint extends NativeRpcTarget implements WorktreeSubscription {
   constructor(private impl: OverseerImpl, private sessionId: string, private subscriptionId: string) { super(); }

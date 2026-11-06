@@ -153,10 +153,22 @@ export interface WorktreeTurnAccess {
    */
   appendChange(worktreeId: WorkpieceId, path: string, change: FileChange): void;
 
-  /** Changes when a tool mutates the turn overlay; guards asynchronous replica reads. */
+  /**
+   * A counter that increases whenever this turn's uncommitted edits change. Callers that read
+   * asynchronously compare it before and after to detect edits made in between.
+   */
   getRevision?(): number;
 
-  /** Durably accept a replica batch; validate its receipt/version inside the serialized barrier. */
+  /**
+   * Accept edits submitted by a worktree replica (WorktreeSyncSession.submitChanges()) while
+   * this turn is running. The edits join the turn's in-memory edits, and are saved right away,
+   * together with any of the turn's edits not yet saved, through the same step barrier as
+   * commitAgentStep() (see AiToolCall.effectsPersisted).
+   *
+   * `revision` is the getRevision() value the edits were prepared against; `commit` is the
+   * batch's receipt, stored in the same transaction; `validate` is rechecked inside it. Returns
+   * false, without applying anything, if any of these no longer match -- the caller retries.
+   */
   flushReplica?(change: CodeChange, revision: number,
     commit?: WorktreeSyncCommit, validate?: () => boolean): Promise<boolean>;
 
@@ -385,9 +397,17 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
-        /** Idempotent receipt for changes accepted from a gatekeeper's replica. */
+        /**
+         * Set when the step's last change is a batch submitted by a worktree replica: its
+         * receipt, stored in the same transaction, which fails if the receipt already exists
+         * or the chat's change stream is no longer at `revision`.
+         */
         replicaCommit?: WorktreeSyncCommit,
-        /** Publish prepared replica edits only after their transaction commits in this live pass. */
+        /**
+         * Set when replica edits are saved during a live agent turn (see flushReplica). The
+         * transaction fails unless `current` is still the chat's live turn, at `revision`;
+         * `accept()` then adds the edits to the turn's in-memory state, only once they are saved.
+         */
         replicaAccess?: {current: WorktreeTurnAccess, revision: number, accept(): void},
       },
       usage?: Usage, aiGatewayLogId?: string,

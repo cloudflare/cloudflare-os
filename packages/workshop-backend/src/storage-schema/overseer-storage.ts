@@ -36,25 +36,128 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
 
-/** One explicitly delegated Worktree capability; independent of agent turns and recipients. */
+// =======================================================================================
+// Worktree replicas
+//
+// A worktree replica is a copy of a worktree's files kept outside the workspace -- typically by a
+// container gatekeeper that runs shell commands against them -- and kept in sync in both
+// directions with the chat's uncommitted changes. The public API is in
+// `@gadgets/workshop-shared/agent-integration`, which explains the concepts; these records are
+// the workspace's side of it. All of them are keyed by strings the workspace generates.
+//
+// Positions in a chat's change stream ("revisions") are stored in the form the API hands out:
+// "<generation>:<revision>", naming ChatCodeBase.generation and the ChatChangeRecord.revision
+// within it.
+
+/**
+ * A sync session: created each time a gatekeeper calls `getSyncSession()` on a Worktree stub, and
+ * the authority behind the persistent session stub it receives. The session stays usable as long
+ * as the worktree still belongs to `chatId`, the chat exists, and the connection the worktree came
+ * from (if any) has not been removed; this is checked on every use. Not currently deleted, even
+ * once it is no longer usable.
+ */
 export type WorktreeSyncRecord = {
-  id: string; chatId: number; worktreeId: WorkpieceId; author: AiChatAuthorInfo;
+  /** Random UUID; the key of this session's stub and of the rows below that belong to it. */
+  id: string;
+
+  /** The chat the worktree belongs to, whose change stream the session reads and writes. */
+  chatId: number;
+
+  /** The worktree the session syncs. */
+  worktreeId: WorkpieceId;
+
+  /**
+   * Who edits the session submits are attributed to: the user who started the agent turn that
+   * passed the Worktree stub on.
+   */
+  author: AiChatAuthorInfo;
 };
 
-/** Payload-bound retry receipt, committed atomically with canonical OTs. */
+/**
+ * A receipt for one batch of edits a session submitted (`WorktreeSyncSession.submitChanges()`)
+ * that the workspace accepted. It is written in the same transaction as the chat change row
+ * holding the edits, so a receipt exists exactly when the edits were accepted. A retried
+ * submission with the same batch ID finds the receipt and gets the original result back, instead
+ * of applying the edits twice. Kept indefinitely, for diagnosis and for very late retries.
+ */
 export type WorktreeSyncCommit = {
-  id: string; sessionId: string; batchId: string; digest: string;
-  /** Canonical version checked before persistence and replaced by the accepted revision. */
+  /** `${sessionId}:${batchId}`. */
+  id: string;
+
+  /** The submitting session (a WorktreeSyncRecord id). */
+  sessionId: string;
+
+  /** The batch ID the replica chose for the submission. */
+  batchId: string;
+
+  /**
+   * SHA-256 (hex) of the submission's arguments. A retry with the same batch ID but a different
+   * digest is rejected rather than treated as the same batch.
+   */
+  digest: string;
+
+  /**
+   * Once stored: the stream position just after the batch's edits, which `submitChanges()`
+   * returns. While the batch is being accepted (this type is also passed in-memory to
+   * AgentHooks.commitAgentStep), it instead holds the position the edits were transformed to, so
+   * the transaction can reject the batch if the stream has moved on in the meantime; the
+   * transaction then stores the receipt with the final position.
+   */
   revision: string;
 };
 
-/** One ordered, flow-controlled subscriber per sync session, including reset recovery. */
+/**
+ * A session's current subscriber and how far delivery to it has progressed. Deliveries go one
+ * at a time: the workspace sends the next update after `revision`, waits for the subscriber to
+ * acknowledge it (by returning), and then advances `revision`. Nothing is queued in memory, so
+ * delivery picks up from here after the Durable Object restarts. Deleted when the subscription
+ * is cancelled or replaced, or when a delivery attempt finds the session no longer usable.
+ */
 export type WorktreeSyncSubscriptionRecord = {
-  sessionId: string; id: string; subscriber: NativeRpcStub<WorktreeSubscriber>;
+  /** The session (a WorktreeSyncRecord id). Each session has at most one subscriber. */
+  sessionId: string;
+
+  /**
+   * Random UUID of this subscription, embedded in the WorktreeSubscription stub handed out for
+   * it, so that an old stub cannot cancel a newer subscription to the same session.
+   */
+  id: string;
+
+  /** The replica's callback object. */
+  subscriber: NativeRpcStub<WorktreeSubscriber>;
+
+  /**
+   * The last stream position the subscriber has acknowledged. Absent until the `bootstrap`
+   * below has been delivered. Retired change rows after this position are kept, rather than
+   * expired, until the subscriber has received them (see pruneRetiredChatChanges).
+   */
   revision?: string;
+
+  /** The base commit last acknowledged via `setBaseCommit()`; a change triggers another call. */
   head?: string | null;
-  bootstrap?: {revision: string; head: string | null; shallowCommit: string | null;
-    changes: FileChangeByPath[]; baseApplied?: boolean};
+
+  /**
+   * Present until a fresh subscriber has received its initial state: the base commit and the
+   * chat's pending edits to the worktree, captured when it subscribed. Delivered as one
+   * `setBaseCommit()` followed by one `change()`, and then replaced by `revision`/`head`.
+   */
+  bootstrap?: {
+    /** Stream position the captured state corresponds to. */
+    revision: string;
+    /** The base commit (the worktree's `pinBase`). */
+    head: string | null;
+    /** As in WorktreeSubscriber.setBaseCommit(). */
+    shallowCommit: string | null;
+    /** All of the chat's uncommitted edits to the worktree, composed into one list. */
+    changes: FileChangeByPath[];
+    /** Set once `setBaseCommit()` has been acknowledged, so a retry sends only the changes. */
+    baseApplied?: boolean;
+  };
+
+  /**
+   * When the alarm should next try to deliver (epoch milliseconds): 0 when the subscriber is
+   * caught up and nothing is due, and a short delay after a failed delivery.
+   */
   retryAt: number;
 };
 
@@ -964,7 +1067,12 @@ export type ChatChangeRecord = {
 
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
-  /** Replica origin retained on the canonical row for optimistic echo reconciliation. */
+  /**
+   * For a row that came from a worktree replica's `WorktreeSyncSession.submitChanges()`: the
+   * submitting session (a WorktreeSyncRecord id) and the batch ID it chose. When the row is
+   * delivered back to that session's subscriber, it carries the same batch ID, so the replica
+   * recognizes edits it already has. Absent on rows from any other source.
+   */
   replica?: {sessionId: string; batchId: string};
 
   /**
@@ -1316,7 +1424,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
-      //   7 = the worktree command leases' activeByWorktree index exists and is backfilled.
+      //   7 = reached only by builds of an earlier, unreleased design for running commands
+      //       against worktrees, which added an index of "command leases". Nothing reads that
+      //       data anymore.
+      //   8 = worktree replica syncing (the `worktreeSync*` collections) is available. Nothing
+      //       was backfilled: those collections start empty.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1384,8 +1496,15 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      // Worktree replicas: copies of a worktree's files kept in sync outside the workspace (e.g.
+      // in a container), through the APIs in `@gadgets/workshop-shared/agent-integration`.
+      // One row per sync session handed out, i.e. per replica (see WorktreeSyncRecord).
       worktreeSyncSessions: collection<WorktreeSyncRecord>()({primaryKey: "id"}),
+      // One row per batch of edits a replica submitted and the workspace accepted, so that
+      // retries are recognized (see WorktreeSyncCommit).
       worktreeSyncCommits: collection<WorktreeSyncCommit>()({primaryKey: "id"}),
+      // The subscriber of each session that has one, with its delivery progress (see
+      // WorktreeSyncSubscriptionRecord).
       worktreeSyncSubscriptions: collection<WorktreeSyncSubscriptionRecord>()({
         primaryKey: "sessionId",
       }),

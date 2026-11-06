@@ -39,7 +39,15 @@ const GIT_AGENT = "cloudflare-gadgets";
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
-/** Validate the read-only smart-HTTP endpoints; never use this URL to select an upstream. */
+/**
+ * Check that `request` is one of the two read-only Git smart-HTTP requests a `gitPull()`
+ * implementation accepts -- ref discovery (GET `/info/refs?service=git-upload-pack`) or fetch
+ * (POST `/git-upload-pack`), with the `Git-Protocol: version=2` header -- and return which one.
+ * Throws otherwise.
+ *
+ * Only the URL's path and query are checked. Never use the rest of the URL (e.g. its host) to
+ * decide which repository to read: the repository is fixed by whoever serves the request.
+ */
 export function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "git-upload-pack" {
   const url = new URL(request.url);
   if (request.headers.get("git-protocol") !== "version=2")
@@ -51,7 +59,12 @@ export function gitPullPath(request: Request): "info/refs?service=git-upload-pac
   throw new Error("Only Git ref discovery and fetch are allowed.");
 }
 
-/** Adapt the cache's exact-object pull to the same smart-HTTP transport native Git uses. */
+/**
+ * Wrap an already-encoded protocol-v2 fetch command (`body`) in the smart-HTTP POST request
+ * that `Gatekeeper.gitPull()` takes, so that fetches the workspace composes itself (e.g. for
+ * specific objects its cache needs) travel the same way native Git's requests do. The host in
+ * the URL is a placeholder; see `gitPullPath()`.
+ */
 export function gitObjectRequest(body: Uint8Array): Request {
   return new Request("https://git.invalid/git-upload-pack", {method: "POST", headers: {
     "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2",
