@@ -8,7 +8,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
-import { MAX_LIMIT, PagerDutyApi, isDenial, type Page, type Query } from "./pagerduty-api";
+import { MAX_LIMIT, OBJECT_PATHS, PagerDutyApi, isDenial, type Page, type Query } from "./pagerduty-api";
 import { RECONNECT_MESSAGE, accountSource, type Identity, type PublicGrant } from "./pagerduty-credentials";
 import { webOrigin } from "./pagerduty-env";
 import type { WireIncident, WireSchedule, WireService, WireTeam } from "./pagerduty-normalize";
@@ -26,11 +26,6 @@ const GONE = "What you chose no longer exists, or this connection can't open it.
 
 type ObjectKind = Exclude<PagerDutyNodeKind, "account">;
 type Ref = { kind: "account" } | { kind: ObjectKind; id: string };
-
-/** Where each kind's lookup reads; PagerDuty wraps the object in a key named for its kind. */
-const LOOKUPS: Record<ObjectKind, string> = {
-  team: "/teams/", service: "/services/", incident: "/incidents/", schedule: "/schedules/",
-};
 
 const REF = /^(team|service|incident|schedule):([A-Z0-9]{1,64})$/;
 
@@ -89,8 +84,9 @@ const schedules = (query: Query): Source => async (api, offset, limit) => {
   return { ...page, items: page.items.map(scheduleNode) };
 };
 const incidents = (query: Query): Source => async (api, offset, limit) => {
+  // PagerDuty lists the last month by default; an incident open longer is still open.
   const page = await api.page<WireIncident>("/incidents", "incidents",
-    { statuses: OPEN_STATUSES, sort_by: "created_at:desc", ...query }, offset, limit);
+    { statuses: OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query }, offset, limit);
   return { ...page, items: page.items.map(incidentNode) };
 };
 
@@ -209,7 +205,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
   async #node(ref: Ref): Promise<PagerDutyNode | null> {
     if (ref.kind === "account") return { ref: "account", kind: "account", title: new URL(webOrigin(await this.#me())).host };
     try {
-      const body = await this.#read(api => api.get<Record<string, unknown>>(`${LOOKUPS[ref.kind]}${ref.id}`));
+      const body = await this.#read(api => api.get<Record<string, unknown>>(`${OBJECT_PATHS[ref.kind]}${ref.id}`));
       const wire = body[ref.kind];
       if (typeof wire !== "object" || wire === null) throw new Error(`PagerDuty's ${ref.kind} was malformed.`);
       switch (ref.kind) {

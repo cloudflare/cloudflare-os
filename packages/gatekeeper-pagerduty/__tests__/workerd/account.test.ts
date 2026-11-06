@@ -1,7 +1,9 @@
-// A connection: which user, account and region PagerDuty's ID token names, the scopes it must
-// grant, the user a reconnect must come back as, and which links the connection can bind.
+// A connection: which user, account and region PagerDuty's ID token names, the checks the token and
+// the code exchange must pass, the scopes it must grant, the user a reconnect must come back as,
+// and which links the connection can bind.
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { getRedirectUri, RESOURCES, type Env } from "../../src/pagerduty-env";
@@ -15,11 +17,11 @@ afterEach(() => {
  * Runs a first connect up to PagerDuty's callback, PagerDuty authorizing `who`. Only refusals are
  * reached here: a grant that goes live mints the account entrypoint, which the test pool can't.
  */
-async function connect(pd: FakePagerDuty, who: FakeUser) {
+async function connect(pd: FakePagerDuty, who: FakeUser, codeChallenge?: string) {
   const userObjectId = env.USER_ACCOUNT.newUniqueId().toString();
   const initiation = generateNonce();
   await hooks().installCallback(userObjectId, initiation);
-  return { userObjectId, result: await authorize(pd, userObjectId, who, initiation) };
+  return { userObjectId, result: await authorize(pd, userObjectId, who, initiation, codeChallenge) };
 }
 
 /** Reconnects `who`'s account as PagerDuty authorizing `as`, committing the grant it stages. */
@@ -32,13 +34,16 @@ async function reconnect(pd: FakePagerDuty, who: FakeUser, as = who) {
   return { userObjectId, result };
 }
 
-/** Takes the account through PagerDuty's authorization of `who`, from an armed initiation nonce. */
-async function authorize(pd: FakePagerDuty, userObjectId: string, who: FakeUser, initiation: string) {
+/**
+ * Takes the account through PagerDuty's authorization of `who`, from an armed initiation nonce.
+ * PagerDuty holds the code to the authorize request's PKCE challenge, or to `codeChallenge`.
+ */
+async function authorize(pd: FakePagerDuty, userObjectId: string, who: FakeUser, initiation: string, codeChallenge?: string) {
   return await runInDurableObject(accountStub(userObjectId), async instance => {
     const flow = await instance.beginOAuthFlow(initiation, getRedirectUri(env as Env));
     if (!flow) throw new Error("the connect flow did not start");
     const code = `code-${crypto.randomUUID()}`;
-    pd.codes.set(code, who.id);
+    pd.codes.set(code, { userId: who.id, codeChallenge: codeChallenge ?? flow.codeChallenge });
     try {
       return await instance.acceptAuthCode(code, flow.oauthNonce);
     } catch (error) {
@@ -78,9 +83,39 @@ describe("connecting", () => {
 
   it("refuses an ID token that doesn't name the account", async () => {
     const pd = new FakePagerDuty().install();
-    pd.claims = ({ id }) => ({ user_id: id, subdomain: "acme", region: "UnitedStates" });
+    pd.claims = (_user, { account_id: _account, ...claims }) => claims;
     const { result } = await connect(pd, ALICE);
     expect(result).toEqual({ error: expect.stringMatching(/Could not read which PagerDuty user/) });
+  });
+
+  it.each<[string, (pd: FakePagerDuty) => Promise<void> | void]>([
+    ["signed with a key PagerDuty never published", async pd => {
+      pd.idTokenKey = (await generateKeyPair("RS256")).privateKey;
+    }],
+    ["from another issuer", pd => {
+      pd.claims = (_user, claims) => ({ ...claims, iss: "https://identity.example.com" });
+    }],
+    ["that has expired", pd => {
+      pd.claims = (_user, claims) => ({ ...claims, exp: Math.floor(Date.now() / 1000) - 60 });
+    }],
+    ["for another app", pd => {
+      pd.claims = (_user, claims) => ({ ...claims, aud: ["https://api.pagerduty.com", "other-client-id"] });
+    }],
+  ])("refuses an ID token %s, before asking who the user is", async (_name, tamper) => {
+    const pd = new FakePagerDuty().install();
+    await tamper(pd);
+    const { result } = await connect(pd, ALICE);
+    expect(result).toEqual({ error: expect.stringMatching(/Could not read which PagerDuty user/) });
+    expect(pd.matching("GET", /^\/users\/me$/)).toHaveLength(0);
+  });
+
+  it("sends the PKCE verifier its authorize request committed to, which PagerDuty checks", async () => {
+    const pd = new FakePagerDuty().install();
+    const { result } = await connect(pd, ALICE, "a-challenge-the-gatekeeper-never-sent");
+    expect(result).toHaveProperty("error");
+    expect(pd.matching("GET", /^\/users\/me$/)).toHaveLength(0);
+    const exchange = pd.requests.find(r => r.url.pathname === "/oauth/token")!;
+    expect(new URLSearchParams(exchange.body).get("code_verifier")).toMatch(/^[\w-]{43,128}$/);
   });
 
   it("refuses a grant PagerDuty silently narrowed, naming what it dropped", async () => {

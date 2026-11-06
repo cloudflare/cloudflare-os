@@ -1,8 +1,8 @@
 // The PagerDuty gatekeeper's main module: the HTTP entrypoint (connect link, OAuth callback and
 // webhook), the vendor and per-account entrypoints, the account Durable Object that holds the OAuth
 // grant, and the observer verifier. The per-binding gatekeeper Durable Object, its sessions and its
-// hooks live in pagerduty-gatekeeper.ts, pagerduty-sessions.ts and pagerduty-hooks.ts, re-exported
-// here so wrangler finds every class on the main module.
+// hooks live in pagerduty-gatekeeper.ts, the pagerduty-*session*.ts modules and pagerduty-hooks.ts,
+// re-exported here so wrangler finds every class on the main module.
 //
 // A connection is a Scoped OAuth user grant: PagerDuty access tokens live a day and refresh tokens
 // rotate, so `UserAccount` keeps the grant in the kit's `CredentialCoordinator`. The token
@@ -33,6 +33,7 @@ import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/g
 import { CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
   CredentialCoordinator,
+  CredentialSource,
   CredentialsExpiredError,
   isConnectionSuperseded,
   isCredentialsExpired,
@@ -45,7 +46,7 @@ import {
   OAuthClient, createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { PagerDutyApi, isDenial } from "./pagerduty-api";
+import { OBJECT_PATHS, PagerDutyApi, isAuthError, isDenial } from "./pagerduty-api";
 import {
   RECONNECT_MESSAGE,
   identityOf,
@@ -55,7 +56,6 @@ import {
   verifyIdToken,
   type GrantIdentity,
   type Identity,
-  type ObjectKind,
   type PagerDutyVerifierApi,
   type PublicGrant,
   type Subresource,
@@ -87,9 +87,9 @@ import CONFIGURATOR_HTML from "./generated/pagerduty-configurator-ui.txt";
 
 export { PagerDutyGatekeeperImpl } from "./pagerduty-gatekeeper";
 export { PagerDutyHookController, PagerDutyHookDeliveryImpl, PagerDutyHookDriver } from "./pagerduty-hooks";
-export {
-  PagerDutyAccountImpl, PagerDutyIncidentImpl, PagerDutyScheduleImpl, PagerDutyServiceImpl, PagerDutyTeamImpl,
-} from "./pagerduty-sessions";
+export { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
+export { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
+export { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.pagerduty", vendorId: VENDOR_ID });
 
@@ -111,22 +111,13 @@ const accessTtl = (allowed: boolean): number => allowed ? ACCESS_ALLOWED_TTL_MS 
 /** How many objects an access check probes at once. */
 const PROBE_CONCURRENCY = 6;
 
-/** Where an object's access probe reads it. */
-const PROBE_PATHS: Record<ObjectKind, string> = {
-  team: "/teams/",
-  service: "/services/",
-  incident: "/incidents/",
-  schedule: "/schedules/",
-  escalation_policy: "/escalation_policies/",
-};
-
 /**
  * Whether PagerDuty opens an object for the user whose token this is: a 403 or 404 is a definite
  * no, and any other failure leaves access undetermined, so it throws.
  */
 async function probe(accessToken: string, { region, object }: Subresource): Promise<boolean> {
   try {
-    await new PagerDutyApi(accessToken, region).get(`${PROBE_PATHS[object!.kind]}${object!.id}`);
+    await new PagerDutyApi(accessToken, region).get(`${OBJECT_PATHS[object!.kind]}${object!.id}`);
     return true;
   } catch (error) {
     if (isDenial(error)) return false;
@@ -333,6 +324,16 @@ export class UserAccount extends DurableObject<Env> {
   readonly #notify = (): Promise<void> => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
     this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
 
+  // The account's own PagerDuty reads (its user, its observer probes) run through the same
+  // rejection handling as a facet's: a refused token is refreshed, or the grant marked dead and the
+  // user asked to reconnect.
+  readonly #source = new CredentialSource<PublicGrant>({
+    account: () => this,
+    isAuthError,
+    expiredMessage: RECONNECT_MESSAGE,
+    vendorId: VENDOR_ID,
+  });
+
   // This account's answers about its own access to subresources, partitioned by the connection
   // that learned them, so none outlives a disconnect or survives a reconnect. Bypassed while the
   // account holds no grant.
@@ -398,7 +399,8 @@ export class UserAccount extends DurableObject<Env> {
     if (!tokens.idToken) throw new Error("PagerDuty did not say which user authorized this connection.");
     let identity: Identity;
     try {
-      identity = await fetchUser(grant.accessToken, await verifyIdToken(tokens.idToken));
+      // `oauthClient()` refused to exchange the code without a client ID.
+      identity = await fetchUser(grant.accessToken, await verifyIdToken(tokens.idToken, this.env.CLIENT_ID!));
     } catch (error) {
       throw new Error("Could not read which PagerDuty user authorized this connection. Please try again.",
         { cause: error });
@@ -498,8 +500,7 @@ export class UserAccount extends DurableObject<Env> {
     const recent = options?.maxAgeMs !== undefined;
     if (Date.now() - stored.fetchedAt < (options?.maxAgeMs ?? IDENTITY_TTL_MS)) return stored;
     try {
-      const { creds } = await this.getCredentials();
-      const fresh = await fetchUser(creds.accessToken, stored);
+      const fresh = await this.#source.run(creds => fetchUser(creds.accessToken, stored), { replayable: true });
       this.ctx.storage.kv.put<Identity>("identity", fresh);
       return fresh;
     } catch (error) {
@@ -515,12 +516,13 @@ export class UserAccount extends DurableObject<Env> {
    * object, when the account is and PagerDuty opens it for this user, a 403 or 404 being a
    * definite no. An allowed answer is reused for up to 15 minutes and a denial for 15 seconds, until
    * the next reconnect. Throws for an ID it can't check, or when access can't be determined, which
-   * is never reused.
+   * is never reused. A token PagerDuty refuses is refreshed, or else the user asked to reconnect.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     const parsed = subresources.map(parseSubresource);
-    const { creds } = await this.getCredentials();
+    // A connection that is gone fails the check outright, rather than serve answers it cached.
+    await this.getCredentials();
     const accounts = new Map<string, boolean>();
     for (const key of parsed) {
       const id = subresourceId(key);
@@ -532,7 +534,8 @@ export class UserAccount extends DurableObject<Env> {
     const allowed = new Map<string, boolean>();
     for (let start = 0; start < objects.length; start += PROBE_CONCURRENCY) {
       await Promise.all(objects.slice(start, start + PROBE_CONCURRENCY).map(async id => {
-        allowed.set(id, await this.#access.cached(id, accessTtl, () => probe(creds.accessToken, parseSubresource(id))));
+        allowed.set(id, await this.#access.cached(id, accessTtl, () =>
+          this.#source.run(creds => probe(creds.accessToken, parseSubresource(id)), { replayable: true })));
       }));
     }
     return parsed.map(key =>
@@ -541,8 +544,8 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Whether `key` is this connection's account and its user's role sees the account's objects. */
   async #ownsAccount(key: Subresource): Promise<boolean> {
-    const stored = await this.getIdentity();
-    if (stored.region !== key.region || stored.accountId !== key.accountId) return false;
+    const stored = this.ctx.storage.kv.get<Identity>("identity");
+    if (stored?.region !== key.region || stored.accountId !== key.accountId) return false;
     // The role can change, so it is read afresh for every answer this caches.
     return seesPublicObjects((await this.getIdentity({ maxAgeMs: 0 })).role);
   }

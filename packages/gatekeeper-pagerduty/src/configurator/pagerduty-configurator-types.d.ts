@@ -1,7 +1,8 @@
 // The contract between the PagerDuty configurator frame and `PagerDutyConfiguratorUI`. The frame is
 // transpiled on its own and cannot import runtime code, so the shapes it trades are declared here.
 // The frame never builds a resource URL: it trades refs, and the gatekeeper writes the URL a ref
-// binds (`resourceUrlFor`), so the frame holds no copy of the URL grammar.
+// binds (`resourceUrlFor`). It holds the resource URL patterns only to match them against those the
+// Workshop says it accepts.
 
 /** What a node is, which decides its icon and what choosing it binds. */
 export type PagerDutyNodeKind = "account" | "team" | "service" | "incident" | "schedule";

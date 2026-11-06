@@ -133,8 +133,8 @@ const HOME_TAB: Record<ObjectKind, Ancestor> = {
   schedule: { id: "schedules", title: "Schedules", selectable: false },
 };
 
-/** Every node listed or looked up, by ref: what a choice's kind is, and where a located one lives. */
-const nodes = new Map<string, Node>();
+/** What a ref chooses: `account`, or the kind before its `:`, so a breadcrumb's ref says it too. */
+const valuesOf = (ref: string): Values => ({ ref, kind: ref === "account" ? "account" : ref.slice(0, ref.indexOf(":")) as Kind });
 
 const isContainer = (kind: Kind) => kind === "team" || kind === "service";
 
@@ -145,7 +145,6 @@ function toAncestor({ ref, kind, title }: Pick<Node, "ref" | "kind" | "title">, 
 
 /** A node as the picker lists it; a located one (a search result, a pre-fill) says where it lives. */
 function toItem(node: Node, accepted: readonly string[] | undefined, located = false): Item {
-  nodes.set(node.ref, node);
   const reason = refusal(accepted, node.kind);
   const container = isContainer(node.kind);
   return {
@@ -186,7 +185,6 @@ async function loadNode({ ui, acceptedResourceUrlPatterns: accepted }: Context, 
   return node && toItem(node, accepted, true);
 }
 
-const valuesOf = (node: Pick<Node, "ref" | "kind">): Values => ({ ref: node.ref, kind: node.kind });
 const NOTHING: Values = { ref: null, kind: null };
 
 // -- rendering ----------------------------------------------------------------------------------
@@ -209,7 +207,7 @@ function picker(context: Context, host: string) {
           return;
         }
         missing = null;
-        setValues({ ref: next, kind: next === "account" ? "account" : nodes.get(next)?.kind ?? null });
+        setValues(valuesOf(next));
       }}
     />
   </Field>;
@@ -250,8 +248,7 @@ function prefillNotice({ ui, setValues }: Context, attempt: NonNullable<typeof m
           return;
         }
         missing = null;
-        nodes.set(located.ref, located);
-        setValues(valuesOf(located));
+        setValues(valuesOf(located.ref));
       }, error => {
         if (missing !== attempt) return;
         missing = { url, failed: errorMessage(error, "Couldn't reach PagerDuty.") };
@@ -317,8 +314,7 @@ export default {
       missing = { url: resourceUrl };
       return {};
     }
-    nodes.set(located.ref, located);
-    return valuesOf(located);
+    return valuesOf(located.ref);
   },
 
   resourceUrl({ values, ui }) {

@@ -13,7 +13,7 @@ import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { PagerDutyGatekeeperImplProps } from "../../src/pagerduty-env.js";
-import type { HookScope } from "../../src/pagerduty-sessions.js";
+import type { HookScope } from "../../src/pagerduty-session-shared.js";
 import type { PagerDutyEvent, PagerDutySubscribeOptions } from "../../src/types.js";
 
 export { default } from "../../src/pagerduty.js";

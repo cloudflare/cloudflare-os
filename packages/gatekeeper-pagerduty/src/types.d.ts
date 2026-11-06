@@ -200,7 +200,10 @@ export interface PagerDutyIncident {
   /** Acknowledges the incident as the connected user, which stops escalation while it lasts. */
   acknowledge(): Promise<void>;
 
-  /** Resolves the incident. `resolution`, if given, is added to it as a note. */
+  /**
+   * Resolves the incident. `resolution`, if given, is recorded on the resolve entry of
+   * `getTimeline()`; it isn't a note, so `listNotes()` doesn't return it.
+   */
   resolve(resolution?: string): Promise<void>;
 
   /**
@@ -267,7 +270,10 @@ export interface PagerDutySchedule {
    */
   createOverride(user: string, start: string, end: string): Promise<string>;
 
-  /** Removes an override by id. One already over can't be removed. */
+  /**
+   * Removes an override by id. One already under way is cut short instead, ending once the removal
+   * is approved; one already over can't be removed.
+   */
   deleteOverride(id: string): Promise<void>;
 }
 
@@ -369,7 +375,10 @@ export type PagerDutyTimeWindow = {
   until?: string;
 };
 
-/** Filters for listing incidents. All given filters must match. */
+/**
+ * Filters for listing incidents. All given filters must match. PagerDuty lists at most the first
+ * 10000 matches, so narrow `since`/`until` to reach older ones.
+ */
 export type PagerDutyIncidentFilter = PagerDutyPageOptions & PagerDutyTimeWindow & {
   /** By default `["triggered", "acknowledged"]`. */
   statuses?: PagerDutyIncidentStatus[];

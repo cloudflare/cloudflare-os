@@ -1,7 +1,8 @@
 // Reads as if every pending action had been applied: an incident shows the status, title,
 // priority, urgency and assignees its pending changes give it, incidents and overrides a pending
-// action creates are listed, an override pending removal is not, and a note waiting to be added is
-// among the incident's notes. Every function is pure over the journal's pending entries.
+// action creates are listed, an override pending removal is gone (or, if under way, ends when the
+// removal was staged), and a note waiting to be added is among the incident's notes. Every
+// function is pure over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { NewIncident, PagerDutyAction } from "./pagerduty-actions";
@@ -132,18 +133,24 @@ const overlaps = (a: { start: string; end: string }, b: { start: string; end: st
   Date.parse(a.start) < Date.parse(b.end) && Date.parse(b.start) < Date.parse(a.end);
 
 /**
- * A schedule's overrides in `window` as if pending ones were made and removed: those pending
- * removal dropped, those pending creation added, ordered by start.
+ * A schedule's overrides in `window` as if pending ones were made and removed, ordered by start:
+ * those pending creation added, and those pending removal gone. As PagerDuty does, a removal cuts
+ * one already under way short at the time it was staged, and leaves one already over.
  */
 export function overlayOverrides(
   overrides: readonly PagerDutyOverride[], scheduleId: string, window: { since: string; until: string },
   pending: Pending, resolve: Resolve,
 ): PagerDutyOverride[] {
-  const removed = new Set(pending.flatMap(({ action }) =>
-    action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId ? [resolve(action.payload.overrideId)] : []));
-  const span = { start: window.since, end: window.until };
-  return [...overrides, ...pendingOverrides(scheduleId, pending, resolve).filter(override => overlaps(override, span))]
-    .filter(override => !removed.has(override.id))
+  const removedAt = new Map(pending.flatMap(({ action }) =>
+    action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId
+      ? [[resolve(action.payload.overrideId), action.payload.stagedAt] as const] : []));
+  return [...overrides, ...pendingOverrides(scheduleId, pending, resolve)]
+    .flatMap(override => {
+      const at = removedAt.get(override.id);
+      if (at === undefined || Date.parse(override.end) <= Date.parse(at)) return [override];
+      return Date.parse(override.start) < Date.parse(at) ? [{ ...override, end: at }] : [];
+    })
+    .filter(override => overlaps(override, { start: window.since, end: window.until }))
     .toSorted((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
 

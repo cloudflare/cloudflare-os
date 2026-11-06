@@ -3,9 +3,11 @@
 // for. A 403 or 404 is a definite no; anything else fails the whole answer. Answers are reused per
 // observer connection for a while, so a busy workspace doesn't probe PagerDuty on every read.
 
+import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ALICE, BOB, CAROL, DAVE, FakePagerDuty, POLICY, SCHEDULE, SERVICE, TEAM, failure, hooks, json, seedAccount, sub, unwrap,
+  ALICE, BOB, CAROL, DAVE, FakePagerDuty, POLICY, SCHEDULE, SERVICE, TEAM, accountStub, failure, hooks, json, seedAccount, sub,
+  unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps } from "./worker";
 
@@ -94,6 +96,25 @@ describe("verifyObserverAccess", () => {
     const bob = await seedAccount(t.pd, BOB);
     t.pd.on("GET", /^\/services\//, () => json({ error: { message: "Internal error" } }, { status: 500 }));
     expect(failure(await t.verify([{ id: "bob", userObjectId: bob }], [sub(), SERVICE_ID]))).toMatch(/HTTP 500/);
+  });
+
+  it("refreshes an observer token PagerDuty refuses, and fails rather than deny once the grant is dead", async () => {
+    const t = await setup();
+    /** Makes PagerDuty refuse Bob's tokens, those starting with `prefix`. */
+    const revoke = (prefix: string) => {
+      for (const [token, owner] of t.pd.tokens) if (owner === BOB.id && token.startsWith(prefix)) t.pd.tokens.delete(token);
+    };
+    const healed = await seedAccount(t.pd, BOB);
+    revoke("access-");
+    expect(unwrap(await t.verify([{ id: "bob", userObjectId: healed }], [sub(), SERVICE_ID]))).toEqual({ allowedObserverIds: ["bob"] });
+    expect(t.pd.matching("POST", /^\/oauth\/token$/)).toHaveLength(1);
+
+    const dead = await seedAccount(t.pd, BOB);
+    revoke("");
+    expect(failure(await t.verify([{ id: "bob", userObjectId: dead }], [sub(), SERVICE_ID]))).toMatch(/Reconnect the PagerDuty account/);
+    // Read inside the account: a rejection crossing RPC also reports as unhandled.
+    expect(await runInDurableObject(accountStub(dead), instance => instance.getCredentials().then(() => "live", (error: Error) => error.message)))
+      .toMatch(/Reconnect the PagerDuty account/);
   });
 
   it("refuses IDs of another account, and IDs that aren't PagerDuty's", async () => {
