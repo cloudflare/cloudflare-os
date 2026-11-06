@@ -1626,8 +1626,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           },
 
           // What each chat's agent did through each connection, for listChatBindings(): every
-          // creation it queued, and each of its other actions once approved. Records written
-          // before 2026-02-24 have no `caller`, and the version 7 backfill indexes them too.
+          // creation it queued, and each of its other actions once approved. Records written before
+          // 2026-02-24 have no `caller`, so they aren't indexed; the version 7 backfill skips them
+          // rather than throwing.
           agentActionsByChat(record: ActionRecord) {
             if (record.type !== "action" || record.caller?.from !== "agent") return null;
             let {chatId} = record.caller;
