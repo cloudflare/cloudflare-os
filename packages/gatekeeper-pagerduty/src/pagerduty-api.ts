@@ -110,20 +110,17 @@ export class PagerDutyApi {
   }
 
   /**
-   * `GET` of schedule `id` with `query(shiftBased)`, and whether it is shift-based. Unless
-   * `shiftBased` says which it is, v3 is asked first, as PagerDuty recommends: it answers 400 for a
-   * layer-based schedule, which v2 then serves.
+   * Schedule `id`, read without parameters from the API of its generation, and whether it is
+   * shift-based. v3 is asked first, as PagerDuty recommends: it answers 400 for a layer-based
+   * schedule, which v2 then serves.
    */
-  async schedule<T>(id: string, query: (shiftBased: boolean) => Query = () => ({}), shiftBased?: boolean):
-      Promise<{ body: T; shiftBased: boolean }> {
-    if (shiftBased !== false) {
-      try {
-        return { body: await this.get<T>(schedulePath(id, true), query(true)), shiftBased: true };
-      } catch (error) {
-        if (shiftBased || !(error instanceof PagerDutyApiError && error.status === 400)) throw error;
-      }
+  async schedule<T>(id: string): Promise<{ body: T; shiftBased: boolean }> {
+    try {
+      return { body: await this.get<T>(schedulePath(id, true)), shiftBased: true };
+    } catch (error) {
+      if (!(error instanceof PagerDutyApiError && error.status === 400)) throw error;
     }
-    return { body: await this.get<T>(schedulePath(id, false), query(false)), shiftBased: false };
+    return { body: await this.get<T>(schedulePath(id, false)), shiftBased: false };
   }
 
   /** The object `id` of `kind`, under a key named for its kind; a schedule of either generation. */

@@ -7,7 +7,7 @@ import type { WireIncident, WireRef } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyScheduleSummary } from "../../src/types";
 import {
   ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM, failure,
-  hooks, seedAccount, sub, unwrap,
+  hooks, json, seedAccount, sub, unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -337,5 +337,13 @@ describe("a shift-based schedule binding", () => {
     expect(pd.matching("GET", /^\/schedules\//)).toEqual([]);
     const expected = ids(sub("schedule", SHIFT_SCHEDULE.id));
     expect(await t.reported()).toEqual([expected, expected, expected]);
+  });
+
+  it("fails a read whose parameters PagerDuty's v3 API refuses, rather than take the schedule for layer-based", async () => {
+    const t = await setup({ resourceKind: "schedule", id: SHIFT_SCHEDULE.id });
+    t.pd.on("GET", new RegExp(`^/v3/schedules/${SHIFT_SCHEDULE.id}\\?`), () => json({ error: { message: "Invalid Request" } }, { status: 400 }));
+    expect(await t.attempt([["listShifts", { since: at(0), until: at(24) }]])).toMatch(/HTTP 400: Invalid Request/);
+    expect(await t.run([["getDetails"]])).toMatchObject({ id: SHIFT_SCHEDULE.id, shiftBased: true });
+    expect(t.pd.matching("GET", /^\/schedules\//)).toEqual([]);
   });
 });
