@@ -229,13 +229,18 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
   const [changes, setChanges] = useState(0)
 
   // The access select is disabled while its change is in flight, and a browser takes focus from a
-  // control that becomes disabled without giving it back. So the control that had focus when the
-  // change began gets it again once it settles, unless focus has gone elsewhere since.
-  const focusBeforeSave = useRef<HTMLElement | null>(null)
+  // control that becomes disabled without giving it back. So its trigger gets focus again once the
+  // change settles, unless focus has gone elsewhere since. The trigger, not the control focused
+  // when the change began: a choice by keyboard is made from an option of the popup, which is gone
+  // by then. Kumo's Select hands out no ref to its trigger, so it is found through this wrapper.
+  const accessField = useRef<HTMLDivElement>(null)
+  const refocusAccess = useRef(false)
   useEffect(() => {
-    if (savingAccess) return
-    if (document.activeElement === document.body) focusBeforeSave.current?.focus()
-    focusBeforeSave.current = null
+    if (savingAccess || !refocusAccess.current) return
+    refocusAccess.current = false
+    if (document.activeElement === document.body) {
+      accessField.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus()
+    }
   }, [savingAccess])
 
   const reportFailure = (title: string, err: unknown) => {
@@ -268,7 +273,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
     // maximum holds a higher choice down makes it the admins' choice, which a later rise of
     // ADMIN_WORKSPACE_ACCESS_MAX then cannot raise.
     if (level === access.chosen) return
-    focusBeforeSave.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    refocusAccess.current = true
     setSavingAccess(true)
     try {
       await change(`Couldn’t update “${ACCESS_LABEL}”`, () => admin.setAdminWorkspaceAccess(level))
@@ -331,24 +336,26 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
 
       <div className={CARD}>
         <h2 className="text-lg font-semibold text-kumo-strong mb-4">{ACCESS_LABEL}</h2>
-        <Select<AdminWorkspaceAccess>
-          label="Access level"
-          value={access.effective}
-          disabled={savingAccess}
-          onValueChange={(level) => { if (level !== null) void changeAccess(level) }}
-          renderValue={(level) => ACCESS_LEVEL_NAMES[level]}
-          description={(
-            <span className="block space-y-1">
-              {accessHelp(access).map((text) => <span key={text} className="block">{text}</span>)}
-            </span>
-          )}
-        >
-          {ADMIN_WORKSPACE_ACCESS_LEVELS.map((level) => (
-            <Select.Option key={level} value={level} disabled={accessRank(level) > accessRank(access.max)}>
-              {ACCESS_LEVEL_NAMES[level]}
-            </Select.Option>
-          ))}
-        </Select>
+        <div ref={accessField}>
+          <Select<AdminWorkspaceAccess>
+            label="Access level"
+            value={access.effective}
+            disabled={savingAccess}
+            onValueChange={(level) => { if (level !== null) void changeAccess(level) }}
+            renderValue={(level) => ACCESS_LEVEL_NAMES[level]}
+            description={(
+              <span className="block space-y-1">
+                {accessHelp(access).map((text) => <span key={text} className="block">{text}</span>)}
+              </span>
+            )}
+          >
+            {ADMIN_WORKSPACE_ACCESS_LEVELS.map((level) => (
+              <Select.Option key={level} value={level} disabled={accessRank(level) > accessRank(access.max)}>
+                {ACCESS_LEVEL_NAMES[level]}
+              </Select.Option>
+            ))}
+          </Select>
+        </div>
       </div>
 
       <div className={CARD}>
