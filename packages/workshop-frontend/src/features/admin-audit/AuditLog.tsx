@@ -71,7 +71,6 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
   const nextCursor = page?.nextCursor
   const pageNumber = cursors.length + 1
   const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
-  // The target users the shown page names, to offer in the target user filter.
   const targetSuggestions = [...new Set(page?.records.flatMap((record) =>
     record.kind === 'workspace' && record.workspaceOwner ? [record.workspaceOwner] : []))]
   const workspaceRecord = page?.records.find((record) =>
