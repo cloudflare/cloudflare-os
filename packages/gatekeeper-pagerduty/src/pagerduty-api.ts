@@ -15,14 +15,22 @@ export const MAX_LIMIT = 100;
 /** PagerDuty refuses a listing whose `offset + limit` exceeds this. */
 export const MAX_OFFSET = 10_000;
 
-/** Where the REST API keeps one object of each kind; it answers with the object under a key named for its kind. */
-export const OBJECT_PATHS = {
+/**
+ * Where the REST API keeps one object of each kind; it answers with the object under a key named for
+ * its kind. Schedules have a path per generation (see `schedulePath`).
+ */
+const OBJECT_PATHS = {
   team: "/teams/",
   service: "/services/",
   incident: "/incidents/",
-  schedule: "/schedules/",
   escalation_policy: "/escalation_policies/",
 } as const;
+
+/**
+ * Where schedule `id` is kept: PagerDuty serves shift-based schedules from its v3 API and
+ * layer-based ones from v2, by the same IDs.
+ */
+export const schedulePath = (id: string, shiftBased: boolean): string => `${shiftBased ? "/v3" : ""}/schedules/${id}`;
 
 /** A query value; arrays are sent as PagerDuty's `name[]=a&name[]=b`. */
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
@@ -99,6 +107,30 @@ export class PagerDutyApi {
   write<T = unknown>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
     if (!this.#from) throw new Error("A PagerDuty write needs the connected user's email.");
     return this.#send<T>(method, path, {}, body);
+  }
+
+  /**
+   * `GET` of schedule `id` with `query(shiftBased)`, and whether it is shift-based. Unless
+   * `shiftBased` says which it is, v3 is asked first, as PagerDuty recommends: it answers 400 for a
+   * layer-based schedule, which v2 then serves.
+   */
+  async schedule<T>(id: string, query: (shiftBased: boolean) => Query = () => ({}), shiftBased?: boolean):
+      Promise<{ body: T; shiftBased: boolean }> {
+    if (shiftBased !== false) {
+      try {
+        return { body: await this.get<T>(schedulePath(id, true), query(true)), shiftBased: true };
+      } catch (error) {
+        if (shiftBased || !(error instanceof PagerDutyApiError && error.status === 400)) throw error;
+      }
+    }
+    return { body: await this.get<T>(schedulePath(id, false), query(false)), shiftBased: false };
+  }
+
+  /** The object `id` of `kind`, under a key named for its kind; a schedule of either generation. */
+  async object(kind: keyof typeof OBJECT_PATHS | "schedule", id: string): Promise<Record<string, unknown>> {
+    return kind === "schedule"
+      ? (await this.schedule<Record<string, unknown>>(id)).body
+      : await this.get<Record<string, unknown>>(`${OBJECT_PATHS[kind]}${id}`);
   }
 
   /** One page of the listing at `path`, whose rows PagerDuty returns under `key`. */

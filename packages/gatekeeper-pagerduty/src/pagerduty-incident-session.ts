@@ -151,7 +151,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     const { id } = loaded.wire;
     return offsetCursor<W, T>(this.#ctx, {
       pageSize,
-      fetch: (api, offset, limit) => api.page<W>(`/incidents/${id}/${key}`, key, query, offset, limit),
+      sources: [(api, offset, limit) => api.page<W>(`/incidents/${id}/${key}`, key, query, offset, limit)],
       convert: rows => rows.map(convert),
       describe,
       filter: [],
@@ -182,7 +182,10 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   async acknowledge(): Promise<void> {
-    await this.#stage("acknowledge", target => ({ incident: target }));
+    const { target, status } = await this.#target();
+    // PagerDuty reopens a resolved incident it is asked to acknowledge.
+    if (status === "resolved") throw new Error("A resolved incident can't be acknowledged.");
+    await this.#ctx.host.submit(this.#ctx.queue, "acknowledge", { incident: target });
   }
 
   async resolve(resolution?: string): Promise<void> {

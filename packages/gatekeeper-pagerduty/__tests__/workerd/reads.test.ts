@@ -4,9 +4,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WireIncident, WireRef } from "../../src/pagerduty-normalize";
-import type { PagerDutyIncidentDetails } from "../../src/types";
+import type { PagerDutyIncidentDetails, PagerDutyScheduleSummary } from "../../src/types";
 import {
-  ALICE, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, POLICY, SCHEDULE, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
+  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM, failure,
+  hooks, seedAccount, sub, unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -94,6 +95,18 @@ describe("an account binding", () => {
     ]);
   });
 
+  it("lists layer-based schedules, then shift-based ones, which PagerDuty lists apart", async () => {
+    const t = await setup();
+    const [rows] = await t.run([["listSchedules"]], 5) as PagerDutyScheduleSummary[][];
+    expect(rows).toMatchObject([
+      { id: SCHEDULE.id, shiftBased: false, timeZone: "Etc/UTC", teams: [{ id: TEAM.id }] },
+      { id: OTHER_SCHEDULE.id, shiftBased: false },
+      { id: SHIFT_SCHEDULE.id, name: "Follow the sun", shiftBased: true, description: null, timeZone: null, teams: null },
+    ]);
+    expect(await t.reported())
+      .toEqual([ids(sub("schedule", SCHEDULE.id), sub("schedule", OTHER_SCHEDULE.id), sub("schedule", SHIFT_SCHEDULE.id))]);
+  });
+
   it("reports the schedules an on-call filter names and the policies and schedules its entries show", async () => {
     const t = await setup();
     t.pd.oncalls = [{ user: { id: ALICE.id, summary: "Alice" }, escalation_level: 1, escalation_policy: POLICY, schedule: SCHEDULE }];
@@ -138,7 +151,7 @@ describe("a team binding", () => {
     expect(await t.reported()).toEqual([
       scope, scope,
       ids(sub("team", TEAM.id), sub("service", SERVICE.id)),
-      ids(sub("team", TEAM.id), sub("schedule", SCHEDULE.id)),
+      ids(sub("team", TEAM.id), sub("schedule", SCHEDULE.id), sub("schedule", SHIFT_SCHEDULE.id)),
       ids(sub("team", TEAM.id), sub("service", SERVICE.id)),
     ]);
     expect(t.pd.matching("GET", /^\/incidents\?/)[0].url.searchParams.getAll("team_ids[]")).toEqual([TEAM.id]);
@@ -168,6 +181,14 @@ describe("a team binding", () => {
     expect(await t.attempt([["getSchedule", OTHER_SCHEDULE.id]])).toMatch(/doesn't belong to this team/);
     expect(await t.attempt([["getIncident", theirs.id]])).toMatch(/doesn't belong to this team/);
     expect(await t.reported()).toEqual([]);
+  });
+
+  it("opens a shift-based schedule it owns, and refuses one another team owns", async () => {
+    const t = await setup(team);
+    expect(await t.run([["getSchedule", SHIFT_SCHEDULE.id], ["getDetails"]])).toMatchObject({ id: SHIFT_SCHEDULE.id, shiftBased: true });
+    t.pd.shiftSchedules.get(SHIFT_SCHEDULE.id)!.teams = [OTHER_TEAM];
+    expect(await t.attempt([["getSchedule", SHIFT_SCHEDULE.id]])).toMatch(/doesn't belong to this team/);
+    expect(await t.reported()).toEqual([ids(sub("team", TEAM.id), sub("schedule", SHIFT_SCHEDULE.id))]);
   });
 });
 
@@ -281,6 +302,40 @@ describe("a schedule binding", () => {
     expect(await t.run([["listShifts"]])).toEqual([]);
     expect(await t.run([["listOverrides"]])).toEqual([]);
     const expected = ids(sub("schedule", SCHEDULE.id));
+    expect(await t.reported()).toEqual([expected, expected, expected]);
+    // Only the first read asks the v3 API, which refuses a layer-based schedule.
+    expect(t.pd.matching("GET", /^\/v3\//)).toHaveLength(1);
+  });
+});
+
+/** An hour of a fixed day, as PagerDuty writes times. */
+const at = (hours: number) => new Date(Date.UTC(2026, 10, 10, hours)).toISOString();
+
+describe("a shift-based schedule binding", () => {
+  it("reads its details, shifts and overrides from PagerDuty's v3 API, reporting the schedule", async () => {
+    const pd = new FakePagerDuty().install();
+    const alice = { type: "user_member", user_id: ALICE.id } as const;
+    const bob = { type: "user_member", user_id: BOB.id } as const;
+    pd.assignments.set(SHIFT_SCHEDULE.id, [
+      { start_time: at(0), end_time: at(12), member: alice },
+      { start_time: at(0), end_time: at(12), member: bob },
+      { start_time: at(12), end_time: at(24), member: { type: "empty_member" } },
+    ]);
+    pd.shiftOverrides.set(SHIFT_SCHEDULE.id, [{ id: "POVR003", start_time: at(2), end_time: at(4), overriding_member: bob }]);
+    const t = await setup({ resourceKind: "schedule", id: SHIFT_SCHEDULE.id }, pd);
+    const window = { since: at(0), until: at(24) };
+    expect(await t.run([["getDetails"]])).toMatchObject({
+      name: "Follow the sun", shiftBased: true, timeZone: "Etc/UTC", teams: [{ id: TEAM.id }], escalationPolicies: [{ id: POLICY.id }],
+      layers: [],
+    });
+    // Concurrent shifts are both listed; nobody is on call in the empty one.
+    expect(await t.run([["listShifts", window]])).toEqual([
+      { user: { id: ALICE.id, name: "Alice" }, start: at(0), end: at(12) },
+      { user: { id: BOB.id, name: "Bob" }, start: at(0), end: at(12) },
+    ]);
+    expect(await t.run([["listOverrides", window]])).toEqual([{ id: "POVR003", user: { id: BOB.id, name: "Bob" }, start: at(2), end: at(4) }]);
+    expect(pd.matching("GET", /^\/schedules\//)).toEqual([]);
+    const expected = ids(sub("schedule", SHIFT_SCHEDULE.id));
     expect(await t.reported()).toEqual([expected, expected, expected]);
   });
 });

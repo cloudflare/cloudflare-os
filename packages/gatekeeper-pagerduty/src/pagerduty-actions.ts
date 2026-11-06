@@ -1,8 +1,9 @@
 // What a gadget can change in PagerDuty, as kit actions: each kind's approval text, auto-approval
 // verdict and REST call. Sessions validate and stage them (the pagerduty-*session*.ts modules);
 // nothing here runs until a user approves, and apply first checks that a team or service binding
-// still reaches what the action changes. Incidents and overrides a pending action creates have
-// temporary `~N` IDs, which later actions can name and which apply resolves to PagerDuty's.
+// still reaches what the action changes, and that an incident being acknowledged isn't resolved.
+// Incidents and overrides a pending action creates have temporary `~N` IDs, which later actions can
+// name and which apply resolves to PagerDuty's.
 
 import {
   ActionApplyError, ActionOutcomeUnknownError, defineActions, type ActionPresentation, type TaggedAction,
@@ -89,6 +90,11 @@ export type PagerDutyActionHost = {
    * to) has left the team or service the binding is scoped to.
    */
   requireInScope(object: ScopedObject): Promise<void>;
+  /**
+   * The incident `id` as PagerDuty has it now, read afresh.
+   * @throws ActionApplyError once it has left the team or service the binding is scoped to.
+   */
+  currentIncident(id: string): Promise<WireIncident>;
   /** Drops every cached read, once an action changed what they hold. */
   invalidate(): void;
 };
@@ -178,10 +184,14 @@ async function idempotent(host: PagerDutyActionHost, op: (api: PagerDutyApi, me:
   }
 }
 
-/** Updates the incident with the `PUT /incidents/{id}` fields in `incident`. */
-async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
-  const id = await incidentId(host, target);
+/** Updates the incident `id` with the `PUT /incidents/{id}` fields in `incident`. */
+async function putIncident(host: PagerDutyActionHost, id: string, incident: Record<string, unknown>): Promise<void> {
   await idempotent(host, api => api.write("PUT", `/incidents/${id}`, { incident: { type: "incident_reference", ...incident } }));
+}
+
+/** Updates the incident `target` is, refused once it has left the binding's scope. */
+async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
+  await putIncident(host, await incidentId(host, target), incident);
 }
 
 const userReference = ({ id }: UserTarget) => ({ id, type: "user_reference" });
@@ -253,7 +263,14 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     dependsOn: dependedRefs,
     describe: (payload, host) => present("Acknowledge a PagerDuty incident",
       buildDescription(`Acknowledges ${incidentLabel(host, payload.incident)} as you, which stops its escalation.`)),
-    apply: (payload, host) => updateIncident(host, payload.incident, { status: "acknowledged" }),
+    apply: async (payload, host) => {
+      const id = host.refs.requireResolved(payload.incident.id, { expectedKind: "incident" });
+      // PagerDuty reopens a resolved incident it is asked to acknowledge.
+      if ((await host.currentIncident(id)).status === "resolved") {
+        throw new ActionApplyError("The incident was resolved in the meantime, so it was left resolved.");
+      }
+      await putIncident(host, id, { status: "acknowledged" });
+    },
   },
   snooze: {
     kind: ACKNOWLEDGE,

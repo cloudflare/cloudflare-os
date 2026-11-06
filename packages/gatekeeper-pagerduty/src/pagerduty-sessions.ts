@@ -10,15 +10,15 @@ import type { NewIncident } from "./pagerduty-actions";
 import { youOf } from "./pagerduty-credentials";
 import { webOrigin } from "./pagerduty-env";
 import {
-  toMember, toRef, toScheduleSummary, toServiceDetails, toServiceSummary, toTeam,
-  type WireMember, type WireRef, type WireSchedule, type WireService, type WireTeam,
+  toMember, toRef, toServiceDetails, toServiceSummary, toTeam,
+  type WireMember, type WireRef, type WireService, type WireTeam,
 } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 import {
   CATALOG_TTL_MS, MAX_NOTE_LENGTH, cachedService, countOf, escalationPolicy, findUsers, ids, listIncidents, listOnCalls,
-  listPriorities, namedListing, priorityNamed, readSchedule, readService, requireTeam, schedule, service, subscribed, team,
-  text, urgency, usersNamed, type SessionContext, type Within,
+  listPriorities, listSchedules, namedListing, priorityNamed, readSchedule, readService, requireTeam, schedule, service,
+  subscribed, team, text, urgency, usersNamed, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -59,7 +59,7 @@ export class PagerDutyAccountImpl extends RpcTarget implements PagerDutyAccount 
 
   async listServices(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyServiceSummary>> {
     return namedListing<WireService, PagerDutyServiceSummary>(this.#ctx,
-      { path: "/services", key: "services", kind: "service", noun: "service", list: options, convert: toServiceSummary });
+      { key: "services", kind: "service", noun: "service", list: options, sources: [{ path: "/services", convert: toServiceSummary }] });
   }
 
   async getService(id: string): Promise<PagerDutyService> {
@@ -69,7 +69,7 @@ export class PagerDutyAccountImpl extends RpcTarget implements PagerDutyAccount 
 
   async listTeams(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyTeamSummary>> {
     return namedListing<WireTeam, PagerDutyTeamSummary>(this.#ctx,
-      { path: "/teams", key: "teams", kind: "team", noun: "team", list: options, convert: toTeam });
+      { key: "teams", kind: "team", noun: "team", list: options, sources: [{ path: "/teams", convert: toTeam }] });
   }
 
   async getTeam(id: string): Promise<PagerDutyTeam> {
@@ -78,8 +78,7 @@ export class PagerDutyAccountImpl extends RpcTarget implements PagerDutyAccount 
   }
 
   async listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>> {
-    return namedListing<WireSchedule, PagerDutyScheduleSummary>(this.#ctx,
-      { path: "/schedules", key: "schedules", kind: "schedule", noun: "schedule", list: options, convert: toScheduleSummary });
+    return listSchedules(this.#ctx, options);
   }
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {
@@ -147,8 +146,8 @@ export class PagerDutyTeamImpl extends RpcTarget implements PagerDutyTeam {
 
   async listServices(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyServiceSummary>> {
     return namedListing<WireService, PagerDutyServiceSummary>(this.#ctx, {
-      path: "/services", key: "services", kind: "service", noun: "service", teamId: this.#id, list: options,
-      convert: toServiceSummary,
+      key: "services", kind: "service", noun: "service", teamId: this.#id, list: options,
+      sources: [{ path: "/services", convert: toServiceSummary }],
     });
   }
 
@@ -166,10 +165,7 @@ export class PagerDutyTeamImpl extends RpcTarget implements PagerDutyTeam {
   }
 
   async listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>> {
-    return namedListing<WireSchedule, PagerDutyScheduleSummary>(this.#ctx, {
-      path: "/schedules", key: "schedules", kind: "schedule", noun: "schedule", teamId: this.#id, list: options,
-      convert: toScheduleSummary,
-    });
+    return listSchedules(this.#ctx, options, this.#id);
   }
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {

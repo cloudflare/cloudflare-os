@@ -31,7 +31,8 @@ import {
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 import {
-  SessionContext, objectOutside, type HookScope, type ObjectRef, type SessionHost, type Within,
+  SessionContext, currentIncident, objectOutside, readService, type HookScope, type ObjectRef, type SessionHost,
+  type Within,
 } from "./pagerduty-session-shared";
 import { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
 import { resourceUrl, sameTenant } from "./pagerduty-urls";
@@ -74,6 +75,18 @@ const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
 
 type PagerDutySession = PagerDutyAccount | PagerDutyTeam | PagerDutyService | PagerDutyIncident | PagerDutySchedule;
 
+/** An apply-time check's fresh reads: nothing has been sent yet, so PagerDuty refusing one fails the action for good. */
+async function checked<T>(reads: Promise<T>): Promise<T> {
+  try {
+    return await reads;
+  } catch (error) {
+    if (error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429) {
+      throw new ActionApplyError(error.message);
+    }
+    throw error;
+  }
+}
+
 @validateRpc()
 export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekeeperImplProps>
   implements Gatekeeper<PagerDutySession> {
@@ -102,18 +115,14 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     },
     // PagerDuty can move an incident to another service, or a service or schedule to another team,
     // after the action was staged: a team or service binding checks again that it still reaches it.
-    // Nothing has been sent yet, so PagerDuty refusing the check's read fails the action for good.
     requireInScope: async object => {
-      let outside: string | undefined;
-      try {
-        outside = await objectOutside({ host: this.#sessionHost }, object, this.#within);
-      } catch (error) {
-        if (error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429) {
-          throw new ActionApplyError(error.message);
-        }
-        throw error;
-      }
+      const outside = await checked(objectOutside({ host: this.#sessionHost }, object, this.#within));
       if (outside) throw new ActionApplyError(outside);
+    },
+    currentIncident: async id => {
+      const { wire, outside } = await checked(currentIncident({ host: this.#sessionHost }, id, this.#within, [], readService));
+      if (outside) throw new ActionApplyError(outside);
+      return wire;
     },
     invalidate: () => this.#cache.invalidateAll(),
   };

@@ -12,8 +12,8 @@ import { vi } from "vitest";
 import { identityOf } from "../../src/pagerduty-credentials";
 import { ID_TOKEN_ISSUER, SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
 import type {
-  WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule, WireService, WireShift,
-  WireTeam, WireUser,
+  WireAssignment, WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule,
+  WireService, WireShift, WireShiftOverride, WireTeam, WireUser,
 } from "../../src/pagerduty-normalize";
 import SIGNING_JWK from "./id-token-key.json";
 
@@ -50,6 +50,8 @@ export const SERVICE = ref("service", "PSVC001", "API");
 export const OTHER_SERVICE = ref("service", "PSVC002", "Billing");
 export const SCHEDULE = ref("schedule", "PSCH001", "Platform primary");
 export const OTHER_SCHEDULE = ref("schedule", "PSCH002", "Payments primary");
+/** A shift-based schedule, which only PagerDuty's v3 API serves. */
+export const SHIFT_SCHEDULE = ref("schedule", "PSCH003", "Follow the sun");
 export const PRIORITY: WirePriority = { id: "PPRI001", name: "P1" };
 
 export type FakeRequest = { method: string; url: URL; headers: Headers; body?: string; userId?: string };
@@ -87,6 +89,13 @@ export class FakePagerDuty {
     [SCHEDULE.id, { ...SCHEDULE, type: "schedule", name: "Platform primary", time_zone: "Etc/UTC", teams: [TEAM], escalation_policies: [POLICY] }],
     [OTHER_SCHEDULE.id, { ...OTHER_SCHEDULE, type: "schedule", name: "Payments primary", time_zone: "Etc/UTC", teams: [OTHER_TEAM], escalation_policies: [OTHER_POLICY] }],
   ]);
+  /** Shift-based schedules, as `GET /v3/schedules/{id}` describes them. */
+  readonly shiftSchedules = new Map<string, WireSchedule>([
+    [SHIFT_SCHEDULE.id, { ...SHIFT_SCHEDULE, type: "schedule_v3", name: "Follow the sun", time_zone: "Etc/UTC", teams: [TEAM], escalation_policies: [POLICY] }],
+  ]);
+  /** Each shift-based schedule's final schedule. */
+  readonly assignments = new Map<string, WireAssignment[]>();
+  readonly shiftOverrides = new Map<string, WireShiftOverride[]>();
   readonly incidents = new Map<string, WireIncident>();
   readonly notes = new Map<string, WireNote[]>();
   /** Each incident's log, oldest first, as PagerDuty lists it. */
@@ -231,9 +240,11 @@ export class FakePagerDuty {
     const path = url.pathname;
     const body = () => JSON.parse(request.body ?? "{}");
     const segments = path.split("/").slice(1);
-    const id = segments[1];
+    // A v3 path names its object one segment further in.
+    const object = segments[0] === "v3" ? segments.slice(1) : segments;
+    const id = object[1];
     const hidden = id ? this.#hidden.get(`${me.id}:${id}`) : undefined;
-    if (method === "GET" && segments.length === 2 && hidden) return error(hidden, "Not allowed");
+    if (method === "GET" && object.length === 2 && hidden) return error(hidden, "Not allowed");
     const query = url.searchParams.get("query")?.toLowerCase();
     const named = (row: WireRef) => !query || (row.name ?? row.summary ?? "").toLowerCase().includes(query);
     let match: RegExpMatchArray | null;
@@ -288,6 +299,28 @@ export class FakePagerDuty {
       const schedule = this.schedules.get(match[1]);
       if (!schedule) return error(404, "Not found");
       return json({ schedule: { ...schedule, final_schedule: { rendered_schedule_entries: this.shifts.get(schedule.id) ?? [] } } });
+    }
+    if (method === "GET" && path === "/v3/schedules") {
+      return page(url, "schedules", [...this.shiftSchedules.values()].filter(s => named(s) && inTeams(url, s))
+        .map(s => ({ id: s.id, type: "schedule_v3_reference", summary: s.name, html_url: s.html_url })));
+    }
+    if (method === "GET" && (match = path.match(/^\/v3\/schedules\/(\w+)(\/overrides)?$/))) {
+      const [, scheduleId, overrides] = match;
+      // v3 answers 400 for a layer-based schedule, as PagerDuty documents.
+      if (this.schedules.has(scheduleId)) return error(400, "This schedule is not shift-based");
+      const schedule = this.shiftSchedules.get(scheduleId);
+      if (!schedule) return error(404, "Not found");
+      const assignments = this.assignments.get(scheduleId) ?? [];
+      const changes = this.shiftOverrides.get(scheduleId) ?? [];
+      if (overrides) return json({ overrides: changes });
+      const include = url.searchParams.getAll("include[]");
+      const userIds = new Set([...assignments.map(a => a.member), ...changes.map(o => o.overriding_member)].flatMap(m => m.user_id ?? []));
+      return json({ schedule: {
+        ...schedule,
+        ...(include.includes("final_schedule") ? { final_schedule: { type: "final_schedule", computed_shift_assignments: assignments } } : {}),
+        ...(include.includes("users")
+          ? { users: [...userIds].map(userId => ref("user", userId, this.users.get(userId)!.name!)) } : {}),
+      } });
     }
     if ((match = path.match(/^\/schedules\/(\w+)\/overrides(?:\/(\w+))?$/))) {
       const [, scheduleId, overrideId] = match;

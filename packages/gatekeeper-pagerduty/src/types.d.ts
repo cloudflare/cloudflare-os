@@ -47,7 +47,10 @@ export interface PagerDutyAccount {
   /** Opens a team by its id. */
   getTeam(id: string): Promise<PagerDutyTeam>;
 
-  /** Lists on-call schedules, by name. `query` filters by a case-insensitive name substring. */
+  /**
+   * Lists on-call schedules: layer-based ones by name, then shift-based ones. `query` filters by a
+   * case-insensitive name substring.
+   */
   listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>>;
 
   /** Opens a schedule by its id. */
@@ -129,7 +132,7 @@ export interface PagerDutyTeam {
   /** Opens an incident on one of the team's services. Throws if it belongs to another team. */
   getIncident(idOrNumber: string): Promise<PagerDutyIncident>;
 
-  /** Lists the team's schedules, by name. */
+  /** Lists the team's schedules: layer-based ones by name, then shift-based ones. */
   listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>>;
 
   /** Opens one of the team's schedules by id. Throws if the team doesn't own it. */
@@ -198,7 +201,10 @@ export interface PagerDutyIncident {
   /** The alerts grouped into the incident, newest first. */
   listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>>;
 
-  /** Acknowledges the incident as the connected user, which stops escalation while it lasts. */
+  /**
+   * Acknowledges the incident as the connected user, which stops escalation while it lasts. Throws
+   * if the incident is resolved; one resolved in the meantime is left resolved.
+   */
   acknowledge(): Promise<void>;
 
   /**
@@ -255,29 +261,35 @@ export interface PagerDutyIncident {
   subscribe(hook: RpcStub<PagerDutyEventHook>, options?: PagerDutySubscribeOptions): Promise<void>;
 }
 
-/** One on-call schedule. */
+/** One on-call schedule, layer-based or shift-based (`shiftBased` in its details). */
 export interface PagerDutySchedule {
   /** The schedule's name, time zone, layers and the escalation policies that use it. */
   getDetails(): Promise<PagerDutyScheduleDetails>;
 
   /**
    * Who is on call when, overrides applied, between `since` and `until` (ISO 8601; by default,
-   * the next 7 days; at most 90 days apart).
+   * the next 7 days; at most 90 days apart). On a shift-based schedule, shifts can overlap: several
+   * people can be on call at once.
    */
   listShifts(window?: PagerDutyTimeWindow): Promise<PagerDutyShift[]>;
 
-  /** The schedule's overrides in a window (by default, the next 30 days). */
+  /**
+   * The schedule's overrides in a window (by default, the next 30 days). On a shift-based schedule,
+   * an override that leaves a shift empty isn't listed.
+   */
   listOverrides(window?: PagerDutyTimeWindow): Promise<PagerDutyOverride[]>;
 
   /**
    * Puts `user` (an email or id) on call from `start` to `end` (ISO 8601), over whoever the
-   * schedule would otherwise have. Returns the new override's id.
+   * schedule would otherwise have. Returns the new override's id. Throws for a shift-based
+   * schedule, which this doesn't support yet.
    */
   createOverride(user: string, start: string, end: string): Promise<string>;
 
   /**
    * Removes an override by id. One already under way is cut short instead, ending now; one
-   * already over can't be removed.
+   * already over can't be removed. Throws for a shift-based schedule, which this doesn't support
+   * yet.
    */
   deleteOverride(id: string): Promise<void>;
 }
@@ -571,8 +583,8 @@ export type PagerDutyAlert = {
   createdAt: string;
   /** Where it came from, e.g. a hostname. */
   source: string | null;
-  /** The monitoring tool's own details, as JSON. */
-  details: Record<string, unknown> | null;
+  /** The monitoring tool's own details: a JSON object, or plain text. */
+  details: Record<string, unknown> | string | null;
   htmlUrl: string;
 };
 
@@ -610,14 +622,22 @@ export type PagerDutyOnCall = {
 };
 
 export type PagerDutyScheduleSummary = PagerDutyRef & {
+  /** Whether it is shift-based (rotations of shifts) rather than layer-based. */
+  shiftBased: boolean;
+  /** `null` when it has none, and in listings of shift-based schedules, which leave it out. */
   description: string | null;
-  timeZone: string;
-  teams: PagerDutyRef[];
+  /** e.g. `"America/New_York"`; `null` in listings of shift-based schedules, which leave it out. */
+  timeZone: string | null;
+  /** `null` in listings of shift-based schedules, which leave them out. */
+  teams: PagerDutyRef[] | null;
 };
 
+/** A schedule's details, which always include its time zone and teams. */
 export type PagerDutyScheduleDetails = PagerDutyScheduleSummary & {
+  timeZone: string;
+  teams: PagerDutyRef[];
   escalationPolicies: PagerDutyRef[];
-  /** The rotations the schedule combines, highest first. */
+  /** The rotations a layer-based schedule combines, highest first; empty for a shift-based one. */
   layers: {
     name: string;
     users: PagerDutyUserRef[];

@@ -34,8 +34,14 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
   page of such an incident.
 - **Incident** reads its details, log, notes and alerts, and acknowledges, snoozes, resolves,
   reassigns, escalates, requests responders, sets the title, priority or urgency, adds notes and
-  posts status updates.
-- **Schedule** reads its details, shifts and overrides, and adds or removes overrides.
+  posts status updates. A resolved incident isn't acknowledged, since PagerDuty would reopen it:
+  `acknowledge()` refuses one, and an acknowledgement waiting for approval fails if the incident is
+  resolved by then.
+- **Schedule** reads its details, shifts and overrides, and adds or removes overrides. Both kinds
+  of PagerDuty schedule are read, by the same IDs: layer-based ones from `/schedules`, shift-based
+  ones from `/v3/schedules`, which is asked first for a schedule not yet known, as PagerDuty
+  recommends, and refuses a layer-based one with 400. Listings give layer-based schedules first,
+  then shift-based ones, whose rows carry only a name.
 
 Methods that take a user accept an email or a PagerDuty ID. `getMetadata().you` is the connected
 user, so "my incidents" is `listIncidents({ assignedToMe: true })`.
@@ -174,6 +180,9 @@ or team membership goes unnoticed for up to 15 minutes. See `docs/observers.md`.
   profile.
 - **Not covered:** merging incidents, incident workflows, the Events API, maintenance windows,
   editing escalation policies, status pages, custom fields and analytics.
+- **No overrides on shift-based schedules yet.** A shift-based schedule's override replaces one
+  rotation's member rather than whoever the schedule has, so `createOverride()` and
+  `deleteOverride()` refuse one; its shifts and overrides can still be read.
 
 ## Troubleshooting
 
