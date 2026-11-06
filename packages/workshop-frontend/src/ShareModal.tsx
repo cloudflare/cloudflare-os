@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Checkbox, Dialog, useKumoToastManager } from '@cloudflare/kumo'
+import { Checkbox, Dialog, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
@@ -13,7 +13,6 @@ import {
   AiChatAuthorInfo,
   CollaboratorGrant,
   ObserverBindingNeed,
-  PermissionEdge,
   WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
@@ -23,6 +22,7 @@ import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
+import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 
 /**
  * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
@@ -36,17 +36,9 @@ function grantFor(gadgetId: WorkpieceId | undefined): CollaboratorGrant {
   return gadgetId === undefined ? 'workspace' : { gadgetId }
 }
 
-// What one permission edge grants, in the terms the dialogs list people under: the workspace, one
-// gadget, or every gadget without editing -- a "use" grant from before gadgets were shared one at
-// a time, which can no longer be made but still holds.
-type EdgeScope = 'workspace' | 'legacy' | WorkpieceId
-
-function edgeScope(edge: PermissionEdge): EdgeScope {
-  if ((edge.role ?? 'build') === 'build') return 'workspace'
-  return edge.gadgetId ?? 'legacy'
-}
-
-const LEGACY_ACCESS_LABEL = 'All gadgets · Cannot edit'
+// What one permission edge grants, in the terms the dialogs list people under: the workspace, or
+// one gadget.
+type EdgeScope = 'workspace' | WorkpieceId
 
 // Where a recipient lands: the workspace, opened on the shared gadget if there is one. A share
 // link carries its key in the fragment, which browsers never send to a server.
@@ -277,8 +269,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     ...(currentUser ? [currentUser.id] : []),
     ...(metadata.owner ? [metadata.owner.id] : []),
     ...collaborators
-      .filter(({ access }) => access.role === 'build' || (gadgetId !== undefined &&
-        (access.gadgetIds === 'all' || access.gadgetIds.includes(gadgetId))))
+      .filter(({ access }) => access.role === 'build' ||
+        (gadgetId !== undefined && access.gadgetIds.includes(gadgetId)))
       .map(({ profile }) => profile.id),
     ...staged.map(recipient => recipient.id),
   ], [collaborators, currentUser, gadgetId, metadata.owner, staged])
@@ -338,6 +330,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const landedTimerRef = useRef<number | null>(null)
   const [directoryPortalContainer, setDirectoryPortalContainer] =
     useState<HTMLDivElement | null>(null)
+  // Kumo portals tooltips to the body, beneath the dialog's layer; this host sits above it.
+  const tooltipPortalContainer = useDialogSelectPortalContainer()
   const [scrolled, setScrolled] = useState(false)
   const [landedPersonIds, setLandedPersonIds] = useState<ReadonlySet<string>>(NO_IDS)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
@@ -517,17 +511,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
 
   const ownerProfile: AiChatAuthorInfo | null = isOwner ? currentUser : (metadata.owner ?? null)
   // The workspace dialog lists the workspace's members. A gadget's lists the people given that
-  // gadget, since every member holds it anyway. Legacy access covers every gadget, so both list it.
+  // gadget, since every member holds it anyway.
   const members = collaborators.filter(({ access }) => gadgetId === undefined
     ? access.role === 'build'
-    : access.role === 'use' && access.gadgetIds !== 'all' && access.gadgetIds.includes(gadgetId))
-  const legacyCollaborators = collaborators.filter(({ access }) =>
-    access.role === 'use' && access.gadgetIds === 'all')
+    : access.role === 'use' && access.gadgetIds.includes(gadgetId))
   const sortedShareLinks = useMemo(
     () => [...shareLinks].toSorted((a, b) => b.created.getTime() - a.created.getTime()),
     [shareLinks],
   )
-  // Links to one gadget name it; a link naming none grants the workspace (or, legacy, every gadget).
+  // Links to one gadget name it; a link naming none grants the workspace, or the several gadgets
+  // it lists, which stay with the workspace since no one gadget's dialog owns them.
   const visibleShareLinks = sortedShareLinks.filter(link => link.gadgetId === gadgetId)
   // Someone who can't invite has no recipient to verify.
   const recipientVerification = canInvite && (requirementsFailed || requirements !== null)
@@ -538,7 +531,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
 
   // How someone got the access a row lists, ignoring their grants of anything else.
   const describeAccess = (info: CollaboratorInfo, scope: EdgeScope): string => {
-    const edges = info.addedBy.filter(edge => edgeScope(edge) === scope)
+    const edges = info.addedBy.filter(edge =>
+      ((edge.role ?? 'build') === 'build' ? 'workspace' : edge.gadgetId) === scope)
     if (edges.length > 1) return `Access from ${edges.length} sources`
     const edge = edges[0]
     if (!edge) return 'Collaborator'
@@ -855,9 +849,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     }
   }
 
-  // One collaborator's row: who they are, how they got the access this dialog lists, and, where
-  // they can be removed from here, the removal flow with its choice of dependents to keep.
-  const renderCollaborator = (info: CollaboratorInfo, scope: EdgeScope, label: string, removable: boolean) => {
+  // One collaborator's row: who they are, how they got the access this dialog lists, and the
+  // removal flow with its choice of dependents to keep.
+  const renderCollaborator = (info: CollaboratorInfo, scope: EdgeScope) => {
     const { profile } = info
     const removing = removeTarget?.profileId === profile.id ? removeTarget : null
     const downstreamDependents = removing
@@ -885,18 +879,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
             />
           ) : (
             <>
-              <span className="px-2 text-[12px] text-kumo-subtle">{label}</span>
-              {removable && (
-                <WorkshopIconButton
-                  danger
-                  className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                  onClick={() => handleStartRemoveCollaborator(profile.id)}
-                  aria-label={`Remove ${profile.name}`}
-                  disabled={confirmationBusy}
-                >
-                  <Trash size={13} />
-                </WorkshopIconButton>
-              )}
+              <span className="px-2 text-[12px] text-kumo-subtle">Member</span>
+              <WorkshopIconButton
+                danger
+                className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                onClick={() => handleStartRemoveCollaborator(profile.id)}
+                aria-label={`Remove ${profile.name}`}
+                disabled={confirmationBusy}
+              >
+                <Trash size={13} />
+              </WorkshopIconButton>
             </>
           )}
         </div>
@@ -1263,24 +1255,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                   <span className="px-2 text-[12px] text-kumo-subtle">Can edit</span>
                 </div>
               )}
-              {members.map(info => renderCollaborator(info, gadgetId ?? 'workspace', 'Member', true))}
+              {members.map(info => renderCollaborator(info, gadgetId ?? 'workspace'))}
             </div>
           </section>
-
-          {legacyCollaborators.length > 0 && (
-          <section aria-labelledby="legacy-heading" className="mt-4">
-            <div className="mb-2 px-1">
-              <h3 id="legacy-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-                Legacy access
-              </h3>
-            </div>
-            <div className="divide-y divide-kumo-line/70 overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
-              {/* Removal takes all of someone's legacy access, so only the workspace dialog offers it. */}
-              {legacyCollaborators.map(info =>
-                renderCollaborator(info, 'legacy', LEGACY_ACCESS_LABEL, gadgetId === undefined))}
-            </div>
-          </section>
-          )}
 
           {visibleShareLinks.length > 0 && (
           <section aria-labelledby="links-heading" className="mt-4">
@@ -1294,8 +1271,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 {visibleShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
-                  // A legacy link grants every gadget; it can still be copied, though no new one can be made.
-                  const isLegacyLink = sk.role === 'use' && sk.gadgetId === undefined
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
                       <div className="flex items-center gap-3">
@@ -1341,8 +1316,22 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                           />
                         ) : (
                           <>
-                            {isLegacyLink && (
-                              <span className="px-2 text-[12px] text-kumo-subtle">{LEGACY_ACCESS_LABEL}</span>
+                            {/* A link to several gadgets lists them on hover or keyboard focus. It can
+                                still be copied, though no new one can be made. */}
+                            {sk.gadgets && (
+                              <Tooltip
+                                container={tooltipPortalContainer}
+                                content={
+                                  <ul className="m-0 max-w-xs list-none p-0">
+                                    {sk.gadgets.map(gadget => <li key={gadget.id} className="truncate">{gadget.title}</li>)}
+                                  </ul>
+                                }
+                                asChild
+                              >
+                                <span tabIndex={0} className="cursor-default rounded-md px-2 text-[12px] text-kumo-subtle underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring">
+                                  {sk.gadgets.length} {sk.gadgets.length === 1 ? 'gadget' : 'gadgets'} · Cannot edit
+                                </span>
+                              </Tooltip>
                             )}
                             {canUseShareLinks && (
                               <WorkshopIconButton
