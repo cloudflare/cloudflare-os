@@ -293,17 +293,24 @@ describe("AdminAuditDurableObject schema", () => {
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(0);
   });
 
-  it("stores an over-long owner cut, and finds its records by the whole id", async () => {
+  it("keeps a long owner short, apart from another sharing its start, and finds it by its whole id",
+      async () => {
     let log = auditLog();
-    let owner = "o".repeat(800_000);
-    for (let i = 0; i < 3; i++) await log.append(access({ workspaceOwner: owner }), RETENTION);
+    let ada = `${"o".repeat(600)}a`;
+    let grace = `${"o".repeat(600)}g`;
+    let huge = "o".repeat(800_000);
+    for (let owner of [ada, grace, huge]) await log.append(access({ workspaceOwner: owner }), RETENTION);
 
-    let page = await log.list({ limit: 50 }, RETENTION);
-    let cut = `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`;
-    expect(page.records.map(r => (r as AdminAccessRecord).workspaceOwner)).toEqual([cut, cut, cut]);
-    expect((await log.list({ limit: 50, owner: owner.slice(0, 1000) }, RETENTION)).records)
-        .toHaveLength(3);
-    expect((await log.list({ limit: 50, owner: cut }, RETENTION)).records).toHaveLength(3);
+    let kept = (await log.list({ limit: 50 }, RETENTION)).records
+        .map(r => (r as AdminAccessRecord).workspaceOwner);
+    expect(kept.every(owner => owner.length === MAX_ADMIN_AUDIT_ARG_LENGTH)).toBe(true);
+    expect(new Set(kept).size).toBe(3);
+    expect(kept[2]).toMatch(/^o+…#[0-9a-f]{20}$/);
+    for (let [owner, stored] of [[ada, kept[2]], [grace, kept[1]]]) {
+      let byWhole = (await log.list({ limit: 50, owner }, RETENTION)).records;
+      expect(byWhole.map(r => (r as AdminAccessRecord).workspaceOwner)).toEqual([stored]);
+      expect((await log.list({ limit: 50, owner: stored }, RETENTION)).records).toEqual(byWhole);
+    }
     let [{ size }] = await sql<{ size: number }>(log,
         "SELECT max(length(record)) AS size FROM admin_audit");
     expect(size).toBeLessThan(10_000);

@@ -7,6 +7,7 @@
 // AdminConfig), and adminAccessPolicy() holds that choice inside them wherever it is enforced. This
 // is the reason authentication config stays in auth/config.ts rather than in AdminConfig.
 
+import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
   ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
@@ -228,6 +229,22 @@ export function cutAdminAuditText(text: string, maxLength: number): string {
   let end = maxLength - 1;
   if (end > 0 && isHighSurrogate(text.charCodeAt(end - 1))) end--;
   return `${text.slice(0, end)}…`;
+}
+
+// Hex digits of a long owner id's SHA-256 its audit form keeps: 80 bits, so that no two ids, however
+// alike, share one.
+const OWNER_DIGEST_LENGTH = 20;
+
+/** A workspace owner's id as an audit record keeps it (see AdminAccessRecord.workspaceOwner): whole
+ * while at most MAX_ADMIN_AUDIT_ARG_LENGTH characters, else its start, "…#" and a digest of the
+ * whole id, MAX_ADMIN_AUDIT_ARG_LENGTH characters in all. An id is an identity, so unlike
+ * cutAdminAuditText() this keeps two long ids sharing a start apart. Applied to its own result it
+ * returns it unchanged, so the owner filter takes either form. */
+export function auditOwnerId(id: string): string {
+  if (id.length <= MAX_ADMIN_AUDIT_ARG_LENGTH) return id;
+  let digest = createHash("sha256").update(id).digest("hex").slice(0, OWNER_DIGEST_LENGTH);
+  let start = cutAdminAuditText(id, MAX_ADMIN_AUDIT_ARG_LENGTH - OWNER_DIGEST_LENGTH - 1);
+  return `${start}#${digest}`;
 }
 
 /** The arguments an AdminAccessRecord keeps (see AdminAccessRecord.args): undefined ones left out,
