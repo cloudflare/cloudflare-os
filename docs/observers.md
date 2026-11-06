@@ -128,7 +128,7 @@ visible at `"metadata"`, and can echo content. The compensating controls are:
 - a view expires (15 minutes by default, an hour at most);
 - every call re-checks that the view is live and its admin still an admin;
 - every call is recorded, with whether its answer held content, before anything it read leaves the
-  server, in the workspace (apart from its action log) and in a deployment-wide log; a call whose
+  server, in the deployment-wide audit log (nothing is written to the workspace); a call whose
   record cannot be written fails, returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
 

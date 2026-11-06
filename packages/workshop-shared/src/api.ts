@@ -2632,7 +2632,8 @@ export interface AdminWorkspaceView extends RpcTarget {
   /** The workspace's connections, oldest first, with their bindings and hooks. */
   listGatekeepers(): Promise<AdminGatekeeperInfo[]>;
 
-  /** The workspace's operational state, with its most recent admin access records. */
+  /** The workspace's operational state. Admin access records are not part of it: they are kept
+   * only in the deployment-wide log (AdminApi.listAdminAudit()). */
   getDiagnostics(): Promise<AdminWorkspaceDiagnostics>;
 }
 
