@@ -73,7 +73,7 @@ export interface PagerDutyAccount {
    * Have `hook.receiveEvent()` called with each incident event of the kinds in `options.events`
    * (by default, all of them) on any incident in the account; see {@link PagerDutyEventKind}.
    *
-   * Every event is delivered, whoever caused it, including those of this gadget's own changes;
+   * Every event is delivered, whoever caused it, including those this gadget's own changes cause;
    * `event.actor.isYou` tells those apart. The hook starts disabled, and nothing is
    * delivered until the user enables it. Every call creates a distinct hook, so subscribe once
    * for each set of events to watch. Throws if this deployment has not configured PagerDuty

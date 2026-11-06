@@ -19,7 +19,7 @@ import {
   actions, dependedRefs, isProvisional, providedRefs, type PagerDutyAction, type PagerDutyActionHost,
   type PagerDutyActions,
 } from "./pagerduty-actions";
-import { PagerDutyApi } from "./pagerduty-api";
+import { PagerDutyApi, PagerDutyApiError } from "./pagerduty-api";
 import {
   accountSource, parseSubresource, type AccountKey, type Identity, type PagerDutyVerifierApi,
 } from "./pagerduty-credentials";
@@ -82,6 +82,9 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
   readonly #refs = new ProvisionalIds<string>(this.ctx.storage.kv, { namespace: "refs:", isProvisional });
   readonly #cache = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#creds, { name: "pagerduty" });
   #identity?: { value: Identity; at: number };
+  /** The team or service a team or service binding is scoped to, which every change must still be in. */
+  readonly #within: Within = this.ctx.props.resourceKind === "team" ? { teamId: this.ctx.props.id }
+    : this.ctx.props.resourceKind === "service" ? { serviceId: this.ctx.props.id } : {};
 
   // Every ID a read reports names the pinned account (see `verifyObserverAccess`), and each
   // observer's own connection answers for them.
@@ -99,11 +102,17 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     },
     // PagerDuty can move an incident to another service, or a service or schedule to another team,
     // after the action was staged: a team or service binding checks again that it still reaches it.
+    // Nothing has been sent yet, so PagerDuty refusing the check's read fails the action for good.
     requireInScope: async object => {
-      const props = this.ctx.props;
-      const within: Within = props.resourceKind === "team" ? { teamId: props.id }
-        : props.resourceKind === "service" ? { serviceId: props.id } : {};
-      const outside = await objectOutside({ host: this.#sessionHost }, object, within);
+      let outside: string | undefined;
+      try {
+        outside = await objectOutside({ host: this.#sessionHost }, object, this.#within);
+      } catch (error) {
+        if (error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429) {
+          throw new ActionApplyError(error.message);
+        }
+        throw error;
+      }
       if (outside) throw new ActionApplyError(outside);
     },
     invalidate: () => this.#cache.invalidateAll(),

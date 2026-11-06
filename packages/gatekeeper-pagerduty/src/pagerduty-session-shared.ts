@@ -219,11 +219,12 @@ export function requireTeam(wire: { teams?: WireRef[] }, teamId: string | undefi
 
 /**
  * Why an incident on service `serviceId` is outside a capability's team or service, or undefined
- * when it is within.
+ * when it is within. `loadService` reads the service's teams: briefly cached for reads by default.
  */
-export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, within: Within): Promise<string | undefined> {
+export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, within: Within,
+                                loadService = cachedService): Promise<string | undefined> {
   if (within.serviceId && serviceId !== within.serviceId) return "That incident belongs to another service.";
-  if (within.teamId && !inTeam(await cachedService(ctx, serviceId), within.teamId)) {
+  if (within.teamId && !inTeam(await loadService(ctx, serviceId), within.teamId)) {
     return "That incident doesn't belong to this team.";
   }
   return undefined;
@@ -245,13 +246,17 @@ export type ScopedObject = { kind: "incident" | "service" | "schedule"; id: stri
 
 /**
  * Why `object` is now outside `within`, or undefined when it is within: an incident by the service
- * PagerDuty has it on, a service or schedule by its teams. Reads nothing when `within` is empty.
+ * PagerDuty has it on, a service or schedule by its teams. Every read is fresh, since a change is
+ * about to be made; nothing is read when `within` is empty.
  */
 export async function objectOutside(ctx: { host: SessionHost }, { kind, id }: ScopedObject, within: Within):
     Promise<string | undefined> {
-  if (kind === "incident") return within.teamId || within.serviceId ? (await currentIncident(ctx, id, within)).outside : undefined;
+  if (kind === "incident") {
+    return within.teamId || within.serviceId
+      ? await outsideOf(ctx, (await readIncident(ctx, id)).service.id, within, readService) : undefined;
+  }
   if (!within.teamId) return undefined;
-  const wire = kind === "service" ? await cachedService(ctx, id) : await readSchedule(ctx, id);
+  const wire = kind === "service" ? await readService(ctx, id) : await readSchedule(ctx, id);
   return inTeam(wire, within.teamId) ? undefined : `That ${kind} doesn't belong to this team.`;
 }
 

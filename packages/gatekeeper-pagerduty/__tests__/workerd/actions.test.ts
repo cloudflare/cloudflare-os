@@ -234,6 +234,31 @@ describe("narrow bindings", () => {
     expect(await t.tryApply(actionId)).toMatch(/doesn't belong to this team/);
     expect(t.pd.writes()).toEqual([]);
   });
+
+  it("refuses, sending nothing, a change to an incident whose service has left the team binding since staging read it", async () => {
+    const t = await setup({ resourceKind: "team", id: TEAM.id });
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    const [{ actionId }] = await t.submitted();
+    t.pd.services.get(SERVICE.id)!.teams = [OTHER_TEAM];
+    expect(await t.tryApply(actionId)).toMatch(/doesn't belong to this team/);
+    expect(t.pd.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["createOverride", [ALICE.email, START, END]],
+    ["deleteOverride", ["POVR001"]],
+  ])("fails %s for good, sending nothing, once the team binding's schedule is gone", async (method, args) => {
+    const t = await setup({ resourceKind: "team", id: TEAM.id });
+    await t.run([["getSchedule", SCHEDULE.id], [method, ...args]]);
+    const [{ actionId }] = await t.submitted();
+    const deleted = t.pd.schedules.get(SCHEDULE.id)!;
+    t.pd.schedules.delete(SCHEDULE.id);
+    await t.tryApply(actionId);
+    // Terminal: the schedule coming back doesn't revive it.
+    t.pd.schedules.set(SCHEDULE.id, deleted);
+    await t.tryApply(actionId);
+    expect(t.pd.writes()).toEqual([]);
+  });
 });
 
 describe("simulation", () => {
