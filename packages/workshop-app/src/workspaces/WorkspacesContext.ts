@@ -6,11 +6,22 @@ export type WorkspacesState =
   | { status: 'ready'; workspaces: WorkspaceMetadataWithTimestamps[] }
   | { status: 'failed'; message: string }
 
-export const WorkspacesContext = createContext<WorkspacesState | null>(null)
+export type WorkspacesContextValue = {
+  state: WorkspacesState
+  /** Loads the list again, e.g. after a conversation was created. The current list stays up meanwhile. */
+  refresh: () => void
+}
+
+export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
+
+const useWorkspacesContext = (): WorkspacesContextValue => {
+  const value = useContext(WorkspacesContext)
+  if (!value) throw new Error('Workspaces hooks must be used inside WorkspacesProvider')
+  return value
+}
 
 /** The user's workspaces, most recently active first. Only available beneath `WorkspacesProvider`. */
-export const useWorkspaces = (): WorkspacesState => {
-  const state = useContext(WorkspacesContext)
-  if (!state) throw new Error('useWorkspaces must be used inside WorkspacesProvider')
-  return state
-}
+export const useWorkspaces = (): WorkspacesState => useWorkspacesContext().state
+
+/** Reloads the workspace list. */
+export const useRefreshWorkspaces = (): (() => void) => useWorkspacesContext().refresh
