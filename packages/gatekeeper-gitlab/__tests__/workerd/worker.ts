@@ -84,7 +84,11 @@ type TestExports = {
     getSupportedResources(): Promise<Array<{ urlPattern: string; title: string; description: string }>>;
     ensureResources(patterns: string[]): Promise<{ url?: string }>;
   };
-  TestVerifier(options: { props: UserProps }): { hasProjectAccess(projectPath: string): Promise<boolean> };
+  TestVerifier(options: { props: UserProps }): {
+    hasProjectAccess(projectId: number, minAccessLevel?: number): Promise<boolean>;
+    hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
+    checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
+  };
   TestCallback(options: { props: UserProps }): Fetcher<GatekeeperConnectCallback>;
 };
 
@@ -113,6 +117,8 @@ type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   mergeRequestCommits(id: string, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   isSimulatedCommitId(commitId: string): boolean;
   addObserver(id: string, verifier: unknown): Promise<void>;
+  verifyObserverAccess(observers: Array<{ id: string; verifier: unknown }>, subresources: string[]):
+    Promise<{ allowedObserverIds: string[] }>;
   // write side
   prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<GitLabAction>;
   prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<GitLabAction>;
@@ -187,8 +193,13 @@ export class RecordingQueue extends RpcTarget {
   readonly observations: string[] = [];
   /** Each observation's exclusions, in the order recorded (`undefined` for none). */
   readonly excluded: Array<string[] | undefined> = [];
+  /** Each observation's subresources, in the order recorded. */
+  readonly subresources: Array<string[] | undefined> = [];
   /** How many of the next submissions to refuse, as a Workshop that could not record them would. */
   refuseNext = 0;
+  /** The ordinals (1-based) of the observations to refuse, as the Workshop refusing their audience would. */
+  readonly refuseObservations = new Set<number>();
+  #observationsAsked = 0;
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
     if (this.refuseNext > 0) {
       this.refuseNext -= 1;
@@ -196,9 +207,12 @@ export class RecordingQueue extends RpcTarget {
     }
     this.submitted.push({ actionId, description });
   }
-  async authorizeObservation(description: { title: string; excludeObservers?: string[] }): Promise<void> {
+  async authorizeObservation(description: { title: string; excludeObservers?: string[]; subresources?: string[] }):
+      Promise<void> {
+    if (this.refuseObservations.has(++this.#observationsAsked)) throw new Error("test: the audience was refused");
     this.observations.push(description.title);
     this.excluded.push(description.excludeObservers);
+    this.subresources.push(description.subresources);
   }
   async getGitCache(): Promise<EmptyGitCache> {
     return new EmptyGitCache();
@@ -278,6 +292,33 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
         target = step.drain ? await drain(result as Pages<unknown>) : result;
       }
       return target;
+    });
+  }
+
+  /**
+   * `session`, whose last step returns a cursor that is then walked page by page; a page that
+   * fails is asked for once more. What the walk served, and the error each failed call gave.
+   */
+  async sessionRetryingPages(facetName: string, props: GatekeeperProps, steps: SessionStep[]):
+      Promise<Outcome<{ served: unknown[][]; errors: string[] }>> {
+    return await outcome(async () => {
+      const opened = await this.session(facetName, props, steps);
+      if ("error" in opened) throw new Error(opened.error);
+      const cursor = opened.ok as Pages<unknown>;
+      const served: unknown[][] = [];
+      const errors: string[] = [];
+      for (let retried = false; ;) {
+        const page = await outcome(() => cursor.next());
+        if ("ok" in page) {
+          if (page.ok === null) break;
+          served.push(page.ok);
+          continue;
+        }
+        errors.push(page.error);
+        if (retried) break;
+        retried = true;
+      }
+      return { served, errors };
     });
   }
 
@@ -401,6 +442,15 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#gatekeeper(facetName, props).addObserver(observerId, verifier));
   }
 
+  /** `verifyObserverAccess` for observers named by id, each with a verifier minted for its account. */
+  async verifyObservers(facetName: string, props: GatekeeperProps, observers: Array<{ id: string; userObjectId: string }>,
+                        subresources: string[]): Promise<Outcome<string[]>> {
+    return await outcome(async () => (await this.#gatekeeper(facetName, props).verifyObserverAccess(
+      observers.map(({ id, userObjectId }) => ({
+        id, verifier: (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } }),
+      })), subresources)).allowedObserverIds);
+  }
+
   // -- write side -------------------------------------------------------------------------
 
   #queues = new Map<string, RecordingQueue>();
@@ -419,14 +469,23 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     this.#queue(facetName).refuseNext += 1;
   }
 
+  /** Make the facet's queue refuse its `ordinal`th observation (1-based, counted from its first). */
+  async refuseObservation(facetName: string, ordinal: number): Promise<void> {
+    this.#queue(facetName).refuseObservations.add(ordinal);
+  }
+
   /** What the facet's queue has recorded so far. */
   async queueLog(facetName: string): Promise<{
     submitted: Array<{ actionId: number; description: ActionDescription }>;
     observations: string[];
     excluded: Array<string[] | undefined>;
+    subresources: Array<string[] | undefined>;
   }> {
     const queue = this.#queue(facetName);
-    return { submitted: queue.submitted, observations: queue.observations, excluded: queue.excluded };
+    return {
+      submitted: queue.submitted, observations: queue.observations, excluded: queue.excluded,
+      subresources: queue.subresources,
+    };
   }
 
   /**
@@ -527,8 +586,16 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#user(userObjectId).getSupportedResources());
   }
 
-  async hasProjectAccess(userObjectId: string, projectPath: string): Promise<Outcome<boolean>> {
+  /** The verifier's membership check, by the project's id (a number) or its path (a string). */
+  async hasProjectAccess(userObjectId: string, project: number | string, minAccessLevel?: number): Promise<Outcome<boolean>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } });
-    return await outcome(() => verifier.hasProjectAccess(projectPath));
+    return await outcome(() => typeof project === "number"
+      ? verifier.hasProjectAccess(project, minAccessLevel)
+      : verifier.hasProjectPathAccess(project, minAccessLevel));
+  }
+
+  async checkSubresourceAccess(userObjectId: string, subresources: string[]): Promise<Outcome<boolean[]>> {
+    const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } });
+    return await outcome(() => verifier.checkSubresourceAccess(subresources));
   }
 }

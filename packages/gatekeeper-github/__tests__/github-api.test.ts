@@ -229,7 +229,45 @@ describe("GitHubApi git reads", () => {
     const api = new GitHubApi(async () => "test-token");
     await expect(api.getBranchHead("cloudflare", "workerd", "../../../../../../repos/victim/secret/git/ref/heads/main"))
       .rejects.toThrow("invalid branch name");
+    await expect(api.isBranchProtected("cloudflare", "workerd", "../../../../../../repos/victim/secret/branches/main"))
+      .rejects.toThrow("invalid branch name");
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("GitHubApi.isBranchProtected", () => {
+  const api = () => new GitHubApi(async () => "test-token");
+  const answer = (status: number, body: unknown) =>
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(body, { status })));
+
+  it("reads the branch's protected flag, encoding the name segment by segment", async () => {
+    const url = captureRequests({ name: "release/1.0", commit: { sha: "a".repeat(40) }, protected: true });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "release/1.0")).toBe(true);
+    expect(url().pathname).toBe("/repos/cloudflare/workerd/branches/release/1.0");
+  });
+
+  it("reads an unprotected branch as unprotected", async () => {
+    answer(200, { name: "feature", commit: { sha: "a".repeat(40) }, protected: false });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "feature")).toBe(false);
+  });
+
+  it("reads a missing branch, or any branch of an empty repository, as unprotected", async () => {
+    answer(404, { message: "Branch not found" });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "feature")).toBe(false);
+    answer(409, { message: "Git Repository is empty." });
+    expect(await api().isBranchProtected("cloudflare", "workerd", "main")).toBe(false);
+  });
+
+  it("reads a renamed branch's old name, which GitHub redirects, as protected", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
+      status: 301, headers: { location: "https://api.github.com/repos/cloudflare/workerd/branches/main" },
+    })));
+    expect(await api().isBranchProtected("cloudflare", "workerd", "master")).toBe(true);
+  });
+
+  it("fails on any other error rather than guessing", async () => {
+    answer(502, { message: "Bad Gateway" });
+    await expect(api().isBranchProtected("cloudflare", "workerd", "main")).rejects.toMatchObject({ status: 502 });
   });
 });
 
@@ -261,30 +299,37 @@ describe("GitHubApi redirects", () => {
     throw new Error("expected a rejection");
   }
 
-  it("follows a renamed repo's redirect to its pinned id with the same method and body", async () => {
-    const requests = redirectOnce(307, "https://api.github.com/repositories/42/issues/5/labels");
+  it("sends a pinned repository's requests to its id, with the same method, body and query", async () => {
+    const requests: Array<[string | undefined, string, unknown]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push([init?.method, String(input), init?.body]);
+      return Response.json({});
+    }));
     const api = new GitHubApi(async () => "test-token", { repo: pin });
     await api.addLabels("octo", "repo", 5, ["bug"]);
+    await api.listIssuesConditional("octo", "repo", { state: "open", per_page: 10, page: 2 });
 
-    expect(requests.map(r => [r.method, r.url])).toEqual([
-      ["POST", "https://api.github.com/repos/octo/repo/issues/5/labels"],
+    expect(requests.map(([method, url]) => [method, url])).toEqual([
       ["POST", "https://api.github.com/repositories/42/issues/5/labels"],
+      ["GET", "https://api.github.com/repositories/42/issues?state=open&per_page=10&page=2"],
     ]);
-    expect(requests[1].body).toBe(requests[0].body);
-    expect(JSON.parse(String(requests[1].body))).toEqual({ labels: ["bug"] });
+    expect(JSON.parse(String(requests[0][2]))).toEqual({ labels: ["bug"] });
   });
 
-  it("keeps the original query when following a pinned redirect", async () => {
-    const requests = redirectOnce(301, "https://api.github.com/repositories/42/issues?evil=1");
+  it("sends a path outside the pinned repository as it is", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
     const api = new GitHubApi(async () => "test-token", { repo: pin });
-    await api.listIssuesConditional("octo", "repo", { state: "open", per_page: 10, page: 2 });
-    expect(new URL(requests[1].url).search).toBe(new URL(requests[0].url).search);
+    await api.getRepo("octo", "repository");
+    await api.getViewerConditional();
+    expect(vi.mocked(fetch).mock.calls.map(([input]) => String(input))).toEqual([
+      "https://api.github.com/repos/octo/repository", "https://api.github.com/user",
+    ]);
   });
 
   it.each([
     ["another repository's id", "https://api.github.com/repositories/43/issues/5"],
     ["a name-form issue transfer", "https://api.github.com/repos/octo/private/issues/5"],
-    ["another origin", "https://evil.example/repositories/42/issues/5"],
+    ["another origin", "https://evil.example/elsewhere"],
     ["a different path", "https://api.github.com/repositories/42/issues/6"],
   ])("refuses a redirect to %s without disclosing it", async (_name, location) => {
     const requests = redirectOnce(301, location);
@@ -337,11 +382,18 @@ describe("GitHubApi redirects", () => {
     expect(await rejection(api.getBranchHead("octo", "repo", "main"))).toMatchObject({ status: 301 });
   });
 
-  it("refuses a second hop from a followed redirect", async () => {
-    const location = "https://api.github.com/repositories/42/issues/5";
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 301, headers: { location } })));
+  it("follows no redirect from a pinned repository's id, even to the same path", async () => {
+    const requests = redirectOnce(301, "https://api.github.com/repositories/42/issues/5");
     const api = new GitHubApi(async () => "test-token", { repo: pin });
     expect(await rejection(api.getIssue("octo", "repo", 5))).toMatchObject({ status: 301 });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("refuses a second hop from a followed redirect", async () => {
+    const location = "https://api.github.com/repositories/42";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 301, headers: { location } })));
+    expect(await rejection(new GitHubApi(async () => "test-token").getRepo("octo", "repo")))
+      .toMatchObject({ status: 301 });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

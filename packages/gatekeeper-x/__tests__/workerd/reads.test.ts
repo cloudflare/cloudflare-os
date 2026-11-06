@@ -158,8 +158,10 @@ describe("the daily read limit", () => {
   });
 
   it("counts the identity read behind an account's privacy against the limit", async () => {
-    const { x, userObjectId, props, name } = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
+    // Expire the privacy cache without crossing the daily budget's UTC reset.
+    vi.setSystemTime(new Date("2026-10-10T12:00:00Z"));
+    const { x, userObjectId, props, name } = await setup();
     // Bob's profile is read, and cached, while there's budget...
     unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]]));
     await setReadsUsed(userObjectId, 50);

@@ -11,7 +11,8 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
-import type { GoogleVerifierApi } from "./google-verifier-types";
+import { requireFileSubresources } from "./file-subresources";
+import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
@@ -151,11 +152,13 @@ export class GoogleSlidesGatekeeperImpl
     let props = this.ctx.props;
     let queue = approvalQueue.dup();
     // A presentation binding's scope is the one presentation, so there is nothing to revalidate.
+    // Every read reports it, except one not created yet, which holds only what the caller wrote.
     return new GooglePresentationSessionImpl(
       isSimulated(props) ? new BlankPresentation(props.creation.title) : this.#api,
       this.#presentationId,
       queue,
-      unguardedNativeRead(description => queue.authorizeObservation(description)),
+      unguardedNativeRead(description => queue.authorizeObservation(description),
+        isSimulated(props) ? [] : [{ kind: "presentation", fileId: props.presentationId }]),
       {
         snapshot: read => this.#reads.read(() => read(this.#journal.listUndecided())),
         queue: (kind, prepare) => this.#prepareExclusively(async () => {
@@ -226,6 +229,10 @@ export class GoogleSlidesGatekeeperImpl
    * Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
    * presentation granularity, so an observer must be able to open this presentation with their
    * own account. The overseer re-runs this check on every open, catching revoked access.
+   *
+   * Reads now also report the presentation as a `slides/presentation/<presentationId>`
+   * subresource, which verifyObserverAccess checks; this check stays for the reads made before
+   * they did.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
@@ -238,6 +245,19 @@ export class GoogleSlidesGatekeeperImpl
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the presentation subresource every read reports, failing the whole call for any other
+   * ID. Each observer's UserAccount answers whether the Slides API opens the presentation for their
+   * own account, reusing recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(subresources, ["presentation"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 /** A read with queued changes applied, and the first that no longer applies. */

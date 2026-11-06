@@ -10,8 +10,16 @@ afterEach(() => vi.unstubAllGlobals());
 
 const COMMIT = "a".repeat(40);
 const PROJECT = "group/sub/project";
+/** The project's path, which the binding reads only to pin its id. */
+const PATH = "group%2Fsub%2Fproject";
+/** The bound project's numeric id, by which it asks for the project's current path around a git request. */
+const PROJECT_ID = 3;
+/** The pin probe and the by-id reads `#gitRequest` makes before and after each git request. */
+const PROJECT_READ = new RegExp(`^/api/v4/projects/(?:${PATH}|${PROJECT_ID})$`);
+/** The git endpoint at the path the project has now, which is where git requests are sent. */
 const ENDPOINT = /^\/group\/sub\/project\.git\/git-upload-pack$/;
 const HEADERS = { "Content-Type": "application/x-git-upload-pack-result" };
+const isGit = (call: { url: URL }) => call.url.pathname.includes(".git/");
 // Include non-text bytes so decoding/re-encoding the upload-pack response would fail the test.
 const PACK = new Uint8Array([0, 255, 128, 80, 65, 67, 75, 13, 10]);
 
@@ -25,7 +33,10 @@ const packResponse = () => new Blob([
 ]);
 
 async function setup(name: string, resourceKind: GatekeeperProps["resourceKind"] = "project") {
-  const gitlab = new FakeGitLab().on("POST", ENDPOINT, () => new Response(packResponse(), { headers: HEADERS }));
+  // Answers the project reads every git pull makes, and the pull itself with `PACK`.
+  const gitlab = new FakeGitLab()
+    .on("GET", PROJECT_READ, () => json({ id: PROJECT_ID, name: "project", path_with_namespace: PROJECT }))
+    .on("POST", ENDPOINT, () => new Response(packResponse(), { headers: HEADERS }));
   gitlab.install();
   const props = { ...projectProps(await seedAccount(), PROJECT), resourceKind };
   return { gitlab, props, name };
@@ -68,22 +79,30 @@ describe("unified GitLab pack stream", () => {
       name, props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
     expect(new Uint8Array(await new Response(await transfer.stream()).arrayBuffer())).toEqual(PACK);
     expect(await transfer.status()).toEqual({state: "complete"});
-    expect(gitlab.requests).toHaveLength(1);
-    const upstream = gitlab.requests[0];
+    // Pin the project by its path, then read its current path by id before and after the pull.
+    expect(gitlab.requests.map(call => `${call.method} ${call.url.pathname}`)).toEqual([
+      `GET /api/v4/projects/${PATH}`,
+      `GET /api/v4/projects/${PROJECT_ID}`,
+      `POST /${PROJECT}.git/git-upload-pack`,
+      `GET /api/v4/projects/${PROJECT_ID}`,
+    ]);
+    const upstream = gitlab.requests.find(isGit)!;
     expect(upstream.url.href).toBe(`${API}/${PROJECT}.git/git-upload-pack`);
     expect(upstream.bytes).toEqual(body);
     expect(upstream.headers.get("git-protocol")).toBe("version=2");
     expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("oauth2:test-token")}`);
     expect(upstream.headers.get("cf-access-client-id")).toBe(ACCESS.id);
     expect(upstream.headers.get("cf-access-client-secret")).toBe(ACCESS.secret);
-    // No REST reads, reference discovery, or GitCache capability is needed by this path.
+    // No reference discovery or GitCache capability is needed by this path.
   });
 
   it.each(["refs/heads/main", "a".repeat(39), "a".repeat(40) + "\\ncommand=ls-refs"])(
-    "rejects invalid object id %s before contacting GitLab", async oid => {
+    "rejects invalid object id %s before contacting GitLab's git endpoint", async oid => {
       const {gitlab, props, name} = await setup("invalid-oid");
       expect(await hooks().gitPull(name, props, [oid], OPTIONS)).toHaveProperty("error");
-      expect(gitlab.requests).toHaveLength(0);
+      // The binding pins its project before any read, so the pin probe may precede the refusal;
+      // no git request is sent.
+      expect(gitlab.requests.filter(isGit)).toHaveLength(0);
     });
 
   it.each([
@@ -140,6 +159,7 @@ describe("unified GitLab pack stream", () => {
 
   it("uses refreshed credentials rather than exporting them to the caller", async () => {
     const gitlab = new FakeGitLab()
+      .on("GET", PROJECT_READ, () => json({ id: PROJECT_ID, name: "project", path_with_namespace: PROJECT }))
       .on("POST", /^\/oauth\/token$/, () => json(tokenResponse(1)))
       .on("POST", ENDPOINT, () => new Response(packResponse(), { headers: HEADERS }));
     gitlab.install();
@@ -148,7 +168,7 @@ describe("unified GitLab pack stream", () => {
       "bootstrap-refresh", props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
     expect(new Uint8Array(await new Response(await transfer.stream()).arrayBuffer())).toEqual(PACK);
     expect(gitlab.count("POST", /^\/oauth\/token$/)).toBe(1);
-    const upstream = gitlab.requests.find(call => ENDPOINT.test(call.url.pathname))!;
+    const upstream = gitlab.requests.find(isGit)!;
     expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("oauth2:access-1")}`);
   });
 
@@ -160,7 +180,7 @@ describe("unified GitLab pack stream", () => {
     await runInDurableObject(env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(props.userObjectId)),
       async (_instance, state) => { await state.storage.deleteAll(); });
     expect(await hooks().gitPull(name, props, [COMMIT], OPTIONS)).toHaveProperty("error");
-    expect(gitlab.requests).toHaveLength(1);
+    expect(gitlab.requests.filter(isGit)).toHaveLength(1);
   });
 
   it.each<[string, () => Response]>([
@@ -172,6 +192,6 @@ describe("unified GitLab pack stream", () => {
     const { gitlab, props, name } = await setup(`bootstrap-upstream-${label}`);
     gitlab.on("POST", ENDPOINT, response);
     expect(await hooks().gitPull(name, props, [COMMIT], OPTIONS)).toHaveProperty("error");
-    expect(gitlab.requests).toHaveLength(1);
+    expect(gitlab.requests.filter(isGit)).toHaveLength(1);
   });
 });

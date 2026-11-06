@@ -14,7 +14,7 @@ it("restores a stored sync capability after DO eviction without replaying an acc
   const fixture = await runInDurableObject(owner, async instance => {
     const impl = instance.impl;
     impl.storage.chatMeta.put({id: 1, title: "Transfer", started: new Date(), lastActive: new Date()});
-    const commit = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "abc"]]),
+    const commit = await impl.gitCache.writeFilesAsCommit(new Map([["a.txt", "abc"]]),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
     const tree = await impl.createWorktree("Repo", 1, commit);
     const session = await impl.openWorktreeSync(1, tree.id, {type: "agent", id: "test", name: "Test"});
@@ -48,7 +48,7 @@ it("redelivers an applied but unacknowledged callback after both Durable Objects
   const fixture = await runInDurableObject(owner, async instance => {
     const impl = instance.impl;
     impl.storage.chatMeta.put({id: 1, title: "Callback reset", started: new Date(), lastActive: new Date()});
-    const commit = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "abc"]]),
+    const commit = await impl.gitCache.writeFilesAsCommit(new Map([["a.txt", "abc"]]),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
     const tree = await impl.createWorktree("Repo", 1, commit);
     using session = await impl.openWorktreeSync(1, tree.id, {type: "agent", id: "test", name: "Test"});

@@ -18,6 +18,8 @@ const sideband = (band: number, payload: Uint8Array) => new Uint8Array([
 const response = () => new Blob([
   encodePktLine("packfile"), sideband(1, PACK), FLUSH_PKT,
 ]);
+/** The repository, by name or by id: git is addressed by the name its id has now. */
+const REPOSITORY = {id: 1, name: "widgets", owner: {login: "acme"}};
 
 async function propsFor(resourceKind: GatekeeperProps["resourceKind"]): Promise<GatekeeperProps> {
   const id = env.USER_ACCOUNT.newUniqueId();
@@ -72,7 +74,8 @@ describe("unified GitHub pack stream", () => {
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const upstream = new Request(input, init);
       calls.push(upstream);
-      if (upstream.url === "https://api.github.com/repos/acme/widgets") return Response.json({ id: 1 });
+      if (upstream.url === "https://api.github.com/repos/acme/widgets"
+        || upstream.url === "https://api.github.com/repositories/1") return Response.json(REPOSITORY);
       expect(upstream.url).toBe("https://github.com/acme/widgets.git/git-upload-pack");
       expect(upstream.method).toBe("POST");
       expect(upstream.headers.get("git-protocol")).toBe("version=2");
@@ -86,7 +89,12 @@ describe("unified GitHub pack stream", () => {
     using transfer = outcome.ok as RpcStub<GitPullTransfer>;
     expect(new Uint8Array(await new Response(await transfer.stream()).arrayBuffer())).toEqual(PACK);
     expect(await transfer.status()).toEqual({state: "complete"});
-    expect(calls).toHaveLength(2);
+    expect(calls.map(call => call.url)).toEqual([
+      "https://api.github.com/repos/acme/widgets",
+      "https://api.github.com/repositories/1",
+      "https://github.com/acme/widgets.git/git-upload-pack",
+      "https://api.github.com/repositories/1",
+    ]);
   });
 
   it("rejects an invalid object id without sending an upload-pack request", async () => {
@@ -127,7 +135,7 @@ describe("unified GitHub pack stream", () => {
       if (String(input).includes("git-upload-pack")) {
         return new Response(body());
       }
-      return Response.json({id: 1});
+      return Response.json(REPOSITORY);
     });
     const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("hooks"));
     const outcome = await hooks.gitPull(`bootstrap-error-${name}`, props, [COMMIT], OPTIONS);

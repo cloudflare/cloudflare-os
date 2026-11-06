@@ -324,6 +324,14 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   only name that same repository) and follows a redirect only to the same path under that id. A
   transferred issue, which redirects into another repository, is still refused, and props stay
   path-based, so the observer probe and URL builders are unchanged.
+  Since the observer conversion (§8) this gatekeeper pins the project's id as well, read once from
+  its path, and now matches GitHub on redirects: a GET of a project's root by path follows a 301
+  to the root by id (re-issued to the API origin, since the Location names the browser-facing
+  host), which the pin and the legacy admission path check use; nothing beneath a project is
+  followed. It sends every REST request beneath the
+  project to `/projects/<id>/…`, so a move after the pin no longer reaches the error; git, which
+  GitLab addresses only by path, goes to the path the id has now, and a fetch is refused if that
+  path, read afresh once GitLab answered, differs from the one the fetch was sent to.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`
@@ -997,6 +1005,33 @@ The owner's own access is checked too: the job read that revalidates a cached lo
 a debug trace Developer's, so a cached log is served only while the connected account holds
 Developer on the project (the verifier's `members/all` probe, run with the owner's token);
 otherwise the read goes to `/trace` and GitLab decides.
+
+**Kernel-checked subresources.** Every read now reports what it depends on as
+`ObservationDescription.subresources` (docs/observers.md §10): `project/<projectId>`, the id the
+binding pins on first use, or for CI data the role it needs, `project/<projectId>/role/developer`
+(job logs, and test reports read below Maintainer) or `project/<projectId>/role/maintainer` (test
+reports read as a Maintainer, an administrator or no member), chosen inside the report's
+connection fence and never recomputed from the owner's later role. `verifyObserverAccess` answers
+through the observer's `UserAccount.checkSubresourceAccess`: the `members/all` probe above, by id,
+at the role named, reusing a grant for 15 minutes and a denial for 15 seconds within one
+connection generation. Reads no longer mark sets, exclude observers or consult the roster, which
+is dropped: the Workshop checks the whole audience, observers admitted unrecorded included.
+`addObserver` keeps the tracker for the sets reads marked before, and requires the baseline and
+each marked set's role by the binding's path, since those reads followed it, and by the stored id
+once there is one. It never pins, which would ask with the owner's token and lock collaborators out
+of the history once the owner's grant lapsed; a binding without an id has read nothing by it. A
+reported id is only true if the read came from it, so REST is addressed by id (§5, redirects), git
+by the path the id has now, and caches filled while reads followed the path are discarded once on
+upgrade.
+
+New bindings carry `reportsSubresources: true` in their immutable props. No read of theirs
+predates reporting, so their `addObserver` and `removeObserver` are no-ops: no check, no stored
+observer, no cap, and a rename or reuse of the old path does not stop sharing them. Legacy
+bindings keep the tracker and the admission checks above, on the original path and any stored id:
+their history is not exported (`getHistoricalSubresources` is not implemented). Returned issue and
+merge request references follow GitLab's current `web_url`, and comment, diff-thread and
+queued-item links the pinned project's current path, not the old path used as the REST ID-rewrite
+key; same-project simulation compares their current source and target.
 
 ### 9. Tests
 

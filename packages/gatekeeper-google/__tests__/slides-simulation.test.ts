@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { RestText } from "../src/slides-api";
 import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
+import { batchKind } from "../src/slides-actions";
+import type { DesignChange } from "../src/slides-design";
 import {
-  applyChange, slidesToFetch, type CreatedPlaceholder, type Deck, type SlidesAction,
+  applyChange, batchSlides, slidesToFetch, type CreatedPlaceholder, type Deck, type SlidesAction,
 } from "../src/slides-simulation";
 import type { ShapeElement } from "../src/slides-read-types";
 import { editSlide } from "../src/slides-target";
@@ -346,5 +348,61 @@ describe("Slides change replay", () => {
       expect(drop({ ...themed, masters: new Map([...themed.masters, ["s1", "m2"]]) }, "s2").masters.get("layout-m2"))
         .toBe("m2");
     });
+  });
+});
+
+describe("Slides batch kinds", () => {
+  const TEXT: DesignChange = { op: "editText", slideId: "s1", elementId: "t1", replace: "x" };
+  const BOLD: DesignChange = { op: "formatText", slideId: "s1", elementId: "t1", format: { bold: true } };
+  const IMAGE = "https://example.com/chart.png";
+
+  it("queues text edits and formatting alone under their own kinds", () => {
+    expect(batchKind([TEXT, { ...TEXT, replace: "y" }])).toBe("editText");
+    expect(batchKind([BOLD, { op: "setBackground", slideId: "s1", background: "none" }])).toBe("formatSlides");
+  });
+
+  it("queues any other batch as an edit unless it deletes or downloads", () => {
+    let edits: DesignChange[] = [
+      { op: "formatText", slideId: "s1", elementId: "t1", format: { link: IMAGE } },
+      { op: "formatText", slideId: "s1", elementId: "t1", format: { fontFamily: "Georgia" } },
+      { op: "createShape", slideId: "s1", id: "new", shapeType: "RECTANGLE", bounds: { x: 0, y: 0, width: 1, height: 1 } },
+      { op: "setAltText", slideId: "s1", elementId: "t1", title: "Title" },
+      { op: "createTable", slideId: "s1", id: "new", rows: 1, columns: 1 },
+      { op: "insertTableRows", slideId: "s1", elementId: "tb", at: 0 },
+      { op: "insertTableColumns", slideId: "s1", elementId: "tb", at: 0 },
+      { op: "formatTableCells", slideId: "s1", elementId: "tb", fill: "none" },
+      { op: "setBackground", layoutId: "l1", background: "#000000" },
+      { op: "setBackground", masterId: "m1", background: "none" },
+      { op: "setThemeColors", masterId: "m1", colors: { ACCENT1: "#ff0000" } },
+    ];
+    for (let change of edits) expect(batchKind([change]), change.op).toBe("editSlides");
+    expect(batchKind([TEXT, BOLD])).toBe("editSlides");
+
+    let held: DesignChange[] = [
+      { op: "deleteElement", slideId: "s1", elementId: "t1" },
+      { op: "deleteTableRows", slideId: "s1", elementId: "tb", at: 0 },
+      { op: "deleteTableColumns", slideId: "s1", elementId: "tb", at: 0 },
+      { op: "insertImage", slideId: "s1", id: "new", url: IMAGE },
+      { op: "replaceImage", slideId: "s1", elementId: "img", url: IMAGE },
+      { op: "setBackground", slideId: "s1", background: { imageUrl: IMAGE } },
+      { op: "setBackground", masterId: "m1", background: { imageUrl: IMAGE } },
+    ];
+    for (let change of held) {
+      expect(batchKind([change]), change.op).toBe("updateSlides");
+      expect(batchKind([TEXT, BOLD, change]), change.op).toBe("updateSlides");
+    }
+  });
+
+  it("checks and fetches the slides of a batch whichever kind it was queued as", () => {
+    let changes: DesignChange[] = [
+      { op: "setAltText", slideId: "s1", elementId: "t1", title: "Title" },
+      { op: "setAltText", slideId: "s2", elementId: "t2", title: "Title" },
+    ];
+    for (let kind of ["editText", "formatSlides", "editSlides", "updateSlides"] as const) {
+      let action: SlidesAction = { kind, payload: { changes, slides: {} } };
+      expect(batchSlides(action), kind).toEqual(["s1", "s2"]);
+      expect(slidesToFetch(["s1"], [{ id: 1, action }]), kind).toEqual(new Set(["s1", "s2"]));
+    }
+    expect(batchSlides({ kind: "deleteSlide", payload: { slideId: "s1", slide: { number: 1 } } })).toEqual([]);
   });
 });

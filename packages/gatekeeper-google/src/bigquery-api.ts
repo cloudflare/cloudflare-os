@@ -50,6 +50,17 @@ type GoogleErrorResponse = {
   };
 };
 
+/**
+ * A failed BigQuery REST request, with its HTTP status and the first `reason` Google gave: what
+ * tells a denial (`accessDenied`) apart from the other refusals BigQuery also answers with 403,
+ * such as a rate limit, a quota or a missing scope.
+ */
+export class BigQueryApiError extends Error {
+  constructor(message: string, readonly status: number, readonly reason: string | undefined) {
+    super(message);
+  }
+}
+
 type RestField = {
   name: string;
   type: string;
@@ -272,7 +283,8 @@ async function callRest<T>(
       detail += ` [errors=${rawBody.error.errors.map(
           e => `${e.reason ?? "?"}:${e.message ?? "?"}`).join(" | ")}]`;
     }
-    throw new Error(`BigQuery API error: ${detail}`);
+    throw new BigQueryApiError(
+        `BigQuery API error: ${detail}`, response.status, rawBody.error?.errors?.[0]?.reason);
   }
   if (!isJson) {
     throw new Error(`BigQuery API: expected JSON, got ${contentType}`);

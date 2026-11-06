@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { guardedFetch, isAllowedUrl, sdkFetch } from "../src/fetch.js";
+import { guardedFetch, isAllowedUrl, MAX_RESPONSE_BYTES, sdkFetch } from "../src/fetch.js";
 
 type Hop = {
   url: string;
@@ -201,7 +201,7 @@ describe("sdkFetch", () => {
   });
 
   it("refuses an OAuth response larger than the shared response limit", async () => {
-    vi.stubGlobal("fetch", async () => new Response("x".repeat(2 * 1024 * 1024)));
+    vi.stubGlobal("fetch", async () => new Response("x".repeat(MAX_RESPONSE_BYTES + 1)));
     await expect(sdkFetch()("https://auth.example.com/metadata"))
       .rejects.toThrow(/response exceeded/i);
   });

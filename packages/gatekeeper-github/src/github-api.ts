@@ -413,9 +413,11 @@ type RequestOptions = {
 };
 
 /**
- * A repository with its GitHub id, which survives renames and owner transfers. GitHub redirects
- * a renamed repo's `/repos/<owner>/<name>/...` to `/repositories/<id>/...`, while a transferred
- * issue redirects into another repository, so the id tells the two apart.
+ * A repository with its GitHub id, which survives renames and owner transfers and is never reused.
+ * A request beneath `/repos/<owner>/<repo>` is sent beneath `/repositories/<id>` instead (see
+ * requestUrl): the same address GitHub redirects a renamed repository's old path to, and one no
+ * other repository can take over, as a repository created under a deleted or renamed one's freed
+ * name takes over that name.
  */
 export type PinnedRepo = { owner: string; repo: string; id: number };
 
@@ -468,24 +470,32 @@ const REPO_ROOT_PATH = /^\/repos\/[^/]+\/[^/]+$/;
 const REPO_ID_PATH = /^\/repositories\/\d+$/;
 
 /**
- * The URL to re-issue a redirected request to, built rather than taken from `location`. Without
- * `pin`, only a repository's root is followed, to `/repositories/<id>`: GitHub redirects a renamed
- * or transferred repository there, and at the root the id can only be that same repository's.
- * With it, a redirect is followed only to the same path under the pinned id, since beneath the
- * root a transferred issue redirects into another repository.
+ * Where a request for `path` is sent: with `pin`, a path beneath the pinned repository's name goes
+ * to the same path beneath its id (see PinnedRepo); every other path is sent as given.
+ */
+function requestUrl(path: string, pin: PinnedRepo | undefined): URL {
+  const url = new URL(path, API_BASE_URL);
+  if (!pin) return url;
+  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
+  const suffix = url.pathname.slice(prefix.length);
+  if (url.pathname.startsWith(prefix) && (suffix === "" || suffix.startsWith("/"))) {
+    url.pathname = `/repositories/${pin.id}${suffix}`;
+  }
+  return url;
+}
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from `location`. Only an
+ * unpinned request for a repository's root is followed, to `/repositories/<id>`: GitHub redirects
+ * a renamed or transferred repository there, and at the root the id can only be that same
+ * repository's. A pinned request is addressed by id already, and beneath a repository GitHub
+ * redirects only into another one, as for a transferred issue.
  */
 function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined): URL | undefined {
   const moved = location === null ? null : URL.parse(location);
-  if (moved?.origin !== API_BASE_URL) return undefined;
-  if (!pin) {
-    return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
-      ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
-  }
-  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
-  const suffix = url.pathname.slice(prefix.length);
-  if (!url.pathname.startsWith(prefix) || !(suffix === "" || suffix.startsWith("/"))) return undefined;
-  const target = new URL(`/repositories/${pin.id}${suffix}${url.search}`, API_BASE_URL);
-  return moved.pathname === target.pathname ? target : undefined;
+  if (pin || moved?.origin !== API_BASE_URL) return undefined;
+  return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
+    ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
 }
 
 async function request<T>(
@@ -495,7 +505,7 @@ async function request<T>(
   getToken?: () => Promise<string>,
   pin?: PinnedRepo,
 ): Promise<RequestResult<T>> {
-  const url = new URL(path, API_BASE_URL);
+  const url = requestUrl(path, pin);
 
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
@@ -659,9 +669,9 @@ export async function revokeOAuthToken(
 }
 
 /**
- * GitHub's REST API as one account. Redirects are followed only within `repo`, by its id (see
- * PinnedRepo); without it, only a repository root's redirect to its id is (see redirectTarget),
- * and every other redirect fails with a GitHubApiError.
+ * GitHub's REST API as one account. With `repo`, a request beneath its name is sent by its id (see
+ * PinnedRepo) and no redirect is followed; without it, only a repository root's redirect to its id
+ * is (see redirectTarget). Every other redirect fails with a GitHubApiError.
  */
 export class GitHubApi {
   #getToken: () => Promise<string>;
@@ -1485,6 +1495,29 @@ export class GitHubApi {
     }
   }
 
+  /**
+   * Whether GitHub reports a branch as protected; false for a branch that does not exist. An
+   * unconditional, uncached read, since it decides whether a push may apply without a person. A
+   * renamed branch's old name redirects to the new branch, which is not followed, so it counts
+   * as protected: the branch it names may be.
+   */
+  async isBranchProtected(owner: string, repo: string, branch: string): Promise<boolean> {
+    try {
+      const result = await this.#request<GitHubBranchResponse>(
+        "GET",
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+          validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+      );
+      return result.data.protected === true;
+    } catch (error) {
+      if (!(error instanceof GitHubApiError)) throw error;
+      if (isRedirect(error.status)) return true;
+      // 409 is GitHub's answer for an empty repository, which has no branches at all.
+      if (error.status === 404 || error.status === 409) return false;
+      throw error;
+    }
+  }
+
   async listTagsConditional(
     owner: string,
     repo: string,
@@ -1854,14 +1887,15 @@ export const CREDENTIALS_EXPIRED_MESSAGE =
   "GitHub credentials have expired or been revoked. Please reconnect the account.";
 
 /**
- * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
- * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
- * replaced while the request was in flight fails as retryable rather than marking the account
- * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
- * reruns `fn` once with the replacement token.
+ * Runs `fn` against GitHub as `account`, a stub to it or the account itself, addressing `repo` by
+ * its id (see GitHubApi). GitHub's rejection of the token a request presented is the account's to
+ * adjudicate, so a token replaced while the request was in flight fails as retryable rather than
+ * marking the account expired. With `replayable`, which only calls safe to run twice may pass, such
+ * a failure instead reruns `fn` once with the replacement token.
  */
 export async function withAccountApi<T>(
-  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
+  account: Pick<UserAccount, "getAccessToken" | "reportTokenRejected">,
+  fn: (api: GitHubApi) => Promise<T>,
   options: { replayable?: true; repo?: PinnedRepo } = {},
 ): Promise<T> {
   for (let replays = options.replayable ? 1 : 0; ; replays--) {

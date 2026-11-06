@@ -20,7 +20,7 @@ type Impl = OverseerDurableObject["impl"];
 const author = {type: "agent" as const, id: "test", name: "Test"};
 async function setup(impl: Impl) {
   impl.storage.chatMeta.put({id: 1, title: "Live worktree", started: new Date(), lastActive: new Date()});
-  const commit = await impl.gitStore.writeFilesAsCommit(new Map([
+  const commit = await impl.gitCache.writeFilesAsCommit(new Map([
     ["a.txt", "abc"], ["untouched.txt", "base"], ["raw.bin", "\0binary\xff"],
   ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
   const tree = await impl.createWorktree("Repo", 1, commit);
@@ -240,7 +240,7 @@ describe("mounted worktree canonical synchronization", () => {
   it("accepts a whole binary blob replacement and streams its OID, rejecting absent blobs", () => within(async (impl, f) => {
     const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
     const subscription = await f.session.subscribe(await receiver.subscriber());
-    const blob = await impl.gitStore.writeBlob(Uint8Array.from([0, 255, 42, 0]));
+    const blob = await impl.gitCache.writeBlob(Uint8Array.from([0, 255, 42, 0]));
     const ack = await f.session.submitChanges("binary", impl.replicaHistoryRevision(1),
       [{path: "image.bin", change: {setBytes: {oid: blob.oid, byteLength: 4}}}]);
     await impl.drainWorktreeSubscription([...impl.storage.worktreeSyncSessions.list()][0].id);
@@ -276,7 +276,7 @@ describe("mounted worktree canonical synchronization", () => {
 
   it("serves explicit Git HEAD and the canonical file base through one endpoint before acceptance", () => within(async (impl, f) => {
     await step(impl, f.tree.id, "a.txt", diffFiles("abc", "committed"));
-    const head = await impl.gitStore.writeChangedFilesAsCommit(new Map([["a.txt", "committed"]]), {
+    const head = await impl.gitCache.writeChangedFilesAsCommit(new Map([["a.txt", "committed"]]), {
       treeBase: f.commit, parents: [f.commit], author: {name: "Test", email: "test@example.com"},
       message: "Explicit worktree commit", timestamp: new Date(),
     });

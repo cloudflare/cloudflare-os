@@ -221,6 +221,9 @@ export function normalizeProjectMetadata(instanceUrl: string, response: GitLabPr
 // Issues
 
 export function normalizeIssueSummary(instanceUrl: string, projectPath: string, response: GitLabIssueResponse): GitLabIssueSummary {
+  // Requests may use the binding's original path as an ID-rewrite key after a move. GitLab's
+  // returned browser URL names the project that actually answered, not a replacement at that path.
+  projectPath = parseResourceUrl(instanceUrl, response.web_url)?.projectPath ?? projectPath;
   const id = String(response.iid);
   return {
     project: projectRef(instanceUrl, projectPath),
@@ -290,6 +293,7 @@ export function normalizeMergeRequestSummary(
   response: GitLabMergeRequestResponse,
   sourceProject?: GitLabProjectRef,
 ): GitLabMergeRequestSummary {
+  projectPath = parseResourceUrl(instanceUrl, response.web_url)?.projectPath ?? projectPath;
   const id = String(response.iid);
   const target = projectRef(instanceUrl, projectPath);
   const source: GitLabBranchRef = {

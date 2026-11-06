@@ -20,7 +20,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "isomorphic-git": "^1.44.4",
+    "isomorphic-git": "^1.44.5",
     "yaml": "^2.9.1",
     "zod": "catalog:"
   },
@@ -53,7 +53,7 @@
     "terser": "^5.51.2",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plugin-singlefile": "^2.3.3",
+    "vite-plugin-singlefile": "^2.3.4",
     "vite-plus": "catalog:",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "catalog:",

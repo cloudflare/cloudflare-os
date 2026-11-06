@@ -263,3 +263,76 @@ it("refuses oversized tool names before consulting the host", async () => {
   await expect(session.callTool(oversized)).rejects.toThrow(/tool name.*at most/i);
   expect(finds).toBe(0);
 });
+
+/**
+ * A host over one read-only tool whose calls return nothing, and applied actions whose results are
+ * `result`, reporting `subresources` on every observation.
+ */
+function disclosingHost(
+  subresources: readonly string[] | undefined,
+  result?: StoredAction["result"],
+): McpSessionHost {
+  const search = classifyTool({ name: "jira_search", annotations: { readOnlyHint: true } }, "byo");
+  return {
+    serverName: "Portal / Jira",
+    endpoint: "https://gw.example.com/mcp",
+    scope: { serverId: "jira" },
+    observationSubresources: subresources,
+    tools: async () => [],
+    searchTools: async () => [],
+    findTool: async (name: string) => name === search.tool.name ? search : undefined,
+    call: async (fn: (client: never) => Promise<unknown>) =>
+      fn({ callTool: async () => ({ content: [] }) } as never),
+    lookupAction: (id: number): StoredAction => ({
+      id, toolName: "jira_create_issue", args: {}, state: "applied", submittedAt: 0, result,
+    }),
+  } as unknown as McpSessionHost;
+}
+
+/** Every disclosure a session makes, each returning nothing but still an observation. */
+const DISCLOSURES: Array<[string, (session: McpSessionBase) => Promise<unknown>]> = [
+  ["catalog", session => session.listTools()],
+  ["exact lookup", session => session.listTools({ name: "jira_missing" })],
+  ["search", session => session.listTools({ search: "nothing" })],
+  ["read-only call", session => session.callTool("jira_search", {})],
+  ["approved result", session => session.getActionResult(3)],
+];
+
+it("reports the host's subresources on every disclosure, empty and stored results too", async () => {
+  const stored = { status: "ok" as const, content: [], text: "Created PROJ-1" };
+  for (const result of [undefined, stored]) {
+    type Observation = { title: string; subresources?: string[] };
+    const observations: Observation[] = [];
+    const queue = { authorizeObservation: (d: Observation) => { observations.push(d); } };
+    const session = new McpSessionBase(disclosingHost(["server/jira"], result), queue as never);
+
+    for (const [, disclose] of DISCLOSURES) await disclose(session);
+
+    expect(observations).toHaveLength(DISCLOSURES.length);
+    for (const observation of observations) {
+      expect(observation.subresources, observation.title).toEqual(["server/jira"]);
+    }
+  }
+});
+
+it("reports no subresources for a host that has none, leaving reads to addObserver", async () => {
+  const observations: object[] = [];
+  const queue = { authorizeObservation: (d: object) => { observations.push(d); } };
+  const session = new McpSessionBase(disclosingHost(undefined), queue as never);
+
+  for (const [, disclose] of DISCLOSURES) await disclose(session);
+
+  expect(observations).toHaveLength(DISCLOSURES.length);
+  for (const observation of observations) expect(observation).not.toHaveProperty("subresources");
+});
+
+it("hands nothing back from a disclosure the Workshop refuses to authorize", async () => {
+  const refusal = new Error("A collaborator may not see this.");
+  const queue = { authorizeObservation: async () => { throw refusal; } };
+  const stored = { status: "ok" as const, content: [], text: "Created PROJ-1" };
+  const session = new McpSessionBase(disclosingHost(["server/jira"], stored), queue as never);
+
+  for (const [family, disclose] of DISCLOSURES) {
+    await expect(disclose(session), family).rejects.toBe(refusal);
+  }
+});

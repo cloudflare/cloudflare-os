@@ -184,6 +184,25 @@ describe("labels, tags, merge request summary", () => {
   it("carries an issue's upvotes, the key a popularity listing is ordered by", () => {
     expect(normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data).upvotes).toBe(4);
   });
+
+  it("uses the returned project path for moved issue and merge request references, including fork targets", () => {
+    const moved = "acme/renamed";
+    const issue = normalizeIssueSummary(INSTANCE, "group/project", {
+      ...fx.issueResponse.data, web_url: `${INSTANCE}/${moved}/-/issues/1`,
+    });
+    expect(issue.project).toEqual(projectRef(INSTANCE, moved));
+    expect(issue.url).toBe(`${INSTANCE}/${moved}/-/issues/${issue.id}`);
+    const mr = { ...fx.mergeRequestResponse.data, web_url: `${INSTANCE}/${moved}/-/merge_requests/1` };
+    const sameProject = normalizeMergeRequestSummary(INSTANCE, "group/project", mr);
+    expect(sameProject.project).toEqual(projectRef(INSTANCE, moved));
+    expect(sameProject.source.project).toEqual(sameProject.project);
+    expect(sameProject.target.project).toEqual(sameProject.project);
+    expect(sameProject.url).toBe(`${INSTANCE}/${moved}/-/merge_requests/${sameProject.id}`);
+    const fork = projectRef(INSTANCE, "fork/project");
+    const fromFork = normalizeMergeRequestSummary(INSTANCE, "group/project", mr, fork);
+    expect(fromFork.target.project).toEqual(projectRef(INSTANCE, moved));
+    expect(fromFork.source.project).toEqual(fork);
+  });
 });
 
 describe("listing filters", () => {

@@ -51,6 +51,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
+import { autoApprovableKinds, dashboardVerdict, serviceCallVerdict } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -984,7 +985,7 @@ class EntityConfiguratorUI extends RpcTarget implements HomeAssistantEntityConfi
 // ---------------------------------------------------------------------------
 // GatekeeperImpl
 
-type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
+export type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
 
 type HomeAssistantGatekeeperImplProps = {
   userObjectId: string;
@@ -1064,6 +1065,10 @@ type PendingActionRow = {
   id: number;
   action: HomeAssistantAction;
   submittedAt: number;
+  /** The verdict submitted with the action; apply re-checks a `true` one (see applyAction). */
+  autoApprovable?: boolean;
+  /** Set when the overseer first applies it, which proves it received the action (see submitWrite). */
+  applyStarted?: true;
 };
 
 // Internal storage row for actions that have been applied. Retained so that revertAction() can
@@ -1166,7 +1171,7 @@ export class HomeAssistantGatekeeperImpl
   }
 
   async getAutoApprovableActions() {
-    return [];
+    return autoApprovableKinds(this.ctx.props.resourceKind, this.ctx.props.resourceId);
   }
 
   async startSession(
@@ -1192,17 +1197,37 @@ export class HomeAssistantGatekeeperImpl
     // The overseer only knows the numeric action ID; the full action lives in DO storage.
     const pending = this.#getPending(actionId);
     if (!pending) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.#getApplied(actionId) !== undefined) return;
       throw new Error(`No queued Home Assistant action exists with id ${actionId}.`);
     }
     const action = pending.action;
+    if (!pending.applyStarted) this.ctx.storage.kv.put<PendingActionRow>(`pending:${actionId}`, { ...pending, applyStarted: true });
     const creds = await this.#getCreds();
-
     let revertInfo: HomeAssistantRevertInfo;
     try {
       revertInfo = await this.#snapshotForRevert(action, creds);
     } catch {
       // If we can't snapshot, proceed without revert.
       revertInfo = { type: "noRevert" };
+    }
+
+    // Home Assistant resolves area, device, label and floor targets when the call runs, so what a
+    // device-control call reaches can change while it is queued (a template switch moved into the
+    // area). One that could be auto-approved is held unless it would still qualify now, checked
+    // last, just before the call: Home Assistant has no conditional call to close the gap entirely.
+    // An apply cannot tell a rule's approval from a person's, so this holds one a person approved
+    // too, as GitHub's and GitLab's push gates and Calendar's do: they approved what the card
+    // showed, which reached only device control.
+    if (action.type === "callService" && pending.autoApprovable === true &&
+        !serviceCallVerdict(action, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("What this call reaches has changed since it was queued, so it is no longer only device control. Queue it again to have it reviewed.");
+    }
+    // The same holds for the entities a dashboard shows controls for.
+    if (action.type === "saveDashboard" && pending.autoApprovable === true &&
+        !dashboardVerdict(action.config, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("An entity this dashboard shows has changed since it was queued, so its controls are no longer only device control. Queue it again to have it reviewed.");
     }
 
     try {
@@ -1349,9 +1374,14 @@ export class HomeAssistantGatekeeperImpl
           description = describeAction(action, emptyRegistry);
         }
 
+        self.ctx.storage.kv.put<PendingActionRow>(`pending:${id}`, { ...row, autoApprovable: description.autoApprovable });
         try {
           await approvalQueue.submitAction(id, description);
         } catch (e) {
+          // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+          // action the overseer has started applying proves it received it; failing would invite a
+          // repeated call, and dropping the row would take away its retry.
+          if (self.ctx.storage.kv.get(`applied:${id}`) !== undefined || self.#getPending(id)?.applyStarted) return;
           // The submit failed (e.g., the approval queue stub is gone). Drop the pending row.
           self.#deletePending(id);
           throw e;

@@ -69,7 +69,8 @@ import {
   type StoredChatMessage,
 } from "./overseer-storage";
 import { chatChangeStatuses } from "../agent-compaction";
-import { GitStore, filesEqual } from "../git-store";
+import type { WorkspaceGitCache } from "../git-cache";
+import { filesEqual } from "../three-way-merge";
 import { createWorkshopLogger } from "../observability";
 
 const logger = createWorkshopLogger("workshop.overseer.git-migration");
@@ -91,8 +92,8 @@ export interface GitMigrationHost {
       "code" | "gadgets" | "chats" | "chatMeta" | "chatCompactions" | "chatDraftUpdates" |
       "nextChatSequences" | "blueprints">;
 
-  /** The workspace's git object store, which receives the synthesized commits. */
-  gitStore: GitStore;
+  /** The workspace's git store, which receives the synthesized commits. */
+  gitCache: Pick<WorkspaceGitCache, "writeFilesAsCommit">;
 
   /** Commit author/committer for every synthesized commit: the workspace owner's identity. */
   ownerIdentity: CommitIdentity;
@@ -196,7 +197,7 @@ export function legacyChatBaseVersion(
  * caller owns that.
  */
 export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ commits: number }> {
-  let { storage, gitStore } = host;
+  let { storage, gitCache } = host;
 
   // ---------------------------------------------------------------------------------------
   // Inventory the log and choose commit points.
@@ -319,7 +320,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     let state = tracked.get(gadget.id)!;
     state.chain.push({
       version: 0,
-      commitId: await gitStore.writeFilesAsCommit(new Map(), {
+      commitId: await gitCache.writeFilesAsCommit(new Map(), {
         parents: [],
         author: host.ownerIdentity,
         message: "Import pre-git history (initial empty state)",
@@ -351,7 +352,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
       // content are history worth a commit.
       if (files.size === 0 && state.chain.length === 0) continue;
       let parent = state.chain[state.chain.length - 1];
-      let commitId = await gitStore.writeFilesAsCommit(files, {
+      let commitId = await gitCache.writeFilesAsCommit(files, {
         parents: parent !== undefined ? [parent.commitId] : [],
         author: host.ownerIdentity,
         message: `Import pre-git history (code versions ${(parent?.version ?? 0) + 1}-` +
@@ -524,8 +525,7 @@ function convertLegacyChat(
   // The boundary message is written even when the chat has nothing to convert: the boundary
   // itself is load-bearing (epoch points at it; replay keys pre-conversion elision on it). An
   // empty boundary carries no change and no pins, and proposes nothing (see foldProposedChanges).
-  let sequenceRecord = storage.nextChatSequences.get(meta.id);
-  let sequence = sequenceRecord?.nextSequence ?? 0;
+  let sequence = storage.nextChatSequences.get(meta.id)?.nextSequence ?? 0;
   storage.nextChatSequences.put({ chatId: meta.id, nextSequence: sequence + 1 });
   let createdGadgets = carriedPending.map(id => {
     // Pre-v4 rows are all gadgets (see the heads loop above for why this is a cast).
