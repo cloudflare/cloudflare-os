@@ -27,7 +27,7 @@ import {
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
-import type { BlobReader } from "./git-chunked-blob";
+import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
@@ -12761,6 +12761,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return oid;
   }
 
+  async readBlob(oid: string): Promise<ReadableStream<Uint8Array>> {
+    return blobByteStream(this.impl.gitCache.openBlobRef(oid, undefined));
+  }
+
   // Fetch the bytes of a committed chat attachment over the authenticated RPC connection. The
   // caller already has its canonical metadata from the ChatAttachmentRef in the message.
   async getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array> {
@@ -13646,6 +13650,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<string> {
     this.#deny();
   }
+  async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {
