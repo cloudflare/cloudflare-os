@@ -3476,6 +3476,14 @@ export interface Overseer extends RpcTarget {
   getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
 
   /**
+   * List every live connection in this workspace, regardless of gadget or chat bindings, including
+   * legacy connections, model/spawner bindings and resources awaiting creation approval. Connections
+   * blocked pending a workspace restart are omitted. Available only to owners/build collaborators;
+   * reads stored metadata without calling gatekeepers.
+   */
+  listConnections(): Promise<WorkspaceConnectionInfo[]>;
+
+  /**
    * Try to create a new gatekeeper for this resource URL, such as a repository or MCP server.
    * The gatekeeper is a connection to that one resource of a connected account, such as a GitHub
    * repository or an MCP server's endpoint.
@@ -5944,6 +5952,30 @@ export interface WorkpiecesSubscriber {
   /** Called after entry() has been called for all workpieces known so far. */
   ready(): void;
 }
+
+/** Workspace-wide connection metadata returned by Overseer.listConnections(). */
+export type WorkspaceConnectionInfo = {
+  /** The connection's workpiece ID, usable with Overseer.getGatekeeperById(). */
+  target: WorkpieceId;
+
+  /** Denormalized display title of the connected resource. */
+  resourceTitle: string;
+
+  /** Denormalized resource URL, absent when unknown or not yet created. */
+  resourceUrl?: string;
+
+  /** Connection vendor, absent for model/spawner bindings and legacy records without a vendor. */
+  vendorId?: string;
+
+  /** The vendor's resource URL pattern, when recorded for this connection. */
+  typeUrlPattern?: string;
+
+  /** Whether this is an ambient connection automatically provisioned to the workspace. */
+  alwaysAvailable: boolean;
+
+  /** Whether creation of the connected resource is still awaiting approval. */
+  awaitingApproval: boolean;
+};
 
 /**
  * Information about one of a gadget's bindings, for display in the Connections tab. Returned by

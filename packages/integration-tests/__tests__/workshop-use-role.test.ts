@@ -94,6 +94,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     generation: 0, revision: 0, clientId: "use", seq: 1, change: diffFiles(new Map(), new Map()),
   }),
   getGatekeeperById: ws => ws.getGatekeeperById(1),
+  listConnections: ws => ws.listConnections(),
   newGatekeeper: ws => ws.newGatekeeper(1, "https://gadgets-test.example/things/use-denied"),
   newAiModelGatekeeper: ws => ws.newAiModelGatekeeper("model"),
   newAgentSpawnerGatekeeper: ws =>

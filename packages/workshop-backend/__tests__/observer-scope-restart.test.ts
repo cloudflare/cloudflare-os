@@ -161,6 +161,8 @@ describe("restarting sessions when verification scope widens", () => {
         { gatekeepers: impl.storage.gatekeepers },
         { impl: {
           assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id),
+          gatekeeperUsable: (id: number) => impl.gatekeeperUsable(id),
+          creationPending: (id: number) => impl.creationPending(id),
           getGatekeeperFacet: (id: number) => impl.getGatekeeperFacet(id),
         } });
 
@@ -173,6 +175,7 @@ describe("restarting sessions when verification scope widens", () => {
     // delay. Until the reset lands -- destroying this object, in-memory mark and all -- every
     // route to the new connection is refused: the mint a stale client can pipeline on...
     await expect(client.getGatekeeperById(id)).rejects.toThrow(/restarting/);
+    expect(await client.listConnections()).toEqual([]);
     // ...and the session chokepoint itself, which binding loopbacks also pass through.
     await expect(added.openSession()).rejects.toThrow(/restarting/);
   }));
