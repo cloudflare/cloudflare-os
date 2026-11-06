@@ -833,6 +833,62 @@ describe("injected rows", () => {
     ]);
   });
 
+  it("re-derives a buffered provider row as it is served, changing or dropping it", async () => {
+    // One fetch buffers all three rows; changes staged after it must still show.
+    const closed = new Set<number>();
+    const gone = new Set<number>();
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2), issue(3)] }]);
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      inject: {
+        items: [],
+        compare: byId,
+        overlay: row => gone.has(row.id) ? null : issue(row.id, !closed.has(row.id)),
+      },
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    closed.add(2);
+    gone.add(3);
+    expect(await cursor.next()).toEqual([issue(2, false)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+    // Authorization sees each row as served.
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1)], { terminal: false }],
+      [[issue(2, false)], { terminal: false }],
+    ]);
+  });
+
+  it("re-derives a refused page's provider rows, deferring one the overlay no longer drops", async () => {
+    // A pending change hides provider 2 when the page is refused, and is discarded before the
+    // retry. The overlay returns fresh objects, so the retry must match rows by queue entry.
+    const hidden = new Set([2]);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
+      inject: { items: [], compare: byId, overlay: row => hidden.has(row.id) ? null : { ...row } },
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    hidden.delete(2);
+    expect(await cursor.next()).toEqual([issue(1)]);
+    expect(await cursor.next()).toEqual([issue(2), issue(3)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(3)], { terminal: false }],
+      [[issue(1)], { terminal: false }],
+      [[issue(2), issue(3)], { terminal: false }],
+    ]);
+  });
+
   it("serves one row per identity on a refused page's retry", async () => {
     // The stand-in's create lands as issue 5 between refusal and retry, so the page holds it twice.
     const landed = new Map<number, number>();
