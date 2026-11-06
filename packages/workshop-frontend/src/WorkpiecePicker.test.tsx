@@ -52,8 +52,8 @@ const BINDINGS: ChatBindingInfo[] = [
   binding({ target: 14, resourceTitle: 'Sketchy', resourceUrl: 'javascript:alert(1)' }),
 ]
 
-const connectionsGroup = (container: HTMLElement) =>
-  container.querySelector('[role="group"][aria-label="Connections"]')!
+const group = (container: HTMLElement, label: 'Created in this chat' | 'Connected to this chat') =>
+  container.querySelector(`[role="group"][aria-label="${label}"]`)!
 
 /** Each collapsed row's accessible name and icon, in order. */
 const rows = (scope: Element) => [...scope.querySelectorAll('a[aria-label], [role="img"][aria-label]')]
@@ -114,18 +114,15 @@ describe('WorkpiecePicker', () => {
   })
 
   describe("with the chat's bindings", () => {
-    it('lists created resources as outputs and the rest as connections, once each and built-in last', async () => {
+    it("groups the chat's created resources apart from its other connections, once each and built-in last", async () => {
       const container = await render({ expanded: false, chatBindings: { status: 'ready', bindings: BINDINGS } })
-      const connections = connectionsGroup(container)
-      const outputs = rows(container).filter(([name]) =>
-        !connections.querySelector(`[aria-label="${name}"]`))
 
       // Each is labelled by its type, with its type's icon, or else by its vendor.
-      expect(outputs).toEqual([
+      expect(rows(group(container, 'Created in this chat'))).toEqual([
         ['Q3 Budget · Google Sheet', 'https://example.com/sheet.svg'],
         ['Launch plan · Awaiting approval', 'https://example.com/sheet.svg'],
       ])
-      expect(rows(connections)).toEqual([
+      expect(rows(group(container, 'Connected to this chat'))).toEqual([
         ['acme/widgets · GitHub · Changed', 'https://example.com/github.svg'],
         ['Sketchy', undefined],
         ['Skills · Built in', undefined],
@@ -147,7 +144,10 @@ describe('WorkpiecePicker', () => {
     it('tells loading and failure apart from having no outputs or connections', async () => {
       const shown = async (chatBindings: ChatBindings) => {
         const container = await render({ expanded: true, chatBindings })
-        return { outputs: container.textContent!.includes('Nothing yet'), connections: connectionsGroup(container).textContent }
+        return {
+          outputs: container.textContent!.includes('Nothing yet'),
+          connections: group(container, 'Connected to this chat').textContent,
+        }
       }
 
       expect(await shown({ status: 'loading' })).toEqual({ outputs: false, connections: expect.stringContaining('Loading…') })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   CaretLeft, CaretRight, Check, GitBranch, Lightning, PencilSimple, Pulse, Warning, X,
 } from '@phosphor-icons/react'
@@ -23,8 +23,8 @@ interface WorkpiecePickerProps {
   // conversation, and selecting it returns there.
   worktrees: WorktreeSummary[]
   selectedId: WorkpieceId | null
-  // The selected chat's bindings, or null when no chat is selected. The ones its agent created
-  // are listed among the outputs; the rest under Connections.
+  // The selected chat's bindings, or null when no chat is selected. Listed after the workspace's
+  // gadgets and worktrees, in groups named for the chat: what its agent created, then the rest.
   chatBindings: ChatBindings | null
   // The gadget the agent is currently streaming edits into, if any. Shown as an activity dot when
   // it isn't the selected one (e.g. because the user pinned their selection mid-turn).
@@ -62,7 +62,8 @@ export default function WorkpiecePicker({
     ? chatBindings.bindings.filter((binding, i, all) => all.findIndex(b => b.target === binding.target) === i)
     : []
   const createdResources = listed.filter(binding => binding.created)
-  const hasOutputs = gadgets.length > 0 || worktrees.length > 0 || createdResources.length > 0
+  const hasWorkpieces = gadgets.length > 0 || worktrees.length > 0
+  const hasOutputs = hasWorkpieces || createdResources.length > 0
   // Always-available connections (an auto-provisioning vendor's) come last: they say least about
   // this chat.
   const connections = listed.filter(binding => !binding.created)
@@ -212,9 +213,6 @@ export default function WorkpiecePicker({
           )
         })}
 
-        {createdResources.map(binding => (
-          <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
-        ))}
         {expanded && !hasOutputs && chatBindings?.status === 'ready' && (
           <span className="px-2 text-[12px] text-kumo-inactive">Nothing yet</span>
         )}
@@ -270,15 +268,16 @@ export default function WorkpiecePicker({
           </>
         )}
 
+        {createdResources.length > 0 && (
+          <RailGroup label="Created in this chat" expanded={expanded} divider={hasWorkpieces}>
+            {createdResources.map(binding => (
+              <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
+            ))}
+          </RailGroup>
+        )}
+
         {chatBindings && (
-          <div role="group" aria-label="Connections" className="flex flex-col gap-0.5">
-            {expanded ? (
-              <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
-                Connections
-              </span>
-            ) : hasOutputs && (
-              <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
-            )}
+          <RailGroup label="Connected to this chat" expanded={expanded} divider={hasOutputs}>
             {chatBindings.status === 'loading' && expanded && (
               <span className="px-2 text-[12px] text-kumo-inactive">Loading…</span>
             )}
@@ -297,7 +296,7 @@ export default function WorkpiecePicker({
             {chatBindings.status === 'ready' && connections.length === 0 && expanded && (
               <span className="px-2 text-[12px] text-kumo-inactive">None yet</span>
             )}
-          </div>
+          </RailGroup>
         )}
 
         <Tooltip content="View activity" asChild>
@@ -318,6 +317,28 @@ export default function WorkpiecePicker({
           </button>
         </Tooltip>
       </div>
+    </div>
+  )
+}
+
+// A group of the rail's rows, named by a heading when expanded and set apart by a divider when
+// collapsed below other rows.
+function RailGroup({ label, expanded, divider, children }: {
+  label: string
+  expanded: boolean
+  divider: boolean
+  children: ReactNode
+}) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-col gap-0.5">
+      {expanded ? (
+        <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
+          {label}
+        </span>
+      ) : divider && (
+        <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
+      )}
+      {children}
     </div>
   )
 }
