@@ -209,7 +209,7 @@ describe("prepareInputs and buildVerdict", () => {
       const binaryPr = { headSha: head, baseSha: before, title: "t", body: "" };
       prepareInputs(binaries.dir, dir, "sol", binaryPr, { round: 1, reviewFromSha: null }, before);
       const diff = readFileSync(join(dir, "inputs", "diff.patch"), "utf8");
-      assert.doesNotMatch(diff, /IHDR|\u0000/);
+      assert.equal(diff.includes("IHDR") || diff.includes("\u0000"), false);
       writeFileSync(join(dir, "opencode-version"), "1.18.33");
       writeFileSync(join(dir, "events.jsonl"), events(GOOD_REVIEW));
       const verdict = buildVerdict(dir, "sol", binaryPr);
