@@ -385,11 +385,15 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   if (verdict.fingerprint.opencode === null) return fail("the review step did not record the opencode version");
   const parsed = parseReview(events.text);
   if (!parsed.ok) return fail(parsed.error);
+  // A diff-only round never saw the code earlier rounds flagged, and their findings are not
+  // reconciled here, so a clean diff-only review must not stand in for a clean pull request.
+  const diffOnly = meta.review_from_sha === null ? [] :
+    [`diff-only review since ${meta.review_from_sha}: earlier rounds' findings are not re-checked`];
   return {
     ...verdict,
     status: "ok",
     findings: parsed.review.findings,
-    needs_person: parsed.review.needsPerson,
+    needs_person: [...parsed.review.needsPerson, ...diffOnly],
     merge_confidence: parsed.review.mergeConfidence,
   };
 }

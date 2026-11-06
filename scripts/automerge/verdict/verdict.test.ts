@@ -159,6 +159,18 @@ describe("prepareInputs and buildVerdict", () => {
     assert.match(readFileSync(join(dir, "prompt.md"), "utf8"), new RegExp(`only the changes from ${first}`));
   });
 
+  it("asks for a person on a clean diff-only review, since earlier blockers are not re-checked", () => {
+    const dir = workDir();
+    prepareInputs(repo.dir, dir, "opus", pr, { round: 3, reviewFromSha: first }, base);
+    writeFileSync(join(dir, "opencode-version"), "1.18.33");
+    writeFileSync(join(dir, "events.jsonl"), events("## Findings\n\nNone.\n\n## Summary\n\nOnly a README.\nMERGE-CONFIDENCE: 10"));
+    const verdict = buildVerdict(dir, "opus", pr);
+    assert.equal(verdict.status, "ok");
+    assert.deepEqual(verdict.findings, []);
+    assert.equal(verdict.review_from_sha, first);
+    assert.deepEqual(verdict.needs_person, [`diff-only review since ${first}: earlier rounds' findings are not re-checked`]);
+  });
+
   it("shows removed code whatever the head's .gitattributes say", () => {
     const attributes = createTestRepo();
     try {
