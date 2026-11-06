@@ -983,7 +983,9 @@ it.concurrent("only a gadget's builders are told which blueprint it follows", as
   // otherwise read.
   using viewerPublic = connect(requireHarness().url);
   using viewerApi = await signUp(viewerPublic, viewer);
-  if (!await ws.addCollaborator(viewer, "use")) throw new Error(`Failed to share with ${viewer}`);
+  if (!await ws.addCollaborator(viewer, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
   using useWs = await viewerApi.openWorkspace((await ws.getMetadata()).id);
   const { upstream: _upstream, ...used } = built;
   expect(await gadgetNow(useWs, gadgetId)).toEqual(used);

@@ -6,7 +6,7 @@ import { MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS } from '@gadgets/wo
 import type { AdminApi, DeploymentUpdateStatus } from '@gadgets/workshop-shared/api'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
-import { DurationSetting } from './DurationSetting'
+import { DurationSetting } from '../../components/DurationSetting'
 import { probeRouterTag } from './probeRouterTag'
 
 type AdminUpdatesPanelProps = {

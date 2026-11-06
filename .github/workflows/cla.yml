@@ -16,6 +16,49 @@ jobs:
   CLAssistant:
     runs-on: ubuntu-latest
     steps:
+      # Public members of the repository's GitHub organization are Cloudflare people, covered
+      # without signing, so they join the allowlist and only the others are asked to sign. Only a
+      # member can make their own membership public. This token cannot see private membership (see
+      # the `author_association` note in bonk.yml), so a private member is asked to sign until they
+      # make it public. A committer is the commit's GitHub author, else its committer, as the
+      # action counts them. A failed lookup leaves the committer off, so they are asked to sign.
+      #
+      # That identity comes from the commit's author email, which whoever makes the commit picks,
+      # so only a pull request opened by a member (an account GitHub authenticated) allowlists
+      # anyone. A contributor who sets a member's email on their own commit still gets that member
+      # asked to sign.
+      - name: Allowlist committers who are organization members
+        id: allowlist
+        if: (github.event.issue.pull_request && (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ORG: ${{ github.repository_owner }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+          STATIC_ALLOWLIST: dependabot[bot],workers-devprod,github-actions[bot]
+        run: |
+          allowlist="$STATIC_ALLOWLIST"
+          # 204 for a public member, 404 for anyone else.
+          is_member() {
+            [[ -n "$1" ]] && gh api --silent "orgs/$ORG/public_members/$1" 2>/dev/null
+          }
+          if ! is_member "$PR_AUTHOR"; then
+            echo "$PR_AUTHOR, who opened this pull request, is not a public $ORG member: every committer signs."
+            echo "allowlist=$allowlist" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          logins=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/commits" \
+            --jq '.[] | (.author.login // .committer.login // empty)' | sort -u)
+          while read -r login; do
+            [[ -n "$login" ]] || continue
+            if is_member "$login"; then
+              echo "$login is a public $ORG member: no CLA signature needed."
+              allowlist="$allowlist,$login"
+            fi
+          done <<< "$logins"
+          echo "allowlist=$allowlist" >> "$GITHUB_OUTPUT"
+
       - name: "CLA Assistant"
         if: (github.event.issue.pull_request && (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         uses: contributor-assistant/github-action@v2.6.1
@@ -26,5 +69,5 @@ jobs:
           path-to-document: 'https://www.cloudflare.com/cla/'
           # branch should not be protected
           branch: 'cla-signatures'
-          allowlist: dependabot[bot],workers-devprod,github-actions[bot]
+          allowlist: ${{ steps.allowlist.outputs.allowlist }}
           lock-pullrequest-aftermerge: false

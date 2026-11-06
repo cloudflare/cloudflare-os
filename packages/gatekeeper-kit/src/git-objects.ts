@@ -14,7 +14,7 @@
 // kit's `PageHookCursor` (`./cursors`), the `RpcTarget` that runs it on each page before the
 // caller sees it.
 
-import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 
 /** The author or committer of a commit, as recorded in the commit object itself. */
 export type GitCommitIdentity = {
@@ -138,6 +138,52 @@ export type ParsedGitCommit = {
   committer: GitCommitIdentity;
   message: string;
 };
+
+/**
+ * A `GitCache.get()` result, as this module reads it: structural, so both an `RpcStub<GitCache>`'s
+ * result and a test fake's satisfy it.
+ */
+export type GitCacheObject = {
+  type: GitObjectType;
+  content: Uint8Array | ReadableStream<Uint8Array>;
+} | null;
+
+// Releases a result's stream, if it has one, when the caller has no use for it.
+function discardGitContent(content: Uint8Array | ReadableStream<Uint8Array>): void {
+  if (!(content instanceof Uint8Array)) content.cancel().catch(() => {});
+}
+
+/**
+ * The payload of a `GitCache.get()` result whole, if it is an object of `type`, else null. Every
+ * result is consumed or cancelled, as `get()` requires: `get()` streams any object over
+ * `MAX_BUFFERED_BLOB_SIZE`, which a tree of a very large directory (or a commit with a huge
+ * message) can be, so a stream of the right type is read to its end, and one of another type is
+ * cancelled. For a caller that needs a commit or tree; use `stat()` to learn only the type.
+ */
+export async function gitObjectBytes(object: GitCacheObject, type: GitObjectType)
+    : Promise<Uint8Array | null> {
+  if (object === null) return null;
+  if (object.type !== type) {
+    discardGitContent(object.content);
+    return null;
+  }
+  if (object.content instanceof Uint8Array) return object.content;
+  return new Uint8Array(await new Response(object.content).arrayBuffer());
+}
+
+/**
+ * The payload of a `GitCache.get()` result if it is an object of `type` that came buffered (at
+ * most `MAX_BUFFERED_BLOB_SIZE`); `"streamed"` if it is one too large for that, whose stream has
+ * been cancelled; else null, after cancelling any stream. For a caller that has no use for a
+ * large object, such as a diff, which omits large files anyway.
+ */
+export function bufferedGitObject(object: GitCacheObject, type: GitObjectType)
+    : Uint8Array | "streamed" | null {
+  if (object === null) return null;
+  if (object.type === type && object.content instanceof Uint8Array) return object.content;
+  discardGitContent(object.content);
+  return object.type === type ? "streamed" : null;
+}
 
 /**
  * Parse a git commit object's payload (as returned by `GitCache.get()` -- no `<type> <size>\0`

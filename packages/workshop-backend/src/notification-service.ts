@@ -136,7 +136,8 @@ export async function authorizeDevice(env: Cloudflare.Env, subject: string): Pro
  */
 export async function deliver(
     env: Cloudflare.Env, subject: string, subscriptionId: string,
-    { id, kind, workspaceId, chatId, chatTitle }: UserNotification): Promise<boolean> {
+    { id, kind, workspaceId, chatId, chatTitle }: UserNotification,
+    signal?: AbortSignal): Promise<boolean> {
   let response = await signedPost(env, "/v1/deliveries", {
     type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
     eventId: id,
@@ -145,7 +146,7 @@ export async function deliver(
     path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
     subscriptionId,
     subject,
-  });
+  }, signal);
   if (response.ok) return true;
   // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
   // which must not discard every device's subscription.

@@ -10,6 +10,22 @@ declare global {
       // (which is what a secret binding, can carry).
       ADMINS?: string[] | string;
 
+      // The Models tab's admin settings a deployment has until an admin changes one: a JSON object
+      // of the AdminConfig fields ADMIN_CONFIG_SEED_FIELDS lists, or the same object as a JSON
+      // string (a secret's form). See effectiveAdminConfig() in admin-config.ts.
+      ADMIN_CONFIG_SEED?: object | string;
+
+      // Where this Workshop runs: "development" under `pnpm dev-server` (scripts/run-dev-server.ts),
+      // "test" in the integration harness. A deployment never sets it, and must not: an absent or
+      // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
+      // (see the /api route in server.ts).
+      WORKSHOP_ENVIRONMENT?: "development" | "test";
+      // The fewest days the admin audit log keeps a record, whatever admins choose in the admin
+      // panel: a positive whole number, 90 when unset, blank or invalid (see admin-access.ts, and
+      // docs/admin-access.md, which also says where each kind of deployment sets it). An
+      // environment variable so that a compromised admin session cannot shorten it.
+      ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
 

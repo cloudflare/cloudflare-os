@@ -30,11 +30,23 @@ and the Worker picker searches the full retention window. Suggested bindings are
 
 ### Sharing a gadget that reads telemetry
 
-A binding is not transferable. When a gadget with an observability binding is shared, each
-collaborator is admitted only if **their own** connected Cloudflare account can read that resource
-(`addObserver` checks it against their credentials, not the owner's). A collaborator without access is
+A binding is not transferable. Every read, through an account or a Worker binding alike, reports the
+account it queried as the subresource `account/<accountId>`, and the Workshop admits a collaborator
+to what was read only if **their own** connected Cloudflare account can read telemetry in that
+account (`verifyObserverAccess` checks their credentials, not the owner's). The check is an
+account-wide telemetry read; no individual Worker is checked. A collaborator without access is
 refused, and a verification that fails for any other reason — a 5xx, a transport error — is also a
 refusal rather than an admission.
+
+The Workshop asks on every read, so each collaborator's answers are cached in their own connected
+account and reused across every workspace: an allowed answer for up to 15 minutes and a denial for
+up to 15 seconds, until their credentials are next installed. Cloudflare does not say when a role
+changes, so access revoked in Cloudflare can still admit a collaborator for up to 15 minutes, and a
+new grant is noticed within 15 seconds. A connection with no usable credentials, or whose grant no
+longer includes `workers-observability.read`, is refused whatever it learned before, a check a
+reconnect overtakes fails, and a failed check is never reused. `addObserver` still checks each
+binding live on every open, as it did before reads reported a subresource: a Worker binding with a
+telemetry query filtered to its Worker name.
 
 ### What a Worker binding trusts, and what it re-checks
 

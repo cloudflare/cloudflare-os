@@ -7,7 +7,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
-import type { ObservationInput, ObservationScope } from "@gadgets/gatekeeper-kit/observers";
+import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import type { Cursor } from "./types";
 
 /** One page as fetched: its rows, where to resume, and how to authorize disclosing it. */
@@ -16,7 +16,8 @@ export type XPage<T> = {
   /** Absent once the walk is over. */
   nextToken?: string;
   observation: ObservationInput;
-  scope: ObservationScope;
+  /** What restricts who may see the page, as its observation reports it; `[]` for nothing. */
+  subresources: string[];
 };
 
 /** What a cursor needs from the listing that made it. */
@@ -71,9 +72,4 @@ export class XCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
     this.#disposed = true;
     this.#options.dispose?.();
   }
-}
-
-/** A cursor over rows already in hand, such as posts that exist only while pending. */
-export function staticPage<T>(items: T[], observation: ObservationInput, scope: ObservationScope): XPage<T> {
-  return { items, observation, scope };
 }

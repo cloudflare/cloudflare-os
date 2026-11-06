@@ -119,7 +119,7 @@ async function addBob(publicApi: RpcStub<PublicApi>, ws: Workspace): Promise<Bob
   const [bob] = nextUsernames("bob");
   const bobApi = await signUp(publicApi, bob);
   const bobAccount = await provisionAccount(bobApi);
-  const collaborator = await ws.overseer.addCollaborator(bob, "build");
+  const collaborator = await ws.overseer.addCollaborator(bob, "workspace");
   if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
   return {
     bob, bobProfileId: collaborator.profile.id, bobApi, bobAccount,
@@ -283,7 +283,7 @@ describe("sensitive observations", () => {
   it.concurrent("an unredeemed share link does not block a sensitive observation", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "unredeemed");
-      await ws.overseer.createShareLink("build", "never redeemed");
+      await ws.overseer.createShareLink("workspace", "never redeemed");
 
       // An outstanding link grants nobody anything until it is redeemed, and redemption happens
       // inside open() -- where verification runs -- so the observation proceeds.
@@ -295,7 +295,7 @@ describe("sensitive observations", () => {
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "owner-invites-only");
-      const { key, linkId } = await ws.overseer.createShareLink("build", "before ownerInvitesOnly");
+      const { key, linkId } = await ws.overseer.createShareLink("workspace", "before ownerInvitesOnly");
       const [dave, carol] = nextUsernames("dave", "carol");
       const opens = async (api: RpcStub<AuthenticatedApi>, account: ConnectedAccount) => {
         const callback = stubFor(
@@ -326,7 +326,9 @@ describe("sensitive observations", () => {
         expect(await overseer.listCollaborators()).toEqual([]);
 
         // No new links, and no new copies of the old one.
-        await expect(overseer.createShareLink("use", "after ownerInvitesOnly"))
+        using gadget = await overseer.createGadget("Shared Gadget", undefined, "SHARED_GADGET");
+        const gadgetId = await gadget.getId();
+        await expect(overseer.createShareLink({ gadgetId }, "after ownerInvitesOnly"))
             .rejects.toThrow(/Share links are disabled/);
         await expect(overseer.newShareLinkKey(linkId))
             .rejects.toThrow(/Share links are disabled/);
@@ -346,11 +348,11 @@ describe("sensitive observations", () => {
 
         // The owner adds Dave directly. He opens after verifying his own access -- still through
         // the old link, which lets a direct collaborator through -- but cannot add people himself.
-        await expect(overseer.addCollaborator(dave, "build")).resolves.toMatchObject({
-          role: "build",
+        await expect(overseer.addCollaborator(dave, "workspace")).resolves.toMatchObject({
+          access: { role: "build" },
         });
         using daveOverseer = await opens(daveApi, daveAccount);
-        await expect(daveOverseer.addCollaborator(carol, "use"))
+        await expect(daveOverseer.addCollaborator(carol, { gadgetId }))
             .rejects.toThrow(/Only the workspace owner/);
 
         // The owner can still see and revoke the old link. It grants nothing now, so revoking it
@@ -371,10 +373,12 @@ describe("sensitive observations", () => {
       // Sharing stays available after containsRestrictedData is set, across every sharing RPC.
       const [carol] = nextUsernames("carol");
       await signUp(publicApi, carol);
-      await expect(ws.overseer.addCollaborator(carol, "build")).resolves.toMatchObject({
+      await expect(ws.overseer.addCollaborator(carol, "workspace")).resolves.toMatchObject({
         profile: expect.objectContaining({ id: expect.any(String) }),
       });
-      const { linkId } = await ws.overseer.createShareLink("use", "after containsRestrictedData");
+      using gadget = await ws.overseer.createGadget("Shared Gadget", undefined, "SHARED_GADGET");
+      const { linkId } = await ws.overseer.createShareLink(
+          { gadgetId: await gadget.getId() }, "after containsRestrictedData");
       await expect(ws.overseer.newShareLinkKey(linkId)).resolves.toMatchObject({
         key: expect.any(String),
       });
@@ -542,7 +546,7 @@ describe("sensitive observations", () => {
       const ws = await newWorkspace(publicApi, "refused-link");
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      const { key } = await ws.overseer.createShareLink("build", "refused recipient");
+      const { key } = await ws.overseer.createShareLink("workspace", "refused recipient");
 
       const [dave] = nextUsernames("dave");
       const daveApi = await signUp(publicApi, dave);
@@ -575,7 +579,7 @@ describe("sensitive observations", () => {
   it.concurrent("concurrent redemptions of the same key both verify", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "raced");
-      const { key } = await ws.overseer.createShareLink("build", "raced");
+      const { key } = await ws.overseer.createShareLink("workspace", "raced");
 
       const [dave] = nextUsernames("dave");
       const daveApi = await signUp(publicApi, dave);
@@ -606,10 +610,11 @@ describe("sensitive observations", () => {
       (await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))[Symbol.dispose]();
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Removing Bob triggers the revocation restart: the DO aborts shortly after this call
-      // returns, killing every stub from this connection -- including the session Bob holds,
-      // which is the point. Everything past here runs on a fresh connection.
-      await ws.overseer.removeCollaborator(bob.bobProfileId, []);
+      // The revocation restart kills every stub, including Bob's session. It can overtake the
+      // ACK on a loaded runner; the fresh session below verifies the persisted removal/cleanup.
+      await ws.overseer.removeCollaborator(bob.bobProfileId, []).catch(error => {
+        if (!(error instanceof Error && error.message.startsWith("Peer closed WebSocket: 3000 "))) throw error;
+      });
       const reopened = await reopenAfterRestart(ws);
 
       try {
@@ -620,7 +625,7 @@ describe("sensitive observations", () => {
         // Removal also tore down his observer record, so re-adding him must not silently restore
         // his coverage: his next open has to name an account for the producer and pass
         // addObserver again.
-        await reopened.overseer.addCollaborator(bob.bob, "build");
+        await reopened.overseer.addCollaborator(bob.bob, "workspace");
         const recorder = new ObserverConfigRecorder()
             .alwaysChoose(bob.bobAccount.id, MAX_OBSERVER_PROMPTS);
         await bobReopens(ws, bob, recorder);

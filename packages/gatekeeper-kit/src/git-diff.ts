@@ -103,6 +103,9 @@ export type GitTreeEntry = {
  * than none). `getBlob` returns `"unavailable"` for a blob that cannot or should not be loaded
  * (missing, or over the size cap); the affected file is then reported with `diffOmitted: true`
  * rather than failing the whole diff -- the same shape providers use for large and binary files.
+ * An adapter over `GitCache.get()` treats a streamed result (an object over
+ * `MAX_BUFFERED_BLOB_SIZE`, which exceeds the diff's own blob cap anyway) as unavailable, after
+ * cancelling the stream: see `bufferedGitObject()` in `./git-objects`.
  */
 export type TreeDiffSource = {
   getTree(oid: GitOid): Promise<GitTreeEntry[] | null>;

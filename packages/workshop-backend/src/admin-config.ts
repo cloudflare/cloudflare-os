@@ -3,17 +3,21 @@
 // agent can resolve it with a single cheap KV get.
 //
 // This covers the "soft" deployment customizations only (branding, agent instructions, which
-// gatekeeper connectors/resources are offered, and the models an AI Gateway deployment provides).
-// Authentication/authorization config (sign-in
-// providers, password login) is deliberately NOT here — it stays env-var driven so it can't be
-// changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
-// things *out*.
+// gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, and
+// the audit retention admins choose within the bound admin-access.ts reads from the environment).
+// Authentication/authorization config (sign-in providers, password login) is deliberately NOT
+// here — it stays env-var driven so it can't be changed by a compromised admin session. Everything
+// here is enabled by default; the admin UI opts things *out*.
 
-import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { adminSettingChange } from "./admin-access.js";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import { createWorkshopLogger } from "./observability.js";
+
+const logger = createWorkshopLogger("workshop.admin.config");
 
 /**
  * Longest `agentHint` a promoted format may carry. Every enabled format's hint goes into the
@@ -45,20 +49,31 @@ function parseFormats(value: unknown): FormatCuration[] {
 }
 
 /**
- * `formats` rearranged into the order `blueprintIds` gives. Throws unless that is a permutation of
- * what is promoted, so a stale client can't silently drop a format.
+ * Throws an Error with `message` unless `order` lists each of `ids` exactly once, so that a stale
+ * client reordering a list can't silently drop an entry.
  *
- * Uniqueness is checked separately from length because the lookup Map dedupes: [A, A] against
- * promoted [A, B] passes both a length and a membership test, drops B, and leaves a duplicate that
- * makes every later reorder throw.
+ * Uniqueness is checked separately from length because the lookup Set dedupes: [A, A] against
+ * [A, B] passes both a length and a membership test, drops B, and leaves a duplicate that makes
+ * every later reorder throw.
+ */
+export function assertPermutation(order: readonly string[], ids: Iterable<string>, message: string)
+    : void {
+  let known = new Set(ids);
+  if (order.length !== known.size || new Set(order).size !== order.length
+      || order.some(id => !known.has(id))) {
+    throw new Error(message);
+  }
+}
+
+/**
+ * `formats` rearranged into the order `blueprintIds` gives. Throws unless that is a permutation of
+ * what is promoted (see assertPermutation).
  */
 export function reorderFormats(formats: FormatCuration[], blueprintIds: string[])
     : FormatCuration[] {
   let byId = new Map(formats.map(f => [f.blueprintId, f]));
-  if (blueprintIds.length !== byId.size || new Set(blueprintIds).size !== blueprintIds.length
-      || blueprintIds.some(id => !byId.has(id))) {
-    throw new Error("Format order must list each promoted format exactly once.");
-  }
+  assertPermutation(blueprintIds, byId.keys(),
+      "Format order must list each promoted format exactly once.");
   return blueprintIds.map(id => byId.get(id)!);
 }
 
@@ -377,6 +392,11 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
               return settings ? [[id, settings]] : [];
             }))
           : {};
+  let modelOrder: Partial<Record<AiModelProvider, string[]>> =
+      p.modelOrder && typeof p.modelOrder === "object"
+          ? Object.fromEntries(Object.entries(p.modelOrder).flatMap(([provider, ids]) =>
+              isProvider(provider) ? [[provider, [...new Set(strings(ids))]]] : []))
+          : {};
   let signupsEnabled = typeof p.signupsEnabled === "boolean"
     ? p.signupsEnabled
     : DEFAULT_ADMIN_CONFIG.signupsEnabled;
@@ -398,12 +418,17 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
+    restrictedWebFetchApprovals: p.restrictedWebFetchApprovals === true,
     formats: parseFormats(p.formats),
     modelModes,
     addedProviders: Array.isArray(p.addedProviders)
       ? [...new Set(p.addedProviders.filter(isProvider))]
       : [],
+    providerOrder: Array.isArray(p.providerOrder)
+      ? [...new Set(p.providerOrder.filter(isProvider))]
+      : [],
     addedModels: parseAddedModels(p.addedModels),
+    modelOrder,
     modelSettings,
     defaultReasoning: isReasoningLevel(p.defaultReasoning) ? p.defaultReasoning : null,
     userModelsEnabled: typeof p.userModelsEnabled === "boolean"
@@ -412,6 +437,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
       ? p.modelsDevSuggestions
       : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
+    // A config stored before the flag existed counts as saved, so a seed set on an existing
+    // deployment never overrides what its admins chose.
+    modelsSaved: typeof p.modelsSaved === "boolean" ? p.modelsSaved : true,
     updateChecksEnabled: typeof p.updateChecksEnabled === "boolean"
       ? p.updateChecksEnabled
       : DEFAULT_ADMIN_CONFIG.updateChecksEnabled,
@@ -424,16 +452,208 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     updateNoticeSnoozeHours: isUpdateHours(p.updateNoticeSnoozeHours)
       ? p.updateNoticeSnoozeHours
       : DEFAULT_ADMIN_CONFIG.updateNoticeSnoozeHours,
+    // The admins' choice, kept as chosen: adminAccessPolicy() (admin-access.ts) holds it within the
+    // environment's bound wherever it is enforced, so changing the bound needs no rewrite.
+    adminAuditRetentionDays: isAdminAuditRetention(p.adminAuditRetentionDays)
+      ? p.adminAuditRetentionDays
+      : DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays,
   };
 }
 
-export function parseAdminConfig(raw: string | null): AdminConfig {
-  if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
-  try {
-    return normalizeAdminConfig(JSON.parse(raw) as Partial<AdminConfig>);
-  } catch {
-    return { ...DEFAULT_ADMIN_CONFIG };
+function isAdminAuditRetention(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 &&
+      value <= MAX_ADMIN_AUDIT_RETENTION_DAYS;
+}
+
+// The lists whose entries have ids, by the field naming each entry's id. A list whose entries have
+// ids belongs here, so that one entry's change records that entry, not the whole list.
+const KEYED_LISTS: Partial<Record<keyof AdminConfig, string>> = {
+  formats: "blueprintId",
+  addedModels: "id",
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// The entries of a keyed list by id, in list order. Ids are deduplicated on read (parseFormats,
+// parseAddedModels), so each names one entry.
+function entriesById(list: unknown, idField: string): Map<string, unknown> {
+  let byId = new Map<string, unknown>();
+  if (!Array.isArray(list)) return byId;
+  for (let entry of list) {
+    let id = isPlainObject(entry) ? entry[idField] : undefined;
+    if (typeof id === "string" && !byId.has(id)) byId.set(id, entry);
   }
+  return byId;
+}
+
+function diffKeyedList(field: string, before: unknown, after: unknown, idField: string)
+    : (AdminSettingChange | undefined)[] {
+  let was = entriesById(before, idField);
+  let now = entriesById(after, idField);
+  let changes = [...new Set([...was.keys(), ...now.keys()])].toSorted()
+      .map(id => adminSettingChange(field, id, was.get(id), now.get(id)));
+  let keptBefore = [...was.keys()].filter(id => now.has(id));
+  let keptAfter = [...now.keys()].filter(id => was.has(id));
+  if (keptBefore.some((id, i) => id !== keptAfter[i])) {
+    changes.push(adminSettingChange(field, undefined, [...was.keys()], [...now.keys()]));
+  }
+  return changes;
+}
+
+// Object.hasOwn, so that a "__proto__" or "constructor" entry is read as itself, never as
+// Object.prototype or its constructor.
+function ownValue(map: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+function diffMap(field: string, before: Record<string, unknown>, after: Record<string, unknown>)
+    : (AdminSettingChange | undefined)[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].toSorted()
+      .map(key => adminSettingChange(field, key, ownValue(before, key), ownValue(after, key)));
+}
+
+/**
+ * The settings `after` changes from `before`, as an AdminSettingRecord lists them, each built with
+ * adminSettingChange(), field by field in DEFAULT_ADMIN_CONFIG order:
+ *   - a list of entries with ids (formats, by blueprintId; addedModels, by id): one change per
+ *     entry added, removed or changed, in sorted id order, `key` naming it and the values the
+ *     entry alone; then, when the entries both sides hold are in a different relative order, one
+ *     change without `key` whose values are the lists of every id, in order;
+ *   - a map (an object, not an array: banner, disabledResources, ambientGatekeeperModes,
+ *     modelModes, modelOrder, modelSettings): one change per own key, in sorted order, whose
+ *     value differs;
+ *   - any other field: one change with the whole value.
+ * Presence is tested with Object.hasOwn, so a "__proto__" or "constructor" entry is an ordinary
+ * one. Empty when nothing differs.
+ */
+export function diffAdminConfig(before: AdminConfig, after: AdminConfig): AdminSettingChange[] {
+  let changes: (AdminSettingChange | undefined)[] = [];
+  for (let field of Object.keys(DEFAULT_ADMIN_CONFIG) as (keyof AdminConfig)[]) {
+    let was: unknown = before[field];
+    let now: unknown = after[field];
+    let idField = KEYED_LISTS[field];
+    if (idField) {
+      changes.push(...diffKeyedList(field, was, now, idField));
+    } else if (isPlainObject(was) && isPlainObject(now)) {
+      changes.push(...diffMap(field, was, now));
+    } else {
+      changes.push(adminSettingChange(field, undefined, was, now));
+    }
+  }
+  return changes.filter(change => change !== undefined);
+}
+
+/**
+ * The fields ADMIN_CONFIG_SEED may set: the Models tab's. The rest of the config is what an admin
+ * curates for the people using a deployment, which nothing outside the admin UI should decide.
+ */
+export const ADMIN_CONFIG_SEED_FIELDS = [
+  "modelModes", "addedProviders", "providerOrder", "addedModels", "modelOrder", "modelSettings",
+  "defaultReasoning", "userModelsEnabled", "modelsDevSuggestions",
+] as const satisfies readonly (keyof AdminConfig)[];
+
+/** What ADMIN_CONFIG_SEED may hold. */
+export type AdminConfigSeed =
+    Partial<Pick<AdminConfig, typeof ADMIN_CONFIG_SEED_FIELDS[number]>>;
+
+/**
+ * Parse an ADMIN_CONFIG_SEED value: a JSON object, or that object as a JSON string, which is what
+ * a secret can carry. A value that is not one, or that names a field ADMIN_CONFIG_SEED_FIELDS
+ * leaves out, gives no seed at all rather than part of one, so that a typo cannot apply half of
+ * what was meant. The fields' values are checked later, by normalizeAdminConfig(), the same way
+ * as a stored config's.
+ */
+export function parseAdminConfigSeed(raw: unknown): AdminConfigSeed {
+  if (raw === undefined || raw === null || raw === "") return {};
+  let value: unknown;
+  try {
+    value = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    logger.error("ADMIN_CONFIG_SEED is not JSON; ignoring it", {event: "admin.seed.invalid"});
+    return {};
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    logger.error("ADMIN_CONFIG_SEED is not a JSON object; ignoring it", {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  let allowed: readonly string[] = ADMIN_CONFIG_SEED_FIELDS;
+  let unknown = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unknown.length > 0) {
+    logger.error(`ADMIN_CONFIG_SEED sets fields it may not (${unknown.join(", ")}); ignoring it`, {
+      event: "admin.seed.invalid",
+    });
+    return {};
+  }
+  return value as AdminConfigSeed;
+}
+
+// The last seed parsed, by the value it was parsed from, so the hot path parses (and logs a bad
+// seed) once per isolate rather than once per read.
+let parsedSeed: { raw: unknown, seed: AdminConfigSeed } | undefined;
+
+/** The deployment's ADMIN_CONFIG_SEED, parsed (see parseAdminConfigSeed). */
+export function adminConfigSeed(env: Pick<Cloudflare.Env, "ADMIN_CONFIG_SEED">): AdminConfigSeed {
+  let raw = env.ADMIN_CONFIG_SEED;
+  if (parsedSeed === undefined || parsedSeed.raw !== raw) {
+    parsedSeed = { raw, seed: parseAdminConfigSeed(raw) };
+  }
+  return parsedSeed.seed;
+}
+
+// The Models tab fields of a config no admin has changed them in: the defaults, under the seed.
+function unsavedModelFields(seed: AdminConfigSeed): AdminConfigSeed {
+  let defaults = Object.fromEntries(ADMIN_CONFIG_SEED_FIELDS.map(
+      field => [field, DEFAULT_ADMIN_CONFIG[field]])) as AdminConfigSeed;
+  return { ...defaults, ...seed };
+}
+
+/**
+ * The config a deployment runs on, from the one stored (in the AdminSettings DO or its KV mirror;
+ * null when there is none) and its ADMIN_CONFIG_SEED. Until an admin changes a Models tab setting
+ * (`modelsSaved`), those fields are the defaults under the seed, whatever is stored for them: the
+ * deployment's own writes, such as promoting its bundled formats on its first request, store a
+ * config without ending the seed, and a changed seed applies on the next deploy.
+ *
+ * Without a seed the stored config is read as it is, as it was before seeds existed; so a
+ * deployment whose seed is removed keeps the values the seed last gave it.
+ */
+export function effectiveAdminConfig(
+    stored: Partial<AdminConfig> | null, seed: AdminConfigSeed): AdminConfig {
+  let config = normalizeAdminConfig(stored ?? { ...DEFAULT_ADMIN_CONFIG });
+  if (config.modelsSaved || Object.keys(seed).length === 0) return config;
+  return normalizeAdminConfig({ ...config, ...unsavedModelFields(seed) });
+}
+
+/**
+ * Whether a write from `current` to `next` changes a Models tab setting, which is what ends a
+ * seed (see effectiveAdminConfig). Compared by value, so a setter that rebuilds a record without
+ * changing it does not count.
+ */
+export function changesModelSettings(current: AdminConfig, next: AdminConfig): boolean {
+  return ADMIN_CONFIG_SEED_FIELDS.some(
+      field => canonicalJson(current[field]) !== canonicalJson(next[field]));
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v)
+          ? Object.fromEntries(Object.entries(v).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+          : v);
+}
+
+export function parseAdminConfig(raw: string | null, seed: AdminConfigSeed = {}): AdminConfig {
+  if (!raw) return effectiveAdminConfig(null, seed);
+  let stored: Partial<AdminConfig>;
+  try {
+    stored = JSON.parse(raw) as Partial<AdminConfig>;
+  } catch {
+    return effectiveAdminConfig(null, seed);
+  }
+  return effectiveAdminConfig(stored, seed);
 }
 
 export function serializeAdminConfig(config: AdminConfig): string {
@@ -442,7 +662,7 @@ export function serializeAdminConfig(config: AdminConfig): string {
 
 /** Read the admin config from the KV mirror. Cheap enough for the hot path (a single KV get). */
 export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig> {
-  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY));
+  return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY), adminConfigSeed(env));
 }
 
 // --- Resource-disable helpers ---

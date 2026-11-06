@@ -64,6 +64,7 @@ import {
 import {
   ConfluenceStore,
   applyStoredAction,
+  autoApprovableKinds,
   observation,
   overlayChildPages,
   overlaySearch,
@@ -640,7 +641,7 @@ export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekee
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceSiteSession> {
     const identity: AtlassianIdentity | null =
@@ -688,7 +689,7 @@ export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatek
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceSpaceSession> {
     return new SpaceSessionImpl(
@@ -735,7 +736,7 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
 
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions() { return autoApprovableKinds(); }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<ConfluenceContentSession> {
     return new ContentSessionImpl(

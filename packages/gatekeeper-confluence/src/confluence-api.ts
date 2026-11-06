@@ -800,7 +800,7 @@ export class ConfluenceApi {
       if (target?.protocol !== "https:" || target.hostname !== MEDIA_HOST) {
         throw new ConfluenceApiError(502, "A space icon redirected somewhere unexpected.");
       }
-      response = await fetch(target, { headers: { Accept: "image/*" }, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      response = await fetch(target, { headers: { Accept: "image/*" }, redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     }
     if (!response.ok) throw new ConfluenceApiError(response.status, `Space icon download failed: ${response.status}`);
     return { data: await readCapped(response, maxBytes), mediaType: response.headers.get("Content-Type") ?? "" };

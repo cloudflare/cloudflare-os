@@ -355,8 +355,15 @@ export type SupportedResource = {
   grantable?: boolean;
 
   /**
+   * Whether to offer this type in existing-resource connection pickers and requestConnection.
+   * Omitted means true. Set false for types that can only be created; existing bindings are
+   * unaffected.
+   */
+  connectable?: boolean;
+
+  /**
    * If true, an agent may create a new resource of this type with the createExternalResource tool
-   * (see GatekeeperVendor.createResource()).
+   * (see GatekeeperVendor.createResource()). Omitted means false.
    */
   creatable?: boolean;
 
@@ -426,7 +433,7 @@ export type ResolveRequestedResourceResult =
 
 /**
  * Determines which SupportedResource an agent connection request would pre-select in the accept
- * modal, using the exact same precedence the modal uses:
+ * modal, using the modal's precedence:
  *   1. the resource whose urlPattern matches `resourceUrl` (ignoring the catch-all), else
  *   2. the whole-instance catch-all ("https://*") if the vendor offers one, else
  *   3. the sole resource, if the vendor offers exactly one.
@@ -438,6 +445,8 @@ export type ResolveRequestedResourceResult =
  *
  * This is the single source of truth shared by the backend (which enforces it at request time)
  * and the frontend (which pre-seeds from the resolved resource), so the two cannot diverge.
+ * Connection discovery callers must first exclude types marked connectable: false. Observer
+ * verification uses the full list, since an already-bound resource still needs its grants.
  */
 export function resolveRequestedResource(
     supportedResources: SupportedResource[],
@@ -556,7 +565,16 @@ export type GatekeeperUiFrame = {
   /** Complete HTML for the UI. Workshop hosts it in a sandboxed iframe. */
   iframeHtml: string;
 
-  /** Capability exposed to the iframe for any RPCs needed by the UI. */
+  /**
+   * Capability exposed to the iframe for any RPCs needed by the UI. A gatekeeper app's (see
+   * AuthenticatedApi.getGatekeeperApp()) implements an interface its gatekeeper declares; a
+   * configurator's, that vendor's `*ConfiguratorUI` class in
+   * `packages/gatekeeper-<vendor>/src/`, which helps look up what fills the URL the configurator
+   * yields: for a resource configurator, the resource URL Overseer.newGatekeeper() takes (see
+   * AuthenticatedApi.startResourceConfigurator()); for a creation configurator, the
+   * CreationApproval.configuration Overseer.approveAction() takes (see
+   * AuthenticatedApi.startCreationConfigurator()).
+   */
   ui: RpcStub<RpcTarget>;
 }
 
@@ -651,7 +669,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 
   /**
    * Get the list of resource types this vendor supports. Each entry describes a category of
-   * resource the vendor can provide access to, along with a URL pattern for matching.
+   * resource the vendor can provide access to, along with a URL pattern for matching. Each type's
+   * connectable (default true) and creatable (default false) flags control which flows offer it.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
    * query, which the gatekeeper can consider in deciding what resources are available. If it
@@ -698,7 +717,10 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
-   * Present only on vendors with a `creatable` resource type.
+   * While the creation is pending, reads are audited but record no observer requirements (see
+   * ObservationDescription.subresources).
+   * Present only on vendors with a `creatable` resource type. The `action` (the creation card) sets
+   * `autoApprovable: false`: approving it means choosing the account to create the resource in.
    */
   createResource?(resourceUrlPattern: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
@@ -942,10 +964,11 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
 /**
  * Opaque object representing one of a user's accounts. Minted by `GatekeeperUser`, and then passed
- * to `Gatekeeper.addObserver()`, to verify whether the user is able to access a particular
- * Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a resource with the account's authority.
- * Also returned from `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible
- * accounts with the same vendor.
+ * to `Gatekeeper.addObserver()` or `Gatekeeper.verifyObserverAccess()`, to verify whether the user
+ * is able to access a particular Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a
+ * resource with the account's authority. Also returned from
+ * `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible accounts with the
+ * same vendor.
  *
  * At present, this interface has no methods, because it is merely meant to be passed back to the
  * Gatekeeper that created it.
@@ -953,10 +976,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * IMPLEMENTATION NOTE: As of this writing, there is no runtime-supported way to "unwrap" a
  * `Fetcher` passed back to its implementer in order to extract the underlying `props`. This will
  * be added eventually. For now, we recommend that the `GatekeeperUserVerifier` implement a public
- * but non-standard method which the same gatekeeper's `addObserver()` and `applyCreation()`
- * implementations can call. The overseer promises only to pass a `GatekeeperUserVerifier` object
- * back to the same gatekeeper that created it, so they can then call that non-standard method and
- * trust the results.
+ * but non-standard method which the same gatekeeper's `addObserver()`, `verifyObserverAccess()`
+ * and `applyCreation()` implementations can call. The overseer promises only to pass a
+ * `GatekeeperUserVerifier` object back to the same gatekeeper that created it, so they can then
+ * call that non-standard method and trust the results.
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
 
@@ -1004,11 +1027,12 @@ export interface Gatekeeper<Session> extends DurableObject {
   getTypeScriptTypes(): Promise<string>;
 
   /**
-   * Catalog of action kinds this gatekeeper MAY auto-apply without per-action review, for
-   * pre-approval UIs that must list them before any action has been submitted. Each entry is the
-   * {tag, label} an action of that kind carries on its ActionDescription.actionKind. This is the
-   * *potential* set; the per-action `autoApprovable` verdict is still the binding gate at apply
-   * time. Gatekeepers with no auto-approvable actions return [].
+   * Catalog of action kinds whose actions may carry `autoApprovable: true`, for pre-approval UIs
+   * that let a user enable a rule for a kind before any such action has been submitted. Each entry
+   * is the {tag, label} an action of that kind carries on its ActionDescription.actionKind. The
+   * catalog approves nothing by itself: the user must enable a rule for the kind, and each submitted
+   * action's own `autoApprovable` verdict still gates it. Gatekeepers with no auto-approvable
+   * actions return [].
    */
   getAutoApprovableActions(): Promise<ActionKind[]>;
 
@@ -1075,6 +1099,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * access. However, if the Gadget itself carefully reads only emails addressed to a particular
    * mailing list, then it is OK to reveal those observations to any member of the mailing list.
    * The gatekeeper should ideally permit observers who are mailing list members.
+   *
+   * The Workshop calls this for every connection, whether or not its observations report
+   * `ObservationDescription.subresources`, and checks the subresources they recorded itself,
+   * through `verifyObserverAccess()`: a collaborator must pass both. So a gatekeeper need not
+   * track here what its reads report as subresources, but must keep enforcing everything else:
+   * any binding-wide requirement its reads rely on (such as tenant membership), the reads that
+   * omit subresources, and whatever it recorded before it began reporting them.
    */
   addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
 
@@ -1087,6 +1118,33 @@ export interface Gatekeeper<Session> extends DurableObject {
    * should just ignore the call rather than throw.
    */
   removeObserver(id: string): Promise<void>;
+
+  /**
+   * Required of a gatekeeper whose observations report `ObservationDescription.subresources`:
+   * which of `observers` can read every one of `subresources` now. The Workshop calls this to check
+   * collaborators against the subresource IDs this gatekeeper reported: before authorizing a read
+   * that reports them, for every collaborator who can see the context that made it, and at
+   * admission, alongside `addObserver()`, for everything the collaborator's role reaches. The
+   * answer must not depend on which of the two is asking, and the Workshop does not say.
+   *
+   * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
+   * unique within one call. It is not a cache key: the same observer may arrive later with a
+   * different account's verifier. Each `verifier` was minted by this gatekeeper's vendor (see
+   * `GatekeeperUserVerifier`) and is meant for this call only. A call carries at most 10,000
+   * subresource IDs, never none; the Workshop splits larger checks.
+   *
+   * `allowedObserverIds` lists the IDs of the observers whose account can read every one of
+   * `subresources`; every observer it omits is denied. Throw if access cannot be determined
+   * (expired credentials, provider outage). A throw, a malformed result, or an ID that was not
+   * passed in denies every observer in the call.
+   *
+   * The Workshop may call this while one of this gatekeeper's own `authorizeObservation()` calls
+   * is pending, so it must not wait on anything a read holds while it awaits authorization.
+   */
+  verifyObserverAccess?(
+    observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+    subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}>;
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
@@ -1108,12 +1166,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * also reports the terminal status: Workers RPC can replace a stream's original exception with
    * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
    * the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A requested blob suppressed by
-   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
+   * transfer. Dispose the capability when finished. A filter may omit objects only beyond those
+   * requested: the overseer requests an exact blob with no `filterBlobSize`, and stores blobs of
+   * any size.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
    * commits. This supports native Git hydration as well as lazy cache population. Consumers own
-   * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
+   * their storage/transfer limits.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
@@ -1224,6 +1283,10 @@ export interface ObservationAuthorizer extends RpcTarget {
    * remote service, so that the description can include details about the actual data. As long
    * as the operation is strictly read-only, and the call is made before actually returning any
    * data to the gadget, this is OK.
+   *
+   * When `description.subresources` is present, returning normally also means the Workshop
+   * recorded them and confirmed that every collaborator who can see the read may access them (see
+   * `ObservationDescription.subresources`).
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
 
@@ -1417,6 +1480,7 @@ export interface ApprovalQueue extends ObservationAuthorizer {
         description: HookDescription): Promise<void>;
 }
 
+/** What a gadget is about to read from an external service, for `authorizeObservation()`. */
 export type ObservationDescription = {
   /** Brief one-line summary of the observation, like an email subject line, to display in a list. */
   title: string;
@@ -1450,7 +1514,8 @@ export type ObservationDescription = {
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
    * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
-   *   deployment admin trusts with such data (none by default), and every action
+   *   deployment admin trusts with such data (none by default) or, where the admin allows it, a
+   *   URL a user approves, and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
    *   action's full `description` and is responsible for checking it contains none of the
    *   restricted data. An action whose description is not complete
@@ -1496,6 +1561,33 @@ export type ObservationDescription = {
    * the observation.
    */
   excludeObservers?: string[];
+
+  /**
+   * The IDs of everything this disclosure depends on that might restrict who may see it, which the
+   * Workshop checks collaborators against through this gatekeeper's
+   * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting them must implement it. Before
+   * authorizing the read, the Workshop checks every collaborator who can see the chat or gadget
+   * that made it, refusing the read if any is denied; it then records the IDs and checks them again
+   * at each collaborator's admission, alongside `Gatekeeper.addObserver()`.
+   *
+   * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
+   * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
+   * with a JavaScript `length` of 1–2048 (UTF-16 code units), and a single observation may report
+   * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
+   * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
+   * nothing restricts it. A binding-wide requirement every read relies on (such as tenant
+   * membership) belongs in `Gatekeeper.addObserver()`, which runs at every admission.
+   *
+   * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
+   * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user
+   * session with no known chat).
+   * Attribution stays with the original authorizer, including child sessions that reuse it;
+   * passing capabilities or data between contexts does not transfer requirements.
+   *
+   * Absent, the Workshop checks nothing for this read: the gatekeeper's own `addObserver()` and
+   * `excludeObservers` must cover it, as they did before this field existed.
+   */
+  subresources?: string[];
 }
 
 /** The language a `text` action field is written in, named so the approver knows how it is read. */
@@ -1649,7 +1741,8 @@ export type ActionDescription = {
    * Author's verdict that this specific action is safe to auto-apply without human review, IF the
    * user has opted in to auto-approving this action's kind (see `actionKind`). Only the gatekeeper
    * author knows whether a given edit is benign vs. destructive, so this gate is set per-action.
-   * Absent -> never auto-approvable, even if a matching rule exists.
+   * `true` is the norm; the `write-gatekeeper` skill lists when an action must be `false`, and
+   * prefers computing the verdict from the payload over a blanket `false`.
    *
    * TODO: A single opaque boolean isn't the ideal long-term shape. Eventually the gatekeeper should
    * describe the *nature* of the action -- e.g. destructive vs. additive, reversible vs. not,
@@ -1657,7 +1750,7 @@ export type ActionDescription = {
    * policy decide whether auto-approval is allowed, rather than the gatekeeper author hard-coding
    * that judgement here.
    */
-  autoApprovable?: boolean;
+  autoApprovable: boolean;
 
   // ----------------------------------------------------------------------------
   // Policy hints
@@ -1681,8 +1774,9 @@ export type ActionDescription = {
 
   /**
    * The action's kind (stable tag + display label), or absent for actions that can't be matched by
-   * any tag-keyed rule -- those always require manual approval. `actionKind.tag` is what auto-
-   * approval rules and the future policy engine key on; `actionKind.label` is shown in the UI.
+   * any tag-keyed rule -- those always require manual approval. Required when `autoApprovable` is
+   * true. `actionKind.tag` is what auto-approval rules and the future policy engine key on; users'
+   * rules are stored under it, so a tag is never renamed. `actionKind.label` is shown in the UI.
    */
   actionKind?: ActionKind;
 }
@@ -1772,6 +1866,17 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
+ * The size, in bytes, above which an RPC that can return a git object's (or file's) content
+ * either whole or as a stream returns a stream: `GitCache.get()` returns a `Uint8Array` for an
+ * object of at most this many bytes, and a `ReadableStream` for a larger one.
+ *
+ * This is a choice of representation, not a storage limit: no object is refused for its size.
+ * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
+ * row's worth.
+ */
+export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
+
+/**
  * Interface to the workspace's git object cache, as exposed to one gatekeeper.
  *
  * Each workspace maintains a cache of git objects, i.e. commits and their file trees. This cache
@@ -1816,7 +1921,12 @@ export interface GitCache extends RpcTarget {
    * gatekeeper's view (see the interface doc for the view rules).
    *
    * `content` is strictly the object payload. It does NOT include the `<type> <size>\0` header,
-   * even though that header is included in the hash.
+   * even though that header is included in the hash. It is a `Uint8Array` iff the object's size
+   * is at most `MAX_BUFFERED_BLOB_SIZE` (1 MiB); otherwise a byte stream of the payload, which the
+   * caller must consume or cancel. The rule is by size, not type: trees and commits are buffered
+   * in practice, but a tree of a very large directory can exceed the limit, so a caller narrows
+   * with `instanceof Uint8Array` whatever it fetches. A caller that has no use for a large object
+   * cancels the stream.
    *
    * An object that is pending push to this gatekeeper but not locally cached is pulled through
    * from its recorded source on demand, so a queued cross-remote push can be simulated as if it
@@ -1826,7 +1936,8 @@ export interface GitCache extends RpcTarget {
    * related objects up front rather than faulting once per `get()`. When omitted, the pull
    * requests exactly this object, with its type taken from recorded metadata.
    */
-  get(id: GitOid, hints?: GitPullHints): Promise<{type: GitObjectType, content: Uint8Array} | null>;
+  get(id: GitOid, hints?: GitPullHints)
+      : Promise<{type: GitObjectType, content: Uint8Array | ReadableStream<Uint8Array>} | null>;
 
   /** Return whether the given object exists, under the same scoped view as `get()`. */
   has(id: GitOid): Promise<boolean>;
@@ -1838,7 +1949,8 @@ export interface GitCache extends RpcTarget {
   stat(id: GitOid): Promise<{type: GitObjectType, size: number} | null>;
 
   /**
-   * Add an object to cache. Returns the computed oid.
+   * Add an object to cache. Returns the computed oid. There is no size limit, but the object
+   * travels whole in one RPC message.
    *
    * As with `get()`, the `content` must NOT include the `<type> <size>\0` header.
    *
@@ -1879,8 +1991,8 @@ export interface GitCache extends RpcTarget {
 
   /**
    * Consumes a standard git packfile, storing each object in it as `put()` would, and returns
-   * the oids of those now in the cache. An object too large to store is measured and left out of
-   * the result rather than thrown on; the kernel uses this to recognize oversized-file reads.
+   * the oids of those now in the cache: every object the pack carries, of any size. Large blobs
+   * are stored as they stream in, never held whole.
    *
    * The pack is decoded in one pass, so a delta must follow its base, as in every pack
    * `git upload-pack` sends. Objects are stored as the pack streams in, and its commits last,

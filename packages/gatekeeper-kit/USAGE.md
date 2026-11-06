@@ -538,11 +538,28 @@ provider request the entry exists to cache. A disconnected account propagates it
 source that cannot vouch for the credentials bypasses the cache. Compose an authority on the raw
 constructor only where it is genuinely local.
 
+Use `cachedMany` when the provider answers many keys in one request. Fresh entries are served,
+keys another caller is already loading are joined, and the rest reach the loader together; each key
+is then stored and fenced as `cached` stores it, so a later batch of a different shape reuses them.
+Pass the provider's per-request limit as `batchSize` rather than splitting keys inside the loader:
+the cache cuts batches from the missing keys alone, loads them one at a time and stores each as it
+returns, so a failing request keeps what the requests before it learned. A loader that throws
+stores nothing. Use `cached` for a key answered by a request of its own.
+
+Either method takes its TTL as a function of the cached value instead of a number when some answers
+deserve trust for longer than others, such as an access check that keeps a grant longer than a
+denial. It is asked each time an entry is consulted, so changing it applies to entries already
+stored.
+
 ## Actions and files
 
 Use `defineActions` and `stageAction` for externally visible side effects. They own the
 submit, approve, apply, and retire lifecycle, including retryable versus terminal failure,
 dependency stranding, and connection fences.
+
+Every definition declares a `kind` and an `autoApprovable` verdict: `true` unless the
+`write-gatekeeper` skill's opt-out policy applies
+([Action kinds and auto-approval](../../.agents/skills/write-gatekeeper/SKILL.md#action-kinds-and-auto-approval)).
 
 `retainApplied: true` opts out of retirement: applied records move to a retained tier the kit never
 bounds. Enforce the binding's retention policy inside `runExclusive()`: walk storage-bounded pages
@@ -623,97 +640,357 @@ for mapping provisional IDs to provider IDs.
 
 ## Observations
 
-Every session method that returns provider data must await `ObservationGate.authorize()` before it
-returns, in this order: fetch, authorize, return.
+Every method that returns information to its caller must await `authorizeObservation()` before
+returning it: fetch, authorize, return. That includes provider data (anything that came from the
+provider's API, fetched now or cached earlier), values derived from it, and simulated state.
+Report all access dependencies as explicit `subresources`, and keep observer authorization in
+`verifyObserverAccess()`. [Simulated reads](#simulation-and-subresources) report the same IDs.
+Do not build observer rosters, observed-set logs, `excludeObservers`, or legacy trackers for new code.
+
+The shared `ObservationDescription.subresources` property is still optional for compatibility.
+Require it locally with a typed helper:
 
 ```ts
+import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { escapeObservationValue } from "@gadgets/gatekeeper-kit/observers";
+import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
+
+type ExplicitObservation = ObservationDescription & { subresources: string[] };
+
+// Session helper; this session owns its approval-queue stub.
+async #authorizeObservation(description: ExplicitObservation): Promise<void> {
+  await this.#queue.authorizeObservation(description);
+}
+
 async getPage(id: string) {
   const page = await this.#api.page(id);
   const title = escapeObservationValue(page.title);
-  await this.#gate.authorize(
-    { title: `Page: ${title}`, description: `Read page **${title}**.` },
-    { kind: "collections", ids: [page.spaceId] },
-  );
+  await this.#authorizeObservation({
+    title: `Page: ${title}`,
+    description: `Read page **${title}**.`,
+    subresources: [
+      formatSubresourceId({ fragments: [{ name: "workspace", id: page.workspaceId }] }),
+      formatSubresourceId({ fragments: [{ name: "page", id: page.id }] }),
+    ],
+  });
   return project(page);
 }
 ```
 
+Here the workspace ID requires current workspace membership, and the page ID requires permission to
+read that page's disclosed content. The verifier must check both; a binding or connection does not
+implicitly establish either. Report any additional role, tenant, or parent-resource dependencies
+the returned data requires, using real resource IDs whose verifier semantics enforce those requirements.
+
 Run every provider-controlled string through `escapeObservationValue()` first. It collapses
-newlines and escapes Markdown controls, so a page whose title carries `#` or a line break cannot
-forge structure in the text a human approves against.
+newlines and escapes Markdown controls, so a title cannot forge structure in the observation text.
+Nothing automatically intercepts a session's return value: skipping authorization leaks unaudited
+data. Cached reads, nested resource capabilities, cursor pages, and hook deliveries have the same
+obligation. Hooks authorize through the fresh queue from `startHook()` before invoking the callback;
+derive requirements from current binding state, not fields absent from older persistent hook props.
 
-Nothing in the kit can enforce this — no code sits between a session method and its return value.
-Skipping it fails silently: reads keep working, the Workshop records no observation, and the
-strategy's derived `excludeObservers` never reaches the overseer, so owner-only data goes to every
-admitted collaborator. Authorizing after the fetch makes the description name the bytes actually
-disclosed; authorizing before it would describe a read that may still fail.
+### Simulation and subresources
 
-`ObservationGate` is the only path to `authorizeObservation`. It takes a duplicate of the stub it
-guards and owns that dup, so a session holds two owners — its own approval queue for staging
-actions, and the gate over `queue.dup()` — and releases both when the session ends:
+Simulation doesn't change what a read reports:
+
+- A simulated read reports every real resource its data came from, in the provider's current
+  (unapplied) state, plus every container the simulated view places it in. A pending move from P
+  to Q reports both until it applies.
+- Content the gatekeeper itself fetched for an action (previous values or a server-side copy source)
+  keeps its source's IDs when stored in pending-action state and replayed.
+- Pending permission changes (sharing, visibility, membership) never relax what a read reports.
+  `verifyObserverAccess()` checks live provider state only, never simulated state.
+- Caller-supplied content and generated provisional IDs add no source IDs by themselves. The kernel
+  does not propagate source requirements with text an agent quotes into an action argument. A read
+  returning only such content still authorizes, reporting `[]` plus any container or account
+  requirement.
+- Do not invent IDs for pending actions or simulated resources.
+
+While a Workshop `createExternalResource` creation is pending, the kernel records nothing its
+simulated reads report (`docs/observers.md` §10), so that resource must hold no provider data.
+
+Keep pending-action and cached state in the connection's facet storage, never in the account
+Durable Object or anywhere else shared across connections: requirements are recorded per
+connection. Within one connection, every chat and gadget reads that shared state. Authorize each
+read through the reading session's own approval queue, never one captured when an action was
+submitted or stored on the facet: that queue attributes the read to its chat or gadget. Never assume
+the reader already received what it replays. Re-reporting adds no admission work, since admission
+reads distinct requirement keys, though each read still checks its own audience.
+
+Content one chat writes into a pending action reaches every other chat and gadget on the connection
+before anyone approves it, with no requirement, and stays disclosed if the action is rejected. A
+chat's audience is its "build" collaborators while a gadget's includes "use" collaborators, so text
+a chat quotes from a resource checked only against "build" collaborators can reach "use"
+collaborators this way. The kernel accepts this as indirect disclosure (`docs/observers.md` §10):
+approval gates what reaches the provider, not what other contexts in the workspace see.
+
+### New-gatekeeper observer contract
+
+New gatekeepers follow these rules, although the current interface and its JSDoc still describe the
+legacy observer methods:
+
+- Every read that returns information to its caller explicitly reports all its dependencies, even
+  ones an earlier read already reported, simulated reads included. Workshop records requirements
+  per chat or gadget, not per binding.
+- `[]` adds **no requirement**; requirements already recorded stay in force. It never means a
+  binding/admission baseline was already checked. Report membership requirements explicitly; when
+  any account on a deployment-fixed service instance may read everything returned, use
+  [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), not `[]`.
+- Private-only reads report the actual mailbox, account, document, or other resource ID;
+  `verifyObserverAccess()` denies observers who may not read it. Neither `[]` nor a synthetic
+  `private` policy marker expresses that requirement.
+- Implement `getHistoricalSubresources(): Promise<string[]>` returning `[]`, read-only and with no
+  tracker. It is required even though the current interface does not declare it, so type-checking
+  will not catch its absence.
+- Implement `addObserver(id, verifier)` and `removeObserver(id)`, which the current interface
+  requires, as compatibility-only no-ops. Keep `getVerifier()` so Workshop can obtain each
+  observer's provider-side verifier.
+
+Use `observerAccessVerifier` without creating a tracker:
 
 ```ts
-#queue = queue;
-#gate = new ObservationGate(queue.dup(), this.#observers);
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 
-[Symbol.dispose]() {
-  this.#gate[Symbol.dispose]();
-  this.#queue[Symbol.dispose]();
+#verify = observerAccessVerifier<MyVerifierApi>({
+  hasCollectionAccess: (verifier, ids) => verifier.canAccess(ids),
+});
+
+async verifyObserverAccess(
+  observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+  subresources: string[],
+) {
+  return this.#verify(observers, subresources);
+}
+
+async getHistoricalSubresources(): Promise<string[]> { return []; }
+async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
+async removeObserver(_id: string): Promise<void> {}
+```
+
+`hasCollectionAccess` is the helper's existing option name; its IDs are subresource requirements,
+not a tracked collection set. The provider's `canAccess` must validate IDs, reject unknown kinds,
+and check every requirement with the observer's own account, including membership and private-only
+restrictions. Throw when access is indeterminate (expired credentials or a provider outage).
+The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
+since an observer may reconnect with another account.
+
+An existing `ObservationGate` converts a read with
+`gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
+it prepares no legacy state, exclusions, or fences. New code needs no gate: its constructor demands
+one of the legacy strategies below, and the typed helper above does the same job.
+
+### Choosing reporting and verification strategies
+
+There is one new-authoring protocol, but several **strategies for choosing requirements and checks**.
+Keep the [`write-gatekeeper` skill's](../../.agents/skills/write-gatekeeper/SKILL.md#choosing-a-strategy-per-resource-type--binding)
+A–D framing; choose per disclosure, not once for an entire provider or even a session. These letters
+are not the legacy admission strategies of the same letters in
+[`docs/observers.md` §9.1](../../docs/observers.md#91-strategies) (where C is data-set tracking and D
+is a no-op), which existing code comments may still cite.
+
+| Strategy | Report | Verify |
+| --- | --- | --- |
+| **A — Private-only / account identity** | The actual mailbox/account or other private resource. | Deny collaborators, or require the same provider identity if that is the intended policy. |
+| **B — One access-controlled unit** | The resource whose information is disclosed, including an empty answer about it. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
+| **C — Multiple access-controlled units** | Every independently required resource: returned items, query sources, and required containers or memberships. | All requirements, not any one of them; a parent ID does not imply child access. |
+| **D — Unrestricted disclosure** | `[]`. | No provider-side access requirement applies to this answer. |
+
+Keep **grant scope**, **disclosure dependencies**, and **oracle strength** separate. Labels, search
+filters, and table/folder bindings limit what a caller may request; they do not necessarily define
+sharing ACLs. A narrow binding can report a coarser resource when its oracle genuinely covers the
+disclosure. A broad binding can mix private discovery (A), shareable resource reads (B/C), and local
+configuration echoes or source-free computations (D). Observer verification does not replace the
+session's own scope enforcement.
+
+Design these variants explicitly:
+
+- **Different information classes on one object.** Metadata, content, private fields, and availability
+  can have different audiences. Use real resource kinds with distinct verifier semantics where
+  necessary, rather than collapsing everything to "can open object" or adding synthetic policy IDs.
+- **Account-wide discovery versus item access.** Knowing each returned item is readable need not
+  authorize the owner's personal list, membership, or caller-specific metadata. Report an account
+  requirement too when those are private. Distinguish the operator's configurator API from data
+  returned to a Gadget session; a picker method is not automatically a session observation pattern.
+- **Derived results.** Report the source footprint, not just objects present in output rows. Obtain
+  dependencies from trustworthy provider analysis where available; request text alone may not reveal
+  everything a query reads. Deduplicate, but retain dependencies for zero-row and cached answers.
+  A source-free result is D only if it has no other restricted input or context.
+- **Hierarchy and compound requirements.** A folder/list may control enumeration while individual
+  children have independent ACLs. Report both where needed, including the container for an empty
+  listing. Coarsen to one parent only with a provider guarantee that the observer can see everything
+  disclosed; neither URL nesting nor common ownership proves that.
+- **Empty and failed results.** "No rows" is not "no dependencies": absence, filtered membership,
+  counts, and aggregates can be restricted. Conversely, a failed item lookup that discloses no
+  protected information need not report that item. Decide from the complete returned answer,
+  including errors and auxiliary metadata; do not mechanically add or remove a parent ID.
+- **Stable identity.** Resolve or reject `me`, `primary`, personal `root`, mutable names, and similar
+  account-relative selectors before reporting them. Canonical escaping is not identity resolution.
+  Re-check the same real resource with the observer's account; never resolve an owner's alias to
+  the observer's unrelated resource.
+
+Choose the access oracle to match the information class. Metadata access does not establish content,
+table-row, or private-field visibility, and a mutation role is not inherently the right read check.
+An account-identity comparison can implement a private policy; it is not a delegated-resource ACL
+probe. If no adequate oracle exists, choose A, not D. See the worked patterns below for real examples
+and limits of the existing implementations.
+
+### Connection-only access (`global`)
+
+Use `GLOBAL_SUBRESOURCE_ID` only when the deployed Worker's configuration fixes the one service
+instance every account of this vendor connects to, and any account connected to it may read
+everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, role or scope
+differences that change read visibility, and private account data in the answer disqualify it.
+
+`"global"` names no instance; the deployment supplies its meaning. When accounts choose their
+instance (a self-hosted URL, a cloud or site ID, an Access team domain, a directory tenant), report
+a structured instance ID instead, such as `instance/<stable instance id>`, and have the oracle
+compare it with the observer's own instance. The [tenant identity](#subresource-ids-name-resources)
+rules apply: repointing a deployment that has recorded `"global"` requires an explicit migration.
+
+For example, a catalog whose origin is fixed in the Worker's `env`, behind one Access policy that
+grants instance-wide read access, can offer project/item bindings without separate sharing ACLs.
+Each read reports the same requirement:
+
+```ts
+import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
+
+await queue.authorizeObservation({
+  title: "Read project catalog",
+  description: "List projects from the connected catalog.",
+  subresources: [GLOBAL_SUBRESOURCE_ID],
+});
+```
+
+Report it on every read that returns information, including empty results, cache hits, cursor
+pages, simulated reads, and hooks. Bindings still enforce their project/item scope; observer access
+does not expand the caller's grant.
+
+The observer's verifier delegates to its own account. Check a fixed, deployment-defined catalog-read
+entitlement, not whether the observer's grant matches the owner's. That entitlement must cover every
+read reporting `global`; if different reads need different entitlements, use distinct resource kinds
+instead. Because every account here connects to the `env`-fixed origin, the account's oracle checks
+its own grant, using `getCredentials()` from the
+[credential sequence](#2-expose-the-account-rpc-methods):
+
+```ts
+async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
+  if (ids.some(id => id !== GLOBAL_SUBRESOURCE_ID)) {
+    throw new Error("Unknown subresource ID.");
+  }
+  // Throws when the grant is expired, dead on refresh, or disconnected.
+  const { creds } = await this.getCredentials();
+  // Check the fixed catalog-read entitlement, independently of the owner's role or scopes.
+  return ids.map(() => grantCoversCatalogReads(creds));
 }
 ```
 
-The gate only needs `ObservationAuthorizer`, the read-only capability, so a slash-command
-handler — which receives exactly that — constructs one from its own `authorizer.dup()`. Gate
-leases (`lease()`) are independent owners in the same way.
+`getCredentials()` refreshes only when the access token expires, so this oracle notices an
+observer's removal from the instance no sooner than that: within one token lifetime if refresh
+re-evaluates access, and never for a credential that does not expire. If that window is too long,
+add one identity call with the observer's credentials, not a probe per object. Credential failures
+must throw. Document the window you accept.
 
-Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
-alongside them. `aclObservers` and `trackedCollectionObservers` call that capability to check a
-collaborator, and `asVerifier` casts it to the vendor's own interface. Select one strategy:
+Compare the sentinel directly before `parseSubresourceId()`, which rejects it. The kernel treats
+it as an ordinary requirement, not a wildcard or automatic grant. It cannot replace independent
+membership or resource checks. Existing gatekeepers must still follow the
+[historical-enforcement migration rules](#existing-code-migration-only-preserve-historical-enforcement).
 
-- `privateObservers` rejects collaborators.
-- `aclObservers` checks baseline resource access when a collaborator is admitted.
-- `trackedCollectionObservers` tracks disclosed collections and rechecks each observer for every collection-scoped read.
-- `openObservers` admits every observer without consulting the provider. Choose it only where the
-  data carries no provider-side access distinction, since a collaborator the provider itself would
-  refuse still observes everything the binding reads.
+### Worked patterns from the Google migrations
 
-`trackedCollectionObservers` persists verifier stubs. Its Worker needs the
-`allow_irrevocable_stub_storage` compatibility flag; without it, the first `addObserver` fails with
-`DataCloneError`.
+These examples were audited against the merged migration PRs, including their implementations and
+review discussions. They highlight design lessons; the per-binding decision table in
+[`docs/observers.md` §9.2](../../docs/observers.md#92-decision-table) is authoritative for each
+binding's current IDs and checks. IDs below are schematic: use `formatSubresourceId()` to escape
+provider IDs, not string interpolation.
 
-### Baseline access is checked at admission
-
-`verifyBaseline` and `aclObservers.hasAccess` run when a collaborator is admitted. The overseer
-re-admits on every open, so losing Workshop membership is the revocation path.
-
-Only `trackedCollectionObservers` continuously runs its oracle. It calls `hasCollectionAccess` for every observer
-on every collection-scoped read. If the provider can revoke binding-level access independently of Workshop
-membership, a `{ kind: "baseline" }` read is insufficient because it consults no oracle. Represent
-that disclosure with a synthetic collection ID instead.
-
-### Scope describes the disclosure
-
-`ObservationScope` describes what a read reveals: `baseline`, `collections`, or `withholdFromObservers`.
-
-A **collection** is a provider-side access-controlled grouping — a Confluence space, a Jira project, a
-GitHub repo — whose ACL governs the items the read returned. Pass the ids of those groupings, not
-of the individual rows.
-
-Each strategy declares, as `aclChecks`, how thoroughly it verifies observer access to them, and the
-gate refuses a `collections` scope a strategy cannot honour:
-
-| Strategy | `aclChecks` | A `collections` scope |
+| Resource / disclosure | Strategy and requirements | Observer oracle / important boundary |
 | --- | --- | --- |
-| `trackedCollectionObservers` | `per-read` | checked for every observer, on every read |
-| `privateObservers` | `no-observers` | accepted; nobody is admitted to exclude |
-| `aclObservers` | `unsupported` | **refused** |
-| `openObservers` | `unsupported` | **refused** |
+| **Calendar metadata and events** ([#980](https://github.com/cloudflare/cloudflare-os/pull/980), `GoogleCalendarSessionImpl`) | B: `calendar/calendar/<calendarId>`, including empty event windows. Event IDs are unnecessary because the calendar determines visibility. | The observer's calendar-list role must include private-detail visibility (`owner` or `writer`); `writerWithoutPrivateAccess` or `reader` is not equivalent to the owner's full disclosure. |
+| **Calendar availability** (same PR) | A separate information class: `calendar/freeBusy/<calendarId>` for each successful result, even one with no busy blocks. `allVisible` can span foreign calendars (C) without granting their event details. | Query free/busy with the observer's credentials, not the event-detail role. Failed per-calendar lookups contribute no successful availability requirement; assess their error information separately. Account-relative `primary` is refused. |
+| **BigQuery project/dataset/table grants** ([#983](https://github.com/cloudflare/cloudflare-os/pull/983), `BigQuerySessionImpl`) | C: `bigquery/project/<projectId>/dataset/<datasetId>` for every dataset in provider dry-run `referencedTables`, deduplicated across joins. The same dataset unit is used under narrower table grants; table listings keep it even when empty. | Scope validation and read-only SQL checks are separate from observer access. **Existing limitation:** `datasets.get` proves metadata access, not table-row or row/column-policy equivalence. Copy dependency derivation, not this probe as proof of query-result access. |
+| **Gmail mailbox, label, or search grants** ([#984](https://github.com/cloudflare/cloudflare-os/pull/984), `gmail.ts`) | A: every read, cursor page, nested message/attachment capability, and hook reports `gmail/user/<Google-sub>`. A label or search narrows authority, not the mailbox's sharing ACL. | Compare the observer's stable provider subject to the mailbox owner. This is a private-identity policy, not delegated-mailbox ACL verification or a probe of current Gmail content scopes. |
+| **Chat account versus conversation/thread** ([#985](https://github.com/cloudflare/cloudflare-os/pull/985), `chat.ts`) | Account binding: A, `chat/user/<Google-sub>` on **all** reads, including discovery, nested capabilities, and hooks. Conversation/thread content: B, `chat/space/<spaceId>`, including empty pages. Member reads instead use `chat/spaceMembers/<spaceId>`. | Identity for account reads; `getSpace` for space visibility; `listMembers` for the independently protected member list. Space-level reporting relies on filtering out app-private messages with narrower audiences. |
+| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Tabs, ranges, slides, notes, thumbnails, and cached or simulated reads report the whole file. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
+| **Drive account discovery and exact file** (same PR, `drive-session.ts`) | Account list/search: C, `drive/file/<id>` per returned metadata row, including folder rows. Exact-file reads/listings: B, the bound file ID even if a trashed item is omitted. | File visibility uses the observer's Drive grant and a batched `files.get` metadata lookup. This implementation deliberately treats an empty account-wide list/search as `[]`; that is a disclosure policy, not a general rule for absence. |
+| **Drive positioned folder / descendant native reads** (same PR) | C: current `drive/folder/<id>` plus each returned child `drive/file/<id>`; opening a child folder reports both folder IDs. Searching selected child folders retains all searched folder IDs even with no hits. Folder-derived native reads carry folder + file + native-product requirements on every read. | Folder enumeration requires a live Drive folder with `capabilities.canListChildren`, not merely metadata visibility. The caller's live ancestry checks separately prevent moves, shortcuts, or foreign IDs from escaping the grant. A selected shared-drive root is a concrete folder, not a new shared-drive observer kind. |
 
-A resource whose children carry their own ACLs needs `trackedCollectionObservers`. Under the other two,
-collection ids would name a check nothing performs, so declare those reads `{ kind: "baseline" }` — and if
-the provider can revoke child access independently, that is the wrong strategy, not the wrong
-scope. A custom strategy declares its own `aclChecks`, and only the `per-read` arm may carry
-`prepare`, so claiming a check it does not implement will not compile.
+Several details prevent overly broad recipes:
+
+- **The origin binding matters.** Whole-account Chat replaces child-space requirements with the
+  owner requirement, so opening a child capability does not turn a private account binding into a
+  shareable conversation grant. Drive account/file native reads first authorize Drive metadata, then
+  report the native file on content reads; folder-derived reads retain the additional folder/file
+  guard requirements. Preserve the originating authorizer and scope in child capabilities.
+- **Derived versus source-free answers.** BigQuery queries keep all referenced datasets for zero-row
+  or cached results. A project-ID echo and an accepted tableless query report `[]`; a narrow
+  dataset/table binding rejects tableless SQL when it cannot prove scope. Empty project-level dataset
+  discovery also currently reports `[]`, unlike an empty table list within a dataset. Explain the
+  policy before copying any of those empty cases.
+  A Docs/Sheets/Slides resource not created yet, built only from caller-written content, also
+  reports `[]`. Simulation over an existing file still reports that file; see
+  [simulation and subresources](#simulation-and-subresources).
+- **Private versus shareable discovery.** Chat account discovery is private even when its returned
+  spaces have individual ACLs; Drive discovery reports each returned file instead.
+  Inspect the entire response, including personal read state and membership, rather than deciding
+  that every list is private or that every list is covered by returned-item IDs.
+- **Permission strength still needs review.** Drive PDF reads use `drive/file/<id>`, whose
+  oracle establishes metadata visibility, not download permission. That does not prove equivalent
+  PDF-content access. BigQuery's metadata-only probe has the analogous table-data limitation
+  ([review discussion](https://github.com/cloudflare/cloudflare-os/pull/983#issuecomment-6619477652)).
+  Do not treat either implementation as a permission-complete content-access template.
+- **Authorization machinery is reusable; migration quirks are not.** Calendar uses a typed read
+  helper, Gmail decorates a shared queue with its mailbox requirement, and the Chat account queue
+  enforces its account policy across child reads and hooks. Reuse those ways to avoid omissions.
+  Do not copy Drive's one-time `directParentId` parent check when a cursor is created (`#assertParent`)
+  as a substitute for complete dependencies on each page, or eagerly seed requirements merely because
+  a binding exists.
+
+The Google migrations retain legacy admission/history checks but do **not** implement the
+required `getHistoricalSubresources()` export. They illustrate reporting and oracle design, not a
+complete history migration or permission to use empty history in an existing gatekeeper. Follow the
+new-authoring contract or the existing-code migration rules below, as appropriate.
+
+### Existing-code migration only: preserve historical enforcement
+
+Do not apply the new-gatekeeper empty-history/no-op admission recipe to an existing binding.
+Preserve old binding-wide checks, private restrictions, observed sets, stored verifiers, and
+admission enforcement until every affected read is converted **and a shipped kernel importer has
+committed all actual historical access requirements to the observer ledger**. Export those real
+requirements through `getHistoricalSubresources(): Promise<string[]>` as a complete, conservative
+array. The current kernel does not
+call this export; the importer is still deferred in
+[`plans/kernel-observer-tracking.md`](../../plans/kernel-observer-tracking.md#deferred). Implementing
+a complete exporter alone does not protect past disclosures or justify retiring legacy checks.
+
+The exporter must return a valid subresource array for every supported legacy state. Missing granular
+history is not an intentional error path: return broader real resource IDs whose verifier checks
+preserve all historical access restrictions. A parent/container ID works only if its check covers
+every possible historical child disclosure; otherwise fall back to an account-private resource whose
+verifier denies collaborators. If no existing resource kind safely expresses that fallback, define
+one and its verifier as part of the migration. Keep the export deduplicated, read-only, and repeatable;
+never truncate history. Return `[]` only when no historical access requirement applies, not because
+history is unknown. Unexpected storage or runtime failures must propagate rather than be converted
+to an empty or incomplete export.
+
+Legacy `privateObservers`, `aclObservers`, `trackedCollectionObservers`, and `openObservers`, and
+the `baseline`, `collections`, and `withholdFromObservers` scopes, exist for maintaining and
+migrating existing code, **not as alternate strategies for a new gatekeeper**. A converted read uses
+`subresources` with all requirements, including any baseline previously enforced at admission.
+Unconverted paths must retain their legacy protections.
+
+Useful legacy operational constraints:
+
+- `verifyBaseline` and `aclObservers.hasAccess` run at admission, not on every read. A legacy
+  `baseline` scope does not recheck provider revocation. Never translate it into `subresources: []`
+  when the read actually depends on membership or another ACL.
+- Only `trackedCollectionObservers` supports per-read collection ACL checks. `collections` is refused
+  with `aclObservers` or `openObservers`; `privateObservers` accepts it because it admits nobody.
+  An empty `collections` list is refused. Do not weaken a read to `baseline` to evade these checks.
+- Persisted verifier stubs require `allow_irrevocable_stub_storage`; without it, a legacy tracker's
+  first `addObserver()` fails with `DataCloneError`. Preserve existing keys and verifier lifetimes
+  while historical enforcement still needs them; do not introduce that storage for new gatekeepers.
+- An existing gate owns its duplicated authorizer stub and must be disposed. A session holding an
+  action queue and a gate over `queue.dup()` releases both; a gate lease owns an independent dup.
 
 ### A cursor authorizes everything it hands out
 
@@ -723,45 +1000,50 @@ from the buffer with no provider fetch at all. Pass `authorizePage`, which the c
 exact page it is about to return:
 
 ```ts
-// A cursor is walked after this call returns, so it takes its own gate with `lease()` and
-// releases it from `dispose`. Built on the session's gate instead, the first `next()` after the
-// session releases its stub fails on the authorization rather than the data.
-const walk = this.#gate.lease();
+// The walk owns a duplicate so it can outlive the session's approval-queue stub.
+const walk = this.#queue.dup();
+const authorizePage = (description: ExplicitObservation) => walk.authorizeObservation(description);
+const workspaceResource = formatSubresourceId({
+  fragments: [{ name: "workspace", id: this.#workspaceId }],
+});
 return new TokenCursor<Project>({
   pageSize: 50,
   dispose: () => walk[Symbol.dispose](),
   fetchPage: (token, perPage) => this.#api.listProjects({ cursor: token, limit: perPage }),
-  authorizePage: (projects, { terminal }) => projects.length === 0
-    ? walk.authorize(
-      {
-        title: "Projects",
-        description: terminal
-          ? "Listed the projects; there were none."
-          : "Scanned a window of projects; none were visible.",
-      },
-      { kind: "baseline" })
-    : walk.authorize(
-      { title: "Projects", description: `Read ${projects.length} projects.` },
-      { kind: "collections", ids: projects.map(project => project.id) }),
+  authorizePage: (projects, { terminal }) => authorizePage({
+    title: "Projects",
+    description: projects.length > 0
+      ? `Read ${projects.length} projects.`
+      : terminal
+        ? "Listed the projects; there were none."
+        : "Scanned a window of projects; none were visible.",
+    subresources: [
+      workspaceResource,
+      ...projects.map(project => formatSubresourceId({
+        fragments: [{ name: "project", id: project.id }],
+      })),
+    ],
+  }),
 });
 ```
 
-The lease and the session gate share the binding's strategy, so exclusions stay one decision; only
-the stub is duplicated, and either side can be released without disturbing the other. `lease()`
-needs a real `RpcStub` — the overseer hands one over, but a gate built from a service binding
-cannot duplicate it, since `dup` is reserved over RPC.
+`dup()` needs a real `RpcStub`: the overseer hands one over, but a stub reached through a service
+binding cannot be duplicated, since `dup` is reserved over RPC.
+
+This listing requires workspace membership even to learn that there are no projects, so every
+page retains the workspace resource. The oracle checks membership for that ID and each project's
+read ACL. If a tenant or restricted parent controls absence or listing visibility, report that
+resource too, including on empty pages. Use `[]` only if the answer has no observer-access
+restriction at all. The same requirements accompany cached and buffered pages, not only fresh fetches.
 
 Every page is authorized, including an empty one from a spent fetch window. So is the end of a walk
 that disclosed nothing: `searchUsers(email) → no matches` answers a question about provider data,
 and letting that reach the gadget unaudited turns the cursor into an existence oracle. A walk that
 already returned a page does not re-authorize its `null`, and exhaustion is authorized at most once.
 
-Branch on `projects.length`, not on `terminal`. Both an exhausted walk and a spent mid-walk window
-arrive with no items, and `{ kind: "collections", ids: [] }` is refused — naming no collection is exactly the
-shape the gate rejects. `terminal` distinguishes the two only for the description: whether the walk
-is over, or the caller should ask again. The `collections` branch above also assumes
-`trackedCollectionObservers`; under a strategy whose `aclChecks` is `"unsupported"` every branch is
-`baseline`, per the table above.
+`terminal` changes the empty-page description, not whether access dependencies are reported.
+Every outgoing page names all requirements for that disclosure, even if earlier pages named them.
+Do not drop a membership or parent-resource requirement just because `projects.length === 0`.
 
 A refusal holds the outgoing page, so the retry re-offers its rows with no further provider
 fetch: a page the provider capped short cannot grow between the refusal and the retry, which would
@@ -779,11 +1061,11 @@ connection the walk opened under, not the current one:
 ```ts
 const opened = await this.#creds.read();
 return new TokenCursor<Project>({
-  authorizePage: async projects => {
+  authorizePage: async (projects, { terminal }) => {
     if ((await this.#creds.read()).generation !== opened.generation) {
       throw new Error("This walk was started under a connection that has since been replaced.");
     }
-    await walk.authorize(/* … */);
+    await authorizePage({ /* the explicit-subresource description above */ });
   },
   // …
 });
@@ -806,7 +1088,7 @@ identity is re-read at each check, so a temporary id that became the provider's 
 A refused page's retry re-reads its injected rows and offers no provider row the refusal did not
 cover; one a dropped injected row had hidden leads the next page instead, with the rows after it.
 
-### Refusal and failure have different outcomes
+### Existing-code migration only: refusal and failure
 
 `ObservationGate.authorize()` reclaims prepared state only when an error carries
 `OBSERVATION_REFUSED_CODE`. That mark proves the overseer refused the observation before recording
@@ -822,6 +1104,46 @@ kernel change marks them, every failure takes the fail-closed unknown-outcome pa
 `discard()` never runs. For a `withholdFromObservers` read that is not merely a retained marker:
 `abandon` latches the binding unshareable for good, so a refused owner-only read costs the
 workspace its sharing until the kernel distinguishes the two.
+
+### Subresource IDs name resources
+
+Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global)
+on a deployment-fixed instance.
+Build every **structured resource** ID with `formatSubresourceId()` from `./subresource-ids`, and
+read it back in `verifyObserverAccess()` with `parseSubresourceId()`:
+
+```ts
+formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId }] });
+// "drive/file/<escaped fileId>"
+```
+
+Each fragment names a resource: a kind and the provider's id for it. It never names a predicate or
+a policy. A mailbox only its owner may see is still `gmail/user/<sub>`, naming the owner's Google
+account, not a `private` marker; the verifier knows what access each kind of resource requires,
+including that one is shared with nobody else. Set `namespace` only when the gatekeeper exposes
+distinct product families with their own resources, as Google does with Gmail, Drive and BigQuery.
+A single-product gatekeeper omits it instead of repeating its own name.
+
+Cloud IDs, workspace URLs, organization IDs, and similar provider-instance identifiers are **tenant
+identities**. Qualify a resource with its tenant, using real resource kinds such as Slack's
+`workspace/<teamId>/conversation/<conversationId>`, unless the deployed Worker's configuration
+permanently fixes that tenant. A tenant chosen through a connected account, resource binding, or
+URL is not fixed, and one OAuth app can serve many tenants. A fixed tenant left implicit, as in
+`GLOBAL_SUBRESOURCE_ID`, must stay fixed while recorded requirements exist: repointing the
+deployment needs an explicit migration, never a silent reinterpretation of old IDs.
+
+Prefer stable provider IDs; escaping does not make a mutable URL or account-relative alias stable.
+Recorded IDs must retain their meaning across renames and reconnects. Report independently required
+tenant membership and child-resource permissions separately, even when the tenant is implicit;
+nesting does not imply access inheritance.
+
+`parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
+resource always reports one string. That string is what the Workshop deduplicates and indexes.
+The current shared contract requires well-formed Unicode IDs of **1–2048 UTF-16 code units**,
+with at most **10,000 IDs** and **500,000 total code units** per observation, before deduplication.
+Escaping can lengthen a component up to ninefold (a three-byte UTF-8 character becomes nine).
+Use a suitable coarser real resource when needed, with a verifier check covering the entire
+disclosure; do not truncate IDs or omit requirements to fit a bound.
 
 ## Bounds
 
@@ -839,6 +1161,8 @@ The kit supplies defaults where they apply across consumers:
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
 | `OAuthClient` `maxResponseBytes` | 64 KiB |
+| `readCiLog` `retainBytes` / `maxBytes` | 8 MiB / 128 MiB |
+| `CiLogCache` `ttlMs` / `maxTotalBytes` | 1 hour / 32 MiB |
 
 The kit requires values where no general default is safe:
 
@@ -924,6 +1248,12 @@ shallow-info.
   so an oversized HTML error page still yields its first bytes. Never redact its result: the cut can
   split an echoed secret. Read a body that may echo a credential whole with `readTextCapped` and
   redact before cutting. Use `readTextCapped` whenever the whole body must be read, JSON included.
+- Read CI job logs with `readCiLog`, not `readTextCapped`: a long log is legitimately larger than
+  any whole-body cap, and `readCiLog` streams it, keeps only the tail, and still counts every
+  line, so `pageCiLog` numbers lines over the whole log. Pass agent-supplied page options to
+  `pageCiLog` untouched; it validates them. Put only finished logs in `CiLogCache`, and revalidate
+  a hit against the provider (log erased, job deleted, access lost) before serving it — the cache
+  holds bytes, not authority.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the

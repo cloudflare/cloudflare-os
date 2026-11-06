@@ -590,7 +590,7 @@ function FileRow({
             className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
           >
             <DropdownMenu.Item
-              icon={<DownloadSimple size={12} className="mr-2" />}
+              icon={<DownloadSimple className="size-3" />}
               onClick={onDownload}
               className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
             >
@@ -600,7 +600,7 @@ function FileRow({
               <>
                 {kind === 'file' && (
                   <DropdownMenu.Item
-                    icon={<Pencil size={12} className="mr-2" />}
+                    icon={<Pencil className="size-3" />}
                     onClick={onRename}
                     className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                   >
@@ -608,7 +608,7 @@ function FileRow({
                   </DropdownMenu.Item>
                 )}
                 <DropdownMenu.Item
-                  icon={<Trash size={12} className="mr-2" />}
+                  icon={<Trash className="size-3" />}
                   variant="danger"
                   onClick={onDelete}
                   className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"

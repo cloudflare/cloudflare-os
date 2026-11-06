@@ -116,6 +116,19 @@ Report a failure in these areas at P1, or P0 for data loss or a security hole.
   chokepoint, env-var-only auth config (`AUTH_GATEKEEPERS`, `DISABLE_PASSWORD_AUTH`), and
   `AdminSettings` as the only writer of `AdminConfig`. `packages/mcp-shared/AGENTS.md`: the
   `tools.ts` trust boundary and `sdkFetch(...)` for SDK OAuth. Flag a change that breaks them.
+- Other code reads admin settings through `readAdminConfig(env)`. The one exception is
+  `AdminApiImpl`, which reads the authoritative config for the audit log's retention in
+  `listAdminAudit()` and `getAdminAuditStats()`.
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` is env-driven, like auth config. Flag code that enforces or
+  prunes with `adminAuditRetentionDays` without `adminAccessPolicy()`.
+- A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
+  `#mutateAdminConfig()`, or records explicitly before any other write.
+- `cf-os api` sends `User-Agent: cf-os-api/<version>`. Except on a local instance
+  (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
+  harness), the Workshop lets such a session act only as a deployment admin. A client can send any
+  User-Agent, so this is a speed bump, not authorization; the API's own checks are the boundary.
+  Flag code that grants anything by User-Agent, and any deployment config that sets
+  `WORKSHOP_ENVIRONMENT`.
 - `packages/bundled-blueprints/blueprints/`: a `blueprintId` is never edited after deploy. Installs
   and promotion are keyed on it, so a rename orphans the old entry.
 
@@ -127,6 +140,15 @@ user stories, what would you do differently? Check that the seams (resource gran
 sessions) partition authority along the lines users grant. The checklist is "Reviewing a
 gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
 
+- Check every action's `autoApprovable` verdict against that skill's "Action kinds and
+  auto-approval" policy.
+- A new gatekeeper meets that checklist's "Observer protocol" items, including a read-only
+  `getHistoricalSubresources()` that returns `[]`. The `Gatekeeper` interface enforces none of them,
+  so code that type-checks can still break them.
+- An existing gatekeeper's migration keeps the old enforcement until every affected read reports
+  complete requirements and a shipped kernel importer has written the complete historical
+  requirements from `getHistoricalSubresources()` to the observer ledger. The kernel does not read
+  that export yet, so do not apply the new-gatekeeper empty-history rule to existing data.
 - A fan-out where one failed item must not fail the rest (a catalog, a menu, a list built from many
   sources) uses `Promise.allSettled`, not `Promise.all` (P2; P1 when one failing source empties the
   list for all users).
