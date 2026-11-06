@@ -1,0 +1,139 @@
+diff --git a/packages/observability/__tests__/tracing.test.ts b/packages/observability/__tests__/tracing.test.ts
+new file mode 100644
+index 000000000..de9529024
+--- /dev/null
++++ b/packages/observability/__tests__/tracing.test.ts
+@@ -0,0 +1,49 @@
++// Runs against the real workerd tracing API (vitest-pool-workers), pinning the platform
++// contract `traced` depends on: enterSpan ends its span when the returned promise settles, not
++// when the synchronous callback returns (docs: workers/observability/traces/custom-spans/).
++//
++// Caveats:
++// - Invocations are only traced when a tail consumer is attached, so vitest.config.ts wires a
++//   no-op streaming tail sink behind the experimental `streaming_tail_worker` flag. If workerd
++//   renames or removes that flag, setup fails loudly — a mechanical config fix, not a tracer bug.
++// - Attributes are write-only, so "span still open" is inferred from the documented guarantee
++//   that `span.isTraced` flips to false once the span ends. The entry assertion in each test
++//   guards the signal itself: if invocations stop being traced, isTraced starts false and the
++//   test fails rather than silently passing.
++
++import { describe, expect, it } from "vitest";
++import { createTracer } from "../src/tracing";
++
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
++const traced = createTracer(() => ({}));
++
++describe("traced span lifetime", () => {
++  it("keeps the span open across awaits in an async callback", async () => {
++    const observed: boolean[] = [];
++    await traced("probe", async (span) => {
++      observed.push(span.isTraced); // must start true — guards the isTraced signal
++      await sleep(50);
++      observed.push(span.isTraced); // still true ⇒ span did not end at the sync return
++    });
++    expect(observed).toEqual([true, true]);
++  });
++
++  it("records the error attribute before the span can close on rejection", async () => {
++    let openWhenErrorSet: boolean | undefined;
++    await expect(
++      traced("probe-reject", (span) => {
++        // Shadow setAttribute to observe the instant traced()'s catch marks the failure.
++        const original = span.setAttribute.bind(span);
++        span.setAttribute = (key, value) => {
++          if (key === "error") openWhenErrorSet = span.isTraced;
++          original(key, value);
++        };
++        return (async () => {
++          await sleep(50);
++          throw new Error("boom");
++        })();
++      }),
++    ).rejects.toThrow("boom");
++    expect(openWhenErrorSet).toBe(true);
++  });
++});
+diff --git a/packages/observability/package.json b/packages/observability/package.json
+index c251de20a..4e527ce19 100644
+--- a/packages/observability/package.json
++++ b/packages/observability/package.json
+@@ -14,0 +15,4 @@
++    "./tracing": {
++      "types": "./src/tracing.ts",
++      "import": "./src/tracing.ts"
++    },
+diff --git a/packages/observability/src/tracing.ts b/packages/observability/src/tracing.ts
+new file mode 100644
+index 000000000..2ee5764d0
+--- /dev/null
++++ b/packages/observability/src/tracing.ts
+@@ -0,0 +1,46 @@
++import { tracing } from "cloudflare:workers";
++
++type Attribute = boolean | number | string;
++
++/** The span surface exposed to callbacks. Lifetime is managed by `traced`, so no `end()`. */
++export interface TraceSpan {
++  readonly isTraced: boolean;
++  setAttribute(key: string, value?: Attribute): void;
++}
++
++/**
++ * Creates a span helper that stamps the ambient observability context onto each span as
++ * attributes. Tracing only: never logs, never modifies context. Exceptions propagate
++ * unchanged, marked on the span via an `error` attribute (the beta API has no outcome).
++ * Sync and async callbacks both get correct spans: enterSpan ends the span only when the
++ * returned promise settles, not at the synchronous return (pinned by __tests__/tracing.test.ts).
++ */
++export function createTracer(getContext: () => Readonly<Record<string, unknown>>) {
++  return function traced<Result>(name: string, callback: (span: TraceSpan) => Result): Result {
++    return tracing.enterSpan(name, (span) => {
++      if (span.isTraced) {
++        for (const [key, value] of Object.entries(getContext())) {
++          if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
++            span.setAttribute(key, value);
++          }
++        }
++      }
++      // Boolean marker only: error text is unbounded and possibly sensitive, so it belongs to
++      // logs/reporting, not trace attributes.
++      const fail = () => span.setAttribute("error", true);
++      try {
++        const result = callback(span);
++        // enterSpan keeps the span open until the returned promise settles, so async work gets
++        // its real duration and fail() runs before the span can close (the runtime watches the
++        // .catch-wrapped promise returned here). That wrapper is a new promise, not `result` —
++        // fine for data results; don't wrap pipelined RPC stubs in `traced`.
++        return result instanceof Promise
++            ? result.catch((err) => { fail(); throw err; }) as Result
++            : result;
++      } catch (err) {
++        fail();
++        throw err;
++      }
++    });
++  };
++}
+diff --git a/packages/observability/vitest.config.ts b/packages/observability/vitest.config.ts
+index f27d13b69..67408608b 100644
+--- a/packages/observability/vitest.config.ts
++++ b/packages/observability/vitest.config.ts
+@@ -9,2 +9,3 @@ export default defineConfig({
+-        // nodejs_als enables observability context; experimental enables the Reporter stub below.
+-        compatibilityFlags: ["experimental", "nodejs_als"],
++        // nodejs_als enables observability context; experimental enables the Reporter stub below
++        // and the streaming_tail_worker flag (which workerd refuses without experimental mode).
++        compatibilityFlags: ["experimental", "nodejs_als", "streaming_tail_worker"],
+@@ -13,0 +15,3 @@ export default defineConfig({
++        // Invocations are only traced (span.isTraced === true) when a tail consumer is attached;
++        // the no-op "span-sink" below exists solely so tracing.test.ts can observe span lifetime.
++        tails: ["span-sink"],
+@@ -14,0 +19,8 @@ export default defineConfig({
++          name: "span-sink",
++          modules: true,
++          compatibilityDate: "2026-09-04",
++          compatibilityFlags: ["streaming_tail_worker"],
++          // The no-op tail() silences workerd's legacy tail delivery, which it attempts alongside
++          // the streaming path.
++          script: `export default { tail: () => {}, tailStream: () => () => {} }`,
++        }, {
