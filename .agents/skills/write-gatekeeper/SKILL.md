@@ -17,8 +17,8 @@ Read `packages/workshop-shared/src/gatekeeper.ts` for the canonical interfaces a
 
 Write new gatekeepers to this observer contract:
 
-- Every observation explicitly reports `subresources`: all resources whose access requirements govern the disclosure. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
-- `subresources: []` means **no observer-access restriction**, never "the binding already checked it." Private-only data reports a real resource ID and denies collaborators through `verifyObserverAccess()`. Workspace or tenant membership is represented by a reported resource and verified explicitly.
+- Every read that returns provider data explicitly reports `subresources`: every resource whose access rules govern that data. [Simulation](#simulation) replay of data this chat or gadget already received adds none. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
+- `subresources: []` adds **no requirement**. It does not clear requirements already recorded, and it never means "the binding already checked it." Private-only provider data reports a real resource ID and denies collaborators through `verifyObserverAccess()`. Report and verify any required workspace or tenant membership explicitly.
 - Implement `getHistoricalSubresources(): Promise<string[]>` as a read-only method returning `[]`, with no legacy tracker. It is required even though the current `Gatekeeper` interface does not declare it, so type-checking will not catch its absence. Do not omit or remove it.
 - Implement `addObserver(id, verifier)` and `removeObserver(id)`, which the current interface requires, as **compatibility-only no-ops**. Do not introduce observer rosters, observed-set logs, stored observer verifiers, `excludeObservers`, or new legacy trackers.
 - Require `subresources` in your read helper's type; the shared type still makes it optional. Type-checking does not enforce the whole contract; use the [review checklist](#reviewing-a-gatekeeper).
@@ -108,7 +108,7 @@ packages/gatekeeper-<name>/
 
 #### Authorizing observations
 
-Any operation which reads external data and returns it to the caller (but with no side effects) must await `authorizeObservation()` with explicit `subresources` before returning, including cache hits, cursor pages, and hook deliveries. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+Any operation that returns provider data must await `authorizeObservation()` with explicit `subresources` before returning, including cached data, cursor pages, and hook deliveries. [Simulation](#simulation) replay of data already returned to this chat or gadget is not a new read. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
 
 ##### What counts as an observation
 
@@ -251,6 +251,21 @@ Two possible implementation approaches include:
 
 Choose based on the service's data model and the complexity of simulating each action type.
 
+**Subresources follow provider data, not simulation state.** Provider data is anything that came
+from the provider's API, whether fetched by this read or earlier and cached. Caller-written action
+arguments and simulated state are not provider data. Report IDs for the provider data a read
+returns; simulation itself adds none:
+
+- Replaying data this chat or gadget already received adds nothing; Workshop recorded its IDs when
+  the data was first returned.
+- Action arguments the caller wrote, and provisional IDs you generated, add nothing.
+- Do not invent IDs for pending actions or simulated resources, and do not fetch a resource from the
+  provider just to justify replaying it.
+
+If a simulated read also returns provider data this chat or gadget has not received before, report
+that data's IDs as usual. Data sitting in a shared cache, or fetched internally but never returned,
+has not been received by this chat or gadget.
+
 Keep in mind that the agent calling the API (or the agent writing a gadget to call it) is generally not aware that actions do not take place immediately. If the simulation is correct, the agent doesn't need to be aware. If the simulation has gaps, you may want to mention it in your API's doc comments, so that the calling agent knows to work around them — but ideally there are no gaps and the calling agent does not need to think about it.
 
 For concrete examples, see the Google gatekeeper's Google Docs simulation/cache handling and BigQuery dry-run scope enforcement.
@@ -264,7 +279,7 @@ For **new gatekeepers**, there is one authoring protocol: explicit `subresources
 The members involved:
 
 - `GatekeeperUser.getVerifier()` mints a persistent `GatekeeperUserVerifier` representing this account. The Workshop only passes it back to the same vendor, so its non-standard methods can be trusted as that vendor's access oracle.
-- `ObservationDescription.subresources` is explicit on every observation. `[]` declares that no observer-access restriction applies.
+- `ObservationDescription.subresources` is explicit on every observation. `[]` adds no requirement; requirements already recorded stay in force.
 - `Gatekeeper.verifyObserverAccess(observers, subresources)` returns the IDs of observers whose accounts can read **every** reported resource now. Implement it for every reported resource kind, including any historical IDs an existing connection exports; throw if access is indeterminate.
 - `getHistoricalSubresources(): Promise<string[]>` exports observer history recorded under the legacy protocol. Every gatekeeper implements it, although the current interface does not declare it. New gatekeepers return `[]` from a read-only method; existing ones export what they actually observed (see [Existing-code migration and legacy history](#existing-code-migration-and-legacy-history)).
 - `addObserver(id, verifier)` and `removeObserver(id)` are required by the current interface. New gatekeepers implement them as no-ops, without authorization or bookkeeping.
@@ -346,7 +361,7 @@ for scope-specific examples and implementation caveats.
 
 Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` JSDoc for ID limits and answer shape, and this skill for the access model: no restriction may depend on admission.
 
-1. **Report every dependency on every observation**, not just resources new to the binding. Include ordinary reads, cursor pages (even buffered pages), cache hits, nested capability reads, and hook deliveries. An empty result can reveal restricted absence; retain the parent/container or tenant requirement even when there are no rows. `[]` is correct only if nothing restricts that disclosure.
+1. **Report every dependency on every read that returns provider data**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, nested capability reads, and hook deliveries. An empty result can still reveal restricted absence, so keep the container, tenant, or membership requirement even when there are no rows. [Simulation](#simulation) replay of data this chat or gadget already received adds none.
 2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Include enough provider identity for unambiguous checks across service instances, and omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
 3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
@@ -417,7 +432,7 @@ Reviews tend to stop at general correctness. The most important review is of the
   - Each binding's types expose only what that binding can do and stay small, and its reported resources and verifier checks fit that partition (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
 
 - **Observer protocol.** For new gatekeepers, reject any of the following omissions even if the code type-checks:
-  - Every observation explicitly reports all correct dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. `[]` must mean unrestricted, not "checked at admission."
+  - Every read that returns provider data explicitly reports its dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. [Simulation](#simulation) replay adds none, so do not flag missing IDs for caller-written values, provisional resources, or data this chat or gadget already received.
   - No access requirement exists only in `addObserver()`; `verifyObserverAccess()` handles every reported kind, checks all IDs per observer, denies unauthorized accounts, and propagates indeterminate failures.
   - Grant scope, disclosure dependencies, and oracle strength are reviewed separately. Account discovery, item/member reads, derived results, and descendant capabilities may need different strategies within one binding; metadata visibility must not stand in for content access.
   - `getHistoricalSubresources()` exists and returns `[]` without reading or keeping any observer state; `addObserver(id, verifier)` and `removeObserver(id)` are no-ops.
