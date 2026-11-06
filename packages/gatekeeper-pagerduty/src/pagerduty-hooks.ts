@@ -12,7 +12,9 @@
 // `PagerDutyHookDriver`, which queues it once for every enabled hook that may watch it and
 // delivers from its alarm, retrying failures. Each delivery starts a firing, and the facet re-reads
 // the incident as the hook's owner, dropping what they can't see or what lies outside the binding,
-// before calling the hook.
+// before calling the hook. An event reaches only hooks on the account its signed incident link
+// names: object IDs are not known to be unique across accounts, so a bare ID re-read in another
+// account could pair this event's text with someone else's incident.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -31,7 +33,7 @@ import {
   SessionContext, outsideOf, readIncident, youRef, type HookScope, type SessionHost,
 } from "./pagerduty-session-shared";
 import { overlayIncident } from "./pagerduty-simulation";
-import { OBJECT_ID } from "./pagerduty-urls";
+import { OBJECT_ID, parseResourceUrl, sameTenant } from "./pagerduty-urls";
 import { obsContext } from "./observability";
 import type { PagerDutyEvent, PagerDutyEventHook, PagerDutyEventKind, PagerDutySubscribeOptions } from "./types";
 
@@ -67,6 +69,8 @@ type StoredEvent = {
   id: string;
   kind: PagerDutyEventKind;
   occurredAt: string;
+  /** The account the incident's signed link names. */
+  tenant: Tenant;
   incidentId: string;
   /** The incident's service, when the payload names it. */
   serviceId?: string;
@@ -77,7 +81,7 @@ type StoredEvent = {
   statusUpdate?: string;
 };
 
-/** The deployment's one driver: its OAuth app and webhook secret are one PagerDuty account's. */
+/** The deployment's one driver; each event carries the account it is from (see `watches`). */
 const driver = (exports: Cloudflare.Exports) => exports.PagerDutyHookDriver.getByName("webhook");
 
 /** The kinds `options` asks for, by default all. */
@@ -129,6 +133,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
                 event: StoredEvent): Promise<void> {
     const host = this.#host;
     const { scope, within, incidentId } = this.#scope;
+    if (!sameTenant(event.tenant, host.tenant)) return;
     if (incidentId !== undefined && event.incidentId !== incidentId) return;
     let wire: WireIncident;
     let note = event.note;
@@ -173,7 +178,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
 // ── Controller ──────────────────────────────────────────────────────
 
 /** What the driver filters a hook's events by: cheap checks that spare firings, which the facet repeats. */
-type Registration = { events: PagerDutyEventKind[]; incidentId?: string; serviceId?: string };
+type Registration = { tenant: Tenant; events: PagerDutyEventKind[]; incidentId?: string; serviceId?: string };
 
 type Capabilities = {
   delivery: RpcStub<PagerDutyHookDelivery>;
@@ -273,8 +278,9 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
 }
 
 /** Whether a hook may watch `event`; the facet decides, as the hook's owner sees the incident now. */
-function watches({ events, incidentId, serviceId }: Registration, event: StoredEvent): boolean {
-  return events.includes(event.kind) && (incidentId === undefined || incidentId === event.incidentId)
+function watches({ tenant, events, incidentId, serviceId }: Registration, event: StoredEvent): boolean {
+  return sameTenant(tenant, event.tenant) && events.includes(event.kind)
+    && (incidentId === undefined || incidentId === event.incidentId)
     && (serviceId === undefined || event.serviceId === undefined || serviceId === event.serviceId);
 }
 
@@ -335,7 +341,7 @@ type WebhookPayload = {
     event_type?: unknown;
     occurred_at?: unknown;
     agent?: (WireRef & { type?: string }) | null;
-    data?: WireRef & { service?: WireRef; incident?: WireRef; content?: unknown; message?: unknown; trimmed?: unknown };
+    data?: WireRef & { html_url?: unknown; service?: WireRef; incident?: WireRef & { html_url?: unknown }; content?: unknown; message?: unknown; trimmed?: unknown };
   };
 };
 
@@ -348,7 +354,8 @@ function parseDelivery(payload: unknown): StoredEvent | undefined {
   const kind = typeof event_type === "string" ? EVENT_TYPES.get(event_type) : undefined;
   if (kind === undefined) return undefined;
   const incident = data?.type === "incident" ? data : data?.incident;
-  if (typeof id !== "string" || typeof occurred_at !== "string" || !OBJECT_ID.test(incident?.id ?? "")) {
+  const link = typeof incident?.html_url === "string" ? parseResourceUrl(incident.html_url) : null;
+  if (typeof id !== "string" || typeof occurred_at !== "string" || !OBJECT_ID.test(incident?.id ?? "") || !link) {
     logger.warn("ignored a PagerDuty event it could not read", { event: "hooks.delivery.unreadable" });
     return undefined;
   }
@@ -365,7 +372,7 @@ function parseDelivery(payload: unknown): StoredEvent | undefined {
   const statusUpdate = kind === "statusUpdatePublished" && !trimmed && typeof data?.message === "string"
     ? data.message : undefined;
   return {
-    id, kind, occurredAt: occurred_at, incidentId: incident!.id,
+    id, kind, occurredAt: occurred_at, tenant: { subdomain: link.subdomain, region: link.region }, incidentId: incident!.id,
     ...(serviceId && OBJECT_ID.test(serviceId) ? { serviceId } : {}),
     agent: agent?.type === "user_reference" && OBJECT_ID.test(agent.id)
       ? { id: agent.id, name: agent.summary ?? agent.name ?? agent.id } : null,

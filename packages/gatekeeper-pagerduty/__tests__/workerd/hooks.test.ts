@@ -287,6 +287,21 @@ describe("PagerDuty event hooks", () => {
       .toEqual([apiOrigin("eu")]);
   });
 
+  it("delivers an event only to hooks on the account its incident link names, even where another account has that ID", async () => {
+    const pd = new FakePagerDuty().install();
+    // The fake keeps one incident store, so Dave's EU account can open this US incident's ID too.
+    const incident = pd.incident(SERVICE);
+    const alice = await subscribe(pd, { resourceKind: "account" });
+    const dave = await subscribe(pd, { resourceKind: "account" }, { who: DAVE });
+    expect(await deliver(webhookEvent("incident.annotated", incident, {
+      data: { type: "incident_note", id: "PNOTE01", content: "Customer data is in the logs.", trimmed: false },
+    }))).toBe(204);
+    await settled();
+    expect((await alice.read()).received).toEqual([expect.objectContaining({ note: "Customer data is in the logs." })]);
+    expect(await dave.read()).toMatchObject({ firings: 0, received: [] });
+    expect(pd.matching("GET", new RegExp(`^/incidents/${incident.id}$`), DAVE.id)).toEqual([]);
+  });
+
   it("hands the hook a live incident, whose changes queue on the firing", async () => {
     const pd = new FakePagerDuty().install();
     const incident = pd.incident(SERVICE);
