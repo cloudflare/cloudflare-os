@@ -245,8 +245,6 @@ function newSession(
       convertPdf,
       scope,
       queueStub,
-      async fileIds => ({ pendingSets: fileIds, commit() {} }),
-      () => ({ pendingSets: [], commit() {} }),
     )),
   };
 }
@@ -313,10 +311,10 @@ describe("Drive nested native sessions", () => {
       { id: "layout-title-body", name: "Title and body", master: "master-1" },
     ]);
     expect((await deck.getSlides(["s2"]))[0].speakerNotes).toBe("Say hello");
-    expect(queue.observations.map(o => o.title)).toEqual([
-      "Open Google Slides presentation from Google Drive",
-      "Read Google Slides presentation outline",
-      "Read one Google Slides slide",
+    expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
+      ["Open Google Slides presentation from Google Drive", ["drive/file/deck-1"]],
+      ["Read Google Slides presentation outline", ["slides/presentation/deck-1"]],
+      ["Read one Google Slides slide", ["slides/presentation/deck-1"]],
     ]);
 
     // The capability itself has no write method, whatever a caller sends it.
@@ -383,12 +381,18 @@ describe("Drive PDF reads", () => {
     expect(download.pathname).toBe("/drive/v3/files/pdf-1");
     expect(download.searchParams.get("supportsAllDrives")).toBe("true");
     // The text is converted before its read is authorized, and authorized before it is returned.
-    expect(queue.observations.map(({ title, description }) => ({ title, description }))).toEqual([
+    expect(queue.observations.map(({ title, description, subresources }) =>
+      ({ title, description, subresources }))).toEqual([
       {
         title: "Open PDF from Google Drive",
         description: "Check current metadata for Drive file pdf-1 and open it as a PDF.",
+        subresources: ["drive/file/pdf-1"],
       },
-      { title: "Read PDF from Google Drive", description: "Read the text of Drive file pdf-1." },
+      {
+        title: "Read PDF from Google Drive",
+        description: "Read the text of Drive file pdf-1.",
+        subresources: ["drive/file/pdf-1"],
+      },
     ]);
   });
 
@@ -726,8 +730,6 @@ describe("folder-scoped native sessions", () => {
         convertPdf,
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
-        async fileIds => ({ pendingSets: fileIds, commit() {} }),
-        () => ({ pendingSets: [], commit() {} }),
       )),
     };
   }
@@ -737,11 +739,16 @@ describe("folder-scoped native sessions", () => {
   it("serves Doc and Sheet reads while the files remain in the subtree", async () => {
     const nodes = subtree();
     installFolderProvider(nodes);
-    using session = folderSession(nodes).session;
+    const { queue, session: owned } = folderSession(nodes);
+    using session = owned;
 
     using doc = await session.openGoogleDoc("doc-1");
     expect((await doc.getMetadata()).title).toBe("doc-1");
     expect(await doc.getContent()).toBe("");
+    expect(queue.observations.slice(-2).map(o => o.subresources)).toEqual([
+      [`drive/folder/${ROOT}`, "drive/file/doc-1", "docs/document/doc-1"],
+      [`drive/folder/${ROOT}`, "drive/file/doc-1", "docs/document/doc-1"],
+    ]);
 
     using sheet = await session.openGoogleSheet("sheet-1");
     expect((await sheet.getSpreadsheet()).title).toBe("Forecast");
@@ -949,8 +956,10 @@ describe("folder-scoped native sessions", () => {
     expect(await readText(await owned.readPdf("pdf-1")))
       .toEqual({ text: PDF_MARKDOWN, hasText: true });
     expect(nativeCalls).toEqual(["download"]);
-    expect(queue.observations.map(o => o.title))
-      .toEqual(["Open PDF from Google Drive", "Read PDF from Google Drive"]);
+    expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
+      ["Open PDF from Google Drive", [`drive/folder/${ROOT}`, "drive/file/pdf-1"]],
+      ["Read PDF from Google Drive", [`drive/folder/${ROOT}`, "drive/file/pdf-1"]],
+    ]);
   });
 
   it("refuses a PDF moved out of the folder during the download, authorizing no read", async () => {

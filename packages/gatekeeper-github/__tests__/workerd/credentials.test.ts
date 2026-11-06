@@ -125,9 +125,9 @@ async function describeAccount(userObjectId: string) {
 }
 
 /** `GitHubVerifier.hasRepoAccess()` as the account, as plain data. */
-async function hasRepoAccess(userObjectId: string, owner: string, repo: string) {
+async function hasRepoAccess(userObjectId: string, repoId: number) {
   return await env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"))
-    .hasRepoAccess(userObjectId, owner, repo);
+    .hasRepoAccess(userObjectId, repoId);
 }
 
 /** Stands in for the overseer's approval queue, which a submit must reach. */
@@ -292,12 +292,12 @@ describe("UserAccount with an expiring grant", () => {
     github.respondToken = () => json(issued.shift());
     const release = Promise.withResolvers<void>();
     github.respondApi = async token => {
-      if (token === "gho_3") return json({ full_name: "octo/repo" });
+      if (token === "gho_3") return json({ id: 42, full_name: "octo/repo" });
       await release.promise;
       return json({ message: "Bad credentials" }, 401);
     };
 
-    const checked = hasRepoAccess(id.toString(), "octo", "repo");
+    const checked = hasRepoAccess(id.toString(), 42);
     await vi.waitUntil(() => github.apiTokens.length > 0);
     expect(await account.getAccessToken()).toBe("gho_3");
     release.resolve();
@@ -312,7 +312,7 @@ describe("UserAccount with an expiring grant", () => {
     const { id, events } = await connect(github, tokens(1));
     github.respondApi = () => json({ message: "Not Found" }, status);
 
-    expect(await hasRepoAccess(id.toString(), "octo", "private")).toEqual({ ok: false });
+    expect(await hasRepoAccess(id.toString(), 42)).toEqual({ ok: false });
     expect(events()).toEqual(["complete"]);
   });
 
@@ -330,7 +330,7 @@ describe("UserAccount with an expiring grant", () => {
     expect(await apply()).not.toHaveProperty("error");
     // Recorded as applied, so a re-delivered apply succeeds without posting a second review.
     expect(await apply()).not.toHaveProperty("error");
-    expect(github.writes).toEqual(["POST /repos/octo/repo/pulls/7/reviews"]);
+    expect(github.writes).toEqual(["POST /repositories/1/pulls/7/reviews"]);
     // At most the bound repository's one-time identity read; nothing about the review.
     expect(reads.filter(path => path !== "/repos/octo/repo")).toEqual([]);
   });
@@ -344,7 +344,7 @@ describe("UserAccount with an expiring grant", () => {
     const release = Promise.withResolvers<void>();
     const pullReads: string[] = [];
     github.respondApi = async (token, path) => {
-      if (path !== "/repos/octo/repo/pulls/7") return json({ id: 1 });
+      if (path !== "/repositories/1/pulls/7") return json({ id: 1 });
       pullReads.push(token);
       if (token === "gho_2") {
         return json({ merged_at: "2026-01-02T00:00:00Z", head: { sha: MERGE.expectedHeadSha } });
@@ -361,7 +361,7 @@ describe("UserAccount with an expiring grant", () => {
     release.resolve();
 
     expect(await applied).not.toHaveProperty("error");
-    expect(github.writes).toEqual(["PUT /repos/octo/repo/pulls/7/merge"]);
+    expect(github.writes).toEqual(["PUT /repositories/1/pulls/7/merge"]);
     expect(pullReads).toEqual(["gho_1", "gho_2"]);
     expect(events()).toEqual(["complete"]);
   });

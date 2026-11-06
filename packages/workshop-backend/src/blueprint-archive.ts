@@ -103,7 +103,7 @@ export async function readBlueprintRelease(
   for (let [path, text] of snapshot.getMap<Y.Text>()) {
     files.set(path, text.toString());
   }
-  let release = await buildSnapshotRelease(files);
+  let release = buildSnapshotRelease(files);
   validateReleaseObjects(release.objects, release.commitId);
   return release;
 }

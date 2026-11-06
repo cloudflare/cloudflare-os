@@ -510,6 +510,7 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
     title: "GitHub issue #42 opened: Crash on start",
     description: "Receive issue #42 in acme/widgets, opened by `@bob`: its title, body, author, " +
       "assignees, and labels.",
+    subresources: [`repo/${REPO_ID}`],
   }]);
 });
 
@@ -641,6 +642,7 @@ it("delivers branch pushes with the repository, but not tag pushes", async () =>
   expect(observations).toEqual([{
     title: "GitHub push to release/1.0 in acme/widgets",
     description: `Receive a push by \`@ada\` to branch \`release/1.0\` of acme/widgets, creating it at \`${HEAD}\`.`,
+    subresources: [`repo/${REPO_ID}`],
   }]);
   // A created branch had no head before the push, which is not a commit to advertise.
   expect(advertised).toEqual([HEAD]);
@@ -672,9 +674,11 @@ it("delivers tag pushes as tag events, to hooks that watch for tags", async () =
   expect(observations.toSorted((a, b) => a.title.localeCompare(b.title))).toEqual([{
     title: "GitHub push of tag v0.9 in acme/widgets",
     description: "Receive a push by `@ada` of tag `v0.9` in acme/widgets, deleting it.",
+    subresources: [`repo/${REPO_ID}`],
   }, {
     title: "GitHub push of tag v1.0 in acme/widgets",
     description: `Receive a push by \`@ada\` of tag \`v1.0\` in acme/widgets, creating it at \`${HEAD}\`.`,
+    subresources: [`repo/${REPO_ID}`],
   }]);
   // An annotated tag names its tag object rather than a commit.
   expect(advertised).toEqual([]);
@@ -724,6 +728,30 @@ it("keeps an issue binding's hooks to its issue, whatever their delivery stub's 
   expect((await hooks.readHook()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
   // Delivered without any webhook: these deliveries came straight to the facet.
   expect(github.webhooks.size).toBe(0);
+});
+
+it("reports the repository a binding stored on a hook an earlier release bound, before calling the hook", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const props: GatekeeperProps = { userObjectId: account, resourceKind: "repo", owner: OWNER, repo: REPO };
+  const scenario = `hooks-${nextScenario++}`;
+  const hooks = env.TEST_HOOKS.getByName(scenario);
+  // The binding as an earlier release left it: its repository's id pinned, and a delivery stub
+  // minted with the parameters it gave every repository-wide hook, nothing more.
+  await hooks.seedGatekeeper(scenario, props, { repoId: REPO_ID });
+  expect(await hooks.deliverDirectly(scenario, props, {}, storedIssueEvent(42))).toEqual({ ok: undefined });
+
+  const delivered = await hooks.readHook();
+  expect(delivered.received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+  expect(delivered.observations).toEqual([expect.objectContaining({ subresources: [`repo/${REPO_ID}`] })]);
+  // The stored id was used as it was: the repository was asked after only by it.
+  expect(github.requests.filter(request => request.startsWith("GET /repos/"))).toEqual([]);
+
+  // A firing whose observation the Workshop refuses never reaches the hook.
+  await hooks.setHookBehavior({ refuseObservations: true });
+  expect(await hooks.deliverDirectly(scenario, props, {}, storedIssueEvent(43)))
+    .toEqual({ error: expect.stringMatching(/refused/) });
+  expect((await hooks.readHook()).received).toHaveLength(1);
 });
 
 it("gives a hook on one pull request its lifecycle, comments and reviews", async () => {

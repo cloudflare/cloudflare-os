@@ -63,7 +63,7 @@ export const ComposerModelSelector = ({
                 <Check
                   size={12}
                   weight="bold"
-                  className="ml-3 flex-shrink-0 text-kumo-inactive"
+                  className="ml-1 flex-shrink-0 text-kumo-inactive"
                 />
               )}
             </DropdownMenu.Item>
@@ -79,7 +79,7 @@ export const ComposerModelSelector = ({
             <Check
               size={12}
               weight="bold"
-              className="ml-3 flex-shrink-0 text-kumo-inactive"
+              className="ml-1 flex-shrink-0 text-kumo-inactive"
             />
           )}
         </DropdownMenu.Item>

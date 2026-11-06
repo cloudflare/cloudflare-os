@@ -37,11 +37,11 @@ import {
   type RejectionVerdict,
 } from "@gadgets/gatekeeper-kit/credentials";
 import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { createPkce } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import {
-  GitLabApiError,
   buildAuthorizeUrl,
   exchangeAuthCode,
   refreshAccessToken,
@@ -56,6 +56,7 @@ import {
   getBaseUrl,
   getRedirectUri,
   gitlabInstance,
+  hasProjectMembership,
   instanceUrl,
   oauthApp,
   supportedResources,
@@ -66,6 +67,7 @@ import {
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
+import { parseProjectSubresource } from "./project-subresources";
 import {
   GitLabIssueConfiguratorUI,
   GitLabMergeRequestConfiguratorUI,
@@ -271,6 +273,13 @@ type ReconnectStage = { grant: GitLabGrant; startedUnder: string };
 /** The GitLab user behind a connection, kept against the generation it was read under. */
 type StoredUser = { id: number; generation: string };
 
+// How long an account reuses an answer about its access to a project, counted from when it started
+// asking GitLab. GitLab doesn't say when membership changes: a revoked membership is noticed only
+// once the answer that allowed it expires, while a denial is kept briefly so that a new membership
+// is noticed soon.
+const PROJECT_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const PROJECT_ACCESS_DENIED_TTL_MS = 15_000;
+
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
  * moved-past gate adjudicates it. Never equal to a real identity, which is a hex nonce.
@@ -322,6 +331,15 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     notify: () => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
       this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID),
   };
+
+  // This account's answers about its own access to projects, keyed by subresource. Partitioned by
+  // the connection, which every connect, reconnect and disconnect replaces, so an answer never
+  // outlives one that may sign in as another GitLab user. The partition is read through the grant on
+  // every use, as getAccessToken() reads it, so a disconnected account, or one whose grant GitLab
+  // has confirmed dead, serves no answer but throws: its access can no longer be determined.
+  readonly #access = new KvTtlCache(this.ctx.storage.kv,
+    async () => (await this.#creds.snapshot(this.#recovery.refresh, this.#recovery)).generation,
+    { name: "access" });
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
                     requestedScopes: string[], ephemeral: boolean): Promise<void> {
@@ -496,6 +514,30 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
   }
 
   /**
+   * Whether this account can read each project subresource (see projectSubresourceId), in order:
+   * whether its GitLab user's effective membership of the project reaches the role the ID names,
+   * or Reporter for none (see hasProjectMembership). An allowed answer is reused for up to
+   * PROJECT_ACCESS_ALLOWED_TTL_MS and a denial for up to PROJECT_ACCESS_DENIED_TTL_MS, while this
+   * connection lasts. Throws for an ID it can't check, or when access can't be determined, which is
+   * never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
+    const required = subresources.map(parseProjectSubresource);
+    // GitLab answers for one project's membership per request, so each ID is cached on its own, and
+    // a later failure keeps what earlier requests learned. One at a time, though a binding's reads
+    // report at most its one project's IDs.
+    const answers: boolean[] = [];
+    for (const [index, subresource] of subresources.entries()) {
+      const { projectId, minAccessLevel } = required[index];
+      answers.push(await this.#access.cached(subresource,
+        allowed => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
+        () => hasProjectMembership(this.env, this, projectId, minAccessLevel)));
+    }
+    return answers;
+  }
+
+  /**
    * Adjudicates GitLab's refusal of `accessToken`, notifying the Workshop when the grant is dead.
    * GitLab invalidates an access token when it issues the next one, so a request that presented a
    * token this account has since replaced -- by a refresh or a reconnect -- failed stale. A refusal
@@ -604,6 +646,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       userObjectId: this.ctx.props.userObjectId,
       projectPath: parsed.projectPath,
       resourceKind: parsed.kind,
+      reportsSubresources: true,
       ...(parsed.kind === "project" ? {} : { iid: parsed.iid }),
     };
     return {
@@ -670,10 +713,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   /**
-   * Mint a verifier representing this account, used by GitLabGatekeeperImpl.addObserver to confirm
-   * a prospective observer is allowed to read a bound project (see that method). The verifier
-   * carries this user's own account id, so when the gatekeeper calls hasProjectAccess() the check
-   * runs against the observer's *own* GitLab token.
+   * Mint a verifier representing this account, used by GitLabGatekeeperImpl's addObserver and
+   * verifyObserverAccess to confirm a prospective observer may read a bound project (see those
+   * methods). The verifier carries this user's own account id, so its checks run against the
+   * observer's *own* GitLab token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -701,67 +744,61 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // every project it was checked against -- the access most members of most projects hold. The
 // same check, live: a non-member reads as `[]`, an inherited Developer as one row at 30.
 // Over-strictness (Planner's confidential-issue and 18.7+ private-repo read, custom roles, the
-// non-member collaborator on an open-source project) is accepted: under `excludeObservers`
-// semantics erring toward denial never leaks.
+// non-member collaborator on an open-source project) is accepted: erring toward denial never
+// leaks.
+//
+// CI job logs and test reports raise the bar: a job run with `CI_DEBUG_TRACE` writes every CI/CD
+// variable, masked or not, into its log, and GitLab lets only Developers and above read such a log
+// (https://docs.gitlab.com/ci/variables/variables_troubleshooting/), and a job can restrict its
+// artifacts, test reports included, to Maintainers (https://docs.gitlab.com/ci/yaml/#artifactsaccess).
+// Such reads report the role their data needs (see projectSubresourceId), rather than telling debug
+// logs or restricted reports apart from others.
 
 type GitLabVerifierProps = {
   userObjectId: string;
 };
 
 /**
- * The non-standard method the GitLab gatekeeper calls on its own verifier (see addObserver). Not
- * part of the generic GatekeeperUserVerifier contract.
+ * The non-standard methods the GitLab gatekeeper calls on its own verifier (see addObserver and
+ * verifyObserverAccess). Not part of the generic GatekeeperUserVerifier contract.
  */
 export interface GitLabVerifierApi extends GatekeeperUserVerifier {
-  hasProjectAccess(projectPath: string): Promise<boolean>;
-}
-
-/**
- * The lowest role that sees everything a binding can disclose: the repository, confidential
- * issues, and internal notes.
- */
-const REPORTER_ACCESS_LEVEL = 20;
-
-/**
- * Decide from a user's effective membership (or its absence) whether they see everything a
- * binding can disclose: Reporter or above, not an invitation still awaiting acceptance, and not
- * expired -- GitLab documents that from `expires_at` onward the user can no longer access the
- * project, and a row it has not yet swept may still be listed with the date passed. The date is
- * a day (`2026-09-18`), read as its UTC midnight; a date that does not parse expires too.
- */
-function membershipGrantsFullRead(
-  member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
-  now: Date = new Date(),
-): boolean {
-  if (member === null || member.membership_state === "awaiting") return false;
-  if (member.expires_at != null && !(Date.parse(member.expires_at) > now.getTime())) return false;
-  return member.access_level >= REPORTER_ACCESS_LEVEL;
+  /**
+   * Whether the user holds an effective membership of at least `minAccessLevel` on the project with
+   * GitLab id `projectId`, asked now. The level defaults to, and is never lower than, Reporter (20).
+   * A reconnect mid-probe answers false; the overseer asks again on the next open.
+   */
+  hasProjectAccess(projectId: number, minAccessLevel?: number): Promise<boolean>;
+  /**
+   * As hasProjectAccess, for the project at `projectPath` now: the check made before reads were
+   * addressed by id, kept for what they read by path (see GitLabGatekeeperImpl.addObserver).
+   */
+  hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
+  /**
+   * Whether the user's account can read each project subresource, in order, reusing recent answers
+   * (see UserAccount.checkSubresourceAccess). Throws for an ID it can't check, or when access can't
+   * be determined (expired credentials, an outage).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
 
 @validateRpc()
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
-  async hasProjectAccess(projectPath: string): Promise<boolean> {
-    const { userObjectId } = this.ctx.props;
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-    try {
-      // What the observer holds on the project, read with their own token: nothing (`[]`) for a
-      // non-member, 404 for a project the token cannot see at all (GitLab hides existence) -- the
-      // same answer here. Their user id comes from the account, fenced to the connection that
-      // answered it: if a reconnect (possibly as another GitLab user) lands between the two reads,
-      // the membership row would be one user's and the token another's, so the answer is
-      // discarded and the probe fails closed -- the overseer re-runs it on the next open.
-      const user = await account.getUser();
-      const member = await accountReader(this.env, this.ctx.exports, userObjectId)(
-        api => api.getProjectMember(projectPath, user.id));
-      if ((await account.getUser()).generation !== user.generation) return false;
-      return membershipGrantsFullRead(member);
-    } catch (error) {
-      // 403 in some policy cases; the observer lacks access either way.
-      if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) {
-        return false;
-      }
-      throw error;
-    }
+  async hasProjectAccess(projectId: number, minAccessLevel?: number): Promise<boolean> {
+    return await hasProjectMembership(this.env, this.#account(), projectId, minAccessLevel);
+  }
+
+  async hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean> {
+    return await hasProjectMembership(this.env, this.#account(), projectPath, minAccessLevel);
+  }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    return await this.#account().checkSubresourceAccess(subresources);
+  }
+
+  #account() {
+    const accounts = this.ctx.exports.UserAccount;
+    return accounts.get(accounts.idFromString(this.ctx.props.userObjectId));
   }
 }

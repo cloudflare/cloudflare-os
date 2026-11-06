@@ -1,5 +1,10 @@
 # Plan: Govern sharing of restricted data by observer verification
 
+> **Historical plan.** This records the original restricted-data-sharing rollout, not current
+> behavior: names below may be gone, and `use` collaborators are now verified per gadget, not at
+> workspace `open()`. See [Observer verification](../docs/observers.md) and
+> [Sharing](../docs/sharing.md).
+
 ## Goal
 
 Replace the all-or-nothing sharing lockdown that a restricted-data observation imposes
@@ -64,7 +69,7 @@ commits.
 - **Fail closed everywhere.** An operational failure — provider outage, expired
   credential — is treated exactly like a refusal.
 
-## Current-state anchors (for orientation)
+## Historical implementation anchors (for orientation)
 
 - `authorizeObservation` (overseer.ts) is where a gatekeeper's observation is admitted
   or refused, and where it sets the durable `containsRestrictedData` flag.
@@ -214,13 +219,6 @@ stays on this ledger only if its failure mode is *persistent* wrong state that o
 the window. Each item is marked in the code by a matching `TODO` comment; this ledger is
 the follow-up worklist.
 
-- Observer verification is not serialized per profile, so concurrent opens by one
-  collaborator can overwrite each other's records and registrations.
-- A mid-registration observer named in `excludeObservers` is read as unknown and the
-  observation admitted: a first-time `ensureObserver` registers the id with the
-  gatekeepers before the record is persisted, so `#enforceExcludeObservers` cannot map it
-  back during that window. Persistent (the observation lands in chat history). Fix: an
-  in-memory pending-id map consulted there, failing closed — `observer-verification-fixes`.
 - An unverified redeemer persists as a collaborator: redemption writes a real edge
   before the redeeming open's verification runs, so from click onward the recipient is
   visible in `listCollaborators` whether or not they ever complete the open (remedies:

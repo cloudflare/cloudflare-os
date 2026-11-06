@@ -14,7 +14,9 @@ import {
   buildDescription,
 } from "@gadgets/gatekeeper-kit/action-description";
 import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
-import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription, ActionKind, ApprovalQueue, ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   ConfluenceApi,
   contentBodyMarkdown,
@@ -70,6 +72,11 @@ export type StoredActionRecord = {
   action: ConfluenceAction;
   state: "pending" | "applied" | "reverted";
   submittedAt: number;
+  /**
+   * When the overseer first applied it, which proves it received the action even if the submit
+   * reply was lost (see stageAction).
+   */
+  applyStartedAt?: number;
   /** For createContent / addComment: the real content ID assigned on apply. */
   createdContentId?: string;
   /** For uploadAttachment: the attachment ID assigned on apply. */
@@ -384,7 +391,44 @@ export function observation(title: string, description: string): ObservationDesc
   return { title, description };
 }
 
-const kind = (tag: string, label: string): ActionDescription["actionKind"] => ({ tag: `confluence.${tag}`, label });
+/**
+ * Each action's kind, which users' auto-approval rules key on, so a tag must never change, and
+ * whether the action may be applied without a person once the user has enabled that kind. Only
+ * trashing always waits for a person, because it removes content from everyone's view; restoring
+ * has a kind of its own so that enabling it never covers a trash.
+ */
+const ACTION_KINDS = {
+  createContent: { tag: "confluence.createContent", label: "Create page/blog post", autoApprovable: true },
+  setContent: { tag: "confluence.editContent", label: "Edit page content", autoApprovable: true },
+  appendContent: { tag: "confluence.editContent", label: "Edit page content", autoApprovable: true },
+  setTitle: { tag: "confluence.setTitle", label: "Rename content", autoApprovable: true },
+  addComment: { tag: "confluence.addComment", label: "Add comment", autoApprovable: true },
+  addLabel: { tag: "confluence.label", label: "Add/remove label", autoApprovable: true },
+  removeLabel: { tag: "confluence.label", label: "Add/remove label", autoApprovable: true },
+  uploadAttachment: { tag: "confluence.uploadAttachment", label: "Upload attachment", autoApprovable: true },
+  trash: { tag: "confluence.trash", label: "Trash content", autoApprovable: false },
+  restore: { tag: "confluence.restore", label: "Restore content from trash", autoApprovable: true },
+} satisfies Record<ConfluenceAction["type"], ActionKind & { autoApprovable: boolean }>;
+
+/** The action's kind and whether it may be auto-approved; see `ACTION_KINDS`. */
+export function autoApprovalOf(
+  action: ConfluenceAction,
+): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
+  const { tag, label, autoApprovable } = ACTION_KINDS[action.type];
+  return { actionKind: { tag, label }, autoApprovable };
+}
+
+/**
+ * The auto-approvable kinds, once each. Every binding lists them all: a site or space session
+ * reaches every content session, and a content session can create child pages.
+ */
+export function autoApprovableKinds(): ActionKind[] {
+  const kinds = new Map<string, ActionKind>();
+  for (const { tag, label, autoApprovable } of Object.values(ACTION_KINDS)) {
+    if (autoApprovable) kinds.set(tag, { tag, label });
+  }
+  return [...kinds.values()];
+}
 
 // Starts a description naming, by ID, the existing content an action writes to or under.
 function onContent(intro: string, contentId: string, label = "Content ID"): ActionDescriptionBuilder {
@@ -398,7 +442,7 @@ function onContent(intro: string, contentId: string, label = "Content ID"): Acti
 // is shown in full in a field, and the completeness claim is the builder's. An uploaded attachment
 // is agent-supplied bytes the approver cannot read as text, so it is named by size and digest and
 // never claims completeness.
-function describeAction(action: ConfluenceAction): ActionDescription {
+function describeAction(action: ConfluenceAction): Omit<ActionDescription, "actionKind" | "autoApprovable"> {
   switch (action.type) {
     case "createContent": {
       const noun = action.kind === "blogpost" ? "blog post" : "page";
@@ -416,7 +460,6 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.content ?? "", "markdown")
           .finish(),
         implementsRevert: true,
-        actionKind: kind("createContent", "Create page/blog post"),
       };
     }
     case "setContent":
@@ -426,7 +469,6 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.markdown, "markdown")
           .finish(),
         implementsRevert: true,
-        actionKind: kind("editContent", "Edit page content"),
       };
     case "appendContent":
       return {
@@ -435,7 +477,6 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Content", action.markdown, "markdown")
           .finish(),
         implementsRevert: true,
-        actionKind: kind("editContent", "Edit page content"),
       };
     case "setTitle":
       return {
@@ -445,28 +486,24 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .inline("New title", action.title)
           .finish(),
         implementsRevert: true,
-        actionKind: kind("setTitle", "Rename content"),
       };
     case "addComment":
       return {
         title: "Comment on Confluence content",
         ...onContent("Post a comment.", action.contentId).verbatim("Comment", action.text).finish(),
         implementsRevert: true,
-        actionKind: kind("addComment", "Add comment"),
       };
     case "addLabel":
       return {
         title: "Add label to Confluence content",
         ...onContent("Add a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
-        actionKind: kind("label", "Add/remove label"),
       };
     case "removeLabel":
       return {
         title: "Remove label from Confluence content",
         ...onContent("Remove a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
-        actionKind: kind("label", "Add/remove label"),
       };
     case "uploadAttachment":
       return {
@@ -483,21 +520,18 @@ function describeAction(action: ConfluenceAction): ActionDescription {
           .verbatim("Comment", action.comment ?? "")
           .finish(),
         implementsRevert: true,
-        actionKind: kind("uploadAttachment", "Upload attachment"),
       };
     case "trash":
       return {
         title: "Move Confluence content to trash",
         ...onContent("Move this content to the trash (reversible).", action.contentId).finish(),
         implementsRevert: true,
-        actionKind: kind("trash", "Trash content"),
       };
     case "restore":
       return {
         title: "Restore Confluence content from trash",
         ...onContent("Restore this content from the trash.", action.contentId).finish(),
         implementsRevert: true,
-        actionKind: kind("trash", "Trash content"),
       };
   }
 }
@@ -512,8 +546,12 @@ export async function stageAction(
   const id = store.nextActionId();
   store.putAction({ id, action, state: "pending", submittedAt: Date.now() });
   try {
-    await approvalQueue.submitAction(id, describeAction(action));
+    await approvalQueue.submitAction(id, { ...describeAction(action), ...autoApprovalOf(action) });
   } catch (err) {
+    // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+    // action the overseer has started applying proves it received it: failing would invite a
+    // repeated write, and deleting would take away its retry.
+    if (store.getAction(id)?.applyStartedAt !== undefined) return id;
     store.deleteAction(id);
     throw err;
   }
@@ -653,12 +691,20 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
   if (action.type === "uploadAttachment") store.releaseAttachment(action);
 }
 
+/** Records that the overseer has started applying `record`, before anything reaches the provider. */
+function markApplyStarted(store: ConfluenceStore, record: StoredActionRecord): void {
+  if (record.applyStartedAt !== undefined) return;
+  record.applyStartedAt = Date.now();
+  store.putAction(record);
+}
+
 export async function applyStoredAction(store: ConfluenceStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
   // The Workshop marks its side approved only after this RPC returns, so a restart in between
   // re-applies an action whose work (and attachment file) is already done and gone.
   if (record.state === "applied") return;
+  markApplyStarted(store, record);
   await applyAction(store, record);
 }
 

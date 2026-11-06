@@ -3,13 +3,15 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   PreviewOAuth,
   PreviewOAuthConfigurationError,
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDocTab } from "./docs-types";
 import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
@@ -17,6 +19,7 @@ import {
 } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
+import { GoogleApiError } from "./google-response";
 import {
   boundProps, createFileOnce, creationAction, isSimulated, newFileTitle, UNCREATED_FILE_ID,
   type SimulatedFileProps,
@@ -37,10 +40,15 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
+import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
+import {
+  DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
+  requireFileSubresources, SHEETS_SUBRESOURCE_NAMESPACE, SLIDES_SUBRESOURCE_NAMESPACE,
+  type FileSubresource, type NativeFileSubresource,
+} from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
@@ -51,17 +59,21 @@ import type {
   DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
-import { ChatApi, isChatNoAccessError } from "./chat-api";
-import type { GoogleVerifierApi } from "./google-verifier-types";
-import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
+import { ChatApi, ChatApiError } from "./chat-api";
+import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
   BigQueryQueryOptions, BigQueryQueryResult, BigQuerySession, BigQueryTable,
 } from "./bigquery-types";
 import {
   calendarEventOverlaps, calendarEventSortKey, eventPatchToGoogle, GoogleCalendarApi,
-  hasCalendarPrivateAccessRole, validateCalendarTimeWindow,
+  GoogleCalendarApiError, hasCalendarPrivateAccessRole, MAX_FREE_BUSY_CALENDARS, validateCalendarTimeWindow,
+  type LiveCalendarEvent,
 } from "./calendar-api";
+import {
+  CALENDAR_EVENTS_ACTION, CALENDAR_INVITATIONS_ACTION, createEventVerdict, updateEventVerdict,
+} from "./calendar-verdict";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
   CalendarListEventsOptions, CalendarSendUpdates, CalendarTime, GoogleCalendarCapabilities,
@@ -108,7 +120,9 @@ import {
   beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
-import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
+import {
+  DEFAULT_CONCURRENCY, mapWithConcurrency, type ObserverBatchResult, ObserverTracker,
+} from "./observers";
 import type {Pager} from "./cursor";
 import {
   getBasePath,
@@ -143,8 +157,12 @@ function getGoogleDriveTypesCode(): string {
   ].join("\n");
 }
 
-import type {GmailGatekeeperImplProps} from "./gmail";
-import type {GoogleChatGatekeeperImplProps} from "./chat";
+import {
+  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailUserSubresource, type GmailGatekeeperImplProps,
+} from "./gmail";
+import {
+  CHAT_SUBRESOURCE_NAMESPACE, parseChatSubresource, type ChatSubresource, type GoogleChatGatekeeperImplProps,
+} from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleChatGatekeeperImpl } from "./chat";
@@ -174,6 +192,16 @@ const TOKEN_REVOKE_TIMEOUT_MS = 10 * 1000;
 // short enough that the account recovers on its own once the cause is fixed — an admin lifting a
 // scope restriction leaves nothing for us to observe, so we have to re-ask Google eventually.
 const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
+
+// What a token request fails with once an account has no refresh token. Of the accounts a binding
+// can name, only one the Workshop disconnected loses it: revoke() deletes all of its storage. The
+// connect callback goes with the rest and the Workshop deletes its record, so there is nothing to
+// mark expired or reconnect, and connecting Google again creates a new account while the binding's
+// props still name this one. Replacing the binding is the only remedy.
+const DISCONNECTED_ACCOUNT_MESSAGE =
+    "The Google account this connection was made with has been disconnected, so the connection " +
+    "no longer works. Connecting Google again does not restore it: remove this connection and " +
+    "connect the resource again under the same name.";
 
 function hexEncode(bytes: Uint8Array): string {
   return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -443,6 +471,47 @@ type StagedGoogleCredentials = {
   requestedResources: string[];
 };
 
+// How long an account reuses an answer about its access to a subresource, counted from when it
+// started asking Google. Google doesn't tell us when a share changes: a revoked share is noticed
+// only once the answer that allowed it expires, while a denial is kept briefly so that a new share
+// is noticed soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
+
+/** A subresource whose access a UserAccount checks for itself (see parseAccountSubresource). */
+type AccountSubresource =
+  | { kind: "calendar" | "freeBusy"; calendarId: string }
+  | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
+  | { kind: "gmailUser"; subject: string }
+  | ChatSubresource
+  | FileSubresource;
+
+/**
+ * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
+ * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
+ * conversation, its member list or account (see parseChatSubresource), or a Drive file or folder or
+ * a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any other ID.
+ */
+function parseAccountSubresource(subresource: string): AccountSubresource {
+  switch (parseSubresourceId(subresource).namespace) {
+    case CALENDAR_SUBRESOURCE_NAMESPACE:
+      return parseCalendarSubresource(subresource);
+    case BIGQUERY_SUBRESOURCE_NAMESPACE:
+      return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
+    case GMAIL_SUBRESOURCE_NAMESPACE:
+      return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
+    case CHAT_SUBRESOURCE_NAMESPACE:
+      return parseChatSubresource(subresource);
+    case DRIVE_SUBRESOURCE_NAMESPACE:
+    case DOCS_SUBRESOURCE_NAMESPACE:
+    case SHEETS_SUBRESOURCE_NAMESPACE:
+    case SLIDES_SUBRESOURCE_NAMESPACE:
+      return parseFileSubresource(subresource);
+    default:
+      throw new Error("Not a Google subresource.");
+  }
+}
+
 export class UserAccount extends DurableObject<Env> {
   // Serialize minting, reconnect, and revoke against each other. Minting is a network round trip, so
   // without this a single invalidated token has every concurrent caller mint its own — a burst
@@ -452,6 +521,27 @@ export class UserAccount extends DurableObject<Env> {
 
   // The last mint that failed permanently — revoked credentials, or a scope an admin has blocked.
   #mintFailure: { error: Error; at: number } | undefined;
+
+  // This account's answers about its own access to subresources, keyed by subresource and
+  // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
+  // outlive a disconnect that left storage behind, nor survive a reconnect, which may sign in as
+  // another Google account. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the credentials installed now, or undefined while there are none. Every install names
+  // its credentials afresh, and revoking deletes the name with everything else, so no load that
+  // started under earlier credentials can find the same name when it finishes. Credentials
+  // installed before names existed are named on first use.
+  #credentialsId(): string | undefined {
+    let kv = this.ctx.storage.kv;
+    if (!kv.get<string>("refreshToken")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
 
   async setCallback(
       callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
@@ -555,6 +645,7 @@ export class UserAccount extends DurableObject<Env> {
 
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
+      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
@@ -594,11 +685,110 @@ export class UserAccount extends DurableObject<Env> {
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.ctx.storage.kv.put<string>("refreshToken", staged.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
+      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", staged.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, staged.requestedResources);
     });
+  }
+
+  /**
+   * Whether this account can read each subresource, in order. An allowed answer is reused for up
+   * to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to SUBRESOURCE_ACCESS_DENIED_TTL_MS,
+   * until credentials are next installed. Throws for an ID it can't check, or when access can't be
+   * determined, which is never reused.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
+    let parsed = new Map(subresources.map(subresource =>
+        [subresource, parseAccountSubresource(subresource)] as const));
+    let getToken = async (opts?: AccessTokenRequest) => (await this.getAccessToken(opts)).token;
+    let freeBusy = new Map<string, string>();
+    let calendars = new Map<string, string>();
+    let datasets = new Map<string, BigQueryDatasetRef>();
+    let owners = new Map<string, string>();
+    let conversations = new Map<string, { spaceName: string; members: boolean }>();
+    let driveUnits = new Map<string, DriveObservation>();
+    let nativeFiles = new Map<string, NativeFileSubresource>();
+    for (let [subresource, resource] of parsed) {
+      if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
+      else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
+        owners.set(subresource, resource.subject);
+      } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
+        conversations.set(subresource,
+          { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
+      } else if (resource.kind === "file" || resource.kind === "folder") {
+        driveUnits.set(subresource, resource);
+      } else if ("calendarId" in resource) {
+        (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+      } else nativeFiles.set(subresource, resource);
+    }
+    let api = new GoogleCalendarApi(getToken);
+    let ttl = (allowed: boolean) =>
+        allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+    let access = new Map<string, boolean>();
+    // Each Google request is cached on its own, so a later failure keeps what earlier ones learned,
+    // and the free/busy queries carry only the calendars without a recent answer. One request at a
+    // time, so a long list doesn't trip Google's per-user rate limit. A query Google refuses
+    // outright (expired credentials, a missing scope, a rate limit) says nothing about the
+    // account's access, so it throws rather than reading as a denial.
+    let freeBusyIds = [...freeBusy.keys()];
+    let freeBusyAnswers = await this.#access.cachedMany(freeBusyIds, ttl, missing =>
+        api.hasFreeBusyAccess(missing.map(subresource => freeBusy.get(subresource)!)),
+        {batchSize: MAX_FREE_BUSY_CALENDARS});
+    freeBusyIds.forEach((subresource, index) => access.set(subresource, freeBusyAnswers[index]));
+    for (let [subresource, calendarId] of calendars) {
+      access.set(subresource, await this.#access.cached(subresource, ttl,
+          () => hasCalendarDetailAccess(api, calendarId)));
+    }
+    if (datasets.size > 0) {
+      let bigQuery = new BigQueryApi(getToken);
+      for (let [subresource, dataset] of datasets) {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasBigQueryDatasetAccess(bigQuery, dataset)));
+      }
+    }
+    if (conversations.size > 0) {
+      let chat = new ChatApi(getToken);
+      // Chat answers for one space per request, so a few run at a time.
+      let entries = [...conversations];
+      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY,
+        ([subresource, { spaceName, members }]) =>
+          this.#access.cached(subresource, ttl, () => hasChatAccess(chat, spaceName, members)));
+      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (driveUnits.size > 0) {
+      // As verifyDriveObservations does, an account without a Drive grant is denied every Drive
+      // unit, and Drive is asked about each unit (100 to a batch) only for one with it.
+      let drive = new DriveApi(getToken);
+      let unitIds = [...driveUnits.keys()];
+      let answers = await this.#access.cachedMany(unitIds, ttl, async missing => {
+        let units = missing.map(subresource => driveUnits.get(subresource)!);
+        return hasDriveResourceGrant(await this.getGrantedResourceUrlPatterns())
+          ? drive.checkObservations(units)
+          : units.map(() => false);
+      }, { batchSize: MAX_BATCH_FILES });
+      unitIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    if (nativeFiles.size > 0) {
+      // Docs, Sheets and Slides answer for one file per request, so a few run at a time.
+      let entries = [...nativeFiles];
+      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
+          this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
+      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (owners.size > 0) {
+      // A mailbox or a Chat account is private to its owner, so only that same Google account can
+      // read it.
+      let ownerIds = [...owners.keys()];
+      let answers = await this.#access.cachedMany(ownerIds, ttl, async missing => {
+        let { sub } = await getGoogleAccountProfile(getToken);
+        return missing.map(subresource => owners.get(subresource) === sub);
+      });
+      ownerIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+    }
+    return subresources.map(subresource => access.get(subresource)!);
   }
 
   /**
@@ -628,8 +818,9 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("The Google Gatekeeper is not configured.");
     }
 
+    // Checked before the cached access token, so a disconnected account serves nothing.
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
-      throw new Error("no refresh token set");
+      throw new Error(DISCONNECTED_ACCOUNT_MESSAGE);
     }
 
     // Fast path, deliberately outside the lock: the overwhelmingly common case is a valid cached
@@ -657,7 +848,7 @@ export class UserAccount extends DurableObject<Env> {
       // while this call waited for the lock.
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
       if (!refreshToken) {
-        throw new Error("no refresh token set");
+        throw new Error(DISCONNECTED_ACCOUNT_MESSAGE);
       }
 
       // Logged before the exchange so a mint that fails or hangs still leaves a trace. The events
@@ -989,11 +1180,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   /**
-   * Mint a verifier representing this account, used by the Google gatekeepers' addObserver to confirm
-   * a prospective observer may read a bound resource. The verifier carries this user's own account
-   * id, so the access checks run against the observer's *own* Google token. (The Gmail gatekeeper
-   * uses strategy A — it never consults the verifier — but getVerifier must still exist because the
-   * overseer mints one on every open.)
+   * Mint a verifier representing this account, used by the Google gatekeepers' addObserver and
+   * verifyObserverAccess to confirm a prospective observer may read a bound resource. The verifier
+   * carries this user's own account id, so the access checks run against the observer's *own*
+   * Google token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -1006,20 +1196,37 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // Verifier
 //
 // Google spans several strategies (see each gatekeeper's observer methods):
-//   - Gmail Mailbox — strategy A (private-only): addObserver always throws, so the verifier is never
-//     consulted (but must exist).
-//   - Google Doc — strategy B (ACL check, single unit): hasDocAccess answers whether the observer's
-//     own token can open the bound document (Docs API returns 401/403/404 otherwise).
-//   - Google Sheets — strategy B (ACL check, single unit): hasSpreadsheetAccess answers whether the
-//     observer's own token can open the bound spreadsheet.
-//   - Google Slides — strategy B (ACL check, single unit): hasPresentationAccess answers whether the
-//     observer's own token can open the bound presentation.
-//   - Google Calendar — strategies B/C: hasCalendarWriterAccess covers the bound calendar, while
-//     hasCalendarFreeBusyAccess covers foreign calendars read by an all-visible availability query.
-//   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
-//     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
-//   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
-//     binding checks that the observer can open its conversation.
+//   - Gmail Mailbox — strategy A (private-only), kernel-checked: every read reports its owner's
+//     account as a `gmail/user/<sub>` subresource, which checkSubresourceAccess grants only to that
+//     same Google account. addObserver still always throws, for reads made before they reported it.
+//   - Google Doc, Sheets and Slides — strategy B (ACL check, single unit), kernel-checked: every
+//     read reports the bound file as `docs/document/<documentId>`,
+//     `sheets/spreadsheet/<spreadsheetId>` or `slides/presentation/<presentationId>`, which
+//     checkSubresourceAccess checks by opening it in that API, as hasDocAccess,
+//     hasSpreadsheetAccess and hasPresentationAccess do without reusing answers for addObserver,
+//     which still checks the bound file for reads made before they reported it.
+//   - Google Drive — strategy C by file, kernel-checked: reads report each file whose metadata they
+//     return as `drive/file/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each
+//     native file whose content they read as Docs, Sheets or Slides names it.
+//     checkSubresourceAccess checks a file or folder as verifyDriveObservations does (a Drive grant,
+//     then the file visible or the folder listable), which addObserver still uses, asking Drive
+//     every time, for the bound folder or file and the units recorded before reads reported them.
+//   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
+//     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
+//     hasCalendarWriterAccess also checks for the bound calendar at admission;
+//     hasCalendarFreeBusyAccess covers the calendars availability queries recorded before they
+//     reported them. The observer's UserAccount answers both, reusing recent answers.
+//   - BigQuery — strategy C by dataset, kernel-checked: reads report each dataset whose data they
+//     reveal as a `bigquery/project/<projectId>/dataset/<datasetId>` subresource, checked by
+//     checkSubresourceAccess like Calendar's. hasDatasetAccess answers, without reusing answers,
+//     whether the observer's own token has IAM access to a dataset (see hasBigQueryDatasetAccess),
+//     for the datasets addObserver still guards from before reads reported them.
+//   - Google Chat — strategies A/B, kernel-checked: reads report each conversation they read as a
+//     `chat/space/<spaceId>` subresource, its member list as `chat/spaceMembers/<spaceId>`, and on
+//     an account binding the account as `chat/user/<sub>`, which checkSubresourceAccess checks as
+//     hasChatSpaceAccess does, or grants only to that same Google account. addObserver still
+//     refuses an account binding and checks a conversation or thread binding's conversation through
+//     hasChatSpaceAccess, for reads made before they reported subresources.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results. Creation uses it too: getUserObjectId names the account a user approved a
 // pending creation into, and applyCreation() creates the file through that account.
@@ -1036,10 +1243,85 @@ function httpStatusFromError(error: unknown): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-// True if an error means "the observer's token cannot access this resource" (as opposed to a
-// transient failure, which is rethrown so the open fails loudly rather than silently denying).
-function isNoAccessStatus(status: number | undefined): boolean {
-  return status === 401 || status === 403 || status === 404;
+// Whether the account behind `api` holds a role on the calendar that sees private event details,
+// not merely write access (see hasCalendarPrivateAccessRole): false when the calendar isn't on the
+// account's list (404), and a throw for any other failure. A refused request (expired
+// credentials, a missing scope, a rate limit) says nothing about the account's access.
+async function hasCalendarDetailAccess(api: GoogleCalendarApi, calendarId: string): Promise<boolean> {
+  try {
+    return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
+  } catch (error) {
+    if (httpStatusFromError(error) === 404) return false;
+    throw error;
+  }
+}
+
+/**
+ * Whether `api`'s account can open a BigQuery dataset: false when BigQuery denies it (403
+ * `accessDenied`, which also hides whether it exists) or doesn't hold it (404), and a throw for any
+ * other failure. BigQuery answers other refusals with 403 too (a rate limit, a quota, billing, a
+ * missing scope, a disabled API), and those say nothing about the account's access.
+ */
+async function hasBigQueryDatasetAccess(
+    api: BigQueryApi, { projectId, datasetId }: BigQueryDatasetRef): Promise<boolean> {
+  try {
+    await api.getDataset(projectId, datasetId);
+    return true;
+  } catch (error) {
+    if (error instanceof BigQueryApiError &&
+        (error.status === 404 || (error.status === 403 && error.reason === "accessDenied"))) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether `api`'s account can open a Google Chat space, or with `members`, list its members, which
+ * a space can restrict to its managers: false when Chat refuses it without giving a reason (403)
+ * or doesn't hold it for the account (404), and a throw for any other failure. Chat gives a reason
+ * for the refusals that say nothing about the account's access, such as a missing scope or a
+ * disabled API.
+ */
+async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean): Promise<boolean> {
+  try {
+    if (members) await api.listMembers(spaceName, { pageSize: 1 });
+    else await api.getSpace(spaceName);
+    return true;
+  } catch (error) {
+    if (error instanceof ChatApiError &&
+        (error.status === 404 || (error.status === 403 && error.reasons.length === 0))) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
+ * Sheets or Slides): false when Google refuses it without giving a reason (403) or doesn't hold it
+ * for the account (404), and a throw for any other failure. Google gives a reason for the refusals
+ * that say nothing about the account's access, such as a missing scope or a disabled API, and a
+ * 401 that survives a fresh token means the credentials, not the file.
+ */
+async function hasNativeFileAccess(
+    getToken: (opts?: AccessTokenRequest) => Promise<string>,
+    { kind, fileId }: NativeFileSubresource): Promise<boolean> {
+  try {
+    switch (kind) {
+      case "document": await new GoogleDocsApi(getToken).getDocumentMetadata(fileId); break;
+      case "spreadsheet": await new GoogleSheetsApi(getToken).getSpreadsheet(fileId); break;
+      case "presentation": await new GoogleSlidesApi(getToken).getPresentationTitle(fileId); break;
+    }
+    return true;
+  } catch (error) {
+    let status = httpStatusFromError(error);
+    if (error instanceof GoogleApiError &&
+        (status === 404 || (status === 403 && error.providerReasons.length === 0))) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1062,85 +1344,47 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 
   async hasDocAccess(documentId: string): Promise<boolean> {
-    let api = new GoogleDocsApi(opts => this.#getToken(opts));
-    try {
-      await api.getDocumentMetadata(documentId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "document", fileId: documentId });
   }
 
   async hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean> {
-    let api = new GoogleSheetsApi(opts => this.#getToken(opts));
-    try {
-      await api.getSpreadsheet(spreadsheetId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "spreadsheet", fileId: spreadsheetId });
   }
 
   async hasPresentationAccess(presentationId: string): Promise<boolean> {
-    let api = new GoogleSlidesApi(opts => this.#getToken(opts));
-    try {
-      await api.getPresentationTitle(presentationId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasNativeFileAccess(
+      opts => this.#getToken(opts), { kind: "presentation", fileId: presentationId });
   }
 
   /**
    * Observers need the roles that see private event details, not merely write access; see
-   * `hasCalendarPrivateAccessRole` and the observer notes on GoogleCalendarGatekeeperImpl.
+   * `hasCalendarDetailAccess` and the observer notes on GoogleCalendarGatekeeperImpl.
    */
   async hasCalendarWriterAccess(calendarId: string): Promise<boolean> {
-    let api = new GoogleCalendarApi(opts => this.#getToken(opts));
-    try {
-      return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasCalendarDetailAccess(new GoogleCalendarApi(opts => this.#getToken(opts)), calendarId);
   }
 
   async hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean> {
-    let api = new GoogleCalendarApi(opts => this.#getToken(opts));
-    try {
-      return await api.hasFreeBusyAccess(calendarId);
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    let [access] = await this.checkSubresourceAccess([freeBusySubresourceId(calendarId)]);
+    return access;
+  }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    return await account.checkSubresourceAccess(subresources);
   }
 
   async hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean> {
-    let api = new BigQueryApi(opts => this.#getToken(opts));
-    try {
-      await api.getDataset(projectId, datasetId);
-      return true;
-    } catch (error) {
-      if (isNoAccessStatus(httpStatusFromError(error))) return false;
-      throw error;
-    }
+    return hasBigQueryDatasetAccess(new BigQueryApi(opts => this.#getToken(opts)), { projectId, datasetId });
   }
 
   async hasChatSpaceAccess(spaceName: string, options: { members?: boolean } = {}): Promise<boolean> {
     let api = new ChatApi(opts => this.#getToken(opts));
-    try {
-      await api.getSpace(spaceName);
-      if (options.members) await api.listMembers(spaceName, { pageSize: 1 });
-      return true;
-    } catch (error) {
-      // Chat answers a space the observer is not a member of with 403 or 404, which
-      // isChatNoAccessError recognizes; anything else is transient and must fail the open loudly.
-      if (isChatNoAccessError(error)) return false;
-      throw error;
-    }
+    return await hasChatAccess(api, spaceName, false) &&
+      (!options.members || await hasChatAccess(api, spaceName, true));
   }
 
   async verifyDriveObservations(
@@ -1199,6 +1443,21 @@ class PendingActionStore<Action> {
 
   remove(id: number): void {
     this.#kv.delete(this.#actionKey(id));
+    this.#kv.delete(this.#applyingKey(id));
+  }
+
+  #applyingKey(id: number): string {
+    return `pending:applying:${id}`;
+  }
+
+  /** Records that the overseer has started applying `id`, which proves it received the action. */
+  markApplying(id: number): void {
+    this.#kv.put(this.#applyingKey(id), true);
+  }
+
+  /** Whether the overseer has started applying `id` (see `markApplying`). */
+  isApplying(id: number): boolean {
+    return this.#kv.get<boolean>(this.#applyingKey(id)) === true;
   }
 }
 
@@ -1735,7 +1994,8 @@ function materializeGoogleDocAction(
   }
 }
 
-type GoogleDocGatekeeperImplProps = { userObjectId: string; documentId: string } | SimulatedFileProps;
+export type GoogleDocGatekeeperImplProps =
+  { userObjectId: string; documentId: string } | SimulatedFileProps;
 
 /** The ID of the first tab of a document just created, for the real class to adopt pending edits. */
 const CREATED_DOC_TAB_KEY = "createdDocTab";
@@ -2076,6 +2336,9 @@ export class GoogleDocGatekeeperImpl
    * The document is the atomic unit (everything read through this binding is that one doc), so no
    * observers are tracked and removeObserver is a no-op. The overseer re-runs addObserver on every
    * open, catching loss of access promptly.
+   *
+   * Reads now also report the document as a `docs/document/<documentId>` subresource, which
+   * verifyObserverAccess checks; this check stays for the reads made before they did.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
@@ -2087,6 +2350,19 @@ export class GoogleDocGatekeeperImpl
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the document subresource every read reports, failing the whole call for any other ID.
+   * Each observer's UserAccount answers whether the Docs API opens the document for their own
+   * account, reusing recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(subresources, ["document"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 @validateRpc()
@@ -2098,6 +2374,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #pendingActions: PendingActionStore<GoogleDocAction>;
   #storage: DurableObjectStorage;
   #simulationCache: GoogleDocSimulationCacheHolder;
+  /** What every read reports: the document, or nothing for one not created yet. */
+  #subresources: string[];
 
   constructor(
     docsApi: GoogleDocReader,
@@ -2116,6 +2394,16 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#pendingActions = pendingActions;
     this.#storage = storage;
     this.#simulationCache = simulationCache;
+    this.#subresources = documentId === UNCREATED_FILE_ID
+      ? []
+      : [fileSubresourceId({kind: "document", fileId: documentId})];
+  }
+
+  // Every read authorizes through here, which reports the document it read as its subresource.
+  #authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void> {
+    return this.#approvalQueue.authorizeObservation({
+      ...description, subresources: this.#subresources,
+    });
   }
 
   async #getSnapshot(): Promise<GoogleDocSnapshot> {
@@ -2205,7 +2493,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         .map(({action}) => action)
         .filter(action => !action.invalidatedReason);
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "Read Google Doc metadata",
       description: "Read the title and modification time of the document.",
     });
@@ -2268,7 +2556,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   async listTabs(): Promise<GoogleDocTab[]> {
     let snapshot = await this.#getSnapshot();
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "List Google Doc tabs",
       description: "Read the document's tab names and hierarchy.",
     });
@@ -2282,14 +2570,14 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       selected = await this.#getSimulatedContent(tabId, "getContent");
     } catch (error) {
       // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
       throw error;
     }
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeRead({
       title: "Read Google Doc content",
       description:
         `Read the full simulated content of tab ${googleDocTabLabel(selected.tab)} as Markdown.`,
@@ -2319,7 +2607,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       }
     } catch (error) {
       // The error says whether that tab, or that text, exists.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
@@ -2371,7 +2659,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       requireGoogleDocAppendIndex(selected.appendIndex);
     } catch (error) {
       // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#approvalQueue.authorizeObservation({
+      await this.#authorizeRead({
         title: "Read Google Doc content",
         description: "Read the content of one tab of the document.",
       });
@@ -2438,6 +2726,19 @@ type GoogleCalendarUpdateAction = GoogleCalendarActionBase & {
   type: "updateEvent";
   eventId: string;
   patch: CalendarEventPatch;
+  /**
+   * The verdict it was submitted with. One judged auto-approvable is judged again against the
+   * live event when it applies, since guests may have been added in Google meanwhile. Absent on
+   * actions stored before verdicts were recorded, which were never auto-approvable.
+   */
+  autoApprovable?: boolean;
+  /**
+   * Whether it was submitted as an invitation (`calendar-invitations`) rather than a change to an
+   * event nobody else is on. One judged auto-approvable must keep its kind when judged again, since
+   * the user may trust one kind and not the other. Absent on actions stored before invitations
+   * could be auto-approved, which were never invitations when auto-approvable.
+   */
+  invitation?: boolean;
 }
 
 type GoogleCalendarAction = GoogleCalendarCreateAction | GoogleCalendarUpdateAction;
@@ -2458,7 +2759,7 @@ type GoogleCalendarRevertInfo =
       sendUpdates: CalendarSendUpdates;
     };
 
-type GoogleCalendarGatekeeperImplProps = {
+export type GoogleCalendarGatekeeperImplProps = {
   userObjectId: string;
   calendarId: string;
   availabilityMode: CalendarAvailabilityMode;
@@ -2489,7 +2790,7 @@ function pendingCalendarEventFromDraft(
 function applyCalendarPatchToEvent(
   event: CalendarEvent,
   patch: CalendarEventPatch,
-  opts: CalendarListEventsOptions,
+  opts: Pick<CalendarListEventsOptions, "includeDescriptions">,
 ): void {
   if (patch.title !== undefined) event.title = patch.title;
   if (patch.start !== undefined) event.start = patch.start;
@@ -2556,6 +2857,21 @@ function applyPendingCalendarActions(
       .toSorted((a, b) => calendarEventSortKey(a) - calendarEventSortKey(b));
 }
 
+// The event as it will be once this binding's pending updates to it apply, so a change queued
+// behind one that adds guests is judged as reaching them.
+function simulatedCalendarEvent(
+  event: LiveCalendarEvent,
+  pending: {id: number, action: GoogleCalendarAction}[],
+): LiveCalendarEvent {
+  let simulated = {...event};
+  for (let {action} of pending) {
+    if (action.type === "updateEvent" && action.eventId === event.id) {
+      applyCalendarPatchToEvent(simulated, action.patch, {includeDescriptions: true});
+    }
+  }
+  return simulated;
+}
+
 function validateEventTimes(start: CalendarTime, end: CalendarTime): void {
   if (start.kind !== end.kind) {
     throw new Error("Event start and end must both be all-day (date) or both be timed (dateTime).");
@@ -2568,6 +2884,46 @@ function validateEventTimes(start: CalendarTime, end: CalendarTime): void {
 function summarizePeople(people: string[]): string {
   if (people.length <= 5) return people.join(", ");
   return `${people.slice(0, 5).join(", ")}, and ${people.length - 5} more`;
+}
+
+// What Calendar reports as subresources, each something a read returned from Google: a calendar
+// (`calendar/calendar/<calendarId>`) for its metadata and its events, which its role on the
+// calendar decides who may see, and a calendar's free/busy information
+// (`calendar/freeBusy/<calendarId>`), which Google shares separately from, and more widely than,
+// its events ("See only free/busy").
+const CALENDAR_SUBRESOURCE_NAMESPACE = "calendar";
+const CALENDAR_FRAGMENT = "calendar";
+const FREE_BUSY_FRAGMENT = "freeBusy";
+
+/** The subresource ID of a calendar. */
+function calendarSubresourceId(calendarId: string): string {
+  return formatSubresourceId({
+    namespace: CALENDAR_SUBRESOURCE_NAMESPACE,
+    fragments: [{name: CALENDAR_FRAGMENT, id: calendarId}],
+  });
+}
+
+/** The subresource ID of a calendar's free/busy information. */
+function freeBusySubresourceId(calendarId: string): string {
+  return formatSubresourceId({
+    namespace: CALENDAR_SUBRESOURCE_NAMESPACE,
+    fragments: [{name: FREE_BUSY_FRAGMENT, id: calendarId}],
+  });
+}
+
+/**
+ * The calendar a calendar or free/busy subresource names, and which of the two it is. Throws for
+ * any other ID.
+ */
+function parseCalendarSubresource(subresource: string)
+    : {kind: "calendar" | "freeBusy", calendarId: string} {
+  let {namespace, fragments} = parseSubresourceId(subresource);
+  if (namespace === CALENDAR_SUBRESOURCE_NAMESPACE && fragments.length === 1) {
+    let [{name, id}] = fragments;
+    if (name === CALENDAR_FRAGMENT) return {kind: "calendar", calendarId: id};
+    if (name === FREE_BUSY_FRAGMENT) return {kind: "freeBusy", calendarId: id};
+  }
+  throw new Error("Not a Google Calendar subresource.");
 }
 
 export class GoogleCalendarGatekeeperImpl
@@ -2609,7 +2965,7 @@ export class GoogleCalendarGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [CALENDAR_EVENTS_ACTION, CALENDAR_INVITATIONS_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -2622,7 +2978,6 @@ export class GoogleCalendarGatekeeperImpl
       this.ctx.props.availabilityMode,
       approvalQueue.dup(),
       pendingActions,
-      calendarIds => this.#observers.prepareObservation(calendarIds),
     );
   }
 
@@ -2630,8 +2985,12 @@ export class GoogleCalendarGatekeeperImpl
     let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
     let action = pendingActions.get(actionId);
     if (!action) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.ctx.storage.kv.get(this.#revertKey(actionId)) !== undefined) return;
       throw new Error(`Unknown pending Google Calendar action: ${actionId}`);
     }
+    pendingActions.markApplying(actionId);
 
     let api = new GoogleCalendarApi(opts => this.#getAccessToken(opts));
     switch (action.type) {
@@ -2648,10 +3007,38 @@ export class GoogleCalendarGatekeeperImpl
       }
       case "updateEvent": {
         let oldEvent = await api.getEvent(action.calendarId, action.eventId);
+        // Whoever approved it, it was approved as reaching nobody, or as an invitation; with guests
+        // added or removed or its visibility narrowed in Google since, applying it would now email
+        // people under a kind the user may not trust, or expose the event.
+        let changedError = new Error(
+          "The event has changed in Google Calendar since this was proposed: who is on it has " +
+          "changed, or this change would widen who can see it. This attempt changed nothing. " +
+          "Reject this and ask the agent to read the event again.");
+        // The write below is conditional on the etag, so an event Google sent without one cannot
+        // be updated without a person.
+        if (action.autoApprovable && !oldEvent.etag) {
+          throw new Error(
+            "Google Calendar sent this event without the version tag this change needs to apply " +
+            "only to the event as it was checked. This attempt changed nothing. Reject this and " +
+            "ask the agent to make the change again.");
+        }
+        if (action.autoApprovable) {
+          let verdict = updateEventVerdict(oldEvent, action.patch);
+          let submittedKind = action.invitation ? CALENDAR_INVITATIONS_ACTION : CALENDAR_EVENTS_ACTION;
+          if (!verdict.autoApprovable || verdict.actionKind !== submittedKind) throw changedError;
+        }
         let previous = priorCalendarPatch(oldEvent, action.patch);
-        await api.patchEvent(
-          action.calendarId, action.eventId,
-          eventPatchToGoogle(action.patch), action.sendUpdates);
+        try {
+          // Conditional on the version just judged, so guests added between the read and the
+          // write cannot receive it.
+          await api.patchEvent(
+            action.calendarId, action.eventId,
+            eventPatchToGoogle(action.patch), action.sendUpdates,
+            action.autoApprovable ? oldEvent.etag : undefined);
+        } catch (error) {
+          if (error instanceof GoogleCalendarApiError && error.status === 412) throw changedError;
+          throw error;
+        }
         pendingActions.remove(actionId);
         this.ctx.storage.kv.put<GoogleCalendarRevertInfo>(this.#revertKey(actionId), {
           type: "updatedEvent",
@@ -2707,12 +3094,20 @@ export class GoogleCalendarGatekeeperImpl
     // No hooks for Google Calendar.
   }
 
-  // Observer tracking combines strategy B for the selected calendar with strategy C for the
-  // optional all-visible availability scope. Full event reads can include private event details,
-  // which Google hides from readers, so observers must currently be writers or owners.
+  // Observers: every read reports what it returned from Google as subresources, which the
+  // Workshop checks through verifyObserverAccess(): the bound calendar for its metadata, each event
+  // a listing returns, and the free/busy of each calendar an availability check read. A calendar
+  // and its events need a writer or owner role on it, since Google hides private event details
+  // from readers; free/busy needs only Google answering for the calendar. addObserver() keeps
+  // requiring that role on the bound calendar for the event reads made before reads reported
+  // subresources.
   // TODO: Let the binding owner choose whether private events are included. A public-only mode
   // could admit readers instead of requiring writer access from every collaborator.
 
+  // Guards only legacy history: the foreign calendars availability checks recorded before they
+  // reported them as subresources, which addObserver() keeps checking. No read records more or
+  // forward-checks observers, so none are recorded. The prefix and encoding must match what earlier
+  // versions recorded.
   get #observers(): ObserverTracker<string, Fetcher<GoogleVerifierApi>> {
     return new ObserverTracker(this.ctx.storage.kv, {
       setPrefix: "observedAvailabilityCalendar:",
@@ -2722,9 +3117,7 @@ export class GoogleCalendarGatekeeperImpl
       deniedMessage: calendarId =>
         `This collaborator cannot see free/busy availability for ${calendarId}, whose ` +
         "availability this workspace has read, so they cannot be allowed to observe it.",
-      // In thisCalendar mode no foreign calendar is ever read, so there is never anyone to
-      // forward-exclude and nothing to remember an observer for.
-      recordObservers: this.ctx.props.availabilityMode === "allVisible",
+      recordObservers: false,
     });
   }
 
@@ -2741,6 +3134,19 @@ export class GoogleCalendarGatekeeperImpl
   async removeObserver(id: string): Promise<void> {
     this.#observers.removeObserver(id);
   }
+
+  /**
+   * Checks the subresources this binding's reads report, each with the observer's own account.
+   * Any ID Calendar doesn't report fails the whole call.
+   */
+  async verifyObserverAccess(
+      observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+      subresources: string[]): Promise<{allowedObserverIds: string[]}> {
+    // Refused here rather than by the account, which also checks other Google gatekeepers'
+    // subresources.
+    for (let subresource of subresources) parseCalendarSubresource(subresource);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSession {
@@ -2749,7 +3155,6 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   #availabilityMode: CalendarAvailabilityMode;
   #approvalQueue: RpcStub<ApprovalQueue>;
   #pendingActions: PendingActionStore<GoogleCalendarAction>;
-  #observeAvailabilityCalendars: (calendarIds: string[]) => Promise<ObserverCheck<string>>;
 
   constructor(
     api: GoogleCalendarApi,
@@ -2757,7 +3162,6 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     availabilityMode: CalendarAvailabilityMode,
     approvalQueue: RpcStub<ApprovalQueue>,
     pendingActions: PendingActionStore<GoogleCalendarAction>,
-    observeAvailabilityCalendars: (calendarIds: string[]) => Promise<ObserverCheck<string>>,
   ) {
     super();
     this.#api = api;
@@ -2765,7 +3169,13 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     this.#availabilityMode = availabilityMode;
     this.#approvalQueue = approvalQueue;
     this.#pendingActions = pendingActions;
-    this.#observeAvailabilityCalendars = observeAvailabilityCalendars;
+  }
+
+  // Every read authorizes through here, which makes `subresources` required: each read must name
+  // everything it returned from Google, since addObserver() covers only reads made before they did.
+  #authorizeObservation(
+      description: ObservationDescription & {subresources: string[]}): Promise<void> {
+    return this.#approvalQueue.authorizeObservation(description);
   }
 
   async getCapabilities(): Promise<GoogleCalendarCapabilities> {
@@ -2774,9 +3184,10 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 
   async getCalendar(): Promise<GoogleCalendarInfo> {
     let calendar = await this.#api.getCalendar(this.#calendarId);
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeObservation({
       title: "Read Google Calendar metadata",
       description: `Read metadata for Google Calendar ${calendar.summary} (${calendar.id}).`,
+      subresources: [calendarSubresourceId(this.#calendarId)],
     });
     return calendar;
   }
@@ -2785,13 +3196,16 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     validateCalendarTimeWindow(opts.timeMin, opts.timeMax, 366);
     let events = await this.#api.listEvents(this.#calendarId, opts);
     let simulated = applyPendingCalendarActions(events, this.#pendingActions.list(), opts);
+    // Even an empty window reveals something about the calendar, so every listing reports it.
+    let subresources = [calendarSubresourceId(this.#calendarId)];
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeObservation({
       title: "List Google Calendar events",
       description:
           `List ${simulated.length} event(s) on calendar ${this.#calendarId} from ` +
           `${opts.timeMin.toISOString()} to ${opts.timeMax.toISOString()}.` +
           (opts.includeDescriptions ? " Event descriptions are included." : ""),
+      subresources,
     });
 
     return simulated;
@@ -2806,37 +3220,33 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     validateCalendarTimeWindow(opts.timeMin, opts.timeMax, 90);
     let people = [...new Set(opts.people.map(person => person.trim()).filter(Boolean))];
     if (people.length === 0) throw new Error("At least one person or calendar is required.");
-    if (people.length > 50) throw new Error("At most 50 people/calendars can be checked at once.");
     if (people.includes("primary")) {
       throw new Error(
         "Availability checks must use a stable calendar ID or email address, not the " +
         "account-relative \"primary\" alias.");
     }
 
-    let foreign = people.filter(id => id !== this.#calendarId);
-    if (foreign.length > 0 && this.#availabilityMode === "thisCalendar") {
+    if (this.#availabilityMode === "thisCalendar" && people.some(id => id !== this.#calendarId)) {
       throw new Error(
           "This connection only allows availability for the bound calendar. Reconnect with " +
           "\"All calendars visible to me\" to check other calendars' availability.");
     }
 
     let availability = await this.#api.freeBusy({...opts, people});
-    let successfulForeign = availability
-        .filter(result => foreign.includes(result.email) && !result.error)
-        .map(result => result.email);
-    let check = successfulForeign.length > 0
-        ? await this.#observeAvailabilityCalendars(successfulForeign)
-        : {pendingSets: [], commit() {}};
+    // The calendars whose free/busy this reveals, bound or not, each once since `people` is
+    // deduplicated: not a failed lookup, which returns none.
+    let subresources = availability
+        .filter(result => !result.error)
+        .map(result => freeBusySubresourceId(result.email));
 
-    await this.#approvalQueue.authorizeObservation({
+    await this.#authorizeObservation({
       title: "Check Google Calendar availability",
       description:
           `Check free/busy availability for ${summarizePeople(people)} from ` +
           `${opts.timeMin.toISOString()} to ${opts.timeMax.toISOString()}. ` +
           "Only busy time blocks are returned; event details are not read.",
-      excludeObservers: check.excludeObservers,
+      subresources,
     });
-    check.commit();
 
     return availability;
   }
@@ -2869,8 +3279,10 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Event", event)
           .finish(),
         implementsRevert: true,
+        ...createEventVerdict(event),
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
@@ -2883,18 +3295,14 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
   ): Promise<void> {
     if (!eventId.trim()) throw new Error("eventId is required.");
     if (Object.keys(patch).length === 0) throw new Error("patch must change at least one field.");
+    // Read for the verdict, which turns on who is on the event, and for the side of a start/end
+    // pair the patch leaves alone.
+    let current = await this.#api.getEvent(this.#calendarId, eventId);
     if (patch.start !== undefined || patch.end !== undefined) {
-      // Validate the resulting start/end pair. If only one side is patched, fetch the event to
-      // get the other side.
-      let start = patch.start;
-      let end = patch.end;
-      if (start === undefined || end === undefined) {
-        let current = await this.#api.getEvent(this.#calendarId, eventId);
-        start ??= current.start;
-        end ??= current.end;
-      }
-      validateEventTimes(start, end);
+      validateEventTimes(patch.start ?? current.start, patch.end ?? current.end);
     }
+    let verdict = updateEventVerdict(
+      simulatedCalendarEvent(current, this.#pendingActions.list()), patch);
     let action: GoogleCalendarAction = {
       type: "updateEvent",
       calendarId: this.#calendarId,
@@ -2902,6 +3310,8 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       sendUpdates: opts?.sendUpdates ?? "all",
       eventId,
       patch,
+      autoApprovable: verdict.autoApprovable,
+      invitation: verdict.actionKind === CALENDAR_INVITATIONS_ACTION,
     };
     let actionId = this.#pendingActions.submit(action);
 
@@ -2916,11 +3326,21 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
           .json("Changes", patch)
           .finish(),
         implementsRevert: true,
+        ...verdict,
       });
     } catch (error) {
+      if (this.#receivedDespite(actionId)) return;
       this.#pendingActions.remove(actionId);
       throw error;
     }
+  }
+
+  // An auto-approval can apply an action before its submit reply arrives. Its pending record goes
+  // only once the overseer has applied or rejected it, and is marked while an apply is under way
+  // or has failed, so a lost reply then is no failure: reporting one would invite a repeated write,
+  // and dropping the record would take away the retry.
+  #receivedDespite(actionId: number): boolean {
+    return this.#pendingActions.get(actionId) === undefined || this.#pendingActions.isApplying(actionId);
   }
 }
 
@@ -2928,7 +3348,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 // Google Drive Gatekeeper
 // =======================================================================================
 
-type GoogleDriveGatekeeperImplProps = {
+export type GoogleDriveGatekeeperImplProps = {
   userObjectId: string;
   scope: DriveBindingScope;
 };
@@ -2991,7 +3411,6 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
-    let observerTracker = this.#observerTracker();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
@@ -3006,8 +3425,6 @@ export class GoogleDriveGatekeeperImpl
       convertPdf,
       this.#scope,
       approvalQueue.dup(),
-      observations => observerTracker.prepareObservation(observations),
-      () => observerTracker.prepareWithheld(),
     );
   }
 
@@ -3017,6 +3434,17 @@ export class GoogleDriveGatekeeperImpl
   revertAction(_action: number): Promise<void> {
     throw new Error("Google Drive gatekeeper has no writable actions to revert");
   }
+
+  // Observers: every read reports the Drive units it depends on as subresources (see
+  // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
+  // whose metadata it returned, each folder it listed, and each native file whose content it read,
+  // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
+  // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
+  // a folder binding's search reports its folders even when empty. Account-binding invisible-file
+  // 403/404 probes return one generic error without Google's per-file reason. The tracker no
+  // longer records what reads reveal. It keeps what addObserver() still enforces: a Drive grant,
+  // the bound folder or file (seeded below), the units reads recorded before they reported
+  // subresources, and the admission fence earlier releases latched after owner-relative reads.
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
@@ -3034,6 +3462,21 @@ export class GoogleDriveGatekeeperImpl
 
   async removeObserver(id: string): Promise<void> {
     this.#observerTracker().removeObserver(id);
+  }
+
+  /**
+   * Checks the Drive, Docs, Sheets and Slides subresources this binding's reads report, failing
+   * the whole call for any other ID. Each observer's UserAccount answers whether their own account
+   * can see each file, list each folder and open each native file, reusing recent answers (see
+   * UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(
+      subresources, ["file", "folder", "document", "spreadsheet", "presentation"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
 
@@ -3168,10 +3611,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
-  #prepareObservation: (
-    observations: DriveObservation[],
-  ) => Promise<ObserverCheck<DriveObservation>>;
-  #prepareWithheld: () => ObserverCheck<DriveObservation>;
 
   constructor(
     driveApi: DriveApi,
@@ -3181,10 +3620,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
     convertPdf: PdfConverter | undefined,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
-    prepareObservation: (
-      observations: DriveObservation[],
-    ) => Promise<ObserverCheck<DriveObservation>>,
-    prepareWithheld: () => ObserverCheck<DriveObservation>,
     location?: FolderLocation,
   ) {
     super();
@@ -3198,8 +3633,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
       ? location ?? {folderIds: [scope.folderId]}
       : undefined;
     this.#approvalQueue = approvalQueue;
-    this.#prepareObservation = prepareObservation;
-    this.#prepareWithheld = prepareWithheld;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -3229,7 +3662,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, location,
+        this.#scope, queue, location,
       );
     });
   }
@@ -3296,8 +3729,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {
     let common = {
       api: this.#driveApi,
-      prepareObservation: this.#prepareObservation,
-      prepareWithheld: this.#prepareWithheld,
       authorize: (description: ObservationDescription) => queue.authorizeObservation(description),
     };
     if (this.#scope.kind === "folder") {
@@ -3351,12 +3782,36 @@ export class GoogleDriveSessionImpl extends RpcTarget
 // `maximumBytesBilled` before actually executing — defense in depth, since BigQuery will also
 // enforce maximumBytesBilled server-side.
 
-/** One BigQuery dataset, the unit at which observer access is tracked. */
+/** One BigQuery dataset, the unit at which observer access is checked. */
 type BigQueryDatasetRef = { projectId: string; datasetId: string };
 
-type BigQueryGatekeeperImplProps = {
+const BIGQUERY_SUBRESOURCE_NAMESPACE = "bigquery";
+
+/**
+ * The subresource ID a read reports for a dataset whose data it reveals:
+ * `bigquery/project/<projectId>/dataset/<datasetId>`, each component escaped. A dataset ID is
+ * unique only within its project, so the ID names both.
+ */
+function bigQueryDatasetSubresource({ projectId, datasetId }: BigQueryDatasetRef): string {
+  return formatSubresourceId({
+    namespace: BIGQUERY_SUBRESOURCE_NAMESPACE,
+    fragments: [{ name: "project", id: projectId }, { name: "dataset", id: datasetId }],
+  });
+}
+
+/** The dataset a {@link bigQueryDatasetSubresource} ID names; throws for any other ID. */
+function parseBigQueryDatasetSubresource(id: string): BigQueryDatasetRef {
+  let { namespace, fragments } = parseSubresourceId(id);
+  if (namespace !== BIGQUERY_SUBRESOURCE_NAMESPACE || fragments.length !== 2 ||
+      fragments[0].name !== "project" || fragments[1].name !== "dataset") {
+    throw new Error("Not a BigQuery dataset subresource ID.");
+  }
+  return { projectId: fragments[0].id, datasetId: fragments[1].id };
+}
+
+export type BigQueryGatekeeperImplProps = {
   userObjectId: string;
-  // When set, narrows the session's authority. Project is required for any narrower scope.
+  /** When set, narrows the session's authority. Project is required for any narrower scope. */
   scopedProjectId?: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
@@ -3411,7 +3866,6 @@ export class BigQueryGatekeeperImpl
       this.ctx.props.scopedProjectId,
       this.ctx.props.scopedDatasetId,
       this.ctx.props.scopedTableId,
-      datasets => this.#observers.prepareObservation(datasets),
     );
   }
 
@@ -3423,9 +3877,14 @@ export class BigQueryGatekeeperImpl
   }
 
   // -------------------------------------------------------------------------
-  // Observer tracking — strategy C, by dataset. Even a project- or table-scoped binding is tracked
-  // at dataset granularity: users may have IAM access to different datasets, so we record which
-  // datasets' data the gadget has actually read and verify each observer against them.
+  // Observer tracking — strategy C, by dataset. Even a project- or table-scoped binding is checked
+  // at dataset granularity: users may have IAM access to different datasets. Reads report each
+  // dataset they reveal as a subresource, which the Workshop checks through verifyObserverAccess().
+  //
+  // This tracker now guards only legacy history: the datasets reads recorded before they reported
+  // subresources, or that a read still running that code records. Reads no longer feed it, so
+  // addObserver() verifies each observer against that history alone, through hasDatasetAccess,
+  // which reuses no answers.
 
   get #observers(): ObserverTracker<BigQueryDatasetRef, Fetcher<GoogleVerifierApi>> {
     return new ObserverTracker(this.ctx.storage.kv, {
@@ -3452,6 +3911,19 @@ export class BigQueryGatekeeperImpl
   async removeObserver(id: string): Promise<void> {
     this.#observers.removeObserver(id);
   }
+
+  /**
+   * Checks the dataset subresources reads report, failing the whole call for any other ID. Each
+   * observer's UserAccount answers whether its own token has IAM access to every dataset, reusing
+   * recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    for (let id of subresources) parseBigQueryDatasetSubresource(id);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 @validateRpc()
@@ -3461,8 +3933,6 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #scopedProjectId?: string;
   #scopedDatasetId?: string;
   #scopedTableId?: string;
-  // Records the datasets an observation reveals and returns observers to exclude.
-  #observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>;
 
   constructor(
     api: BigQueryApi,
@@ -3470,7 +3940,6 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     scopedProjectId: string | undefined,
     scopedDatasetId: string | undefined,
     scopedTableId: string | undefined,
-    observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>,
   ) {
     super();
     this.#api = api;
@@ -3478,21 +3947,19 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     this.#scopedProjectId = scopedProjectId;
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
-    this.#observe = observe;
   }
 
-  // Authorize an observation that reveals data belonging to specific dataset(s), tracking them and
-  // excluding observers who lack access to a newly-seen one. Use for every read that exposes dataset
-  // data; pass an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
+  // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
+  // the Workshop checks every collaborator who can see the read against. Use for every read; pass
+  // an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
   async #authorizeDatasets(
     datasets: { projectId: string; datasetId: string }[],
     description: ObservationDescription,
   ): Promise<void> {
-    let check = datasets.length > 0 ? await this.#observe(datasets) : {pendingSets: [], commit() {}};
     await this.#approvalQueue.authorizeObservation({
-      ...description, excludeObservers: check.excludeObservers,
+      ...description,
+      subresources: [...new Set(datasets.map(bigQueryDatasetSubresource))],
     });
-    check.commit();
   }
 
   // The unique datasets referenced by a dry-run's `referencedTables` (format "project.dataset.table",

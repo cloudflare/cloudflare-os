@@ -24,7 +24,8 @@ import type { CalendarAccessLevel } from "../../src/calendar-scope.js";
 export { default } from "../../src/microsoft.js";
 export * from "../../src/microsoft.js";
 import {
-  GatekeeperUserImpl, MicrosoftVerifier, OutlookGatekeeper, OutlookHookController as ProductionHookController,
+  CalendarGatekeeper, GatekeeperUserImpl, MicrosoftVerifier, OutlookGatekeeper, OutlookHookController as ProductionHookController,
+  SharePointGatekeeper,
 } from "../../src/microsoft.js";
 
 /**
@@ -72,6 +73,18 @@ testOutlook.testRestoreThrough = function(hooks, facet, props) {
 testOutlook.testDeliver = function(callback, approvalQueue, messageId) {
   return this[restore]({}).deliver(callback as never, approvalQueue as never, messageId);
 };
+
+/** Writes straight into a binding's storage, as an earlier release left it. */
+function testPut(this: unknown, key: string, value: unknown): void {
+  // Installed on each binding's prototype below, so `this` is a binding Durable Object.
+  const binding = this as { ctx: DurableObjectState };
+  binding.ctx.storage.kv.put(key, value);
+}
+for (const binding of [SharePointGatekeeper, OutlookGatekeeper, CalendarGatekeeper]) {
+  // The production classes declare no testPut: this is where the test adds it.
+  const prototype = binding.prototype as unknown as { testPut: typeof testPut };
+  prototype.testPut = testPut;
+}
 
 /** What hooks were called with, by the key their subscription was made under. */
 const hookDeliveries = new Map<string, { subject: string; id: string; markdown?: string; error?: string }[]>();
@@ -186,6 +199,9 @@ type GatekeeperFacet = {
   revertAction(actionId: number): Promise<unknown>;
   addObserver(id: string, verifier: unknown): Promise<void>;
   removeObserver(id: string): Promise<void>;
+  verifyObserverAccess(observers: { id: string; verifier: unknown }[], subresources: string[]): Promise<{ allowedObserverIds: string[] }>;
+  getHistoricalSubresources(): Promise<string[]>;
+  testPut(key: string, value: unknown): Promise<void>;
 };
 
 class NullGitCache extends RpcTarget {}
@@ -329,6 +345,22 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async removeObserver(facetName: string, props: AnyGatekeeperProps, observerId: string): Promise<Outcome<void>> {
     return await outcome(() => this.#gatekeeper(facetName, props).removeObserver(observerId));
+  }
+
+  /** `verifyObserverAccess`, each observer judged by a verifier minted for their account. */
+  async verifyObserverAccess(facetName: string, props: AnyGatekeeperProps, observers: Record<string, string>, subresources: string[]):
+      Promise<Outcome<string[]>> {
+    const asked = Object.entries(observers).map(([id, userObjectId]) => ({ id, verifier: this.#exports.TestVerifier({ props: { userObjectId } }) }));
+    return await outcome(async () => (await this.#gatekeeper(facetName, props).verifyObserverAccess(asked, subresources)).allowedObserverIds);
+  }
+
+  async historicalSubresources(facetName: string, props: AnyGatekeeperProps): Promise<Outcome<string[]>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).getHistoricalSubresources());
+  }
+
+  /** Leaves `value` under `key` in a binding's storage, as an earlier release did. */
+  async seed(facetName: string, props: AnyGatekeeperProps, key: string, value: unknown): Promise<void> {
+    await this.#gatekeeper(facetName, props).testPut(key, value);
   }
 
   /** Restarts the gatekeeper, as an eviction would: its storage stays, its memory does not. */

@@ -5,6 +5,7 @@ import {
   MAX_TOOL_NAME_CHARS,
   McpClient,
 } from "../src/client.js";
+import { MAX_RESPONSE_BYTES } from "../src/fetch.js";
 import { describeCall } from "../src/tools.js";
 
 // Answers every `tools/list` from `pages`, in order, repeating the last one forever.
@@ -21,6 +22,31 @@ function stubPages(pages: { tools?: unknown[]; nextCursor?: string }[]): () => n
       { status: 200, headers: { "Content-Type": "application/json" } });
   });
   return () => calls;
+}
+
+// The current limit is 2 MiB.
+const PREV_MAX_RESPONSE_BYTES = 1024 * 1024;
+
+// Answers every `tools/list` with one tool whose description is `descriptionBytes` long.
+function stubToolListPage(
+  descriptionBytes: number,
+  contentType: "text/event-stream" | "application/json" = "text/event-stream",
+): () => boolean {
+  let cancelled = false;
+  vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+    const id = JSON.parse(String(init?.body)).id;
+    const tools = [{ name: "big", description: "x".repeat(descriptionBytes) }];
+    const json = JSON.stringify({ jsonrpc: "2.0", id, result: { tools } });
+    const body = contentType === "text/event-stream" ? `data: ${json}\n\n` : json;
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+        if (contentType === "application/json") controller.close();
+      },
+      cancel() { cancelled = true; },
+    }), { status: 200, headers: { "Content-Type": contentType } });
+  });
+  return () => cancelled;
 }
 
 afterEach(() => {
@@ -490,12 +516,31 @@ describe("McpClient.listTools", () => {
     // The catalog caps bound what is *kept*; the body still has to be read whole before anything can
     // parse it, and a `tools/call` result is not bounded at all. A server answering one request with
     // an enormous body would exhaust the Worker before any of the limits above applied.
-    vi.stubGlobal("fetch", async () => new Response("x".repeat(2 * 1024 * 1024), {
+    vi.stubGlobal("fetch", async () => new Response("x".repeat(MAX_RESPONSE_BYTES + 1), {
       status: 200, headers: { "Content-Type": "application/json" },
     }));
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
     await expect(client.callTool("anything", {})).rejects.toThrow(/too large/);
   });
+
+  it("refuses a tools/list event stream larger than MAX_RESPONSE_BYTES", async () => {
+    const cancelled = stubToolListPage(MAX_RESPONSE_BYTES);
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+    await expect(client.listTools(10))
+      .rejects.toThrow(`MCP server's event stream exceeded ${MAX_RESPONSE_BYTES} bytes.`);
+    expect(cancelled()).toBe(true);
+  });
+
+  it.each(["text/event-stream", "application/json"] as const)(
+    "accepts a tools/list page larger than 1 MiB as %s",
+    async contentType => {
+      stubToolListPage(1.5 * PREV_MAX_RESPONSE_BYTES, contentType);
+      const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+      const { tools } = await client.listTools(10);
+      expect(tools.map(tool => tool.name)).toEqual(["big"]);
+    });
 
   it("returns an SSE response without waiting for the stream to close", async () => {
     let cancelled = false;
