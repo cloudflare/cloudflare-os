@@ -3,6 +3,7 @@
 // capabilities a broader one opens, which refuse anything outside them.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { WireIncident, WireRef } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails } from "../../src/types";
 import {
   ALICE, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, POLICY, SCHEDULE, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
@@ -21,7 +22,7 @@ async function setup(binding: Binding = { resourceKind: "account" }, pd = new Fa
   return {
     pd,
     run: async (steps: Step[], pages?: number) => unwrap(await hooks().run(name, props, steps, pages ? { pages } : {})),
-    attempt: async (steps: Step[]) => failure(await hooks().run(name, props, steps)),
+    attempt: async (steps: Step[], pages?: number) => failure(await hooks().run(name, props, steps, pages ? { pages } : {})),
     /** What each observation so far reported, order aside. */
     reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
   };
@@ -226,6 +227,50 @@ describe("an incident binding", () => {
     const [first, second] = await t.run([["getTimeline", { pageSize: 10 }]], 2) as { id: string }[][];
     expect([...first, ...second].map(entry => entry.id)).toEqual(Array.from({ length: 20 }, (_, n) => `PLOG${n}`));
     expect(pd.matching("GET", /\/log_entries\?/)).toHaveLength(1);
+  });
+
+  it("shows the note a log entry carries, such as a resolution", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE);
+    pd.logEntries.set(incident.id, [
+      { id: "PLOG1", type: "trigger_log_entry", summary: "Triggered", created_at: incident.created_at },
+      {
+        id: "PLOG2", type: "resolve_log_entry", summary: "Resolved by Alice", created_at: new Date().toISOString(),
+        agent: { id: ALICE.id, type: "user_reference", summary: "Alice" }, note: "Rolled back the deploy",
+      },
+    ]);
+    const t = await setup({ resourceKind: "incident", id: incident.id }, pd);
+    expect(await t.run([["getTimeline"]], 1)).toMatchObject([[
+      { id: "PLOG1", kind: "trigger", note: null },
+      { id: "PLOG2", kind: "resolve", actor: { id: ALICE.id }, note: "Rolled back the deploy" },
+    ]]);
+  });
+});
+
+/** Moves `incident` to `to` when its listing first asks PagerDuty for a page, after the cursor was made. */
+const moveOnPage = (pd: FakePagerDuty, incident: WireIncident, to: WireRef) =>
+  pd.on("GET", new RegExp(`^/incidents/${incident.id}/(alerts|log_entries)`), () => {
+    incident.service = to;
+    return undefined;
+  });
+
+describe("an incident's listing, open while the incident moves to another service", () => {
+  it.each(["listAlerts", "getTimeline"])("refuses %s's page once the incident has left the service binding", async method => {
+    const t = await setup({ resourceKind: "service", id: SERVICE.id });
+    const incident = t.pd.incident(SERVICE);
+    moveOnPage(t.pd, incident, OTHER_SERVICE);
+    expect(await t.attempt([["getIncident", incident.id], [method]], 1)).toMatch(/belongs to another service/);
+    expect(await t.reported()).toEqual([]);
+  });
+
+  it("serves, in a team binding, the page of an incident moved to another of its services, reporting that one", async () => {
+    const t = await setup({ resourceKind: "team", id: TEAM.id });
+    t.pd.services.get(OTHER_SERVICE.id)!.teams = [TEAM];
+    const incident = t.pd.incident(SERVICE);
+    t.pd.logEntries.set(incident.id, [{ id: "PLOG1", type: "trigger_log_entry", summary: "Triggered", created_at: incident.created_at }]);
+    moveOnPage(t.pd, incident, OTHER_SERVICE);
+    expect(await t.run([["getIncident", incident.id], ["getTimeline"]], 1)).toMatchObject([[{ id: "PLOG1" }]]);
+    expect(await t.reported()).toEqual([ids(sub("team", TEAM.id), sub("incident", incident.id), sub("service", OTHER_SERVICE.id))]);
   });
 });
 

@@ -69,6 +69,7 @@ describe("regionOf", () => {
     [{ aud: ["client"], region: "UnitedStates" }, "us"],
     [{ aud: ["client"], region: "EU" }, "eu"],
     [{ aud: ["client"], region: "Mars" }, undefined],
+    [{ aud: ["https://api.eu.pagerduty.com.evil.test", "client"], region: "UnitedStates" }, "us"],
     [{}, undefined],
   ] satisfies [Parameters<typeof regionOf>[0], string | undefined][])("reads %o as %s", (claims, region) => {
     expect(regionOf(claims)).toBe(region);

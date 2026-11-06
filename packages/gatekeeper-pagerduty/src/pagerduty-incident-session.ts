@@ -14,8 +14,8 @@ import {
 } from "./pagerduty-normalize";
 import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
-  MAX_NOTE_LENGTH, countOf, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed, readIncident, service,
-  subscribed, text, urgency, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
+  MAX_NOTE_LENGTH, countOf, currentIncident, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed,
+  service, subscribed, text, urgency, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -68,19 +68,18 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async #load(includes: readonly string[] = []): Promise<Loaded> {
     const { host } = this.#ctx;
     const id = host.resolve(this.#id);
-    let loaded: Loaded;
-    if (isProvisional(id)) {
-      const created = host.pending().find(({ action }) => action.kind === "createIncident" && action.payload.ref === id);
-      if (created?.action.kind !== "createIncident") {
-        throw new Error("This incident was never opened: opening it was rejected or failed.");
-      }
-      loaded = { pending: created.action.payload };
-    } else {
-      loaded = { wire: await readIncident(this.#ctx, id, includes) };
+    if (!isProvisional(id)) {
+      const { wire, outside } = await currentIncident(this.#ctx, id, this.#within, includes);
+      if (outside) throw new Error(outside);
+      return { wire };
     }
-    const why = await outsideOf(this.#ctx, loaded.wire ? loaded.wire.service.id : loaded.pending.service.id, this.#within);
+    const created = host.pending().find(({ action }) => action.kind === "createIncident" && action.payload.ref === id);
+    if (created?.action.kind !== "createIncident") {
+      throw new Error("This incident was never opened: opening it was rejected or failed.");
+    }
+    const why = await outsideOf(this.#ctx, created.action.payload.service.id, this.#within);
     if (why) throw new Error(why);
-    return loaded;
+    return { pending: created.action.payload };
   }
 
   /** What this incident's reads depend on: itself, once PagerDuty has it, and its service. */
@@ -156,7 +155,9 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       convert: rows => rows.map(convert),
       describe,
       filter: [],
-      result: () => this.#result(loaded),
+      // The incident can move to another service while the walk is open, so each page reads it
+      // again: refused once it has left the capability's scope, and reporting the service it is on.
+      result: async () => this.#result(await this.#load()),
     });
   }
 
@@ -230,8 +231,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   async setUrgency(value: PagerDutyUrgency): Promise<void> {
-    const chosen = urgency(value);
-    await this.#stage("setUrgency", target => ({ incident: target, urgency: chosen }));
+    await this.#stage(urgency(value) === "high" ? "raiseUrgency" : "lowerUrgency", target => ({ incident: target }));
   }
 
   async setTitle(title: string): Promise<void> {

@@ -1,6 +1,7 @@
 // What a gadget can change in PagerDuty, as kit actions: each kind's approval text, auto-approval
 // verdict and REST call. Sessions validate and stage them (the pagerduty-*session*.ts modules);
-// nothing here runs until a user approves. Incidents and overrides a pending action creates have
+// nothing here runs until a user approves, and apply first checks that a team or service binding
+// still reaches what the action changes. Incidents and overrides a pending action creates have
 // temporary `~N` IDs, which later actions can name and which apply resolves to PagerDuty's.
 
 import {
@@ -12,6 +13,7 @@ import { PagerDutyApiError, type PagerDutyApi } from "./pagerduty-api";
 import type { Identity } from "./pagerduty-credentials";
 import { VENDOR_ID, type Tenant } from "./pagerduty-env";
 import type { WireIncident, WireOverride } from "./pagerduty-normalize";
+import type { ScopedObject } from "./pagerduty-session-shared";
 import { resourceUrl } from "./pagerduty-urls";
 import type { PagerDutyRef, PagerDutyUrgency } from "./types";
 
@@ -57,7 +59,8 @@ export type PagerDutyActions = {
   resolve: { incident: IncidentTarget; resolution?: string };
   setPriority: { incident: IncidentTarget; priority: PriorityTarget | null };
   setTitle: { incident: IncidentTarget; title: string };
-  setUrgency: { incident: IncidentTarget; urgency: PagerDutyUrgency };
+  lowerUrgency: { incident: IncidentTarget };
+  raiseUrgency: { incident: IncidentTarget };
   addNote: { incident: IncidentTarget; ref: string; content: string; stagedAt: string };
   reassign: { incident: IncidentTarget; to: { users: UserTarget[] } | { escalationPolicyId: string } };
   escalate: { incident: IncidentTarget; level: number };
@@ -81,6 +84,11 @@ export type PagerDutyActionHost = {
   readonly refs: ProvisionalIds<string>;
   /** Runs a write as the connected user, who `From` names. */
   write<T>(op: (api: PagerDutyApi, me: Identity) => Promise<T>): Promise<T>;
+  /**
+   * @throws ActionApplyError once `object` (an incident, or the service or schedule an action adds
+   * to) has left the team or service the binding is scoped to.
+   */
+  requireInScope(object: ScopedObject): Promise<void>;
   /** Drops every cached read, once an action changed what they hold. */
   invalidate(): void;
 };
@@ -88,9 +96,15 @@ export type PagerDutyActionHost = {
 /** Whether an ID is a temporary one a pending action created. */
 export const isProvisional = (id: string): boolean => id.startsWith("~");
 
-/** Which incident `target` is now: PagerDuty's ID once the action creating it applied. */
-const incidentId = (host: PagerDutyActionHost, target: IncidentTarget): string =>
-  host.refs.requireResolved(target.id, { expectedKind: "incident" });
+/**
+ * Which incident `target` is now (PagerDuty's ID once the action creating it applied), refused once
+ * it has left the binding's scope.
+ */
+async function incidentId(host: PagerDutyActionHost, target: IncidentTarget): Promise<string> {
+  const id = host.refs.requireResolved(target.id, { expectedKind: "incident" });
+  await host.requireInScope({ kind: "incident", id });
+  return id;
+}
 
 /**
  * The temporary reference a payload builds on, if any: its incident's, or the override it removes.
@@ -135,18 +149,21 @@ function present(title: string, description: ActionDescriptionBuilder): ActionPr
 const usersGiven = (users: readonly UserTarget[]): string[] => users.map(({ given, id }) => given === id ? id : `${given} (${id})`);
 
 /**
- * Sends a change PagerDuty applies at most once per call. PagerDuty's refusal, or a rate limit or
- * credential rejection that stopped the call, left nothing behind; any other failure may have
- * landed after all.
+ * Sends a change PagerDuty applies at most once per call. Only the request's own failure is
+ * classified: PagerDuty's refusal left nothing behind, and any other failure may have landed after
+ * all. A rate limit or credential rejection stopped the call, so it is retried as it came, as is
+ * anything that failed before the request was made (the connected user, the credentials).
  */
 async function once<T>(host: PagerDutyActionHost, op: (api: PagerDutyApi, me: Identity) => Promise<T>): Promise<T> {
-  try {
-    return await host.write(op);
-  } catch (error) {
-    if (error instanceof PagerDutyApiError && (error.status === 401 || error.status === 429)) throw error;
-    if (error instanceof PagerDutyApiError && error.status < 500) throw new ActionApplyError(error.message);
-    throw new ActionOutcomeUnknownError(error instanceof Error ? error.message : "PagerDuty did not answer.");
-  }
+  return await host.write(async (api, me) => {
+    try {
+      return await op(api, me);
+    } catch (error) {
+      if (error instanceof PagerDutyApiError && (error.status === 401 || error.status === 429)) throw error;
+      if (error instanceof PagerDutyApiError && error.status < 500) throw new ActionApplyError(error.message);
+      throw new ActionOutcomeUnknownError(error instanceof Error ? error.message : "PagerDuty did not answer.");
+    }
+  });
 }
 
 /** Sends a change that repeating leaves the same, so a failure is retried as it came. */
@@ -162,9 +179,9 @@ async function idempotent(host: PagerDutyActionHost, op: (api: PagerDutyApi, me:
 }
 
 /** Updates the incident with the `PUT /incidents/{id}` fields in `incident`. */
-function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
-  const id = incidentId(host, target);
-  return idempotent(host, api => api.write("PUT", `/incidents/${id}`, { incident: { type: "incident_reference", ...incident } }));
+async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
+  const id = await incidentId(host, target);
+  await idempotent(host, api => api.write("PUT", `/incidents/${id}`, { incident: { type: "incident_reference", ...incident } }));
 }
 
 const userReference = ({ id }: UserTarget) => ({ id, type: "user_reference" });
@@ -197,6 +214,7 @@ function overrideDefinition(autoApprovable: boolean) {
         .inline("From", payload.start)
         .inline("Until", payload.end)),
     apply: async (payload: NewOverride, host: PagerDutyActionHost) => {
+      await host.requireInScope({ kind: "schedule", id: payload.scheduleId });
       const [result] = await once(host, api => api.write<{ status: number; errors?: string[]; override?: WireOverride }[]>(
         "POST", `/schedules/${payload.scheduleId}/overrides`,
         { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] }));
@@ -205,6 +223,24 @@ function overrideDefinition(autoApprovable: boolean) {
       }
       host.refs.bind(payload.ref, result.override.id);
     },
+  };
+}
+
+/** Setting an incident's urgency to `urgency`: its approval text and REST call. */
+function urgencyDefinition(urgency: PagerDutyUrgency, autoApprovable: boolean) {
+  return {
+    kind: EDIT,
+    autoApprovable,
+    delivery: "continue-with-simulation" as const,
+    dependsOn: dependedRefs,
+    describe: (payload: { incident: IncidentTarget }, host: PagerDutyActionHost) =>
+      present(`Set a PagerDuty incident's urgency to ${urgency}`,
+        buildDescription(`Sets the urgency of ${incidentLabel(host, payload.incident)} to ${urgency}` + (urgency === "high"
+          ? ", which pages its responders by their high-urgency rules and, if it is acknowledged, returns it to " +
+            "triggered and resumes its escalation."
+          : "."))),
+    apply: (payload: { incident: IncidentTarget }, host: PagerDutyActionHost) =>
+      updateIncident(host, payload.incident, { urgency }),
   };
 }
 
@@ -228,7 +264,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       buildDescription(`Snoozes ${incidentLabel(host, payload.incident)}: it triggers again after the time below ` +
         "unless it is resolved first.").inline("Seconds", String(payload.seconds))),
     apply: async (payload, host) => {
-      const id = incidentId(host, payload.incident);
+      const id = await incidentId(host, payload.incident);
       await idempotent(host, api => api.write("POST", `/incidents/${id}/snooze`, { duration: payload.seconds }));
     },
   },
@@ -264,16 +300,9 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       buildDescription(`Replaces the title of ${incidentLabel(host, payload.incident)}.`).inline("Title", payload.title)),
     apply: (payload, host) => updateIncident(host, payload.incident, { title: payload.title }),
   },
-  setUrgency: {
-    kind: EDIT,
-    autoApprovable: true,
-    delivery: "continue-with-simulation",
-    dependsOn: dependedRefs,
-    describe: (payload, host) => present(`Set a PagerDuty incident's urgency to ${payload.urgency}`,
-      buildDescription(`Sets the urgency of ${incidentLabel(host, payload.incident)} to ${payload.urgency}` +
-        (payload.urgency === "high" ? ", which may notify its assignees again." : "."))),
-    apply: (payload, host) => updateIncident(host, payload.incident, { urgency: payload.urgency }),
-  },
+  lowerUrgency: urgencyDefinition("low", true),
+  // Pages responders by their high-urgency rules, resuming an acknowledged incident's escalation (rule 2).
+  raiseUrgency: urgencyDefinition("high", false),
   addNote: {
     kind: NOTES,
     autoApprovable: true,
@@ -283,7 +312,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     describe: (payload, host) => present("Add a note to a PagerDuty incident",
       buildDescription(`Adds a note to ${incidentLabel(host, payload.incident)}.`).verbatim("Note", payload.content)),
     apply: async (payload, host) => {
-      const id = incidentId(host, payload.incident);
+      const id = await incidentId(host, payload.incident);
       await once(host, api => api.write("POST", `/incidents/${id}/notes`, { note: { content: payload.content } }));
     },
   },
@@ -330,7 +359,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       return present("Request responders for a PagerDuty incident", description);
     },
     apply: async (payload, host) => {
-      const id = incidentId(host, payload.incident);
+      const id = await incidentId(host, payload.incident);
       await once(host, (api, me) => api.write("POST", `/incidents/${id}/responder_requests`, {
         requester_id: me.userId,
         message: payload.message,
@@ -353,7 +382,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       buildDescription(`Publishes a status update on ${incidentLabel(host, payload.incident)}, which PagerDuty ` +
         "sends to its subscribers and stakeholders.").verbatim("Message", payload.message)),
     apply: async (payload, host) => {
-      const id = incidentId(host, payload.incident);
+      const id = await incidentId(host, payload.incident);
       await once(host, api => api.write("POST", `/incidents/${id}/status_updates`, { message: payload.message }));
     },
   },
@@ -377,6 +406,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       return present(`Open a PagerDuty incident: ${payload.title}`, description);
     },
     apply: async (payload, host) => {
+      await host.requireInScope({ kind: "service", id: payload.service.id });
       const { incident } = await once(host, api => api.write<{ incident: WireIncident }>("POST", "/incidents", {
         incident: {
           type: "incident",
@@ -407,6 +437,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "or ends it now if it has already begun.")
         .inline("Override", payload.overrideId)),
     apply: async (payload, host) => {
+      await host.requireInScope({ kind: "schedule", id: payload.scheduleId });
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });
       await idempotent(host, async api => {
         try {

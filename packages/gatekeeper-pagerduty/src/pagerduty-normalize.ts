@@ -65,7 +65,7 @@ export type WireAlert = WireRef & {
   body?: { details?: unknown; cef_details?: { source_origin?: string | null } } | null;
 };
 
-export type WireLogEntry = WireRef & { created_at: string; agent?: WireRef | null };
+export type WireLogEntry = WireRef & { created_at: string; agent?: WireRef | null; note?: string | null };
 
 export type WireNote = { id: string; content: string; created_at: string; user?: WireRef | null };
 
@@ -212,6 +212,7 @@ export function toTimelineEntry(wire: WireLogEntry): PagerDutyTimelineEntry {
     kind: (wire.type ?? "").replace(/_log_entry$/, ""),
     summary: wire.summary ?? "",
     actor,
+    note: wire.note || null,
   };
 }
 

@@ -17,7 +17,7 @@ import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-crede
 import type { Tenant } from "./pagerduty-env";
 import {
   toIncidentSummary, toOnCall, toPriority, toUser,
-  type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireService, type WireUser,
+  type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireSchedule, type WireService, type WireUser,
 } from "./pagerduty-normalize";
 import {
   matchesQuery, newestFirst, overlayIncident, pendingIncidents, type IncidentQuery, type Pending,
@@ -198,6 +198,11 @@ export async function readService({ host }: { host: SessionHost }, id: string): 
   return (await host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
 }
 
+/** A schedule as PagerDuty describes it now; `query` can ask for its shifts in a window. */
+export async function readSchedule({ host }: { host: SessionHost }, id: string, query: Query = {}): Promise<WireSchedule> {
+  return (await host.read(api => api.get<{ schedule: WireSchedule }>(`/schedules/${id}`, query))).schedule;
+}
+
 /** A service's team and escalation policy, cached briefly, for checking a binding's scope. */
 export function cachedService(ctx: { host: SessionHost }, id: string): Promise<WireService> {
   return ctx.host.cached(`service:${id}`, SERVICE_TTL_MS, () => readService(ctx, id));
@@ -222,6 +227,32 @@ export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, w
     return "That incident doesn't belong to this team.";
   }
   return undefined;
+}
+
+/**
+ * The incident `id` as PagerDuty has it now, and why it is outside `within`, if it is. PagerDuty
+ * can move an incident to another service at any time, so each check reads it afresh.
+ */
+export async function currentIncident(ctx: { host: SessionHost }, id: string, within: Within,
+                                      include: readonly string[] = []): Promise<{ wire: WireIncident; outside?: string }> {
+  const wire = await readIncident(ctx, id, include);
+  const outside = await outsideOf(ctx, wire.service.id, within);
+  return outside ? { wire, outside } : { wire };
+}
+
+/** What a change can act on, or add to, that a team or service capability must still reach. */
+export type ScopedObject = { kind: "incident" | "service" | "schedule"; id: string };
+
+/**
+ * Why `object` is now outside `within`, or undefined when it is within: an incident by the service
+ * PagerDuty has it on, a service or schedule by its teams. Reads nothing when `within` is empty.
+ */
+export async function objectOutside(ctx: { host: SessionHost }, { kind, id }: ScopedObject, within: Within):
+    Promise<string | undefined> {
+  if (kind === "incident") return within.teamId || within.serviceId ? (await currentIncident(ctx, id, within)).outside : undefined;
+  if (!within.teamId) return undefined;
+  const wire = kind === "service" ? await cachedService(ctx, id) : await readSchedule(ctx, id);
+  return inTeam(wire, within.teamId) ? undefined : `That ${kind} doesn't belong to this team.`;
 }
 
 /** Every user matching `query`, up to `MAX_USERS`. */
@@ -282,7 +313,8 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
   convert(rows: W[]): T[];
   describe(rows: readonly T[], terminal: boolean): ObservationInput;
   filter: readonly ObjectRef[];
-  result(rows: readonly T[]): ObjectRef[];
+  /** What a page shows, as it is served: a page it throws for is refused. */
+  result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   inject?: CursorInjection<T>;
 }): Cursor<T> {
   const walk = ctx.dup();
@@ -299,8 +331,8 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
       const more = page.more && page.items.length > 0 && next < MAX_OFFSET;
       return { items: options.convert(page.items), ...(more ? { nextToken: String(next) } : {}) };
     },
-    authorizePage: (rows, { terminal }) =>
-      walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: options.result(rows) }),
+    authorizePage: async (rows, { terminal }) =>
+      walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: await options.result(rows) }),
   });
 }
 
