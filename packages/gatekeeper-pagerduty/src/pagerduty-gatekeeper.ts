@@ -119,6 +119,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
       using delivery: RpcStub<PagerDutyHookDelivery> = await this.ctx.restore(scope);
       const controller = this.ctx.exports.PagerDutyHookController({ props: {
         key: crypto.randomUUID(), events, delivery,
+        tenant: { subdomain: this.ctx.props.subdomain, region: this.ctx.props.region },
         ...(scope.incidentId ? { incidentId: scope.incidentId } : {}),
         ...(scope.within.serviceId ? { serviceId: scope.within.serviceId } : {}),
       } });

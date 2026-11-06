@@ -138,6 +138,8 @@ Limits:
   only that long.
 - **Order is not kept**, and an event may arrive more than once; hooks key their work on the
   event's `id`.
+- **Only the webhook's own account is served.** An event goes only to hooks on the account its
+  incident link names (subdomain and region); hooks on any other account never see it.
 - **Every delivery costs a REST read** as the hook's owner, against their rate limit.
 
 For local development, PagerDuty can't reach `localhost`: run a tunnel to the dev server (e.g.
