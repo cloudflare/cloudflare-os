@@ -15,8 +15,10 @@ export const TypedFilterField = ({ label, placeholder, value, clears, suggestion
   suggestions: string[]
   onApply: (value: string | undefined) => void
 }) => {
-  // What is typed, for the value and the clear it was typed over.
+  // What is typed, for the value and the clear it was typed over. Dropped as soon as either changes,
+  // during that render, so coming back to an earlier value does not bring back what was typed.
   const [typed, setTyped] = useState({ over: value, clears, text: value ?? '' })
+  if (typed.over !== value || typed.clears !== clears) setTyped({ over: value, clears, text: value ?? '' })
   const shown = typed.over === value && typed.clears === clears ? typed.text : (value ?? '')
 
   const apply = (text: string) => {
