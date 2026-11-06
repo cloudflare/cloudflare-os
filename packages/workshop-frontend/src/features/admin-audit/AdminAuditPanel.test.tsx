@@ -695,6 +695,19 @@ describe('AdminAuditPanel', () => {
       expect(stored()).toEqual({ time: 180, admin: 160, action: 300, via: 64 })
     })
 
+    it('puts back the width a drag began from when the drag is cancelled, storing nothing', async () => {
+      await render()
+      await pointer('pointerdown', handle('Action'), 500)
+      await pointer('pointermove', handle('Action'), 600)
+      expect(widths()[3]).toBe('320px')
+
+      // A cancel may report any position: 0 here, which would narrow the column to its least.
+      await pointer('pointercancel', handle('Action'), 0)
+
+      expect(widths()[3]).toBe('220px')
+      expect(stored()).toBeNull()
+    })
+
     it('keeps a column within its bounds', async () => {
       await render()
 

@@ -7,8 +7,8 @@ const SHIFT_KEY_STEP = 64
 /**
  * The right edge of a table column, dragged, or moved with the arrow keys (by more with Shift), to
  * resize it; a double click resets it. `onResize` gets each width reached, `done` once a drag ends
- * or a key moves it, so that only a settled width is stored. Placed in a `Table.Head`, which
- * Kumo makes `relative` and a hover group.
+ * or a key moves it, so that only a settled width is stored; a cancelled drag puts back the width
+ * it began from. Placed in a `Table.Head`, which Kumo makes `relative` and a hover group.
  *
  * Kumo's `Table.ResizeHandle` is only the visual: it fixes its own `aria-label` and classes, and it
  * is `invisible` until hovered, which takes it out of the tab order. This handle is reachable by
@@ -41,6 +41,13 @@ export const ColumnResizeHandle = ({ column, width, onResize, onReset }: {
     onResize(widthAt(event), true)
     drag.current = null
   }
+  // A cancelled drag (the browser or the system taking the gesture over) may report any position,
+  // 0 among them, so it puts back the width the drag began from, which is the one stored.
+  const cancelDrag = () => {
+    if (drag.current === null) return
+    onResize(drag.current.width, false)
+    drag.current = null
+  }
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const step = event.shiftKey ? SHIFT_KEY_STEP : KEY_STEP
     if (event.key === 'ArrowLeft') onResize(width - step, true)
@@ -58,7 +65,7 @@ export const ColumnResizeHandle = ({ column, width, onResize, onReset }: {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
-      onPointerCancel={endDrag}
+      onPointerCancel={cancelDrag}
       onKeyDown={onKeyDown}
       onDoubleClick={onReset}
     >
