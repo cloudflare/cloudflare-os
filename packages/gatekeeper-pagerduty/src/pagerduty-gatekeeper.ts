@@ -2,10 +2,10 @@
 // whether to the whole account, a team, a service, an incident or a schedule. It owns the
 // binding's action journal, the temporary IDs of incidents and overrides not yet created, and a
 // read cache partitioned by connection. It pins the user and account the connection belongs to,
-// and mints the capabilities gadgets hold (pagerduty-sessions.ts). Every PagerDuty request runs
-// through the account's credential source.
+// and mints the capabilities gadgets hold (pagerduty-sessions.ts) and the delivery stubs of their
+// hooks (pagerduty-hooks.ts). Every PagerDuty request runs through the account's credential source.
 
-import { DurableObject, type RpcStub } from "cloudflare:workers";
+import { DurableObject, restore, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
@@ -24,8 +24,12 @@ import {
 } from "./pagerduty-credentials";
 import { webOrigin, type Env, type PagerDutyGatekeeperImplProps, type ResourceKind } from "./pagerduty-env";
 import {
+  HOOKS_NOT_CONFIGURED, PagerDutyHookDeliveryImpl, driverName, hookDescription, hooksConfigured, watchedKinds,
+  type PagerDutyHookDelivery,
+} from "./pagerduty-hooks";
+import {
   PagerDutyAccountImpl, PagerDutyIncidentImpl, PagerDutyScheduleImpl, PagerDutyServiceImpl, PagerDutyTeamImpl,
-  SessionContext, type ObjectRef, type SessionHost,
+  SessionContext, type HookScope, type ObjectRef, type SessionHost,
 } from "./pagerduty-sessions";
 import { resourceUrl, sameTenant } from "./pagerduty-urls";
 import type { PagerDutyAccount, PagerDutyIncident, PagerDutySchedule, PagerDutyService, PagerDutyTeam } from "./types";
@@ -101,6 +105,20 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     resolve: id => this.#refs.resolve(id),
     allocate: kind => this.#refs.allocate(sequence => `~${sequence}`, { kind }),
     submit: (queue, kind, payload) => this.#submit(queue, kind, payload),
+    subscribe: async (queue, hook, options, scope) => {
+      if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
+      const events = watchedKinds(options);
+      // Pins the binding's account, which its driver is named by, before the user is asked.
+      await this.#me();
+      using delivery: RpcStub<PagerDutyHookDelivery> = await this.ctx.restore(scope);
+      const controller = this.ctx.exports.PagerDutyHookController({ props: {
+        key: crypto.randomUUID(), account: driverName(this.ctx.props), events, delivery,
+        ...(scope.incidentId ? { incidentId: scope.incidentId } : {}),
+        ...(scope.within.serviceId ? { serviceId: scope.within.serviceId } : {}),
+      } });
+      // @ts-expect-error Workers widens the controller's hook type across bindHook RPC.
+      await queue.bindHook(controller, hook, hookDescription(this.ctx.props, scope, events));
+    },
   };
 
   async describe(): Promise<ResourceDescription> {
@@ -111,11 +129,12 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     return props.resourceKind === "account"
       ? {
         url: resourceUrl({ ...props, kind: "account" }), title: host, snippet: "PagerDuty account",
-        suggestedBindingName: bindingName, tsType,
+        suggestedBindingName: bindingName, tsType, hookTsType: "PagerDutyEventHook",
       }
       : {
         url: resourceUrl({ ...props, kind: props.resourceKind }), title: `PagerDuty ${noun} ${props.id}`,
         snippet: host, suggestedBindingName: bindingName, tsType,
+        ...(props.resourceKind === "schedule" ? {} : { hookTsType: "PagerDutyEventHook" }),
       };
   }
 
@@ -140,6 +159,11 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
       case "incident": return new PagerDutyIncidentImpl(ctx(), props.id, {});
       case "schedule": return new PagerDutyScheduleImpl(ctx({ kind: "schedule", id: props.id }), props.id, {});
     }
+  }
+
+  /** The target of a hook's delivery stub, minted by `SessionHost.subscribe` with the hook's scope. */
+  [restore](scope: HookScope): PagerDutyHookDelivery {
+    return new PagerDutyHookDeliveryImpl(this.#sessionHost, scope);
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {

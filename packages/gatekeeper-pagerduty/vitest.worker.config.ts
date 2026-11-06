@@ -23,12 +23,14 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           PAGERDUTY_GATEKEEPER: { className: "PagerDutyGatekeeperImpl", useSQLite: true },
+          PAGERDUTY_HOOK_DRIVER: { className: "PagerDutyHookDriver", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
         },
         bindings: {
           CLIENT_ID: "test-client-id",
           CLIENT_SECRET: "test-client-secret",
           BASE_URL: "http://localhost:8787/gatekeeper/pagerduty",
+          PAGERDUTY_WEBHOOK_SECRET: "test-webhook-secret",
         },
       },
     }),

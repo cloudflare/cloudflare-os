@@ -5,7 +5,7 @@
 // by augmenting it.
 
 import type { TestHooks } from "./workerd/worker.js";
-import type { UserAccount } from "../src/pagerduty.js";
+import type { PagerDutyHookDriver, UserAccount } from "../src/pagerduty.js";
 
 declare global {
   namespace Cloudflare {
@@ -13,6 +13,7 @@ declare global {
       TEST_HOOKS: DurableObjectNamespace<TestHooks>;
       USER_ACCOUNT: DurableObjectNamespace<UserAccount>;
       PAGERDUTY_GATEKEEPER: DurableObjectNamespace;
+      PAGERDUTY_HOOK_DRIVER: DurableObjectNamespace<PagerDutyHookDriver>;
     }
   }
 }

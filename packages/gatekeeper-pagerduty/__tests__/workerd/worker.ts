@@ -4,17 +4,23 @@
 // `TestHooks` has to be a Durable Object: a `DurableObjectClass` from `ctx.exports.X({props})` is
 // only reachable through `ctx.facets`, which is how the overseer instantiates a gatekeeper. A stub to
 // a facet, or to a session it mints, cannot be handed to the test, so TestHooks runs each scenario
-// itself -- a chain of method calls on a session -- and returns the result as plain data.
+// itself -- a chain of method calls on a session -- and returns the result as plain data. For
+// hooks it also stands in for the overseer: it keeps each bound controller, enables it with an
+// initiator whose firings reach it, and records what each firing observed and received.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, ObservationDescription,
+  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { PagerDutyGatekeeperImplProps } from "../../src/pagerduty-env.js";
+import type { HookScope } from "../../src/pagerduty-sessions.js";
+import type { PagerDutyEvent, PagerDutySubscribeOptions } from "../../src/types.js";
 
 export { default } from "../../src/pagerduty.js";
 export * from "../../src/pagerduty.js";
-import { GatekeeperUserImpl, PagerDutyVerifier } from "../../src/pagerduty.js";
+import {
+  GatekeeperUserImpl, PagerDutyGatekeeperImpl, PagerDutyHookController as ProductionHookController, PagerDutyVerifier,
+} from "../../src/pagerduty.js";
 
 /**
  * The account entrypoint, reachable for tests. Under the capnweb-validate *vite* plugin, which
@@ -27,6 +33,9 @@ export class TestUser extends GatekeeperUserImpl {}
 /** The verifier entrypoint, reachable for tests -- see `TestUser`. */
 export class TestVerifier extends PagerDutyVerifier {}
 
+/** The hook controller, under its production name, which the facet mints it by -- see `TestUser`. */
+export class PagerDutyHookController extends ProductionHookController {}
+
 export type GatekeeperProps = PagerDutyGatekeeperImplProps;
 
 type UserProps = { userObjectId: string };
@@ -36,6 +45,9 @@ type TestExports = {
   TestUser(options: { props: UserProps }): Record<string, (...args: unknown[]) => Promise<unknown>>;
   TestVerifier(options: { props: UserProps }): Record<string, (...args: unknown[]) => Promise<unknown>>;
   TestCallback(options: { props: UserProps }): Fetcher<GatekeeperConnectCallback>;
+  TestHooks: DurableObjectNamespace<TestHooks>;
+  TestHookInitiator(options: { props: { hooks: string; hook: string } }): Fetcher<TestHookInitiator>;
+  TestHookDelivery(options: { props: TestHookDeliveryProps }): Fetcher<TestHookDelivery>;
 };
 
 /** A stand-in for the Workshop's connect callback, persistent as the Workshop's own is. */
@@ -81,12 +93,14 @@ type Callable = Record<string, (...args: unknown[]) => Promise<unknown>> & Parti
 type GatekeeperFacet = {
   describe(): Promise<unknown>;
   getAutoApprovableActions(): Promise<unknown>;
-  startSession(queue: RecordingQueue): Promise<Callable>;
+  startSession(queue: RpcTarget): Promise<Callable>;
   applyAction(actionId: number, cache: RpcTarget): Promise<void>;
   rejectAction(actionId: number): Promise<unknown>;
   verifyObserverAccess(observers: { id: string; verifier: unknown }[], subresources: string[]):
     Promise<{ allowedObserverIds: string[] }>;
   getHistoricalSubresources(): Promise<string[]>;
+  testRestoreThrough(hooks: string, facetName: string, props: GatekeeperProps): Promise<void>;
+  testDeliver(scope: HookScope, initiator: unknown, event: unknown): Promise<void>;
 };
 
 class NullGitCache extends RpcTarget {}
@@ -195,4 +209,180 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async user(userObjectId: string, method: string, ...args: unknown[]): Promise<Outcome<unknown>> {
     return await outcome(() => this.#exports.TestUser({ props: { userObjectId } })[method](...args));
   }
+
+  // -- hooks ------------------------------------------------------------------------------
+
+  #hooks = new Map<string, HookState>();
+
+  #hook(hook: string): HookState {
+    let state = this.#hooks.get(hook);
+    if (!state) this.#hooks.set(hook, state = { received: [], observations: [], submitted: [], firings: 0, failures: 0 });
+    return state;
+  }
+
+  /**
+   * Subscribes the hook named `hook` through the capability `steps` open from the session, as
+   * executeCode would, and returns what it was bound with.
+   */
+  async subscribeHook(hook: string, facetName: string, props: GatekeeperProps, steps: Step[],
+                      options?: PagerDutySubscribeOptions): Promise<Outcome<HookDescription>> {
+    return await outcome(async () => {
+      const facet = this.#gatekeeper(facetName, props);
+      await facet.testRestoreThrough(this.ctx.id.toString(), facetName, props);
+      const owned: Callable[] = [await facet.startSession(new BindingQueue(this.ctx.storage, hook))];
+      try {
+        for (const [method, ...args] of steps) owned.push(await owned.at(-1)![method](...args) as Callable);
+        using callback = new RpcStub(new RecordingHook(this.#hook(hook)));
+        await owned.at(-1)!.subscribe(callback, options);
+      } finally {
+        for (const capability of owned.toReversed()) capability[Symbol.dispose]?.();
+      }
+      return this.ctx.storage.kv.get<HookDescription>(`hook:${hook}:description`)!;
+    });
+  }
+
+  async enableHook(hook: string): Promise<Outcome<void>> {
+    const initiator = this.#exports.TestHookInitiator({ props: { hooks: this.ctx.id.toString(), hook } });
+    return await outcome(() => this.#controller(hook).enable(initiator, { workspaceId: "test-workspace" }));
+  }
+
+  async disableHook(hook: string): Promise<void> {
+    await this.#controller(hook).disable();
+  }
+
+  /** The overseer's `HookInitiator.startHook()` for the hook named `hook`. */
+  startHook(hook: string) {
+    const state = this.#hook(hook);
+    state.firings++;
+    return { callback: new RecordingHook(state), approvalQueue: new RpcStub(new FiringQueue(state)) };
+  }
+
+  /** What a delivery stub the facet minted reaches: the facet's own `[restore]()` target. */
+  async deliverHook(facetName: string, props: GatekeeperProps, scope: HookScope, initiator: unknown, event: unknown): Promise<void> {
+    await this.#gatekeeper(facetName, props).testDeliver(scope, initiator, event);
+  }
+
+  /** Makes the hook's next `count` deliveries throw, as a failing gadget's would. */
+  failHook(hook: string, count: number): void {
+    this.#hook(hook).failures = count;
+  }
+
+  /** Has the hook add `note` to each event's incident, through the capability the event carries. */
+  replyHook(hook: string, note: string): void {
+    this.#hook(hook).reply = note;
+  }
+
+  readHook(hook: string): HookState {
+    return this.#hook(hook);
+  }
+
+  #controller(hook: string): HookController<RpcTarget> {
+    const controller = this.ctx.storage.kv.get<HookController<RpcTarget>>(`hook:${hook}:controller`);
+    if (!controller) throw new Error(`No hook ${hook} has been bound.`);
+    return controller;
+  }
 }
+
+/** One hook's firings, as the test reads them back. */
+type HookState = {
+  /** Each event received, without its incident capability. */
+  received: Omit<PagerDutyEvent, "incident">[];
+  observations: ObservationDescription[];
+  /** The titles of the actions the firings queued. */
+  submitted: string[];
+  /** How many firings were started. */
+  firings: number;
+  /** Fail this many more deliveries. */
+  failures: number;
+  reply?: string;
+};
+
+type TestHookDeliveryProps = { hooks: string; facetName: string; props: GatekeeperProps; scope: HookScope };
+
+function testHooks(exports: Cloudflare.Exports, id: string) {
+  const namespace = (exports as unknown as TestExports).TestHooks;
+  return namespace.get(namespace.idFromString(id));
+}
+
+/** The overseer's HookInitiator: each firing reaches the TestHooks object that enabled the hook. */
+export class TestHookInitiator extends WorkerEntrypoint<Cloudflare.Env, { hooks: string; hook: string }> {
+  startHook() {
+    return testHooks(this.ctx.exports, this.ctx.props.hooks).startHook(this.ctx.props.hook);
+  }
+}
+
+/**
+ * Stands in for the stub the facet mints with `ctx.restore()`, which this pool cannot do (its
+ * Durable Object wrappers don't forward `[restore]`): it reaches the facet's real `[restore]`
+ * target through TestHooks.
+ */
+export class TestHookDelivery extends WorkerEntrypoint<Cloudflare.Env, TestHookDeliveryProps> {
+  deliver(initiator: unknown, event: unknown) {
+    const { hooks, facetName, props, scope } = this.ctx.props;
+    return testHooks(this.ctx.exports, hooks).deliverHook(facetName, props, scope, initiator, event);
+  }
+}
+
+/** The queue a subscription binds its hook on: keeps the controller, as the overseer would. */
+class BindingQueue extends RpcTarget {
+  constructor(private readonly storage: DurableObjectStorage, private readonly hook: string) {
+    super();
+  }
+
+  async bindHook(controller: unknown, _callback: unknown, description: HookDescription): Promise<void> {
+    this.storage.kv.put(`hook:${this.hook}:controller`, controller);
+    this.storage.kv.put(`hook:${this.hook}:description`, description);
+  }
+}
+
+/** The approval queue of every firing of one hook. */
+class FiringQueue extends RpcTarget {
+  constructor(private readonly state: HookState) {
+    super();
+  }
+
+  async authorizeObservation(observation: ObservationDescription): Promise<void> {
+    this.state.observations.push(observation);
+  }
+
+  async submitAction(_actionId: number, description: ActionDescription): Promise<void> {
+    this.state.submitted.push(description.title);
+  }
+}
+
+/** A gadget's event hook: records each event, and fails or replies as its state says. */
+class RecordingHook extends RpcTarget {
+  constructor(private readonly state: HookState) {
+    super();
+  }
+
+  async receiveEvent(event: PagerDutyEvent): Promise<void> {
+    const { incident, ...received } = event;
+    try {
+      if (this.state.failures > 0) {
+        this.state.failures--;
+        throw new Error("The test hook failed.");
+      }
+      this.state.received.push(received);
+      if (this.state.reply !== undefined) await incident.addNote(this.state.reply);
+    } finally {
+      (incident as Partial<Disposable>)[Symbol.dispose]?.();
+    }
+  }
+}
+
+type HookTestFacet = PagerDutyGatekeeperImpl & Pick<GatekeeperFacet, "testRestoreThrough" | "testDeliver">;
+const testPrototype = PagerDutyGatekeeperImpl.prototype as HookTestFacet;
+
+/** Makes this facet's `ctx.restore()` mint TestHookDelivery stubs that route back to `[restore]`. */
+testPrototype.testRestoreThrough = async function(hooks, facetName, props) {
+  const { ctx } = this as unknown as { ctx: DurableObjectState };
+  const exports = ctx.exports as unknown as TestExports;
+  ctx.restore = async (scope: HookScope) => Object.assign(
+    exports.TestHookDelivery({ props: { hooks, facetName, props, scope } }), { [Symbol.dispose]() {} });
+};
+
+/** Delivers through the target the facet's `[restore]()` returns for a hook's delivery stub. */
+testPrototype.testDeliver = function(scope, initiator, event) {
+  return this[restore](scope).deliver(initiator as never, event as never);
+};

@@ -28,14 +28,15 @@ import {
   pendingNotes, type IncidentQuery, type Pending,
 } from "./pagerduty-simulation";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
+import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
 import type {
-  Cursor, PagerDutyAccount, PagerDutyAccountMetadata, PagerDutyAlert, PagerDutyCreateIncidentOptions, PagerDutyIncident,
-  PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyListOptions, PagerDutyNote,
-  PagerDutyOnCall, PagerDutyOnCallFilter, PagerDutyOnCallWindow, PagerDutyOverride, PagerDutyPageOptions,
+  Cursor, PagerDutyAccount, PagerDutyAccountMetadata, PagerDutyAlert, PagerDutyCreateIncidentOptions,
+  PagerDutyIncident, PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyListOptions,
+  PagerDutyNote, PagerDutyOnCall, PagerDutyOnCallFilter, PagerDutyOnCallWindow, PagerDutyOverride, PagerDutyPageOptions,
   PagerDutyPriority, PagerDutyResponderRequest, PagerDutySchedule, PagerDutyScheduleDetails, PagerDutyScheduleSummary,
-  PagerDutyService, PagerDutyServiceDetails, PagerDutyServiceSummary, PagerDutyShift, PagerDutyTeam,
-  PagerDutyTeamMember, PagerDutyTeamMetadata, PagerDutyTeamSummary, PagerDutyTimeWindow, PagerDutyTimelineEntry,
-  PagerDutyUrgency, PagerDutyUser,
+  PagerDutyService, PagerDutyServiceDetails, PagerDutyServiceSummary, PagerDutyShift, PagerDutySubscribeOptions,
+  PagerDutyTeam, PagerDutyTeamMember, PagerDutyTeamMetadata, PagerDutyTeamSummary, PagerDutyTimeWindow,
+  PagerDutyTimelineEntry, PagerDutyUrgency, PagerDutyUser,
 } from "./types";
 
 /** How long a service's team and escalation policy, read to check a binding's scope, stay cached. */
@@ -56,7 +57,8 @@ const MAX_SNOOZE_SECONDS = 604_800;
 /** The longest schedule window PagerDuty renders shifts for. */
 const MAX_SHIFT_DAYS = 90;
 
-const HOOKS_UNAVAILABLE = "PagerDuty hooks are not configured on this deployment.";
+/** The capability a hook subscribed through: its scope, what it may reach, and its incident, if one. */
+export type HookScope = { scope: readonly ObjectRef[]; within: Within; incidentId?: string };
 
 /** What a session may ask of the gatekeeper Durable Object. */
 export type SessionHost = {
@@ -74,6 +76,9 @@ export type SessionHost = {
   /** Allocates a temporary ID for something a pending action creates. */
   allocate(kind: "incident" | "note" | "override"): string;
   submit<K extends keyof PagerDutyActions>(queue: ActionSubmitter, kind: K, payload: PagerDutyActions[K]): Promise<number>;
+  /** Binds `hook` to the incident events `scope` reaches (see pagerduty-hooks.ts). */
+  subscribe(queue: RpcStub<ApprovalQueue>, hook: RpcStub<PagerDutyEventHookTarget>,
+            options: PagerDutySubscribeOptions | undefined, scope: HookScope): Promise<void>;
 };
 
 /** An object a read depends on. */
@@ -120,7 +125,7 @@ export class SessionContext implements Disposable {
 }
 
 /** The objects a capability may reach beyond itself: those in this team, or on this service. */
-type Within = { teamId?: string; serviceId?: string };
+export type Within = { teamId?: string; serviceId?: string };
 
 const team = (id: string): ObjectRef => ({ kind: "team", id });
 const service = (id: string): ObjectRef => ({ kind: "service", id });
@@ -177,12 +182,12 @@ function windowOf(window: PagerDutyTimeWindow | undefined, days: number, maxDays
 // Shared reads
 
 /** A service as PagerDuty describes it now. */
-async function readService(ctx: SessionContext, id: string): Promise<WireService> {
-  return (await ctx.host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
+async function readService({ host }: { host: SessionHost }, id: string): Promise<WireService> {
+  return (await host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
 }
 
 /** A service's team and escalation policy, cached briefly, for checking a binding's scope. */
-function cachedService(ctx: SessionContext, id: string): Promise<WireService> {
+function cachedService(ctx: { host: SessionHost }, id: string): Promise<WireService> {
   return ctx.host.cached(`service:${id}`, SERVICE_TTL_MS, () => readService(ctx, id));
 }
 
@@ -191,6 +196,18 @@ function requireTeam(wire: { teams?: WireRef[] }, teamId: string | undefined, wh
   if (teamId !== undefined && !wire.teams?.some(({ id }) => id === teamId)) {
     throw new Error(`That ${what} doesn't belong to this team.`);
   }
+}
+
+/**
+ * Why an incident on service `serviceId` is outside a capability's team or service, or undefined
+ * when it is within.
+ */
+export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, within: Within): Promise<string | undefined> {
+  if (within.serviceId && serviceId !== within.serviceId) return "That incident belongs to another service.";
+  if (within.teamId && !(await cachedService(ctx, serviceId)).teams?.some(({ id }) => id === within.teamId)) {
+    return "That incident doesn't belong to this team.";
+  }
+  return undefined;
 }
 
 /** Every user matching `query`, up to `MAX_USERS`. */
@@ -396,9 +413,11 @@ async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | 
   return entries;
 }
 
-const unsupportedHooks = (): never => {
-  throw new Error(HOOKS_UNAVAILABLE);
-};
+/** Binds `hook` to events on the incidents `ctx` reaches: those `within`, or the one `incidentId` names. */
+function subscribed(ctx: SessionContext, hook: RpcStub<PagerDutyEventHookTarget>, options: PagerDutySubscribeOptions | undefined,
+                    within: Within, incidentId?: string): Promise<void> {
+  return ctx.host.subscribe(ctx.queue, hook, options, { scope: ctx.scope, within, ...(incidentId ? { incidentId } : {}) });
+}
 
 // ---------------------------------------------------------------------------
 // Account
@@ -476,8 +495,8 @@ export class PagerDutyAccountImpl extends RpcTarget implements PagerDutyAccount 
     return await listPriorities(this.#ctx);
   }
 
-  async subscribe(): Promise<void> {
-    unsupportedHooks();
+  async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
+    await subscribed(this.#ctx, hook, options, {});
   }
 
   [Symbol.dispose](): void {
@@ -568,8 +587,8 @@ export class PagerDutyTeamImpl extends RpcTarget implements PagerDutyTeam {
     return await listPriorities(this.#ctx);
   }
 
-  async subscribe(): Promise<void> {
-    unsupportedHooks();
+  async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
+    await subscribed(this.#ctx, hook, options, { teamId: this.#id });
   }
 
   [Symbol.dispose](): void {
@@ -654,8 +673,8 @@ export class PagerDutyServiceImpl extends RpcTarget implements PagerDutyService 
     return await listPriorities(this.#ctx);
   }
 
-  async subscribe(): Promise<void> {
-    unsupportedHooks();
+  async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
+    await subscribed(this.#ctx, hook, options, this.#within);
   }
 
   [Symbol.dispose](): void {
@@ -719,11 +738,8 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
         api.get<{ incident: WireIncident }>(`/incidents/${id}`, includes.length ? { include: includes } : {}));
       loaded = { wire };
     }
-    const serviceId = loaded.wire ? loaded.wire.service.id : loaded.pending.service.id;
-    if (this.#within.serviceId && serviceId !== this.#within.serviceId) {
-      throw new Error("That incident belongs to another service.");
-    }
-    if (this.#within.teamId) requireTeam(await cachedService(this.#ctx, serviceId), this.#within.teamId, "incident");
+    const why = await outsideOf(this.#ctx, loaded.wire ? loaded.wire.service.id : loaded.pending.service.id, this.#within);
+    if (why) throw new Error(why);
     return loaded;
   }
 
@@ -894,8 +910,10 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     await this.#stage("postStatusUpdate", target => ({ incident: target, message }));
   }
 
-  async subscribe(): Promise<void> {
-    unsupportedHooks();
+  async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
+    const loaded = await this.#load();
+    if (!loaded.wire) throw new Error("This incident can't be watched until PagerDuty has opened it.");
+    await subscribed(this.#ctx, hook, options, this.#within, loaded.wire.id);
   }
 
   [Symbol.dispose](): void {

@@ -34,7 +34,8 @@
       "tag": "v0",
       "new_sqlite_classes": [
         "UserAccount",
-        "PagerDutyGatekeeperImpl"
+        "PagerDutyGatekeeperImpl",
+        "PagerDutyHookDriver"
       ]
     }
   ]
