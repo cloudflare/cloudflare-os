@@ -640,8 +640,9 @@ for mapping provisional IDs to provider IDs.
 
 ## Observations
 
-Every method that returns provider data (anything that came from the provider's API, fetched now or
-cached earlier) must await `authorizeObservation()` before returning it: fetch, authorize, return.
+Every method that returns information to its caller must await `authorizeObservation()` before
+returning it: fetch, authorize, return. That includes provider data (anything that came from the
+provider's API, fetched now or cached earlier), values derived from it, and simulated state.
 Report all access dependencies as explicit `subresources`, and keep observer authorization in
 `verifyObserverAccess()`. [Simulated reads](#simulation-and-subresources) report the same IDs.
 Do not build observer rosters, observed-set logs, `excludeObservers`, or legacy trackers for new code.
@@ -692,32 +693,47 @@ derive requirements from current binding state, not fields absent from older per
 
 Simulation doesn't change what a read reports:
 
-- A simulated read of an existing resource reports that resource's IDs, exactly as an unsimulated
-  read would.
+- A simulated read reports every real resource its data came from, in the provider's current
+  (unapplied) state, plus every container the simulated view places it in. A pending move from P
+  to Q reports both until it applies.
 - Provider data stored in pending-action state (previous values, copied or quoted content) keeps
   its source's IDs when replayed.
+- Pending permission changes (sharing, visibility, membership) never relax what a read reports.
+  `verifyObserverAccess()` checks live provider state only, never simulated state.
 - Only content that never came from the provider adds no IDs: action arguments and provisional IDs
-  you generated. A resource not created yet, built only from such content, reports `[]` plus any
+  you generated. A read returning only such content still authorizes, reporting `[]` plus any
   container or account requirement.
 - Do not invent IDs for pending actions or simulated resources.
 
-Simulation state is shared by every chat and gadget using the connection, and the gatekeeper
-cannot tell which one is reading, so never assume the reader already received what it replays.
-Reporting an ID again costs nothing: admission reads distinct requirement keys, not repeated reads.
-Content one chat writes into a pending action reaches other chats and gadgets with no requirement;
-the kernel accepts this as indirect disclosure (`docs/observers.md` §10).
+While a Workshop `createExternalResource` creation is pending, the kernel records nothing its
+simulated reads report (`docs/observers.md` §10), so that resource must hold no provider data.
+
+Keep pending-action and cached state in the connection's facet storage, never in the account
+Durable Object or anywhere else shared across connections: requirements are recorded per
+connection. Within one connection, every chat and gadget reads that shared state. Authorize each
+read through the reading session's own approval queue, never one captured when an action was
+submitted or stored on the facet: that queue attributes the read to its chat or gadget. Never assume
+the reader already received what it replays. Re-reporting adds no admission work, since admission
+reads distinct requirement keys, though each read still checks its own audience.
+
+Content one chat writes into a pending action reaches every other chat and gadget on the connection
+before anyone approves it, with no requirement, and stays disclosed if the action is rejected. A
+chat's audience is its "build" collaborators while a gadget's includes "use" collaborators, so text
+a chat quotes from a resource checked only against "build" collaborators can reach "use"
+collaborators this way. The kernel accepts this as indirect disclosure (`docs/observers.md` §10):
+approval gates what reaches the provider, not what other contexts in the workspace see.
 
 ### New-gatekeeper observer contract
 
 New gatekeepers follow these rules, although the current interface and its JSDoc still describe the
 legacy observer methods:
 
-- Every read that returns provider data explicitly reports all its dependencies, even ones an
-  earlier read already reported, simulated reads included. Workshop records requirements per chat
-  or gadget, not per binding.
+- Every read that returns information to its caller explicitly reports all its dependencies, even
+  ones an earlier read already reported, simulated reads included. Workshop records requirements
+  per chat or gadget, not per binding.
 - `[]` adds **no requirement**; requirements already recorded stay in force. It never means a
-  binding/admission baseline was already checked. Report membership requirements explicitly; when a
-  live connection alone grants access to everything returned, use
+  binding/admission baseline was already checked. Report membership requirements explicitly; when
+  any account on a deployment-fixed service instance may read everything returned, use
   [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), not `[]`.
 - Private-only reads report the actual mailbox, account, document, or other resource ID;
   `verifyObserverAccess()` denies observers who may not read it. Neither `[]` nor a synthetic
@@ -819,12 +835,20 @@ and limits of the existing implementations.
 
 ### Connection-only access (`global`)
 
-Use `GLOBAL_SUBRESOURCE_ID` when the observer's own live connection to the same service instance
-grants access to everything disclosed. This is strategy B, not unrestricted D (`[]`). Read-only
-APIs with separate resource ACLs or private account data do not qualify.
+Use `GLOBAL_SUBRESOURCE_ID` only when the deployed Worker's configuration fixes the one service
+instance every account of this vendor connects to, and any account connected to it may read
+everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, per-user
+roles or scopes, and private account data in the answer disqualify it.
 
-For example, an Access-protected catalog with instance-wide read access can offer project/item
-bindings without separate sharing ACLs. Each read reports the same requirement:
+`"global"` names no instance; the deployment supplies its meaning. When accounts choose their
+instance (a self-hosted URL, a cloud or site ID, an Access team domain, a directory tenant), report
+a structured instance ID instead, such as `instance/<stable instance id>`, and have the oracle
+compare it with the observer's own instance. The [tenant identity](#subresource-ids-name-resources)
+rules apply: repointing a deployment that has recorded `"global"` requires an explicit migration.
+
+For example, a catalog whose origin is fixed in the Worker's `env`, behind one Access policy that
+grants instance-wide read access, can offer project/item bindings without separate sharing ACLs.
+Each read reports the same requirement:
 
 ```ts
 import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
@@ -836,25 +860,31 @@ await queue.authorizeObservation({
 });
 ```
 
-Report it on every read that returns provider data, including empty results, cache hits, cursor pages, and hooks.
-Bindings still enforce their project/item scope; observer access does not expand the caller's grant.
+Report it on every read that returns information, including empty results, cache hits, cursor
+pages, simulated reads, and hooks. Bindings still enforce their project/item scope; observer access
+does not expand the caller's grant.
 
-The observer's verifier delegates to its own account. Using `getCredentials()` from the
-[credential sequence](#2-expose-the-account-rpc-methods), the account's oracle can be:
+The observer's verifier delegates to its own account. Because every account here connects to the
+`env`-fixed origin, the account's oracle needs only its own grant, using `getCredentials()` from the
+[credential sequence](#2-expose-the-account-rpc-methods):
 
 ```ts
 async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
   if (ids.some(id => id !== GLOBAL_SUBRESOURCE_ID)) {
     throw new Error("Unknown subresource ID.");
   }
-  await this.getCredentials();
-  return ids.map(() => true);
+  // Throws when the grant is expired, dead on refresh, or disconnected.
+  const { creds } = await this.getCredentials();
+  // A live grant with narrower scopes or role than the owner's is a definite denial.
+  return ids.map(() => grantCoversCatalogReads(creds));
 }
 ```
 
-Use the normal credential lifecycle for expiry, refresh, and disconnect, not a stored-token check
-or an unnecessary per-object probe. Credential failures must throw. Document revocation-detection
-limits; local validity cannot guarantee immediate detection of remote revocation.
+`getCredentials()` refreshes only when the access token expires, so this oracle notices an
+observer's removal from the instance no sooner than that: within one token lifetime if refresh
+re-evaluates access, and never for a credential that does not expire. If that window is too long,
+add one identity call with the observer's credentials, not a probe per object. Credential failures
+must throw. Document the window you accept.
 
 Compare the sentinel directly before `parseSubresourceId()`, which rejects it. The kernel treats
 it as an ordinary requirement, not a wildcard or automatic grant. It cannot replace independent
@@ -1073,7 +1103,8 @@ workspace its sharing until the kernel distinguishes the two.
 
 ### Subresource IDs name resources
 
-Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global).
+Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global)
+on a deployment-fixed instance.
 Build every **structured resource** ID with `formatSubresourceId()` from `./subresource-ids`, and
 read it back in `verifyObserverAccess()` with `parseSubresourceId()`:
 
@@ -1089,11 +1120,18 @@ including that one is shared with nobody else. Set `namespace` only when the gat
 distinct product families with their own resources, as Google does with Gmail, Drive and BigQuery.
 A single-product gatekeeper omits it instead of repeating its own name.
 
-Include enough provider identity to distinguish resources across service instances, using real
-resource kinds such as Slack's `workspace/<teamId>/conversation/<conversationId>`. Prefer stable
-provider IDs; escaping does not make a mutable URL or account-relative alias stable. Recorded IDs
-must retain their meaning across renames and reconnects. Report independently required membership
-and child-resource permissions separately; nesting does not imply access inheritance.
+Cloud IDs, workspace URLs, organization IDs, and similar provider-instance identifiers are **tenant
+identities**. Qualify a resource with its tenant, using real resource kinds such as Slack's
+`workspace/<teamId>/conversation/<conversationId>`, unless the deployed Worker's configuration
+permanently fixes that tenant. A tenant chosen through a connected account, resource binding, or
+URL is not fixed, and one OAuth app can serve many tenants. A fixed tenant left implicit, as in
+`GLOBAL_SUBRESOURCE_ID`, must stay fixed while recorded requirements exist: repointing the
+deployment needs an explicit migration, never a silent reinterpretation of old IDs.
+
+Prefer stable provider IDs; escaping does not make a mutable URL or account-relative alias stable.
+Recorded IDs must retain their meaning across renames and reconnects. Report independently required
+tenant membership and child-resource permissions separately, even when the tenant is implicit;
+nesting does not imply access inheritance.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes.

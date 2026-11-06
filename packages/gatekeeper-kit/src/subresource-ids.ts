@@ -3,11 +3,13 @@
 const SEPARATOR = "/";
 
 /**
- * Connection-only requirement: `verifyObserverAccess()` must establish that the observer's own
- * live connection to the same service instance grants access to everything disclosed.
- * Report it on every such disclosure; `[]` means unrestricted. It is not a wildcard or grant
- * and cannot replace independent membership, resource ACLs, or private-account checks.
- * Compare it directly before {@link parseSubresourceId}, which rejects it.
+ * Connection-only requirement, for a gatekeeper whose deployed Worker configuration fixes the one
+ * service instance every account connects to: `verifyObserverAccess()` must establish that the
+ * observer's own account can read everything disclosed there. When accounts choose their instance,
+ * report a structured instance ID instead. Report it on every such disclosure; `[]` means
+ * unrestricted. It is not a wildcard or grant and cannot replace independent membership, resource
+ * ACLs, or private-account checks. Compare it directly before {@link parseSubresourceId}, which
+ * rejects it.
  */
 export const GLOBAL_SUBRESOURCE_ID = "global";
 
@@ -20,7 +22,10 @@ export const GLOBAL_SUBRESOURCE_ID = "global";
  * the gatekeeper's `verifyObserverAccess()` when it reads the ID back, and many resources may map to
  * one check. Nesting implies no access inheritance either way.
  *
- * Include enough provider identity to distinguish resources across service instances.
+ * Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities.
+ * Include a tenant fragment unless the deployed Worker's configuration permanently fixes the
+ * tenant; an account, binding, URL, or shared OAuth app does not. An implicit tenant must stay fixed
+ * while recorded requirements exist, and omitting its fragment does not omit membership checks.
  * Recorded IDs must retain their meaning across accounts, renames, and reconnects.
  */
 export type SubresourceFragment = {

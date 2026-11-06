@@ -17,7 +17,7 @@ Read `packages/workshop-shared/src/gatekeeper.ts` for the canonical interfaces a
 
 Write new gatekeepers to this observer contract:
 
-- Every read that returns provider data explicitly reports `subresources`: every resource whose access rules govern that data. A [simulated](#simulation) read reports the same IDs an unsimulated read would. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
+- Every read that returns information to its caller (provider data, anything derived from it, or simulated state) explicitly reports `subresources`: every resource whose access rules govern that information. A [simulated](#simulation) read reports every real resource its data came from. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
 - `subresources: []` adds **no requirement**. It does not clear requirements already recorded, and it never means "the binding already checked it." Private-only provider data reports a real resource ID and denies collaborators through `verifyObserverAccess()`. Report and verify any required workspace or tenant membership explicitly.
 - Implement `getHistoricalSubresources(): Promise<string[]>` as a read-only method returning `[]`, with no legacy tracker. It is required even though the current `Gatekeeper` interface does not declare it, so type-checking will not catch its absence. Do not omit or remove it.
 - Implement `addObserver(id, verifier)` and `removeObserver(id)`, which the current interface requires, as **compatibility-only no-ops**. Do not introduce observer rosters, observed-set logs, stored observer verifiers, `excludeObservers`, or new legacy trackers.
@@ -108,7 +108,7 @@ packages/gatekeeper-<name>/
 
 #### Authorizing observations
 
-Any operation that returns provider data must await `authorizeObservation()` with explicit `subresources` before returning, including cached data, simulated reads, cursor pages, and hook deliveries. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+Any operation that returns information to its caller must await `authorizeObservation()` with explicit `subresources` before returning, including cached data, simulated reads, cursor pages, and hook deliveries. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
 
 ##### What counts as an observation
 
@@ -254,19 +254,24 @@ Choose based on the service's data model and the complexity of simulating each a
 **Simulation doesn't change what a read reports.** Provider data is anything that came from the
 provider's API, whether fetched by this read or earlier and cached.
 
-- A simulated read of an existing resource reports that resource's IDs, exactly as an unsimulated
-  read would.
+- A simulated read reports every real resource its data came from, in the provider's current
+  (unapplied) state, plus every container the simulated view places it in.
 - Provider data stored in pending-action state (previous values, copied or quoted content) keeps
   its source's IDs when replayed.
+- Pending permission changes never relax what a read reports, and `verifyObserverAccess()` checks
+  live provider state only.
 - Only content that never came from the provider adds no IDs: action arguments and provisional IDs
-  you generated. A resource not created yet, built only from such content, reports `[]` plus any
+  you generated. A read returning only such content still authorizes, reporting `[]` plus any
   container or account requirement.
 - Do not invent IDs for pending actions or simulated resources.
 
-Simulation state is shared by every chat and gadget using the connection, and the gatekeeper
-cannot tell which one is reading, so never assume the reader already received what it replays.
-Content one chat writes into a pending action reaches other chats and gadgets with no requirement;
-the kernel accepts this as indirect disclosure (`docs/observers.md` §10).
+Keep simulation and cached state in the connection's facet storage, never in the account Durable
+Object. Every chat and gadget on the connection reads it, so authorize each read through the reading
+session's own queue, never one captured at submission, and never assume the reader already received
+what it replays. Content one chat writes into a pending action reaches other chats and gadgets before
+approval, with no requirement, and stays disclosed if the action is rejected; the kernel accepts this
+as indirect disclosure (`docs/observers.md` §10). See the kit's
+[simulation rules](../../../packages/gatekeeper-kit/USAGE.md#simulation-and-subresources).
 
 Keep in mind that the agent calling the API (or the agent writing a gadget to call it) is generally not aware that actions do not take place immediately. If the simulation is correct, the agent doesn't need to be aware. If the simulation has gaps, you may want to mention it in your API's doc comments, so that the calling agent knows to work around them — but ideally there are no gaps and the calling agent does not need to think about it.
 
@@ -336,11 +341,14 @@ use the same explicit-`subresources` protocol:
 - **C — Multiple access-controlled units.** Report the union of the disclosure's requirements, including independently required container/tenant membership. Variants include a list spanning ACLs, a query derived from several data sets, and a hierarchical read requiring both a folder and independently protected children. Report every source even when the derived answer has no rows. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
 - **D — Unrestricted disclosure.** Report `[]` only when no provider-side access requirement restricts the answer. This can be a public read, a local echo of supplied configuration, or a source-free computation inside an otherwise restricted binding. "Low-stakes", "no results", and "no newly observed resources" do not establish D. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
 
-**Connection-only access is B, not D.** When the observer's own live connection to the same service
-instance grants all disclosed access, report `[GLOBAL_SUBRESOURCE_ID]` from
-`@gadgets/gatekeeper-kit/subresource-ids`, not `[]`. Verify through the normal credential lifecycle,
-without per-object probes. Separate resource ACLs or private account data need stronger checks.
-See the kit's [connection-only recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
+**Connection-only access is B, not D.** When the deployed Worker's configuration fixes the one
+service instance every account connects to, and any account connected to it may read everything
+disclosed, report `[GLOBAL_SUBRESOURCE_ID]` from `@gadgets/gatekeeper-kit/subresource-ids`, not `[]`.
+When accounts choose their instance, report a structured instance ID and compare it with the
+observer's instance instead. Check that the observer's grant covers the disclosure, not only that it
+is live, and document how long a removal from the instance goes unnoticed. Per-resource ACLs,
+per-user roles, or private account data need stronger checks. See the kit's
+[connection-only recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 Keep three decisions separate: **what the binding grants**, **what this answer discloses**, and
 **what the observer oracle proves**. A table grant may report its dataset; a label-scoped mailbox
@@ -363,8 +371,8 @@ for scope-specific examples and implementation caveats.
 
 Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` JSDoc for ID limits and answer shape, and this skill for the access model: no restriction may depend on admission.
 
-1. **Report every dependency on every read that returns provider data**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. An empty result can still reveal restricted absence, so keep the container, tenant, or membership requirement even when there are no rows.
-2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Include enough provider identity for unambiguous checks across service instances, and omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
+1. **Report every dependency on every read that returns information to its caller**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. An empty result can still reveal restricted absence, so keep the container, tenant, or membership requirement even when there are no rows.
+2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
 3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
@@ -434,7 +442,7 @@ Reviews tend to stop at general correctness. The most important review is of the
   - Each binding's types expose only what that binding can do and stay small, and its reported resources and verifier checks fit that partition (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
 
 - **Observer protocol.** For new gatekeepers, reject any of the following omissions even if the code type-checks:
-  - Every read that returns provider data explicitly reports its dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. [Simulated](#simulation) reads report what an unsimulated read would; only caller-written values and provisional IDs add none.
+  - Every read that returns information to its caller explicitly reports its dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. [Simulated](#simulation) reads report every real resource their data came from plus the containers the simulated view places it in; only caller-written values and provisional IDs add none, pending permission changes relax nothing, and each read authorizes through the reading session's own queue.
   - No access requirement exists only in `addObserver()`; `verifyObserverAccess()` handles every reported kind, checks all IDs per observer, denies unauthorized accounts, and propagates indeterminate failures.
   - Grant scope, disclosure dependencies, and oracle strength are reviewed separately. Account discovery, item/member reads, derived results, and descendant capabilities may need different strategies within one binding; metadata visibility must not stand in for content access.
   - `getHistoricalSubresources()` exists and returns `[]` without reading or keeping any observer state; `addObserver(id, verifier)` and `removeObserver(id)` are no-ops.
