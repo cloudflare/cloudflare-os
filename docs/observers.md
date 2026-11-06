@@ -1015,10 +1015,13 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   (`ObserverLedger.observerScope`), never an unrelated gadget's. Two gadgets
   reporting different subresources through one connection have those requirements checked
   independently, but must still pass the connection-wide `addObserver()` check above.
-  Each observation checks its IDs for every configured observer the data reaches, online or not:
+  Each observation checks its IDs for every configured observer the data reaches who holds a live
+  session (a client interface, a capability minted into one, or an admission in flight):
   for a gadget's read, "build" collaborators and those whose access includes a gadget that
   reaches it (`gadgetsReaching`); for a workspace read, anyone with access; for a chat's, "build"
-  collaborators. A collaborator who lost access is skipped. Either way the Workshop looks up each
+  collaborators. A collaborator who lost access or holds no session is skipped: the read still
+  records its requirements, which their next admission checks before they see anything, so an
+  offline collaborator's expired or lapsed account cannot block reads. Either way the Workshop looks up each
   observer's verifier for their chosen account (`getVerifier()` refuses a disconnected or
   wrong-vendor account even when there is nothing to check) and asks `verifyObserverAccess()`:
   one call per 10 observers for a read's audience, and batches of 10,000 IDs for admission,

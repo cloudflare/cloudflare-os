@@ -47,7 +47,9 @@ async function withImpl(
 // what the restart gate counts (an entry in the sharing table is not: a collaborator who isn't
 // connected has no session to sever).
 function joinSession(impl: any, holds: "build" | number = "build"): () => void {
-  return holds === "build" ? impl.joinSession("build") : impl.joinSession("use", holds);
+  return holds === "build"
+    ? impl.joinSession({ kind: "build", profileId: "alice" })
+    : impl.joinSession({ kind: "use", profileId: "alice" }, holds);
 }
 
 function seedGatekeeper(impl: any, id: number): void {
@@ -268,7 +270,7 @@ describe("restarting sessions when verification scope widens", () => {
       () => withImpl(async (impl, restarts) => {
     // The shell lists gadgets but shows nothing any gadget read; each gadget is verified as it is
     // got, and a session holding it counts for it then.
-    impl.joinSession("use");
+    impl.joinSession({ kind: "use", profileId: "alice" });
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
@@ -442,7 +444,8 @@ describe("restarting sessions when verification scope widens", () => {
 
     // A connection capability minted into a collaborator's session (joinAs "build") counts for
     // its own lifetime: the client can dispose the interface that minted it and retain this.
-    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER, "build");
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER,
+        { kind: "build", profileId: "alice" });
     expect(restarts).toEqual([]);
 
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
@@ -462,7 +465,7 @@ describe("restarting sessions when verification scope widens", () => {
     let client = await openFakeOverseer(
         { gadgets: impl.storage.gadgets },
         { role: "use", impl: {
-            joinSession: (kind: string, gadgetId?: number) => impl.joinSession(kind, gadgetId),
+            joinSession: (holder: unknown, gadgetId?: number) => impl.joinSession(holder, gadgetId),
             authorizeGadget: async () => true,
             getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
           } });

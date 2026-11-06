@@ -108,7 +108,7 @@ const viewerUser = {
 function openViewer(impl: ObserverImpl, access: CollaboratorAccess, extra: object = {}) {
   return openFakeOverseer({ gadgets: impl.storage.gadgets }, { role: "use", access, impl: {
     users: { idFromString: (id: string) => id, get: () => viewerUser },
-    joinSession: (kind: "use", gadgetId?: number) => impl.joinSession(kind, gadgetId),
+    joinSession: (holder: unknown, gadgetId?: number) => impl.joinSession(holder as never, gadgetId),
     authorizeGadget: (...args: Parameters<ObserverImpl["authorizeGadget"]>) =>
         impl.authorizeGadget(...args),
     ...extra,

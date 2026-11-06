@@ -743,10 +743,9 @@ export function sanitizeMessageFormatRefs(
   return accepted.toSorted((a, b) => a.position - b.position);
 }
 
-// What kind of capability an open session holds, for OverseerImpl.joinSession(). The owner's
-// session is a "build" capability but never an observer's, so it is counted apart from the
-// collaborator roles.
-type SessionKind = CollaboratorRole | "owner";
+// Who an open session belongs to, for OverseerImpl.joinSession(). The owner's session is a
+// "build" capability but never an observer's, so it is counted apart from the collaborator roles.
+type SessionHolder = {kind: "owner"} | {kind: CollaboratorRole, profileId: string};
 
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
@@ -908,7 +907,11 @@ class OverseerImpl implements AgentHooks {
   // maintained by joinSession(): the client interfaces, the capabilities minted into their
   // sessions -- which the client can retain past the interface's disposal -- and in-flight
   // authorizations, which are sessions-to-be parked on collaborator-controlled awaits.
-  #liveSessions: Record<SessionKind, number> = {owner: 0, build: 0, use: 0};
+  #liveSessions: Record<SessionHolder["kind"], number> = {owner: 0, build: 0, use: 0};
+
+  // The same sessions by collaborator profile: whom a read must be verified against now (see
+  // ObserverLedger). Someone absent here is verified against what was read on their next open.
+  #liveProfileSessions = new Map<string, number>();
 
   // The subset of live "use" sessions that hold a gadget, by gadget: a "use" collaborator is
   // verified one gadget at a time, so widening what one gadget reaches only strands sessions
@@ -923,8 +926,13 @@ class OverseerImpl implements AgentHooks {
   // joins presence only once its fetchProfile() resolves, so a just-opened session is briefly
   // invisible there. That is fine for a roster and wrong for an access decision, which must never
   // conclude "nobody is here" about a session that already exists.
-  joinSession(kind: SessionKind, gadgetId?: WorkpieceId): () => void {
+  joinSession(holder: SessionHolder, gadgetId?: WorkpieceId): () => void {
+    let {kind} = holder;
+    let profileId = holder.kind === "owner" ? undefined : holder.profileId;
     this.#liveSessions[kind]++;
+    if (profileId !== undefined) {
+      this.#liveProfileSessions.set(profileId, (this.#liveProfileSessions.get(profileId) ?? 0) + 1);
+    }
     let gadget = kind === "use" ? gadgetId : undefined;
     if (gadget !== undefined) {
       this.#liveGadgetSessions.set(gadget, (this.#liveGadgetSessions.get(gadget) ?? 0) + 1);
@@ -934,11 +942,21 @@ class OverseerImpl implements AgentHooks {
       if (left) return;
       left = true;
       this.#liveSessions[kind]--;
+      if (profileId !== undefined) {
+        let remaining = this.#liveProfileSessions.get(profileId)! - 1;
+        if (remaining > 0) this.#liveProfileSessions.set(profileId, remaining);
+        else this.#liveProfileSessions.delete(profileId);
+      }
       if (gadget === undefined) return;
       let remaining = this.#liveGadgetSessions.get(gadget)! - 1;
       if (remaining > 0) this.#liveGadgetSessions.set(gadget, remaining);
       else this.#liveGadgetSessions.delete(gadget);
     };
+  }
+
+  /** The collaborators holding a live session (see joinSession), by profile id. */
+  liveCollaborators(): string[] {
+    return [...this.#liveProfileSessions.keys()];
   }
 
   // Whether some non-owner session is live right now that holds "build", or one of `affected`'s
@@ -1525,7 +1543,7 @@ class OverseerImpl implements AgentHooks {
           throw new Error("The original initiator no longer has build access to this workspace.");
         }
         // Keep verification live through inference, including after the approving client leaves.
-        leaveSession = this.joinSession("build");
+        leaveSession = this.joinSession({kind: "build", profileId: record.initiator.id});
       }
     } catch (err) {
       failure = err;
@@ -5064,7 +5082,7 @@ class OverseerImpl implements AgentHooks {
   //
   // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
   // look like an RpcTarget instead.
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind)
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
       : Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
@@ -5498,7 +5516,7 @@ class OverseerImpl implements AgentHooks {
   // `bindings` are an agent spawner's (see GatekeeperRecord.bindings).
   async addGatekeeper(
       cls: GatekeeperClass, creationSpec: GatekeeperCreationSpec, actorUserId: string,
-      joinAs?: SessionKind, bindings?: Record<string, BindingRecord>)
+      joinAs?: SessionHolder, bindings?: Record<string, BindingRecord>)
       : Promise<GatekeeperClient<any>> {
     let id = this.allocateWorkpieceId();
     let gatekeeperRecord: GatekeeperRecord = {
@@ -6824,13 +6842,20 @@ class OverseerImpl implements AgentHooks {
   // startGatekeeperSession alike -- passes through here, so this is where a connection still
   // blocked pending a scope-widening restart is refused (see #gatekeepersPendingRestart). Agent
   // loopbacks carry the execution their authorizers belong to.
+  //
+  // `holder` counts a session minted into a collaborator's own session (joinSession) for as long
+  // as the gatekeeper holds its queue: everything the session hands out that discloses data
+  // authorizes through that queue, so it outlives every such child the client may retain after
+  // disposing the session and its parent capability. A gatekeeper that keeps the queue longer
+  // only keeps the collaborator counted, which checks more reads, never fewer.
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
       id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
-      executionId?: string): Promise<RpcStub<Session>> {
+      executionId?: string, holder?: SessionHolder): Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
+    let leave = holder && this.joinSession(holder);
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
-        ? new AgentSpawnerQueueImpl(this, id, caller)
-        : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
+        ? new AgentSpawnerQueueImpl(this, id, caller, undefined, undefined, leave)
+        : new ApprovalQueueImpl(this, id, caller, undefined, executionId, leave);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
     return facet.startSession(queue);
   }
@@ -10489,7 +10514,7 @@ class OverseerImpl implements AgentHooks {
     // interface there are only microtask continuations (open() awaits nothing else after this
     // call), and no incoming event can be delivered inside a microtask drain, so nothing can
     // observe the count dip to zero across the handoff.
-    let leaveSession = this.joinSession("build");
+    let leaveSession = this.joinSession({kind: "build", profileId});
     try {
       await this.ensureObserver(profileId, clientUser, "workspace", opts.configureCb);
     } finally {
@@ -10516,7 +10541,7 @@ class OverseerImpl implements AgentHooks {
     if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
       return false;
     }
-    let leaveSession = this.joinSession("use", gadgetId);
+    let leaveSession = this.joinSession({kind: "use", profileId}, gadgetId);
     try {
       await this.ensureObserver(profileId, clientUser, {gadgetId}, configureCb);
     } finally {
@@ -11276,7 +11301,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           message: "You do not have access to interact with this workspace through its agent.",
         };
       }
-      leaveSession = this.impl.joinSession("build");
+      leaveSession = this.impl.joinSession({kind: "build", profileId: callerProfile.id});
     }
 
     // Complete pending registration in the owner's UserDO.
@@ -11804,7 +11829,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               // this so ambient providers are attached when possible.
                private slashCommandsReady: Promise<void>) {
     super();
-    this.#leaveSession = this.impl.joinSession(this.isOwner ? "owner" : "build");
+    this.#leaveSession = this.impl.joinSession(
+        this.isOwner ? {kind: "owner"} : {kind: "build", profileId: this.clientProfileId});
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "build", () => this.#getClientProfile());
     this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
@@ -11863,24 +11889,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return { profileId: this.clientProfileId, isOwner: this.isOwner };
   }
 
-  // What a capability minted into this session counts as toward #hasCollaboratorSession -- the
+  // Whom a capability minted into this session counts for toward #hasCollaboratorSession -- the
   // client can dispose this interface while retaining the capability, so each one counts for its
   // own lifetime. Undefined for the owner: the owner is never an observer, and counting them
   // would restart the owner's solo workspace for the owner's own change.
-  #mintedCapabilityKind(): SessionKind | undefined {
-    return this.isOwner ? undefined : "build";
+  #mintedCapabilityHolder(): SessionHolder | undefined {
+    return this.isOwner ? undefined : {kind: "build", profileId: this.clientProfileId};
   }
 
   // Count a subscription handle minted into a collaborator's session toward
   // #hasCollaboratorSession for its own lifetime, like every other retainable capability (see
-  // #mintedCapabilityKind): a retained subscription keeps delivering workspace data after the
+  // #mintedCapabilityHolder): a retained subscription keeps delivering workspace data after the
   // interface that minted it is disposed, so one that escaped the count would let a scope
   // widening find no session to sever while e.g. a chat or action subscription kept streaming
   // gatekeeper-derived data. Applied to every subscription-returning method uniformly -- one
   // invariant for every export, rather than per-subscription reasoning about which could carry
   // sensitive data. The owner's subscriptions pass through uncounted.
   #subscriptionLease(subscription: RpcStub<{}>): RpcStub<{}> {
-    let kind = this.#mintedCapabilityKind();
+    let kind = this.#mintedCapabilityHolder();
     if (!kind) return subscription;
     let leave = this.impl.joinSession(kind);
     // @ts-expect-error Bugs in native RPC types make this not work currently.
@@ -12080,7 +12106,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetClientImpl(this.impl, record.id, this.clientUserId,
-        this.#mintedCapabilityKind());
+        this.#mintedCapabilityHolder());
   }
 
   // A "build" session was verified for everything when the workspace opened, so there is nothing
@@ -12090,7 +12116,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.getGadgetRecord(id);  // validate it exists
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
-    return new GadgetClientImpl(this.impl, id, this.clientUserId, this.#mintedCapabilityKind());
+    return new GadgetClientImpl(this.impl, id, this.clientUserId, this.#mintedCapabilityHolder());
   }
 
   async deleteSelf(): Promise<void> {
@@ -12182,7 +12208,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let facet = await this.impl.getGatekeeperFacet(id);
     this.impl.assertGatekeeperUsable(id);
     return new GatekeeperClientImpl(
-        this.impl, id, facet, this.clientUserId, this.#mintedCapabilityKind());
+        this.impl, id, facet, this.clientUserId, this.#mintedCapabilityHolder());
   }
 
   private async recordConnectionCreated(
@@ -12209,7 +12235,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       typeUrlPattern,
     };
     let result = await this.impl.addGatekeeper(
-        cls, creationSpec, this.clientUserId, this.#mintedCapabilityKind());
+        cls, creationSpec, this.clientUserId, this.#mintedCapabilityHolder());
     await this.recordConnectionCreated(result, "gatekeeper", vendorId);
     return result;
   }
@@ -12235,7 +12261,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         modelKind(props.config.provider, props.config.model) === "decision"
             ? this.impl.ctx.exports.DecisionModelGatekeeper({props})
             : this.impl.ctx.exports.LanguageModelGatekeeper({props}),
-        creationSpec, this.clientUserId, this.#mintedCapabilityKind());
+        creationSpec, this.clientUserId, this.#mintedCapabilityHolder());
     await this.recordConnectionCreated(result, "ai_model");
     return result;
   }
@@ -12269,7 +12295,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let result = await this.impl.addGatekeeper(
         this.impl.ctx.exports.AgentSpawnerGatekeeper({props}), creationSpec,
-        this.clientUserId, this.#mintedCapabilityKind(), bindings);
+        this.clientUserId, this.#mintedCapabilityHolder(), bindings);
     await this.recordConnectionCreated(result, "agent_spawner");
     return result;
   }
@@ -13417,7 +13443,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
               private notifyClosed: NativeRpcStub<() => void>,
               private access: CollaboratorAccess) {
     super();
-    this.#leaveSession = this.impl.joinSession("use");
+    this.#leaveSession = this.impl.joinSession({kind: "use", profileId: this.clientProfileId});
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "use",
         () => retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger));
@@ -13459,7 +13485,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // subscriptions: every export minted into a collaborator session counts, rather than
   // per-subscription reasoning about which could carry data.
   #subscriptionLease(subscription: RpcStub<{}>): RpcStub<{}> {
-    let leave = this.impl.joinSession("use");
+    let leave = this.impl.joinSession({kind: "use", profileId: this.clientProfileId});
     // @ts-expect-error Bugs in native RPC types make this not work currently.
     return new NativeRpcStub<{}>({
       [Symbol.dispose]() {
@@ -13548,7 +13574,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     }
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
-    return new UseGadgetClientInterface(this.impl, id, this.clientUserId);
+    return new UseGadgetClientInterface(this.impl, id, this.clientUserId, this.clientProfileId);
   }
 
   // --- Denied methods (build-only) ---
@@ -13714,7 +13740,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   #leaveSession?: () => void;
 
   constructor(private impl: OverseerImpl, private id: WorkpieceId,
-      private clientUserId: string, private joinedAs?: SessionKind) {
+      private clientUserId: string, private joinedAs?: SessionHolder) {
     super();
     if (joinedAs) this.#leaveSession = impl.joinSession(joinedAs);
   }
@@ -13992,9 +14018,9 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   #leaveSession: () => void;
 
   constructor(private impl: OverseerImpl, private id: WorkpieceId,
-      private clientUserId: string) {
+      private clientUserId: string, private clientProfileId: string) {
     super();
-    this.#leaveSession = impl.joinSession("use", id);
+    this.#leaveSession = impl.joinSession({kind: "use", profileId: clientProfileId}, id);
   }
 
   [Symbol.dispose]() {
@@ -14040,7 +14066,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     });
     // The facet stub counts as a "use" session for its own lifetime, like this interface: it can
     // outlive this object, and it is the very stub a hook-enable widening's data flows through.
-    return this.impl.getGadgetFacet(this.id, undefined, "use");
+    return this.impl.getGadgetFacet(this.id, undefined, {kind: "use", profileId: this.clientProfileId});
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
@@ -14083,14 +14109,15 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
 class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
     extends RpcTarget implements GatekeeperClient<Session> {
   // See GadgetClientImpl: `joinedAs` counts a collaborator's retained capability toward
-  // #hasCollaboratorSession; omitted for the owner's and for internal construction.
-  // `actorUserId` (hex user DO ID of the client holding this capability) feeds analytics only.
+  // #hasCollaboratorSession; omitted for the owner's and for internal construction. Sessions it
+  // opens count too (see openGatekeeperSession). `actorUserId` (hex user DO ID of the client
+  // holding this capability) feeds analytics only.
   #leaveSession?: () => void;
 
   constructor(private impl: OverseerImpl, private id: number,
       private facet: Fetcher<Gatekeeper<Session>>,
       private actorUserId: string,
-      joinedAs?: SessionKind) {
+      private joinedAs?: SessionHolder) {
     super();
     if (joinedAs) this.#leaveSession = impl.joinSession(joinedAs);
   }
@@ -14138,7 +14165,8 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
   }
 
   async openSession(): Promise<RpcStub<Session>> {
-    return this.impl.openGatekeeperSession(this.id, this.facet, {from: "user"});
+    return this.impl.openGatekeeperSession(this.id, this.facet, {from: "user"}, undefined,
+        this.joinedAs);
   }
 
   async getCreationSpec(): Promise<GatekeeperCreationSpec> {
@@ -14234,10 +14262,16 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // containsRestrictedData). Session queues (openGatekeeperSession) pass no hookId: they are
   // bounded by the facet's in-DO lifetime, which the session chokepoints already gate.
   // `executionId` is the agent execution an agent caller's session was minted for.
+  // `leaveSession` ends the lease of a collaborator's session this queue serves once the
+  // gatekeeper releases its last reference to the queue (see openGatekeeperSession).
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
               private caller: GatekeeperCaller, private hookId?: number,
-              private executionId?: string) {
+              private executionId?: string, private leaveSession?: () => void) {
     super();
+  }
+
+  [Symbol.dispose]() {
+    this.leaveSession?.();
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
