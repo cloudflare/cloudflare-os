@@ -4,8 +4,8 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ChatBindingInfo, GadgetSummary, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import type { ChatBindings } from './features/chat-bindings/useChatBindings'
+import type { WorkspaceConnectionInfo, GadgetSummary, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { WorkspaceConnections } from './features/workspace-connections/useWorkspaceConnections'
 
 const SHEET = 'https://docs.google.com/spreadsheets/d/:id/*'
 
@@ -33,23 +33,21 @@ import WorkpiecePicker from './WorkpiecePicker'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const binding = (over: Partial<ChatBindingInfo> & Pick<ChatBindingInfo, 'target' | 'resourceTitle'>): ChatBindingInfo =>
-  ({ name: `b${over.target}`, created: false, changed: false, alwaysAvailable: false, ...over })
+const connection = (over: Partial<WorkspaceConnectionInfo> & Pick<WorkspaceConnectionInfo, 'target' | 'resourceTitle'>): WorkspaceConnectionInfo =>
+  ({ alwaysAvailable: false, awaitingApproval: false, ...over })
 
-const BINDINGS: ChatBindingInfo[] = [
-  binding({ target: 12, resourceTitle: 'Skills', vendorId: 'context', alwaysAvailable: true }),
-  binding({
-    target: 10, resourceTitle: 'Q3 Budget', vendorId: 'google', typeUrlPattern: SHEET, created: true,
+const CONNECTIONS: WorkspaceConnectionInfo[] = [
+  connection({ target: 12, resourceTitle: 'Skills', vendorId: 'context', alwaysAvailable: true }),
+  connection({
+    target: 10, resourceTitle: 'Q3 Budget', vendorId: 'google', typeUrlPattern: SHEET,
     resourceUrl: 'https://docs.google.com/spreadsheets/d/1/edit',
   }),
-  binding({ target: 11, resourceTitle: 'Launch plan', vendorId: 'google', typeUrlPattern: SHEET, created: true }),
-  binding({
+  connection({ target: 11, resourceTitle: 'Launch plan', vendorId: 'google', typeUrlPattern: SHEET, awaitingApproval: true }),
+  connection({
     target: 13, resourceTitle: 'acme/widgets', vendorId: 'github', typeUrlPattern: 'https://github.com/:owner/:repo',
-    resourceUrl: 'https://github.com/acme/widgets', changed: true,
+    resourceUrl: 'https://github.com/acme/widgets',
   }),
-  // Another name for the same connection.
-  binding({ name: 'widgets', target: 13, resourceTitle: 'acme/widgets', vendorId: 'github', changed: true }),
-  binding({ target: 14, resourceTitle: 'Sketchy', resourceUrl: 'javascript:alert(1)' }),
+  connection({ target: 14, resourceTitle: 'Orphaned resource', resourceUrl: 'javascript:alert(1)' }),
 ]
 
 const connectionsGroup = (container: HTMLElement) =>
@@ -64,10 +62,10 @@ describe('WorkpiecePicker', () => {
 
   afterEach(() => act(() => root?.unmount()))
 
-  async function render({ expanded, gadgets = [], chatBindings = null }: {
+  async function render({ expanded, gadgets = [], connections = null }: {
     expanded: boolean
     gadgets?: GadgetSummary[]
-    chatBindings?: ChatBindings | null
+    connections?: WorkspaceConnections | null
   }) {
     const container = document.createElement('div')
     root = createRoot(container)
@@ -76,7 +74,8 @@ describe('WorkpiecePicker', () => {
         gadgets={gadgets}
         worktrees={[]}
         selectedId={null}
-        chatBindings={chatBindings}
+        connections={connections}
+        onRemoveConnection={vi.fn<(id: number) => Promise<void>>(async () => {})}
         expanded={expanded}
         hookedGadgetIds={new Set([1])}
         onExpandedChange={vi.fn<(expanded: boolean) => void>()}
@@ -113,48 +112,39 @@ describe('WorkpiecePicker', () => {
     expect(container.querySelectorAll(HOOK_BADGE)).toHaveLength(1)
   })
 
-  describe("with the chat's bindings", () => {
-    it('lists created resources as outputs and the rest as connections, once each and built-in last', async () => {
-      const container = await render({ expanded: false, chatBindings: { status: 'ready', bindings: BINDINGS } })
-      const connections = connectionsGroup(container)
-      const outputs = rows(container).filter(([name]) =>
-        !connections.querySelector(`[aria-label="${name}"]`))
-
-      // Each is labelled by its type, with its type's icon, or else by its vendor.
-      expect(outputs).toEqual([
+  describe('with workspace connections', () => {
+    it('lists every registry record under Connections, including orphans and built-ins', async () => {
+      const container = await render({ expanded: false, connections: { status: 'ready', connections: CONNECTIONS } })
+      const group = connectionsGroup(container)
+      expect(rows(group)).toEqual([
         ['Q3 Budget · Google Sheet', 'https://example.com/sheet.svg'],
         ['Launch plan · Awaiting approval', 'https://example.com/sheet.svg'],
-      ])
-      expect(rows(connections)).toEqual([
-        ['acme/widgets · GitHub · Changed', 'https://example.com/github.svg'],
-        ['Sketchy', undefined],
+        ['acme/widgets · GitHub', 'https://example.com/github.svg'],
+        ['Orphaned resource', undefined],
         ['Skills · Built in', undefined],
       ])
+      expect(rows(container)).toEqual(rows(group))
+      expect(container.querySelector('button[title="Remove from workspace"]')).toBeNull()
     })
 
-    it('links rows to their resources in a new tab, through safe URLs only, badging changed ones', async () => {
-      const container = await render({ expanded: true, chatBindings: { status: 'ready', bindings: BINDINGS } })
-
-      // Not "Launch plan", which awaits approval, nor "Sketchy", whose URL is a script.
+    it('opens safe URLs only and never offers built-in removal', async () => {
+      const container = await render({ expanded: true, connections: { status: 'ready', connections: CONNECTIONS } })
       expect([...container.querySelectorAll('a')].map(link =>
         [link.getAttribute('aria-label'), link.getAttribute('href'), link.target, link.rel])).toEqual([
         ['Q3 Budget · Google Sheet', 'https://docs.google.com/spreadsheets/d/1/edit', '_blank', 'noopener noreferrer'],
-        ['acme/widgets · GitHub · Changed', 'https://github.com/acme/widgets', '_blank', 'noopener noreferrer'],
+        ['acme/widgets · GitHub', 'https://github.com/acme/widgets', '_blank', 'noopener noreferrer'],
       ])
+      expect(container.querySelector('[aria-label="Remove Skills from workspace"]')).toBeNull()
     })
 
-    // In a chat with no other outputs, where its created resources are all Outputs would show.
-    it('tells loading and failure apart from having no outputs or connections', async () => {
-      const shown = async (chatBindings: ChatBindings) => {
-        const container = await render({ expanded: true, chatBindings })
-        return { outputs: container.textContent!.includes('Nothing yet'), connections: connectionsGroup(container).textContent }
+    it('distinguishes loading and failure from an empty registry', async () => {
+      const shown = async (connections: WorkspaceConnections) => {
+        const container = await render({ expanded: true, connections })
+        return connectionsGroup(container).textContent
       }
-
-      expect(await shown({ status: 'loading' })).toEqual({ outputs: false, connections: expect.stringContaining('Loading…') })
-      expect(await shown({ status: 'failed' }))
-        .toEqual({ outputs: false, connections: expect.stringContaining('Couldn’t load connections') })
-      expect(await shown({ status: 'ready', bindings: [] }))
-        .toEqual({ outputs: true, connections: expect.stringContaining('None yet') })
+      expect(await shown({ status: 'loading' })).toContain('Loading…')
+      expect(await shown({ status: 'failed' })).toContain('Couldn’t load connections')
+      expect(await shown({ status: 'ready', connections: [] })).toContain('None yet')
     })
   })
 })

@@ -53,7 +53,7 @@ const mocks = vi.hoisted(() => {
           },
           getGadget: () => disposable,
           listHooks: async () => [],
-          listChatBindings: async () => [],
+          listConnections: async () => [],
           subscribeToConsoleLogs: async () => disposable,
         },
       },
@@ -358,36 +358,6 @@ describe('GadgetEditor, opening a chat from a notification', () => {
   })
 })
 
-describe('GadgetEditor, showing the output rail', () => {
-  const workspace = mocks.workspace
-  const original = workspace.overseer
-
-  beforeEach(() => {
-    workspace.overseer = {
-      stub: {
-        ...original.stub,
-        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
-          await subscriber.ready()
-          return { [Symbol.dispose]() {} }
-        },
-      },
-    }
-  })
-
-  afterEach(() => {
-    workspace.overseer = original
-  })
-
-  // It lists the selected chat's connections, so a workspace with no gadgets has it only for a chat.
-  it('shows beside a chat in a workspace with no gadgets', async () => {
-    await openEditor('desktop')
-    expect(container.textContent).not.toContain('output rail')
-
-    mocks.search = { chat: 3 }
-    await openEditor('desktop')
-    expect(container.textContent).toContain('output rail')
-  })
-})
 
 // A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
 // once its admission resolves, and never one disposed when an earlier admission was abandoned.

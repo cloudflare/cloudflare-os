@@ -143,6 +143,25 @@ Revocation is a two-phase process in the UI:
 
 A non-owner can only sever their own `user` edges to the target (and only if such an edge exists -- otherwise the call is rejected). If the target still has edges from other sources, they retain the access those grant; if the caller's edges were their only support, the target becomes unreachable like any other lazily-removed user.
 
+## Workspace connections
+
+The workspace sidebar's **Connections** section lists every live connection in the workspace,
+including connections no longer bound to a gadget or chat. It is independent of the selected chat.
+Owners and build collaborators can expand the sidebar and choose **Remove from workspace** for a
+non-built-in connection; use-only collaborators do not see this inventory. Built-ins are labeled
+**Built in** and have no removal control.
+
+The inventory uses `Overseer.listConnections()`, which reads stored resource metadata without
+contacting gatekeepers. It refreshes after connection changes, creation approvals/rejections,
+reconnection, and window focus. Removal uses the existing `GatekeeperClient.remove()` capability:
+it removes the connection from all gadgets and chats and from future collaborator verification,
+not merely from the selected gadget or chat. It does not disconnect the user's external account.
+
+Historical observations and previously read data remain in chat history and gadget storage. The
+confirmation warns users to ensure retained sensitive data is safe before dropping the connection's
+sharing check. Removal does not clear the workspace's sticky restricted-data or `ownerInvitesOnly`
+policies.
+
 ## Resource isolation between collaborators
 
 Collaborators share the gadget's code, storage, and AI chat history, but certain resources are scoped to individual users:

@@ -4,12 +4,12 @@ import {
 } from '@phosphor-icons/react'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import { Tooltip } from '@cloudflare/kumo'
-import type { ChatBindingInfo, GadgetSummary, WorkpieceId, WorktreeSummary } from '@gadgets/workshop-shared/api'
+import type { GadgetSummary, WorkpieceId, WorktreeSummary } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from './AuthContext'
 import { CountBadge } from './components/CountBadge'
 import { WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
-import { ChatBindingRow } from './features/chat-bindings/ChatBindingRow'
-import type { ChatBindings } from './features/chat-bindings/useChatBindings'
+import { WorkspaceConnectionRow } from './features/workspace-connections/WorkspaceConnectionRow'
+import type { WorkspaceConnections } from './features/workspace-connections/useWorkspaceConnections'
 import { useGatekeeperVendors } from './hooks/useGatekeeperVendors'
 import { isImeComposing } from './keyboardEvent'
 
@@ -23,9 +23,8 @@ interface WorkpiecePickerProps {
   // conversation, and selecting it returns there.
   worktrees: WorktreeSummary[]
   selectedId: WorkpieceId | null
-  // The selected chat's bindings, or null when no chat is selected. The ones its agent created
-  // are listed among the outputs; the rest under Connections.
-  chatBindings: ChatBindings | null
+  connections: WorkspaceConnections | null
+  onRemoveConnection: (id: WorkpieceId) => Promise<void>
   // The gadget the agent is currently streaming edits into, if any. Shown as an activity dot when
   // it isn't the selected one (e.g. because the user pinned their selection mid-turn).
   agentEditingId?: WorkpieceId | null
@@ -43,7 +42,8 @@ export default function WorkpiecePicker({
   gadgets,
   worktrees,
   selectedId,
-  chatBindings,
+  connections,
+  onRemoveConnection,
   agentEditingId,
   hookedGadgetIds,
   expanded,
@@ -55,18 +55,10 @@ export default function WorkpiecePicker({
 }: WorkpiecePickerProps) {
   const [editing, setEditing] = useState<{ id: WorkpieceId; value: string } | null>(null)
   const vendors = useGatekeeperVendors(useAuthenticatedApi().authenticatedApi)
-  const vendorOf = (binding: ChatBindingInfo) =>
-    binding.vendorId === undefined ? undefined : vendors.get(binding.vendorId)
-  // Two binding names can alias one connection.
-  const listed = chatBindings?.status === 'ready'
-    ? chatBindings.bindings.filter((binding, i, all) => all.findIndex(b => b.target === binding.target) === i)
+  const hasOutputs = gadgets.length > 0 || worktrees.length > 0
+  const listedConnections = connections?.status === 'ready'
+    ? connections.connections.toSorted((a, b) => Number(a.alwaysAvailable) - Number(b.alwaysAvailable))
     : []
-  const createdResources = listed.filter(binding => binding.created)
-  const hasOutputs = gadgets.length > 0 || worktrees.length > 0 || createdResources.length > 0
-  // Always-available connections (an auto-provisioning vendor's) come last: they say least about
-  // this chat.
-  const connections = listed.filter(binding => !binding.created)
-    .toSorted((a, b) => Number(a.alwaysAvailable) - Number(b.alwaysAvailable))
 
   const commitRename = () => {
     if (!editing) return
@@ -212,10 +204,7 @@ export default function WorkpiecePicker({
           )
         })}
 
-        {createdResources.map(binding => (
-          <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
-        ))}
-        {expanded && !hasOutputs && chatBindings?.status === 'ready' && (
+        {expanded && !hasOutputs && connections?.status === 'ready' && (
           <span className="px-2 text-[12px] text-kumo-inactive">Nothing yet</span>
         )}
 
@@ -270,7 +259,7 @@ export default function WorkpiecePicker({
           </>
         )}
 
-        {chatBindings && (
+        {connections && (
           <div role="group" aria-label="Connections" className="flex flex-col gap-0.5">
             {expanded ? (
               <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
@@ -279,10 +268,10 @@ export default function WorkpiecePicker({
             ) : hasOutputs && (
               <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
             )}
-            {chatBindings.status === 'loading' && expanded && (
+            {connections.status === 'loading' && expanded && (
               <span className="px-2 text-[12px] text-kumo-inactive">Loading…</span>
             )}
-            {chatBindings.status === 'failed' && (expanded ? (
+            {connections.status === 'failed' && (expanded ? (
               <span className="px-2 text-[12px] text-kumo-subtle">Couldn’t load connections</span>
             ) : (
               <Tooltip content="Couldn’t load connections" asChild>
@@ -291,10 +280,10 @@ export default function WorkpiecePicker({
                 </span>
               </Tooltip>
             ))}
-            {connections.map(binding => (
-              <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
+            {listedConnections.map(connection => (
+              <WorkspaceConnectionRow key={connection.target} connection={connection} vendor={connection.vendorId === undefined ? undefined : vendors.get(connection.vendorId)} expanded={expanded} onRemoveConnection={onRemoveConnection} />
             ))}
-            {chatBindings.status === 'ready' && connections.length === 0 && expanded && (
+            {connections.status === 'ready' && listedConnections.length === 0 && expanded && (
               <span className="px-2 text-[12px] text-kumo-inactive">None yet</span>
             )}
           </div>

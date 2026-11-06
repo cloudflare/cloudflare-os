@@ -777,9 +777,10 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    instead of blocking.
 8. **Removing a connection that read restricted data** — removal is not guarded by
    `containsRestrictedData`. The record is what observer verification runs against, so removing a
-   producer drops the check for data that outlives it in chat history and storage. The intended
-   remedy is that a future connection-removal UI asks the owner to certify that no sensitive data
-   from that connection has been retained in the workspace, for any connection.
+   producer drops the check for data that outlives it in chat history and storage. The workspace
+   sidebar's **Remove from workspace** confirmation warns that data and history remain and asks
+   the user to ensure retained sensitive data is safe before removing the sharing check. This is
+   a user confirmation, not a server-enforced check that retained data was erased.
 
 ---
 

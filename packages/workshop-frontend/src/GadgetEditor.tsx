@@ -67,7 +67,7 @@ import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
-import { useChatBindings } from './features/chat-bindings/useChatBindings'
+import { useWorkspaceConnections } from './features/workspace-connections/useWorkspaceConnections'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -908,21 +908,23 @@ export default function GadgetEditor() {
   // hasCodeRelatedState so initial-load sequencing is unchanged.)
   const simpleMode = layoutModeReady && !hasCodeRelatedState && !hasCommittedCode
     && singleInitialChat && visibleGadgets.length <= 1
-  // The rail lists every workpiece in the workspace (picking another chat's draft or worktree
-  // navigates to that chat), but the pane can only show one visible for the selected chat, so
-  // it opens for an app only when there is one: with no chat selected in a workspace of drafts
-  // and worktrees alone, an open pane would be empty -- and on mobile would replace the chat
-  // list. The rail also lists the selected chat's connections, so it shows for a chat whatever
-  // the workspace holds.
-  const hasAnyApps = allGadgets.length > 0 || allWorktrees.length > 0
+  // Workpieces and connections are workspace-wide, including resources no chat still references.
+  // Selecting another chat's draft or worktree navigates back to its owning conversation.
   const hasVisibleWorkpieces = visibleWorkpieces.length > 0
   const showingActivity = workspaceView?.mode === 'activity'
   const showFullEditor = layoutModeReady && (
     showingActivity || (hasVisibleWorkpieces && (workspaceView === null ? !simpleMode : workspaceView.mode === 'app'))
   )
-  const showOutputRail = layoutModeReady && (hasAnyApps || effectiveSelectedChatId !== null) && !showFullEditor
-  const { chatBindings, invalidate: invalidateChatBindings } =
-    useChatBindings(overseerStub, showOutputRail ? effectiveSelectedChatId : null)
+  const showOutputRail = layoutModeReady && !showFullEditor
+  const { connections, invalidate: invalidateConnections } =
+    useWorkspaceConnections(isUseOnly ? null : overseerStub)
+  const handleRemoveConnection = async (id: WorkpieceId) => {
+    if (!overseerStub) throw new Error('The workspace is not connected.')
+    using connection = overseerStub.getGatekeeperById(id)
+    await connection.remove()
+    invalidateConnections()
+    setUiReloadTrigger(t => t + 1)
+  }
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {
     if (!activityClosing) return
@@ -1115,6 +1117,7 @@ export default function GadgetEditor() {
   }, [showCodeIfNoUi])
 
   const handleAgentActiveChange = useCallback((chatId: number, isActive: boolean) => {
+    if (!isActive) invalidateConnections()
     if (chatId !== selectedChatIdRef.current) return
     setIsAgentActive(isActive)
     if (isActive) {
@@ -1127,14 +1130,11 @@ export default function GadgetEditor() {
       return
     }
 
-    // A chat lists its starting connections once its first turn has begun, which no message
-    // announces (see onSelectedChatBindingsChange for the bindings messages add).
-    invalidateChatBindings()
     let output = turnOutputRef.current
     turnOutputRef.current = null
     if (!output || output.chatId !== chatId || output.userSelectedTab) return
     if (output.showedCode) setActiveTab('app')
-  }, [invalidateChatBindings])
+  }, [invalidateConnections])
 
   const handleStreamingActiveFileChange = useCallback(
       (chatId: number, file: ActiveFileTarget | null | undefined) => {
@@ -2015,7 +2015,7 @@ export default function GadgetEditor() {
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onSelectedChatBindingsChange={invalidateChatBindings}
+                  onWorkspaceConnectionsChange={invalidateConnections}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
@@ -2254,7 +2254,10 @@ export default function GadgetEditor() {
                   gadget={selectedGadgetStub}
                   chatId={effectiveSelectedChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
-                  onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
+                  onConnectionsChange={() => {
+                    setUiReloadTrigger(t => t + 1)
+                    invalidateConnections()
+                  }}
                   isVisible={activeTab === 'connections'}
                   onHasGatekeepersChange={setHasBindings}
                 />
@@ -2274,7 +2277,8 @@ export default function GadgetEditor() {
               gadgets={allGadgets}
               worktrees={allWorktrees}
               selectedId={null}
-              chatBindings={chatBindings}
+              connections={connections}
+              onRemoveConnection={handleRemoveConnection}
               agentEditingId={streamingActiveFile?.workpieceId ?? null}
               hookedGadgetIds={hookedGadgetIds}
               expanded={workpieceRailExpanded}

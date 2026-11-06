@@ -110,7 +110,7 @@ import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
-import { addsChatBinding } from "./features/chat-bindings/useChatBindings";
+import { changesWorkspaceConnections } from "./features/workspace-connections/useWorkspaceConnections";
 import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
@@ -2595,9 +2595,8 @@ interface ChatInterfaceProps {
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
-  // Called when a message for the selected chat binds it a resource (see addsChatBinding), which
-  // can arrive before its turn ends.
-  onSelectedChatBindingsChange?: () => void;
+  // Connections are workspace-wide; resource messages in any chat can change the inventory.
+  onWorkspaceConnectionsChange?: () => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
   onAutoApproveChange?: () => void;
@@ -2801,7 +2800,7 @@ function ChatInterface({
   onChatCountChange,
   onAgentActiveChange,
   onAutoApproveChange,
-  onSelectedChatBindingsChange,
+  onWorkspaceConnectionsChange,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -3062,8 +3061,8 @@ function ChatInterface({
   const selectedChatIdRef = useRef<number | null>(null);
   const onNavigateToChatRef = useRef(onNavigateToChat);
   onNavigateToChatRef.current = onNavigateToChat;
-  const onSelectedChatBindingsChangeRef = useRef(onSelectedChatBindingsChange);
-  onSelectedChatBindingsChangeRef.current = onSelectedChatBindingsChange;
+  const onWorkspaceConnectionsChangeRef = useRef(onWorkspaceConnectionsChange);
+  onWorkspaceConnectionsChangeRef.current = onWorkspaceConnectionsChange;
 
   // Subscription stub (wrapped in object for useState)
   const subscriptionRef = useRef<RpcStub<{}> | null>(null);
@@ -3779,8 +3778,8 @@ function ChatInterface({
         setProposedChangesVersion((prev) => prev + 1);
       }
 
-      if (msg.chatId === selectedChatIdRef.current && addsChatBinding(msg)) {
-        onSelectedChatBindingsChangeRef.current?.();
+      if (changesWorkspaceConnections(msg)) {
+        onWorkspaceConnectionsChangeRef.current?.();
       }
 
       // A revert reaching past the oldest loaded boundary changed it on the server; see
@@ -4705,11 +4704,18 @@ function ChatInterface({
     });
   };
 
+  const createCapsuleGatekeeper = async (accountId: number, url: string) => {
+    const connection = await overseer.newGatekeeper(accountId, url);
+    if (connection) onWorkspaceConnectionsChangeRef.current?.();
+    return connection;
+  };
+
   // Invoked by the accept-flow GatekeeperModal once the user has connected + configured a resource.
   // The gatekeeper is bound into no gadget; finalizing the request surfaces it to the agent as a
   // binding in the chat's env, under the name the agent chose when it made the request (the agent
   // wires it into a gadget itself if that gadget's code needs it).
   const handleConnectionCreated = async (gk: RpcStub<GatekeeperClient<any>>) => {
+    onWorkspaceConnectionsChangeRef.current?.();
     const accept = connectionAcceptRef.current;
     if (!accept) {
       gk[Symbol.dispose]();
@@ -5711,9 +5717,7 @@ function ChatInterface({
           {/* Attachments and pending resource operations belong to this workspace's composer. */}
           <ChatComposer
             key={workspaceId}
-            createCapsuleGatekeeper={(accountId, url) =>
-              overseer.newGatekeeper(accountId, url)
-            }
+            createCapsuleGatekeeper={createCapsuleGatekeeper}
             getOverseer={getOverseer}
             onSend={handleNewChatSend}
             isAgentActive={false}
@@ -6776,9 +6780,7 @@ function ChatInterface({
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}
                     chatKey={selectedChatId}
-                    createCapsuleGatekeeper={(accountId, url) =>
-                      overseer.newGatekeeper(accountId, url)
-                    }
+                    createCapsuleGatekeeper={createCapsuleGatekeeper}
                     getOverseer={getOverseer}
                     onSend={handleSend}
                     isAgentActive={isAgentActive}
