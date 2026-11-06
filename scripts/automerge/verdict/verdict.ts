@@ -150,6 +150,13 @@ interface Meta {
   prompt: string;
   head_instruction_paths: string[];
   skipped_paths: string[];
+  binary_files: BinaryFile[];
+}
+
+/** A changed file git judged binary by its content; the patch shows no content for it. */
+export interface BinaryFile {
+  path: string;
+  bytes: number;
 }
 
 export interface PullRequest {
@@ -169,6 +176,7 @@ function paths(workDir: string) {
     prompt: join(workDir, "prompt.md"),
     meta: join(workDir, "meta.json"),
     events: join(workDir, "events.jsonl"),
+    stderr: join(workDir, "opencode-stderr.log"),
     opencodeVersion: join(workDir, "opencode-version"),
     home: join(workDir, "home"),
   };
@@ -195,15 +203,24 @@ export function prepareInputs(repo: string, workDir: string, name: ModelName, pr
     prompt: PROMPT_HASH,
     head_instruction_paths: [],
     skipped_paths: [],
+    binary_files: [],
   };
   if (plan.round < ROUND_LIMIT) {
     const range = plan.reviewFromSha === null ? `${pr.baseSha}...${pr.headSha}` : `${plan.reviewFromSha}..${pr.headSha}`;
-    // The checkout's .gitattributes is the head's, and `-diff` or a binary diff driver there would
-    // print "Binary files differ" in place of removed code. Attributes come from the empty tree,
-    // and `--text` also covers a file the head made look binary with a NUL byte.
+    // Attributes come from the empty tree, so no `-diff` or binary diff driver can blank a text
+    // file; git's own content check alone decides what is binary.
     const emptyTree = git(repo, ["hash-object", "-t", "tree", "/dev/null"]).trim();
-    writeFileSync(files.diff, git(repo, [`--attr-source=${emptyTree}`, "-c", "core.attributesFile=/dev/null", "diff",
-      "--text", "--no-ext-diff", "--no-textconv", "--no-color", range]));
+    const diff = (args: string[]) => git(repo, [`--attr-source=${emptyTree}`, "-c", "core.attributesFile=/dev/null", "diff",
+      "--no-ext-diff", "--no-textconv", "--no-color", ...args, range]);
+    writeFileSync(files.diff, diff([]));
+    const from = plan.reviewFromSha ?? git(repo, ["merge-base", pr.baseSha, pr.headSha]).trim();
+    meta.binary_files = diff(["--numstat", "-z", "--no-renames"]).split("\0").flatMap(record => {
+      const match = /^-\t-\t(.+)$/s.exec(record);
+      if (!match) return [];
+      const path = match[1];
+      const side = spawnSync("git", ["-C", repo, "cat-file", "-e", `${pr.headSha}:${path}`]).status === 0 ? pr.headSha : from;
+      return [{ path, bytes: Number(git(repo, ["cat-file", "-s", `${side}:${path}`]).trim()) }];
+    });
     writeFileSync(files.pullRequest, `# ${pr.title}\n\n${pr.body}\n`);
     writeFileSync(files.prompt, fill(PROMPT_TEMPLATE, {
       round: String(plan.round),
@@ -247,16 +264,19 @@ export function runReview(workDir: string, name: ModelName, opencodeBin: string,
   };
   writeFileSync(files.opencodeVersion, execFileSync(opencodeBin, ["--version"], { encoding: "utf8", env: openCodeEnv }).trim());
   const events = openSync(files.events, "w");
+  const stderr = openSync(files.stderr, "w");
   try {
     const result = spawnSync(opencodeBin, [
       "run", readFileSync(files.prompt, "utf8"),
       "--pure", "--dir", files.review, "--model", MODELS[name], "--variant", VARIANT,
       "--format", "json", "--title", "review", "--file", files.diff, "--file", files.pullRequest,
-    ], { env: openCodeEnv, stdio: ["ignore", events, "inherit"] });
+    // stderr stays in the work directory: provider error bodies reach it, and job logs are public.
+    ], { env: openCodeEnv, stdio: ["ignore", events, stderr] });
     if (result.error) throw new Error(`opencode did not start: ${result.error.message}`, { cause: result.error });
     return result.status ?? 1;
   } finally {
     closeSync(events);
+    closeSync(stderr);
   }
 }
 
@@ -282,12 +302,21 @@ export function readEvents(stream: string): { text: string; tokens: Tokens } | {
     let event: Json;
     try {
       event = parseJson(line);
-    } catch (error) {
-      return { error: `opencode printed a line that is not JSON: ${error instanceof Error ? error.message : String(error)}` };
+    } catch {
+      // A named case. The parse error quotes the line, which may hold a provider's response body.
+      return { error: "opencode printed a line that is not JSON" };
     }
     const type = field(event, "type");
     const part = field(event, "part");
-    if (type === "error") return { error: `opencode reported an error: ${JSON.stringify(field(event, "error")).slice(0, 500)}` };
+    if (type === "error") {
+      // Only the error class and HTTP status: the message and metadata can carry the provider's
+      // response body, and the verdict artifact and job log are public.
+      const error = field(event, "error");
+      const name = field(error, "name");
+      const status = field(field(error, "data"), "statusCode");
+      return { error: `opencode reported ${typeof name === "string" && /^\w+$/.test(name) ? name : "an error"}` +
+        (typeof status === "number" ? ` (HTTP ${status})` : "") };
+    }
     if (type === "text") {
       const value = field(part, "text");
       if (typeof value === "string") text = value;
@@ -317,7 +346,14 @@ export interface Verdict {
   base_sha: string;
   status: "ok" | "error";
   holds: null;
-  details: { review_text: string | null; reason: string | null; tokens: Tokens | null; head_instruction_paths: string[]; skipped_paths: string[] };
+  details: {
+    review_text: string | null;
+    reason: string | null;
+    tokens: Tokens | null;
+    head_instruction_paths: string[];
+    skipped_paths: string[];
+    binary_files: BinaryFile[];
+  };
   findings: Finding[];
   needs_person: string[];
   merge_confidence: number | null;
@@ -342,8 +378,14 @@ function readMeta(file: string): Meta | null {
     typeof prompt !== "string") {
     throw new Error(`${file} is malformed`);
   }
+  const binaryFiles = list(field(value, "binary_files")).flatMap(item => {
+    const path = field(item, "path");
+    const bytes = field(item, "bytes");
+    return typeof path === "string" && typeof bytes === "number" ? [{ path, bytes }] : [];
+  });
   return { name, head_sha: head, base_sha: base, round, review_from_sha: from, review_md: reviewMd, prompt,
-    head_instruction_paths: strings("head_instruction_paths"), skipped_paths: strings("skipped_paths") };
+    head_instruction_paths: strings("head_instruction_paths"), skipped_paths: strings("skipped_paths"),
+    binary_files: binaryFiles };
 }
 
 /**
@@ -354,7 +396,7 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   const files = paths(workDir);
   const verdict: Verdict = {
     schema: 1, kind: "verdict", name, head_sha: pr.headSha, base_sha: pr.baseSha, status: "error", holds: null,
-    details: { review_text: null, reason: null, tokens: null, head_instruction_paths: [], skipped_paths: [] },
+    details: { review_text: null, reason: null, tokens: null, head_instruction_paths: [], skipped_paths: [], binary_files: [] },
     findings: [], needs_person: [], merge_confidence: null, round: null, review_from_sha: null,
     fingerprint: { model: MODELS[name], opencode: null, review_md: null, prompt: PROMPT_HASH },
   };
@@ -376,6 +418,7 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   verdict.fingerprint.review_md = meta.review_md;
   verdict.details.head_instruction_paths = meta.head_instruction_paths;
   verdict.details.skipped_paths = meta.skipped_paths;
+  verdict.details.binary_files = meta.binary_files;
   if (meta.round >= ROUND_LIMIT) return { ...verdict, status: "ok", needs_person: ["round limit"] };
 
   if (existsSync(files.opencodeVersion)) verdict.fingerprint.opencode = readFileSync(files.opencodeVersion, "utf8").trim();
@@ -391,11 +434,14 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   // reconciled here, so a clean diff-only review must not stand in for a clean pull request.
   const diffOnly = meta.review_from_sha === null ? [] :
     [`diff-only review since ${meta.review_from_sha}: earlier rounds' findings are not re-checked`];
+  // The patch shows no content for a binary file, so a NUL byte added to a source file hides it.
+  const binary = meta.binary_files.length === 0 ? [] : [`binary content not reviewed: ${
+    meta.binary_files.map(file => `${file.path} (${file.bytes} bytes)`).join(", ")}`];
   return {
     ...verdict,
     status: "ok",
     findings: parsed.review.findings,
-    needs_person: [...parsed.review.needsPerson, ...diffOnly],
+    needs_person: [...parsed.review.needsPerson, ...diffOnly, ...binary],
     merge_confidence: parsed.review.mergeConfidence,
   };
 }

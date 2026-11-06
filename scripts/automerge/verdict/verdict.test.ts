@@ -115,8 +115,16 @@ describe("readEvents", () => {
 
   it("rejects a cut-off review, an error event and stray output", () => {
     assert.match(errorOf(events(GOOD_REVIEW, "length")), /ended with "length"/);
-    assert.match(errorOf(`${events(GOOD_REVIEW)}\n{"type":"error","error":{"name":"APIError"}}`), /reported an error/);
     assert.match(errorOf(`warning: something\n${events(GOOD_REVIEW)}`), /not JSON/);
+  });
+
+  it("keeps only the error class and status code from a provider error", () => {
+    const providerError = JSON.stringify({ type: "error", error: { name: "APIError", data: {
+      message: "Your AI Gateway account 0123abcd rejected key sk-live-secret", statusCode: 401,
+      responseBody: "{\"error\":\"token sk-live-secret\"}", metadata: { url: "https://gateway.ai.cloudflare.com/v1/0123abcd" } } } });
+    assert.equal(errorOf(`${events(GOOD_REVIEW)}\n${providerError}`), "opencode reported APIError (HTTP 401)");
+    assert.equal(errorOf(JSON.stringify({ type: "error", error: { name: "has spaces: sk-live-secret" } })), "opencode reported an error");
+    assert.equal(errorOf(`body: sk-live-secret\n${events(GOOD_REVIEW)}`), "opencode printed a line that is not JSON");
   });
 });
 
@@ -178,7 +186,7 @@ describe("prepareInputs and buildVerdict", () => {
       attributes.git("config", "diff.hide.binary", "true");
       attributes.git("config", "diff.hide.textconv", "sh -c true");
       for (const rule of ["*.ts -diff", "*.ts diff=hide", "*.ts binary", "* -text -diff"]) {
-        const head = attributes.commit({ "REVIEW.md": "rules", "src/auth.ts": "run();\u0000\n", ".gitattributes": `${rule}\n` });
+        const head = attributes.commit({ "REVIEW.md": "rules", "src/auth.ts": "run();\n", ".gitattributes": `${rule}\n` });
         const dir = workDir();
         prepareInputs(attributes.dir, dir, "sol", { headSha: head, baseSha: before, title: "t", body: "" },
           { round: 1, reviewFromSha: null }, before);
@@ -188,6 +196,33 @@ describe("prepareInputs and buildVerdict", () => {
       }
     } finally {
       attributes.remove();
+    }
+  });
+
+  it("keeps binary bytes out of the patch and sends binary changes to a person", () => {
+    const binaries = createTestRepo();
+    try {
+      const png = "\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR";
+      const before = binaries.commit({ "REVIEW.md": "rules", "src/auth.ts": "checkAccess();\nrun();\n", "old.bin": "\u0000old" });
+      const head = binaries.commit({ "REVIEW.md": "rules", "src/auth.ts": "run();\u0000\n", "logo.png": png });
+      const dir = workDir();
+      const binaryPr = { headSha: head, baseSha: before, title: "t", body: "" };
+      prepareInputs(binaries.dir, dir, "sol", binaryPr, { round: 1, reviewFromSha: null }, before);
+      const diff = readFileSync(join(dir, "inputs", "diff.patch"), "utf8");
+      assert.doesNotMatch(diff, /IHDR|\u0000/);
+      writeFileSync(join(dir, "opencode-version"), "1.18.33");
+      writeFileSync(join(dir, "events.jsonl"), events(GOOD_REVIEW));
+      const verdict = buildVerdict(dir, "sol", binaryPr);
+      assert.equal(verdict.status, "ok");
+      assert.deepEqual(verdict.details.binary_files, [
+        { path: "logo.png", bytes: Buffer.byteLength(png) },
+        { path: "old.bin", bytes: 4 },
+        { path: "src/auth.ts", bytes: 8 },
+      ]);
+      assert.deepEqual(verdict.needs_person,
+        [`binary content not reviewed: logo.png (${Buffer.byteLength(png)} bytes), old.bin (4 bytes), src/auth.ts (8 bytes)`]);
+    } finally {
+      binaries.remove();
     }
   });
 
