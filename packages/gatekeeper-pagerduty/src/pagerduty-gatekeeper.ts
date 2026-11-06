@@ -179,7 +179,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     // Rejecting an incident or override later actions build on retires those too, and the gadget
     // may hold a capability for its temporary ID: restart it rather than leave that dangling.
     const record = this.#journal.get(actionId);
-    const provided = record ? providedRefs(record.action.payload) : [];
+    const provided = record ? providedRefs(record.action) : [];
     const builtOn = provided.length > 0 && this.#journal.listUndecided().some(({ id, action }) =>
       id !== actionId && dependedRefs(action.payload).some(ref => provided.includes(ref)));
     await this.#actions.reject(actionId);

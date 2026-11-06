@@ -102,11 +102,18 @@ export function dependedRefs(payload: PagerDutyActions[keyof PagerDutyActions]):
 }
 
 /**
- * The temporary reference a payload creates, if any: the incident or override it opens (a note's
- * is not one later actions name). Every definition's `provides`.
+ * The temporary reference an action creates, if any: the incident or override it opens. A note's
+ * `ref` names it only for simulation; no later action builds on it.
  */
-export function providedRefs(payload: PagerDutyActions[keyof PagerDutyActions]): string[] {
-  return "ref" in payload && !("incident" in payload) ? [payload.ref] : [];
+export function providedRefs(action: PagerDutyAction): string[] {
+  switch (action.kind) {
+    case "createIncident":
+    case "createOverride":
+    case "createOverrideForOthers":
+      return [action.payload.ref];
+    default:
+      return [];
+  }
 }
 
 /** The kind a temporary override ID is allocated with, which ties it to the override's schedule. */
@@ -182,7 +189,7 @@ function overrideDefinition(autoApprovable: boolean) {
     autoApprovable,
     delivery: "continue-with-simulation" as const,
     claimBeforeApply: true,
-    provides: providedRefs,
+    provides: (payload: NewOverride) => [payload.ref],
     describe: (payload: NewOverride, host: PagerDutyActionHost) => present("Add a PagerDuty schedule override",
       buildDescription(`Puts a user on call on [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: payload.scheduleId })}), ` +
         "over whoever it would otherwise have.")
@@ -356,7 +363,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    provides: providedRefs,
+    provides: payload => [payload.ref],
     describe: (payload, host) => {
       const service = resourceUrl({ ...host.tenant, kind: "service", id: payload.service.id });
       const description = buildDescription(`Opens an incident on [this service](${service}), which notifies ` +
