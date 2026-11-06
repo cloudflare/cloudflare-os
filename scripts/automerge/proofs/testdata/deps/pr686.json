@@ -24,7 +24,13 @@
     "@modelcontextprotocol/client@2.2.0",
     "@modelcontextprotocol/core@2.2.0",
     "@modelcontextprotocol/client@2.0.0",
-    "@modelcontextprotocol/core@2.0.0"
+    "@modelcontextprotocol/core@2.0.0",
+    "cross-spawn@7.0.6",
+    "eventsource@3.0.7",
+    "eventsource-parser@3.1.0",
+    "jose@6.2.12",
+    "pkce-challenge@5.0.1",
+    "zod@4.6.5"
   ],
   "osv_response": {
     "results": [
@@ -49,7 +55,21 @@
           }
         ]
       },
-      {}
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-mrhx-c7xc-m3w5",
+            "modified": "2026-10-23T18:30:09.376405Z"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
 }

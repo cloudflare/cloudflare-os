@@ -25,12 +25,21 @@
   },
   "osv_queries": [
     "terser@5.49.2",
-    "terser@5.49.0"
+    "terser@5.49.0",
+    "@jridgewell/source-map@0.3.11",
+    "acorn@8.18.0",
+    "commander@2.20.3",
+    "source-map-support@0.5.21"
   ],
   "osv_response": {
     "results": [
       {},
+      {},
+      {},
+      {},
+      {},
       {}
     ]
-  }
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
 }

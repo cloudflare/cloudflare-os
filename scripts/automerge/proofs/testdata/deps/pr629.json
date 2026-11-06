@@ -24,14 +24,17 @@
     "entities@8.1.0",
     "node-html-parser@9.0.4",
     "he@1.2.0",
-    "node-html-parser@7.1.0"
+    "node-html-parser@7.1.0",
+    "css-select@5.2.2"
   ],
   "osv_response": {
     "results": [
       {},
       {},
       {},
+      {},
       {}
     ]
-  }
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
 }

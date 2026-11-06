@@ -13,12 +13,13 @@
 //     minor or patch move (0.x moves count as breaking when the minor changes).
 //   - The lockfile names no package that the base did not, and touches no section beyond
 //     importers, catalogs, packages and snapshots. Every package version present at both base and
-//     head keeps its integrity and resolution, read from the whole lockfile on each side.
+//     head keeps its integrity and resolution, read from the whole lockfile on each side, and
+//     neither side has a line the reader cannot take as pnpm writes it (readLockfile).
 //   - Every version the lockfile adds was published at least `minimumReleaseAge` (read from the
 //     base pnpm-workspace.yaml) before now, by the registry's `time` map.
-//   - OSV lists no advisory for any version the lockfile adds or removes, or that an importer or
-//     catalog entry now resolves to or stopped resolving to (advisoryTargets). An advisory on the
-//     old version is a security fix, and those go to a person.
+//   - OSV lists no advisory for any version the lockfile adds or removes, or that an importer,
+//     catalog or snapshot entry now depends on or stopped depending on (advisoryTargets). An
+//     advisory on the old version is a security fix, and those go to a person.
 //
 // The preview smoke is its own artifact (`preview-smoke`, from the `preview-smoke` job in
 // automerge-evidence.yml, which builds and runs the workers locally); the gate needs both.
@@ -58,8 +59,8 @@ export interface DepsInput {
   published: Record<string, string>;
   /** OSV advisory ids for each of advisoryTargets. Missing means not checked. */
   advisories: Record<string, string[]>;
-  /** The whole pnpm-lock.yaml at the merge base and at head. */
-  lockfiles: { base: string; head: string };
+  /** The whole pnpm-lock.yaml at the merge base and at head, read by readLockfile. */
+  lockfiles: { base: LockfileView; head: LockfileView };
   now: Date;
 }
 
@@ -131,67 +132,104 @@ export interface LockfileView {
   resolutions: Map<string, string>;
   /** Each importer and catalog dependency, keyed by where it is declared. */
   pins: Map<string, Pin>;
-  /** Package keys listed twice, which no rule could then read as one entry. */
-  duplicates: string[];
+  /**
+   * The versions each `snapshots:` entry depends on, keyed by `<name@version>/<group>/<dependency>`.
+   * One package version can have several snapshots (one per peer set), so each key holds a set.
+   */
+  edges: Map<string, Set<string>>;
+  /** Lines the rules cannot read as pnpm writes them: comments, odd keys, duplicates. */
+  problems: string[];
 }
 
 const NESTED_KEY = /^( *)('?)([^']+?)\2:(?: (.*))?$/;
+const SECTION = /^[A-Za-z][\w-]*:/;
+const FLOW_RESOLUTION = /^ {4}resolution: \{.*\}$/;
 
 function unquote(value: string): string {
   return /^'.*'$/.test(value) ? value.slice(1, -1).replaceAll("''", "'") : value;
 }
 
-/** Reads the importers, catalogs and packages sections of a whole pnpm-lock.yaml. */
+/**
+ * Reads the importers, catalogs, packages and snapshots sections of a whole pnpm-lock.yaml. pnpm
+ * writes no comments and indents by two spaces, so a comment, an odd indent, a column-0 line that is
+ * not a section key, an unreadable package key or a resolution not on one line is a problem: each
+ * could hide an entry from the reading below while YAML still parses it.
+ */
 export function readLockfile(text: string): LockfileView {
-  const view: LockfileView = { resolutions: new Map(), pins: new Map(), duplicates: [] };
+  const view: LockfileView = { resolutions: new Map(), pins: new Map(), edges: new Map(), problems: [] };
   let section = "";
   const path: string[] = [];
-  let pkg = "";
-  for (const line of text.split("\n")) {
-    if (/^\S/.test(line)) {
+  let entry = "";
+  text.split("\n").forEach((line, index) => {
+    const problem = (what: string) => view.problems.push(`pnpm-lock.yaml line ${index + 1}: ${what}`);
+    if (line.trim() === "") return;
+    const indent = /^ */.exec(line)?.[0].length ?? 0;
+    if (line.trimStart().startsWith("#")) return problem("a comment");
+    if (indent % 2 !== 0 || line[indent] === "\t") return problem("indentation pnpm does not write");
+    if (indent === 0) {
+      if (!SECTION.test(line)) return problem(`not a section key: ${line}`);
       section = line.replace(/:.*$/, "");
-      continue;
+      entry = "";
+      return;
     }
-    if (section === "packages") {
-      const key = /^ {2}\S/.test(line) ? LOCK_KEY.exec(line) : null;
-      if (key) {
-        pkg = `${key[1]}@${key[2]}`;
-        if (view.resolutions.has(pkg)) view.duplicates.push(pkg);
-        view.resolutions.set(pkg, "");
-      } else if (LOCK_INTEGRITY.test(line) && pkg !== "") {
-        view.resolutions.set(pkg, line.replace(LOCK_INTEGRITY, "").trim());
+    if (section === "packages" || section === "snapshots") {
+      if (indent === 2) {
+        const key = LOCK_KEY.exec(line);
+        entry = key ? `${key[1]}@${key[2]}` : "";
+        if (!key) return problem(`not a package key: ${line.trim()}`);
+        if (section === "packages") {
+          if (view.resolutions.has(entry)) problem(`${entry} is listed twice`);
+          view.resolutions.set(entry, "");
+        }
+        return;
       }
-      continue;
+      if (section === "packages" && /^ {4}resolution:/.test(line)) {
+        if (!FLOW_RESOLUTION.test(line)) return problem(`${entry}: a resolution not written on one line`);
+        view.resolutions.set(entry, line.replace(LOCK_INTEGRITY, "").trim());
+        return;
+      }
+      if (section === "snapshots") {
+        const match = NESTED_KEY.exec(line);
+        if (match && indent === 4) path[0] = match[3];
+        else if (match && indent === 6 && (path[0] === "dependencies" || path[0] === "optionalDependencies")) {
+          const where = `${entry}/${path[0]}/${match[3]}`;
+          const pin = { name: match[3], specifier: "", version: unquote(match[4] ?? "") };
+          view.edges.set(where, (view.edges.get(where) ?? new Set()).add(lockedVersion(pin)));
+        }
+      }
+      return;
     }
-    if (section !== "importers" && section !== "catalogs") continue;
+    if (section !== "importers" && section !== "catalogs") return;
     const match = NESTED_KEY.exec(line);
-    if (!match) continue;
+    if (!match) return;
     // importers: <importer>/<group>/<name> at indents 2, 4, 6; catalogs: <catalog>/<name> at 2, 4.
-    const depth = match[1].length / 2 - 1;
+    const depth = indent / 2 - 1;
     const fieldDepth = section === "importers" ? 3 : 2;
     if (depth < fieldDepth) {
       path.length = depth;
       path[depth] = match[3];
-      continue;
+      return;
     }
-    if (depth !== fieldDepth || path.length !== fieldDepth) continue;
+    if (depth !== fieldDepth || path.length !== fieldDepth) return;
     const where = `${section}/${path.join("/")}`;
     const pin = view.pins.get(where) ?? { name: path[fieldDepth - 1], specifier: "", version: "" };
     if (match[3] === "specifier") pin.specifier = unquote(match[4] ?? "");
     if (match[3] === "version") pin.version = unquote(match[4] ?? "");
     view.pins.set(where, pin);
-  }
+  });
   return view;
 }
 
-/** The registry version a pin locks, or undefined for a workspace link or a local file. */
+/**
+ * The registry version a pin locks, or undefined for anything else: a workspace link, a local
+ * file, a URL or a git dependency, none of which OSV can be asked about.
+ */
 function pinnedVersion(pin: Pin): PackageVersion | undefined {
   const version = pin.version.replace(/\(.*$/, "");
-  if (/^(link|file|workspace):/.test(version)) return undefined;
   const alias = /^((?:@[^/@]+\/)?[^@]+)@(.+)$/.exec(version);
-  if (alias) return { name: alias[1], version: alias[2] };
   const npm = /^npm:((?:@[^/@]+\/)?[^@]+)@/.exec(pin.specifier);
-  return { name: npm ? npm[1] : pin.name, version };
+  const found = alias ? { name: alias[1], version: alias[2] } : { name: npm ? npm[1] : pin.name, version };
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?$/.test(found.version) ? found : undefined;
 }
 
 /**
@@ -205,9 +243,12 @@ function normalResolution(key: string, resolution: string): string {
   return resolution.replace(`, tarball: ${tarball}}`, "}");
 }
 
-/** Every package version at both base and head whose resolution or integrity is not the same. */
+/**
+ * Every package version at both base and head whose resolution or integrity is not the same, and
+ * every line of either lockfile the reading could not take as pnpm writes it.
+ */
 export function retainedPackageReasons(base: LockfileView, head: LockfileView): string[] {
-  const reasons = [...base.duplicates, ...head.duplicates].map((key) => `pnpm-lock.yaml: ${key} is listed twice`);
+  const reasons = [...base.problems.map((problem) => `base ${problem}`), ...head.problems.map((problem) => `head ${problem}`)];
   for (const [key, after] of head.resolutions) {
     const before = base.resolutions.get(key);
     if (before !== undefined && normalResolution(key, before) !== normalResolution(key, after)) {
@@ -217,39 +258,56 @@ export function retainedPackageReasons(base: LockfileView, head: LockfileView): 
   return reasons;
 }
 
-/** The registry versions importer and catalog entries stopped and started resolving to. */
+/** The registry versions importer, catalog and snapshot entries stopped and started resolving to. */
 export interface PinMoves {
   from: PackageVersion[];
   to: PackageVersion[];
   reasons: string[];
 }
 
+const NOT_REGISTRY = "not a registry version: ";
+
 /**
  * What a pin locks, compared by `name@version`: a version string's peer suffix can change while the
  * package version stays the same. A non-registry version compares as written.
  */
-function locked(pin: Pin | undefined): string | undefined {
-  const version = pin === undefined ? undefined : pinnedVersion(pin);
-  return version === undefined ? pin?.version : versionKey(version);
+function lockedVersion(pin: Pin): string {
+  const version = pinnedVersion(pin);
+  return version === undefined ? `${NOT_REGISTRY}${pin.version}` : versionKey(version);
 }
 
-/** Where an importer or catalog entry locks a different version at head, the version each side locks. */
+/**
+ * Where an importer, catalog or snapshot entry locks a different version at head, the version each
+ * side locks. A snapshot's dependencies count too: a bump can move a transitive dependency to a
+ * version the lockfile already had, which then adds no package entry.
+ */
 export function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
   const from = new Map<string, PackageVersion>();
   const to = new Map<string, PackageVersion>();
   const reasons: string[] = [];
-  const record = (where: string, pin: Pin | undefined, into: Map<string, PackageVersion>) => {
-    if (pin === undefined) return;
-    const version = pinnedVersion(pin);
-    if (version === undefined) reasons.push(`pnpm-lock.yaml ${where}: moves to or from ${pin.version}, not a registry version`);
-    else into.set(versionKey(version), version);
+  const record = (where: string, value: string | undefined, into: Map<string, PackageVersion>) => {
+    if (value === undefined) return;
+    if (value.startsWith(NOT_REGISTRY)) {
+      reasons.push(`pnpm-lock.yaml ${where}: moves to or from ${value.slice(NOT_REGISTRY.length)}, not a registry version`);
+      return;
+    }
+    const at = value.lastIndexOf("@");
+    into.set(value, { name: value.slice(0, at), version: value.slice(at + 1) });
   };
   for (const where of new Set([...base.pins.keys(), ...head.pins.keys()])) {
-    const before = base.pins.get(where);
-    const after = head.pins.get(where);
-    if (locked(before) === locked(after)) continue;
+    const beforePin = base.pins.get(where);
+    const afterPin = head.pins.get(where);
+    const before = beforePin === undefined ? undefined : lockedVersion(beforePin);
+    const after = afterPin === undefined ? undefined : lockedVersion(afterPin);
+    if (before === after) continue;
     record(where, before, from);
     record(where, after, to);
+  }
+  for (const where of new Set([...base.edges.keys(), ...head.edges.keys()])) {
+    const before = base.edges.get(where) ?? new Set<string>();
+    const after = head.edges.get(where) ?? new Set<string>();
+    for (const value of before) if (!after.has(value)) record(`snapshots/${where}`, value, from);
+    for (const value of after) if (!before.has(value)) record(`snapshots/${where}`, value, to);
   }
   return { from: [...from.values()], to: [...to.values()], reasons };
 }
@@ -357,8 +415,8 @@ export function evaluateDeps(input: DepsInput): Outcome {
     }
   }
   for (const { path, base, head } of input.manifests) reasons.push(...manifestReasons(path, base, head));
-  const baseLock = readLockfile(input.lockfiles.base);
-  const headLock = readLockfile(input.lockfiles.head);
+  const baseLock = input.lockfiles.base;
+  const headLock = input.lockfiles.head;
   reasons.push(...retainedPackageReasons(baseLock, headLock));
   const moves = pinMoves(baseLock, headLock);
   reasons.push(...moves.reasons);
@@ -407,17 +465,8 @@ export function evaluateDeps(input: DepsInput): Outcome {
 }
 
 /** The package names a lockfile's `packages:` section lists. */
-export function lockfileNames(lockfile: string): Set<string> {
-  const names = new Set<string>();
-  let inPackages = false;
-  for (const line of lockfile.split("\n")) {
-    if (/^\S/.test(line)) inPackages = line === "packages:";
-    else if (inPackages) {
-      const key = LOCK_KEY.exec(line);
-      if (key) names.add(key[1]);
-    }
-  }
-  return names;
+export function lockfileNames(lockfile: LockfileView): Set<string> {
+  return new Set([...lockfile.resolutions.keys()].map((key) => key.slice(0, key.lastIndexOf("@"))));
 }
 
 /** Publish times for `entries`, from each package's full registry document. */
@@ -478,8 +527,8 @@ async function main(): Promise<void> {
     const headLock = fileAt(head, "pnpm-lock.yaml");
     if (workspace === undefined || baseLock === undefined) throw new Error("base has no pnpm workspace");
     if (headLock === undefined) throw new Error("head has no pnpm-lock.yaml");
-    const baseNames = lockfileNames(baseLock);
-    const lockfiles = { base: baseLock, head: headLock };
+    const lockfiles = { base: readLockfile(baseLock), head: readLockfile(headLock) };
+    const baseNames = lockfileNames(lockfiles.base);
     return evaluateDeps({
       author: process.env.AUTOMERGE_PR_AUTHOR ?? "",
       headRef: process.env.AUTOMERGE_HEAD_REF ?? "",
@@ -490,7 +539,7 @@ async function main(): Promise<void> {
       baseLockHasName: (name) => baseNames.has(name),
       minimumReleaseAgeMinutes: minimumReleaseAge(workspace),
       published: await fetchPublishTimes(lock.added),
-      advisories: await fetchAdvisories(advisoryTargets(lock, pinMoves(readLockfile(baseLock), readLockfile(headLock)))),
+      advisories: await fetchAdvisories(advisoryTargets(lock, pinMoves(lockfiles.base, lockfiles.head))),
       lockfiles,
       now: new Date(),
     });

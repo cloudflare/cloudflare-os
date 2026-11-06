@@ -4,11 +4,10 @@
 //
 // Applies when every changed file is a test file (TEST_PATH) in one package. The proof mutates the
 // package source those tests reach through imports and re-exports (sourceGraph), with Stryker and
-// the package's own vitest config narrowed to
-// the changed test files, once with the base version of those files and once with the head
-// version. Source is identical on both sides, so the two runs make the same mutants. It holds when
-// every mutant the base tests killed (or timed out) is still killed at head: an edit that weakens
-// a test without deleting a line kills fewer and fails.
+// the package's own vitest config narrowed to the changed test files, once with the base version of
+// those files and once with the head version. Source is identical on both sides, so the two runs
+// make the same mutants. It holds when every mutant the base tests killed (or timed out) is still
+// killed at head: an edit that weakens a test without deleting a line kills fewer and fails.
 //
 // Scope follows a 2026-11-02 probe: Stryker 10.1.1's vitest runner worked on a workerd suite
 // (typed-storage) and a Node suite (error-reporting).
@@ -32,12 +31,12 @@
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, normalize, relative } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
 import { fileAt, git, mergeBase, pullRequestDiff } from "./git.ts";
-import { asArray, asObject, asString, parseJson, type JsonObject } from "./json.ts";
+import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "./json.ts";
 
 /** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
 export const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
@@ -108,7 +107,9 @@ export function planScope(files: FileDiff[]): TestsScope {
   return { packageDir: `packages/${[...packages][0]}`, tests: files.map((file) => file.path) };
 }
 
-const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"](\.[^'"]+)['"]|(?:^|[\s;])import\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
+/** A dynamic import or require whose argument is not one string literal, which cannot be followed. */
+const UNREADABLE_IMPORT = /(?<![\w$#.])(?:import|require)\((?!\s*['"][^'"]+['"]\s*\))/g;
 const SOURCE = /\.[cm]?tsx?$/;
 
 /** The source a set of tests reaches, and the imports that could not be followed. */
@@ -118,12 +119,44 @@ export interface SourceGraph {
   problems: string[];
 }
 
+/** The file an `exports` entry names for an import: a path, or its `import` or `default` condition. */
+function exportTarget(value: Json | undefined): string | undefined {
+  if (typeof value === "string") return value;
+  if (!isObject(value)) return undefined;
+  return exportTarget(value.import) ?? exportTarget(value.default);
+}
+
 /**
- * Every source file `roots` reach through relative imports and re-exports, followed transitively
- * within `packageDir`: a test that imports an index which re-exports another module exercises that
- * module too. Bare specifiers (other packages, node_modules) are not followed. A relative specifier
- * that resolves to no file, or to a file outside the package, is a problem, since its mutants would
- * go unmade. `read` gives a file's text, or undefined when there is no such file.
+ * The file a package's import of itself by name resolves to through its `exports` map (one `*`
+ * allowed), or undefined when it names none.
+ */
+export function selfImportPath(packageDir: string, manifest: JsonObject, specifier: string): string | undefined {
+  const name = typeof manifest.name === "string" ? manifest.name : "";
+  const subpath = specifier === name ? "." : `./${specifier.slice(name.length + 1)}`;
+  const exports = manifest.exports;
+  // `"exports": "./src/index.ts"` names the package root only.
+  const exact = isObject(exports) ? exportTarget(exports[subpath]) : subpath === "." ? exportTarget(exports) : undefined;
+  if (exact !== undefined) return join(packageDir, exact);
+  if (!isObject(exports)) return undefined;
+  for (const [pattern, value] of Object.entries(exports)) {
+    const [prefix, suffix, ...rest] = pattern.split("*");
+    const target = exportTarget(value);
+    if (suffix === undefined || rest.length > 0 || target === undefined) continue;
+    if (subpath.startsWith(prefix) && subpath.endsWith(suffix) && subpath.length >= prefix.length + suffix.length) {
+      return join(packageDir, target.replace("*", subpath.slice(prefix.length, subpath.length - suffix.length)));
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every source file `roots` reach through imports and re-exports, followed transitively within
+ * `packageDir`: a test that imports an index which re-exports another module exercises that module
+ * too. Relative specifiers and the package's imports of itself by name (through its package.json
+ * `exports`) are followed; other bare specifiers (other packages, node_modules) are not. A specifier
+ * that resolves to no file, a file outside the package, or an import whose argument is not a string
+ * literal is a problem, since its mutants would go unmade. `read` gives a file's text, or undefined
+ * when there is no such file.
  */
 export function sourceGraph(
   roots: { path: string; text: string }[], packageDir: string, read: (path: string) => string | undefined,
@@ -131,19 +164,39 @@ export function sourceGraph(
   const sources = new Set<string>();
   const problems: string[] = [];
   const seen = new Set<string>();
+  const manifestText = read(join(packageDir, "package.json"));
+  const parsed = manifestText === undefined ? undefined : parseJson(manifestText);
+  const manifest: JsonObject = isObject(parsed) ? parsed : {};
+  const name = typeof manifest.name === "string" ? manifest.name : undefined;
   const queue = [...roots];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    for (const unreadable of next.text.matchAll(UNREADABLE_IMPORT)) {
+      problems.push(`${next.path}: cannot follow "${unreadable[0]}", whose argument is not one string literal`);
+    }
     for (const match of next.text.matchAll(IMPORT)) {
       const specifier = match[1] ?? match[2] ?? match[3];
-      const base = normalize(join(dirname(next.path), specifier));
+      let base: string;
+      if (specifier.startsWith(".")) {
+        base = normalize(join(dirname(next.path), specifier));
+      } else if (name !== undefined && (specifier === name || specifier.startsWith(`${name}/`))) {
+        const target = selfImportPath(packageDir, manifest, specifier);
+        if (target === undefined) {
+          problems.push(`${next.path}: ${specifier} is not in ${packageDir}/package.json exports`);
+          continue;
+        }
+        base = normalize(target);
+      } else {
+        continue;
+      }
       const candidates = [base, base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx"), `${base}.ts`, `${base}.tsx`,
-        join(base, "index.ts"), join(base, "index.tsx")];
+        `${base}.d.ts`, base.replace(/\.js$/, ".d.ts"), join(base, "index.ts"), join(base, "index.tsx")];
       const hit = candidates.map((path) => ({ path, text: read(path) })).find((file) => file.text !== undefined);
       if (hit?.text === undefined) {
         problems.push(`${next.path}: cannot resolve ${specifier}`);
         continue;
       }
-      if (relative(packageDir, hit.path).startsWith("..")) {
+      const inside = relative(packageDir, hit.path);
+      if (inside === ".." || inside.startsWith("../") || isAbsolute(inside)) {
         problems.push(`${next.path}: imports ${hit.path}, outside ${packageDir}`);
         continue;
       }

@@ -104,6 +104,37 @@ describe("proof-tests scope", () => {
     ]);
   });
 
+  // From the review of #987's fix: bundled-blueprints' xlsx.server.test.ts imports its package's
+  // own zip and sync libraries by name, through package.json `exports` (recorded 2026-11-06).
+  it("follows the package's imports of itself by name through its exports", () => {
+    const read = files({
+      "packages/bundled-blueprints/package.json": JSON.stringify({
+        name: "@gadgets/bundled-blueprints",
+        exports: { ".": "./src/index.ts", "./libraries/*/server": "./libraries/*/server.ts" },
+      }),
+      "packages/bundled-blueprints/libraries/zip/server.ts": 'export { crc32 } from "./src/zip.ts";\n',
+      "packages/bundled-blueprints/libraries/zip/src/zip.ts": "export const crc32 = () => 0;\n",
+      "packages/bundled-blueprints/src/index.ts": "export const index = 1;\n",
+    });
+    const test = { path: "packages/bundled-blueprints/blueprints/workspace-sheets/__tests__/xlsx.server.test.ts",
+      text: 'import { crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";\nimport "@gadgets/bundled-blueprints";\n' +
+        'import { other } from "@gadgets/bundled-blueprints-extra";\nimport { gone } from "@gadgets/bundled-blueprints/nowhere";\n' };
+    assert.deepEqual(sourceGraph([test], "packages/bundled-blueprints", read), {
+      sources: ["packages/bundled-blueprints/libraries/zip/server.ts", "packages/bundled-blueprints/libraries/zip/src/zip.ts",
+        "packages/bundled-blueprints/src/index.ts"],
+      problems: [`${test.path}: @gadgets/bundled-blueprints/nowhere is not in packages/bundled-blueprints/package.json exports`],
+    });
+  });
+
+  it("names an import whose argument is not a string literal, and follows require()", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/..odd.ts": "export const odd = 1;\n" });
+    const text = 'const a = require("./a.ts");\nconst b = await import(`./${name}.ts`);\nimport "./..odd.ts";\nthis.#require("x");\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read), {
+      sources: ["packages/p/src/..odd.ts", "packages/p/src/a.ts"],
+      problems: ['packages/p/src/x.test.ts: cannot follow "import(", whose argument is not one string literal'],
+    });
+  });
+
   it("flags edited helpers and fixtures, which unchanged tests may import", () => {
     assert.deepEqual(editedSupportFiles([
       "packages/p/src/a.test.ts", "packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json",
