@@ -62,6 +62,7 @@ export default function WorkpiecePicker({
     ? chatBindings.bindings.filter((binding, i, all) => all.findIndex(b => b.target === binding.target) === i)
     : []
   const createdResources = listed.filter(binding => binding.created)
+  const hasOutputs = gadgets.length > 0 || worktrees.length > 0 || createdResources.length > 0
   // Always-available connections (an auto-provisioning vendor's) come last: they say least about
   // this chat.
   const connections = listed.filter(binding => !binding.created)
@@ -214,6 +215,9 @@ export default function WorkpiecePicker({
         {createdResources.map(binding => (
           <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
         ))}
+        {expanded && !hasOutputs && chatBindings?.status === 'ready' && (
+          <span className="px-2 text-[12px] text-kumo-inactive">Nothing yet</span>
+        )}
 
         {worktrees.length > 0 && (
           <>
@@ -272,7 +276,7 @@ export default function WorkpiecePicker({
               <span aria-hidden="true" className="mt-3 mb-1 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
                 Connections
               </span>
-            ) : (
+            ) : hasOutputs && (
               <span aria-hidden="true" className="mx-2 mt-2 mb-1.5 border-t border-kumo-line" />
             )}
             {chatBindings.status === 'loading' && expanded && (
@@ -290,6 +294,9 @@ export default function WorkpiecePicker({
             {connections.map(binding => (
               <ChatBindingRow key={binding.target} binding={binding} vendor={vendorOf(binding)} expanded={expanded} />
             ))}
+            {chatBindings.status === 'ready' && connections.length === 0 && expanded && (
+              <span className="px-2 text-[12px] text-kumo-inactive">None yet</span>
+            )}
           </div>
         )}
 

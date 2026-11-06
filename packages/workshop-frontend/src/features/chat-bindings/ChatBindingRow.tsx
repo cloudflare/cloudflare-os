@@ -16,7 +16,8 @@ type ChatBindingRowProps = {
 export const ChatBindingRow = ({ binding, vendor, expanded }: ChatBindingRowProps) => {
   const type = vendor?.supportedResources.find(resource => resource.urlPattern === binding.typeUrlPattern)
   const href = safeExternalUrl(binding.resourceUrl)
-  const subheader = binding.created && !binding.resourceUrl ? 'Awaiting approval'
+  const awaitingApproval = binding.created && !binding.resourceUrl
+  const subheader = awaitingApproval ? 'Awaiting approval'
     : binding.alwaysAvailable ? 'Built in'
     : type?.title ?? vendor?.description.displayName
   const label = [binding.resourceTitle, subheader, binding.changed && 'Changed'].filter(Boolean).join(' · ')
@@ -38,40 +39,50 @@ export const ChatBindingRow = ({ binding, vendor, expanded }: ChatBindingRowProp
     />
   )
 
-  if (!expanded) {
-    const className = 'relative flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg transition-colors hover:bg-kumo-tint'
-    const changedDot = binding.changed && (
-      <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-kumo-brand" />
-    )
-    return (
-      <Tooltip content={label} asChild>
-        {href ? (
-          <a href={href} target="_blank" rel="noopener noreferrer" aria-label={label} className={className}>
-            {icon}{changedDot}
-          </a>
-        ) : (
-          <span role="img" aria-label={label} className={className}>{icon}{changedDot}</span>
-        )}
-      </Tooltip>
-    )
-  }
+  const content = expanded ? (
+    <>
+      {icon}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{binding.resourceTitle}</span>
+        {subheader && <span className="block truncate text-[11px] leading-[14px] text-kumo-subtle">{subheader}</span>}
+      </span>
+      {binding.changed && (
+        // Kumo rings a badge inside a hovered link, as if the badge were the link.
+        <Badge variant="secondary" className="shrink-0 px-1.5 py-0.5 text-[10px] leading-none [a:hover_&]:ring-0">
+          Changed
+        </Badge>
+      )}
+    </>
+  ) : (
+    <>
+      {icon}
+      {/* Drawn like a draft gadget's dot, which also means not yet accepted. */}
+      {awaitingApproval && (
+        <span className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full border border-kumo-base bg-kumo-brand" />
+      )}
+    </>
+  )
+  const className = `relative flex items-center rounded-lg text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default ${
+    expanded ? 'gap-1 px-2 py-1' : 'h-9 w-9 shrink-0 justify-center self-center'
+  }`
 
   return (
-    <div className="flex items-center gap-2 rounded-lg px-2 py-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint">
-      {icon}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1">
-          {href ? (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate hover:underline">
-              {binding.resourceTitle}
-            </a>
-          ) : (
-            <span className="min-w-0 truncate">{binding.resourceTitle}</span>
-          )}
-          {binding.changed && <Badge variant="neutral" className="shrink-0">Changed</Badge>}
-        </div>
-        {subheader && <div className="truncate text-[11px] leading-[14px] text-kumo-subtle">{subheader}</div>}
-      </div>
-    </div>
+    <Tooltip content={label} asChild>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={label}
+          className={`${className} transition-colors hover:bg-kumo-tint`}
+        >
+          {content}
+        </a>
+      ) : expanded ? (
+        <div className={className}>{content}</div>
+      ) : (
+        <span role="img" tabIndex={0} aria-label={label} className={className}>{content}</span>
+      )}
+    </Tooltip>
   )
 }
