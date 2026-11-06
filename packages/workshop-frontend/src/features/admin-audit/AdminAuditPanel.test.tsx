@@ -950,7 +950,7 @@ describe('AdminAuditPanel', () => {
     it('starts from the defaults, the Action column taking what is left', async () => {
       await render()
 
-      expect(widths()).toEqual(['48px', '170px', '150px', '', '220px', '150px'])
+      expect(widths()).toEqual(['48px', '170px', '140px', '', '240px', '140px'])
       expect(stored()).toBeNull()
     })
 
@@ -963,7 +963,7 @@ describe('AdminAuditPanel', () => {
       await key(handle('Time'), { key: 'ArrowLeft', shiftKey: true })
       expect(widths()[1]).toBe('122px')
 
-      expect(stored()).toEqual({ time: 122, admin: 150, sensitivity: 220, target: 150 })
+      expect(stored()).toEqual({ time: 122, admin: 140, sensitivity: 240, target: 140 })
     })
 
     it('resizes a column by dragging its edge, storing the width once the drag ends', async () => {
@@ -971,24 +971,24 @@ describe('AdminAuditPanel', () => {
 
       await pointer('pointerdown', handle('Admin'), 500)
       await pointer('pointermove', handle('Admin'), 560)
-      expect(widths()[2]).toBe('210px')
+      expect(widths()[2]).toBe('200px')
       expect(stored()).toBeNull()
       await pointer('pointerup', handle('Admin'), 580)
 
-      expect(widths()[2]).toBe('230px')
-      expect(stored()).toEqual({ time: 170, admin: 230, sensitivity: 220, target: 150 })
+      expect(widths()[2]).toBe('220px')
+      expect(stored()).toEqual({ time: 170, admin: 220, sensitivity: 240, target: 140 })
     })
 
     it('puts back the width a drag began from when the drag is cancelled, storing nothing', async () => {
       await render()
       await pointer('pointerdown', handle('Admin'), 500)
       await pointer('pointermove', handle('Admin'), 600)
-      expect(widths()[2]).toBe('250px')
+      expect(widths()[2]).toBe('240px')
 
       // A cancel may report any position: 0 here, which would narrow the column to its least.
       await pointer('pointercancel', handle('Admin'), 0)
 
-      expect(widths()[2]).toBe('150px')
+      expect(widths()[2]).toBe('140px')
       expect(stored()).toBeNull()
     })
 
@@ -1009,8 +1009,8 @@ describe('AdminAuditPanel', () => {
 
       await act(async () => { handle('Admin').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
 
-      expect(widths()[2]).toBe('150px')
-      expect(stored()).toEqual({ time: 170, admin: 150, sensitivity: 220, target: 150 })
+      expect(widths()[2]).toBe('140px')
+      expect(stored()).toEqual({ time: 170, admin: 140, sensitivity: 240, target: 140 })
     })
 
     it('starts from the widths stored, bounded, and the defaults for any missing or malformed', async () => {
@@ -1018,7 +1018,7 @@ describe('AdminAuditPanel', () => {
 
       await render()
 
-      expect(widths()).toEqual(['48px', '64px', '333px', '', '220px', '150px'])
+      expect(widths()).toEqual(['48px', '64px', '333px', '', '240px', '140px'])
     })
 
     it('ignores stored widths that are not JSON', async () => {
@@ -1026,7 +1026,7 @@ describe('AdminAuditPanel', () => {
 
       await render()
 
-      expect(widths()).toEqual(['48px', '170px', '150px', '', '220px', '150px'])
+      expect(widths()).toEqual(['48px', '170px', '140px', '', '240px', '140px'])
     })
   })
 

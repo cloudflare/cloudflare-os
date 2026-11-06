@@ -23,8 +23,9 @@ const RESIZABLE_COLUMNS = {
   time: 'Time', admin: 'Admin', sensitivity: 'Sensitivity', target: 'Target user',
 } as const
 type ResizableColumn = keyof typeof RESIZABLE_COLUMNS
-// Sized so that, with Action at its least, the log fits the Audit tab at a 1440 px window.
-const DEFAULT_WIDTHS: Record<ResizableColumn, number> = { time: 170, admin: 150, sensitivity: 220, target: 150 }
+// Sized so that, with Action at its least, the log fits the Audit tab at a 1440 px window, and a
+// refused call's two badges share a line.
+const DEFAULT_WIDTHS: Record<ResizableColumn, number> = { time: 170, admin: 140, sensitivity: 240, target: 140 }
 const TOGGLE_WIDTH = 48
 const ACTION_MIN_WIDTH = 140
 
