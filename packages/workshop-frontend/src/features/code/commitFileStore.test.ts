@@ -41,9 +41,10 @@ class FakeReader implements CommitFileReader {
 
 const text = (t: string): FileAtCommit => ({ kind: 'text', text: t })
 
-// A streamed file, as the server sends one over MAX_BUFFERED_BLOB_SIZE: its bytes in two pieces,
-// or erroring after the first piece. `cancelled` reports whether the consumer cancelled it.
-const streamed = (bytes: Uint8Array, options: { fail?: boolean } = {}) => {
+// A streamed file, as the server sends one over MAX_BUFFERED_BLOB_SIZE: its blob, and its bytes in
+// two pieces, or erroring after the first piece. `cancelled` reports whether the consumer
+// cancelled it.
+const streamed = (bytes: Uint8Array, options: { oid?: string; fail?: boolean } = {}) => {
   const state = { cancelled: false }
   let sent = 0
   const content = new ReadableStream<Uint8Array>({
@@ -60,7 +61,8 @@ const streamed = (bytes: Uint8Array, options: { fail?: boolean } = {}) => {
     },
     cancel() { state.cancelled = true },
   })
-  return { file: { kind: 'stream', byteLength: bytes.length, content } as FileAtCommit, state }
+  const blob = { oid: options.oid ?? '1'.repeat(40), byteLength: bytes.length }
+  return { file: { kind: 'stream', blob, content } as FileAtCommit, state }
 }
 const utf8 = (t: string) => new TextEncoder().encode(t)
 
@@ -183,16 +185,16 @@ describe('CommitFileStore', () => {
     const reader = new FakeReader()
     reader.files.set('c1', new Map([
       ['big.txt', streamed(utf8('héllo\nworld\n')).file],
-      ['nul.bin', streamed(Uint8Array.of(65, 0, 66)).file],
-      ['bad.bin', streamed(Uint8Array.of(65, 0xff, 66)).file],
+      ['nul.bin', streamed(Uint8Array.of(65, 0, 66), { oid: '2'.repeat(40) }).file],
+      ['bad.bin', streamed(Uint8Array.of(65, 0xff, 66), { oid: '3'.repeat(40) }).file],
       ['small.txt', text('S')],
     ]))
     const store = new CommitFileStore()
     const result = await store.readFiles(reader, 'c1', ['big.txt', 'nul.bin', 'bad.bin', 'small.txt'])
     expect(Object.fromEntries(result)).toEqual({
       'big.txt': text('héllo\nworld\n'),
-      'nul.bin': { kind: 'unreadable', message: 'nul.bin is not a text file' },
-      'bad.bin': { kind: 'unreadable', message: 'bad.bin is not a text file' },
+      'nul.bin': { kind: 'blob', blob: { oid: '2'.repeat(40), byteLength: 3 } },
+      'bad.bin': { kind: 'blob', blob: { oid: '3'.repeat(40), byteLength: 3 } },
       'small.txt': text('S'),
     })
     expect(store.peekFile('c1', 'big.txt')).toEqual(text('héllo\nworld\n'))
