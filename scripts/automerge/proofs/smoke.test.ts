@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer, type ServerResponse } from "node:http";
 import { describe, it } from "node:test";
-import { evaluateSmoke, isReadyLine, startServer, type Answer } from "./smoke.ts";
+import { evaluateSmoke, get, isReadyLine, startServer, type Answer } from "./smoke.ts";
 
 const ORIGIN = "http://localhost:8799";
 const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", body: "<!doctype html>" };
@@ -33,6 +35,32 @@ describe("preview-smoke", () => {
 });
 
 const node = (script: string) => ["-e", script];
+
+// A loopback server on the real clock: what is under test is that a request that never finishes
+// ends at the timeout.
+describe("smoke request", () => {
+  for (const [what, answer] of [
+    ["never answers", (_response: ServerResponse) => {}],
+    ["sends headers but never the body", (response: ServerResponse) => response.writeHead(200, { "content-type": "text/html" })],
+  ] satisfies [string, (response: ServerResponse) => void][]) {
+    it(`gives up on a server that ${what}`, async () => {
+      const held: ServerResponse[] = [];
+      const server = createServer((_request, response) => {
+        held.push(response);
+        answer(response);
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert.ok(address !== null && typeof address === "object");
+      try {
+        await assert.rejects(get(`http://127.0.0.1:${address.port}/`, 300), /did not answer within 300 ms/);
+      } finally {
+        for (const response of held) response.destroy();
+        server.close();
+      }
+    });
+  }
+});
 
 // Real child processes on the real clock: what is under test is how a server's start is detected.
 describe("local preview server", () => {

@@ -32,7 +32,7 @@ import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts"
 import type { FileDiff, Hunk } from "./diff.ts";
 import { fileAt, mergeBase, pullRequestDiff } from "./git.ts";
 import { asArray, asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
-import { isMinorOrPatch, rangeVersion } from "./semver.ts";
+import { isMinorOrPatch, parseVersion, rangeVersion } from "./semver.ts";
 
 export const DEPENDABOT_LOGIN = "dependabot[bot]";
 const NPM_BRANCH_PREFIX = "dependabot/npm_and_yarn/";
@@ -276,38 +276,78 @@ function lockedVersion(pin: Pin): string {
   return version === undefined ? `${NOT_REGISTRY}${pin.version}` : versionKey(version);
 }
 
+/** Whether two versions are on one release line: the same major, and for 0.x the same minor. */
+function sameLine(a: string, b: string): boolean {
+  const [x, y] = [parseVersion(a), parseVersion(b)];
+  if (x === undefined || y === undefined) return false;
+  return a === b || isMinorOrPatch(x, y) || isMinorOrPatch(y, x);
+}
+
+function splitKey(key: string): PackageVersion {
+  const at = key.lastIndexOf("@");
+  return { name: key.slice(0, at), version: key.slice(at + 1) };
+}
+
 /**
  * Where an importer, catalog or snapshot entry locks a different version at head, the version each
  * side locks. A snapshot's dependencies count too: a bump can move a transitive dependency to a
  * version the lockfile already had, which then adds no package entry.
+ *
+ * Every move must stay on a release line (sameLine), as the manifest rule requires of direct
+ * dependencies: a version an entry moves to must share a line with a version that entry moved
+ * from, or, for an entry new at head, with a version of the same package at base. So must every
+ * package version the lockfile adds. A package the base does not have at all is left to the rule
+ * on new package names.
  */
 export function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
   const from = new Map<string, PackageVersion>();
   const to = new Map<string, PackageVersion>();
   const reasons: string[] = [];
-  const record = (where: string, value: string | undefined, into: Map<string, PackageVersion>) => {
-    if (value === undefined) return;
-    if (value.startsWith(NOT_REGISTRY)) {
-      reasons.push(`pnpm-lock.yaml ${where}: moves to or from ${value.slice(NOT_REGISTRY.length)}, not a registry version`);
-      return;
+  const baseVersions = new Map<string, string[]>();
+  for (const key of base.resolutions.keys()) {
+    const { name, version } = splitKey(key);
+    baseVersions.set(name, [...baseVersions.get(name) ?? [], version]);
+  }
+  const registry = (where: string, values: string[]) => values.flatMap((value) => {
+    if (!value.startsWith(NOT_REGISTRY)) return [splitKey(value)];
+    reasons.push(`pnpm-lock.yaml ${where}: moves to or from ${value.slice(NOT_REGISTRY.length)}, not a registry version`);
+    return [];
+  });
+  const move = (where: string, removed: string[], added: string[]) => {
+    const before = registry(where, removed);
+    const after = registry(where, added);
+    for (const entry of before) from.set(versionKey(entry), entry);
+    for (const entry of after) {
+      to.set(versionKey(entry), entry);
+      const lines = before.length > 0
+        ? before.filter((old) => old.name === entry.name).map((old) => old.version)
+        : baseVersions.get(entry.name) ?? [entry.version];
+      if (!lines.some((version) => sameLine(version, entry.version))) {
+        reasons.push(`pnpm-lock.yaml ${where}: ${versionKey(entry)} leaves the release line of ${lines.join(", ") || "nothing it moved from"}`);
+      }
     }
-    const at = value.lastIndexOf("@");
-    into.set(value, { name: value.slice(0, at), version: value.slice(at + 1) });
   };
   for (const where of new Set([...base.pins.keys(), ...head.pins.keys()])) {
     const beforePin = base.pins.get(where);
     const afterPin = head.pins.get(where);
-    const before = beforePin === undefined ? undefined : lockedVersion(beforePin);
-    const after = afterPin === undefined ? undefined : lockedVersion(afterPin);
-    if (before === after) continue;
-    record(where, before, from);
-    record(where, after, to);
+    const before = beforePin === undefined ? [] : [lockedVersion(beforePin)];
+    const after = afterPin === undefined ? [] : [lockedVersion(afterPin)];
+    if (before[0] !== after[0]) move(where, before, after);
   }
   for (const where of new Set([...base.edges.keys(), ...head.edges.keys()])) {
     const before = base.edges.get(where) ?? new Set<string>();
     const after = head.edges.get(where) ?? new Set<string>();
-    for (const value of before) if (!after.has(value)) record(`snapshots/${where}`, value, from);
-    for (const value of after) if (!before.has(value)) record(`snapshots/${where}`, value, to);
+    const removed = [...before].filter((value) => !after.has(value));
+    const added = [...after].filter((value) => !before.has(value));
+    if (removed.length > 0 || added.length > 0) move(`snapshots/${where}`, removed, added);
+  }
+  for (const key of head.resolutions.keys()) {
+    if (base.resolutions.has(key)) continue;
+    const { name, version } = splitKey(key);
+    const lines = baseVersions.get(name);
+    if (lines !== undefined && !lines.some((old) => sameLine(old, version))) {
+      reasons.push(`pnpm-lock.yaml packages: ${key} leaves the release line of ${lines.join(", ")}`);
+    }
   }
   return { from: [...from.values()], to: [...to.values()], reasons };
 }

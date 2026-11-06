@@ -81,9 +81,12 @@ describe("proof-deps on recorded Dependabot pull requests", () => {
     assert.equal(found.length, 3, found.join("\n"));
   });
 
-  it("fails a major bump (#629 node-html-parser 7 -> 9)", () => {
-    assert.deepEqual(reasons(fixture("pr629")),
-      ["packages/gatekeeper-confluence/package.json node-html-parser: ^7.1.0 -> ^9.0.4 is not a minor or patch update"]);
+  it("fails a major bump (#629 node-html-parser 7 -> 9), in the manifest and in the lockfile", () => {
+    assert.deepEqual(reasons(fixture("pr629")), [
+      "packages/gatekeeper-confluence/package.json node-html-parser: ^7.1.0 -> ^9.0.4 is not a minor or patch update",
+      "pnpm-lock.yaml importers/packages/gatekeeper-confluence/dependencies/node-html-parser: node-html-parser@9.0.4 leaves the release line of 7.1.0",
+      "pnpm-lock.yaml packages: node-html-parser@9.0.4 leaves the release line of 7.1.0",
+    ]);
   });
 
   it("fails when the pull request also edits source (#409 styles.css)", () => {
@@ -246,6 +249,23 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
     const found = reasons(moved);
     assert.ok(found.includes("zod@4.6.5: OSV lists GHSA-mrhx-c7xc-m3w5"), found.join("\n"));
     assert.ok(found.includes("zod@4.6.7: not checked against OSV"), found.join("\n"));
+  });
+
+  // Clanky on #987, round 2: a transitive dependency moved across a major version, which no
+  // manifest or catalog range shows.
+  it("fails a snapshot dependency moved across a major version", () => {
+    const input = fixture("pr686");
+    const edge = "  '@modelcontextprotocol/core@2.0.0':\n    dependencies:\n      zod: 4.6.5\n";
+    const moved: DepsInput = {
+      ...input,
+      manifests: [],
+      files: [{ path: "pnpm-lock.yaml", status: "modified", binary: false, modeChanged: false,
+        hunks: [{ section: "snapshots:", removed: ["      zod: 3.25.76"], added: ["      zod: 4.6.5"] }] }],
+      lockfiles: { base: readLockfile(base.replace(edge, edge.replace("zod: 4.6.5", "zod: 3.25.76"))), head: readLockfile(base) },
+    };
+    assert.ok(reasons(moved).includes(
+      "pnpm-lock.yaml snapshots/@modelcontextprotocol/core@2.0.0/dependencies/zod: zod@4.6.5 leaves the release line of 3.25.76"),
+      reasons(moved).join("\n"));
   });
 
   it("fails a move to a version that is not a registry version", () => {

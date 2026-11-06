@@ -28,6 +28,8 @@ export interface Answer {
 
 export const LOCAL_PORT = 8799;
 const LOCAL_READY_MINUTES = 15;
+/** How long one request, body included, may take before the smoke is status `error`. */
+export const REQUEST_TIMEOUT_MS = 60_000;
 
 /** Judges the answers to `GET /` and `GET /api/version`. */
 export function evaluateSmoke(url: string, root: Answer, version: Answer): Outcome {
@@ -46,10 +48,19 @@ export function evaluateSmoke(url: string, root: Answer, version: Answer): Outco
   return decide(reasons, { url, root_status: root.status, version_status: version.status, backend_version: backend });
 }
 
-// A redirect is judged as it is, not followed.
-async function get(url: string): Promise<Answer> {
-  const response = await fetch(url, { redirect: "manual" });
-  return { status: response.status, contentType: response.headers.get("content-type") ?? "", body: await response.text() };
+/**
+ * One GET, judged as it answers (a redirect is not followed). A server that accepts the connection
+ * but does not finish answering within `timeoutMs` throws, which the producer records as `error`.
+ */
+export async function get(url: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Answer> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await fetch(url, { redirect: "manual", signal });
+    return { status: response.status, contentType: response.headers.get("content-type") ?? "", body: await response.text() };
+  } catch (error) {
+    if (signal.aborted) throw new Error(`GET ${url} did not answer within ${timeoutMs} ms`, { cause: error });
+    throw error;
+  }
 }
 
 /** Whether a line of the local server's output says it is listening on `port`. */

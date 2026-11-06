@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import type { FileDiff } from "./diff.ts";
 import { asObject, parseJson, type JsonObject } from "./json.ts";
 import {
-  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, OverBudget,
-  planScope, runBounded, sourceGraph,
+  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, narrowedConfig, OverBudget,
+  planScope, runBounded, selfImportPath, sourceGraph,
 } from "./tests.ts";
+
+/** The workspace's package names, as the proof reads them, for the graph tests below. */
+const WORKSPACE = new Set(["@gadgets/bundled-blueprints", "@gadgets/workshop-shared", "@gadgets/scripts"]);
 
 // Stryker JSON reports from real proof runs on packages/error-reporting (2026-11-02), cut down to
 // the fields the proof reads. "red" weakened the two `toBeNull()` assertions of "rejects only
@@ -34,7 +40,7 @@ describe("proof-tests verdict", () => {
     assert.equal(outcome.details.killed_base, outcome.details.killed_head);
   });
 
-  it("counts timeouts as killed and survivors as not", () => {
+  it("counts the red head run's Killed and Timeout statuses: 213 of its 280 mutants", () => {
     const killed = killedMutants(report("red-head"));
     assert.equal(killed.size, 213);
   });
@@ -72,7 +78,7 @@ describe("proof-tests scope", () => {
       "packages/p/src/double.ts": "export const double = (x: number) => x * 2;\n",
     });
     const test = { path: "packages/p/src/index.test.ts", text: 'import { double, identity } from "./index.ts";\n' };
-    assert.deepEqual(sourceGraph([test], "packages/p", read), { sources: ["packages/p/src/double.ts", "packages/p/src/index.ts"], problems: [] });
+    assert.deepEqual(sourceGraph([test], "packages/p", read, WORKSPACE), { sources: ["packages/p/src/double.ts", "packages/p/src/index.ts"], problems: [] });
   });
 
   it("follows imports through helpers and side-effect imports, but mutates neither tests nor data", () => {
@@ -86,7 +92,7 @@ describe("proof-tests scope", () => {
       "packages/p/__tests__/helpers.ts": 'export * from "../src/index.ts";\nimport type { T } from "../src/types.d.ts";\n',
     });
     const text = 'import { x } from "../__tests__/helpers.ts";\nimport { d } from "vitest";\nconst e = await import("./index.ts");\n';
-    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read), {
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
       sources: ["packages/p/src/deep/index.ts", "packages/p/src/index.ts", "packages/p/src/setup.ts", "packages/p/src/util.tsx"],
       problems: [],
     });
@@ -98,7 +104,7 @@ describe("proof-tests scope", () => {
       "packages/q/src/other.ts": "export const other = 1;\n",
     });
     const test = { path: "packages/p/src/index.test.ts", text: 'import { gone } from "./index.ts";\n' };
-    assert.deepEqual(sourceGraph([test], "packages/p", read).problems, [
+    assert.deepEqual(sourceGraph([test], "packages/p", read, WORKSPACE).problems, [
       "packages/p/src/index.ts: cannot resolve ./gone.ts",
       "packages/p/src/index.ts: imports packages/q/src/other.ts, outside packages/p",
     ]);
@@ -119,7 +125,7 @@ describe("proof-tests scope", () => {
     const test = { path: "packages/bundled-blueprints/blueprints/workspace-sheets/__tests__/xlsx.server.test.ts",
       text: 'import { crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";\nimport "@gadgets/bundled-blueprints";\n' +
         'import { other } from "@gadgets/bundled-blueprints-extra";\nimport { gone } from "@gadgets/bundled-blueprints/nowhere";\n' };
-    assert.deepEqual(sourceGraph([test], "packages/bundled-blueprints", read), {
+    assert.deepEqual(sourceGraph([test], "packages/bundled-blueprints", read, WORKSPACE), {
       sources: ["packages/bundled-blueprints/libraries/zip/server.ts", "packages/bundled-blueprints/libraries/zip/src/zip.ts",
         "packages/bundled-blueprints/src/index.ts"],
       problems: [`${test.path}: @gadgets/bundled-blueprints/nowhere is not in packages/bundled-blueprints/package.json exports`],
@@ -129,16 +135,78 @@ describe("proof-tests scope", () => {
   it("names an import whose argument is not a string literal, and follows require()", () => {
     const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/..odd.ts": "export const odd = 1;\n" });
     const text = 'const a = require("./a.ts");\nconst b = await import(`./${name}.ts`);\nimport "./..odd.ts";\nthis.#require("x");\n';
-    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read), {
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
       sources: ["packages/p/src/..odd.ts", "packages/p/src/a.ts"],
-      problems: ['packages/p/src/x.test.ts: cannot follow "import(", whose argument is not one string literal'],
+      problems: ['packages/p/src/x.test.ts: cannot follow "import(`./${name}.ts`);", not a call with one string literal'],
     });
+  });
+
+  // Bonk on #987, round 2: a space or a comment between `import` and its parenthesis.
+  it("names an import call it cannot read for a space or a comment, though its argument is a string", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/feature.ts": "export const f = 1;\n" });
+    const text = 'import { a } from "./a.ts";\nconst f = await import ("./feature.ts");\n' +
+      'const g = await import /* webpackIgnore: true */ ("./feature.ts");\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts"],
+      problems: [
+        'packages/p/src/x.test.ts: cannot follow "import ("./feature.ts");", not a call with one string literal',
+        'packages/p/src/x.test.ts: cannot follow "import /* webpackIgnore: true */ ("./fea", not a call with one string literal',
+      ],
+    });
+  });
+
+  // Clanky on #987, round 2: a weakened assertion about another workspace package's code changes no
+  // kill in this package's mutants.
+  it("names a value import of another workspace package, but not a type-only one or a node_modules one", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n" });
+    const text = 'import { a } from "./a.ts";\nimport { api } from "@gadgets/workshop-shared/api";\n' +
+      'import type { T } from "@gadgets/workshop-shared";\nimport { z } from "zod";\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts"],
+      problems: ["packages/p/src/x.test.ts: imports @gadgets/workshop-shared/api from the workspace package " +
+        "@gadgets/workshop-shared, whose source is not mutated"],
+    });
+  });
+
+  // CodeQL on #987, round 2: every `*` in an exports target names the matched part.
+  it("replaces every * in an exports target", () => {
+    const manifest = { name: "@gadgets/p", exports: { "./lib/*": "./lib/*/*.ts" } };
+    assert.equal(selfImportPath("packages/p", manifest, "@gadgets/p/lib/zip"), "packages/p/lib/zip/zip.ts");
   });
 
   it("flags edited helpers and fixtures, which unchanged tests may import", () => {
     assert.deepEqual(editedSupportFiles([
       "packages/p/src/a.test.ts", "packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json",
     ]), ["packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json"]);
+  });
+});
+
+/** Loads `config` through narrowedConfig's wrapper, as Vitest would, from a temporary directory. */
+async function load(config: string): Promise<unknown> {
+  const dir = mkdtempSync(join(tmpdir(), "automerge-narrow-"));
+  try {
+    writeFileSync(join(dir, "config.mjs"), config);
+    writeFileSync(join(dir, "wrapper.mjs"), narrowedConfig("./config.mjs", ["src/a.test.ts"]));
+    const wrapper: { default: (env: object) => Promise<unknown> } = await import(pathToFileURL(join(dir, "wrapper.mjs")).href);
+    return await wrapper.default({});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Bonk on #987, round 2: Vitest merges a root include into each project's include, so a config
+// with projects is not narrowed.
+describe("narrowed vitest config", () => {
+  it("narrows a config, given as an object or a function, to the changed tests", async () => {
+    for (const config of ['export default { test: { include: ["**/*.test.ts"], setupFiles: ["s.ts"] } };',
+      'export default async () => ({ test: { include: ["**/*.test.ts"], setupFiles: ["s.ts"] } });']) {
+      assert.deepEqual(await load(config), { test: { include: ["src/a.test.ts"], setupFiles: ["s.ts"] } });
+    }
+  });
+
+  it("refuses a config with test.projects", async () => {
+    await assert.rejects(load('export default { test: { projects: [{ test: { name: "a", include: ["**/*.test.ts"] } }] } };'),
+      /a vitest config with test\.projects is not supported/);
   });
 });
 
