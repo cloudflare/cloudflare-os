@@ -127,6 +127,26 @@ describe("mounted worktree canonical synchronization", () => {
     expect(await text(impl, f.tree.id, "new.txt")).toBe("from replica");
   }));
 
+  it("resolves delegated integration access from the captured agent binding after execution", () => within(async (impl, f) => {
+    const mint = vi.spyOn(impl, "makeBindingLoopback");
+    const turn = new Proxy({} as WorktreeTurnAccess, {get: () => () => { throw new Error("unused"); }});
+    await impl.executeCodeMode(1, "export default async function() {}", author, "test",
+      {REPO: {type: "workpiece", id: f.tree.id}}, undefined, turn);
+    const target = mint.mock.calls.find(([target]) => target.type === "worktree")![0];
+    mint.mockRestore();
+    if (target.type !== "worktree") throw new Error("Missing Worktree binding");
+    expect(target).toMatchObject({type: "worktree", id: f.tree.id, author});
+    // The pool's loopback wrapper cannot proxy arbitrary RPC methods. Resolve the exact
+    // captured target through the real factory, then cross the separate Worker boundary.
+    using worktree = await impl.startGatekeeperSession(target, {from: "agent", chatId: 1});
+    const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
+    expect(await receiver.transfer(worktree, f.commit)).toContainEqual({oid: f.commit, type: "commit", binary: false});
+    expect(await receiver.mount(worktree)).toContainEqual(expect.objectContaining({kind: "base", head: f.commit}));
+    expect(() => impl.getActiveWorktreeSession(1, f.tree.id, target.executionId)).toThrow("Worktree execution ended.");
+    impl.storage.gadgets.delete(f.tree.id);
+    expect(() => impl.startGatekeeperSession(target, {from: "agent", chatId: 1})).toThrow(/No such worktree/);
+  }));
+
   it("transforms stale-base text edits over a concurrent DO edit without full-file replacement", () => within(async (impl, f) => {
     const revision = impl.replicaHistoryRevision(1);
     await step(impl, f.tree.id, "a.txt", diffFiles("abc", "Xabc"));

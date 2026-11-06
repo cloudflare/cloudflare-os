@@ -3061,8 +3061,8 @@ class OverseerImpl implements AgentHooks {
   // gadget's `{rpc, exports}` pair, a gatekeeper session stub, or an agent callback's stored
   // arguments.
   // Entries whose targets no longer exist are silently skipped, mirroring the deleted-gadget
-  // behavior elsewhere. `executionId` is the calling executeCodeMode run, minted into worktree
-  // loopbacks so they are usable only from within that execution.
+  // behavior elsewhere. `executionId` is the calling executeCodeMode run; ordinary worktree
+  // file methods remain scoped to that execution even when an integration retains the binding.
   getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>,
                  executionId: string): object {
     let caller: GatekeeperCaller = {from: "agent", chatId};
@@ -3095,12 +3095,14 @@ class OverseerImpl implements AgentHooks {
               exports: this.makeBindingLoopback({type: "exports", id: entry.id}, caller),
             };
           } else if (record?.type === "worktree") {
-            // The programmatic Worktree binding (see worktree-session.ts). Served through the
-            // loopback like every binding, resolving against this execution's registered
-            // worktree state -- the executionId is what keeps it live for exactly this
-            // executeCode run (see startGatekeeperSession's "worktree" case).
+            let execution = this.#activeExecutions.get(chatId);
+            if (!execution?.worktree || execution.executionId !== executionId) {
+              throw new Error("Worktree execution ended.");
+            }
+            // Capture attribution while minting: delegated Git/sync methods outlive this call,
+            // while the facade checks executionId on each ordinary file operation.
             env[name] = this.makeBindingLoopback(
-                {type: "worktree", id: entry.id, executionId}, caller);
+                {type: "worktree", id: entry.id, executionId, author: execution.initiator}, caller);
           } else if (this.storage.gatekeepers.get(entry.id)) {
             env[name] = this.makeBindingLoopback(
                 {type: "gatekeeper", id: entry.id, executionId}, caller);
@@ -5674,13 +5676,9 @@ class OverseerImpl implements AgentHooks {
             this.openGatekeeperSession(target.id, facet, caller, target.executionId));
 
       case "worktree": {
-        // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
-        // content and buffered effects live in the agent turn, so the session resolves against
-        // the turn state executeCodeMode registered for the calling chat -- reachable only from
-        // the agent's own executeCode (never gadgets: worktrees can't be bound into them), and
-        // only while the *minting* execution runs: the loopback's executionId must match the
-        // registered turn's, so a stub retained past its execution (e.g. stored in a gadget)
-        // fails closed here rather than reviving against a later execution's turn.
+        // Resolve the persistent facade even after execution, so an integration can retain its
+        // explicitly delegated Git/sync capability. WorktreeEndpoint guards ordinary file tools
+        // against the minting execution separately.
         if (caller.from !== "agent") {
           throw new Error("Worktree bindings are only available to the agent's executeCode.");
         }
@@ -5689,15 +5687,15 @@ class OverseerImpl implements AgentHooks {
           throw new Error(`No such worktree: ${target.id}`);
         }
         let execution = this.#activeExecutions.get(caller.chatId);
-        if (execution?.worktree === undefined || execution.executionId !== target.executionId) {
+        // Older persisted loopbacks did not capture attribution; they can resolve only while
+        // their original execution is still active.
+        let initiator = target.author ?? (execution?.worktree !== undefined &&
+            execution.executionId === target.executionId ? execution.initiator : undefined);
+        if (!initiator) {
           throw new Error(
               "This worktree binding is no longer live; worktree bindings are usable only " +
               "while the executeCode call they were provided to is running.");
         }
-        // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
-        // attributed to the collaborator, matching how accepted commits use the acting user's
-        // profile.
-        let initiator = execution.initiator;
         return this.ctx.restore({type: "worktree", worktreeId: target.id, chatId: caller.chatId,
           executionId: target.executionId, author: initiator});
       }
@@ -5746,8 +5744,7 @@ class OverseerImpl implements AgentHooks {
   // The executeCode invocation running for each chat (one turn per chat, and executeCode calls
   // within it are sequential), with the turn's worktree state when it has one. `executionId`
   // names the registering execution: worktree and gatekeeper loopbacks are minted with it and
-  // verified against it, so only stubs from the currently-running execution resolve. See
-  // executeCodeMode.
+  // verified against it for ordinary file methods and gatekeeper observations. See executeCodeMode.
   #activeExecutions = new Map<number,
       {executionId: string, initiator: AiChatAuthorInfo, worktree?: WorktreeTurnAccess}>();
 
@@ -12057,11 +12054,12 @@ type BindingLoopbackTarget = {
   type: "worktree";
   id: WorkpieceId;
 
-  // The executeCodeMode execution this loopback was minted for. A worktree binding resolves
-  // against the turn state registered for exactly that execution (see #activeExecutions), so
-  // a stub retained past it -- say, stored in a gadget the agent called -- fails closed instead
-  // of coming back to life against a later execution's turn.
+  // Ordinary file methods resolve only against this execution's turn state.
   executionId: string;
+
+  // Captured for explicitly delegated, persistent Git/sync access. Optional for loopbacks
+  // persisted before attribution was carried here.
+  author?: AiChatAuthorInfo;
 } | {
   // The `env.GIT` binding (see git-binding.ts).
   type: "git";
