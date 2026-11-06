@@ -28,7 +28,7 @@ import { VENDOR_ID, webOrigin, type Env, type Tenant } from "./pagerduty-env";
 import { toIncidentSummary, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import {
-  SessionContext, outsideOf, readIncident, youOf, type HookScope, type SessionHost,
+  SessionContext, outsideOf, readIncident, youRef, type HookScope, type SessionHost,
 } from "./pagerduty-session-shared";
 import { overlayIncident } from "./pagerduty-simulation";
 import { OBJECT_ID } from "./pagerduty-urls";
@@ -145,7 +145,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
       if (!isDenial(error)) throw error;
       return;
     }
-    const you = youOf(await host.me());
+    const you = youRef(await host.me());
     const ctx = new SessionContext(host, approvalQueue.dup(), scope);
     // Owns `ctx`. Released when receiveEvent() returns, or here if it is never called.
     const incident = new PagerDutyIncidentImpl(ctx, wire.id, within);

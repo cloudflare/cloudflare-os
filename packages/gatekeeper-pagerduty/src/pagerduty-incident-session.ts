@@ -15,7 +15,7 @@ import {
 import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
   MAX_NOTE_LENGTH, countOf, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed, readIncident, service,
-  subscribed, text, urgency, usersNamed, youOf, type ObjectRef, type SessionContext, type Within,
+  subscribed, text, urgency, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -89,7 +89,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   async #you() {
-    return youOf(await this.#ctx.host.me());
+    return youRef(await this.#ctx.host.me());
   }
 
   async getDetails(): Promise<PagerDutyIncidentDetails> {

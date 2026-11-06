@@ -5,7 +5,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { Query } from "./pagerduty-api";
-import { isProvisional } from "./pagerduty-actions";
+import { isProvisional, overrideKind } from "./pagerduty-actions";
 import { toOverride, toScheduleDetails, toShift, type WireOverride, type WireSchedule } from "./pagerduty-normalize";
 import { overlayOverrides, overlayShifts } from "./pagerduty-simulation";
 import { countOf, requireTeam, text, time, usersNamed, windowOf, type SessionContext } from "./pagerduty-session-shared";
@@ -73,7 +73,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     if (this.#teamId) await this.#read();
     const [target] = await usersNamed(this.#ctx, [user], "user");
     const me = await this.#ctx.host.me();
-    const ref = this.#ctx.host.allocate("override");
+    const ref = this.#ctx.host.allocate(overrideKind(this.#id));
     await this.#ctx.host.submit(this.#ctx.queue, target.id === me.userId ? "createOverride" : "createOverrideForOthers",
       { ref, scheduleId: this.#id, user: target, start: from, end: until });
     return ref;
@@ -84,11 +84,9 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
       throw new Error('id must be an override ID, such as "Q3X6MJ1LUKD6QW".');
     }
     const { host } = this.#ctx;
-    // A temporary ID names an override a pending action adds; it must be adding it to this schedule.
-    if (isProvisional(host.resolve(id)) && !host.pending().some(({ action }) =>
-      (action.kind === "createOverride" || action.kind === "createOverrideForOthers")
-        && action.payload.ref === id && action.payload.scheduleId === this.#id)) {
-      throw new Error("That override isn't one this gadget is adding to this schedule.");
+    // A temporary ID names an override this gadget is adding, or added, to this schedule.
+    if (isProvisional(id) && host.kindOf(id) !== overrideKind(this.#id)) {
+      throw new Error("That override isn't one this gadget added to this schedule.");
     }
     if (this.#teamId) await this.#read();
     await host.submit(this.#ctx.queue, "deleteOverride",

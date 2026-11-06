@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, PRIORITY, SCHEDULE, SERVICE, TEAM, failure, hooks, seedAccount, sub,
-  unwrap,
+  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, PRIORITY, SCHEDULE, SERVICE, TEAM, failure, hooks,
+  seedAccount, sub, unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -233,7 +233,20 @@ describe("simulation", () => {
     await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect([opened.service.name, existing.id]).toEqual(["Billing", t.incident.id]);
-    expect(await t.reported()).toEqual([new Set([sub(), sub("service", SERVICE.id), sub("service", OTHER_SERVICE.id)])]);
+    // Once for the pending incident before the walk serves it, then for the page PagerDuty filled.
+    expect(await t.reported()).toEqual([
+      new Set([sub(), sub("service", OTHER_SERVICE.id)]), new Set([sub(), sub("service", SERVICE.id)]),
+    ]);
+  });
+
+  it.each([
+    ["PagerDuty lists none", { serviceIds: [OTHER_SERVICE.id] }],
+    ["the page has room for it alone", { pageSize: 1 }],
+  ])("reports the service of an incident a pending action opens when %s", async (_name, filter) => {
+    const t = await setup();
+    await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
+    expect(await t.run([["listIncidents", filter]], 1)).toMatchObject([[{ id: "~1", service: { name: "Billing" } }]]);
+    expect(await t.reported()).toEqual([new Set([sub(), sub("service", OTHER_SERVICE.id)])]);
   });
 
   it("asks the gadget to restart when a rejected incident had work built on it", async () => {
@@ -249,7 +262,16 @@ describe("simulation", () => {
     await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect([opened.id, opened.team?.id, existing.id]).toEqual(["~1", TEAM.id, t.incident.id]);
-    expect(await t.reported()).toEqual([new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)])]);
+    const reported = new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)]);
+    expect(await t.reported()).toEqual([reported, reported]);
+  });
+
+  it("lists, in a team binding, an incident a pending action opens on a service the team shares", async () => {
+    const t = await setup({ resourceKind: "team", id: TEAM.id });
+    t.pd.services.get(OTHER_SERVICE.id)!.teams = [OTHER_TEAM, TEAM];
+    await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
+    const [[opened]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
+    expect([opened.id, opened.team?.id]).toEqual(["~1", OTHER_TEAM.id]);
   });
 
   it("shows pending overrides in a schedule's overrides and shifts, and hides one pending removal", async () => {
@@ -289,9 +311,23 @@ describe("simulation", () => {
     const t = await setup();
     expect(await t.run([["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, START, END]])).toBe("~1");
     expect(await t.attempt([["getSchedule", OTHER_SCHEDULE.id], ["deleteOverride", "~1"]]))
-      .toMatch(/isn't one this gadget is adding to this schedule/);
+      .toMatch(/isn't one this gadget added to this schedule/);
     await t.run([["getSchedule", SCHEDULE.id], ["deleteOverride", "~1"]]);
     expect((await t.submitted()).map(({ description }) => description.actionKind?.tag)).toEqual(["manage-overrides", "delete-overrides"]);
     expect(await t.run([["getSchedule", SCHEDULE.id], ["listOverrides", { since: START, until: END }]])).toEqual([]);
+  });
+
+  it("removes an override another action added only through the schedule it added it to", async () => {
+    const t = await setup();
+    await t.run([["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, START, END]]);
+    const [create] = await t.submitted();
+    await t.apply(create.actionId);
+    expect(await t.attempt([["getSchedule", OTHER_SCHEDULE.id], ["deleteOverride", "~1"]]))
+      .toMatch(/isn't one this gadget added to this schedule/);
+    await t.run([["getSchedule", SCHEDULE.id], ["deleteOverride", "~1"]]);
+    const [, removal] = await t.submitted();
+    await t.apply(removal.actionId);
+    const [, deleted] = t.pd.writes();
+    expect([deleted.method, deleted.url.pathname]).toEqual(["DELETE", expect.stringMatching(`^/schedules/${SCHEDULE.id}/overrides/`)]);
   });
 });

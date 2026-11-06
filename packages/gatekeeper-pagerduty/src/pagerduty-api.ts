@@ -145,7 +145,9 @@ export class PagerDutyApi {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
-      throw new Error("PagerDuty did not answer in time; please try again.", { cause: error });
+      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+      throw new Error(timedOut ? "PagerDuty did not answer in time; please try again." : "Could not reach PagerDuty; please try again.",
+        { cause: error });
     }
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel();

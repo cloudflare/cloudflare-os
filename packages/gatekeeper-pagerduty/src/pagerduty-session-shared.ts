@@ -12,7 +12,7 @@ import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import { MAX_LIMIT, MAX_OFFSET, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
-import { isProvisional, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
+import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
 import {
@@ -60,8 +60,10 @@ export type SessionHost = {
   pending(): Pending;
   /** The ID PagerDuty assigned a temporary ID, or the ID itself. */
   resolve(id: string): string;
-  /** Allocates a temporary ID for something a pending action creates. */
-  allocate(kind: "incident" | "note" | "override"): string;
+  /** Allocates a temporary ID for something a pending action creates, of `kind`. */
+  allocate(kind: "incident" | "note" | `override:${string}`): string;
+  /** The kind a temporary ID was allocated with. */
+  kindOf(id: string): string | undefined;
   submit<K extends keyof PagerDutyActions>(queue: ActionSubmitter, kind: K, payload: PagerDutyActions[K]): Promise<number>;
   /** Binds `hook` to the incident events `scope` reaches (see pagerduty-hooks.ts). */
   subscribe(queue: RpcStub<ApprovalQueue>, hook: RpcStub<PagerDutyEventHookTarget>,
@@ -182,7 +184,7 @@ export function windowOf(window: PagerDutyTimeWindow | undefined, days: number, 
 // Shared reads
 
 /** The connected user, as the pending actions they staged show them. */
-export const youOf = (me: Identity) => ({ id: me.userId, name: me.name });
+export const youRef = (me: Identity) => ({ id: me.userId, name: me.name });
 
 /** An incident as PagerDuty describes it now. */
 export async function readIncident({ host }: { host: SessionHost }, id: string,
@@ -201,11 +203,13 @@ export function cachedService(ctx: { host: SessionHost }, id: string): Promise<W
   return ctx.host.cached(`service:${id}`, SERVICE_TTL_MS, () => readService(ctx, id));
 }
 
+/** Whether `owned` belongs to team `teamId`, as one of its teams; anything does when there's none. */
+export const inTeam = (owned: { teams?: readonly { id: string }[] }, teamId: string | undefined): boolean =>
+  teamId === undefined || (owned.teams ?? []).some(({ id }) => id === teamId);
+
 /** @throws Error unless `wire` belongs to team `teamId`. */
 export function requireTeam(wire: { teams?: WireRef[] }, teamId: string | undefined, what: string): void {
-  if (teamId !== undefined && !wire.teams?.some(({ id }) => id === teamId)) {
-    throw new Error(`That ${what} doesn't belong to this team.`);
-  }
+  if (!inTeam(wire, teamId)) throw new Error(`That ${what} doesn't belong to this team.`);
 }
 
 /**
@@ -214,7 +218,7 @@ export function requireTeam(wire: { teams?: WireRef[] }, teamId: string | undefi
  */
 export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, within: Within): Promise<string | undefined> {
   if (within.serviceId && serviceId !== within.serviceId) return "That incident belongs to another service.";
-  if (within.teamId && !(await cachedService(ctx, serviceId)).teams?.some(({ id }) => id === within.teamId)) {
+  if (within.teamId && !inTeam(await cachedService(ctx, serviceId), within.teamId)) {
     return "That incident doesn't belong to this team.";
   }
   return undefined;
@@ -370,13 +374,20 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const { host } = ctx;
   const me = await host.me();
   const { query, params } = incidentQuery(filter, within, me);
-  const you = youOf(me);
+  const you = youRef(me);
   const overlay = (row: PagerDutyIncidentSummary) => overlayIncident(row, host.pending(), id => host.resolve(id), you);
-  const inScope = (row: PagerDutyIncidentSummary) => (!within.serviceId || row.service.id === within.serviceId)
-    && (!within.teamId || row.team?.id === within.teamId);
-  const fresh = () => pendingIncidents(host.pending(), id => host.resolve(id), you)
-    .filter(row => inScope(row) && matchesQuery(row, query, you));
+  const inScope = (payload: NewIncident) => (!within.serviceId || payload.service.id === within.serviceId)
+    && inTeam(payload, within.teamId);
+  const fresh = () => pendingIncidents(host.pending(), id => host.resolve(id), you, inScope)
+    .filter(row => matchesQuery(row, query, you));
   const injected = fresh().toSorted(newestFirst);
+  const named = (query.serviceIds ?? []).map(service);
+  // Pending incidents show what staging read of their services, and the cursor authorizes no page
+  // made only of them, so their services are reported before the walk serves any.
+  if (injected.length > 0) {
+    await ctx.authorize({ title: "Listed PagerDuty incidents", description: `Read ${countOf(injected.length, "incident")} waiting to be opened.` },
+      { filter: named, result: injected.map(row => service(row.service.id)) });
+  }
   return offsetCursor<WireIncident, PagerDutyIncidentSummary>(ctx, {
     pageSize: pageSizeOf(filter),
     // A filter naming none of a service binding's services matches nothing, so PagerDuty isn't asked.
@@ -385,9 +396,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
       : api.page<WireIncident>("/incidents", "incidents", params, offset, limit),
     convert: rows => rows.map(row => overlay(toIncidentSummary(row))).filter(row => matchesQuery(row, query, you)),
     describe: listed("Listed PagerDuty incidents", "incident"),
-    // A pending incident shows what staging read of its service, and the cursor never passes it to
-    // `result`, so every page of the walk reports that service.
-    filter: [...query.serviceIds ?? [], ...injected.map(row => row.service.id)].map(service),
+    filter: named,
     // One check per service rather than per incident: an incident is as visible as its service.
     result: rows => rows.map(row => service(row.service.id)),
     inject: {

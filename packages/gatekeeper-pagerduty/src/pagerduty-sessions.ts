@@ -256,7 +256,7 @@ export class PagerDutyServiceImpl extends RpcTarget implements PagerDutyService 
     const ref = ctx.host.allocate("incident");
     const payload: NewIncident = {
       ref, service: { id: summary.id, name: summary.name, htmlUrl: summary.htmlUrl },
-      team: summary.team, escalationPolicy: toRef(wire.escalation_policy),
+      teams: (wire.teams ?? []).map(toRef), escalationPolicy: toRef(wire.escalation_policy),
       title, stagedAt: new Date().toISOString(),
       ...(details !== undefined ? { details } : {}),
       ...(chosenUrgency ? { urgency: chosenUrgency } : {}),

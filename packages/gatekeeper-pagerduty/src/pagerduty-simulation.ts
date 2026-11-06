@@ -72,7 +72,7 @@ export function pendingIncident(payload: NewIncident): PagerDutyIncidentDetails 
     urgency: payload.urgency ?? "high",
     priority: payload.priority?.name ?? null,
     service: payload.service,
-    team: payload.team,
+    team: payload.teams[0] ?? null,
     assignees: (payload.assignTo ?? []).map(({ id, name }) => ({ id, name })),
     createdAt: payload.stagedAt,
     updatedAt: payload.stagedAt,
@@ -88,9 +88,14 @@ export function pendingIncident(payload: NewIncident): PagerDutyIncidentDetails 
   };
 }
 
-/** The incidents pending actions open that PagerDuty doesn't have yet, with later changes applied. */
-export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef): PagerDutyIncidentDetails[] {
-  return pending.flatMap(({ action }) => action.kind === "createIncident" && resolve(action.payload.ref) === action.payload.ref
+/**
+ * The incidents pending actions open that PagerDuty doesn't have yet and `include` keeps, with later
+ * changes applied.
+ */
+export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef,
+                                 include: (payload: NewIncident) => boolean): PagerDutyIncidentDetails[] {
+  return pending.flatMap(({ action }) => action.kind === "createIncident"
+    && resolve(action.payload.ref) === action.payload.ref && include(action.payload)
     ? [overlayIncident(pendingIncident(action.payload), pending, resolve, me)] : []);
 }
 
