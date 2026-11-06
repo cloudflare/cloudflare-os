@@ -1610,6 +1610,9 @@ importers:
       fast-diff:
         specifier: ^1.3.0
         version: 1.3.0
+      mdast-util-from-markdown:
+        specifier: ^2.0.3
+        version: 2.0.3(supports-color@10.2.2)
     devDependencies:
       typescript:
         specifier: 'catalog:'
