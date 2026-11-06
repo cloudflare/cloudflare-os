@@ -11,7 +11,7 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
-import { MAX_LIMIT, MAX_OFFSET, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
+import { MAX_LIMIT, MAX_OFFSET, schedulePath, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
 import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
@@ -203,24 +203,27 @@ export async function readService({ host }: { host: SessionHost }, id: string): 
 export type ScheduleQuery = { window?: { since: string; until: string }; users?: boolean };
 
 /**
- * A schedule as PagerDuty describes it now, of either generation. Which one it is is remembered a
- * while, so only the first read of a layer-based schedule asks the v3 API in vain.
+ * A schedule as PagerDuty describes it now, of either generation. Which one it is is found by a
+ * read without parameters, so a parameter PagerDuty refuses fails the read rather than pass for a
+ * layer-based schedule, and is remembered a while, so only the first read of a layer-based
+ * schedule asks the v3 API in vain.
  */
 export async function readSchedule({ host }: { host: SessionHost }, id: string,
                                    { window, users }: ScheduleQuery = {}): Promise<Schedule> {
+  const probed: { schedule?: Schedule } = {};
+  const shiftBased = await host.cached(`schedule-generation:${id}`, CATALOG_TTL_MS, async () => {
+    const probe = await host.read(api => api.schedule<{ schedule: WireSchedule }>(id));
+    probed.schedule = { ...probe.body.schedule, shiftBased: probe.shiftBased };
+    return probe.shiftBased;
+  });
+  // The probe serves a read that asks for nothing more.
+  if (probed.schedule && !window && !users) return probed.schedule;
   // v3 sends a schedule's shifts and users only when asked to include them.
-  const query = (shiftBased: boolean): Query => shiftBased
+  const query: Query = shiftBased
     ? { ...window, include: [...(window ? ["final_schedule"] : []), ...(users ? ["users"] : [])] }
     : { ...window };
-  const read = (known?: boolean) => host.read(async api => {
-    const { body, shiftBased } = await api.schedule<{ schedule: WireSchedule }>(id, query, known);
-    return { ...body.schedule, shiftBased };
-  });
-  // The read that finds out which generation it is serves this call too.
-  const first: { read?: Promise<Schedule> } = {};
-  const shiftBased = await host.cached(`schedule-generation:${id}`, CATALOG_TTL_MS,
-    async () => (await (first.read = read())).shiftBased);
-  return await (first.read ?? read(shiftBased));
+  const read = await host.read(api => api.get<{ schedule: WireSchedule }>(schedulePath(id, shiftBased), query));
+  return { ...read.schedule, shiftBased };
 }
 
 /** A service's team and escalation policy, cached briefly, for checking a binding's scope. */
