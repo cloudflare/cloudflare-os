@@ -3,14 +3,11 @@
 const SEPARATOR = "/";
 
 /**
- * A subresource requirement satisfied by the observer's own live connection to the service, with
- * no additional resource-specific permission check. Report it on every disclosure governed only
- * by that connection; an empty subresource list instead means no observer-access restriction.
- *
- * This is not a wildcard or an automatic grant: the gatekeeper's `verifyObserverAccess()` must
- * recognize it and establish that the observer's connection is live for the same service/tenant.
- * It cannot stand in for independent tenant membership, resource ACLs, or private account data.
- * Compare it directly before parsing structured IDs; {@link parseSubresourceId} rejects it.
+ * Connection-only requirement: `verifyObserverAccess()` must establish that the observer's own
+ * live connection to the same service instance grants access to everything disclosed.
+ * Report it on every such disclosure; `[]` means unrestricted. It is not a wildcard or grant
+ * and cannot replace independent membership, resource ACLs, or private-account checks.
+ * Compare it directly before {@link parseSubresourceId}, which rejects it.
  */
 export const GLOBAL_SUBRESOURCE_ID = "global";
 
@@ -23,11 +20,8 @@ export const GLOBAL_SUBRESOURCE_ID = "global";
  * the gatekeeper's `verifyObserverAccess()` when it reads the ID back, and many resources may map to
  * one check. Nesting implies no access inheritance either way.
  *
- * Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities.
- * Include a tenant fragment in a child resource's path if and only if the tenant is not permanently
- * fixed by the deployed Worker's configuration. Account or facet scoping, or one OAuth app, does not
- * establish that. A deployment-fixed tenant is implicit in trusted configuration and must remain
- * stable while historical requirements exist; omitting its prefix does not omit membership checks.
+ * Include enough provider identity to distinguish resources across service instances.
+ * Recorded IDs must retain their meaning across accounts, renames, and reconnects.
  */
 export type SubresourceFragment = {
   /** The resource's kind, such as `file` or `inbox`. */
@@ -36,7 +30,7 @@ export type SubresourceFragment = {
   id: string;
 };
 
-/** A structured resource ID before encoding (see {@link formatSubresourceId}), not the global ID. */
+/** A structured resource ID before encoding (see {@link formatSubresourceId}). */
 export type SubresourceId = {
   /**
    * The product family the resource belongs to, for a gatekeeper exposing several that each have
@@ -97,8 +91,7 @@ export function formatSubresourceId(value: SubresourceId): string {
  * the canonical spelling parses: any other (a lowercase or needless escape, a raw character the
  * encoder would escape, an empty component, a namespace with no fragments) is not an ID this module
  * made, and is refused rather than read as some nearby resource.
- * {@link GLOBAL_SUBRESOURCE_ID} is a separate sentinel, not a structured ID; recognize it before
- * calling this parser, which rejects it rather than changing the meaning of a namespace alone.
+ * Rejects {@link GLOBAL_SUBRESOURCE_ID}; compare that sentinel directly before parsing.
  * @param id Encoded subresource ID.
  * @returns Its namespace, when it has one, and its fragments.
  * @throws Error when `id` is not a subresource ID in canonical form.

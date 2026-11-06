@@ -728,14 +728,12 @@ async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Prom
 async removeObserver(_id: string): Promise<void> {}
 ```
 
-`hasCollectionAccess` is the helper's existing option name; here its IDs are subresource requirements,
-not a tracked collection set. The provider's `canAccess` implementation must recognize any supported
-`GLOBAL_SUBRESOURCE_ID` sentinel before parsing structured IDs, reject unknown IDs, and verify every
-requirement using the observer's own account. Check
-workspace/tenant membership explicitly and enforce private-only resources there too. Throw when
-access cannot be determined (expired credentials or a provider outage), rather than disguising
-uncertainty as a known denial. The helper stores no verifier or observer-ID verdict: each call uses
-the verifier supplied with that call, since an observer may reconnect with another account.
+`hasCollectionAccess` is the helper's existing option name; its IDs are subresource requirements,
+not a tracked collection set. The provider's `canAccess` must validate IDs, reject unknown kinds,
+and check every requirement with the observer's own account, including membership and private-only
+restrictions. Throw when access is indeterminate (expired credentials or a provider outage).
+The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
+since an observer may reconnect with another account.
 
 An existing `ObservationGate` converts a read with
 `gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
@@ -799,36 +797,28 @@ and limits of the existing implementations.
 
 ### Connection-only access (`global`)
 
-Use `GLOBAL_SUBRESOURCE_ID` from `@gadgets/gatekeeper-kit/subresource-ids` when the observer's own
-live connection to the service is sufficient to read everything disclosed, with no additional
-resource-specific authorization. This is a connection-only form of strategy B, not unrestricted
-strategy D. `subresources: [GLOBAL_SUBRESOURCE_ID]` records that requirement; `[]` records none.
+Use `GLOBAL_SUBRESOURCE_ID` when the observer's own live connection to the same service instance
+grants access to everything disclosed. This is strategy B, not unrestricted D (`[]`). Read-only
+APIs with separate resource ACLs or private account data do not qualify.
 
-Choose requirements from the provider's permission boundaries, not its API's object hierarchy or
-the binding's grant scope. For example, consider an Access-protected project catalog whose admission
-policy grants instance-wide read access, with no additional project/item ACLs. It can offer
-whole-catalog, project, and item bindings while every provider-data read reports the same `global`
-requirement. Do not fetch an object merely to prove a permission the live connection already establishes.
-Read-only APIs are not automatically connection-only: separate ACLs or private user-specific
-results still require their own resource checks.
+For example, an Access-protected catalog with instance-wide read access can offer project/item
+bindings without separate sharing ACLs. Each read reports the same requirement:
 
 ```ts
 import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
 
 await queue.authorizeObservation({
   title: "Read project catalog",
-  description: "List projects from the connected Access-protected catalog.",
+  description: "List projects from the connected catalog.",
   subresources: [GLOBAL_SUBRESOURCE_ID],
 });
 ```
 
-Report this requirement on every such disclosure, including empty results, cache hits, cursor
-pages, and hook deliveries. Narrow bindings must still enforce their project/item scope; the
-shared observer requirement does not expand the caller's capabilities.
+Report it on every disclosure, including empty results, cache hits, cursor pages, and hooks.
+Bindings still enforce their project/item scope; observer access does not expand the caller's grant.
 
-The same-vendor verifier must establish that the **observer's** connection is live, not that the
-owner is connected or that a token exists in storage. With the account's `getCredentials()` from
-the [credential sequence](#2-expose-the-account-rpc-methods), its batched oracle can be:
+The observer's verifier delegates to its own account. Using `getCredentials()` from the
+[credential sequence](#2-expose-the-account-rpc-methods), the account's oracle can be:
 
 ```ts
 async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
@@ -840,28 +830,14 @@ async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
 }
 ```
 
-The verifier delegates to this method on its own account; `observerAccessVerifier` combines its
-answers normally. The credential lifecycle handles expiry, refresh, and disconnect. An expired
-connection or indeterminate refresh must throw, not return an allow; refreshing credentials is
-not an extra content/ACL probe. Document the credential lifetime and revocation detection of the
-integration rather than claiming a local validity check detects every remote revocation instantly.
+Use the normal credential lifecycle for expiry, refresh, and disconnect, not a stored-token check
+or an unnecessary per-object probe. Credential failures must throw. Document revocation-detection
+limits; local validity cannot guarantee immediate detection of remote revocation.
 
-`global` is an exact sentinel, not a wildcard, a private-policy marker, or a grant across vendors
-or tenants. Use it only when the observer's connection proves access to the same provider instance
-whose data was disclosed. A deployment-fixed tenant needs no redundant `tenant/<origin>` ID;
-a deployment supporting multiple tenants still needs explicit tenant identity and verification.
-Do not use `global` instead of independently required tenant membership or resource permissions.
-
-This is the exception to the structured-ID grammar below: compare `GLOBAL_SUBRESOURCE_ID` directly
-before calling `parseSubresourceId()`. The parser deliberately rejects `global`, and the kernel
-does not give it special authorization behavior. A verifier supporting only concrete resource
-kinds must continue to refuse it.
-
-For an existing migration, `global` can describe historical reads only when the same connection-only
-requirement covers every historical disclosure. Preserve old enforcement and export complete history
-under the [migration rules](#existing-code-migration-only-preserve-historical-enforcement); adding
-this constant does not make unknown history empty or justify dropping stronger checks.
-
+Compare the sentinel directly before `parseSubresourceId()`, which rejects it. The kernel treats
+it as an ordinary requirement, not a wildcard or automatic grant. It cannot replace independent
+membership or resource checks. Existing gatekeepers must still follow the
+[historical-enforcement migration rules](#existing-code-migration-only-preserve-historical-enforcement).
 
 ### Worked patterns from the Google migrations
 
@@ -1091,32 +1067,11 @@ including that one is shared with nobody else. Set `namespace` only when the gat
 distinct product families with their own resources, as Google does with Gmail, Drive and BigQuery.
 A single-product gatekeeper omits it instead of repeating its own name.
 
-Cloud IDs, workspace URLs, organization IDs, and similar provider-instance identifiers are **tenant
-identities**. Include a tenant fragment in another resource's ID hierarchy **if and only if** that
-tenant is not permanently fixed by the deployed gatekeeper Worker's configuration. A tenant selected
-through a connected account, resource binding, or URL is not deployment-fixed. One OAuth app can
-serve multiple tenants; sharing an OAuth client ID does not make tenant identity implicit.
-
-For a multi-tenant deployment, qualify the resource with its tenant. A deployment permanently tied
-to one tenant omits the redundant prefix; its verifier resolves the tenant from trusted deployment
-configuration instead:
-
-```ts
-// Multi-tenant deployment: tenant/<escaped cloudId>/page/<escaped pageId>.
-formatSubresourceId({ fragments: [{ name: "tenant", id: cloudId }, { name: "page", id: pageId }] });
-// Deployment permanently tied to one tenant: page/<escaped pageId>.
-formatSubresourceId({ fragments: [{ name: "page", id: pageId }] });
-```
-
-Prefer an immutable provider tenant ID over a mutable workspace URL. If the provider identifies a
-tenant by URL, normalize it consistently and preserve its identity across renames and reconnects;
-canonical escaping alone does not make it stable. An implicit tenant must remain fixed for as long
-as historical requirements exist: repointing a deployment to another tenant requires an explicit
-migration, never silently interpreting old IDs in the new tenant.
-
-This prefix rule qualifies another resource's identity; it does not remove access requirements.
-Report and verify independently required tenant membership even when the tenant is deployment-fixed.
-Conversely, nesting under a tenant does not imply that its membership check covers child-resource ACLs.
+Include enough provider identity to distinguish resources across service instances, using real
+resource kinds such as Slack's `workspace/<teamId>/conversation/<conversationId>`. Prefer stable
+provider IDs; escaping does not make a mutable URL or account-relative alias stable. Recorded IDs
+must retain their meaning across renames and reconnects. Report independently required membership
+and child-resource permissions separately; nesting does not imply access inheritance.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes.
