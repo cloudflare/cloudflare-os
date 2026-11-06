@@ -8,11 +8,11 @@
 // loopback entrypoint rather than the facet, since removing a connection deletes the facet in the
 // same turn as it fires the unawaited `disable()`.
 //
-// The webhook route verifies each delivery and hands its event to the account's
-// `PagerDutyHookDriver`, named by the account's web host, which queues it once for every enabled
-// hook that may watch it and delivers from its alarm, retrying failures. The facet then re-reads
-// the incident as the hook's owner, drops what they can't see or what lies outside the binding,
-// and only then starts a firing.
+// The webhook route verifies each delivery and hands its event to the deployment's one
+// `PagerDutyHookDriver`, which queues it once for every enabled hook that may watch it and
+// delivers from its alarm, retrying failures. Each delivery starts a firing, and the facet re-reads
+// the incident as the hook's owner, dropping what they can't see or what lies outside the binding,
+// before calling the hook.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -20,14 +20,18 @@ import {
   DELIVERED_RETENTION_MS, HookDeliveryQueue, disposeStubs,
 } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
 import { ResponseTooLargeError, readBytesCapped } from "@gadgets/gatekeeper-kit/response-body";
-import type { HookController, HookDescription, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { isDenial } from "./pagerduty-api";
 import { VENDOR_ID, webOrigin, type Env, type Tenant } from "./pagerduty-env";
-import { toIncidentSummary, type WireIncident, type WireRef } from "./pagerduty-normalize";
+import { toIncidentSummary, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
-import { SessionContext, outsideOf, type HookScope, type SessionHost } from "./pagerduty-session-shared";
+import {
+  SessionContext, outsideOf, readIncident, youOf, type HookScope, type SessionHost,
+} from "./pagerduty-session-shared";
 import { overlayIncident } from "./pagerduty-simulation";
-import { OBJECT_ID, parseResourceUrl } from "./pagerduty-urls";
+import { OBJECT_ID } from "./pagerduty-urls";
 import { obsContext } from "./observability";
 import type { PagerDutyEvent, PagerDutyEventHook, PagerDutyEventKind, PagerDutySubscribeOptions } from "./types";
 
@@ -41,7 +45,7 @@ export const hooksConfigured = (env: Env): boolean => Boolean(env.PAGERDUTY_WEBH
 export type PagerDutyEventHookTarget = RpcTarget & PagerDutyEventHook;
 
 /** Each webhook event type a hook can watch for, by the kind it delivers as. */
-export const EVENT_TYPES: ReadonlyMap<string, PagerDutyEventKind> = new Map([
+const EVENT_TYPES: ReadonlyMap<string, PagerDutyEventKind> = new Map([
   ["incident.triggered", "triggered"],
   ["incident.acknowledged", "acknowledged"],
   ["incident.unacknowledged", "unacknowledged"],
@@ -59,7 +63,7 @@ export const EVENT_TYPES: ReadonlyMap<string, PagerDutyEventKind> = new Map([
 const KINDS = [...EVENT_TYPES.values()];
 
 /** An event as the driver queues it: what the webhook said, before any hook's owner re-reads it. */
-export type StoredEvent = {
+type StoredEvent = {
   id: string;
   kind: PagerDutyEventKind;
   occurredAt: string;
@@ -68,11 +72,13 @@ export type StoredEvent = {
   serviceId?: string;
   agent: { id: string; name: string } | null;
   note?: string;
+  /** A note PagerDuty trimmed in the payload, to be read in full by its ID. */
+  trimmedNoteId?: string;
   statusUpdate?: string;
 };
 
-/** The driver of an account's hooks, by the account's web host, e.g. `acme.eu.pagerduty.com`. */
-export const driverName = (tenant: Tenant): string => new URL(webOrigin(tenant)).host;
+/** The deployment's one driver: its OAuth app and webhook secret are one PagerDuty account's. */
+const driver = (exports: Cloudflare.Exports) => exports.PagerDutyHookDriver.getByName("webhook");
 
 /** The kinds `options` asks for, by default all. */
 export function watchedKinds(options: PagerDutySubscribeOptions | undefined): PagerDutyEventKind[] {
@@ -86,7 +92,7 @@ export function watchedKinds(options: PagerDutySubscribeOptions | undefined): Pa
 /** How the Workshop asks the user to approve a hook; by object IDs only, as descriptions are public. */
 export function hookDescription(tenant: Tenant, { within, incidentId }: HookScope, kinds: PagerDutyEventKind[]): HookDescription {
   const on = incidentId ? `incident ${incidentId}` : within.serviceId ? `service ${within.serviceId}`
-    : within.teamId ? `team ${within.teamId}` : driverName(tenant);
+    : within.teamId ? `team ${within.teamId}` : new URL(webOrigin(tenant)).host;
   const which = kinds.length === KINDS.length ? "every incident event" : `each ${kinds.join(", ")} event`;
   return {
     title: `Watch PagerDuty incidents on ${on}`,
@@ -100,10 +106,12 @@ export function hookDescription(tenant: Tenant, { within, incidentId }: HookScop
 /** What a hook's delivery stub reaches: the binding's facet, narrowed to delivering. */
 export interface PagerDutyHookDelivery extends RpcTarget {
   /**
-   * Deliver `event` through one firing of the hook, started from `initiator` only if the hook's
-   * owner can see the incident and it lies within the capability the hook subscribed through.
+   * Deliver `event` to one firing of the hook, as `HookInitiator.startHook()` returned it, if the
+   * hook's owner can see the incident and it lies within the capability the hook subscribed
+   * through; otherwise return without calling it.
    */
-  deliver(initiator: Fetcher<HookInitiator<PagerDutyEventHookTarget>>, event: StoredEvent): Promise<void>;
+  deliver(callback: RpcStub<PagerDutyEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
+          event: StoredEvent): Promise<void>;
 }
 
 @validateRpc()
@@ -117,26 +125,31 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
     this.#scope = scope;
   }
 
-  async deliver(initiator: Fetcher<HookInitiator<PagerDutyEventHookTarget>>, event: StoredEvent): Promise<void> {
+  async deliver(callback: RpcStub<PagerDutyEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
+                event: StoredEvent): Promise<void> {
     const host = this.#host;
     const { scope, within, incidentId } = this.#scope;
     if (incidentId !== undefined && event.incidentId !== incidentId) return;
     let wire: WireIncident;
+    let note = event.note;
     try {
       // The webhook sees the whole account, so each event is re-read as the hook's owner.
-      ({ incident: wire } = await host.read(api => api.get<{ incident: WireIncident }>(`/incidents/${event.incidentId}`)));
+      wire = await readIncident({ host }, event.incidentId);
       if (await outsideOf({ host }, wire.service.id, within)) return;
+      if (event.trimmedNoteId !== undefined) {
+        // Left out if deleted since.
+        const { notes } = await host.read(api => api.get<{ notes: WireNote[] }>(`/incidents/${wire.id}/notes`));
+        note = notes.find(({ id }) => id === event.trimmedNoteId)?.content;
+      }
     } catch (error) {
       if (!isDenial(error)) throw error;
       return;
     }
-    const me = await host.me();
-    using firing = await initiator.startHook();
-    // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
-    const ctx = new SessionContext(host, firing.approvalQueue.dup(), scope);
+    const you = youOf(await host.me());
+    const ctx = new SessionContext(host, approvalQueue.dup(), scope);
     // Owns `ctx`. Released when receiveEvent() returns, or here if it is never called.
     const incident = new PagerDutyIncidentImpl(ctx, wire.id, within);
-    const { note, statusUpdate } = event;
+    const { statusUpdate } = event;
     try {
       const extra = note !== undefined ? " and the note" : statusUpdate !== undefined ? " and the status update" : "";
       await ctx.authorize(
@@ -146,10 +159,10 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
       incident[Symbol.dispose]();
       throw error;
     }
-    await firing.callback.receiveEvent({
+    await callback.receiveEvent({
       id: event.id, kind: event.kind, occurredAt: event.occurredAt,
-      actor: event.agent && { ...event.agent, isYou: event.agent.id === me.userId },
-      info: overlayIncident(toIncidentSummary(wire), host.pending(), id => host.resolve(id), { id: me.userId, name: me.name }),
+      actor: event.agent && { ...event.agent, isYou: event.agent.id === you.id },
+      info: overlayIncident(toIncidentSummary(wire), host.pending(), id => host.resolve(id), you),
       incident,
       ...(note !== undefined ? { note } : {}),
       ...(statusUpdate !== undefined ? { statusUpdate } : {}),
@@ -168,25 +181,23 @@ type Capabilities = {
 };
 
 /** Everything a hook needs once enabled, captured when the facet binds it. */
-export type PagerDutyHookProps = Registration & {
-  key: string;
-  /** The account's driver (see `driverName`). */
-  account: string;
-  delivery: RpcStub<PagerDutyHookDelivery>;
-};
+type PagerDutyHookProps = Registration & { key: string; delivery: RpcStub<PagerDutyHookDelivery> };
 
 @validateRpc()
 export class PagerDutyHookController extends WorkerEntrypoint<Env, PagerDutyHookProps>
     implements HookController<PagerDutyEventHookTarget> {
   async enable(initiator: Fetcher<HookInitiator<PagerDutyEventHookTarget>>, _target: HookTargetMetadata): Promise<void> {
     if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
-    const { key, account, delivery, ...registration } = this.ctx.props;
-    await this.ctx.exports.PagerDutyHookDriver.getByName(account).register(key, registration, { delivery, initiator });
+    const { key, delivery, ...registration } = this.ctx.props;
+    await driver(this.ctx.exports).register(key, registration, {
+      // @ts-expect-error Worker RPC's mapped types can't relate a stub taking an ApprovalQueue to itself.
+      delivery,
+      initiator,
+    });
   }
 
   async disable(): Promise<void> {
-    const { key, account } = this.ctx.props;
-    await this.ctx.exports.PagerDutyHookDriver.getByName(account).unregister(key);
+    await driver(this.ctx.exports).unregister(this.ctx.props.key);
   }
 }
 
@@ -196,8 +207,8 @@ const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 
 /**
- * One per PagerDuty account, named by its web host (see `driverName`). Storage: `reg:`/`caps:` per
- * enabled hook, and the delivery queue's `msg:` rows and `queue:` indexes.
+ * The deployment's one driver (see `driver`). Storage: `reg:`/`caps:` per enabled hook, and the
+ * delivery queue's `msg:` rows and `queue:` indexes.
  */
 export class PagerDutyHookDriver extends DurableObject<Env> {
   #queue = new HookDeliveryQueue<StoredEvent>(this.ctx.storage.kv, () => {
@@ -223,11 +234,15 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
   /** Queue `event` once for each enabled hook that may watch it. */
   async ingest(event: StoredEvent): Promise<void> {
     const now = Date.now();
+    let queued = false;
     // Listed in full first, as the queue lists storage too.
     for (const [regKey, registration] of Array.from(this.ctx.storage.kv.list<Registration>({ prefix: "reg:" }))) {
-      if (watches(registration, event)) this.#queue.enqueue(regKey.slice("reg:".length), event.id, event, now);
+      if (!watches(registration, event)) continue;
+      this.#queue.enqueue(regKey.slice("reg:".length), event.id, event, now);
+      queued = true;
     }
-    await this.#reschedule();
+    // Due now, so no later than anything else queued.
+    if (queued) await this.ctx.storage.setAlarm(now);
   }
 
   async alarm(): Promise<void> {
@@ -240,8 +255,11 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
     const capabilities = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(key));
     if (!capabilities) return;
     try {
-      // A failure is retried with backoff; disabling the hook ends the retries.
-      await capabilities.delivery.deliver(capabilities.initiator, event);
+      // A refused firing is retried like a failed one; disabling the hook ends the retries. Awaited,
+      // not pipelined: workerd can't pass a property of a pending result into another call.
+      using firing = await capabilities.initiator.startHook();
+      // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
+      await capabilities.delivery.deliver(firing.callback, firing.approvalQueue, event);
     } finally {
       disposeStubs(capabilities);
     }
@@ -267,9 +285,9 @@ const MAX_DELIVERY_BYTES = 256 * 1024;
 const SIGNATURE = /^v1=([0-9a-f]{64})$/i;
 
 /**
- * Handle one delivery to `POST {BASE_URL}/webhook`: verify it, and hand its event to the account's
- * driver. Answered at once, as PagerDuty allows five seconds and disables the subscription for a
- * day after three failures in a row.
+ * Handle one delivery to `POST {BASE_URL}/webhook`: verify it, and hand its event to the driver.
+ * Answered at once, as PagerDuty allows five seconds and disables the subscription for a day after
+ * three failures in a row.
  */
 export async function handleWebhook(request: Request, env: Env, exports: Cloudflare.Exports): Promise<Response> {
   const secret = env.PAGERDUTY_WEBHOOK_SECRET;
@@ -290,11 +308,11 @@ export async function handleWebhook(request: Request, env: Env, exports: Cloudfl
   } catch {
     return new Response("Bad Request", { status: 400 });
   }
-  const parsed = parseDelivery(payload);
+  const event = parseDelivery(payload);
   // A ping, an event no hook watches for, or one older than the queue remembers, which only a
   // replay delivers: signatures carry no time, and the event's own id dedupes only that long.
-  if (parsed && Date.parse(parsed.event.occurredAt) >= Date.now() - DELIVERED_RETENTION_MS) {
-    await exports.PagerDutyHookDriver.getByName(parsed.account).ingest(parsed.event);
+  if (event && Date.parse(event.occurredAt) >= Date.now() - DELIVERED_RETENTION_MS) {
+    await driver(exports).ingest(event);
   }
   return new Response(null, { status: 204 });
 }
@@ -317,37 +335,42 @@ type WebhookPayload = {
     event_type?: unknown;
     occurred_at?: unknown;
     agent?: (WireRef & { type?: string }) | null;
-    data?: WireRef & { service?: WireRef; incident?: WireRef; content?: unknown; message?: unknown };
+    data?: WireRef & { service?: WireRef; incident?: WireRef; content?: unknown; message?: unknown; trimmed?: unknown };
   };
 };
 
 /**
- * The account and event a webhook payload reports, or undefined for one no hook watches for. The
- * incident is `data` itself for incident events, and `data.incident` for notes, responders and
- * status updates; its link names the account.
+ * The event a webhook payload reports, or undefined for one no hook watches for. The incident is
+ * `data` itself for incident events, and `data.incident` for notes, responders and status updates.
  */
-function parseDelivery(payload: unknown): { account: string; event: StoredEvent } | undefined {
+function parseDelivery(payload: unknown): StoredEvent | undefined {
   const { id, event_type, occurred_at, agent, data } = (payload as WebhookPayload | null)?.event ?? {};
   const kind = typeof event_type === "string" ? EVENT_TYPES.get(event_type) : undefined;
   if (kind === undefined) return undefined;
   const incident = data?.type === "incident" ? data : data?.incident;
-  const link = typeof incident?.html_url === "string" ? parseResourceUrl(incident.html_url) : null;
-  if (typeof id !== "string" || typeof occurred_at !== "string" || !OBJECT_ID.test(incident?.id ?? "") || !link) {
+  if (typeof id !== "string" || typeof occurred_at !== "string" || !OBJECT_ID.test(incident?.id ?? "")) {
     logger.warn("ignored a PagerDuty event it could not read", { event: "hooks.delivery.unreadable" });
     return undefined;
   }
+  if (Number.isNaN(Date.parse(occurred_at))) {
+    // Nothing would stop its replay once its dedupe row is forgotten.
+    logger.warn("ignored a PagerDuty event with no usable timestamp", { event: "hooks.delivery.untimed" });
+    return undefined;
+  }
   const serviceId = data?.type === "incident" ? data.service?.id : undefined;
-  const note = kind === "noteAdded" && typeof data?.content === "string" ? data.content : undefined;
-  const statusUpdate = kind === "statusUpdatePublished" && typeof data?.message === "string" ? data.message : undefined;
+  // A trimmed note is read in full on delivery; a trimmed status update can't be, so it is left out.
+  const trimmed = data?.trimmed === true;
+  const note = kind === "noteAdded" && !trimmed && typeof data?.content === "string" ? data.content : undefined;
+  const trimmedNoteId = kind === "noteAdded" && trimmed && typeof data?.id === "string" ? data.id : undefined;
+  const statusUpdate = kind === "statusUpdatePublished" && !trimmed && typeof data?.message === "string"
+    ? data.message : undefined;
   return {
-    account: driverName(link),
-    event: {
-      id, kind, occurredAt: occurred_at, incidentId: incident!.id,
-      ...(serviceId && OBJECT_ID.test(serviceId) ? { serviceId } : {}),
-      agent: agent?.type === "user_reference" && OBJECT_ID.test(agent.id)
-        ? { id: agent.id, name: agent.summary ?? agent.name ?? agent.id } : null,
-      ...(note !== undefined ? { note } : {}),
-      ...(statusUpdate !== undefined ? { statusUpdate } : {}),
-    },
+    id, kind, occurredAt: occurred_at, incidentId: incident!.id,
+    ...(serviceId && OBJECT_ID.test(serviceId) ? { serviceId } : {}),
+    agent: agent?.type === "user_reference" && OBJECT_ID.test(agent.id)
+      ? { id: agent.id, name: agent.summary ?? agent.name ?? agent.id } : null,
+    ...(note !== undefined ? { note } : {}),
+    ...(trimmedNoteId !== undefined ? { trimmedNoteId } : {}),
+    ...(statusUpdate !== undefined ? { statusUpdate } : {}),
   };
 }

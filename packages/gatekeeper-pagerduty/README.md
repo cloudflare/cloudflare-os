@@ -98,8 +98,8 @@ published. PagerDuty delivers them through one account-wide webhook that an admi
 Until the deployment has its signing secret, `subscribe()` throws "PagerDuty hooks are not
 configured on this deployment." and everything else works as before.
 
-1. Sign in as a Manager, Global Admin or Account Owner, and open **Integrations > Generic Webhooks
-   (v3)**. Select **New Webhook**.
+1. Sign in as a Manager, Admin, Global Admin or Account Owner, and open **Integrations > Generic
+   Webhooks (v3)**. Select **New Webhook**.
 2. Set **Webhook URL** to `$PUBLIC_BASE_URL/gatekeeper/pagerduty/webhook`, **Scope Type** to
    **Account**, and give it a description, e.g. "Gadgets".
 3. Under **Event Subscription**, tick exactly these: `incident.acknowledged`,
@@ -120,7 +120,9 @@ once. Each enabled hook whose binding could hold the incident is then called in 
 incident is read again as the hook's owner, and the event is dropped if they can't see it or it lies
 outside the binding (another team's or service's incident). A hook's event carries the incident's
 summary as it is at delivery and a capability to read and change it; its observation reports the
-binding's resources plus the incident and its service.
+binding's resources plus the incident and its service. A note too long for PagerDuty to send whole
+is read in full; a status update too long arrives without its message, which PagerDuty offers no
+way to read.
 
 Limits:
 
@@ -131,6 +133,9 @@ Limits:
   when the secret is wrong (each is refused with 401) or Cloudflare Access turns PagerDuty away,
   and drops what it had queued. It shows as **Needs Attention** in PagerDuty; fix the cause and
   enable it there again.
+- **An outage of more than a day loses events.** PagerDuty retries a failed delivery for up to 48
+  hours, but the worker ignores events more than a day old, as it remembers what it has received
+  only that long.
 - **Order is not kept**, and an event may arrive more than once; hooks key their work on the
   event's `id`.
 - **Every delivery costs a REST read** as the hook's owner, against their rate limit.

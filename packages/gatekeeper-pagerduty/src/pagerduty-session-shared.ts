@@ -181,6 +181,16 @@ export function windowOf(window: PagerDutyTimeWindow | undefined, days: number, 
 // ---------------------------------------------------------------------------
 // Shared reads
 
+/** The connected user, as the pending actions they staged show them. */
+export const youOf = (me: Identity) => ({ id: me.userId, name: me.name });
+
+/** An incident as PagerDuty describes it now. */
+export async function readIncident({ host }: { host: SessionHost }, id: string,
+                                   include: readonly string[] = []): Promise<WireIncident> {
+  return (await host.read(api => api.get<{ incident: WireIncident }>(`/incidents/${id}`, include.length ? { include } : {})))
+    .incident;
+}
+
 /** A service as PagerDuty describes it now. */
 export async function readService({ host }: { host: SessionHost }, id: string): Promise<WireService> {
   return (await host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
@@ -360,7 +370,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const { host } = ctx;
   const me = await host.me();
   const { query, params } = incidentQuery(filter, within, me);
-  const you = { id: me.userId, name: me.name };
+  const you = youOf(me);
   const overlay = (row: PagerDutyIncidentSummary) => overlayIncident(row, host.pending(), id => host.resolve(id), you);
   const inScope = (row: PagerDutyIncidentSummary) => (!within.serviceId || row.service.id === within.serviceId)
     && (!within.teamId || row.team?.id === within.teamId);

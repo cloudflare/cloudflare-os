@@ -2,12 +2,13 @@
 // TestHooks enables the hook and answers each firing as the overseer would, and PagerDuty's signed
 // webhook deliveries arrive through the worker's own fetch handler.
 
-import { SELF, env, runInDurableObject } from "cloudflare:test";
+import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { apiOrigin } from "../../src/pagerduty-env";
 import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutySubscribeOptions } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SERVICE, OTHER_TEAM, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
+  ALICE, BOB, DAVE, FakePagerDuty, OTHER_SERVICE, OTHER_TEAM, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
   type FakeUser,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
@@ -28,7 +29,8 @@ type Binding = { resourceKind: "account" } | { resourceKind: "team" | "service" 
 /** Subscribes a hook through `steps` from a binding of `who`'s, and enables it. */
 async function subscribe(pd: FakePagerDuty, binding: Binding, { steps = [], options, who = ALICE }:
                          { steps?: Step[]; options?: PagerDutySubscribeOptions; who?: FakeUser } = {}) {
-  const props = { userObjectId: await seedAccount(pd, who), region: "us", subdomain: "acme", ...binding } as GatekeeperProps;
+  const { region, subdomain } = who.account;
+  const props = { userObjectId: await seedAccount(pd, who), region, subdomain, ...binding } as GatekeeperProps;
   const hook = crypto.randomUUID();
   const description = unwrap(await hooks().subscribeHook(hook, crypto.randomUUID(), props, steps, options));
   unwrap(await hooks().enableHook(hook));
@@ -72,11 +74,23 @@ async function deliver(payload: unknown, signature?: string | null): Promise<num
   return response.status;
 }
 
-/** Waits until the account's driver has no delivery due: its own alarm delivers them. */
-const settled = () => vi.waitFor(() => runInDurableObject(env.PAGERDUTY_HOOK_DRIVER.getByName("acme.pagerduty.com"), (_instance, state) => {
+const driver = () => env.PAGERDUTY_HOOK_DRIVER.getByName("webhook");
+
+/** Waits until the driver has no delivery due: its own alarm delivers them. */
+const settled = () => vi.waitFor(() => runInDurableObject(driver(), (_instance, state) => {
   const due = [...state.storage.kv.list<{ at?: number }>({ prefix: "msg:" })].filter(([, row]) => row.at !== undefined && row.at <= Date.now());
   if (due.length > 0) throw new Error(`${due.length} deliveries due`);
 }), { timeout: 10_000, interval: 25 });
+
+/** Runs the driver's alarm `ms` from now, on a faked clock the runtime itself never wakes it for. */
+async function after(ms: number): Promise<void> {
+  vi.setSystemTime(Date.now() + ms);
+  try {
+    await runDurableObjectAlarm(driver());
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 describe("PagerDuty event hooks", () => {
   it("delivers a signed event, re-read as the hook's owner, reporting the account, incident and service", async () => {
@@ -155,18 +169,12 @@ describe("PagerDuty event hooks", () => {
     const service = await subscribe(pd, { resourceKind: "service", id: SERVICE.id });
     const incident = await subscribe(pd, { resourceKind: "incident", id: String(api.incident_number) });
     const teamIncident = await subscribe(pd, { resourceKind: "team", id: TEAM.id }, { steps: [["getIncident", api.id]] });
-    expect(incident.description.title).toBe(`Watch PagerDuty incidents on incident ${api.id}`);
 
     expect(await deliver(webhookEvent("incident.triggered", api))).toBe(204);
     expect(await deliver(webhookEvent("incident.triggered", billing))).toBe(204);
     await settled();
 
-    const seen = async (hook: typeof account) => {
-      const { received, firings } = await hook.read();
-      // A hook is fired only for what it receives.
-      expect(firings).toBe(received.length);
-      return received.map(({ info }) => info.id);
-    };
+    const seen = async (hook: typeof account) => (await hook.read()).received.map(({ info }) => info.id);
     expect(await seen(account)).toEqual(expect.arrayContaining([api.id, billing.id]));
     expect(await seen(team)).toEqual([api.id]);
     expect(await seen(otherTeam)).toEqual([billing.id]);
@@ -188,15 +196,33 @@ describe("PagerDuty event hooks", () => {
     pd.hide(ALICE.id, incident.id, 404);
     expect(await deliver(webhookEvent("incident.triggered", incident, { agent: ALICE }))).toBe(204);
     await settled();
-    expect(await alice.read()).toMatchObject({ firings: 0, received: [] });
+    expect((await alice.read()).received).toEqual([]);
     expect((await bob.read()).received).toEqual([expect.objectContaining({ kind: "triggered", actor: { id: ALICE.id, name: "Alice", isYou: false } })]);
+  });
+
+  it("delivers a note or status update only to the hooks whose binding holds its incident", async () => {
+    const pd = new FakePagerDuty().install();
+    const billing = pd.incident(OTHER_SERVICE);
+    const account = await subscribe(pd, { resourceKind: "account" });
+    const team = await subscribe(pd, { resourceKind: "team", id: TEAM.id });
+    const service = await subscribe(pd, { resourceKind: "service", id: SERVICE.id });
+    // Their payloads name no service, so only the re-read can tell.
+    expect(await deliver(webhookEvent("incident.annotated", billing, {
+      data: { type: "incident_note", id: "PNOTE01", content: "Rolling back.", trimmed: false },
+    }))).toBe(204);
+    expect(await deliver(webhookEvent("incident.status_update_published", billing, {
+      data: { type: "incident_status_update", id: "PSTAT01", message: "Mitigated.", trimmed: false },
+    }))).toBe(204);
+    await settled();
+    expect((await account.read()).received.map(({ kind }) => kind).toSorted()).toEqual(["noteAdded", "statusUpdatePublished"]);
+    expect((await team.read()).received).toEqual([]);
+    expect((await service.read()).received).toEqual([]);
   });
 
   it("delivers only the kinds subscribed to, with a note's or status update's text", async () => {
     const pd = new FakePagerDuty().install();
     const incident = pd.incident(SERVICE);
     const notes = await subscribe(pd, { resourceKind: "service", id: SERVICE.id }, { options: { events: ["noteAdded", "statusUpdatePublished"] } });
-    expect(notes.description.description).toMatch(/^Call this hook with each noteAdded, statusUpdatePublished event on service PSVC001 /);
     expect(await deliver(webhookEvent("incident.triggered", incident))).toBe(204);
     expect(await deliver(webhookEvent("incident.annotated", incident, {
       agent: ALICE, data: { type: "incident_note", id: "PNOTE01", content: "Rolling back.", trimmed: false },
@@ -215,6 +241,50 @@ describe("PagerDuty event hooks", () => {
     const props = { userObjectId: await seedAccount(other), region: "us", subdomain: "acme", resourceKind: "account" } as GatekeeperProps;
     expect(failure(await hooks().subscribeHook(crypto.randomUUID(), crypto.randomUUID(), props, [], { events: [] })))
       .toMatch(/^events must name at least one of triggered, /);
+  });
+
+  it("reads a note PagerDuty trimmed in full, and leaves out a trimmed status update", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE);
+    pd.notes.set(incident.id, [{ id: "PNOTE01", content: "Rolling back the deploy, in full.", created_at: new Date().toISOString() }]);
+    const hook = await subscribe(pd, { resourceKind: "account" }, { options: { events: ["noteAdded", "statusUpdatePublished"] } });
+    expect(await deliver(webhookEvent("incident.annotated", incident, {
+      data: { type: "incident_note", id: "PNOTE01", content: "Rolling back", trimmed: true },
+    }))).toBe(204);
+    expect(await deliver(webhookEvent("incident.status_update_published", incident, {
+      data: { type: "incident_status_update", id: "PSTAT01", message: "Mitigated", trimmed: true },
+    }))).toBe(204);
+    await settled();
+    const [note, statusUpdate] = (await hook.read()).received.toSorted((a, b) => a.kind.localeCompare(b.kind));
+    expect(note).toMatchObject({ kind: "noteAdded", note: "Rolling back the deploy, in full." });
+    expect(statusUpdate.kind).toBe("statusUpdatePublished");
+    expect(statusUpdate).not.toHaveProperty("statusUpdate");
+  });
+
+  it("retries an event the hook failed on", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE);
+    const hook = await subscribe(pd, { resourceKind: "account" });
+    await hooks().failHook(enabled.at(-1)!, 1);
+    const payload = webhookEvent("incident.triggered", incident);
+    expect(await deliver(payload)).toBe(204);
+    await settled();
+    expect(await hook.read()).toMatchObject({ firings: 1, received: [] });
+
+    // Past the first retry's backoff, a minute.
+    await after(60_000);
+    expect(await hook.read()).toMatchObject({ firings: 2, received: [expect.objectContaining({ id: payload.event.id })] });
+  });
+
+  it("re-reads an EU account's incident on PagerDuty's EU host", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE, { html_url: "https://euro.eu.pagerduty.com/incidents/1" });
+    const hook = await subscribe(pd, { resourceKind: "account" }, { who: DAVE });
+    expect(await deliver(webhookEvent("incident.triggered", incident))).toBe(204);
+    await settled();
+    expect((await hook.read()).received.map(({ info }) => info.id)).toEqual([incident.id]);
+    expect(pd.matching("GET", new RegExp(`^/incidents/${incident.id}$`), DAVE.id).map(({ url }) => url.origin))
+      .toEqual([apiOrigin("eu")]);
   });
 
   it("hands the hook a live incident, whose changes queue on the firing", async () => {

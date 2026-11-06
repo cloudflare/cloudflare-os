@@ -86,7 +86,7 @@ import TYPES_CODE from "./types.txt";
 import CONFIGURATOR_HTML from "./generated/pagerduty-configurator-ui.txt";
 
 export { PagerDutyGatekeeperImpl } from "./pagerduty-gatekeeper";
-export { PagerDutyHookController, PagerDutyHookDeliveryImpl, PagerDutyHookDriver } from "./pagerduty-hooks";
+export { PagerDutyHookController, PagerDutyHookDriver } from "./pagerduty-hooks";
 export { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 export { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 export { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
