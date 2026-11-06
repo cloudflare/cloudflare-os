@@ -14,7 +14,7 @@ import { AuditValue } from './AuditValue'
 import { SensitivityBadge } from './SensitivityBadge'
 
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
-export const AUDIT_LOG_COLUMNS = 7
+export const AUDIT_LOG_COLUMNS = 8
 
 const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI' }
 
@@ -139,8 +139,9 @@ const AccessDetails = ({ record, onFilterBy }: {
 
 /**
  * One record of the Audit tab's log: a summary row, with a toggle that shows what the record holds
- * in full in a row below it. The admin's name, and in an access record's details its workspace and
- * the workspace's owner, filter the log by `onFilterBy`.
+ * in full in a row below it. An access record's target user is its workspace's owner, the user the
+ * call reached. The admin's name and the target user, and in an access record's details its
+ * workspace, filter the log by `onFilterBy`.
  */
 export const AuditLogRow = ({ record, onFilterBy }: {
   record: AdminAuditRecord
@@ -191,6 +192,29 @@ export const AuditLogRow = ({ record, onFilterBy }: {
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
+        </Table.Cell>
+        <Table.Cell className="max-w-48">
+          {record.kind === 'setting'
+            ? (
+              // A setting change reaches every user, not one: no user is its target.
+              <span className="text-sm text-kumo-subtle" title="Deployment-wide">
+                <span aria-hidden="true">—</span>
+                <span className="sr-only">Deployment-wide</span>
+              </span>
+            )
+            : record.workspaceOwner
+              ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-2 max-w-full text-sm"
+                  aria-label={`Show only calls into workspaces ${record.workspaceOwner} owns`}
+                  onClick={() => onFilterBy({ owner: record.workspaceOwner })}
+                >
+                  <span className="truncate">{record.workspaceOwner}</span>
+                </Button>
+              )
+              : <span className="text-sm text-kumo-subtle">Unknown</span>}
         </Table.Cell>
         <Table.Cell className={`max-w-72 text-xs text-kumo-subtle${record.kind === 'setting' ? ' font-mono' : ''}`}>
           <span className="block truncate" title={summaryOf(record)}>{summaryOf(record)}</span>

@@ -356,7 +356,8 @@ describe('AdminAuditPanel', () => {
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
-        formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'Setting change', 'siteName', 'API',
+        formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'Setting change', '—Deployment-wide',
+        'siteName', 'API',
       ])
       expect(logRows()[0].querySelector('time')?.getAttribute('dateTime')).toBe(SETTING_AT.toISOString())
     })
@@ -627,7 +628,8 @@ describe('AdminAuditPanel', () => {
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
-        formatFullTimestamp(ACCESS_AT), 'admin', 'getChat', 'Workspace metadataRefused', 'Quarterly report', 'CLI',
+        formatFullTimestamp(ACCESS_AT), 'admin', 'getChat', 'Workspace metadataRefused', 'owner@example.test',
+        'Quarterly report', 'CLI',
       ])
       const details = await expand()
       expect(details.textContent).toContain('ws-titled')
@@ -645,7 +647,7 @@ describe('AdminAuditPanel', () => {
       await render(settingsWith(), admin)
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
-      expect(cells.slice(4, 6)).toEqual(['Content read', 'ws-untitled'])
+      expect(cells.slice(4, 7)).toEqual(['Content read', 'owner@example.test', 'ws-untitled'])
     })
 
     it('filters by sensitivity: a content read by what it exposed, a setting change by its kind', async () => {
@@ -674,6 +676,26 @@ describe('AdminAuditPanel', () => {
       expect(document.activeElement).toBe(card('Activity log').querySelector('input[role="combobox"]'))
     })
 
+    it('filters by the target user a row names, offering the page’s target users in the filter', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ workspaceOwner: 'grace' }), accessRecord({ workspaceOwner: 'linus' }),
+        accessRecord({ workspaceOwner: 'grace' }), settingRecord(),
+      ]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(logRows()[1], 'Show only calls into workspaces linus owns'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus' }))
+
+      const target = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      await type(target, '')
+      await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })) })
+      expect([...document.body.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+        .toEqual(expect.arrayContaining(['grace', 'linus']))
+    })
+
     it('filters by the owner and the workspace a record’s details name, and by the owner typed', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
@@ -685,7 +707,7 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'owner@example.test' }))
 
       const owner = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
-        .find((input) => input.placeholder.startsWith('Any owner'))!
+        .find((input) => input.placeholder.startsWith('Any user'))!
       expect(owner.value).toBe('owner@example.test')
       await type(owner, 'grace')
       await act(async () => {

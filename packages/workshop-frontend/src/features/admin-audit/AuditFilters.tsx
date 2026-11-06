@@ -21,15 +21,17 @@ const ANY_SENSITIVITY = 'any'
 type SensitivityChoice = AuditSensitivity | typeof ANY_SENSITIVITY
 
 /**
- * The Audit tab's filters. The admin and the workspace owner are typed (with `adminSuggestions`
- * offered for the admin), and apply on Enter or once a suggestion is picked. The action is
+ * The Audit tab's filters. The admin and the target user (the owner of a workspace an admin called
+ * into) are typed, with `adminSuggestions` and `targetSuggestions` offered, and apply on Enter or
+ * once a suggestion is picked. The action is
  * searched by typing, and the sensitivity chosen; both apply at once. The workspace filter is set
  * from the log or Most inspected workspaces, and shows as a chip named `workspaceLabel` that removes
  * it.
  */
-export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilterChange }: {
+export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, workspaceLabel, onFilterChange }: {
   filter: AuditFilter
   adminSuggestions: string[]
+  targetSuggestions: string[]
   /** What to call the filtered workspace: its title, or its id when no title is known. */
   workspaceLabel: string | undefined
   onFilterChange: (filter: AuditFilter) => void
@@ -98,11 +100,11 @@ export const AuditFilters = ({ filter, adminSuggestions, workspaceLabel, onFilte
           ))}
         </Select>
         <TypedFilterField
-          label="Workspace owner"
-          placeholder="Any owner (press Enter)"
+          label="Target user"
+          placeholder="Any user (press Enter)"
           value={filter.owner}
           clears={clears}
-          suggestions={[]}
+          suggestions={targetSuggestions}
           onApply={(owner) => onFilterChange({ ...filter, owner })}
         />
       </div>
