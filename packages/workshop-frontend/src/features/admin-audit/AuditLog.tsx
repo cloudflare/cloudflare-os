@@ -24,24 +24,28 @@ const filterKey = ({ admin, method }: AuditFilter) => JSON.stringify([admin ?? n
  * keeping what is shown until the new page answers; a change of filter starts again from the
  * newest page.
  */
-export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads }: {
+export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads, restarts }: {
   admin: RpcStub<AdminApi>
   filter: AuditFilter
   onFilterChange: (filter: AuditFilter) => void
   /** Admins to offer in the admin filter. */
   adminSuggestions: string[]
-  /** Increases to load the shown page again. */
+  /** Increases to load the shown page again (Refresh), staying on it. */
   reloads: number
+  /** Increases to load the newest page (after a settings change, whose own record is there and
+   * whose retention may have removed the pages turned to). */
+  restarts: number
 }) => {
   const key = filterKey(filter)
-  // The cursors of the pages turned to under the current filter, oldest page last. Forgotten as
-  // soon as the filter changes, during that render, so that coming back to an earlier filter
-  // starts again from its newest page.
-  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: key, cursors: [] })
-  if (turned.filter !== key) setTurned({ filter: key, cursors: [] })
+  // The cursors of the pages turned to under the current filter and restart, oldest page last.
+  // Forgotten as soon as either changes, during that render, so that coming back to an earlier
+  // filter starts again from its newest page.
+  const turnedUnder = JSON.stringify([key, restarts])
+  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: turnedUnder, cursors: [] })
+  if (turned.filter !== turnedUnder) setTurned({ filter: turnedUnder, cursors: [] })
   const [retries, setRetries] = useState(0)
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const cursors = turned.filter === key ? turned.cursors : []
+  const cursors = turned.filter === turnedUnder ? turned.cursors : []
   const cursor = cursors.at(-1)
   // Everything a load depends on, so that an answer to an earlier one is told apart.
   const request = JSON.stringify([key, cursor ?? null, reloads, retries])
@@ -75,7 +79,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   const turning = useRef(false)
   const turnTo = (next: string[]) => {
     turning.current = true
-    setTurned({ filter: key, cursors: next })
+    setTurned({ filter: turnedUnder, cursors: next })
   }
   useEffect(() => {
     if (!turning.current || busy) return
@@ -88,9 +92,19 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
     enabled?.focus()
   }, [busy, pageNumber])
 
+  // A row's admin button is gone once the page filtered by that admin replaces the row, so focus
+  // goes to the admin field, which now shows the admin chosen, rather than drop to the page.
+  const filters = useRef<HTMLDivElement>(null)
+  const selectAdmin = (selected: string) => {
+    onFilterChange({ ...filter, admin: selected })
+    filters.current?.querySelector<HTMLInputElement>('input[role="combobox"]')?.focus()
+  }
+
   return (
     <div className="space-y-4">
-      <AuditFilters filter={filter} adminSuggestions={adminSuggestions} onFilterChange={onFilterChange} />
+      <div ref={filters}>
+        <AuditFilters filter={filter} adminSuggestions={adminSuggestions} onFilterChange={onFilterChange} />
+      </div>
 
       {page === null && !failed && (
         <div className="flex justify-center py-12">
@@ -124,9 +138,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                   ? (
                     <Table.Row>
                       <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="py-8 text-center text-kumo-subtle">
-                        {filter.admin !== undefined || filter.method !== undefined
-                          ? 'No admin activity matches these filters.'
-                          : 'No admin activity is recorded yet.'}
+                        {pageNumber > 1
+                          ? 'No older admin activity.'
+                          : filter.admin !== undefined || filter.method !== undefined
+                            ? 'No admin activity matches these filters.'
+                            : 'No admin activity is recorded yet.'}
                       </Table.Cell>
                     </Table.Row>
                   )
@@ -134,7 +150,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                     <AuditLogRow
                       key={`${cursor ?? ''}:${index}:${record.at.getTime()}`}
                       record={record}
-                      onAdminSelect={(selected) => onFilterChange({ ...filter, admin: selected })}
+                      onAdminSelect={selectAdmin}
                     />
                   ))}
               </Table.Body>

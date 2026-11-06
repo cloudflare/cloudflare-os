@@ -411,6 +411,55 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'setSignupsEnabled' }))
     })
 
+    it('gives focus to the admin field once an admin is chosen in a row, whose button the filtered page replaces', async () => {
+      await render()
+
+      await click(within(logRows()[0], 'Show only second-admin’s activity'))
+
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+      expect(document.activeElement).toBe(field)
+      expect(field.value).toBe('second-admin')
+    })
+
+    it('abandons what was typed on Escape, showing the admin filter still applied', async () => {
+      const { onFilterChange } = await render(settingsWith(), fakeAdmin(), { admin: 'admin' })
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+      await type(field, 'half-typed')
+
+      await act(async () => {
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      })
+      await act(async () => {
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      })
+
+      expect(field.value).toBe('admin')
+      expect(onFilterChange).not.toHaveBeenCalled()
+    })
+
+    it('filters by an admin suggestion picked by pointer or by keyboard, not by what was typed', async () => {
+      const { onFilterChange } = await render()
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+
+      await type(field, 'second')
+      const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+        .find((element) => element.textContent === 'second-admin')!
+      await act(async () => { option.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'second-admin' })
+
+      await click(button('Clear filters'))
+      await type(field, 'adm')
+      await act(async () => {
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+      })
+      expect(field.getAttribute('aria-activedescendant')).toBeTruthy()
+      await act(async () => {
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      })
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin' })
+      expect(onFilterChange).not.toHaveBeenCalledWith({ admin: 'adm' })
+    })
+
     it('shows the admin filter set from elsewhere in the admin field', async () => {
       await render()
       const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
@@ -512,6 +561,35 @@ describe('AdminAuditPanel', () => {
 
       expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery())
       expect(pages().textContent).toContain('Page 1')
+    })
+
+    it('goes back to the newest page after a settings change, but stays on its page on Refresh', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockImplementation(async ({ cursor } = {}) =>
+        testPage([settingRecord({ admin: cursor ?? 'admin' })], cursor === undefined ? 'c1' : undefined))
+      await render(settingsWith(), admin)
+      await click(within(pages(), 'Older'))
+
+      await click(button('Refresh'))
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ cursor: 'c1' }))
+      expect(pages().textContent).toContain('Page 2')
+
+      await type(retentionInput(), '365')
+      await click(button(`Save “${RETENTION_LABEL}”`))
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery())
+      expect(pages().textContent).toContain('Page 1')
+    })
+
+    it('says a later page holds nothing older, rather than that nothing is recorded', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockImplementation(async ({ cursor } = {}) =>
+        cursor === undefined ? testPage([settingRecord()], 'c1') : testPage([]))
+      await render(settingsWith(), admin)
+
+      await click(within(pages(), 'Older'))
+
+      expect(card('Activity log').textContent).toContain('No older admin activity.')
+      expect(card('Activity log').textContent).not.toContain('No admin activity is recorded yet.')
     })
 
     it('hides the page controls when everything fits on one page', async () => {

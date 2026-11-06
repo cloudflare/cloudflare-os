@@ -14,7 +14,7 @@ export type AuditFilter = {
   method?: AuditMethod
 }
 
-/** The methods the Audit tab offers as filters, grouped as its Action select lists them. */
+/** The methods the Audit tab offers as filters, grouped as its Action combobox lists them. */
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS },
 ]

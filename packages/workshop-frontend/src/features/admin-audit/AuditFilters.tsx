@@ -31,8 +31,8 @@ export const AuditFilters = ({ filter, adminSuggestions, onFilterChange }: {
     setTyped({ over: admin || undefined, text: admin })
     onFilterChange({ ...filter, admin: admin || undefined })
   }
-  // Enter applies what is typed. Base UI gives the Autocomplete and the Select hidden text inputs of
-  // their own, and a form of several text inputs and no submit button is never submitted by Enter,
+  // Enter applies what is typed. Base UI gives the Autocomplete and the Combobox hidden text inputs
+  // of their own, and a form of several text inputs and no submit button is never submitted by Enter,
   // so the key is handled here. While a suggestion is highlighted, Enter picks it instead.
   const applyOnEnter = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
@@ -53,6 +53,13 @@ export const AuditFilters = ({ filter, adminSuggestions, onFilterChange }: {
           items={adminSuggestions}
           value={adminText}
           onValueChange={(text, { reason }) => {
+            // Escape, with the list closed, asks to empty the field: it abandons what was typed
+            // instead, showing the admin filter applied, so the field never says "any admin" while
+            // the log is filtered by one.
+            if (reason === 'escape-key') {
+              setTyped({ over: filter.admin, text: filter.admin ?? '' })
+              return
+            }
             setTyped({ over: filter.admin, text })
             if (reason === 'item-press') applyAdmin(text)
           }}

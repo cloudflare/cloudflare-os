@@ -139,6 +139,8 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
   const refreshing = statsAnswer?.loads !== loads
   const statsFailed = statsAnswer !== null && 'failed' in statsAnswer && !refreshing
   const reload = () => setLoads((n) => n + 1)
+  // Each settings change is one value of this, which sends the log back to its newest page.
+  const [changes, setChanges] = useState(0)
 
   const reportFailure = (title: string, err: unknown) => {
     logRpcFailure(`${title}:`, err)
@@ -155,6 +157,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
       return false
     }
     reload()
+    setChanges((n) => n + 1)
     try {
       await onSettingsChanged()
       return true
@@ -210,6 +213,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             onFilterChange={onFilterChange}
             adminSuggestions={stats?.topAdmins.map(({ admin: name }) => name) ?? []}
             reloads={loads}
+            restarts={changes}
           />
         </section>
       </section>

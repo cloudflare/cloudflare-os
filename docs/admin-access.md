@@ -76,8 +76,10 @@ typed, so type the number of days you want kept, even the minimum.
 
 An `AdminSettingRecord` (`kind: "setting"`) is one `AdminApi` setter's change. It holds `at`,
 `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
-map or list setting, and its value `before` and `after`. `listAdminAudit()` filters by kind, admin
-and time; `getAdminAuditStats()` by kind.
+map or list setting, and its value `before` and `after`. `listAdminAudit()` filters by kind, admin,
+method and time, the method read through an index on the record's `json_extract()` and refused when
+no record names it (capnweb-validate checks it against the method union); `getAdminAuditStats()` by
+kind.
 
 ### Setting records
 
