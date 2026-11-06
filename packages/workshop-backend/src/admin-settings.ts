@@ -1456,9 +1456,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {
     let limit = adminListLimit(options.limit);
-    let { kind, admin, since, cursor } = options;
+    let { kind, admin, method, since, cursor } = options;
     return await this.audits.getByName("").list(
-        { kind, admin, since, cursor, limit }, await this.#retentionDays());
+        { kind, admin, method, since, cursor, limit }, await this.#retentionDays());
   }
 
   async getAdminAuditStats(options: AdminAuditStatsQuery = {}): Promise<AdminAuditStats> {
