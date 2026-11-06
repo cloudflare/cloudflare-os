@@ -11,11 +11,12 @@ import { asArray, asNumber, asObject, asString, parseJson } from "./json.ts";
 // Each fixture is a real Dependabot pull request merged into main: the `git diff -U0` of its
 // squash commit against its parent, the package.json files it touched at both commits, which of
 // the names it adds the base lockfile already had, the registry publish times of the versions it
-// adds, and the OSV querybatch response for every version it adds, removes or moves an importer
-// or catalog entry to or from. Recorded 2026-11-02. OSV answers with what it knows on the
-// recording day, not on the merge day. `<pr>.base.lock.yaml` and `<pr>.head.lock.yaml` are the
-// pnpm-lock.yaml at both commits, cut to the importer, catalog and package entries that differ
-// (recorded 2026-11-06); the entries they leave out are the same on both sides.
+// adds, and the OSV querybatch response for every version it adds, removes, or moves an importer,
+// catalog or snapshot entry to or from. Recorded 2026-11-02, with the versions moved to or from
+// added 2026-11-06; OSV answers with what it knows on the recording day, not on the merge day.
+// `<pr>.base.lock.yaml` and `<pr>.head.lock.yaml` are the pnpm-lock.yaml at both commits, cut to
+// the importer, catalog, package and snapshot entries that differ (every peer variant of a changed
+// snapshot kept); the entries they leave out are the same on both sides.
 function fixture(name: string): DepsInput {
   const dir = new URL("./testdata/deps/", import.meta.url);
   const data = asObject(parseJson(readFileSync(new URL(`${name}.json`, dir), "utf8")), name);
