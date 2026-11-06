@@ -919,7 +919,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
               />
               <DropdownMenu.Content className={MENU_CONTENT}>
                 <DropdownMenu.Item
-                  icon={<DownloadSimple size={13} className="mr-2" />}
+                  icon={<DownloadSimple className="size-3.25" />}
                   onClick={handleDownload}
                   disabled={downloading}
                   className={MENU_ITEM}
@@ -928,7 +928,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item
-                  icon={<Star size={13} className="mr-2" weight={isPinned ? 'fill' : 'regular'} />}
+                  icon={<Star className="size-3.25" weight={isPinned ? 'fill' : 'regular'} />}
                   onClick={handleTogglePinned}
                   disabled={updatingPinned}
                   className={MENU_ITEM}
@@ -938,7 +938,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
                 {sourceWorkspace && (
                   <DropdownMenu.Item
-                    icon={<ArrowSquareOut size={13} className="mr-2" />}
+                    icon={<ArrowSquareOut className="size-3.25" />}
                     onClick={() => window.open(`/workspace/${sourceWorkspace.workspaceId}`, '_blank', 'noopener,noreferrer')}
                     className={MENU_ITEM}
                   >
@@ -950,7 +950,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Trash size={13} className="mr-2" />}
+                      icon={<Trash className="size-3.25" />}
                       variant="danger"
                       onClick={() => setShowDeleteConfirm(true)}
                       className={MENU_ITEM_DANGER}
@@ -965,7 +965,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     <DropdownMenu.Separator />
                     {isUploadedBlueprint ? (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={() => setShowDeleteConfirm(true)}
                         className={MENU_ITEM_DANGER}
@@ -974,7 +974,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                       </DropdownMenu.Item>
                     ) : (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={handleRemoveFromLibrary}
                         disabled={removingFromLibrary}
@@ -990,7 +990,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Sparkle size={13} className="mr-2" weight={isFeatured ? 'fill' : 'regular'} />}
+                      icon={<Sparkle className="size-3.25" weight={isFeatured ? 'fill' : 'regular'} />}
                       onClick={handleToggleFeatured}
                       disabled={updatingFeatured}
                       className={MENU_ITEM}
@@ -1523,9 +1523,9 @@ function BindingField({
 }
 
 // An account can configure a gatekeeper binding when its credentials are live, it belongs to the
-// binding's vendor, it offers the binding's resource type, and — for grantable types — that type
-// is actually granted. A Google account connected for Gmail alone advertises Calendar support but
-// cannot configure a Calendar binding until the grant is expanded.
+// binding's vendor, and it offers connections to that resource type with any required grant.
+// A Google account connected for Gmail alone advertises Calendar support but cannot configure
+// a Calendar binding until the grant is expanded.
 function accountCanConfigureBinding(
   binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>,
   account: AccountOption,
@@ -1533,7 +1533,7 @@ function accountCanConfigureBinding(
   if (!account.credentialsValid ||
       account.vendorId.toLowerCase() !== binding.gatekeeperName.toLowerCase()) return false
   const resource = account.supportedResources.find(
-    candidate => candidate.urlPattern === binding.typeUrlPattern,
+    candidate => candidate.urlPattern === binding.typeUrlPattern && candidate.connectable !== false,
   )
   if (!resource) return false
   const granted = account.description.grantedResourceUrlPatterns
@@ -1616,9 +1616,10 @@ function BlueprintGatekeeperBindingField({
   )
 
   const matchingAccounts = useMemo(() => accounts.filter(account =>
+    resource?.connectable !== false &&
     account.vendorId === vendor?.id &&
-    account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern)
-  ), [accounts, vendor?.id, binding.typeUrlPattern])
+    account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern && r.connectable !== false)
+  ), [accounts, vendor?.id, binding.typeUrlPattern, resource?.connectable])
   // A gatekeeper may offer an account fewer resource types than its vendor does. When that leaves
   // the chooser empty, say why, or an account the user just connected silently never appears.
   const unusableAccountCount = matchingAccounts.length === 0
@@ -1707,7 +1708,7 @@ function BlueprintGatekeeperBindingField({
   }, [])
 
   useEffect(() => {
-    if (!resource || !selectedAccount || hasMissingResourceGrants) {
+    if (!resource || resource.connectable === false || !selectedAccount || hasMissingResourceGrants) {
       replaceFrameState(null)
       setFrameError(null)
       setFrameLoading(false)
@@ -1741,11 +1742,11 @@ function BlueprintGatekeeperBindingField({
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern,
+  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern, resource?.connectable,
     hasMissingResourceGrants, replaceFrameState])
 
   // Bail out if the gatekeeper isn't installed locally or the required resource type isn't
-  // offered by the vendor. The binding can't be satisfied in either case.
+  // offered for connection by the vendor. The binding can't be satisfied in either case.
   if (!vendor) {
     return (
       <div className="rounded-lg border border-kumo-danger/30 bg-kumo-danger-tint px-3 py-2.5 text-sm text-kumo-danger">
@@ -1754,11 +1755,13 @@ function BlueprintGatekeeperBindingField({
       </div>
     )
   }
-  if (!resource) {
+  if (!resource || resource.connectable === false) {
     return (
       <div className="rounded-lg border border-kumo-danger/30 bg-kumo-danger-tint px-3 py-2.5 text-sm text-kumo-danger">
         <p className="font-semibold mb-0.5">{title}</p>
-        <p>The required resource type for this binding isn't offered by {vendor.description.displayName}.</p>
+        <p>{resource
+          ? "This resource type does not support connecting an existing resource, so this blueprint binding can't be configured."
+          : `The required resource type for this binding isn't offered by ${vendor.description.displayName}.`}</p>
       </div>
     )
   }

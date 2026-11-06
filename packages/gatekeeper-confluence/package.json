@@ -15,7 +15,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "node-html-parser": "^9.0.4"
+    "node-html-parser": "^9.0.5"
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*",

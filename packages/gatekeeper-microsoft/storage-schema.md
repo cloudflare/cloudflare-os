@@ -17,6 +17,8 @@ There is one per connected account.
 | `expiredNotified`, `expiredNotifiedArm` | kit `credential-expiry` latch | `credentialsExpired()` is sent once per dead grant. |
 | `stagedCredentials` | kit `credential-stage` record of `{ grant, identity, startedUnder }` | A reconnect's grant, held until `commitReconnect(stageId)`. |
 | `hookDriver:<driver>` | `number`, when last tracked | The `OutlookHookDriver`s holding this account's hooks, by `driverName`. A driver can register a hook only while the account is connected, and `revoke()` has each one forget the account's hooks. |
+| `cache:@access:*` | kit `KvTtlCache` | Graph's answers to whether this account can open each subresource someone else's binding reported, by subresource ID, for `checkSubresourceAccess` when its user observes a workspace. Partitioned by connection generation, so a reconnect starts afresh. An allowed answer is kept 15 minutes and a denial 15 seconds; a failed check is not kept. |
+| `cache:@calendarAcl:*` | kit `KvTtlCache` | What decides observers of this user's own calendars, shared by all their Calendar bindings and partitioned by connection generation: a calendar's sharing list (2 minutes), whether an address is a person (an hour), and the organization's domains (a day). |
 
 ## SharePointGatekeeper
 
@@ -32,7 +34,7 @@ There is one per binding. Its props are `{ userObjectId, scope }`, where `scope`
 | `files:<handle>:*`, `fileAllocations:<handle>`, `fileAllocations:totalBytes` | kit `ActionFileStore` | Content captured for pending uploads and replacements, 25 MiB each and 128 MiB in total. Released once applied. Swept when unreferenced for an hour. |
 | `cache:@sharepoint:*` | kit `KvTtlCache` | Reads, partitioned by connection generation and invalidated after every action decision. Metadata is kept 5 minutes. Extracted text is kept an hour, keyed by the file's `cTag`, and only under 100 KB. |
 | `housekeptAt` | `number` | When housekeeping last ran. |
-| `observer:*`, `observedUnit:*` | kit tracked-collection observers | The admitted observers, and the access units reads have revealed (`site:`, `drive:`, `item:`, `list:`, `listItem:` and `page:` IDs, a file's `content:` and `versions:`, and the exact draft seen as `fileVersion:`, `listItemVersion:` or `pageVersion:`; at most 2,000), each probed per observer through their `MicrosoftVerifier`. |
+| `observer:*`, `observedUnit:*` | kit tracked-collection observers | Legacy: the admitted observers, and the access units reads revealed before they reported subresources (`site:`, `drive:`, `item:`, `list:`, `listItem:` and `page:` IDs, a file's `content:` and `versions:`, and the exact draft seen as `fileVersion:`, `listItemVersion:` or `pageVersion:`; at most 2,000). No longer written; `addObserver` still probes each per observer through their `MicrosoftVerifier`, and `getHistoricalSubresources` exports them as subresource IDs. |
 
 ## OutlookGatekeeper
 
@@ -50,7 +52,7 @@ the resource URL resolved to: the mailbox by its user's object ID, a folder by i
 | `ownDraft:<messageId>` | `number`, when written | Drafts this binding wrote, which it covers whatever its narrowing. Dropped after 30 days, after which a draft is covered only as any other message. |
 | `cache:@outlook:*` | kit `KvTtlCache` | Reads (folders, the mailbox, the organization's domains, who the user has written to), partitioned by connection generation and invalidated after every action decision. |
 | `housekeptAt` | `number` | When housekeeping last ran. |
-| `observer:*`, `observedUnit:*` | kit tracked-collection observers | The admitted observers, and the mail units reads have revealed (`mailbox:`, `mailFolder:` and `mail:` IDs under the mailbox user's ID, at most 2,000), probed per observer through their `MicrosoftVerifier`. |
+| `observer:*`, `observedUnit:*` | kit tracked-collection observers | Legacy: the admitted observers, and the mail units reads revealed before they reported subresources (`mailbox:`, `mailFolder:` and `mail:` IDs under the mailbox user's ID, at most 2,000). No longer written; `addObserver` still probes each per observer, and `getHistoricalSubresources` exports them as subresource IDs. |
 
 ## OutlookHookDriver
 
@@ -79,6 +81,6 @@ MAPI entry ID (what its events name as their parent), with its owner's object ID
 | `description` | `{ value: ResourceDescription, at }` | As for SharePoint. |
 | `calendar:nextActionId`, `calendar:action:<id>`, `retained:calendar:action:<id>`, `applied:calendar:action:` | kit `ActionJournal` records of `CalendarAction` | Pending, failed and retained actions, fenced on `pinnedUser`. Applied actions are kept 30 days for revert. A creation's record holds the `transactionId` it was proposed with, which Exchange uses to make it exactly-once; a deletion's holds what it needs to recreate the event. |
 | `refs:seq:provisional`, `refs:prov:<~N>`, `refs:kind:<~N>` | kit `ProvisionalIds` | Temporary IDs of events that don't exist yet, and the IDs Exchange assigned. |
-| `cache:@calendar:*` | kit `KvTtlCache` | Reads, partitioned by connection generation and invalidated after every action decision: the calendars (5 minutes), mailbox settings (an hour), the organization's domains (a day), and for observer checks a calendar's sharing list (2 minutes) and whether an address is a person (an hour). |
+| `cache:@calendar:*` | kit `KvTtlCache` | Reads, partitioned by connection generation and invalidated after every action decision: the calendars (5 minutes), mailbox settings (an hour) and the organization's domains (a day). What decides observers is cached by the owner's `UserAccount` (`cache:@calendarAcl:*`). |
 | `housekeptAt` | `number` | When housekeeping last ran. |
-| `observer:*`, `observedUnit:*` | kit tracked-collection observers | The admitted observers, and the units reads have revealed, at most 2,000: `calendar:<ownerId>:<calendarId>:<freeBusy\|limited\|full\|private>`, `calendars:<ownerId>` (all of a user's calendars, admitting only that user), and `availability:<address>` (probed by asking for that person's free/busy as the observer). |
+| `observer:*`, `observedUnit:*` | kit tracked-collection observers | Legacy: the admitted observers, and the units reads revealed before they reported subresources, at most 2,000: `calendar:<ownerId>:<calendarId>:<freeBusy\|limited\|full\|private>`, `calendars:<ownerId>` (all of a user's calendars, admitting only that user), and `availability:<address>` (probed by asking for that person's free/busy as the observer). No longer written; `addObserver` still checks each, and `getHistoricalSubresources` exports them as subresource IDs. |

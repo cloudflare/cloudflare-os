@@ -50,7 +50,7 @@ it("reports collaborator presence and removes it when the capability closes", as
   using workspace = await owner.newWorkspace();
   const { id: workspaceId } = await workspace.getMetadata();
   await workspace.newChat("Make this workspace visible without an agent", null);
-  await workspace.addCollaborator(collaboratorName, "build");
+  await workspace.addCollaborator(collaboratorName, "workspace");
 
   const collaboratorWorkspace = await collaborator.openWorkspace(workspaceId);
   const recorder = new PresenceRecorder();

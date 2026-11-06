@@ -5,13 +5,14 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
-import { createTestHarness, type TestHarness } from "wrangler";
+import { createTestHarness, type TestHarness, type TestHarnessOptions } from "wrangler";
 import { z } from "zod";
+import { waitFor } from "./rpc-client.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -115,7 +116,13 @@ function workshopConfig(
 
   // No CF_ACCESS_AUD, so /api takes the unauthenticated path and password signup is available.
   // PUBLIC_BASE_URL mirrors run-dev-server.ts; only connect handoffs read it, as their target origin.
-  config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test" };
+  // WORKSHOP_ENVIRONMENT "test" makes it a local instance, where `cf-os api` may act as anyone, as
+  // on `pnpm dev-server`. A suite deletes it in `patchWorkshop` to run as a deployment, where the
+  // CLI is for admins only.
+  config.vars = {
+    ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test",
+    WORKSHOP_ENVIRONMENT: "test",
+  };
 
   // Most integration tests need no Gadget execution. Keep the loader only for tests that exercise
   // executeCode or a generated Gadget server.
@@ -142,7 +149,8 @@ export type Harness = {
       : ReturnType<TestHarness["fetch"]>;
   /**
    * Deploy another build of the Workshop over the running one, as releasing a new version does.
-   * `patchWorkshop` takes the place of the patch the harness was started with.
+   * `patchWorkshop` takes the place of the patch the harness was started with. Resolves once every
+   * Worker runs the new build; see deploy().
    *
    * Storage and `url` are kept. Every Worker restarts, which breaks the RPC sessions open at the
    * time, so only a suite that started its own harness should call this.
@@ -179,8 +187,55 @@ export async function startHarness(opts: {
     server,
     url,
     fetchWorker: (name, ...args) => server.getWorker(name).fetch(...args),
-    redeployWorkshop: patchWorkshop => server.update(options(patchWorkshop)),
+    redeployWorkshop: patchWorkshop => deploy(server, () => options(patchWorkshop)),
   };
+}
+
+/**
+ * `server.update(next)`, resolving only once every Worker runs the options `next` returns.
+ *
+ * update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so that
+ * reload can still be running any one's earlier build, with another to come. Every Worker is
+ * deployed with a fresh mark in its vars, and this is done once each reports it. Reading the env
+ * asks the runtime again after each reload, so a read that meets a later reload loses its
+ * connection: that Worker has not reported yet.
+ */
+export async function deploy(
+    server: TestHarness, next: (current: TestHarnessOptions) => TestHarnessOptions): Promise<void> {
+  const mark = randomUUID();
+  const workers: string[] = [];
+  await server.update(current => {
+    const options = next(current);
+    return {
+      ...options,
+      workers: options.workers.map(worker => {
+        if (!("config" in worker)) throw new Error("The harness boots inline configs only");
+        workers.push(worker.config.name!);
+        const { config } = worker;
+        return { ...worker, config: { ...config, vars: { ...config.vars, TEST_DEPLOY_MARK: mark } } };
+      }),
+    };
+  });
+  await waitFor("every Worker to run the new deployment", async () => {
+    for (const name of workers) {
+      try {
+        if ((await server.getWorker(name).getEnv()).TEST_DEPLOY_MARK !== mark) return null;
+      } catch (error) {
+        if (isReloadDisconnect(error)) return null;
+        throw error;
+      }
+    }
+    return true;
+  });
+}
+
+/**
+ * Miniflare reads the env with a synchronous fetch on a worker thread and rethrows its failure
+ * here, which drops the cause's `code`, so the cause is matched by its message.
+ */
+function isReloadDisconnect(error: unknown): boolean {
+  return error instanceof TypeError && error.message === "fetch failed" &&
+    error.cause instanceof Error && /\bECONN(RESET|REFUSED)\b/.test(error.cause.message);
 }
 
 // Takes the place of the module the Workshop's build generates its bundled blueprints into.

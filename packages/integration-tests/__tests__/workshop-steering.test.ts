@@ -109,7 +109,7 @@ it.concurrent("every member sees the queued steers, and stopping the agent drops
     using publicApi = connect(harness.url);
     // A collaborator without the running turn's model can still steer it.
     using api = await signUp(publicApi, name!);
-    if (!await ws.addCollaborator(name!, "build")) throw new Error(`Failed to share with ${name}`);
+    if (!await ws.addCollaborator(name!, "workspace")) throw new Error(`Failed to share with ${name}`);
     using shared = await api.openWorkspace((await ws.getMetadata()).id);
     const before = (await shared.listChats()).find(chat => chat.id === chatId);
     expect(queued(before)).toEqual([STEER]);

@@ -17,6 +17,7 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
   workerVersionTag,
+  type ActionKind,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   type ActionDescriptionBuilder, buildDescription, plainInline, type RenderedDescription,
@@ -73,6 +74,7 @@ import {
   type IssueCreateInput,
   type IssueUpdateInput,
 } from "./linear-api";
+import { autoApprovableKindsOf, autoApprovalOf } from "./linear-auto-approval";
 import {
   LinearWorkspaceConfiguratorUI,
   LinearTeamConfiguratorUI,
@@ -939,7 +941,7 @@ type IssueOverlayPatch = {
   parent?: RawIssue["parent"];
 };
 
-type StoredAction =
+type StoredAction = (
   | { id: number; status: ActionStatus; kind: "createIssue"; input: IssueCreateInput;
       provisionalId: string; createdIssueId?: string; synthetic: RawIssue; title: string }
   | { id: number; status: ActionStatus; kind: "updateIssue"; issueRef: string;
@@ -952,10 +954,20 @@ type StoredAction =
       createdCommentId?: string; synthetic: RawComment; title: string }
   | { id: number; status: ActionStatus; kind: "createLabel"; teamId: string; name: string;
       color?: string; description?: string; createdLabelId?: string; synthetic: RawLabel; title: string }
-  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string };
+  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string }
+) & {
+  /**
+   * Set when the overseer first applies the action, which proves it received it even if the submit
+   * reply was lost (see `enqueue`).
+   */
+  applyStarted?: true;
+};
 
-// Distributive Omit so the union's variant-specific fields survive; enqueue assigns id + status.
-type StoredActionDraft = StoredAction extends infer T
+/**
+ * A stored action before `enqueue` assigns its id and status. The Omit is distributive, so each
+ * variant keeps its own fields.
+ */
+export type StoredActionDraft = StoredAction extends infer T
   ? T extends { id: number } ? Omit<T, "id" | "status"> : never
   : never;
 
@@ -1141,13 +1153,14 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
     this.#invalidatePendingActions();
     try {
-      await approvalQueue.submitAction(id, description);
+      // The verdict comes from the stored payload, so it always describes what applies.
+      await approvalQueue.submitAction(id, { ...description, ...autoApprovalOf(action) });
     } catch (err) {
       // An auto-approval can apply the action mid-flight, which proves the overseer received it --
       // only the reply was lost, and reporting failure would invite a repeated provider write. A
       // missing record proves nothing: a dependency's rejection cascade deletes it too.
       const current = this.ctx.storage.kv.get<StoredAction>(`action:${id}`);
-      if (current?.status === "applied") return;
+      if (current?.status === "applied" || current?.applyStarted) return;
       if (current) {
         // Drop the record so simulated reads don't show an action no approver can resolve.
         this.ctx.storage.kv.delete(`action:${id}`);
@@ -1479,8 +1492,8 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKindsOf(this.ctx.props.resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<LinearWorkspace | LinearTeam | LinearIssue> {
@@ -1566,6 +1579,13 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
   async applyAction(actionId: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
+    // The overseer records completion only after this returns, so a lost reply or a restart in
+    // between re-delivers an apply that already ran; running it again would repeat the write.
+    if (action.status === "applied") return;
+    if (!action.applyStarted) {
+      action.applyStarted = true;
+      this.ctx.storage.kv.put<StoredAction>(`action:${actionId}`, action);
+    }
 
     await this.#run(async api => {
       switch (action.kind) {

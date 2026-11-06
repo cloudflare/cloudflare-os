@@ -97,7 +97,7 @@ it.concurrent("a created resource is made in the approver's account, and edits a
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, approver);
   const workspaceId = await withOwnerWorkspace(harness.url, session.username, async ws => {
-    await ws.addCollaborator(approver, "build");
+    await ws.addCollaborator(approver, "workspace");
     return (await ws.getMetadata()).id;
   });
   using ws = await api.openWorkspace(workspaceId);

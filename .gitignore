@@ -13,6 +13,10 @@ packages/workshop-backend/src/generated/bundled-blueprints.ts
 packages/workshop-backend/src/generated/browser-export-runtime.txt
 packages/workshop-backend/src/generated/html-sanitizer-runtime.txt
 packages/workshop-backend/src/generated/browser-export-page.js
+# The API schema and `cf-os api`'s command table, generated from api.ts on demand
+# (packages/api-schema/scripts/generate.ts --if-stale).
+packages/api-schema/generated/
+packages/api-cli/generated/
 
 # TypeScript build info
 *.tsbuildinfo

@@ -38,6 +38,16 @@ grant.
 - A provider error message can quote a caller-supplied filter value back, so only its numeric `codes`
   are logged — filter *values* stay out of the audit trail (`summarizeFilter`), and the message
   travels to the caller who caused it.
+- Observers: every read, through either binding, reports one subresource, `account/<accountId>`.
+  `verifyObserverAccess` allows an observer only if their own connection's account-wide telemetry
+  probe succeeds there; any other ID fails the whole call. Nothing checks an individual Worker, so a
+  Worker binding's collaborators need the account's telemetry. The kernel asks on every read, so the
+  observer's `UserAccount` caches each answer (`checkTelemetryAccess`: allowed 15 minutes, denied 15
+  seconds), invalidated by every credential install in `#writeGrant` and bypassed when no usable
+  token or no `workers-observability.read` remains (scopes are read after the token, since a refresh
+  can narrow them); a check a reconnect overtakes throws, and failures are never cached.
+  `addObserver` keeps its earlier, uncached checks (`hasObservabilityAccess`) for reads made before
+  they reported a subresource.
 
 ## Tests and configurators
 

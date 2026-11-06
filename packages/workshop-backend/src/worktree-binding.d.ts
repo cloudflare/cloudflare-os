@@ -116,13 +116,20 @@ export interface Worktree {
    */
   writeFile(path: string, text: string): Promise<void>;
 
-  /** Stream current file bytes, preserving binary contents; absence is an error. */
-  readBytes(path: string, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>>;
   /**
-   * Create/replace a file with raw bytes using whole-file replacement semantics.
-   * Limited to 8,000,000 bytes; larger files are not supported.
+   * Stream a file's current bytes, preserving binary contents; absence is an error. `range`
+   * selects `length` bytes from `offset` (an error if it extends past the end); omitted, the
+   * whole file. A file of any size can be read, a piece at a time: only what you read is
+   * loaded. The stream errors if this worktree's session ends while it is being read.
    */
-  writeBytes(path: string, content: Uint8Array): Promise<void>;
+  readBytes(path: string, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * Create/replace a file with raw bytes using whole-file replacement semantics. There is no
+   * size limit. Pass a `ReadableStream` to write content too large to hold in memory: it is
+   * stored as it arrives, and the call returns once the whole stream has been written.
+   */
+  writeBytes(path: string, content: Uint8Array | ReadableStream<Uint8Array>): Promise<void>;
 
   /** Delete a file. */
   deleteFile(path: string): Promise<void>;
@@ -133,7 +140,7 @@ export interface Worktree {
    * directory. An array searches each listed file/directory (deduplicated), which is more
    * efficient than separate `grep()` calls; an empty array searches nothing.
    *
-   * Files that cannot be searched (binary/over-limit files, symlinks, submodules) are skipped
+   * Files that cannot be searched (binary files, symlinks, submodules) are skipped
    * with a note, as is a listed path that doesn't exist -- but if *every* listed path fails this
    * way, the call throws instead.
    *
@@ -169,7 +176,7 @@ export interface Worktree {
    * e.g. the worktree's base commit to see everything changed since it was created.
    *
    * Returns the diff in a format similar to `git diff`. An empty string means no differences.
-   * Paths that cannot be rendered as text (binary/over-limit files, symlinks, submodules)
+   * Paths that cannot be rendered as text (binary files, symlinks, submodules)
    * contribute a note instead of a diff.
    *
    * This format is intended to be viewed by a human or agent. Do not try to parse it; if you
@@ -210,7 +217,7 @@ export type StructuredGrepResult = {
   matches: GrepMatch[];
 
   /**
-   * Files that could not be searched: symlinks, submodules, binary or over-limit content, and
+   * Files that could not be searched: symlinks, submodules, binary content, and
    * listed paths that don't exist.
    */
   errors: GrepFileError[];
@@ -246,8 +253,8 @@ export type StructuredDiffResult = {
   files: DiffFile[];
 
   /**
-   * Paths that differ but could not be diffed as text: symlinks, submodules, and binary or
-   * over-limit content (on either side).
+   * Paths that differ but could not be diffed as text: symlinks, submodules, and binary
+   * content (on either side).
    */
   errors: DiffFileError[];
 };

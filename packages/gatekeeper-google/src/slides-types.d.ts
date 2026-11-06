@@ -266,11 +266,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * takes all 12 at once, so the others are sent as the master has them when the batch is
    * applied. Which layout a slide is made from cannot be changed.
    *
-   * The user may let a batch apply without asking when it only edits text, or when it only
-   * formats text, paragraphs and shapes, moves elements, or sets slides' backgrounds to a colour,
-   * `"none"` or `null`, setting no link or font. Any other batch waits for approval: one mixing
-   * those two, setting a picture background, changing a layout or master, or setting theme
-   * colours. So queue changes that need not apply together as separate batches.
+   * The user may let a batch apply without asking unless it deletes an element or a table's rows
+   * or columns, or adds an image, replaces one, or sets a picture background, which Google
+   * downloads from the URL. Such a batch always waits for approval, so queue changes that need not
+   * apply together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the
@@ -283,19 +282,22 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
 
   /**
    * Queue copying a slide, with its speaker notes, to right after it. Returns the copy's slide ID.
-   * Its elements get new IDs too: read the copy with `getSlides()` to edit it.
+   * Its elements get new IDs too: read the copy with `getSlides()` to edit it. The user may let
+   * this apply without asking.
    */
   duplicateSlide(slideId: string): Promise<string>;
 
   /**
    * Queue deleting a slide. Deleting the last slide of any master but the presentation's first
    * removes that master's layouts from `PresentationInfo.layouts`, as Google deletes them with it.
+   * This always waits for approval.
    */
   deleteSlide(slideId: string): Promise<void>;
 
   /**
    * Queue moving slides to follow the slide `after`, or to the start when `after` is null. They
    * keep their current order relative to each other, whatever order `slideIds` lists them in.
+   * The user may let this apply without asking.
    */
   moveSlides(slideIds: string[], after: string | null): Promise<void>;
 
@@ -306,7 +308,8 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * it goes first, or of the presentation's first master when it has no slides, as Google requires.
    * Returns the new slide's ID. The slide gets the layout's placeholders, empty: read it with
    * `getSlides()` to fill them with `updateSlides()`.
-   * Its speaker notes can be edited only once it is approved.
+   * Its speaker notes can be edited only once it is approved. The user may let this apply
+   * without asking.
    */
   createSlide(layoutId: string, after?: string | null): Promise<string>;
 

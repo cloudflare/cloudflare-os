@@ -176,6 +176,8 @@ export type RawUser = {
   email?: string | null;
   avatarUrl?: string | null;
   active?: boolean | null;
+  /** Whether the user is an app (an integration or agent) rather than a person. */
+  app?: boolean | null;
 };
 
 export type RawOrganization = {
@@ -266,7 +268,7 @@ export type RawComment = {
 // ---------------------------------------------------------------------------
 // GraphQL fragments
 
-const USER_FIELDS = `id name displayName email avatarUrl active`;
+const USER_FIELDS = `id name displayName email avatarUrl active app`;
 const TEAM_FIELDS = `id key name description private`;
 const STATE_FIELDS = `id name type color position`;
 const LABEL_FIELDS = `id name color`;

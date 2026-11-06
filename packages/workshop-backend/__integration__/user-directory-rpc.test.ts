@@ -24,7 +24,9 @@ async function authenticate(publicApi: RpcStub<PublicApi>, prefix: string, displ
 }
 
 function setUserSearchEnabled(enabled: boolean): Promise<void> {
-  return exports.AdminSettings.getByName("").updateAdminConfig({ userSearchEnabled: enabled });
+  return exports.AdminSettings.getByName("").updateAdminConfig({ userSearchEnabled: enabled }, {
+    admin: "admin", sessionId: "user-directory-rpc", via: "api", method: "setUserSearchEnabled",
+  });
 }
 
 // Needs this suite's in-isolate clock, which the public-API suite can't reach.

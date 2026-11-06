@@ -20,7 +20,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const P = "group%2Fsub%2Fproject";
+/** The project's path, which the binding reads only to pin its id. */
+const PATH = "group%2Fsub%2Fproject";
+/** Where the binding reads the project once pinned: by its id, the documented project's 3. */
+const P = String(fx.projectResponse.data.id);
 const PROJECT = "group/sub/project";
 const DESC: ActionPresentation = { title: "t", implementsRevert: true };
 /** What applying an action answers once a discard has retired it, directly or by a cascade. */
@@ -37,7 +40,7 @@ function project() {
 /** A fake with the always-needed routes; tests add the endpoints they exercise. */
 function fake(): FakeGitLab {
   const gitlab = new FakeGitLab();
-  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json(project()));
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:${PATH}|${P})$`), () => json(project()));
   gitlab.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
   return gitlab;
 }
@@ -58,9 +61,20 @@ type IssueJson = Omit<typeof fx.issueResponse.data, "state"> & { state: "opened"
 const issue = (over: Partial<IssueJson> = {}): IssueJson => ({ ...fx.issueResponse.data, iid: 1, state: "opened", ...over });
 
 describe("issue creation", () => {
+  it("holds an issue for a person when whether an assignee is a bot cannot be read", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot-unreadable");
+    gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ message: "403 Forbidden" }, { status: 403 }));
+    gitlab.install();
+    const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
+      [{ title: "New thing", assignees: ["lennie"] }], DESC));
+    expect(action).toMatchObject({ type: "createIssue", assigneeIds: [9], assigneeIsBot: true });
+  });
+
   it("queues with a provisional id, reads back simulated, applies, then resolves the real id", async () => {
     const { gitlab, props, name } = await setup("create-issue");
     gitlab.on("GET", /^\/api\/v4\/users\?username=lennie/, () => json(fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" }))));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues$`), request =>
       json(issue({ iid: 77, title: JSON.parse(request.body!).title }), { status: 201 }));
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/77\\?`), () => json(issue({ iid: 77, title: "New thing" })));
@@ -69,7 +83,7 @@ describe("issue creation", () => {
 
     const action = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue",
       [{ title: "New thing", bodyMarkdown: "see !~1", labels: ["bug"], assignees: ["lennie"] }], DESC));
-    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ type: "createIssue", provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
 
     // Simulated: the provisional issue reads as if created, authored by the viewer.
     const provisional = await unwrap(await hooks().openIssue(name, props, "~1"));
@@ -93,6 +107,31 @@ describe("issue creation", () => {
     // The provisional id now resolves to the real one; both lookups work.
     const real = await unwrap(await hooks().openIssue(name, props, "~2"));
     expect(real.id).toBe("77");
+  });
+
+  it("keeps an issue assigned to a bot or service account, or to a user whose kind GitLab does not report, from auto-approval", async () => {
+    const { gitlab, props, name } = await setup("create-issue-bot");
+    const users: Record<string, { id: number; bot?: boolean }> = { lennie: { id: 9, bot: false }, duo: { id: 10, bot: true }, quiet: { id: 11 } };
+    gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => {
+      const username = request.url.searchParams.get("username")!;
+      return json([{ ...fx.usersByUsernameResponse.data[0], id: users[username]!.id, username }]);
+    });
+    gitlab.on("GET", /^\/api\/v4\/users\/\d+$/, request => {
+      const [username, user] = Object.entries(users).find(([, u]) => request.url.pathname.endsWith(`/${u.id}`))!;
+      const { bot: _, ...rest } = fx.singleUserResponse.data;
+      return json({ ...rest, id: user.id, username, ...(user.bot === undefined ? {} : { bot: user.bot }) });
+    });
+    gitlab.install();
+    for (const assignees of [[], ["lennie"], ["lennie", "duo"], ["quiet"]]) {
+      await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New", assignees }], DESC));
+    }
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable])).toEqual([
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", true],
+      ["gitlab.createIssue", false],
+      ["gitlab.createIssue", false],
+    ]);
   });
 
   it("serves a created issue once from a listing that was opened before its create applied", async () => {
@@ -426,6 +465,7 @@ describe("merge requests", () => {
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/compare`), () => json(fx.compareResponse.data));
     gitlab.on("GET", /^\/api\/v4\/users\?username=/, request => json(request.url.searchParams.get("username") === "lennie"
       ? fx.usersByUsernameResponse.data.map(u => ({ ...u, id: 9, username: "lennie" })) : []));
+    gitlab.on("GET", /^\/api\/v4\/users\/9$/, () => json({ ...fx.singleUserResponse.data, id: 9, username: "lennie" }));
     let posted: Record<string, unknown> | undefined;
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests$`), request => {
       posted = JSON.parse(request.body!);
@@ -445,7 +485,7 @@ describe("merge requests", () => {
       title: "Feature", sourceBranch: "feature", targetBranch: "main", draft: true, removeSourceBranch: true,
       labels: ["backend"], assignees: ["lennie"],
     }], DESC));
-    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9] });
+    expect(action).toMatchObject({ provisionalId: "~1", assigneeIds: [9], assigneeIsBot: false });
     const provisional = await unwrap(await hooks().openMergeRequest(name, props, "~1"));
     expect(provisional).toMatchObject({
       id: "~1", title: "Draft: Feature", draft: true, state: "opened", source: { branch: "feature" }, target: { branch: "main" },
@@ -592,7 +632,7 @@ describe("merge requests", () => {
     refusal = 405;
     const blocked = await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest", ["133", {}], DESC));
     await expect(unwrap(await hooks().applyAction(name, props, blocked.approvalId)))
-      .rejects.toThrow(/pipeline has not passed yet; pipeline status is not available through this connection/);
+      .rejects.toThrow(/pipeline has not passed yet; follow it with getDetails\(\)\.ci/);
 
     // It is also the answer for a merge request already merged -- as when this apply retries one
     // whose reply was lost. Merged at the bound head, that merge landed and this apply succeeds;
