@@ -39,7 +39,8 @@ const bob: XUserInfo = {
 /** Submits through the real action set, capturing what the approver would be shown. */
 async function describeAction<K extends keyof XActions>(kind: K, payload: XActions[K]): Promise<ActionDescription> {
   const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
-  const host = { me: async () => me } as unknown as XActionHost;
+  // Every temporary ID counts as created, so an action on a pending post can be described alone.
+  const host = { me: async () => me, refs: { isResolved: () => true } } as unknown as XActionHost;
   const shown: ActionDescription[] = [];
   const queue = { submitAction: async (_id: number, description: ActionDescription) => void shown.push(description) };
   await actions.bind(journal, host).submit(queue as never, kind, payload, { fence: { generation: me.id } });
@@ -138,19 +139,37 @@ describe("descriptions", () => {
     expect(field(previews.at(-1)!, "Reply")).toMatchObject({ value: "My reply" });
   });
 
-  it("redacts private List names from all provider-derived action titles", async () => {
-    const list = { id: "70", info: {
-      id: "70", url: "https://x.com/i/lists/70", name: "Private List title", description: "Private description",
-      private: true, owner: theirPost.author, memberCount: 0, followerCount: 0,
-    } };
+  it("points at a protected account's own pending post by its temporary ID, showing the draft", async () => {
+    const { url: _published, ...unpublished } = theirPost;
+    const mine: XPostInfo = {
+      ...unpublished, id: "~3", text: "My draft", author: { ...theirPost.author, username: "alice", protected: true },
+    };
+    const post = { id: "~3", info: mine };
     for (const preview of await Promise.all([
+      describeAction("like", { post, on: true }),
+      describeAction("deletePost", { post }),
+      describeAction("reply", { ref: "~4", draft: draft("Follow-up"), parent: post, conversationId: "~3", submittedAt: 0 }),
+    ])) {
+      expect(JSON.stringify(preview)).not.toContain("status/~3");
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "your pending post ~3" }));
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "My draft" }));
+    }
+  });
+
+  it("redacts private List names while warning of a List a pending change makes public", async () => {
+    const list = { id: "70", nameRestricted: true as const, info: {
+      id: "70", url: "https://x.com/i/lists/70", name: "Private List title", description: "Private description",
+      private: false, owner: theirPost.author, memberCount: 0, followerCount: 0,
+    } };
+    const previews = await Promise.all([
       describeAction("updateList", { list, changes: { private: false } }),
       describeAction("deleteList", { list }),
       describeAction("listMember", { list, user: bob, add: true }),
-    ])) {
+    ]);
+    for (const preview of previews) {
       expect(JSON.stringify(preview)).not.toMatch(/Private List title|Private description/);
-      expect(preview.title).toContain("X List 70");
     }
+    expect(previews[2].description).toMatch(/X may tell them/);
   });
 
   it("offers only private, reversible actions for auto-approval", async () => {

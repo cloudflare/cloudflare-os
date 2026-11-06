@@ -19,7 +19,9 @@ import type {
 import {
   LIST_FIELDS, POST_FIELDS, USER_FIELDS, XApi, pageQuery, requireData, requirePage, xTime, type XEnvelope,
 } from "./x-api";
-import { MAX_THREAD_POSTS, validateDraft, validateReplyParent, type StoredDraft, type XActions } from "./x-actions";
+import {
+  MAX_THREAD_POSTS, validateDraft, validateReplyParent, type ListTarget, type StoredDraft, type XActions,
+} from "./x-actions";
 import { xUserSubresourceId, type StoredIdentity } from "./x-credentials";
 import { XCursor, type XPage } from "./x-cursor";
 import {
@@ -907,13 +909,17 @@ export class XListImpl extends RpcTarget implements XList {
     await this.#ctx.host.submit(this.#ctx.queue, "listMember", { list, user: toUserInfo(user, false), add });
   }
 
-  /** The owned List an action targets; keep provider privacy despite pending privacy changes. */
-  async #owned(): Promise<{ id: string; info: XListInfo }> {
+  /**
+   * The owned List an action targets. Its name stays out of the preview while X reports the List
+   * private, whatever a pending change would make it; a pending List's name is the workspace's own.
+   */
+  async #owned(): Promise<ListTarget> {
     const { info, restricted } = await readList(this.#ctx, this.#id);
     if (info.owner.id !== (await this.#ctx.host.me()).id) {
       throw new Error("Only Lists the connected account owns can be changed.");
     }
-    return { id: this.#ctx.host.resolve(this.#id), info: restricted && !info.private ? { ...info, private: true } : info };
+    const id = this.#ctx.host.resolve(this.#id);
+    return restricted && !isProvisional(id) ? { id, info, nameRestricted: true } : { id, info };
   }
 }
 

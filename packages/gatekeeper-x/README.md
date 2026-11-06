@@ -99,23 +99,27 @@ See `docs/observers.md`.
 
 Post and List connection cards show only the resource's ID and link, never post text, List names or
 member counts. These descriptions can be seen without read authorization, so private details are
-returned only by session reads subject to the checks above. Old cached Post/List descriptions are
-discarded when described; describing these bindings makes no billed request to X.
+returned only by session reads subject to the checks above. Describing these bindings makes no
+billed request to X, and discards the description an older binding cached in the gatekeeper. The
+Workshop's own copy of that older description, taken when the binding was made, is not refreshed:
+it can still name a protected author or a private List.
 
 Action previews are visible outside read authorization too. Provider-private or unknown-author
 post text and author metadata are redacted, including reply targets and posts quoting or reposting
-protected authors; private List names are replaced by IDs. Caller-supplied drafts and changes stay
-visible for approval. Definitely public provider context can still be shown.
+protected authors; provider-private List names are replaced by IDs, even while a pending change
+would make the List public. What the workspace wrote -- drafts, changes, and the account's own
+pending posts and Lists -- stays visible for approval. Definitely public provider context can
+still be shown.
 
-**Existing writable bindings stay same-X-account-only**, including public-only bindings: historical
-action previews can contain private data without any recorded observation. Newly minted bindings
-carry immutable `redactsActionPreviews: true` props and do not need that legacy fence. A legacy
-binding without a stored pinned identity fails closed. This does not add billed visibility probes.
-The history exporter preserves every legacy `observed:owner` requirement. Without one, an existing
-writable binding whose persistent journal counter shows any action was allocated cannot reconstruct
-its old preview requirements and throws, even if action rows were pruned; an absent counter proves
-no action history. Removing that fence requires historical-log remediation, not merely reconnecting
-or redacting future previews. Do not drop the old binding's protection just by creating a new one.
+Sharing requirements follow data read from X, never data the workspace wrote, so no action or
+draft adds one. **Post and List bindings made before this change are same-X-account-only**, even
+for public reads: the Workshop's copy of their description and their action previews may hold what
+X returned about a private post or List, which only the Workshop can sanitize. Their history export
+is `user/<id>` until it does. This replaces the bound-post/List visibility probe that admitted
+anyone who could see it. Older Account and Profile bindings keep only their recorded legacy private
+reads (`observed:owner`); neither they nor new bindings check the collaborator's credentials in
+`addObserver()` any more. Newly minted bindings carry immutable `redactsActionPreviews: true` props.
+A legacy Post or List binding without a stored pinned identity fails closed.
 
 ## Troubleshooting
 

@@ -170,11 +170,10 @@ touches `workshop-backend` or `workshop-shared`: gatekeepers are discovered from
   submit, apply and reject invalidate caches but never edit them.
 
 - **One observer rule for all four bindings: public, or the owner's.** Public posts and profiles
-  are readable by any collaborator with their own X account, which observers must connect anyway.
-  Bookmarks, likes, mute state, private Lists and anything written by a protected account are
-  **owner-private**: only an observer connected as the *same* X user may see them — which is
-  exactly a team sharing a brand account. Strategy C over one synthetic collection, with a
-  per-binding baseline check (§7).
+  report no subresources, so the gatekeeper restricts no collaborator from them (the Workshop still
+  asks each for an X account). Bookmarks, likes, mute state, private Lists and anything written by
+  a protected account are **owner-private**: they report `user/<id>`, the pinned X user, which only
+  an observer connected as the *same* X user may see — exactly a team sharing a brand account (§7).
 
 - **Rate limits and exhausted credits are their own errors.** Neither is a credential failure and
   neither ever reaches `credentialsExpired`; both messages are display-safe and say when to retry,
@@ -787,22 +786,22 @@ is not account-free admission. Owner-private reads still report `user/<id>`; pri
 before conversion retain the tracked `owner` collection, pending or observed, which admission
 checks as the same X user and `getHistoricalSubresources()` exports unchanged as `user/<id>`.
 
-Action descriptions cross a different, unguarded boundary: the kernel's action log. Future
-previews redact provider-private or unknown-author post text and author metadata/URLs, including
-reply targets and protected quoted/reposted authors, and private List names. Caller-supplied
-drafts/changes remain visible, while definitely public provider context may be displayed. A
-pending privacy change does not declassify provider-private List names.
+Action descriptions cross a different, unguarded boundary: the kernel's action log. Previews
+redact provider-private or unknown-author post text and author metadata/URLs, including reply
+targets and protected quoted/reposted authors, and provider-private List names, which a pending
+privacy change does not declassify. What the workspace wrote -- drafts, changes, and the account's
+own pending posts and Lists -- stays visible, as does definitely public provider context.
 
-Newly minted bindings carry immutable `redactsActionPreviews: true` props. Existing writable
-bindings do not, so `addObserver()` conservatively requires their stored pinned X user, even for
-public-only bindings. A missing pin throws; no billed visibility probe is restored. Historical
-action-only previews might contain private data with no recorded observation, and neither
-redacting future descriptions nor reconnecting fixes the kernel's old log. The journal's
-`x:nextActionId` allocation counter survives pruning and restarts. An absent counter proves no
-action history; a present one without a recorded `owner` requirement leaves the legacy exporter
-unable to reconstruct complete historical requirements, so it throws rather than guessing `[]`
-or inventing a binding requirement. Existing `owner` records still export the pinned user's ID.
-Keep the admission fence until historical logs are remediated and a complete import is committed.
+Sharing requirements follow data read from X, never actions or drafts the workspace wrote, so an
+action alone adds none and the action journal is never consulted. Newly minted bindings carry
+immutable `redactsActionPreviews: true` props. A Post or List binding minted before them has two
+copies of what X returned beyond the facet's reach: the description the kernel took at creation
+(`Post by @author`, a List's name), which it never refreshes, and its action previews. Either may
+name a protected author or a private List, so `addObserver()` admits only observers connected as
+its pinned X user and `getHistoricalSubresources()` exports `user/<id>`, until the kernel
+sanitizes both; a missing pin throws. This replaces the old bound-post/List probe, so it is a new
+restriction for collaborators on other X accounts. Older Account and Profile bindings export only
+a recorded `owner` read.
 
 Why not D, as Spotify is: X's likes have been private since 2024, bookmarks always were, and a
 protected account's posts exist to be seen only by approved followers — a shared gadget
@@ -950,7 +949,7 @@ the account's posts), `XPost.subscribeReplies(hook)` for the account's own posts
 `MAX_IMAGE_BYTES` 5 MiB; `PENDING_MEDIA_BYTES` 64 MiB; `TEXT_LIMIT` 280 and
 `TEXT_LIMIT_PREMIUM` 25,000; `URL_WEIGHT` 23; `RECONCILE_LOOKBACK` 5 posts; `POST_TTL_MS` 5 min,
 `USER_TTL_MS` 1 h, `LIST_TTL_MS` 15 min, `PAGE_TTL_MS` 60 s, `IDENTITY_TTL_MS` 24 h,
-`VERDICT_TTL_MS` 1 h; `OWNED_LISTS_UI_TTL_MS` 5 min; `DEFAULT_DAILY_READ_LIMIT` 2,000 (overridden
+`OWNED_LISTS_UI_TTL_MS` 5 min; `DEFAULT_DAILY_READ_LIMIT` 2,000 (overridden
 by `X_DAILY_READ_LIMIT`); `PROFILE_TABS` and `RESERVED_FIRST_SEGMENTS` (§4); the field and
 expansion sets of §2.
 

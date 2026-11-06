@@ -62,8 +62,12 @@ export type StoredDraft = {
 /** The post an action targets: its ID (possibly temporary), and what was read of it when staged. */
 export type PostTarget = { id: string; info: XPostInfo };
 
-/** The List an action targets. */
-export type ListTarget = { id: string; info: XListInfo };
+/**
+ * The List an action targets. `nameRestricted` marks a List X reports private (or would be, with a
+ * pending change), whose provider-supplied name must stay out of the preview; it is kept apart from
+ * `info.private`, which carries the simulated privacy the preview's warnings describe.
+ */
+export type ListTarget = { id: string; info: XListInfo; nameRestricted?: true };
 
 /**
  * What a send recorded just before it went to X: when; for a post, the media it attached; for a
@@ -335,20 +339,33 @@ function linkNote(drafts: readonly StoredDraft[]): string {
     : "";
 }
 
+/**
+ * Whether a preview may show what X returned about the post. Action descriptions are visible
+ * through the action log without observation authorization, so a protected or unknown-privacy
+ * author's post is redacted; a pending post is the workspace's own draft, never provider data.
+ */
+function showsPost(target: PostTarget): boolean {
+  return isProvisional(target.id) || !mentionsProtectedAuthor([target.info]);
+}
+
+/** Where a preview points for a post: the pending draft by its temporary ID, or the post on X. */
+function postLink(target: PostTarget): string {
+  if (isProvisional(target.id)) return `your pending post ${target.id}`;
+  return showsPost(target) ? target.info.url ?? postUrl(target.id) : postUrl(target.id);
+}
+
 function targetFields(builder: ActionDescriptionBuilder, post: PostTarget): ActionDescriptionBuilder {
-  builder.inline("Post", mentionsProtectedAuthor([post.info]) ? postUrl(post.id)
-    : post.info.url ?? `your pending post ${post.id}`);
-  // Action descriptions are visible through the action log without observation authorization.
-  if (!mentionsProtectedAuthor([post.info]) && post.info.text) builder.verbatim("Post text", post.info.text);
+  builder.inline("Post", postLink(post));
+  if (showsPost(post) && post.info.text) builder.verbatim("Post text", post.info.text);
   return builder;
 }
 
-const post = (target: PostTarget) => mentionsProtectedAuthor([target.info])
-  ? "a protected or unverified X account" : handle(target.info.author.username);
+const post = (target: PostTarget) => showsPost(target)
+  ? handle(target.info.author.username) : "a protected or unverified X account";
 
-/** Private List names, unlike their numeric IDs, cannot appear in unguarded action logs. */
+/** A List's provider-private name, unlike its numeric ID, cannot appear in unguarded action logs. */
 function listLabel(target: ListTarget): string {
-  return target.info.private ? `X List ${target.id}` : `X List "${target.info.name}"`;
+  return target.nameRestricted ? `X List ${target.id}` : `X List "${target.info.name}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -726,11 +743,8 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       const builder = buildDescription(`Reply on X as ${handle(me.username)} to a post by ` +
         `${post(payload.parent)}.${linkNote([payload.draft])}`);
-      builder.inline("Replying to", mentionsProtectedAuthor([payload.parent.info]) ? postUrl(payload.parent.id)
-        : payload.parent.info.url ?? `your pending post ${payload.parent.id}`);
-      if (!mentionsProtectedAuthor([payload.parent.info]) && payload.parent.info.text) {
-        builder.verbatim("Their post", payload.parent.info.text);
-      }
+      builder.inline("Replying to", postLink(payload.parent));
+      if (showsPost(payload.parent) && payload.parent.info.text) builder.verbatim("Their post", payload.parent.info.text);
       addDraftFields(builder, payload.draft, "Reply");
       return {
         title: sanitizeTitle(`Reply on X to ${post(payload.parent)} as @${me.username}`),

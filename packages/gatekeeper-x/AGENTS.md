@@ -25,12 +25,14 @@ by accident:
   there; private data belongs behind session read authorization.
 - Action descriptions are also unguarded disclosures: redact private/unknown-author post text,
   author metadata and author-bearing URLs, including quoted/reposted posts and reply targets;
-  redact private List names even while a pending change would make the List public. New bindings
-  carry immutable `redactsActionPreviews: true`. Older writable bindings remain same-pinned-user-only
-  (missing pins throw), since historical action-only logs may have no `observed:owner` record.
-  Preserve/export that record when present; without it, a legacy journal allocation counter means
-  history is ambiguous even after pruning, so the read-only exporter must throw rather than return
-  `[]`. Only an absent counter proves no historical action. Never infer history from current data.
+  redact provider-private List names even while a pending change would make the List public.
+  Never redact what the workspace wrote (drafts, changes, its own pending posts and Lists).
+- Sharing requirements follow data read from X, never actions or drafts the workspace wrote. New
+  bindings carry immutable `redactsActionPreviews: true`. Older Post/List bindings remain
+  same-pinned-user-only and export `user/<pinned X user ID>` (missing pins throw), because the
+  Workshop's copy of their description and their action previews may hold private post/List
+  details until the Workshop sanitizes them. Older Account and Profile bindings export only a
+  recorded `observed:owner` read.
 - Publishing is `claimBeforeApply`, and a send whose outcome X never reported is reconciled inline on
   the next apply (an attempt marker, then a look at the account's posts from around the attempt,
   binding only a unique match on text, links, media and reply parent), because the kit's

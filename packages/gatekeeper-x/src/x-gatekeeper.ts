@@ -119,13 +119,16 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     kv: this.ctx.storage.kv,
     collectionPrefix: OBSERVED_PREFIX,
     verifyBaseline: async verifier => {
-      // Old action-only logs can contain private provider data without an observed:owner marker.
-      // Their descriptions live in the kernel, beyond this facet's ability to redact or enumerate.
-      // Only immutable new-binding props prove none were submitted; a missing old pin must throw.
-      if (this.ctx.props.redactsActionPreviews !== true && this.ctx.props.resourceKind !== "profile"
+      // A Post or List binding minted before descriptions and action previews were redacted left
+      // what X returned about its post or List -- a protected author's handle, a private List's
+      // name -- in the Workshop's copy of its description and in its action log, beyond this facet's
+      // reach. Only the pinned X user may see those until the Workshop sanitizes them, as
+      // getHistoricalSubresources() exports.
+      if (this.ctx.props.redactsActionPreviews !== true
+          && (this.ctx.props.resourceKind === "post" || this.ctx.props.resourceKind === "list")
           && !await this.#isPinnedUser(verifier)) {
-        throw new Error("This X binding may have private historical action previews. Only a " +
-          "collaborator connected as the same X account can observe it.");
+        throw new Error("This X binding holds details X returned about a post or List that may be " +
+          "private. Only a collaborator connected as the same X account can observe it.");
       }
     },
     hasCollectionAccess: async (verifier, ids) => {
@@ -289,9 +292,9 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   }
 
   /**
-   * Preserves same-user admission for legacy writable bindings, whose action logs may contain
-   * private provider data. New bindings need no baseline credential check here; the Workshop still
-   * requires an account/verifier choice. Recorded legacy owner reads remain checked in either case.
+   * Keeps the legacy admission checks: recorded `owner` reads, and for a Post or List binding minted
+   * before redaction, the same X user (see `verifyBaseline`). New bindings need no baseline check
+   * here; the Workshop still requires an account/verifier choice.
    */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
@@ -320,21 +323,18 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   }
 
   /**
-   * Exports recorded legacy owner reads as the pinned X user's `user/<id>`. An old writable binding's
-   * persistent action counter outlives its journal rows, so its absence proves no action was staged.
-   * With a counter but no recorded owner requirement, private previews cannot be reconstructed from
-   * this facet: fail rather than invent history or return an incomplete empty export.
+   * Exports what legacy state requires as the pinned X user's `user/<id>`: recorded `owner` reads,
+   * and a Post or List binding minted before redaction, whose Workshop-held description and action
+   * previews may hold what X returned about a private post or List. Everything else exports `[]`:
+   * requirements follow data read from X, never actions or drafts the workspace wrote.
    */
   async getHistoricalSubresources(): Promise<string[]> {
-    if (this.ctx.storage.kv.get(`${OBSERVED_PREFIX}${OWNER_COLLECTION}`) !== undefined) {
-      return [xUserSubresourceId(this.#pinnedUserId())];
-    }
-    if (this.ctx.props.redactsActionPreviews !== true && this.ctx.props.resourceKind !== "profile"
-        && this.ctx.storage.kv.get("x:nextActionId") !== undefined) {
-      throw new Error("This X binding has historical action previews whose private requirements " +
-        "cannot be reconstructed. Same-account observer admission must remain in place.");
-    }
-    return [];
+    const props = this.ctx.props;
+    const legacyDetails = props.redactsActionPreviews !== true
+      && (props.resourceKind === "post" || props.resourceKind === "list");
+    return legacyDetails || this.ctx.storage.kv.get(`${OBSERVED_PREFIX}${OWNER_COLLECTION}`) !== undefined
+      ? [xUserSubresourceId(this.#pinnedUserId())]
+      : [];
   }
 
   // -- the connection ----------------------------------------------------------------------

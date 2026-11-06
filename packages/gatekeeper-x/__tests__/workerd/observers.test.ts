@@ -204,29 +204,47 @@ describe("addObserver", () => {
     expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
   });
 
-  it.each(["account", "post", "list"] as const)("keeps legacy %s action-only logs same-account-only", async resourceKind => {
+  it.each(["post", "list"] as const)("keeps a legacy %s binding same-account-only, actions or not", async resourceKind => {
     const x = new FakeX().install();
     const userObjectId = await seedAccount(x);
-    const props: GatekeeperProps = resourceKind === "post" ? { userObjectId, resourceKind, postId: "5" }
-      : resourceKind === "list" ? { userObjectId, resourceKind, listId: "5" } : { userObjectId, resourceKind };
+    const props: GatekeeperProps = resourceKind === "post"
+      ? { userObjectId, resourceKind, postId: "5" } : { userObjectId, resourceKind, listId: "5" };
     const name = crypto.randomUUID();
     await hooks().putStorage(name, props, "pinnedUserId", ALICE.id);
-    // The action rows may have been pruned; the persistent allocation counter never is.
-    await hooks().putStorage(name, props, "x:nextActionId", 2);
     const bob = await seedAccount(x, BOB);
     const owner = await seedAccount(x, ALICE);
     for (let attempt = 0; attempt < 2; attempt++) {
-      expect(failure(await hooks().addObserver(name, props, "bob", bob))).toMatch(/historical action previews/);
+      expect(failure(await hooks().addObserver(name, props, "bob", bob))).toMatch(/details X returned about a post or List/);
       unwrap(await hooks().addObserver(name, props, "owner", owner));
-      expect(failure(await hooks().historicalSubresources(name, props))).toMatch(/cannot be reconstructed/);
+      expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([ALICE_USER]);
       await hooks().restart(name);
     }
     expect(x.requests).toHaveLength(0);
-    await hooks().putStorage(name, props, "observed:owner", "pending");
-    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([ALICE_USER]);
   });
 
-  it("fails closed for a legacy writable binding with no stored identity", async () => {
+  it.each(["account", "profile"] as const)("admits other X users to a legacy %s binding with action history", async resourceKind => {
+    const x = new FakeX().install();
+    const userObjectId = await seedAccount(x);
+    const props: GatekeeperProps = resourceKind === "profile"
+      ? { userObjectId, resourceKind, username: "bob" } : { userObjectId, resourceKind };
+    const name = crypto.randomUUID();
+    await hooks().putStorage(name, props, "pinnedUserId", ALICE.id);
+    // An allocated action proves nothing was read from X; drafts are the workspace's own.
+    await hooks().putStorage(name, props, "x:nextActionId", 2);
+    unwrap(await hooks().addObserver(name, props, "bob", await seedAccount(x, BOB)));
+    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
+    expect(x.requests).toHaveLength(0);
+  });
+
+  it("admits other X users to a legacy account binding that never pinned its X user", async () => {
+    const x = new FakeX().install();
+    const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "account" };
+    const name = crypto.randomUUID();
+    unwrap(await hooks().addObserver(name, props, "bob", await seedAccount(x, BOB)));
+    expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
+  });
+
+  it("fails closed for a legacy Post binding with no stored identity", async () => {
     const x = new FakeX().install();
     const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "post", postId: "5" };
     expect(failure(await hooks().addObserver(crypto.randomUUID(), props, "owner", await seedAccount(x, ALICE))))
@@ -238,7 +256,8 @@ describe("addObserver", () => {
     const x = new FakeX().install();
     const author = privacy === "protected" ? CAROL : BOB;
     x.following.add(`${ALICE.id}:${CAROL.id}`);
-    const post = x.post(author, "Provider source text");
+    // Mentioning the account makes the post one X takes an API reply to.
+    const post = x.post(author, "Provider source text @alice");
     if (privacy === "unknown") x.on("GET", /^\/2\/tweets\//, () => json({
       data: post, includes: { users: [{ id: author.id, username: author.username, name: author.name }] },
     }));
@@ -249,14 +268,18 @@ describe("addObserver", () => {
     const bob = await seedAccount(x, BOB);
     unwrap(await hooks().addObserver(name, props, "bob", bob));
     unwrap(await hooks().run(name, props, [["bookmark"]]));
+    unwrap(await hooks().run(name, props, [["reply", { text: "My reply" }]]));
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual([]);
-    const preview = JSON.stringify(log.submitted[0].description);
-    if (privacy === "public") expect(preview).toContain("Provider source text");
-    else {
-      expect(preview).not.toContain("Provider source text");
-      expect(preview).not.toContain(`@${author.username}`);
-      expect(preview).not.toContain(`x.com/${author.username}`);
+    expect(log.submitted).toHaveLength(2);
+    for (const { description } of log.submitted) {
+      const preview = JSON.stringify(description);
+      if (privacy === "public") expect(preview).toContain("Provider source text");
+      else {
+        expect(preview).not.toContain("Provider source text");
+        expect(preview).not.toContain(`@${author.username}`);
+        expect(preview).not.toContain(`x.com/${author.username}`);
+      }
     }
     expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
     expect(x.requests).toHaveLength(1);
@@ -275,9 +298,8 @@ describe("addObserver", () => {
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual([]);
     expect(JSON.stringify(log.submitted)).not.toContain("Private List title");
-    expect(log.submitted.map(({ description }) => description.title)).toEqual([
-      "Change the X List 5", "Add @bob to the X List 5", "Delete the X List 5",
-    ]);
+    // The pending change makes the List public, so X may notify the member being added.
+    expect(log.submitted[1].description.description).toMatch(/X may tell them/);
   });
 
   it.each([["observed", "observed"], ["pending", "pending"], ["legacy true", true]] as const)(
@@ -315,7 +337,9 @@ describe("getHistoricalSubresources", () => {
   it("exports nothing for a binding that recorded no private read, whatever it reads now", async () => {
     const x = new FakeX().install();
     x.lists.set("5", { id: "5", name: "Mine", private: true, owner_id: ALICE.id, member_count: 0 });
-    const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "list", listId: "5" };
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x), resourceKind: "list", listId: "5", redactsActionPreviews: true,
+    };
     const name = crypto.randomUUID();
     expect(unwrap(await hooks().historicalSubresources(name, props))).toEqual([]);
     unwrap(await hooks().run(name, props, [["getInfo"]]));

@@ -22,16 +22,18 @@ One per connected account.
 One per binding.
 
 New bindings are minted with immutable `redactsActionPreviews: true` props. Its absence is legacy
-state, never inferred from current contents or added to an existing binding. Old writable bindings
-retain same-pinned-X-user observer admission for potentially private action-log history; missing
-identity fails closed. This protection is independent of the legacy read tracker below.
+state, never inferred from current contents or added to an existing binding. A legacy Post or List
+binding's Workshop-held description and action previews may hold what X returned about a private
+post or List, so it admits only observers connected as the pinned X user, and exports
+`user/<pinnedUserId>`; a missing pin fails closed. This is independent of the legacy read tracker
+below.
 
 | Key | Value | Notes |
 |---|---|---|
 | `pinnedUserId` | `string` | The X user the binding was first used as. A connection that comes to name anyone else is refused. Also the action fence, and the `user/<id>` subresource reads private to the account report. |
 | `profileUserId` | `string` | A Profile binding's user, pinned by ID at its first lookup by handle, so a rename cannot redirect the binding. |
 | `description` | `ResourceDescription` | A Profile binding's public description, fetched once because it costs a read. Legacy Post/List descriptions are discarded by `describe()`; their cards show only the bound ID and link, with no X request. |
-| `x:nextActionId`, `x:action:<id>`, `retained:x:action:<id>`, `applied:x:action:` | kit `ActionJournal` records of `XAction` | Pending, failed and retained (applied) actions. Applied actions are kept 30 days for revert, pruned at most every six hours. Every record is fenced on `pinnedUserId`. The allocation counter is never pruned: absent means no action was staged. A legacy writable binding with a counter but no `observed:owner` cannot reconstruct private action-preview history, so its exporter throws; it must not return an incomplete `[]`. |
+| `x:nextActionId`, `x:action:<id>`, `retained:x:action:<id>`, `applied:x:action:` | kit `ActionJournal` records of `XAction` | Pending, failed and retained (applied) actions. Applied actions are kept 30 days for revert, pruned at most every six hours. Every record is fenced on `pinnedUserId`. Observer checks and the history export never read the journal: an action proves nothing was read from X. |
 | `refs:seq:provisional`, `refs:prov:<~N>`, `refs:kind:<~N>` | kit `ProvisionalIds` | Temporary IDs of posts and Lists not yet created, and the IDs X assigned them. |
 | `progress:<actionId>` | `string[]` | The posts a thread has published so far, so a retry resumes rather than reposting. |
 | `attempt:<actionId>:<index>` | `{ at, mediaIds?, existing? }` | A send whose outcome X never reported: a post's, by its index in the thread, with the media it attached, or a List creation's, at index 0, with the matching Lists that were there before its first send. Before sending again the next apply binds the one post or owned List from around `at` that matches what was sent (never one in `existing`); a rejection deletes it (and the thread's `progress:<actionId>`), leaving whatever X already published. Leftovers are swept with housekeeping. |
