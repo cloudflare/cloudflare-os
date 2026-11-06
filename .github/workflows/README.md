@@ -26,7 +26,10 @@ review relay finishes) and `issue_comment`, and never checks out or runs pull re
 [`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
 group events to it; the gate decides a merge group only when the merge queue lists its commit.
 Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact each
-and post nothing. The gate accepts an artifact only from a successful `pull_request` run of the
+and post nothing. They are not in this tree yet: `review-verdict.yml` lands in #972,
+`automerge-proofs.yml` in #987, and `automerge-evidence.yml` in #988. Until then the gate finds no
+run of them and counts every input they would give as absent, so every pull request goes to a
+person. The gate accepts an artifact only from a successful `pull_request` run of the
 expected workflow file on the pull request's head, in this repository, and the run whose latest
 attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
 their smoke runs in workerd, without secrets, in Automerge evidence. A rung 1 proof also counts only
@@ -45,8 +48,10 @@ band the App approves (when `app_approvals_count` is true) and enqueues the pull
 any of these files, or to anything else under `.github/`, always needs a person, with one exception:
 a Dependabot Actions bump that only modifies workflows the gate does not read (none of the producer
 workflows, `risk-review.yml` or `risk-review-trigger.yml`; `GATE_WORKFLOWS` in the script), and whose
-`proof-actions` from `automerge-proofs.yml` holds. That proof requires full-SHA pin swaps by
-Dependabot alone, an allowlisted publisher, and touched workflows that hold no credential.
+`proof-actions` from `automerge-proofs.yml` holds. That proof requires full-SHA pin swaps, an
+allowlisted publisher, and touched workflows that hold no credential. For both Dependabot routes
+(this one and `proof-deps`), the gate itself also requires every commit on the pull request to be
+authored by `dependabot[bot]`, committed by `web-flow` and verified by GitHub.
 
 ### Setup
 
@@ -70,7 +75,10 @@ An organization owner, or a GitHub App manager, does this once.
    its source (GitHub needs a recent check run from the app to offer it), and add a merge queue.
    Before relying on App approvals, approve a real draft pull request as the App and confirm the
    ruleset counts it, then set `app_approvals_count`. Stale-approval dismissal is not needed: the
-   gate counts only approvals of the head commit.
+   gate counts only approvals of the head commit. Bonk need not become a required check: the gate
+   reads both reviewers' verdicts itself, and an AI-scored band merges nothing unless both are
+   present, `ok`, from the band's reviewer configuration, free of P0 and P1 findings and
+   `NEEDS-A-PERSON`, and at or above its threshold. Rung 1 merges only on proofs.
 4. **Actions settings.** Leave *Allow GitHub Actions to create and approve pull requests* off;
    otherwise a pull request's own workflow could approve it.
 

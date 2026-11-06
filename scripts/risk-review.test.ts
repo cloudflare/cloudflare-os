@@ -23,6 +23,7 @@ import {
   type Policy,
   type PullDecision,
   type PullInputs,
+  type PullCommit,
   type PullRequest,
   type Review,
 } from "./risk-review.ts";
@@ -70,9 +71,18 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     head: { sha: HEAD },
     base: { sha: BASE, ref: "main" },
     changed_files: 1,
+    commits: 1,
     ...overrides,
   };
 }
+
+/** A commit Dependabot made and pushed, as `pulls.listCommits` returns one. */
+const DEPENDABOT_COMMIT: PullCommit = {
+  sha: "d".repeat(40),
+  author: { login: "dependabot[bot]", type: "Bot" },
+  committer: { login: "web-flow", type: "User" },
+  commit: { verification: { verified: true } },
+};
 
 let ids = 0;
 function review(login: string, state: string, overrides: Partial<Review> = {}): Review {
@@ -133,11 +143,14 @@ interface HarnessOptions {
   pulls?: PullRequest[];
   files?: Record<number, ChangedFile[]>;
   reviews?: Record<number, Review[]>;
+  commits?: Record<number, PullCommit[]>;
   comments?: Record<number, Comment[]>;
   reviewDecision?: Record<number, string | null>;
   runs?: ProducerRun[];
   /** Makes reading reviews fail, as an API outage would. */
   broken?: true;
+  /** Makes GitHub refuse the enqueue, as it does while required checks are running. */
+  enqueueRefused?: true;
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
   lastPush?: string | undefined;
@@ -187,6 +200,7 @@ function harness(options: HarnessOptions = {}) {
           return page(options.reviews?.[args.pull_number] ?? [], args);
         },
         listReviewComments: async (args) => page([], args),
+        listCommits: async (args) => page(options.commits?.[args.pull_number] ?? [DEPENDABOT_COMMIT], args),
         createReview: async ({ commit_id }) => {
           calls.approvals.push(commit_id);
           return {};
@@ -251,6 +265,7 @@ function harness(options: HarnessOptions = {}) {
     },
     graphql: async (query, variables): Promise<Json> => {
       if (query.includes("enqueuePullRequest")) {
+        if (options.enqueueRefused) throw new Error("Pull request is not mergeable: required status checks are pending");
         calls.enqueued.push({ id: variables.id, head: variables.head });
         return { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_1" } } };
       }
@@ -334,6 +349,7 @@ function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
     lastPush: PUSHED,
     reviewDecision: "REVIEW_REQUIRED",
     producers: {},
+    commits: [DEPENDABOT_COMMIT],
     ...overrides,
   };
 }
@@ -529,6 +545,34 @@ describe("decide", () => {
       }
       assert.equal(decide(inputs({ ...ok, files: [...ciOnly, file(".github/dependabot.yml")], pull: { ...ciPull, changed_files: 2 } }), policy, NOW).would.decision, "person");
       assert.equal(decide(inputs({ ...ok, files: ciOnly, pull: { ...ciPull, changed_files: 2 } }), policy, NOW).would.decision, "person");
+    });
+
+    it("needs every commit to be a verified Dependabot commit, on both Dependabot routes", async () => {
+      // Recorded: #993, where a maintainer pushed an unverified commit onto Dependabot's verified one.
+      const pr993 = JSON.parse(read("scripts/risk-review-fixtures/dependabot-pr-993.json"));
+      const commits: PullCommit[] = pr993.commits;
+      const [dependabotCommit] = commits;
+      assert.ok(dependabotCommit);
+      const deps = { artifact: { ...JSON.parse(proofJson("proof-deps", "proof", true)), name: "proof-deps" } };
+      const smoke = { artifact: { ...JSON.parse(proofJson("preview-smoke", "evidence", true)), name: "preview-smoke" } };
+      const both = policyWith(bandsJson("enforce", true, ["low", "medium", "high"].map((band) => ({ area: "proven", band }))));
+      const routes = [
+        { pull: ciPull, files: ciOnly, producers: { "proof-actions": actions(true) } },
+        { pull: ciPull, files: [file("packages/ui/package.json")], producers: { "proof-deps": deps, "preview-smoke": smoke } },
+      ];
+      for (const route of routes) {
+        assert.deepEqual(decide(inputs({ ...route, commits: [dependabotCommit] }), both, NOW).would, proven);
+        const mixed = decide(inputs({ ...route, commits }), both, NOW);
+        assert.equal(mixed.would.decision, "person");
+        assert.match(mixed.would.reasons.join("\n"), /commit ac686c1 is not a verified Dependabot commit/);
+        const unsigned = { ...dependabotCommit, commit: { verification: { verified: false } } };
+        assert.equal(decide(inputs({ ...route, commits: [unsigned] }), both, NOW).would.decision, "person");
+        assert.equal(decide(inputs({ ...route, commits: undefined }), both, NOW).would.decision, "person");
+      }
+      // Past the API's 250-commit listing, the commits count as unlisted.
+      const { calls, evaluate } = harness({ pulls: [pullRequest({ user: { login: "dependabot[bot]", type: "Bot" }, commits: 251 })] });
+      await evaluate("workflow_run", producerCompleted());
+      assert.match(lastRecord(calls).pulls[0]?.would.reasons.join("\n") ?? "", /could not all be listed/);
     });
 
     it("applies to Dependabot only", () => {
@@ -774,11 +818,12 @@ describe("runRiskReview preview smoke", () => {
 });
 
 describe("runRiskReview content rules", () => {
-  const workspace = read("pnpm-workspace.yaml");
+  const workspace = read("scripts/risk-review-fixtures/pnpm-workspace.yaml");
 
   it("allows pnpm-workspace.yaml when only catalog versions change, and keeps every other change with a person", async () => {
     const files = [file("pnpm-workspace.yaml")];
     const bump = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${HEAD}:pnpm-workspace.yaml`]: workspace.replace("zod: ^4.6.7", "zod: ^4.7.0") });
+    assert.match(workspace, /zod: \^4\.6\.7/);
     assert.deepEqual(bump.never_auto, []);
     const age = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace, [`${HEAD}:pnpm-workspace.yaml`]: `${workspace}minimumReleaseAge: 1\n` });
     assert.match(age.never_auto.join("\n"), /supply-chain/);
@@ -850,8 +895,8 @@ describe("runRiskReview proof freshness", () => {
   };
   const recorded = JSON.parse(read("scripts/risk-review-fixtures/dependabot-actions-621.json"));
   const ciOnly: ChangedFile[] = recorded.files.filter(({ filename }: ChangedFile) => filename === ".github/workflows/ci.yml");
-  const ci = read(".github/workflows/ci.yml");
-  const workspace = read("pnpm-workspace.yaml");
+  const ci = "name: CI\non: pull_request\npermissions:\n  contents: read\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n";
+  const workspace = read("scripts/risk-review-fixtures/pnpm-workspace.yaml");
   const bot = { login: "dependabot[bot]", type: "Bot" };
   const queued = [pullRequest({ number: 939, head: { sha: "9".repeat(40) } }), pullRequest({ number: 943, user: bot })];
   const policyAt = (sha: string) => ({
@@ -939,6 +984,17 @@ describe("runRiskReview proof freshness", () => {
 });
 
 describe("runRiskReview in enforce mode", () => {
+  it("keeps the published check when GitHub refuses the enqueue, and tries again when CI finishes", async () => {
+    const bands = bandsJson("enforce", true, [{ area: "scored", band: "low" }]);
+    const refused = harness({ policy: { bands }, runs: [verdicts()], enqueueRefused: true });
+    await assert.rejects(refused.evaluate("workflow_run", producerCompleted()), /required status checks are pending/);
+    assert.deepEqual(refused.calls.updates.map(({ conclusion }) => conclusion), ["success"]);
+    assert.ok(/workflows: \[[^\]]*\bCI\b/.test(gateWorkflow), "CI's completion wakes the gate");
+    const retried = harness({ policy: { bands }, runs: [verdicts()] });
+    await retried.evaluate("workflow_run", producerCompleted());
+    assert.equal(retried.calls.enqueued.length, 1);
+  });
+
   it("approves the head and enqueues it for an open band when App approvals count", async () => {
     const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, [{ area: "scored", band: "low" }]) }, runs: [verdicts()] });
     await evaluate("workflow_run", producerCompleted());

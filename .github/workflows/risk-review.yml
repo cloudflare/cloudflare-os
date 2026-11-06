@@ -23,7 +23,9 @@ name: Risk review
 # the App. There is no fallback to the job token, whose check runs any workflow could forge.
 on:
   workflow_run:
-    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison]
+    # CI runs the required checks: when it finishes last, the gate tries again the enqueue GitHub
+    # refused while they were running.
+    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, CI]
     types: [completed]
   issue_comment:
     types: [created, deleted]

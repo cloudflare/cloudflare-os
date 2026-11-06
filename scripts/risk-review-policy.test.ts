@@ -215,7 +215,7 @@ describe("classifyChangeset areas", () => {
 });
 
 describe("isCatalogVersionBump", () => {
-  const base = readFileSync(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8");
+  const base = readFileSync(new URL("./risk-review-fixtures/pnpm-workspace.yaml", import.meta.url), "utf8");
 
   it("accepts a change to an existing catalog entry's version", () => {
     assert.equal(isCatalogVersionBump(base, base.replace("zod: ^4.6.7", "zod: ^4.7.0")), true);
@@ -257,6 +257,11 @@ describe("addedClassDeletions", () => {
   });
 });
 
+/** A package.json declaring zod at `spec`. */
+function manifest(spec: string): string {
+  return JSON.stringify({ dependencies: { zod: spec } });
+}
+
 describe("addedDependencies", () => {
   it("lists dependencies the head declares and the base does not, ignoring workspace packages", () => {
     const before = JSON.stringify({ dependencies: { zod: "catalog:" } });
@@ -272,6 +277,15 @@ describe("addedDependencies", () => {
   it("fails closed on a manifest it cannot read", () => {
     assert.equal(addedDependencies("{}", "{"), undefined);
     assert.equal(addedDependencies("{}", JSON.stringify({ dependencies: ["zod"] })), undefined);
+  });
+
+  it("counts a spec changed to anything that can name another package as added", () => {
+    for (const spec of ["npm:evil-zod@4.7.0", "github:evil/zod", "https://evil.example/zod.tgz", "file:../zod", "link:../zod", "latest"]) {
+      assert.deepEqual(addedDependencies(manifest("^4.6.7"), manifest(spec)), ["zod"], spec);
+    }
+    for (const spec of ["^4.7.0", "4.7.0", "~4.7", ">=4.6.7 <5", "4.x", "5.0.0-beta.1", "catalog:", "catalog:next", "workspace:*"]) {
+      assert.deepEqual(addedDependencies(manifest("^4.6.7"), manifest(spec)), [], spec);
+    }
   });
 });
 

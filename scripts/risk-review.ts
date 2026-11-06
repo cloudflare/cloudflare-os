@@ -231,6 +231,32 @@ export interface PullRequest {
   base: { sha: string; ref: string };
   /** Files changed, which can exceed what `pulls.listFiles` will list. */
   changed_files: number;
+  /** Commits, which can exceed what `pulls.listCommits` will list (250). */
+  commits: number;
+}
+
+/** A commit on a pull request, as `pulls.listCommits` returns it. */
+export interface PullCommit {
+  sha: string;
+  /** The GitHub account of the commit's author, or `null` when its email matches none. */
+  author: GitHubUser | null;
+  committer: GitHubUser | null;
+  commit: { verification?: { verified: boolean } | null };
+}
+
+/**
+ * Why a Dependabot pull request's commits are not all Dependabot's own, or `undefined` when they
+ * are. A commit counts only when GitHub verified its signature and links its author to
+ * `dependabot[bot]` and its committer to `web-flow`, which signs what Dependabot pushes; commit
+ * emails alone can be written by anyone who can push to the branch.
+ *
+ * @param commits Every commit on the pull request, or `undefined` when they could not all be listed.
+ */
+export function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
+  if (commits === undefined) return "its commits could not all be listed";
+  const other = commits.find(({ author, committer, commit }) =>
+    author?.login !== DEPENDABOT || committer?.login !== "web-flow" || commit.verification?.verified !== true);
+  return other && `commit ${other.sha.slice(0, 7)} is not a verified Dependabot commit`;
 }
 
 /** A pull request review. */
@@ -261,6 +287,8 @@ export interface PullInputs {
   lastPush: string | undefined;
   reviewDecision: string | null;
   producers: Partial<Record<ProducerName, ProducerInput>>;
+  /** Every commit, for a pull request Dependabot opened; `undefined` otherwise or when unlisted. */
+  commits: PullCommit[] | undefined;
 }
 
 /** A producer input as the decision record shows it. */
@@ -429,7 +457,11 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const { pull } = inputs;
   const author = pull.user ?? undefined;
   const authorLogin = author?.login ?? "";
-  const dependabot = authorLogin === DEPENDABOT && author?.type === "Bot";
+  const dependabotAuthor = authorLogin === DEPENDABOT && author?.type === "Bot";
+  const commitProblem = dependabotAuthor ? dependabotCommitsError(inputs.commits) : undefined;
+  // Someone who can push to a Dependabot branch keeps its author, so both Dependabot routes also
+  // need every commit to be Dependabot's.
+  const dependabot = dependabotAuthor && commitProblem === undefined;
   const classification = classifyChangeset({
     files: inputs.files,
     listed: inputs.files.length >= pull.changed_files,
@@ -451,14 +483,15 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   if (touchesWorkerConfig && !holding(inputs.producers["proof-migrations"])) {
     common.push("changes a Worker config, and the migration proof does not hold");
   }
-  const proven = dependabot
-    ? depsProven || classification.workflowBump
+  const proven = dependabotAuthor
+    ? dependabot && (depsProven || classification.workflowBump)
     : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name]));
   const candidates: Area[] = [];
   if (proven) candidates.push("proven");
   if (maintainer) candidates.push(classification.area);
-  else if (!dependabot) common.push("the author is not a maintainer");
-  if (dependabot && !proven) {
+  else if (!dependabotAuthor) common.push("the author is not a maintainer");
+  if (commitProblem) common.push(`a Dependabot pull request needs only Dependabot's commits: ${commitProblem}`);
+  else if (dependabotAuthor && !proven) {
     common.push("a Dependabot pull request needs its dependency proof and preview smoke, or its Actions proof, to hold");
   }
 
@@ -599,6 +632,7 @@ export interface GitHubClient {
       listFiles(args: PullRef & Page): Promise<{ data: ChangedFile[] }>;
       listReviews(args: PullRef & Page): Promise<{ data: Review[] }>;
       listReviewComments(args: PullRef & Page): Promise<{ data: Comment[] }>;
+      listCommits(args: PullRef & Page): Promise<{ data: PullCommit[] }>;
       createReview(args: PullRef & { commit_id: string; event: "APPROVE"; body: string }): Promise<object>;
       dismissReview(args: PullRef & { review_id: number; message: string }): Promise<object>;
     };
@@ -909,7 +943,6 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
   return parseProducerArtifact(file.text, { name, headSha: pull.head.sha, baseSha: pull.base.sha });
 }
 
-/** Reads everything the decision needs about one pull request. */
 /**
  * Reads everything the decision needs about one pull request.
  *
@@ -921,7 +954,7 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
   const repo = context.repo;
   const ref = { ...repo, pull_number: pull.number };
   const files = await listAll((page) => github.rest.pulls.listFiles({ ...ref, ...page }));
-  const [facts, reviews, issueComments, reviewComments, lastPush, reviewDecision, producers] = await Promise.all([
+  const [facts, reviews, issueComments, reviewComments, lastPush, reviewDecision, producers, commits] = await Promise.all([
     readFacts(github, repo, pull, files),
     listAll((page) => github.rest.pulls.listReviews({ ...ref, ...page })),
     listAll((page) => github.rest.issues.listComments({ ...repo, issue_number: pull.number, ...page })),
@@ -929,6 +962,7 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     readLastPush(github, repo, pull.head.sha),
     readReviewDecision(github, repo, pull.number),
     readProducers(github, repo, pull),
+    pull.user?.login === DEPENDABOT ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
   ]);
   for (const [name, input] of Object.entries(producers)) {
     // Only a holding proof can count, so only it needs checking.
@@ -937,7 +971,18 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, files, decisionBase });
     if (stale) producers[name] = { absent: stale };
   }
-  return { pull, files, facts, reviews, comments: [...issueComments, ...reviewComments], lastPush, reviewDecision, producers };
+  return {
+    pull,
+    files,
+    facts,
+    reviews,
+    comments: [...issueComments, ...reviewComments],
+    lastPush,
+    reviewDecision,
+    producers,
+    // The API lists at most 250 commits; a longer pull request's commits cannot all be checked.
+    commits: commits && commits.length >= pull.commits ? commits : undefined,
+  };
 }
 
 /** The commit a run posts on, the pull requests it decides, and the commit policy is read at. */
@@ -1118,6 +1163,7 @@ export async function runRiskReview({ github, context, core, app, now = new Date
   });
   const complete = (conclusion: "success" | "failure" | "cancelled", output: { title: string; summary: string }) =>
     github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
+  let enforce: { policy: Policy; pulls: { inputs: PullInputs; decision: PullDecision }[] } | undefined;
   try {
     const policy = await readPolicy(github, repo, target.policySha);
     const pulls = await Promise.all(target.pulls.map(async ({ pull, base }) => {
@@ -1151,14 +1197,17 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     }
     const output = renderOutput(record);
     await complete(record.conclusion, output);
-    if (record.mode === "enforce" && !target.mergeGroup) {
-      for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
-    }
     await core.summary.addRaw(output.summary).write();
+    if (record.mode === "enforce" && !target.mergeGroup) enforce = { policy, pulls };
   } catch (error) {
     // A check run left in progress would hold the commit until some later event; fail it instead.
     const message = error instanceof Error ? error.message : String(error);
     await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${message}` });
     throw error;
   }
+  // After the check is published, so GitHub refusing the enqueue (required checks still running)
+  // fails this run but never the decision. CI's completion starts the run that tries again.
+  if (!enforce) return;
+  const { policy, pulls } = enforce;
+  for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
 }

@@ -408,16 +408,27 @@ function catalogEntry(line: string): { indent: string; key: string } | undefined
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
 /**
- * The dependencies a `package.json` declares in `head` but not in `base`. A `workspace:` dependency
- * names a package in this repository, not a new third-party one, so it is left out.
+ * A spec that names a version of the same package: a version or range, `catalog:` or `workspace:`.
+ * Anything else (`npm:`, `github:`, `file:`, `link:`, a URL or a dist-tag) can bring in another package.
+ */
+const SAME_PACKAGE_SPEC = /^(?:catalog:[\w.-]*|workspace:\S*|(?:[\^~<>=]*\s*(?:\d|x\b|\*))[\w\s.*^~<>=|+-]*)$/;
+
+/**
+ * The dependencies a `package.json` declares in `head` but not in `base`, and those whose spec
+ * changed to one that can name another package. A new `workspace:` dependency names a package in
+ * this repository, not a new third-party one, so it is left out.
  *
- * @returns The new names, or `undefined` when either side is not a JSON object.
+ * @returns The names, or `undefined` when either side is not a JSON object.
  */
 export function addedDependencies(base: string | undefined, head: string | undefined): string[] | undefined {
   const before = base === undefined ? new Map<string, string>() : dependencyMap(base);
   const after = head === undefined ? new Map<string, string>() : dependencyMap(head);
   if (!before || !after) return undefined;
-  return [...after].filter(([name, spec]) => !before.has(name) && !spec.startsWith("workspace:")).map(([name]) => name);
+  return [...after].filter(([name, spec]) => {
+    const was = before.get(name);
+    if (was === undefined) return !spec.startsWith("workspace:");
+    return spec !== was && !SAME_PACKAGE_SPEC.test(spec.trim());
+  }).map(([name]) => name);
 }
 
 /** A JSON value, as `JSON.parse` returns it. */

@@ -24,6 +24,7 @@ export interface MergedPull {
   merged_at: string | null;
   updated_at: string;
   head: { sha: string };
+  base: { ref: string };
   user: { login: string } | null;
 }
 
@@ -140,9 +141,13 @@ export function githubGet(token: string, fetchImpl: typeof fetch = fetch): GitHu
 function asPull(value: Json): MergedPull | undefined {
   const pull = asObject(value);
   const head = asObject(pull?.head)?.sha;
+  const base = asObject(pull?.base)?.ref;
   const user = asObject(pull?.user)?.login;
   const { number, title, body, merged_at, updated_at } = pull ?? {};
-  if (typeof number !== "number" || typeof title !== "string" || typeof head !== "string" || typeof updated_at !== "string") {
+  if (
+    typeof number !== "number" || typeof title !== "string" || typeof head !== "string" || typeof base !== "string" ||
+    typeof updated_at !== "string"
+  ) {
     return undefined;
   }
   return {
@@ -152,6 +157,7 @@ function asPull(value: Json): MergedPull | undefined {
     merged_at: typeof merged_at === "string" ? merged_at : null,
     updated_at,
     head: { sha: head },
+    base: { ref: base },
     user: typeof user === "string" ? { login: user } : null,
   };
 }
@@ -164,11 +170,16 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
   until: Date;
 }): Promise<ReportRow[]> {
   const horizon = until.getTime() + REVERT_WINDOW_DAYS * 86_400_000;
+  const defaultBranch = asObject(await get(`/repos/${repository}`))?.default_branch;
+  if (typeof defaultBranch !== "string") throw new Error(`cannot read ${repository}'s default branch`);
   const merged: MergedPull[] = [];
   for (let page = 1; ; page++) {
     const listed = await get(`/repos/${repository}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
     const pulls = Array.isArray(listed) ? listed.map(asPull) : [];
-    for (const pull of pulls) if (pull?.merged_at && Date.parse(pull.merged_at) <= horizon) merged.push(pull);
+    for (const pull of pulls) {
+      // Only the default branch is gated, so only it gives calibration samples and reverts.
+      if (pull?.merged_at && pull.base.ref === defaultBranch && Date.parse(pull.merged_at) <= horizon) merged.push(pull);
+    }
     const last = pulls.at(-1);
     // Sorted by last update, and a merge is an update, so once a page ends before `since` nothing later merged in the window.
     if (!Array.isArray(listed) || listed.length < 100 || !last || Date.parse(last.updated_at) < since.getTime()) break;
@@ -186,8 +197,14 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
       asObject(entry?.app)?.slug === app && entry?.status === "completed");
     const summary = asObject(run?.output)?.summary;
     const decision = typeof summary === "string" ? readDecision(summary, pull.number) : undefined;
-    const reviewsJson = await get(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100`);
-    const reviews = (Array.isArray(reviewsJson) ? reviewsJson : []).flatMap((value) => {
+    const reviewsJson: Json[] = [];
+    for (let page = 1; ; page++) {
+      const listed = await get(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100&page=${page}`);
+      if (!Array.isArray(listed)) throw new Error(`#${pull.number}'s reviews are not a list`);
+      reviewsJson.push(...listed);
+      if (listed.length < 100) break;
+    }
+    const reviews = reviewsJson.flatMap((value) => {
       const review = asObject(value);
       const user = asObject(review?.user);
       const { login, type } = user ?? {};
