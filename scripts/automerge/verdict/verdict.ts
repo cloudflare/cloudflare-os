@@ -196,7 +196,12 @@ export function prepareInputs(repo: string, workDir: string, name: ModelName, pr
   };
   if (plan.round < ROUND_LIMIT) {
     const range = plan.reviewFromSha === null ? `${pr.baseSha}...${pr.headSha}` : `${plan.reviewFromSha}..${pr.headSha}`;
-    writeFileSync(files.diff, git(repo, ["diff", "--no-ext-diff", "--no-textconv", "--no-color", range]));
+    // The checkout's .gitattributes is the head's, and `-diff` or a binary diff driver there would
+    // print "Binary files differ" in place of removed code. Attributes come from the empty tree,
+    // and `--text` also covers a file the head made look binary with a NUL byte.
+    const emptyTree = git(repo, ["hash-object", "-t", "tree", "/dev/null"]).trim();
+    writeFileSync(files.diff, git(repo, [`--attr-source=${emptyTree}`, "-c", "core.attributesFile=/dev/null", "diff",
+      "--text", "--no-ext-diff", "--no-textconv", "--no-color", range]));
     writeFileSync(files.pullRequest, `# ${pr.title}\n\n${pr.body}\n`);
     writeFileSync(files.prompt, fill(PROMPT_TEMPLATE, {
       round: String(plan.round),

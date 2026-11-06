@@ -159,6 +159,26 @@ describe("prepareInputs and buildVerdict", () => {
     assert.match(readFileSync(join(dir, "prompt.md"), "utf8"), new RegExp(`only the changes from ${first}`));
   });
 
+  it("shows removed code whatever the head's .gitattributes say", () => {
+    const attributes = createTestRepo();
+    try {
+      const before = attributes.commit({ "REVIEW.md": "rules", "src/auth.ts": "checkAccess();\nrun();\n" });
+      attributes.git("config", "diff.hide.binary", "true");
+      attributes.git("config", "diff.hide.textconv", "sh -c true");
+      for (const rule of ["*.ts -diff", "*.ts diff=hide", "*.ts binary", "* -text -diff"]) {
+        const head = attributes.commit({ "REVIEW.md": "rules", "src/auth.ts": "run();\u0000\n", ".gitattributes": `${rule}\n` });
+        const dir = workDir();
+        prepareInputs(attributes.dir, dir, "sol", { headSha: head, baseSha: before, title: "t", body: "" },
+          { round: 1, reviewFromSha: null }, before);
+        const diff = readFileSync(join(dir, "inputs", "diff.patch"), "utf8");
+        assert.match(diff, /^-checkAccess\(\);$/m, rule);
+        assert.doesNotMatch(diff, /Binary files/, rule);
+      }
+    } finally {
+      attributes.remove();
+    }
+  });
+
   it("turns a parsed review into an ok verdict with the fingerprint", () => {
     const dir = workDir();
     prepareInputs(repo.dir, dir, "sol", pr, { round: 2, reviewFromSha: null }, base);
