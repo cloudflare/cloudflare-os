@@ -71,9 +71,16 @@ const SettingChanges = ({ changes }: { changes: AdminSettingChange[] }) => (
   </ul>
 )
 
-// A user's name that filters the log by them, shown whole: the action is cut instead.
+// A user's name that filters the log by them, shown whole: one longer than its column wraps,
+// since the action is the column cut.
 const NameFilter = ({ name, label, onFilter }: { name: string; label: string; onFilter: () => void }) => (
-  <Button variant="ghost" size="sm" className="-ml-2 text-sm" aria-label={label} onClick={onFilter}>
+  <Button
+    variant="ghost"
+    size="sm"
+    className="-ml-2 h-auto w-auto max-w-full whitespace-normal break-all py-0.5 text-left text-sm"
+    aria-label={label}
+    onClick={onFilter}
+  >
     {name}
   </Button>
 )
@@ -128,10 +135,13 @@ const AccessDetails = ({ record, onFilterBy }: {
  * changes or an access record's workspace, reason, level and arguments. An access record's target
  * user is its workspace's owner, the user the call reached. The admin's name and the target user,
  * and in an access record's details its workspace, filter the log by `onFilterBy`. Names are never
- * cut: an action too long for the space left is, whole in its tooltip.
+ * cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the summary
+ * row as Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden or
+ * not, so every summary row is an odd row to it and would never be striped.
  */
-export const AuditLogRow = ({ record, onFilterBy }: {
+export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
+  shaded: boolean
   /** Adds a filter to those set. */
   onFilterBy: (filter: AuditFilter) => void
 }) => {
@@ -140,8 +150,8 @@ export const AuditLogRow = ({ record, onFilterBy }: {
   const time = formatFullTimestamp(record.at)
   return (
     <>
-      <Table.Row>
-        <Table.Cell className="w-0 pr-0">
+      <Table.Row className={shaded ? 'bg-kumo-elevated' : undefined}>
+        <Table.Cell className="pr-0">
           <Button
             variant="ghost"
             size="sm"
@@ -157,7 +167,7 @@ export const AuditLogRow = ({ record, onFilterBy }: {
             />
           </Button>
         </Table.Cell>
-        <Table.Cell className="whitespace-nowrap text-sm text-kumo-subtle">
+        <Table.Cell className="truncate text-sm text-kumo-subtle">
           <time dateTime={record.at.toISOString()} title={record.at.toISOString()}>{time}</time>
         </Table.Cell>
         <Table.Cell>
@@ -167,8 +177,7 @@ export const AuditLogRow = ({ record, onFilterBy }: {
             onFilter={() => onFilterBy({ admin: record.admin })}
           />
         </Table.Cell>
-        {/* Takes what the other columns leave (w-full), and no more (max-w-0), cutting the action. */}
-        <Table.Cell className="w-full max-w-0 font-mono text-xs text-kumo-default">
+        <Table.Cell className="font-mono text-xs text-kumo-default">
           <span className="block truncate" title={record.method}>{record.method}</span>
         </Table.Cell>
         <Table.Cell>

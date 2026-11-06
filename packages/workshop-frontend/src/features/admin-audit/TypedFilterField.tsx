@@ -3,7 +3,7 @@ import { Autocomplete } from '@cloudflare/kumo'
 
 /**
  * A filter typed as a user id, with `suggestions` offered as it is typed in. It applies on Enter or
- * once a suggestion is picked; applying nothing clears it. Once `value` changes from elsewhere (a
+ * once a suggestion is picked; applying nothing clears it, and Escape abandons what was typed. Once `value` changes from elsewhere (a
  * name picked in the log), or `clears` grows (every filter cleared), the field shows `value`,
  * whatever was typed and not applied.
  */
@@ -43,6 +43,13 @@ export const TypedFilterField = ({ label, placeholder, value, clears, suggestion
         items={suggestions}
         value={shown}
         onValueChange={(text, { reason }) => {
+          // Escape, with the list closed, asks to empty the field: it abandons what was typed
+          // instead, showing the filter applied, so the field never says "any" while the log is
+          // filtered.
+          if (reason === 'escape-key') {
+            setTyped({ over: value, clears, text: value ?? '' })
+            return
+          }
           setTyped({ over: value, clears, text })
           if (reason === 'item-press') apply(text)
         }}

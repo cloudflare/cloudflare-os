@@ -7,9 +7,26 @@ import { logRpcFailure } from '../../rpcErrors'
 import { auditQueryOf, isFiltered, type AuditFilter } from './auditFilter'
 import { AuditFilters } from './AuditFilters'
 import { AUDIT_LOG_COLUMNS, AuditLogRow } from './AuditLogRow'
+import { ColumnResizeHandle } from './ColumnResizeHandle'
+import { useColumnWidths } from './useColumnWidths'
 
 /** How many records one page of the Audit tab's log shows. */
 export const AUDIT_PAGE_SIZE = 50
+
+/** Where the log's column widths are kept, per browser. */
+export const AUDIT_COLUMN_WIDTHS_KEY = 'gadgets:workshop:adminAuditColumnWidths'
+
+// The log's resizable columns, by the name each is shown and announced with, and their widths
+// before any is resized, in pixels. Action is not among them: it takes the width left over, at
+// least ACTION_MIN_WIDTH, so that it is the column a narrow log cuts, never a name.
+const RESIZABLE_COLUMNS = {
+  time: 'Time', admin: 'Admin', sensitivity: 'Sensitivity', target: 'Target user',
+} as const
+type ResizableColumn = keyof typeof RESIZABLE_COLUMNS
+// Sized so that, with Action at its least, the log fits the Audit tab at a 1440 px window.
+const DEFAULT_WIDTHS: Record<ResizableColumn, number> = { time: 170, admin: 150, sensitivity: 220, target: 150 }
+const TOGGLE_WIDTH = 48
+const ACTION_MIN_WIDTH = 140
 
 // The answer to one load, for the request it answered (see `request` below).
 type Answer = { request: string } & ({ page: AdminAuditPage } | { failed: true })
@@ -25,24 +42,28 @@ const filterKey = ({ admin, method, sensitivity, workspace, owner }: AuditFilter
  * keeping what is shown until the new page answers; a change of filter starts again from the
  * newest page.
  */
-export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads }: {
+export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads, restarts }: {
   admin: RpcStub<AdminApi>
   filter: AuditFilter
   onFilterChange: (filter: AuditFilter) => void
   /** Admins to offer in the admin filter. */
   adminSuggestions: string[]
-  /** Increases to load the shown page again. */
+  /** Increases to load the shown page again (Refresh), staying on it. */
   reloads: number
+  /** Increases to load the newest page (after a settings change, whose own record is there and
+   * whose retention may have removed the pages turned to). */
+  restarts: number
 }) => {
   const key = filterKey(filter)
-  // The cursors of the pages turned to under the current filter, oldest page last. Forgotten as
-  // soon as the filter changes, during that render, so that coming back to an earlier filter
-  // starts again from its newest page.
-  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: key, cursors: [] })
-  if (turned.filter !== key) setTurned({ filter: key, cursors: [] })
+  // The cursors of the pages turned to under the current filter and restart, oldest page last.
+  // Forgotten as soon as either changes, during that render, so that coming back to an earlier
+  // filter starts again from its newest page.
+  const turnedUnder = JSON.stringify([key, restarts])
+  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: turnedUnder, cursors: [] })
+  if (turned.filter !== turnedUnder) setTurned({ filter: turnedUnder, cursors: [] })
   const [retries, setRetries] = useState(0)
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const cursors = turned.filter === key ? turned.cursors : []
+  const cursors = turned.filter === turnedUnder ? turned.cursors : []
   const cursor = cursors.at(-1)
   // Everything a load depends on, so that an answer to an earlier one is told apart.
   const request = JSON.stringify([key, cursor ?? null, reloads, retries])
@@ -68,7 +89,16 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   const failed = answer !== null && 'failed' in answer && !busy
   const nextCursor = page?.nextCursor
   const pageNumber = cursors.length + 1
-  const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
+  // A row's name or workspace button is gone once the filtered page replaces the row, so focus goes
+  // to the filter field that now shows the choice (the admin field for a workspace, whose chip comes
+  // and goes) rather than drop to the page.
+  const filters = useRef<HTMLDivElement>(null)
+  const filterBy = (added: AuditFilter) => {
+    onFilterChange({ ...filter, ...added })
+    const field = added.owner !== undefined ? 'owner' : 'admin'
+    filters.current?.querySelector<HTMLInputElement>(`[data-filter-field="${field}"] input[role="combobox"]`)
+      ?.focus()
+  }
   const targetSuggestions = [...new Set(page?.records.flatMap((record) =>
     record.kind === 'workspace' && record.workspaceOwner ? [record.workspaceOwner] : []))]
   const workspaceRecord = page?.records.find((record) =>
@@ -84,7 +114,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   const turning = useRef(false)
   const turnTo = (next: string[]) => {
     turning.current = true
-    setTurned({ filter: key, cursors: next })
+    setTurned({ filter: turnedUnder, cursors: next })
   }
   useEffect(() => {
     if (!turning.current || busy) return
@@ -97,15 +127,32 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
     enabled?.focus()
   }, [busy, pageNumber])
 
+  const columns = useColumnWidths(AUDIT_COLUMN_WIDTHS_KEY, DEFAULT_WIDTHS)
+  const tableWidth = TOGGLE_WIDTH + ACTION_MIN_WIDTH +
+    Object.values<number>(columns.widths).reduce((sum, width) => sum + width, 0)
+  const head = (column: ResizableColumn) => (
+    <Table.Head className="whitespace-nowrap">
+      {RESIZABLE_COLUMNS[column]}
+      <ColumnResizeHandle
+        column={RESIZABLE_COLUMNS[column]}
+        width={columns.widths[column]}
+        onResize={(width, done) => columns.setWidth(column, width, done)}
+        onReset={() => columns.reset(column)}
+      />
+    </Table.Head>
+  )
+
   return (
     <div className="space-y-4">
-      <AuditFilters
-        filter={filter}
-        adminSuggestions={adminSuggestions}
-        workspaceLabel={workspaceLabel}
-        targetSuggestions={targetSuggestions}
-        onFilterChange={onFilterChange}
-      />
+      <div ref={filters}>
+        <AuditFilters
+          filter={filter}
+          adminSuggestions={adminSuggestions}
+          workspaceLabel={workspaceLabel}
+          targetSuggestions={targetSuggestions}
+          onFilterChange={onFilterChange}
+        />
+      </div>
 
       {page === null && !failed && (
         <div className="flex justify-center py-12">
@@ -123,15 +170,24 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       {page !== null && !failed && (
         <>
           <div className={`overflow-x-auto${busy ? ' opacity-60' : ''}`} aria-busy={busy}>
-            <Table>
+            {/* Fixed, so the columns take the widths set here rather than their content's. */}
+            <Table layout="fixed" style={{ minWidth: tableWidth }}>
+              <colgroup>
+                <col style={{ width: TOGGLE_WIDTH }} />
+                <col style={{ width: columns.widths.time }} />
+                <col style={{ width: columns.widths.admin }} />
+                <col />
+                <col style={{ width: columns.widths.sensitivity }} />
+                <col style={{ width: columns.widths.target }} />
+              </colgroup>
               <Table.Header>
                 <Table.Row>
                   <Table.Head><span className="sr-only">Expand</span></Table.Head>
-                  <Table.Head>Time</Table.Head>
-                  <Table.Head>Admin</Table.Head>
+                  {head('time')}
+                  {head('admin')}
                   <Table.Head>Action</Table.Head>
-                  <Table.Head>Sensitivity</Table.Head>
-                  <Table.Head className="whitespace-nowrap">Target user</Table.Head>
+                  {head('sensitivity')}
+                  {head('target')}
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -139,9 +195,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                   ? (
                     <Table.Row>
                       <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="py-8 text-center text-kumo-subtle">
-                        {isFiltered(filter)
-                          ? 'No admin activity matches these filters.'
-                          : 'No admin activity is recorded yet.'}
+                        {pageNumber > 1
+                          ? 'No older admin activity.'
+                          : isFiltered(filter)
+                            ? 'No admin activity matches these filters.'
+                            : 'No admin activity is recorded yet.'}
                       </Table.Cell>
                     </Table.Row>
                   )
@@ -149,6 +207,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                     <AuditLogRow
                       key={`${cursor ?? ''}:${index}:${record.at.getTime()}`}
                       record={record}
+                      shaded={index % 2 === 1}
                       onFilterBy={filterBy}
                     />
                   ))}

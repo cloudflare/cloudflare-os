@@ -28,6 +28,7 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => ({
 }))
 
 import { AdminAuditPanel } from './AdminAuditPanel'
+import { AUDIT_COLUMN_WIDTHS_KEY } from './AuditLog'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -168,6 +169,16 @@ const choose = async (select: HTMLElement, label: string) => {
   }
 }
 
+// The column widths the log has stored, and its resize handles and the events that move them.
+const stored = () => JSON.parse(localStorage.getItem(AUDIT_COLUMN_WIDTHS_KEY) ?? 'null') as unknown
+const handle = (column: string) => button(`Resize the ${column} column`)
+const pointer = (eventType: string, target: HTMLElement, clientX: number) => act(async () => {
+  target.dispatchEvent(new MouseEvent(eventType, { bubbles: true, cancelable: true, clientX }))
+})
+const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
+  target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+})
+
 // The log's page controls.
 const pages = () => document.body.querySelector('nav[aria-label="Audit log pages"]')!
 
@@ -264,8 +275,13 @@ describe('AdminAuditPanel', () => {
     container.remove()
     document.body.innerHTML = ''
     addToast.mockReset()
+    localStorage.clear()
     vi.restoreAllMocks()
   })
+
+  // The log's <col> widths: toggle, Time, Admin, Action (none: it takes what is left), Sensitivity,
+  // Target user.
+  const widths = () => [...card('Activity log').querySelectorAll('col')].map((col) => col.style.width)
 
   describe('the summary', () => {
     it('loads the last week’s counts', async () => {
@@ -352,6 +368,17 @@ describe('AdminAuditPanel', () => {
         formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'Setting change', '—Deployment-wide',
       ])
       expect(logRows()[0].querySelector('time')?.getAttribute('dateTime')).toBe(SETTING_AT.toISOString())
+    })
+
+    it('stripes every other record, its details row aside', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage(['a', 'b', 'c', 'd'].map((name) => settingRecord({ admin: name }))))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => row.classList.contains('bg-kumo-elevated'))).toEqual([false, true, false, true])
+      // Opening a record adds no row, so the stripes stay put.
+      await expand(0)
+      expect(logRows().map((row) => row.classList.contains('bg-kumo-elevated'))).toEqual([false, true, false, true])
     })
 
     it('shows how a setting change came, and its action whole however long, from its row', async () => {
@@ -498,6 +525,52 @@ describe('AdminAuditPanel', () => {
       expect(owner.value).toBe('')
     })
 
+    it('gives focus to the field showing a name chosen in a row, whose button the filtered page replaces', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord(), settingRecord()]))
+      await render(settingsWith(), admin)
+      const [adminField, , ownerField] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+
+      await click(within(logRows()[1], 'Show only second-admin’s activity'))
+      expect(document.activeElement).toBe(adminField)
+      expect(adminField.value).toBe('second-admin')
+
+      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
+      expect(document.activeElement).toBe(ownerField)
+      expect(ownerField.value).toBe('owner@example.test')
+    })
+
+    it('abandons what was typed on Escape, showing the admin filter still applied', async () => {
+      const { onFilterChange } = await render(settingsWith(), fakeAdmin(), { admin: 'admin' })
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+      await type(field, 'half-typed')
+
+      await key(field, { key: 'Escape' })
+      await key(field, { key: 'Escape' })
+
+      expect(field.value).toBe('admin')
+      expect(onFilterChange).not.toHaveBeenCalled()
+    })
+
+    it('filters by an admin suggestion picked by pointer or by keyboard, not by what was typed', async () => {
+      const { onFilterChange } = await render()
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+
+      await type(field, 'second')
+      const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+        .find((element) => element.textContent === 'second-admin')!
+      await act(async () => { option.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'second-admin' })
+
+      await click(button('Clear filters'))
+      await type(field, 'adm')
+      await key(field, { key: 'ArrowDown' })
+      expect(field.getAttribute('aria-activedescendant')).toBeTruthy()
+      await key(field, { key: 'Enter' })
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin' })
+      expect(onFilterChange).not.toHaveBeenCalledWith({ admin: 'adm' })
+    })
+
     it('shows the admin filter set from elsewhere in the admin field', async () => {
       await render()
       const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
@@ -599,6 +672,35 @@ describe('AdminAuditPanel', () => {
 
       expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery())
       expect(pages().textContent).toContain('Page 1')
+    })
+
+    it('goes back to the newest page after a settings change, but stays on its page on Refresh', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockImplementation(async ({ cursor } = {}) =>
+        testPage([settingRecord({ admin: cursor ?? 'admin' })], cursor === undefined ? 'c1' : undefined))
+      await render(settingsWith(), admin)
+      await click(within(pages(), 'Older'))
+
+      await click(button('Refresh'))
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ cursor: 'c1' }))
+      expect(pages().textContent).toContain('Page 2')
+
+      await type(retentionInput(), '365')
+      await click(button(`Save “${RETENTION_LABEL}”`))
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery())
+      expect(pages().textContent).toContain('Page 1')
+    })
+
+    it('says a later page holds nothing older, rather than that nothing is recorded', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockImplementation(async ({ cursor } = {}) =>
+        cursor === undefined ? testPage([settingRecord()], 'c1') : testPage([]))
+      await render(settingsWith(), admin)
+
+      await click(within(pages(), 'Older'))
+
+      expect(card('Activity log').textContent).toContain('No older admin activity.')
+      expect(card('Activity log').textContent).not.toContain('No admin activity is recorded yet.')
     })
 
     it('hides the page controls when everything fits on one page', async () => {
@@ -841,6 +943,90 @@ describe('AdminAuditPanel', () => {
       })
       expect(onSettingsChanged).not.toHaveBeenCalled()
       expect(accessSelect().textContent).toContain('Metadata only')
+    })
+  })
+
+  describe('the log’s column widths', () => {
+    it('starts from the defaults, the Action column taking what is left', async () => {
+      await render()
+
+      expect(widths()).toEqual(['48px', '170px', '150px', '', '220px', '150px'])
+      expect(stored()).toBeNull()
+    })
+
+    it('resizes a column by keyboard, more with Shift, storing each width', async () => {
+      await render()
+      handle('Time').focus()
+
+      await key(handle('Time'), { key: 'ArrowRight' })
+      expect(widths()[1]).toBe('186px')
+      await key(handle('Time'), { key: 'ArrowLeft', shiftKey: true })
+      expect(widths()[1]).toBe('122px')
+
+      expect(stored()).toEqual({ time: 122, admin: 150, sensitivity: 220, target: 150 })
+    })
+
+    it('resizes a column by dragging its edge, storing the width once the drag ends', async () => {
+      await render()
+
+      await pointer('pointerdown', handle('Admin'), 500)
+      await pointer('pointermove', handle('Admin'), 560)
+      expect(widths()[2]).toBe('210px')
+      expect(stored()).toBeNull()
+      await pointer('pointerup', handle('Admin'), 580)
+
+      expect(widths()[2]).toBe('230px')
+      expect(stored()).toEqual({ time: 170, admin: 230, sensitivity: 220, target: 150 })
+    })
+
+    it('puts back the width a drag began from when the drag is cancelled, storing nothing', async () => {
+      await render()
+      await pointer('pointerdown', handle('Admin'), 500)
+      await pointer('pointermove', handle('Admin'), 600)
+      expect(widths()[2]).toBe('250px')
+
+      // A cancel may report any position: 0 here, which would narrow the column to its least.
+      await pointer('pointercancel', handle('Admin'), 0)
+
+      expect(widths()[2]).toBe('150px')
+      expect(stored()).toBeNull()
+    })
+
+    it('keeps a column within its bounds', async () => {
+      await render()
+
+      await pointer('pointerdown', handle('Target user'), 500)
+      await pointer('pointerup', handle('Target user'), 0)
+      expect(widths()[5]).toBe('64px')
+      await pointer('pointerdown', handle('Admin'), 0)
+      await pointer('pointerup', handle('Admin'), 5000)
+      expect(widths()[2]).toBe('800px')
+    })
+
+    it('resets a column on double click', async () => {
+      await render()
+      await key(handle('Admin'), { key: 'ArrowRight' })
+
+      await act(async () => { handle('Admin').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
+
+      expect(widths()[2]).toBe('150px')
+      expect(stored()).toEqual({ time: 170, admin: 150, sensitivity: 220, target: 150 })
+    })
+
+    it('starts from the widths stored, bounded, and the defaults for any missing or malformed', async () => {
+      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, JSON.stringify({ admin: 333, time: 5, target: 'wide' }))
+
+      await render()
+
+      expect(widths()).toEqual(['48px', '64px', '333px', '', '220px', '150px'])
+    })
+
+    it('ignores stored widths that are not JSON', async () => {
+      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, '{not json')
+
+      await render()
+
+      expect(widths()).toEqual(['48px', '170px', '150px', '', '220px', '150px'])
     })
   })
 

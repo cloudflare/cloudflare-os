@@ -49,7 +49,7 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="search" aria-label="Filter admin activity">
-        <div ref={adminField}>
+        <div ref={adminField} data-filter-field="admin">
           <TypedFilterField
             label="Admin"
             placeholder="Any admin (press Enter)"
@@ -99,14 +99,16 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
             <Select.Option key={sensitivity} value={sensitivity}>{SENSITIVITY_NAMES[sensitivity]}</Select.Option>
           ))}
         </Select>
-        <TypedFilterField
-          label="Target user"
-          placeholder="Any user (press Enter)"
-          value={filter.owner}
-          clears={clears}
-          suggestions={targetSuggestions}
-          onApply={(owner) => onFilterChange({ ...filter, owner })}
-        />
+        <div data-filter-field="owner">
+          <TypedFilterField
+            label="Target user"
+            placeholder="Any user (press Enter)"
+            value={filter.owner}
+            clears={clears}
+            suggestions={targetSuggestions}
+            onApply={(owner) => onFilterChange({ ...filter, owner })}
+          />
+        </div>
       </div>
       {isFiltered(filter) && (
         <div className="flex flex-wrap items-center gap-2">
