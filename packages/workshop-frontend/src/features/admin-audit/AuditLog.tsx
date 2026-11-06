@@ -25,14 +25,12 @@ const filterKey = ({ admin, method, sensitivity, workspace, owner }: AuditFilter
  * keeping what is shown until the new page answers; a change of filter starts again from the
  * newest page.
  */
-export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, workspaceTitles, reloads }: {
+export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads }: {
   admin: RpcStub<AdminApi>
   filter: AuditFilter
   onFilterChange: (filter: AuditFilter) => void
   /** Admins to offer in the admin filter. */
   adminSuggestions: string[]
-  /** Workspaces' titles by id, to name a workspace filter whose page holds none. */
-  workspaceTitles: ReadonlyMap<string, string>
   /** Increases to load the shown page again. */
   reloads: number
 }) => {
@@ -76,7 +74,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
   const workspaceRecord = page?.records.find((record) =>
     record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
   const workspaceLabel = workspace === undefined ? undefined
-    : (workspaceRecord?.kind === 'workspace' ? workspaceRecord.workspaceTitle : workspaceTitles.get(workspace))
+    : (workspaceRecord?.kind === 'workspace' ? workspaceRecord.workspaceTitle : undefined)
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a
   // control that becomes disabled without giving it back. So once a turn lands there, focus moves

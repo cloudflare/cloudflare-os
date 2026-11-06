@@ -82,87 +82,44 @@ const StatsCards = ({ stats, onFilterBy }: {
       </Table>
     </div>
 
-    <div className="space-y-6">
-      <div className={CARD}>
-        <h3 className="text-lg font-semibold text-kumo-strong mb-1">Most active admins</h3>
-        <p className="text-sm text-kumo-subtle mb-4">
-          By actions in the last {stats.days} days, with the content reads among them. Choose an
-          admin to see only their activity.
-        </p>
-        {stats.topAdmins.length === 0
-          ? <p className="text-sm text-kumo-subtle">No admin activity in this window.</p>
-          : (
-            <Table>
-              <Table.Header>
-                <Table.Row>
-                  <Table.Head>Admin</Table.Head>
-                  <Table.Head className="text-right">Actions</Table.Head>
-                  <Table.Head className="whitespace-nowrap text-right">Content reads</Table.Head>
+    <div className={CARD}>
+      <h3 className="text-lg font-semibold text-kumo-strong mb-1">Most active admins</h3>
+      <p className="text-sm text-kumo-subtle mb-4">
+        By actions in the last {stats.days} days, with the content reads among them. Choose an
+        admin to see only their activity.
+      </p>
+      {stats.topAdmins.length === 0
+        ? <p className="text-sm text-kumo-subtle">No admin activity in this window.</p>
+        : (
+          <Table>
+            <Table.Header>
+              <Table.Row>
+                <Table.Head>Admin</Table.Head>
+                <Table.Head className="text-right">Actions</Table.Head>
+                <Table.Head className="whitespace-nowrap text-right">Content reads</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {stats.topAdmins.map(({ admin, count, contentReads }) => (
+                <Table.Row key={admin}>
+                  <Table.Cell className="max-w-0 w-full">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="-ml-2 max-w-full text-base"
+                      aria-label={`Show only ${admin}’s activity`}
+                      onClick={() => onFilterBy({ admin })}
+                    >
+                      <span className="truncate">{admin}</span>
+                    </Button>
+                  </Table.Cell>
+                  <Table.Cell className="text-right tabular-nums">{NUMBER.format(count)}</Table.Cell>
+                  <ContentReads count={contentReads} />
                 </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {stats.topAdmins.map(({ admin, count, contentReads }) => (
-                  <Table.Row key={admin}>
-                    <Table.Cell className="max-w-0 w-full">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="-ml-2 max-w-full text-base"
-                        aria-label={`Show only ${admin}’s activity`}
-                        onClick={() => onFilterBy({ admin })}
-                      >
-                        <span className="truncate">{admin}</span>
-                      </Button>
-                    </Table.Cell>
-                    <Table.Cell className="text-right tabular-nums">{NUMBER.format(count)}</Table.Cell>
-                    <ContentReads count={contentReads} />
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table>
-          )}
-      </div>
-
-      <div className={CARD}>
-        <h3 className="text-lg font-semibold text-kumo-strong mb-1">Most inspected workspaces</h3>
-        <p className="text-sm text-kumo-subtle mb-4">
-          By admin calls into each in the last {stats.days} days. Choose a workspace to see only
-          the calls into it.
-        </p>
-        {stats.topWorkspaces.length === 0
-          ? <p className="text-sm text-kumo-subtle">No workspace was inspected in this window.</p>
-          : (
-            <Table>
-              <Table.Header>
-                <Table.Row>
-                  <Table.Head>Workspace</Table.Head>
-                  <Table.Head className="text-right">Calls</Table.Head>
-                  <Table.Head className="whitespace-nowrap text-right">Content reads</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {stats.topWorkspaces.map(({ workspaceId, title, count, contentReads }) => (
-                  <Table.Row key={workspaceId}>
-                    <Table.Cell className="max-w-0 w-full">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="-ml-2 max-w-full text-base"
-                        aria-label={`Show only calls into ${title || workspaceId}`}
-                        onClick={() => onFilterBy({ workspace: workspaceId })}
-                      >
-                        <span className="truncate">{title || 'Untitled'}</span>
-                      </Button>
-                      <span className="block truncate font-mono text-xs text-kumo-subtle">{workspaceId}</span>
-                    </Table.Cell>
-                    <Table.Cell className="text-right tabular-nums">{NUMBER.format(count)}</Table.Cell>
-                    <ContentReads count={contentReads} />
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table>
-          )}
-      </div>
+              ))}
+            </Table.Body>
+          </Table>
+        )}
     </div>
   </div>
 )
@@ -327,7 +284,6 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             filter={filter}
             onFilterChange={onFilterChange}
             adminSuggestions={stats?.topAdmins.map(({ admin: name }) => name) ?? []}
-            workspaceTitles={new Map(stats?.topWorkspaces.map(({ workspaceId, title }) => [workspaceId, title]))}
             reloads={loads}
             restarts={changes}
           />

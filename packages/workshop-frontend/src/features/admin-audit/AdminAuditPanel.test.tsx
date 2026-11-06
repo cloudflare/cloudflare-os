@@ -70,10 +70,6 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
     { day: '2026-10-21', count: 2 },
   ],
   topAdmins: [{ admin: 'admin', count: 4, contentReads: 2 }, { admin: 'second-admin', count: 1, contentReads: 0 }],
-  topWorkspaces: [
-    { workspaceId: 'ws-titled', title: 'Quarterly report', count: 2, contentReads: 2 },
-    { workspaceId: 'ws-untitled', title: '', count: 1, contentReads: 0 },
-  ],
   contentReads: 2,
   ...patch,
 })
@@ -301,13 +297,11 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'second-admin' }))
     })
 
-    it('counts the week’s content reads, in all and for each top admin and workspace, setting apart those with some', async () => {
+    it('counts the week’s content reads, in all and for each top admin, setting apart those with some', async () => {
       await render()
 
       expect(card('Admin actions, last 7 days').textContent).toContain('2 content reads')
-      const rows = [...card('Most inspected workspaces').querySelectorAll('tbody tr')]
-      expect(rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent)))
-        .toEqual([['Quarterly reportws-titled', '2', '2'], ['Untitledws-untitled', '1', '0']])
+      const rows = [...card('Most active admins').querySelectorAll('tbody tr')]
       const [some, none] = rows.map((row) => row.lastElementChild!)
       expect(some.className).toContain('text-kumo-danger')
       expect(none.className).not.toContain('text-kumo-danger')
@@ -315,12 +309,11 @@ describe('AdminAuditPanel', () => {
 
     it('says when the window holds no activity', async () => {
       const admin = fakeAdmin()
-      admin.getAdminAuditStats.mockResolvedValue(testStats({ totalEvents: 0, topAdmins: [], topWorkspaces: [] }))
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ totalEvents: 0, topAdmins: [] }))
 
       await render(settingsWith(), admin)
 
       expect(card('Most active admins').textContent).toContain('No admin activity in this window.')
-      expect(card('Most inspected workspaces').textContent).toContain('No workspace was inspected in this window.')
     })
 
     it('keeps the log and the retention setting usable when the counts fail to load', async () => {
@@ -657,10 +650,12 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
     })
 
-    it('filters by a workspace chosen in Most inspected workspaces, named in a chip that removes it', async () => {
-      const { listAdminAudit, onFilterChange } = await render()
+    it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
 
-      await click(within(card('Most inspected workspaces'), 'Show only calls into Quarterly report'))
+      await click(within(await expand(), 'Show only calls into Quarterly report'))
       expect(onFilterChange).toHaveBeenLastCalledWith({ workspace: 'ws-titled' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ workspace: 'ws-titled' }))
 
