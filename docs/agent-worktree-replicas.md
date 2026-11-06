@@ -28,6 +28,7 @@ interface WorktreeIntegration {
   gitPull(request: Request): Promise<Response>;
 }
 interface WorktreeSyncSession {
+  putBlob(bytes: Uint8Array): Promise<BytesRef>;
   subscribe(receiver: WorktreeSubscriber, after?: string): Promise<WorktreeSubscription>;
   submitChanges(batchId: string, baseRevision: string,
     changes: FileChangeByPath[]): Promise<{revision: string}>;
@@ -76,8 +77,10 @@ never resets a dirty guest silently. This is not an unlimited historical replay 
 ## Returning edits
 
 A batch contains existing `FileChange` transforms: text OTs, deletion, or a whole-file `setBytes`
-Git-blob reference. Upload a new binary blob through the existing Git cache `put("blob", bytes)` before
-referencing it. Binary differences, chunked uploads and large-file support are outside this API.
+Git-blob reference. Upload a new binary blob with the session's `putBlob(bytes)` before referencing it. It stores
+an ordinary Git blob without changing files; identical payloads return the same reference. The
+persistent session can repeat this upload after a DO reset without retaining a transient Git cache
+handle. The existing 8,000,000-byte Git-object limit applies. Binary differences, chunked uploads and large-file support are outside this API.
 
 The DO transforms the batch over canonical changes since `baseRevision`, then persists the changes
 and a payload-bound receipt atomically. An identical retry returns the original accepted revision,
@@ -91,7 +94,7 @@ Foreign events have kernel-generated IDs in a separate namespace.
 
 Only normalized worktree-relative paths are accepted; `.git` metadata and filesystem aliases are
 excluded. Batches are limited to 128 paths and 1 MiB of serialized transforms. Fresh bootstrap has
-the same 1 MiB transform budget; commit a larger pending overlay before mounting. Binary content
+the same 1 MiB transform budget; accept a larger pending overlay before mounting. Binary content
 travels separately as raw Git objects and retains the existing object-size limits.
 
 ## Unified Git transport

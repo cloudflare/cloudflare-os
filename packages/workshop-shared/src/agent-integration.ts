@@ -39,7 +39,7 @@
 // implementation must do to keep its replica correct.
 
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
-import type { FileChange } from "./code-change";
+import type { BytesRef, FileChange } from "./code-change";
 import type { GitOid } from "./gatekeeper";
 
 /**
@@ -117,6 +117,14 @@ export interface WorktreeIntegration extends RpcTarget {
  */
 export interface WorktreeSyncSession extends RpcTarget {
   /**
+   * Store a whole-file raw payload in the workspace Git store (at most 8,000,000 bytes).
+   * Returns the immutable blob reference for a later `setBytes` change; this call alone does
+   * not change any file. Identical bytes return the same reference, so a lost reply is safe
+   * to retry. This capability shares the session's worktree scope and reset/revocation rules.
+   */
+  putBlob(bytes: Uint8Array): Promise<BytesRef>;
+
+  /**
    * Start receiving the worktree's changes through `subscriber`. Resolves once the subscriber
    * has caught up -- it has received and acknowledged everything up to the current revision --
    * so a replica can wait for this before running a command.
@@ -154,7 +162,7 @@ export interface WorktreeSyncSession extends RpcTarget {
    * nothing is applied twice. Reusing a `batchId` with different arguments is an error.
    *
    * A batch may touch at most 128 files and 1 MiB of serialized edits. Before referencing a
-   * new Git blob with `setBytes`, store it with the gatekeeper's `GitCache.put()`.
+   * new Git blob with `setBytes`, store it with `putBlob()`.
    */
   submitChanges(batchId: string, baseRevision: WorktreeRevision,
     changes: FileChangeByPath[]): Promise<{revision: WorktreeRevision}>;
