@@ -13,7 +13,7 @@ import {
   CalendarUrlError, accessCeiling, calendarUrl, describeScope, parseCalendarUrl, roleSees, sharingRole, type CalendarScope,
 } from "../src/calendar-scope";
 import { localToInstant } from "../src/calendar-time";
-import type { GraphApi } from "../src/graph-api";
+import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   ALL_RESOURCES, CALENDAR_RESOURCE, OUTLOOK_RESOURCE, effectiveCalendarAccess, grantedCalendarAccess, grantedResourcePatterns,
   grantsSharedCalendars, scopesFor, type Env,
@@ -386,6 +386,15 @@ describe("probing free/busy", () => {
     } as unknown as GraphApi;
     const addresses = ["bob", "hidden", "gone", "missing"].map(name => `${name}@contoso.com`);
     expect(await probeAvailability(api, [...addresses, null])).toEqual([true, false, false, false, false]);
+  });
+
+  it("preserves a getSchedule credential rejection for the credential source", async () => {
+    const api = new GraphApi("t", { fetch: async () => Response.json(
+      { error: { code: "InvalidAuthenticationToken" } }, { status: 401 },
+    ) });
+    const result = probeAvailability(api, ["bob@contoso.com"]);
+    await expect(result).rejects.toBeInstanceOf(GraphApiError);
+    await expect(result).rejects.toMatchObject({ status: 401, isAuthError: true });
   });
 });
 

@@ -630,6 +630,19 @@ describe("observer units", () => {
     ])).toEqual([false, true, true]);
     expect(asked[0]).toBe(`users/${user}/messages?$top=1&$select=id`);
   });
+
+  it("propagates a batch-entry credential rejection instead of denying mail access", async () => {
+    const api = new GraphApi("t", { fetch: async () => Response.json({ responses: [
+      { id: "0", status: 200, body: { id: "AAMkInbox" } },
+      { id: "1", status: 401, body: { error: { code: "InvalidAuthenticationToken" } } },
+    ] }) });
+    const result = probeMailUnits(api, [
+      { kind: "mailFolder", userId: user, folderId: "AAMkInbox" },
+      { kind: "mail", userId: user, messageId: "AAMkInInbox" },
+    ]);
+    await expect(result).rejects.toBeInstanceOf(GraphApiError);
+    await expect(result).rejects.toMatchObject({ status: 401, isAuthError: true });
+  });
 });
 
 describe("editing a reply's own part", () => {
