@@ -218,7 +218,9 @@ export function prepareInputs(repo: string, workDir: string, name: ModelName, pr
       const match = /^-\t-\t(.+)$/s.exec(record);
       if (!match) return [];
       const path = match[1];
-      const side = spawnSync("git", ["-C", repo, "cat-file", "-e", `${pr.headSha}:${path}`]).status === 0 ? pr.headSha : from;
+      // The head's blob, or the old one when the head deleted it or put a directory in its place.
+      const headType = spawnSync("git", ["-C", repo, "cat-file", "-t", `${pr.headSha}:${path}`], { encoding: "utf8" }).stdout.trim();
+      const side = headType === "blob" ? pr.headSha : from;
       return [{ path, bytes: Number(git(repo, ["cat-file", "-s", `${side}:${path}`]).trim()) }];
     });
     writeFileSync(files.pullRequest, `# ${pr.title}\n\n${pr.body}\n`);
@@ -262,7 +264,8 @@ export function runReview(workDir: string, name: ModelName, opencodeBin: string,
     OPENCODE_CONFIG_CONTENT: openCodeConfig(files.inputs),
     ...gateway,
   };
-  writeFileSync(files.opencodeVersion, execFileSync(opencodeBin, ["--version"], { encoding: "utf8", env: openCodeEnv }).trim());
+  writeFileSync(files.opencodeVersion, execFileSync(opencodeBin, ["--version"],
+    { encoding: "utf8", env: openCodeEnv, stdio: ["ignore", "pipe", "ignore"] }).trim());
   const events = openSync(files.events, "w");
   const stderr = openSync(files.stderr, "w");
   try {
@@ -446,20 +449,19 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   };
 }
 
-/** The paths whose content at a head decides what its verdict run did. */
-const RUNNER_PATHS = [`.github/workflows/${WORKFLOW_FILE}`, "scripts/automerge/verdict"];
 
 /**
  * Whether round 3 may review only `previousSha..head`. The previous head must still be in the
  * head's history (a force-push may drop it), no merge may sit between them (merging the base in
- * would put the base's changes in that diff), and its run must have used the base's runner: a head
- * that edited the workflow can make its run succeed without a review.
+ * would put the base's changes in that diff), and its workflow file must equal the base's: the run
+ * takes the workflow from the head, which could make it succeed without a review. The scripts
+ * always come from that run's base commit.
  */
 export function canReviewSince(repo: string, previousSha: string, pr: Pick<PullRequest, "headSha" | "baseSha">): boolean {
   const ok = (args: string[]) => spawnSync("git", ["-C", repo, ...args]).status === 0;
   return ok(["merge-base", "--is-ancestor", previousSha, pr.headSha]) &&
     git(repo, ["rev-list", "--merges", `${previousSha}..${pr.headSha}`]).trim() === "" &&
-    ok(["diff", "--quiet", pr.baseSha, previousSha, "--", ...RUNNER_PATHS]);
+    ok(["diff", "--quiet", pr.baseSha, previousSha, "--", `.github/workflows/${WORKFLOW_FILE}`]);
 }
 
 function env(name: string): string {

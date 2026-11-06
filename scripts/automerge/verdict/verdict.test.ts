@@ -260,7 +260,7 @@ describe("prepareInputs and buildVerdict", () => {
     assert.equal(canReviewSince(repo.dir, second, pr3), true);
     assert.equal(canReviewSince(repo.dir, "0000000000000000000000000000000000000000", pr3), false);
 
-    const forged = repo.commit({ "REVIEW.md": "x", "src/a.ts": "5\n", "scripts/automerge/verdict/verdict.ts": "exit" });
+    const forged = repo.commit({ "REVIEW.md": "x", "src/a.ts": "5\n", ".github/workflows/review-verdict.yml": "exit 0" });
     const reverted = repo.commit({ "REVIEW.md": "x", "src/a.ts": "6\n" });
     assert.equal(canReviewSince(repo.dir, forged, { headSha: reverted, baseSha: base }), false);
 
