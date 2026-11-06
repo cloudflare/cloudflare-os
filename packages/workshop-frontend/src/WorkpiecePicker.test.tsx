@@ -132,33 +132,29 @@ describe('WorkpiecePicker', () => {
       ])
     })
 
-    it('links titles to their resources in a new tab, through safe URLs only', async () => {
+    it('links rows to their resources in a new tab, through safe URLs only, badging changed ones', async () => {
       const container = await render({ expanded: true, chatBindings: { status: 'ready', bindings: BINDINGS } })
 
       // Not "Launch plan", which awaits approval, nor "Sketchy", whose URL is a script.
       expect([...container.querySelectorAll('a')].map(link =>
-        [link.textContent, link.getAttribute('href'), link.target, link.rel])).toEqual([
-        ['Q3 Budget', 'https://docs.google.com/spreadsheets/d/1/edit', '_blank', 'noopener noreferrer'],
-        ['acme/widgets', 'https://github.com/acme/widgets', '_blank', 'noopener noreferrer'],
+        [link.getAttribute('aria-label'), link.getAttribute('href'), link.target, link.rel])).toEqual([
+        ['Q3 Budget · Google Sheet', 'https://docs.google.com/spreadsheets/d/1/edit', '_blank', 'noopener noreferrer'],
+        ['acme/widgets · GitHub · Changed', 'https://github.com/acme/widgets', '_blank', 'noopener noreferrer'],
       ])
     })
 
-    it('marks only the connections this chat changed', async () => {
-      const container = await render({ expanded: true, chatBindings: { status: 'ready', bindings: BINDINGS } })
-      const row = (title: string) => [...container.querySelectorAll('a, span')]
-        .find(element => element.textContent === title)!.parentElement!
+    // In a chat with no other outputs, where its created resources are all Outputs would show.
+    it('tells loading and failure apart from having no outputs or connections', async () => {
+      const shown = async (chatBindings: ChatBindings) => {
+        const container = await render({ expanded: true, chatBindings })
+        return { outputs: container.textContent!.includes('Nothing yet'), connections: connectionsGroup(container).textContent }
+      }
 
-      expect(row('acme/widgets').textContent).toBe('acme/widgetsChanged')
-      expect(row('Q3 Budget').textContent).toBe('Q3 Budget')
-    })
-
-    it('tells loading and failure apart from having no connections', async () => {
-      const text = async (chatBindings: ChatBindings) =>
-        connectionsGroup(await render({ expanded: true, chatBindings })).textContent
-
-      expect(await text({ status: 'loading' })).toBe('ConnectionsLoading…')
-      expect(await text({ status: 'failed' })).toBe('ConnectionsCouldn’t load connections')
-      expect(await text({ status: 'ready', bindings: [] })).toBe('Connections')
+      expect(await shown({ status: 'loading' })).toEqual({ outputs: false, connections: expect.stringContaining('Loading…') })
+      expect(await shown({ status: 'failed' }))
+        .toEqual({ outputs: false, connections: expect.stringContaining('Couldn’t load connections') })
+      expect(await shown({ status: 'ready', bindings: [] }))
+        .toEqual({ outputs: true, connections: expect.stringContaining('None yet') })
     })
   })
 })
