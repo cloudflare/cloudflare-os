@@ -19,9 +19,11 @@ export const AuditFilters = ({ filter, adminSuggestions, onFilterChange }: {
   adminSuggestions: string[]
   onFilterChange: (filter: AuditFilter) => void
 }) => {
-  // What is typed in the admin field, for the admin filter it was typed over: once the filter
-  // changes from elsewhere (an admin's name picked in the log), the field shows the new filter.
+  // What is typed in the admin field, for the admin filter it was typed over. Dropped as soon as the
+  // filter changes from elsewhere (an admin's name picked in the log), during that render, so the
+  // field shows the new filter and coming back to the old one does not bring back what was typed.
   const [typed, setTyped] = useState({ over: filter.admin, text: filter.admin ?? '' })
+  if (typed.over !== filter.admin) setTyped({ over: filter.admin, text: filter.admin ?? '' })
   const adminText = typed.over === filter.admin ? typed.text : (filter.admin ?? '')
 
   const applyAdmin = (text: string) => {

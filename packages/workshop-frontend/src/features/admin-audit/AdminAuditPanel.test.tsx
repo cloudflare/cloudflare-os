@@ -421,6 +421,17 @@ describe('AdminAuditPanel', () => {
       expect(field.value).toBe('admin')
     })
 
+    it('drops what was typed over an admin filter once it changes, even back to that admin', async () => {
+      await render(settingsWith(), fakeAdmin(), { admin: 'admin' })
+      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
+      await type(field, 'half-typed')
+
+      await click(within(card('Most active admins'), 'Show only second-admin’s activity'))
+      await click(within(card('Most active admins'), 'Show only admin’s activity'))
+
+      expect(field.value).toBe('admin')
+    })
+
     it('says when there is nothing to show, and when nothing matches the filters', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([]))
