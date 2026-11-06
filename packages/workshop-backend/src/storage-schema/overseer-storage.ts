@@ -1146,10 +1146,17 @@ export type ShareLinkRecord = {
   role?: CollaboratorRole;
 
   /**
-   * The one gadget a "use" link grants (see PermissionEdge.gadgetId). A "use" link without one
-   * grants every gadget; no such links are created anymore, and redeeming one adds no one new.
+   * The one gadget a "use" link grants (see PermissionEdge.gadgetId), unless it grants several
+   * (see `gadgetIds`). A "use" link names one or the other.
    */
   gadgetId?: WorkpieceId;
+
+  /**
+   * The gadgets a "use" link to several gadgets grants: what a link to every gadget, made before
+   * gadgets were shared individually, was frozen to by the schema version 7 migration (see
+   * freezeWorkspaceWideGrants()). No such link is created anymore.
+   */
+  gadgetIds?: WorkpieceId[];
 
   /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
@@ -1376,6 +1383,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
+      //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
+      //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
+      //       held when it was migrated (see freezeWorkspaceWideGrants() in sharing.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)

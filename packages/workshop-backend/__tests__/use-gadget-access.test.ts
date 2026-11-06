@@ -142,7 +142,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 100, { pending: true });
     shareGadgets(impl, [100]);
     legacyFacets(impl);
-    let client = await openViewer(impl, { role: "use", gadgetIds: "all" });
+    let client = await openViewer(impl, { role: "use", gadgetIds: [100] });
 
     await expect(client.getGadget(100)).rejects.toThrow("No such gadget: 100");
     dispose(client);
@@ -260,7 +260,7 @@ describe("what a use session lists", () => {
     seedGadget(impl, 101);
     impl.ownerId = "owner-user";
     let pushes = new Map<string, PromiseWithResolvers<number[]>>(
-        ["owner-user", VIEWER_USER, "legacy-user"].map(id => [id, Promise.withResolvers()]));
+        ["owner-user", VIEWER_USER, "other-user"].map(id => [id, Promise.withResolvers()]));
     impl.users = {
       idFromString: (id: string) => id,
       get: (id: string) => ({
@@ -270,14 +270,14 @@ describe("what a use session lists", () => {
       }),
     } as unknown as ObserverImpl["users"];
     let leaveViewer = impl.joinOutputsFanout(VIEWER_USER, { role: "use", gadgetIds: [100] });
-    let leaveLegacy = impl.joinOutputsFanout("legacy-user", { role: "use", gadgetIds: "all" });
+    let leaveOther = impl.joinOutputsFanout("other-user", { role: "use", gadgetIds: [101] });
 
     impl.markOutputsDirty();
 
     expect(await pushes.get("owner-user")!.promise).toEqual([100, 101]);
     expect(await pushes.get(VIEWER_USER)!.promise).toEqual([100]);
-    expect(await pushes.get("legacy-user")!.promise).toEqual([100, 101]);
+    expect(await pushes.get("other-user")!.promise).toEqual([101]);
     leaveViewer();
-    leaveLegacy();
+    leaveOther();
   }));
 });
