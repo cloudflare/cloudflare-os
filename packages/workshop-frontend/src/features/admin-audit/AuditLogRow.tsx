@@ -71,10 +71,13 @@ const changesSummary = (changes: AdminSettingChange[]) => {
 
 /**
  * One record of the Audit tab's log: a summary row, with a toggle that shows what the record holds
- * in full in a row below it. The admin's name filters the log by that admin.
+ * in full in a row below it. The admin's name filters the log by that admin. `shaded` stripes the
+ * summary row as Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden
+ * or not, so every summary row is an odd row to it and would never be striped.
  */
-export const AuditLogRow = ({ record, onAdminSelect }: {
+export const AuditLogRow = ({ record, shaded, onAdminSelect }: {
   record: AdminAuditRecord
+  shaded: boolean
   onAdminSelect: (admin: string) => void
 }) => {
   const [expanded, setExpanded] = useState(false)
@@ -82,7 +85,7 @@ export const AuditLogRow = ({ record, onAdminSelect }: {
   const time = formatFullTimestamp(record.at)
   return (
     <>
-      <Table.Row>
+      <Table.Row className={shaded ? 'bg-kumo-elevated' : undefined}>
         <Table.Cell className="w-0 pr-0">
           <Button
             variant="ghost"

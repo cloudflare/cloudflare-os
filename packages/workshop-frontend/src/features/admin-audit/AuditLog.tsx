@@ -189,6 +189,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                     <AuditLogRow
                       key={`${cursor ?? ''}:${index}:${record.at.getTime()}`}
                       record={record}
+                      shaded={index % 2 === 1}
                       onAdminSelect={selectAdmin}
                     />
                   ))}

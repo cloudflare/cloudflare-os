@@ -288,6 +288,17 @@ describe('AdminAuditPanel', () => {
       expect(logRows()[0].querySelector('time')?.getAttribute('dateTime')).toBe(SETTING_AT.toISOString())
     })
 
+    it('stripes every other record, its details row aside', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage(['a', 'b', 'c', 'd'].map((name) => settingRecord({ admin: name }))))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => row.classList.contains('bg-kumo-elevated'))).toEqual([false, true, false, true])
+      // Opening a record adds no row, so the stripes stay put.
+      await expand(0)
+      expect(logRows().map((row) => row.classList.contains('bg-kumo-elevated'))).toEqual([false, true, false, true])
+    })
+
     it('summarizes several changes as the first and how many more', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([settingRecord({
