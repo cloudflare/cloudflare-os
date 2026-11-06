@@ -166,7 +166,8 @@ describe("AdminApiImpl.inspectWorkspace", () => {
       const expiresAt = Date.parse(record.args.expiresAt as string);
       expect(expiresAt).toBeGreaterThanOrEqual(before + 60_000);
       expect(expiresAt).toBeLessThanOrEqual(after + 60_000);
-      expect(retentionDays).toBe(90);
+      // No retention: the directory read awaits, so the one read before it may be stale.
+      expect(retentionDays).toBeUndefined();
       expect(callsTo("overseers", "get")).toEqual([]);
 
       // The same capability's records share a session id.
