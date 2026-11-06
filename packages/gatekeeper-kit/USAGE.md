@@ -643,8 +643,7 @@ for mapping provisional IDs to provider IDs.
 Every method that returns provider data (anything that came from the provider's API, fetched now or
 cached earlier) must await `authorizeObservation()` before returning it: fetch, authorize, return.
 Report all access dependencies as explicit `subresources`, and keep observer authorization in
-`verifyObserverAccess()`. [Simulation](#simulation-and-subresources) replay of data already
-returned is not a new read.
+`verifyObserverAccess()`. [Simulated reads](#simulation-and-subresources) report the same IDs.
 Do not build observer rosters, observed-set logs, `excludeObservers`, or legacy trackers for new code.
 
 The shared `ObservationDescription.subresources` property is still optional for compatibility.
@@ -691,22 +690,22 @@ derive requirements from current binding state, not fields absent from older per
 
 ### Simulation and subresources
 
-Subresources follow provider data, not simulation state. Provider data is anything that came from
-the provider's API, whether fetched by this read or earlier and cached. Caller-written action
-arguments and simulated state are not provider data. Report IDs for the provider data a read
-returns; simulation itself adds none:
+Simulation doesn't change what a read reports:
 
-- Replaying data this chat or gadget already received adds nothing; Workshop recorded its IDs when
-  the data was first returned.
-- Action arguments the caller wrote, and provisional IDs you generated, add nothing, whether the
-  target resource exists yet or not.
-- Do not invent IDs for pending actions or simulated resources, and do not fetch a resource from the
-  provider just to justify replaying it.
+- A simulated read of an existing resource reports that resource's IDs, exactly as an unsimulated
+  read would.
+- Provider data stored in pending-action state (previous values, copied or quoted content) keeps
+  its source's IDs when replayed.
+- Only content that never came from the provider adds no IDs: action arguments and provisional IDs
+  you generated. A resource not created yet, built only from such content, reports `[]` plus any
+  container or account requirement.
+- Do not invent IDs for pending actions or simulated resources.
 
-If a simulated read also returns provider data this chat or gadget has not received before, report
-that data's IDs as usual. Data sitting in a shared cache, or fetched internally but never returned,
-has not been received by this chat or gadget. When a result mixes both, report the provider data's
-IDs; the simulated overlay adds none.
+Simulation state is shared by every chat and gadget using the connection, and the gatekeeper
+cannot tell which one is reading, so never assume the reader already received what it replays.
+Reporting an ID again costs nothing: admission reads distinct requirement keys, not repeated reads.
+Content one chat writes into a pending action reaches other chats and gadgets with no requirement;
+the kernel accepts this as indirect disclosure (`docs/observers.md` §10).
 
 ### New-gatekeeper observer contract
 
@@ -714,8 +713,8 @@ New gatekeepers follow these rules, although the current interface and its JSDoc
 legacy observer methods:
 
 - Every read that returns provider data explicitly reports all its dependencies, even ones an
-  earlier read already reported. Workshop records requirements per chat or gadget, not per binding.
-  [Simulation](#simulation-and-subresources) replay of data already received adds none.
+  earlier read already reported, simulated reads included. Workshop records requirements per chat
+  or gadget, not per binding.
 - `[]` adds **no requirement**; requirements already recorded stay in force. It never means a
   binding/admission baseline was already checked. Report membership requirements explicitly; when a
   live connection alone grants access to everything returned, use
@@ -877,7 +876,7 @@ provider IDs, not string interpolation.
 | **BigQuery project/dataset/table grants** ([#983](https://github.com/cloudflare/cloudflare-os/pull/983), `BigQuerySessionImpl`) | C: `bigquery/project/<projectId>/dataset/<datasetId>` for every dataset in provider dry-run `referencedTables`, deduplicated across joins. The same dataset unit is used under narrower table grants; table listings keep it even when empty. | Scope validation and read-only SQL checks are separate from observer access. **Existing limitation:** `datasets.get` proves metadata access, not table-row or row/column-policy equivalence. Copy dependency derivation, not this probe as proof of query-result access. |
 | **Gmail mailbox, label, or search grants** ([#984](https://github.com/cloudflare/cloudflare-os/pull/984), `gmail.ts`) | A: every read, cursor page, nested message/attachment capability, and hook reports `gmail/user/<Google-sub>`. A label or search narrows authority, not the mailbox's sharing ACL. | Compare the observer's stable provider subject to the mailbox owner. This is a private-identity policy, not delegated-mailbox ACL verification or a probe of current Gmail content scopes. |
 | **Chat account versus conversation/thread** ([#985](https://github.com/cloudflare/cloudflare-os/pull/985), `chat.ts`) | Account binding: A, `chat/user/<Google-sub>` on **all** reads, including discovery, nested capabilities, and hooks. Conversation/thread content: B, `chat/space/<spaceId>`, including empty pages. Member reads instead use `chat/spaceMembers/<spaceId>`. | Identity for account reads; `getSpace` for space visibility; `listMembers` for the independently protected member list. Space-level reporting relies on filtering out app-private messages with narrower audiences. |
-| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Provider reads of tabs, ranges, slides, notes, and thumbnails report the whole file. Simulated reads follow [simulation and subresources](#simulation-and-subresources): replayed or caller-written content adds no requirement. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
+| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Tabs, ranges, slides, notes, thumbnails, and cached or simulated reads report the whole file. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
 | **Drive account discovery and exact file** (same PR, `drive-session.ts`) | Account list/search: C, `drive/file/<id>` per returned metadata row, including folder rows. Exact-file reads/listings: B, the bound file ID even if a trashed item is omitted. | File visibility uses the observer's Drive grant and a batched `files.get` metadata lookup. This implementation deliberately treats an empty account-wide list/search as `[]`; that is a disclosure policy, not a general rule for absence. |
 | **Drive positioned folder / descendant native reads** (same PR) | C: current `drive/folder/<id>` plus each returned child `drive/file/<id>`; opening a child folder reports both folder IDs. Searching selected child folders retains all searched folder IDs even with no hits. Folder-derived native reads carry folder + file + native-product requirements on every read. | Folder enumeration requires a live Drive folder with `capabilities.canListChildren`, not merely metadata visibility. The caller's live ancestry checks separately prevent moves, shortcuts, or foreign IDs from escaping the grant. A selected shared-drive root is a concrete folder, not a new shared-drive observer kind. |
 
@@ -893,8 +892,9 @@ Several details prevent overly broad recipes:
   dataset/table binding rejects tableless SQL when it cannot prove scope. Empty project-level dataset
   discovery also currently reports `[]`, unlike an empty table list within a dataset. Explain the
   policy before copying any of those empty cases.
-  Caller-written content and replay of data already received add no requirement, whether the
-  resource exists yet or not; see [simulation and subresources](#simulation-and-subresources).
+  A Docs/Sheets/Slides resource not created yet, built only from caller-written content, also
+  reports `[]`. Simulation over an existing file still reports that file; see
+  [simulation and subresources](#simulation-and-subresources).
 - **Private versus shareable discovery.** Chat account discovery is private even when its returned
   spaces have individual ACLs; Drive discovery reports each returned file instead.
   Inspect the entire response, including personal read state and membership, rather than deciding
