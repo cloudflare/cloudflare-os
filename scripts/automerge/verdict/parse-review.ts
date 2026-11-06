@@ -31,6 +31,7 @@ const LEADING_TAG = /^\[(P[0-3])\]\s+(.+)$/;
 const LOCATION = /^`?([^\s`:]+):(\d+)(?:-\d+)?`?$/;
 const SCORE = /^MERGE-CONFIDENCE: (10|[0-9])$/;
 const FENCE = /^\s*(```|~~~)/;
+const HEADING = /^ {0,3}(#{1,6})(?:\s|$)/;
 /** Markdown that can open a line before a tag: headings, emphasis, quotes, bullets, numbering. */
 const LINE_MARKUP = /^[\s#*_>+\-\d.)]*/;
 const LINE_TAG = /^[\s#*_>+\-\d.)]*\[P[0-3]\]/;
@@ -82,17 +83,28 @@ export function parseReview(raw: string): ParseResult {
     return [reason === "" ? "unspecified" : reason];
   });
 
-  const headings = lines.flatMap((line, index) =>
-    !line.fenced && line.text.startsWith("## ") ? [{ index, name: line.text.slice(3).trim() }] : []);
-  const findingsHeadings = headings.filter(heading => heading.name === "Findings");
-  const summaryHeadings = headings.filter(heading => heading.name === "Summary");
+  // Any heading markdown renders counts, so a section cannot hide behind indentation or a
+  // non-breaking space. Only the two known sections may exist, and an untagged entry heading outside
+  // the findings section is an error: either could carry a finding the loop below never reads.
+  const headings = lines.flatMap((line, index) => {
+    const heading = HEADING.exec(line.text);
+    return !line.fenced && heading ? [{ index, level: heading[1].length, name: line.text.slice(heading[0].length).trim() }] : [];
+  });
+  const sections = headings.filter(heading => heading.level <= 2);
+  const unknown = sections.find(heading => heading.level !== 2 || (heading.name !== "Findings" && heading.name !== "Summary"));
+  if (unknown) return { ok: false, error: `unknown section ${JSON.stringify(lines[unknown.index].text.trim())}` };
+  const findingsHeadings = sections.filter(heading => heading.name === "Findings");
+  const summaryHeadings = sections.filter(heading => heading.name === "Summary");
   if (findingsHeadings.length !== 1 || summaryHeadings.length !== 1) {
     return { ok: false, error: "the review needs exactly one '## Findings' and one '## Summary' heading" };
   }
   const findingsStart = findingsHeadings[0].index;
   const summaryStart = summaryHeadings[0].index;
   if (summaryStart < findingsStart) return { ok: false, error: "'## Summary' comes before '## Findings'" };
-  const findingsEnd = headings.find(heading => heading.index > findingsStart)?.index ?? lines.length;
+  const findingsEnd = summaryStart;
+  const stray = headings.find(heading => heading.level >= 3 && (heading.index < findingsStart || heading.index > findingsEnd) &&
+    !LINE_TAG.test(lines[heading.index].text));
+  if (stray) return { ok: false, error: `untagged heading outside '## Findings': ${JSON.stringify(lines[stray.index].text.trim())}` };
 
   if (scoreLines.length !== 1) {
     return { ok: false, error: `the review has ${scoreLines.length} MERGE-CONFIDENCE lines; it needs exactly one` };
@@ -109,8 +121,11 @@ export function parseReview(raw: string): ParseResult {
   let awaitingLocation = false;
   for (let index = findingsStart + 1; index < findingsEnd; index++) {
     const { text, fenced } = lines[index];
-    if (!fenced && text.startsWith("### ")) {
-      current = { ...titleSeverity(text.slice(4).trim()), path: null, line: null };
+    const heading = fenced ? null : HEADING.exec(text);
+    // Every heading here opens an entry, a deeper one too: an untagged subheading counts as P1
+    // rather than letting a finding pass as body text.
+    if (heading) {
+      current = { ...titleSeverity(text.slice(heading[0].length).trim()), path: null, line: null };
       findings.push(current);
       awaitingLocation = true;
       continue;
@@ -131,10 +146,10 @@ export function parseReview(raw: string): ParseResult {
     }
   }
 
-  // Any other line that opens with a tag is still a finding, whatever markdown wraps it: a deeper
-  // heading inside an entry, a bold or bulleted line, or a heading outside the findings section.
+  // Any other line that opens with a tag is still a finding, whatever markdown wraps it: a bold or
+  // bulleted line, or a heading outside the findings section.
   for (const [index, { text, fenced }] of lines.entries()) {
-    const counted = index > findingsStart && index < findingsEnd && text.startsWith("### ");
+    const counted = index > findingsStart && index < findingsEnd && HEADING.test(text);
     if (fenced || counted) continue;
     if (!LINE_TAG.test(text)) continue;
     const tags = [...text.matchAll(TAG)].map(match => match[1]).filter(isSeverity);

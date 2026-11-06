@@ -48,8 +48,8 @@ describe("parseReview", () => {
   });
 
   it("counts a tagged heading outside the findings section or nested in an entry", () => {
-    const { findings } = parsed(review("None.", "### [P0] Data loss on reset\n## [P1] Another\nMERGE-CONFIDENCE: 9"));
-    assert.deepEqual(findings.map(finding => finding.severity), ["P0", "P1"]);
+    const { findings } = parsed(review("None.", "### [P0] Data loss on reset\nMERGE-CONFIDENCE: 9"));
+    assert.deepEqual(findings.map(finding => finding.severity), ["P0"]);
     const nested = parsed(review("### [P3] Minor naming\n`a.ts:1`\n#### [P0] Authentication bypass\n`b.ts:2`",
       "MERGE-CONFIDENCE: 10"));
     assert.deepEqual(nested.findings.map(finding => finding.severity), ["P3", "P0"]);
@@ -60,9 +60,26 @@ describe("parseReview", () => {
       "### [P3] Issues in foo.ts\n`foo.ts:1`\n**[P1] Missing await**\n- [P0] Token logged\n1. [P2] Typo\n" +
       "###\u00a0[P0] Non-breaking space",
       "MERGE-CONFIDENCE: 9"));
-    assert.deepEqual(findings.map(finding => finding.severity), ["P3", "P1", "P0", "P2", "P0"]);
-    const afterNone = parsed(review("None.\n\n## [P1] Lost write", "MERGE-CONFIDENCE: 9"));
-    assert.deepEqual(afterNone.findings.map(finding => finding.severity), ["P1"]);
+    assert.deepEqual(findings.map(finding => finding.severity), ["P3", "P0", "P1", "P0", "P2"]);
+  });
+
+  it("fails on any section but Findings and Summary", () => {
+    for (const heading of ["## Backend", "## [P1] Lost write", "# Review", "  ## Notes", "##\u00a0Backend", "## findings"]) {
+      assert.match(error(review(`None.\n\n${heading}\n### Missing authorization\n\`a.ts:1\``, "MERGE-CONFIDENCE: 9")),
+        /unknown section/, heading);
+    }
+  });
+
+  it("fails on an untagged entry heading outside the findings section", () => {
+    assert.match(error(review("None.", "### Missing authorization\n`a.ts:1`\nMERGE-CONFIDENCE: 9")), /untagged heading/);
+    assert.match(error(`### Missing authorization\n${review("None.", "MERGE-CONFIDENCE: 9")}`), /untagged heading/);
+  });
+
+  it("counts every heading inside the findings section as an entry", () => {
+    const { findings } = parsed(review("### [P3] Naming\n`a.ts:1`\n#### Missing authorization\n`b.ts:2`\n" +
+      "  ### Indented entry\n###\u00a0Non-breaking entry", "MERGE-CONFIDENCE: 9"));
+    assert.deepEqual(findings.map(finding => [finding.severity, finding.path]),
+      [["P3", "a.ts"], ["P1", "b.ts"], ["P1", null], ["P1", null]]);
   });
 
   it("does not count a tag in the middle of body text", () => {
