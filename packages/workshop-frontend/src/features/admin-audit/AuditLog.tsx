@@ -33,11 +33,14 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   /** Increases to load the shown page again. */
   reloads: number
 }) => {
-  // The cursors of the pages turned to under one filter, oldest page last.
-  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: '', cursors: [] })
+  const key = filterKey(filter)
+  // The cursors of the pages turned to under the current filter, oldest page last. Forgotten as
+  // soon as the filter changes, during that render, so that coming back to an earlier filter
+  // starts again from its newest page.
+  const [turned, setTurned] = useState<{ filter: string; cursors: string[] }>({ filter: key, cursors: [] })
+  if (turned.filter !== key) setTurned({ filter: key, cursors: [] })
   const [retries, setRetries] = useState(0)
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const key = filterKey(filter)
   const cursors = turned.filter === key ? turned.cursors : []
   const cursor = cursors.at(-1)
   // Everything a load depends on, so that an answer to an earlier one is told apart.

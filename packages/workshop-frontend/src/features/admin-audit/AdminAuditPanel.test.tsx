@@ -488,6 +488,21 @@ describe('AdminAuditPanel', () => {
       expect(card('Activity log').querySelector('nav')!.textContent).toContain('Page 1')
     })
 
+    it('starts from the newest page when coming back to a filter left on a later page', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockImplementation(async ({ cursor } = {}) =>
+        testPage([settingRecord({ admin: cursor ?? 'admin' })], cursor === undefined ? 'c1' : undefined))
+      await render(settingsWith(), admin)
+      await click(within(pages(), 'Older'))
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ cursor: 'c1' }))
+
+      await click(within(card('Most active admins'), 'Show only admin’s activity'))
+      await click(button('Clear filters'))
+
+      expect(admin.listAdminAudit).toHaveBeenLastCalledWith(pageQuery())
+      expect(pages().textContent).toContain('Page 1')
+    })
+
     it('hides the page controls when everything fits on one page', async () => {
       await render()
 
