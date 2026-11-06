@@ -88,6 +88,14 @@ describe("parseReview", () => {
       /never closed/);
   });
 
+  it("reads a backtick line with a backtick after the opener as text, not a fence", () => {
+    for (const line of ["```js` not a fence", "```inline code``` then prose", "  ```x```"]) {
+      const { findings } = parsed(review(`### [P3] Naming\n\`a.ts:1\`\n${line}\n### Missing authorization\n\`b.ts:2\``,
+        "MERGE-CONFIDENCE: 9"));
+      assert.deepEqual(findings.map(finding => finding.severity), ["P3", "P1"], line);
+    }
+  });
+
   it("reads past a fence that holds a shorter or different fence", () => {
     const { findings } = parsed(review("### [P2] Quoted\n`a.ts:1`\n````md\n```\n### [P0] in the quote\n~~~\n````\n### Missing authorization",
       "MERGE-CONFIDENCE: 9"));

@@ -30,8 +30,8 @@ const TAG = /\[(P[0-3])\]/g;
 const LEADING_TAG = /^\[(P[0-3])\]\s+(.+)$/;
 const LOCATION = /^`?([^\s`:]+):(\d+)(?:-\d+)?`?$/;
 const SCORE = /^MERGE-CONFIDENCE: (10|[0-9])$/;
-const FENCE_LIKE = /^\s*(```|~~~)/;
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+/** A fence opener, ignoring indentation. A backtick fence's info string has no backtick. */
+const FENCE_OPENER = /^(`{3,})[^`]*$|^(~{3,})/;
 const HEADING = /^ {0,3}(#{1,6})(?:\s|$)/;
 /** Headings markdown renders that the parser does not read: HTML, setext, quoted or listed ones. */
 const HTML_HEADING = /^\s*<h[1-6][\s>]/i;
@@ -84,13 +84,15 @@ function classifyLines(text: string): { lines: Line[] } | { error: string } {
       lines.push({ text: line, fenced: true });
       continue;
     }
-    const opener = FENCE_OPEN.exec(line);
+    const indent = /^\s*/.exec(line)?.[0] ?? "";
+    const opener = FENCE_OPENER.exec(line.slice(indent.length));
     if (opener) {
-      open = opener[1];
+      // Indented four spaces or a tab, renderers read it as code or as a list item's fence.
+      if (!/^ {0,3}$/.test(indent)) return { error: `ambiguous code fence ${JSON.stringify(line.trim())}` };
+      open = opener[1] ?? opener[2];
       lines.push({ text: line, fenced: true });
       continue;
     }
-    if (FENCE_LIKE.test(line)) return { error: `ambiguous code fence ${JSON.stringify(line.trim())}` };
     lines.push({ text: line, fenced: false });
   }
   if (open !== null) return { error: "a code fence is never closed" };
