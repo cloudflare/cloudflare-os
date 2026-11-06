@@ -6498,21 +6498,18 @@ export type CollaboratorRole = "build" | "use";
 
 /**
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
- * gadget's deployed UI. ("use" of every gadget at once can no longer be granted, though
- * collaborators who received it before gadgets were shared individually keep it; see
- * CollaboratorAccess.)
+ * gadget's deployed UI.
  */
 export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.
  * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
- * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, or is
- * "all" for a collaborator granted every gadget before gadgets were shared individually.
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open.
  */
 export type CollaboratorAccess =
   | {role: "build"}
-  | {role: "use", gadgetIds: WorkpieceId[] | "all"};
+  | {role: "use", gadgetIds: WorkpieceId[]};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -6543,9 +6540,8 @@ export type PermissionEdge = {
   role?: CollaboratorRole;
 
   /**
-   * The one gadget a "use" edge grants (for a share key edge, a copy of its link's). A "use" edge
-   * without one grants every gadget in the workspace; those are no longer created except to keep
-   * access someone already had (see removeCollaborator()'s `keepUsers`).
+   * The one gadget a "use" edge grants. Every "use" edge names one, including each of the edges
+   * a share link to several gadgets gives its recipient, one per gadget.
    */
   gadgetId?: WorkpieceId;
 } & ({
@@ -6559,7 +6555,7 @@ export type PermissionEdge = {
 
   /**
    * The id of the share link that was redeemed (the hash of its first key). Every key of the link
-   * resolves to this id, so redeeming any of them yields this one edge.
+   * resolves to this id, so redeeming any of them yields the same edges.
    */
   keyId: string;
 });
@@ -6605,10 +6601,14 @@ export type ShareLinkInfo = {
    */
   role?: CollaboratorRole;
 
-  /**
-   * The one gadget a "use" link grants. A "use" link without one grants every gadget, as links
-   * did before gadgets were shared individually; such a link can no longer be created, but it
-   * can still be copied and redeemed.
-   */
+  /** The one gadget a "use" link grants, unless it grants several (see `gadgets`). */
   gadgetId?: WorkpieceId;
+
+  /**
+   * The gadgets a "use" link to several gadgets grants, those of them that can still be shared,
+   * with their titles. Such a link is what became of a link to every gadget, made before gadgets
+   * were shared individually: it was frozen to the gadgets its workspace then held. No new one can
+   * be created, but it can still be copied and redeemed.
+   */
+  gadgets?: {id: WorkpieceId; title: string}[];
 };

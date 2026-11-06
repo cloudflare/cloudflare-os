@@ -12,8 +12,8 @@
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
 // The version-3 action-index backfill, the version-4 workpiece-type stamp, the version-5
-// blueprint-upstream backfill and the version-6 spawner-bindings move ride the same constructor
-// trigger, so their tests live here too.
+// blueprint-upstream backfill, the version-6 spawner-bindings move and the version-7 gadget-grant
+// freeze ride the same constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -428,6 +428,43 @@ describe("the spawner-bindings move via the Overseer constructor", () => {
       });
       expect(impl.storage.gatekeepers.get(2).creationSpec.config).not.toHaveProperty("env");
       expect(impl.storage.gatekeepers.get(1).bindings).toBeUndefined();
+    });
+  });
+});
+
+describe("the gadget-grant freeze via the Overseer constructor", () => {
+  it("freezes each grant of every gadget to the permanent gadgets before anything reads it",
+      async () => {
+    let created = new Date(0);
+    await inOverseer("gadget-grants", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      for (let [id, title] of [[100, "Trip"], [101, "Draft"], [102, "Budget"]] as const) {
+        impl.storage.gadgets.put({
+          type: "gadget", id, title, created, bindingName: title.toUpperCase(), bindings: {},
+          ...(id === 101 ? { pending: { chatId: 1, sequence: 0 } } : {}),
+        });
+      }
+      impl.storage.shareKeys.put({ id: "link", created, createdBy: "owner", role: "use" });
+      impl.storage.collaborators.put({ profile: { type: "user", id: "bob", name: "Bob" }, addedBy: [
+        { type: "user", sharer: "owner", created, role: "use", note: "trip" },
+        { type: "shareKey", keyId: "link", created, role: "use" },
+      ] });
+      impl.storage.version.put(6);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("gadget-grants", async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      // Gadget 101 is still provisional to a chat, so it is not among them.
+      expect(impl.storage.shareKeys.get("link")).toMatchObject({ role: "use", gadgetIds: [100, 102] });
+      expect(impl.storage.collaborators.get("bob").addedBy).toEqual([100, 102].map(gadgetId =>
+          ({ type: "user", sharer: "owner", created, role: "use", note: "trip", gadgetId }))
+          .concat([100, 102].map(gadgetId =>
+              ({ type: "shareKey", keyId: "link", created, role: "use", gadgetId }))));
+      impl.ownerProfileId = "owner";
+      expect((await impl.getSharingManager()).getEffectiveAccess("bob"))
+          .toEqual({ role: "use", gadgetIds: [100, 102] });
     });
   });
 });

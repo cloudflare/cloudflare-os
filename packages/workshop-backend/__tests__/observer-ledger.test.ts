@@ -1830,7 +1830,7 @@ describe("direct context authorization", () => {
     world.roles.set("bob", "build");
     world.roles.set("carol", { role: "use", gadgetIds: [GADGET] });
     world.roles.set("dave", { role: "use", gadgetIds: [GADGET + 1] });
-    world.roles.set("erin", { role: "use", gadgetIds: "all" });
+    world.roles.set("erin", { role: "use", gadgetIds: [GADGET, GADGET + 1, GADGET + 2] });
     // Frank holds a gadget whose agent spawner can drive A.
     world.roles.set("frank", { role: "use", gadgetIds: [GADGET + 2] });
     let everyone = ["bob", "carol", "dave", "erin", "frank"];

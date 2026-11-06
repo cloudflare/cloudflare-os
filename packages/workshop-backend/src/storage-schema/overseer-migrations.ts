@@ -19,6 +19,7 @@ import {
   type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
+import { freezeWorkspaceWideGrants } from "../sharing";
 import { retryOnDoReset } from "../do-retry";
 import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
 import type { createWorkshopLogger } from "../observability";
@@ -29,7 +30,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 6;
+export const OVERSEER_STORAGE_VERSION = 7;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -376,5 +377,28 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
+  });
+}
+
+/**
+ * Version 6 -> 7: each grant of every gadget, made before gadgets were shared individually, is
+ * frozen to the gadgets that can be shared now (see freezeWorkspaceWideGrants()), so that a gadget
+ * created later is shared only on purpose. Like every migration it runs before anything reads the
+ * sharing graph, so nobody is ever listed or authorized with a grant of every gadget. Synchronous
+ * and atomic, like migrateToWorkpieceTypes.
+ */
+export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 6) return;
+  host.ctx.storage.transactionSync(() => {
+    // The gadgets that can be shared: permanent ones, not those still provisional to a chat.
+    let gadgetIds = Array.from(host.storage.gadgets.list())
+        .filter(record => record.type === "gadget" && !record.pending)
+        .map(record => record.id)
+        .toSorted((a, b) => a - b);
+    freezeWorkspaceWideGrants(host.storage, gadgetIds);
+    host.storage.version.put(7);
+  });
+  host.logger.info("froze grants of every gadget", {
+    event: "storage.migration.gadget-grants.completed",
   });
 }
