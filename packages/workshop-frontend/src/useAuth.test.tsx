@@ -76,6 +76,7 @@ describe('useAuth error reporting identity', () => {
     containers.length = 0
     localStorage.clear()
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
     vi.clearAllMocks()
   })
 
@@ -154,11 +155,16 @@ describe('useAuth error reporting identity', () => {
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
   })
 
-  it('disconnects native push enrollment on CFOS logout', async () => {
+  it('disconnects native push enrollment and ends the native session on CFOS logout', async () => {
+    const sessionEnded = vi.fn<() => void>()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {}, returnToInstalls: () => {}, sessionEnded,
+    })
     localStorage.setItem('authToken', 'stored-token')
     const { controls } = await mount(stubPublicApi(person))
     act(() => controls.logout())
     expect(disconnectNativeNotificationEnrollment).toHaveBeenCalledOnce()
+    expect(sessionEnded).toHaveBeenCalledOnce()
   })
 
   it('finishes local logout when the native notification bridge throws', async () => {

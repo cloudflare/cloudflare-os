@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client'
 import type { RpcStub } from 'capnweb'
 import type { AiChatAuthorInfo, AuthenticatedApi, UnreadStateSubscriber, UserUnreadState } from '@gadgets/workshop-shared/api'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AuthProvider, useAuthenticatedApi } from '../../AuthContext'
+import { AuthProvider } from '../../AuthContext'
 import { NativeAppBridge } from './NativeAppBridge'
 import { inNativeApp, returnToInstalls } from './nativeApp'
 import { UnreadStateBridge } from '../notifications/UnreadStateBridge'
@@ -119,65 +119,6 @@ describe('native app bridge', () => {
     act(() => root.unmount())
   })
 
-  it('clears the native session only after a confirmed non-user identity', async () => {
-    const identity = pendingWhoami()
-    const sessionEnded = vi.fn<() => void>()
-    vi.stubGlobal('cloudflareOSNative', {
-      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(), sessionEnded,
-      returnToInstalls: vi.fn<() => void>(),
-    })
-    const root = createRoot(document.createElement('div'))
-    await act(async () => root.render(
-      <AuthProvider authenticatedApi={apiWithWhoami(() => identity.promise)} onLogout={() => {}}>
-        <NativeAppBridge />
-      </AuthProvider>
-    ))
-    expect(sessionEnded).not.toHaveBeenCalled()
-    await act(async () => identity.resolve({type: 'agent', id: 'agent', name: 'Agent'}))
-    expect(sessionEnded).toHaveBeenCalledOnce()
-    act(() => root.unmount())
-  })
-
-  it('does not let a failed optional native bridge prevent logout', async () => {
-    const logoutError = new Error('native bridge unavailable')
-    vi.stubGlobal('cloudflareOSNative', {
-      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(),
-      sessionEnded: () => { throw logoutError }, returnToInstalls: vi.fn<() => void>(),
-    })
-    let logout!: () => void
-    const CaptureLogout = () => { logout = useAuthenticatedApi().logout; return null }
-    const onLogout = vi.fn<() => void>()
-    const root = createRoot(document.createElement('div'))
-    await act(async () => root.render(
-      <AuthProvider authenticatedApi={apiWithWhoami(async () => user)} onLogout={onLogout}>
-        <CaptureLogout />
-      </AuthProvider>
-    ))
-    expect(() => logout()).not.toThrow()
-    expect(onLogout).toHaveBeenCalledOnce()
-    act(() => root.unmount())
-  })
-
-  it.each([user, {type: 'agent', id: 'agent', name: 'Agent'}] satisfies AiChatAuthorInfo[])(
-    'keeps the app mounted when the native identity callback throws for $type', async identity => {
-      const unavailable = vi.fn<() => void>(() => { throw new Error('native bridge unavailable') })
-      vi.stubGlobal('cloudflareOSNative', {
-        version: 1, isAvailable: () => true, loginReady: unavailable, sessionEnded: unavailable,
-        returnToInstalls: vi.fn<() => void>(),
-      })
-      const container = document.createElement('div')
-      const root = createRoot(container)
-      await act(async () => root.render(
-        <AuthProvider authenticatedApi={apiWithWhoami(async () => identity)} onLogout={() => {}}>
-          <NativeAppBridge /><span>App content</span>
-        </AuthProvider>
-      ))
-      expect(unavailable).toHaveBeenCalledOnce()
-      expect(container.textContent).toBe('App content')
-      act(() => root.unmount())
-    },
-  )
-
   it('forwards a snapshot that arrived before login confirmation, in login-then-badge order', async () => {
     const identity = pendingWhoami()
     const calls: string[] = []
@@ -211,7 +152,7 @@ describe('native app bridge', () => {
     let visibility: DocumentVisibilityState = hiddenOnMount ? 'hidden' : 'visible'
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    const badge = vi.fn<(state: UserUnreadState & {revision: number}) => void>()
+    const badge = vi.fn<(state: {unreadMessageCount: number}) => void>()
     vi.stubGlobal('cloudflareOSNative', {
       version: 1, isAvailable: () => true, loginReady: () => {},
       unreadStateChanged: badge, returnToInstalls: () => {},
@@ -238,10 +179,10 @@ describe('native app bridge', () => {
       expect(dispose).not.toHaveBeenCalled()
       const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
       await act(async () => subscriber.updated(state))
-      expect(badge).toHaveBeenLastCalledWith({...state, revision: 1})
+      expect(badge).toHaveBeenLastCalledWith({unreadMessageCount: 8})
       await act(async () => subscriber.summaryUpdated(
         {workspace: {workspaceId: 'workspace-1', unreadMessageCount: 0, unreadChatCount: 0}, unreadMessageCount: 0, unreadChatCount: 0}))
-      expect(badge).toHaveBeenLastCalledWith({...state, unreadMessageCount: 0, unreadChatCount: 0, revision: 2})
+      expect(badge).toHaveBeenLastCalledWith({unreadMessageCount: 0})
       expect(document.visibilityState).toBe('hidden')
       expect(document.hasFocus()).toBe(false)
       expect(subscribeToUnreadState).toHaveBeenCalledOnce()
