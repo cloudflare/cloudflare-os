@@ -1933,9 +1933,10 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
- * The size, in bytes, above which an RPC that can return a git object's (or file's) content
- * either whole or as a stream returns a stream: `GitCache.get()` returns a `Uint8Array` for an
- * object of at most this many bytes, and a `ReadableStream` for a larger one.
+ * The size, in bytes, above which an RPC does not return a git object's (or file's) content
+ * whole. `GitCache.get()` returns a `Uint8Array` for an object of at most this many bytes, and a
+ * `ReadableStream` for a larger one. `Overseer.readFilesAtCommit()` (see
+ * `@gadgets/workshop-shared/api`) names a larger file by its blob, to read as a stream.
  *
  * This is a choice of representation, not a storage limit: no object is refused for its size.
  * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
