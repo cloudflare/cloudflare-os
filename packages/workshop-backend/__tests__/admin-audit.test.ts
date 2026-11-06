@@ -353,13 +353,13 @@ describe("AdminAuditDurableObject.stats", () => {
     expect((await log.stats({ days: 30 }, RETENTION)).totalEvents).toBe(4);
   });
 
-  it("orders the top lists by count, then by id", async () => {
+  it("orders the top admins by count, then by id, counting both kinds of record", async () => {
     let log = auditLog();
     let records: AdminAuditRecord[] = [
-      access({ admin: "grace", workspaceId: "w2" }),
-      access({ admin: "grace", workspaceId: "w2" }),
-      access({ admin: "ada", workspaceId: "w3" }),
-      access({ admin: "linus", workspaceId: "w1" }),
+      access({ admin: "grace" }),
+      access({ admin: "grace" }),
+      access({ admin: "ada" }),
+      access({ admin: "linus" }),
       setting({ admin: "ada" }),
     ];
     for (let record of records) await log.append(record, RETENTION);
