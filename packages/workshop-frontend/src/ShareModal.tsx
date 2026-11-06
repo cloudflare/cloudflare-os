@@ -22,7 +22,6 @@ import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
-import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 
 /**
  * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
@@ -330,8 +329,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const landedTimerRef = useRef<number | null>(null)
   const [directoryPortalContainer, setDirectoryPortalContainer] =
     useState<HTMLDivElement | null>(null)
-  // Kumo portals tooltips to the body, beneath the dialog's layer; this host sits above it.
-  const tooltipPortalContainer = useDialogSelectPortalContainer()
+  const [gadgetTooltip, setGadgetTooltip] = useState<{ linkId: string; pinned: boolean } | null>(null)
+  const gadgetTooltipId = useId()
   const [scrolled, setScrolled] = useState(false)
   const [landedPersonIds, setLandedPersonIds] = useState<ReadonlySet<string>>(NO_IDS)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
@@ -497,6 +496,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         setEditingShareLinkNote('')
         setCopiedLinkId(null)
         setCopyingLinkId(null)
+        setGadgetTooltip(null)
         if (copiedTimerRef.current !== null) {
           window.clearTimeout(copiedTimerRef.current)
           copiedTimerRef.current = null
@@ -1316,21 +1316,37 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                           />
                         ) : (
                           <>
-                            {/* A link to several gadgets lists them on hover or keyboard focus. It can
-                                still be copied, though no new one can be made. */}
                             {sk.gadgets && (
                               <Tooltip
-                                container={tooltipPortalContainer}
+                                open={open && gadgetTooltip?.linkId === sk.linkId}
+                                onOpenChange={(nextOpen, details) => {
+                                  // The button owns tap toggling; Kumo otherwise closes on pointerdown.
+                                  if (details.reason === 'trigger-press') return
+                                  setGadgetTooltip(current => {
+                                    // Hybrid devices synthesize mouseleave after a tap.
+                                    if (details.reason === 'trigger-hover' && current?.pinned) return current
+                                    if (nextOpen) return { linkId: sk.linkId, pinned: false }
+                                    return current?.linkId === sk.linkId ? null : current
+                                  })
+                                }}
                                 content={
-                                  <ul className="m-0 max-w-xs list-none p-0">
-                                    {sk.gadgets.map(gadget => <li key={gadget.id} className="truncate">{gadget.title}</li>)}
-                                  </ul>
+                                  <div role="tooltip" id={`${gadgetTooltipId}-${sk.linkId}`} data-share-link-gadgets>
+                                    <ul className="m-0 max-h-[min(20rem,calc(var(--available-height)_-_1rem))] max-w-xs list-none overflow-y-auto overscroll-contain p-0">
+                                      {sk.gadgets.map(gadget => <li key={gadget.id} className="truncate">{gadget.title}</li>)}
+                                    </ul>
+                                  </div>
                                 }
                                 asChild
                               >
-                                <span tabIndex={0} className="cursor-default rounded-md px-2 text-[12px] text-kumo-subtle underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring">
+                                <button
+                                  type="button"
+                                  aria-describedby={gadgetTooltip?.linkId === sk.linkId ? `${gadgetTooltipId}-${sk.linkId}` : undefined}
+                                  onClick={() => setGadgetTooltip(current => current?.linkId === sk.linkId
+                                    ? null : { linkId: sk.linkId, pinned: true })}
+                                  className="cursor-pointer rounded-md px-2 text-[12px] text-kumo-subtle underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+                                >
                                   {sk.gadgets.length} {sk.gadgets.length === 1 ? 'gadget' : 'gadgets'} · Cannot edit
-                                </span>
+                                </button>
                               </Tooltip>
                             )}
                             {canUseShareLinks && (
