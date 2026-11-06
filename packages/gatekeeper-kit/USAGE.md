@@ -640,9 +640,11 @@ for mapping provisional IDs to provider IDs.
 
 ## Observations
 
-Every method that returns provider data must await `authorizeObservation()` before returning it:
-fetch, authorize, return. New gatekeepers report **all** access dependencies on **every** observation
-as explicit `subresources`, and put all observer authorization in `verifyObserverAccess()`.
+Every method that returns information to its caller must await `authorizeObservation()` before
+returning it: fetch, authorize, return. That includes provider data (anything that came from the
+provider's API, fetched now or cached earlier), values derived from it, and simulated state.
+Report all access dependencies as explicit `subresources`, and keep observer authorization in
+`verifyObserverAccess()`. [Simulated reads](#simulation-and-subresources) report the same IDs.
 Do not build observer rosters, observed-set logs, `excludeObservers`, or legacy trackers for new code.
 
 The shared `ObservationDescription.subresources` property is still optional for compatibility.
@@ -687,15 +689,53 @@ data. Cached reads, nested resource capabilities, cursor pages, and hook deliver
 obligation. Hooks authorize through the fresh queue from `startHook()` before invoking the callback;
 derive requirements from current binding state, not fields absent from older persistent hook props.
 
+### Simulation and subresources
+
+Simulation doesn't change what a read reports:
+
+- A simulated read reports every real resource its data came from, in the provider's current
+  (unapplied) state, plus every container the simulated view places it in. A pending move from P
+  to Q reports both until it applies.
+- Content the gatekeeper itself fetched for an action (previous values or a server-side copy source)
+  keeps its source's IDs when stored in pending-action state and replayed.
+- Pending permission changes (sharing, visibility, membership) never relax what a read reports.
+  `verifyObserverAccess()` checks live provider state only, never simulated state.
+- Caller-supplied content and generated provisional IDs add no source IDs by themselves. The kernel
+  does not propagate source requirements with text an agent quotes into an action argument. A read
+  returning only such content still authorizes, reporting `[]` plus any container or account
+  requirement.
+- Do not invent IDs for pending actions or simulated resources.
+
+While a Workshop `createExternalResource` creation is pending, the kernel records nothing its
+simulated reads report (`docs/observers.md` §10), so that resource must hold no provider data.
+
+Keep pending-action and cached state in the connection's facet storage, never in the account
+Durable Object or anywhere else shared across connections: requirements are recorded per
+connection. Within one connection, every chat and gadget reads that shared state. Authorize each
+read through the reading session's own approval queue, never one captured when an action was
+submitted or stored on the facet: that queue attributes the read to its chat or gadget. Never assume
+the reader already received what it replays. Re-reporting adds no admission work, since admission
+reads distinct requirement keys, though each read still checks its own audience.
+
+Content one chat writes into a pending action reaches every other chat and gadget on the connection
+before anyone approves it, with no requirement, and stays disclosed if the action is rejected. A
+chat's audience is its "build" collaborators while a gadget's includes "use" collaborators, so text
+a chat quotes from a resource checked only against "build" collaborators can reach "use"
+collaborators this way. The kernel accepts this as indirect disclosure (`docs/observers.md` §10):
+approval gates what reaches the provider, not what other contexts in the workspace see.
+
 ### New-gatekeeper observer contract
 
 New gatekeepers follow these rules, although the current interface and its JSDoc still describe the
 legacy observer methods:
 
-- Every observation explicitly reports all dependencies, even if another read already reported them.
-  Workshop records requirements per chat or gadget, not just per binding.
-- `[]` means **no observer-access restriction**. It never means a binding/admission baseline was
-  already checked. If membership restricts a read, include the workspace/tenant resource and check it.
+- Every read that returns information to its caller explicitly reports all its dependencies, even
+  ones an earlier read already reported, simulated reads included. Workshop records requirements
+  per chat or gadget, not per binding.
+- `[]` adds **no requirement**; requirements already recorded stay in force. It never means a
+  binding/admission baseline was already checked. Report membership requirements explicitly; when
+  any account on a deployment-fixed service instance may read everything returned, use
+  [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), not `[]`.
 - Private-only reads report the actual mailbox, account, document, or other resource ID;
   `verifyObserverAccess()` denies observers who may not read it. Neither `[]` nor a synthetic
   `private` policy marker expresses that requirement.
@@ -727,13 +767,12 @@ async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Prom
 async removeObserver(_id: string): Promise<void> {}
 ```
 
-`hasCollectionAccess` is the helper's existing option name; here its IDs are canonical subresource
-IDs, not a tracked collection set. The provider's `canAccess` implementation must parse and validate
-IDs, reject unknown kinds, and verify every requirement using the observer's own account. Check
-workspace/tenant membership explicitly and enforce private-only resources there too. Throw when
-access cannot be determined (expired credentials or a provider outage), rather than disguising
-uncertainty as a known denial. The helper stores no verifier or observer-ID verdict: each call uses
-the verifier supplied with that call, since an observer may reconnect with another account.
+`hasCollectionAccess` is the helper's existing option name; its IDs are subresource requirements,
+not a tracked collection set. The provider's `canAccess` must validate IDs, reject unknown kinds,
+and check every requirement with the observer's own account, including membership and private-only
+restrictions. Throw when access is indeterminate (expired credentials or a provider outage).
+The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
+since an observer may reconnect with another account.
 
 An existing `ObservationGate` converts a read with
 `gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
@@ -795,6 +834,67 @@ An account-identity comparison can implement a private policy; it is not a deleg
 probe. If no adequate oracle exists, choose A, not D. See the worked patterns below for real examples
 and limits of the existing implementations.
 
+### Connection-only access (`global`)
+
+Use `GLOBAL_SUBRESOURCE_ID` only when the deployed Worker's configuration fixes the one service
+instance every account of this vendor connects to, and any account connected to it may read
+everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, role or scope
+differences that change read visibility, and private account data in the answer disqualify it.
+
+`"global"` names no instance; the deployment supplies its meaning. When accounts choose their
+instance (a self-hosted URL, a cloud or site ID, an Access team domain, a directory tenant), report
+a structured instance ID instead, such as `instance/<stable instance id>`, and have the oracle
+compare it with the observer's own instance. The [tenant identity](#subresource-ids-name-resources)
+rules apply: repointing a deployment that has recorded `"global"` requires an explicit migration.
+
+For example, a catalog whose origin is fixed in the Worker's `env`, behind one Access policy that
+grants instance-wide read access, can offer project/item bindings without separate sharing ACLs.
+Each read reports the same requirement:
+
+```ts
+import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
+
+await queue.authorizeObservation({
+  title: "Read project catalog",
+  description: "List projects from the connected catalog.",
+  subresources: [GLOBAL_SUBRESOURCE_ID],
+});
+```
+
+Report it on every read that returns information, including empty results, cache hits, cursor
+pages, simulated reads, and hooks. Bindings still enforce their project/item scope; observer access
+does not expand the caller's grant.
+
+The observer's verifier delegates to its own account. Check a fixed, deployment-defined catalog-read
+entitlement, not whether the observer's grant matches the owner's. That entitlement must cover every
+read reporting `global`; if different reads need different entitlements, use distinct resource kinds
+instead. Because every account here connects to the `env`-fixed origin, the account's oracle checks
+its own grant, using `getCredentials()` from the
+[credential sequence](#2-expose-the-account-rpc-methods):
+
+```ts
+async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
+  if (ids.some(id => id !== GLOBAL_SUBRESOURCE_ID)) {
+    throw new Error("Unknown subresource ID.");
+  }
+  // Throws when the grant is expired, dead on refresh, or disconnected.
+  const { creds } = await this.getCredentials();
+  // Check the fixed catalog-read entitlement, independently of the owner's role or scopes.
+  return ids.map(() => grantCoversCatalogReads(creds));
+}
+```
+
+`getCredentials()` refreshes only when the access token expires, so this oracle notices an
+observer's removal from the instance no sooner than that: within one token lifetime if refresh
+re-evaluates access, and never for a credential that does not expire. If that window is too long,
+add one identity call with the observer's credentials, not a probe per object. Credential failures
+must throw. Document the window you accept.
+
+Compare the sentinel directly before `parseSubresourceId()`, which rejects it. The kernel treats
+it as an ordinary requirement, not a wildcard or automatic grant. It cannot replace independent
+membership or resource checks. Existing gatekeepers must still follow the
+[historical-enforcement migration rules](#existing-code-migration-only-preserve-historical-enforcement).
+
 ### Worked patterns from the Google migrations
 
 These examples were audited against the merged migration PRs, including their implementations and
@@ -810,7 +910,7 @@ provider IDs, not string interpolation.
 | **BigQuery project/dataset/table grants** ([#983](https://github.com/cloudflare/cloudflare-os/pull/983), `BigQuerySessionImpl`) | C: `bigquery/project/<projectId>/dataset/<datasetId>` for every dataset in provider dry-run `referencedTables`, deduplicated across joins. The same dataset unit is used under narrower table grants; table listings keep it even when empty. | Scope validation and read-only SQL checks are separate from observer access. **Existing limitation:** `datasets.get` proves metadata access, not table-row or row/column-policy equivalence. Copy dependency derivation, not this probe as proof of query-result access. |
 | **Gmail mailbox, label, or search grants** ([#984](https://github.com/cloudflare/cloudflare-os/pull/984), `gmail.ts`) | A: every read, cursor page, nested message/attachment capability, and hook reports `gmail/user/<Google-sub>`. A label or search narrows authority, not the mailbox's sharing ACL. | Compare the observer's stable provider subject to the mailbox owner. This is a private-identity policy, not delegated-mailbox ACL verification or a probe of current Gmail content scopes. |
 | **Chat account versus conversation/thread** ([#985](https://github.com/cloudflare/cloudflare-os/pull/985), `chat.ts`) | Account binding: A, `chat/user/<Google-sub>` on **all** reads, including discovery, nested capabilities, and hooks. Conversation/thread content: B, `chat/space/<spaceId>`, including empty pages. Member reads instead use `chat/spaceMembers/<spaceId>`. | Identity for account reads; `getSpace` for space visibility; `listMembers` for the independently protected member list. Space-level reporting relies on filtering out app-private messages with narrower audiences. |
-| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Tabs, ranges, slides, notes, thumbnails, and cached/simulated reads retain the whole-file requirement. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
+| **Direct Docs / Sheets / Slides** ([#986](https://github.com/cloudflare/cloudflare-os/pull/986), `google.ts`, `sheets.ts`, `slides.ts`; IDs from `file-subresources.ts`) | B: `docs/document/<id>`, `sheets/spreadsheet/<id>`, or `slides/presentation/<id>`. Tabs, ranges, slides, notes, thumbnails, and cached or simulated reads report the whole file. | Open the corresponding native file with the observer's credentials. Read visibility, not edit permission, is the intended check. Do not invent range/tab ACLs when the provider shares the whole file. |
 | **Drive account discovery and exact file** (same PR, `drive-session.ts`) | Account list/search: C, `drive/file/<id>` per returned metadata row, including folder rows. Exact-file reads/listings: B, the bound file ID even if a trashed item is omitted. | File visibility uses the observer's Drive grant and a batched `files.get` metadata lookup. This implementation deliberately treats an empty account-wide list/search as `[]`; that is a disclosure policy, not a general rule for absence. |
 | **Drive positioned folder / descendant native reads** (same PR) | C: current `drive/folder/<id>` plus each returned child `drive/file/<id>`; opening a child folder reports both folder IDs. Searching selected child folders retains all searched folder IDs even with no hits. Folder-derived native reads carry folder + file + native-product requirements on every read. | Folder enumeration requires a live Drive folder with `capabilities.canListChildren`, not merely metadata visibility. The caller's live ancestry checks separately prevent moves, shortcuts, or foreign IDs from escaping the grant. A selected shared-drive root is a concrete folder, not a new shared-drive observer kind. |
 
@@ -826,9 +926,9 @@ Several details prevent overly broad recipes:
   dataset/table binding rejects tableless SQL when it cannot prove scope. Empty project-level dataset
   discovery also currently reports `[]`, unlike an empty table list within a dataset. Explain the
   policy before copying any of those empty cases.
-  Uncreated caller-authored Docs/Sheets/Slides resources can also report `[]` when no provider data
-  or other account/container requirement is involved. This exception does not apply to simulation
-  over an existing resource, which retains that resource's requirements.
+  A Docs/Sheets/Slides resource not created yet, built only from caller-written content, also
+  reports `[]`. Simulation over an existing file still reports that file; see
+  [simulation and subresources](#simulation-and-subresources).
 - **Private versus shareable discovery.** Chat account discovery is private even when its returned
   spaces have individual ACLs; Drive discovery reports each returned file instead.
   Inspect the entire response, including personal read state and membership, rather than deciding
@@ -1007,8 +1107,10 @@ workspace its sharing until the kernel distinguishes the two.
 
 ### Subresource IDs name resources
 
-Build every `ObservationDescription.subresources` ID with `formatSubresourceId()` from
-`./subresource-ids`, and read them back in `verifyObserverAccess()` with `parseSubresourceId()`:
+Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global)
+on a deployment-fixed instance.
+Build every **structured resource** ID with `formatSubresourceId()` from `./subresource-ids`, and
+read it back in `verifyObserverAccess()` with `parseSubresourceId()`:
 
 ```ts
 formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId }] });
@@ -1023,31 +1125,17 @@ distinct product families with their own resources, as Google does with Gmail, D
 A single-product gatekeeper omits it instead of repeating its own name.
 
 Cloud IDs, workspace URLs, organization IDs, and similar provider-instance identifiers are **tenant
-identities**. Include a tenant fragment in another resource's ID hierarchy **if and only if** that
-tenant is not permanently fixed by the deployed gatekeeper Worker's configuration. A tenant selected
-through a connected account, resource binding, or URL is not deployment-fixed. One OAuth app can
-serve multiple tenants; sharing an OAuth client ID does not make tenant identity implicit.
+identities**. Qualify a resource with its tenant, using real resource kinds such as Slack's
+`workspace/<teamId>/conversation/<conversationId>`, unless the deployed Worker's configuration
+permanently fixes that tenant. A tenant chosen through a connected account, resource binding, or
+URL is not fixed, and one OAuth app can serve many tenants. A fixed tenant left implicit, as in
+`GLOBAL_SUBRESOURCE_ID`, must stay fixed while recorded requirements exist: repointing the
+deployment needs an explicit migration, never a silent reinterpretation of old IDs.
 
-For a multi-tenant deployment, qualify the resource with its tenant. A deployment permanently tied
-to one tenant omits the redundant prefix; its verifier resolves the tenant from trusted deployment
-configuration instead:
-
-```ts
-// Multi-tenant deployment: tenant/<escaped cloudId>/page/<escaped pageId>.
-formatSubresourceId({ fragments: [{ name: "tenant", id: cloudId }, { name: "page", id: pageId }] });
-// Deployment permanently tied to one tenant: page/<escaped pageId>.
-formatSubresourceId({ fragments: [{ name: "page", id: pageId }] });
-```
-
-Prefer an immutable provider tenant ID over a mutable workspace URL. If the provider identifies a
-tenant by URL, normalize it consistently and preserve its identity across renames and reconnects;
-canonical escaping alone does not make it stable. An implicit tenant must remain fixed for as long
-as historical requirements exist: repointing a deployment to another tenant requires an explicit
-migration, never silently interpreting old IDs in the new tenant.
-
-This prefix rule qualifies another resource's identity; it does not remove access requirements.
-Report and verify independently required tenant membership even when the tenant is deployment-fixed.
-Conversely, nesting under a tenant does not imply that its membership check covers child-resource ACLs.
+Prefer stable provider IDs; escaping does not make a mutable URL or account-relative alias stable.
+Recorded IDs must retain their meaning across renames and reconnects. Report independently required
+tenant membership and child-resource permissions separately, even when the tenant is implicit;
+nesting does not imply access inheritance.
 
 `parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
 resource always reports one string. That string is what the Workshop deduplicates and indexes.

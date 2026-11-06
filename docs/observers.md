@@ -965,6 +965,10 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
   recorded as requirements on the audit record. A denial or failed check refuses the read and
   records nothing.
 - **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
+- **`[GLOBAL_SUBRESOURCE_ID]` (`["global"]`):** the gatekeeper verifies that the observer's chosen
+  account for the vendor can read everything disclosed on the one service instance the deployed
+  Worker's configuration fixes. The kernel treats it as an ordinary requirement. See the kit's
+  [connection-only recipe](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first).
@@ -1040,10 +1044,11 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
 - **Direct contexts only.** A chat binding read records requirements only on that chat, checked
   against "build" collaborators; a gadget binding read only on that gadget, checked against
   "build" collaborators and those holding a gadget that reaches it. Gadget session access, root
-  RPC calls, forged restore stubs, callbacks, spawned chats, code edits, merges, arguments and
-  persistent writes transfer nothing between contexts. This deliberately permits indirect
-  disclosure, such as chat-derived data reaching a gadget without checking its "use"
-  collaborators against the chat's requirements.
+  RPC calls, forged restore stubs, callbacks, spawned chats, code edits, merges, arguments,
+  persistent writes, and a gatekeeper's simulation of pending actions transfer nothing between
+  contexts. This deliberately permits indirect disclosure, such as chat-derived data reaching a
+  gadget without checking its "use" collaborators against the chat's requirements, including
+  content a chat queued in an action that is not yet approved, or is later rejected.
   Attribution follows the original authorizer, not wherever its capability is passed.
 - **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
   outlives its executeCode call cannot authorize an observation that reports subresources. Reads
