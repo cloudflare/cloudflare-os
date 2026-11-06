@@ -5,7 +5,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
 import {
-  adminAuditStatsDays, adminListLimit, cutAdminAuditText, minAdminAuditRetentionDays,
+  adminAuditStatsDays, adminListLimit, auditOwnerId, cutAdminAuditText, minAdminAuditRetentionDays,
 } from "./admin-access.js";
 import { utcDayKey } from "./ai-gateway-billing/limits/config.js";
 
@@ -90,10 +90,10 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
    * Prunes first with `retentionDays`, which only a caller holding the authoritative config passes:
    * an AdminWorkspaceView reads the KV mirror, whose retention may be one an admin has since raised,
    * so its records are stored without pruning, and the next listing prunes. An access record's
-   * workspaceTitle and workspaceOwner are stored cut by cutAdminAuditText() to
-   * MAX_ADMIN_AUDIT_ARG_LENGTH whatever the caller sent: the fields a workspace's members choose,
-   * neither bounded otherwise. An access record without `exposed` fails the table's CHECK, so its
-   * append throws. */
+   * workspaceTitle is stored cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH, and its
+   * workspaceOwner as auditOwnerId() gives it, whatever the caller sent: the fields a workspace's
+   * members choose, neither bounded otherwise. An access record without `exposed` fails the table's
+   * CHECK, so its append throws. */
   append(record: AdminAuditRecord, retentionDays?: number): void {
     if (retentionDays !== undefined) this.#prune(retentionDays);
     // Each field is stored once, in its column or in the JSON, never both: a title stored twice let
@@ -114,9 +114,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       // holds the bound itself.
       workspaceTitle = typeof title === "string"
           ? cutAdminAuditText(title, MAX_ADMIN_AUDIT_ARG_LENGTH) : null;
-      rest = typeof owner === "string"
-          ? { ...fields, workspaceOwner: cutAdminAuditText(owner, MAX_ADMIN_AUDIT_ARG_LENGTH) }
-          : fields;
+      rest = typeof owner === "string" ? { ...fields, workspaceOwner: auditOwnerId(owner) } : fields;
     } else {
       let { kind: _kind, at: _at, admin: _admin, ...fields } = record;
       rest = fields;
@@ -164,9 +162,9 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       params.push(query.exposed);
     }
     if (query.owner !== undefined) {
-      // Cut as append() cuts it, so a long owner's whole id finds its records.
+      // As append() keeps it, so a long owner's whole id finds its records, and only its records.
       where.push(`${OWNER} = ?`);
-      params.push(cutAdminAuditText(query.owner, MAX_ADMIN_AUDIT_ARG_LENGTH));
+      params.push(auditOwnerId(query.owner));
     }
     if (query.since !== undefined) {
       let since = query.since.getTime();

@@ -1893,10 +1893,11 @@ export type AdminAccessRecord = {
   via: AdminVia;
   /** The workspace. */
   workspaceId: string;
-  /** The workspace's owner, by canonical user id, as the workspace knew them when the view opened,
-   * cut like an argument (see MAX_ADMIN_AUDIT_ARG_LENGTH), since a username has no length limit of
-   * its own. For an open refused before it reached the workspace, the owner the deployment
-   * directory lists, cut the same way, "" when it lists none. */
+  /** The workspace's owner, by canonical user id, as the workspace knew them when the view opened.
+   * A username has no length limit of its own, so an id over MAX_ADMIN_AUDIT_ARG_LENGTH characters
+   * is kept as its start, "…#" and a digest of the whole id, that many characters in all: two
+   * long ids stay apart. For an open refused before it reached the workspace, the owner the
+   * deployment directory lists, kept the same way, "" when it lists none. */
   workspaceOwner: string;
   /** The workspace's title when the call was made, cut like an argument (see
    * MAX_ADMIN_AUDIT_ARG_LENGTH), since a title has no length limit of its own. For an open refused
@@ -2029,7 +2030,7 @@ export type AdminAuditQuery = {
   /** Only records of access to this workspace. At most 1000 characters. */
   workspace?: string;
   /** Only records of access to workspaces this user owns (see AdminAccessRecord.workspaceOwner), by
-   * canonical user id, whole or cut as the records keep it. At most 1000 characters. */
+   * canonical user id, whole or as the records keep it. At most 1000 characters. */
   owner?: string;
   /** Only records of calls into a workspace whose answer exposed this (see
    * AdminAccessRecord.exposed): "content" lists the content reads. Only access records carry it,
