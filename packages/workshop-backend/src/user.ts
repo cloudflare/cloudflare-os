@@ -778,16 +778,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
   }
 
-  #unreadCounts() {
-    let unreadChatCount = 0, unreadMessageCount = 0;
-    for (let cursor of this.#readCursors.values()) {
-      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted) continue;
-      unreadMessageCount += cursor.unreadCount;
-      if (cursor.unreadCount > 0) unreadChatCount++;
-    }
-    return {unreadChatCount, unreadMessageCount};
-  }
-
   #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
     let chats: ChatReadState[] = [];
     if (scope !== "summary") {
@@ -979,54 +969,41 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // This version belongs to the existing push-service replacement protocol, not read state.
   #queueBadge(force = false): void {
     if (!this.env.NOTIFICATION_SERVICE_URL ||
-        (!Object.keys(this.storage.phoneNotificationSubscriptions.get()).length &&
-          !Object.keys(this.storage.browserNotificationSubscriptions.get()).length)) return;
+        !Object.keys(this.storage.phoneNotificationSubscriptions.get()).length) return;
     let previous = this.storage.notificationBadge.get();
-    let {unreadMessageCount} = this.#unreadCounts();
+    let {unreadMessageCount} = this.#unreadSummary();
     if (!force && previous.count === unreadMessageCount) return;
     this.storage.notificationBadge.put({version: previous.version + 1,
-      count: unreadMessageCount, retryAt: Date.now() + 1_000});
+      count: unreadMessageCount, retryAt: Math.min(previous.retryAt ?? Infinity, Date.now() + 1_000)});
     this.ctx.waitUntil(this.#armExpirySweep());
   }
 
   async #flushBadge(): Promise<void> {
     let pending = this.storage.notificationBadge.get();
-    if (pending.retryAt === undefined || pending.retryAt > Date.now()) return;
-    if ((!Object.keys(this.storage.phoneNotificationSubscriptions.get()).length &&
-          !Object.keys(this.storage.browserNotificationSubscriptions.get()).length)) {
-      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
-      return;
-    }
-    // The retry deadline precedes the network effect, so eviction/lost ACK can only replay a
-    // versioned replacement, never lose the pending intent or duplicate an alert.
+    if (pending.count === null || pending.retryAt === undefined || pending.retryAt > Date.now()) return;
+    // Persist the retry before dispatch, so eviction or a lost ACK replays the same replacement.
     this.storage.notificationBadge.put({...pending, retryAt: Date.now() + 30_000});
     await this.#armExpirySweep();
-    if (pending.count === null) {
-      this.#queueBadge();
-      return;
-    }
-    let failed = false;
-    let stores = [this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions];
-    for (let store of stores) for (let [deviceKey, subscriptionId] of Object.entries(store.get())) {
-      let currentBadge = this.storage.notificationBadge.get();
-      if (currentBadge.version !== pending.version || currentBadge.count !== pending.count) return;
-      try {
-        if (!await deliverBadge(this.env, subscriptionId, pending.version, pending.count)) {
-          let current = store.get();
-          if (current[deviceKey] === subscriptionId) {
-            delete current[deviceKey];
-            store.put(current);
-          }
+    let store = this.storage.phoneNotificationSubscriptions;
+    let {version, count} = pending;
+    let results = await Promise.allSettled(Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
+      if (!await deliverBadge(this.env, subscriptionId, version, count)) {
+        let current = store.get();
+        if (current[deviceKey] === subscriptionId) {
+          delete current[deviceKey];
+          store.put(current);
         }
-      } catch {
-        failed = true;
-        logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred"});
       }
+    }));
+    let failed = false;
+    for (let result of results) if (result.status === "rejected") {
+      failed = true;
+      logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred", error: result.reason});
     }
-    let currentBadge = this.storage.notificationBadge.get();
-    if (!failed && currentBadge.version === pending.version && currentBadge.count === pending.count) {
-      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+    if (!failed && this.storage.notificationBadge.get().version === version) {
+      this.storage.notificationBadge.put({version, count});
     }
+    await this.#armExpirySweep();
   }
 
   /**
@@ -1144,7 +1121,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     });
     if (cursors.length) this.#unreadChanged();
-    else this.#queueBadge(); // A cold deletion can still change a previously delivered badge.
   }
 
   /**
@@ -1182,11 +1158,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (acknowledged) return;
       signal.throwIfAborted();
       if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
-      this.#queueBadge();
-      let badge = this.storage.notificationBadge.get();
       let results = await Promise.allSettled(subscriptions.map(async ({store, deviceKey, subscriptionId}) => {
-        if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification,
-            badge.count !== null ? {count: badge.count, version: badge.version} : undefined, signal)) return;
+        if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification, signal)) return;
         // Retire only the failed subscription, preserving a registration made during delivery.
         let { [deviceKey]: current, ...others } = store.get();
         if (current === subscriptionId) store.put(others);

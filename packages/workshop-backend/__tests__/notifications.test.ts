@@ -436,35 +436,60 @@ describe("UserDurableObject notifications", () => {
     });
   });
 
-  it("bounds a stalled badge request, reaches the next device, and retains the retry", async () => {
+  it("sends phone badges in parallel without sending to browser subscriptions", async () => {
+    const fetcher = stubService();
+    const release = Promise.withResolvers<Response>();
+    await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      storage.phoneNotificationSubscriptions.put({phone: ONE, tablet: TWO});
+      storage.browserNotificationSubscriptions.put({browser: THREE});
+      storage.notificationBadge.put({version: 1, count: 0, retryAt: 0});
+      fetcher.mockImplementation(() => release.promise);
+      const alarm = user.alarm();
+      try {
+        await vi.waitFor(() => expect(bodies(fetcher, "/v1/badges")
+          .map(({subscriptionId}) => subscriptionId).toSorted()).toEqual([ONE, TWO]));
+      } finally {
+        release.resolve(new Response(null, {status: 202}));
+        await alarm;
+      }
+      expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0});
+      expect(await ctx.storage.getAlarm()).toBeNull();
+    });
+  });
+
+  it("does not queue badge requests for browser-only users", async () => {
+    const fetcher = stubService();
+    await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      storage.browserNotificationSubscriptions.put({browser: ONE});
+      const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
+      await user.newWorkspace(workspaceId, "Workspace");
+      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+        firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
+      expect(storage.notificationBadge.get()).toEqual({version: 0, count: null});
+    });
+    expect(bodies(fetcher, "/v1/badges")).toEqual([]);
+  });
+
+  it("keeps the first badge deadline while more messages arrive", async () => {
     vi.useFakeTimers();
-    const fetcher = stubService(), started = Promise.withResolvers<void>();
-    const stalled = Promise.withResolvers<Response>();
+    stubService();
     await runInDurableObject(env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`), async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
       storage.phoneNotificationSubscriptions.put({phone: ONE});
-      storage.browserNotificationSubscriptions.put({browser: TWO});
-      storage.notificationBadge.put({version: 1, count: 0, retryAt: 0});
-      fetcher.mockImplementationOnce((_input, init) => {
-        init?.signal?.addEventListener("abort", () => stalled.reject(init.signal!.reason), {once: true});
-        started.resolve();
-        return stalled.promise;
-      });
-      const alarm = user.alarm();
-      try {
-        await started.promise;
-        expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
-        await vi.advanceTimersByTimeAsync(15_000);
-        await alarm;
-        expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
-        expect(bodies(fetcher, "/v1/badges").map(({subscriptionId}) => subscriptionId)).toEqual([ONE, TWO]);
-        expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
-      } finally { stalled.reject(new Error("Release stalled request")); await alarm; }
-      storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
-      await user.alarm();
-      expect(storage.notificationBadge.get()).toEqual({version: 1, count: 0});
-      expect(bodies(fetcher, "/v1/badges").map(({subscriptionId}) => subscriptionId)).toEqual([ONE, TWO, ONE, TWO]);
+      const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
+      await user.newWorkspace(workspaceId, "Workspace");
+      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+        firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
+      const deadline = storage.notificationBadge.get().retryAt;
+      await vi.advanceTimersByTimeAsync(400);
+      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 1,
+        firstVisibleSequence: 2, latestVisibleSequence: 2, notifications: []});
+      expect(storage.notificationBadge.get()).toMatchObject({count: 2, retryAt: deadline});
     });
   });
 
@@ -495,13 +520,15 @@ describe("UserDurableObject notifications", () => {
     expect(bodies(fetcher, "/v1/badges").map(({count}) => count)).toEqual([9]);
   });
 
-  it.each(["workspaceRemoved", "deleteWorkspace"] as const)("invalidates a cold badge on %s without cached cursors", async removal => {
+  it.each(["workspaceRemoved", "deleteWorkspace"] as const)("clears a cold badge on %s from durable cursors", async removal => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Deleted workspace");
       const storage = makeUserStorage(ctx.storage);
+      storage.chatReadCursors.put({workspaceId, chatId: 1, readThroughSequence: -1,
+        readThroughVisibleSequence: 0, latestVisibleSequence: 8, unreadCount: 8, notifiedThroughSequence: 7});
       storage.phoneNotificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
     });
@@ -509,7 +536,7 @@ describe("UserDurableObject notifications", () => {
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
-      expect([...storage.chatReadCursors.list()]).toEqual([]);
+      expect([...storage.chatReadCursors.list()]).toHaveLength(1);
       await user[removal](workspaceId);
       expect(storage.notificationBadge.get().retryAt).toBeDefined();
     });
@@ -666,16 +693,6 @@ describe("UserDurableObject notifications", () => {
     });
   });
 
-  it("stops reconstruction retries when no registered devices remain", async () => {
-    const fetcher = stubService();
-    await inUser(async user => {
-      const storage = Reflect.get(user, "storage") as ReturnType<typeof makeUserStorage>;
-      storage.notificationBadge.put({version: 7, count: null, retryAt: 0});
-      await user.alarm();
-      expect(storage.notificationBadge.get()).toEqual({version: 7, count: null});
-    });
-    expect(fetcher).not.toHaveBeenCalled();
-  });
   it("leaves a notification an open tab shows to that tab", async () => {
     expect(await publish(async () => {})).toEqual([]);
   });

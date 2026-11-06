@@ -202,8 +202,8 @@ recipient cleanup, which clears queued alerts and cancels in-flight delivery whe
 [user-owned unread state](user-unread-state.md) for the handoff and deletion boundaries.
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
-subscription id, opaque User DO subject, same-origin deep-link path, and optional absolute badge
-`{count, version}` cross the central boundary during an alert send. Separate `POST /v1/badges`
+subscription id, opaque User DO subject, and same-origin deep-link path cross the central boundary
+during an alert send. Separate `POST /v1/badges`
 replacements carry only `{subscriptionId, version, count}`; see
 [unread push badges](unread-push-badges.md). Both use the headers every signed request carries:
 install id, key id, timestamp, nonce, body digest, and signature. Permission details, chat content,
