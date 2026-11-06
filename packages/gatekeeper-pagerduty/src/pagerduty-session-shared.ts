@@ -16,8 +16,9 @@ import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTa
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
 import {
-  toIncidentSummary, toOnCall, toPriority, toUser,
-  type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireSchedule, type WireService, type WireUser,
+  toIncidentSummary, toOnCall, toPriority, toScheduleSummary, toUser,
+  type Schedule, type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireSchedule, type WireService,
+  type WireUser,
 } from "./pagerduty-normalize";
 import {
   matchesQuery, newestFirst, overlayIncident, pendingIncidents, type IncidentQuery, type Pending,
@@ -26,8 +27,8 @@ import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
 import type {
   Cursor, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyListOptions, PagerDutyOnCall,
-  PagerDutyOnCallWindow, PagerDutyPageOptions, PagerDutyPriority, PagerDutySubscribeOptions, PagerDutyTimeWindow,
-  PagerDutyUrgency, PagerDutyUser,
+  PagerDutyOnCallWindow, PagerDutyPageOptions, PagerDutyPriority, PagerDutyScheduleSummary, PagerDutySubscribeOptions,
+  PagerDutyTimeWindow, PagerDutyUrgency, PagerDutyUser,
 } from "./types";
 
 /** How long a service's team and escalation policy, read to check a binding's scope, stay cached. */
@@ -198,9 +199,28 @@ export async function readService({ host }: { host: SessionHost }, id: string): 
   return (await host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
 }
 
-/** A schedule as PagerDuty describes it now; `query` can ask for its shifts in a window. */
-export async function readSchedule({ host }: { host: SessionHost }, id: string, query: Query = {}): Promise<WireSchedule> {
-  return (await host.read(api => api.get<{ schedule: WireSchedule }>(`/schedules/${id}`, query))).schedule;
+/** What a schedule read asks for besides the schedule: its shifts in `window`, and the users a shift-based one names. */
+export type ScheduleQuery = { window?: { since: string; until: string }; users?: boolean };
+
+/**
+ * A schedule as PagerDuty describes it now, of either generation. Which one it is is remembered a
+ * while, so only the first read of a layer-based schedule asks the v3 API in vain.
+ */
+export async function readSchedule({ host }: { host: SessionHost }, id: string,
+                                   { window, users }: ScheduleQuery = {}): Promise<Schedule> {
+  // v3 sends a schedule's shifts and users only when asked to include them.
+  const query = (shiftBased: boolean): Query => shiftBased
+    ? { ...window, include: [...(window ? ["final_schedule"] : []), ...(users ? ["users"] : [])] }
+    : { ...window };
+  const read = (known?: boolean) => host.read(async api => {
+    const { body, shiftBased } = await api.schedule<{ schedule: WireSchedule }>(id, query, known);
+    return { ...body.schedule, shiftBased };
+  });
+  // The read that finds out which generation it is serves this call too.
+  const first: { read?: Promise<Schedule> } = {};
+  const shiftBased = await host.cached(`schedule-generation:${id}`, CATALOG_TTL_MS,
+    async () => (await (first.read = read())).shiftBased);
+  return await (first.read ?? read(shiftBased));
 }
 
 /** A service's team and escalation policy, cached briefly, for checking a binding's scope. */
@@ -232,12 +252,14 @@ export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, w
 
 /**
  * The incident `id` as PagerDuty has it now, and why it is outside `within`, if it is. PagerDuty
- * can move an incident to another service at any time, so each check reads it afresh.
+ * can move an incident to another service at any time, so each check reads it afresh;
+ * `loadService` reads the service's teams, briefly cached by default.
  */
 export async function currentIncident(ctx: { host: SessionHost }, id: string, within: Within,
-                                      include: readonly string[] = []): Promise<{ wire: WireIncident; outside?: string }> {
+                                      include: readonly string[] = [], loadService = cachedService):
+    Promise<{ wire: WireIncident; outside?: string }> {
   const wire = await readIncident(ctx, id, include);
-  const outside = await outsideOf(ctx, wire.service.id, within);
+  const outside = await outsideOf(ctx, wire.service.id, within, loadService);
   return outside ? { wire, outside } : { wire };
 }
 
@@ -252,8 +274,7 @@ export type ScopedObject = { kind: "incident" | "service" | "schedule"; id: stri
 export async function objectOutside(ctx: { host: SessionHost }, { kind, id }: ScopedObject, within: Within):
     Promise<string | undefined> {
   if (kind === "incident") {
-    return within.teamId || within.serviceId
-      ? await outsideOf(ctx, (await readIncident(ctx, id)).service.id, within, readService) : undefined;
+    return within.teamId || within.serviceId ? (await currentIncident(ctx, id, within, [], readService)).outside : undefined;
   }
   if (!within.teamId) return undefined;
   const wire = kind === "service" ? await readService(ctx, id) : await readSchedule(ctx, id);
@@ -307,13 +328,17 @@ export async function usersNamed(ctx: SessionContext, given: readonly string[], 
   }));
 }
 
+/** One page of a listing from `offset`, at most `limit` rows. */
+type OffsetFetch<W> = (api: PagerDutyApi, offset: number, limit: number) => Promise<Page<W>>;
+
 /**
- * A listing walked by offset, authorizing each page as it leaves: the cursor owns a duplicate of
- * the capability's queue stub and releases it when the walk is dropped.
+ * Listings walked by offset, one after another, authorizing each page as it leaves: the cursor
+ * owns a duplicate of the capability's queue stub and releases it when the walk is dropped.
  */
 export function offsetCursor<W, T>(ctx: SessionContext, options: {
   pageSize: number;
-  fetch(api: PagerDutyApi, offset: number, limit: number): Promise<Page<W>>;
+  /** The listings walked in turn. */
+  sources: readonly OffsetFetch<W>[];
   /** Converts a page, applying pending actions; may drop rows they move out of the listing. */
   convert(rows: W[]): T[];
   describe(rows: readonly T[], terminal: boolean): ObservationInput;
@@ -328,13 +353,15 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
     remotePageSize: Math.max(options.pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
     ...(options.inject ? { inject: options.inject } : {}),
+    // A token is `<source>:<offset>`, where the walk stopped in which listing.
     fetchPage: async (token, perPage) => {
-      const offset = token === undefined ? 0 : Number(token);
-      const page = await walk.host.read(api => options.fetch(api, offset, Math.min(perPage, MAX_OFFSET - offset)));
+      const [source, offset] = token === undefined ? [0, 0] : token.split(":").map(Number) as [number, number];
+      const page = await walk.host.read(api => options.sources[source]!(api, offset, Math.min(perPage, MAX_OFFSET - offset)));
       const next = offset + page.items.length;
-      // PagerDuty refuses an offset past its cap, so the walk ends there.
+      // PagerDuty refuses an offset past its cap, so the listing ends there.
       const more = page.more && page.items.length > 0 && next < MAX_OFFSET;
-      return { items: options.convert(page.items), ...(more ? { nextToken: String(next) } : {}) };
+      const nextToken = more ? `${source}:${next}` : source + 1 < options.sources.length ? `${source + 1}:0` : undefined;
+      return { items: options.convert(page.items), ...(nextToken ? { nextToken } : {}) };
     },
     authorizePage: async (rows, { terminal }) =>
       walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: await options.result(rows) }),
@@ -351,23 +378,39 @@ export function listed(title: string, noun: string) {
 }
 
 /**
- * A name-sorted listing of services, teams or schedules, reporting each row: a team's listing too,
- * since PagerDuty showing the team needn't mean it shows everything the team owns.
+ * Listings of services, teams or schedules, walked in turn, reporting each row: a team's listing
+ * too, since PagerDuty showing the team needn't mean it shows everything the team owns.
  */
 export function namedListing<W extends WireRef, T extends { id: string }>(ctx: SessionContext, options: {
-  path: string; key: string; kind: ObjectKind; noun: string; teamId?: string;
-  list?: PagerDutyListOptions; convert(wire: W): T;
+  key: string; kind: ObjectKind; noun: string; teamId?: string; list?: PagerDutyListOptions;
+  /** Each listing's path, and how its rows convert. */
+  sources: readonly { path: string; convert(wire: W): T }[];
 }): Cursor<T> {
   const query = options.list?.query === undefined ? undefined : text(options.list.query, "query", 200);
   const filters: Query = { query, ...(options.teamId ? { team_ids: [options.teamId] } : {}) };
   if (options.kind === "service") filters.sort_by = "name";
-  return offsetCursor<W, T>(ctx, {
+  return offsetCursor<T, T>(ctx, {
     pageSize: pageSizeOf(options.list),
-    fetch: (api, offset, limit) => api.page<W>(options.path, options.key, filters, offset, limit),
-    convert: rows => rows.map(options.convert),
+    sources: options.sources.map(({ path, convert }): OffsetFetch<T> => async (api, offset, limit) => {
+      const page = await api.page<W>(path, options.key, filters, offset, limit);
+      return { ...page, items: page.items.map(convert) };
+    }),
+    convert: rows => rows,
     describe: listed(`Listed PagerDuty ${plural(options.noun)}`, options.noun),
     filter: [],
     result: rows => rows.map(({ id }) => ({ kind: options.kind, id })),
+  });
+}
+
+/** Schedules: layer-based ones, by name, then shift-based ones, which PagerDuty lists apart. */
+export function listSchedules(ctx: SessionContext, list: PagerDutyListOptions | undefined,
+                              teamId?: string): Cursor<PagerDutyScheduleSummary> {
+  return namedListing<WireSchedule, PagerDutyScheduleSummary>(ctx, {
+    key: "schedules", kind: "schedule", noun: "schedule", list, teamId,
+    sources: [false, true].map(shiftBased => ({
+      path: shiftBased ? "/v3/schedules" : "/schedules",
+      convert: (wire: WireSchedule) => toScheduleSummary({ ...wire, shiftBased }),
+    })),
   });
 }
 
@@ -428,9 +471,9 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   return offsetCursor<WireIncident, PagerDutyIncidentSummary>(ctx, {
     pageSize: pageSizeOf(filter),
     // A filter naming none of a service binding's services matches nothing, so PagerDuty isn't asked.
-    fetch: (api, offset, limit) => query.serviceIds?.length === 0
+    sources: [(api, offset, limit) => query.serviceIds?.length === 0
       ? Promise.resolve({ items: [], more: false })
-      : api.page<WireIncident>("/incidents", "incidents", params, offset, limit),
+      : api.page<WireIncident>("/incidents", "incidents", params, offset, limit)],
     convert: rows => rows.map(row => overlay(toIncidentSummary(row))).filter(row => matchesQuery(row, query, you)),
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,

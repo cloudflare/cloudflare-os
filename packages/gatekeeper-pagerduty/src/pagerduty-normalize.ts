@@ -78,9 +78,13 @@ export type WireOnCall = {
   end?: string | null;
 };
 
+/**
+ * A schedule, layer-based (v2) or shift-based (v3). A v3 listing's rows carry only a reference
+ * (named by `summary`), and a v3 schedule's final schedule is assignments of members by user ID.
+ */
 export type WireSchedule = WireRef & {
   description?: string | null;
-  time_zone: string;
+  time_zone?: string;
   teams?: WireRef[];
   escalation_policies?: WireRef[];
   schedule_layers?: {
@@ -88,12 +92,26 @@ export type WireSchedule = WireRef & {
     users?: { user: WireRef }[];
     rotation_turn_length_seconds?: number;
   }[];
-  final_schedule?: { rendered_schedule_entries?: WireShift[] };
+  final_schedule?: { rendered_schedule_entries?: WireShift[]; computed_shift_assignments?: WireAssignment[] };
+  /** The users a shift-based schedule names, when asked to include them. */
+  users?: WireRef[];
 };
+
+/** A schedule as read from the API of its generation. */
+export type Schedule = WireSchedule & { shiftBased: boolean };
 
 export type WireShift = { user: WireRef; start: string; end: string };
 
 export type WireOverride = WireShift & { id: string };
+
+/** Who a shift-based schedule puts in a slot: a user, or nobody. */
+export type WireSlotMember = { type: "user_member" | "empty_member"; user_id?: string };
+
+/** A span of a shift-based schedule's final schedule. */
+export type WireAssignment = { start_time: string; end_time: string; member: WireSlotMember };
+
+/** An override on a shift-based schedule. */
+export type WireShiftOverride = { id: string; start_time: string; end_time: string; overriding_member: WireSlotMember };
 
 export type WirePriority = { id: string; name: string; description?: string | null };
 
@@ -199,7 +217,8 @@ export function toAlert(wire: WireAlert): PagerDutyAlert {
     severity: wire.severity ?? "info",
     createdAt: wire.created_at,
     source: wire.body?.cef_details?.source_origin || null,
-    details: details && typeof details === "object" && !Array.isArray(details) ? details as Record<string, unknown> : null,
+    details: typeof details === "string" ? details || null
+      : details && typeof details === "object" && !Array.isArray(details) ? details as Record<string, unknown> : null,
     htmlUrl: wire.html_url ?? "",
   };
 }
@@ -231,18 +250,23 @@ export function toOnCall(wire: WireOnCall): PagerDutyOnCall {
   };
 }
 
-export function toScheduleSummary(wire: WireSchedule): PagerDutyScheduleSummary {
+export function toScheduleSummary(wire: Schedule): PagerDutyScheduleSummary {
   return {
     ...toRef(wire),
+    shiftBased: wire.shiftBased,
     description: wire.description || null,
-    timeZone: wire.time_zone,
-    teams: (wire.teams ?? []).map(toRef),
+    timeZone: wire.time_zone ?? null,
+    // A shift-based schedule's listing row names none.
+    teams: wire.teams?.map(toRef) ?? null,
   };
 }
 
-export function toScheduleDetails(wire: WireSchedule): PagerDutyScheduleDetails {
+export function toScheduleDetails(wire: Schedule): PagerDutyScheduleDetails {
+  if (!wire.time_zone) throw new Error("PagerDuty described a schedule without its time zone.");
   return {
     ...toScheduleSummary(wire),
+    timeZone: wire.time_zone,
+    teams: (wire.teams ?? []).map(toRef),
     escalationPolicies: (wire.escalation_policies ?? []).map(toRef),
     layers: (wire.schedule_layers ?? []).map(layer => ({
       name: layer.name ?? "",
@@ -252,12 +276,41 @@ export function toScheduleDetails(wire: WireSchedule): PagerDutyScheduleDetails 
   };
 }
 
-export function toShift(wire: WireShift): PagerDutyShift {
-  return { user: toUserRef(wire.user), start: wire.start, end: wire.end };
+/**
+ * Who a shift-based schedule's slot member is, named by the users the schedule included (else by
+ * ID), or null for an empty slot.
+ */
+function memberNamer(wire: WireSchedule): (member: WireSlotMember) => PagerDutyUserRef | null {
+  const named = new Map((wire.users ?? []).map(user => [user.id, toUserRef(user)]));
+  return ({ type, user_id: id }) => type === "user_member" && id ? named.get(id) ?? { id, name: id } : null;
 }
 
-export function toOverride(wire: WireOverride): PagerDutyOverride {
-  return { id: wire.id, ...toShift(wire) };
+/** Who is on call when in a schedule's final schedule, of either generation; nobody's spans are left out. */
+export function toShifts(wire: WireSchedule): PagerDutyShift[] {
+  const { rendered_schedule_entries: entries = [], computed_shift_assignments: assignments = [] } = wire.final_schedule ?? {};
+  const memberOf = memberNamer(wire);
+  return [
+    ...entries.map(({ user, start, end }) => ({ user: toUserRef(user), start, end })),
+    ...assignments.flatMap(({ member, start_time: start, end_time: end }) => {
+      const user = memberOf(member);
+      return user ? [{ user, start, end }] : [];
+    }),
+  ];
+}
+
+/**
+ * A schedule's overrides as its generation's `GET …/overrides` lists them; a shift-based one's
+ * leaving a shift empty is left out.
+ */
+export function toOverrides(wire: Schedule, rows: readonly (WireOverride | WireShiftOverride)[]): PagerDutyOverride[] {
+  if (!wire.shiftBased) {
+    return (rows as WireOverride[]).map(({ id, user, start, end }) => ({ id, user: toUserRef(user), start, end }));
+  }
+  const memberOf = memberNamer(wire);
+  return (rows as WireShiftOverride[]).flatMap(({ id, overriding_member: member, start_time: start, end_time: end }) => {
+    const user = memberOf(member);
+    return user ? [{ id, user, start, end }] : [];
+  });
 }
 
 export function toPriority(wire: WirePriority): PagerDutyPriority {

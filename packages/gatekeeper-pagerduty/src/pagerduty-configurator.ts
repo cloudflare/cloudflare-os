@@ -8,7 +8,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
-import { MAX_LIMIT, OBJECT_PATHS, PagerDutyApi, isDenial, type Page, type Query } from "./pagerduty-api";
+import { MAX_LIMIT, PagerDutyApi, isDenial, type Page, type Query } from "./pagerduty-api";
 import { RECONNECT_MESSAGE, accountSource, type Identity, type PublicGrant } from "./pagerduty-credentials";
 import { webOrigin } from "./pagerduty-env";
 import type { WireIncident, WireSchedule, WireService, WireTeam } from "./pagerduty-normalize";
@@ -79,10 +79,11 @@ const services = (query: Query): Source => async (api, offset, limit) => {
   const page = await api.page<WireService>("/services", "services", { sort_by: "name", ...query }, offset, limit);
   return { ...page, items: page.items.map(serviceNode) };
 };
-const schedules = (query: Query): Source => async (api, offset, limit) => {
-  const page = await api.page<WireSchedule>("/schedules", "schedules", query, offset, limit);
+/** Layer-based schedules, then shift-based ones, which PagerDuty lists apart. */
+const schedules = (query: Query): Source[] => ["/schedules", "/v3/schedules"].map((path): Source => async (api, offset, limit) => {
+  const page = await api.page<WireSchedule>(path, "schedules", query, offset, limit);
   return { ...page, items: page.items.map(scheduleNode) };
-};
+});
 const incidents = (query: Query): Source => async (api, offset, limit) => {
   // PagerDuty lists the last month by default; an incident open longer is still open.
   const page = await api.page<WireIncident>("/incidents", "incidents",
@@ -145,7 +146,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     if (parent !== undefined) {
       const ref = parseRef(parent);
       switch (ref.kind) {
-        case "team": return await this.#chain([services({ team_ids: [ref.id] }), schedules({ team_ids: [ref.id] })], cursor);
+        case "team": return await this.#chain([services({ team_ids: [ref.id] }), ...schedules({ team_ids: [ref.id] })], cursor);
         case "service": return await this.#chain([incidents({ service_ids: [ref.id] })], cursor);
         default: throw new Error("That can't be opened.");
       }
@@ -153,7 +154,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     switch (section) {
       case "teams": return await this.#chain([teams({})], cursor);
       case "services": return await this.#chain([services({})], cursor);
-      case "schedules": return await this.#chain([schedules({})], cursor);
+      case "schedules": return await this.#chain(schedules({}), cursor);
       case "incidents": return await this.#chain([incidents({})], cursor);
       default: throw new Error("That can't be opened.");
     }
@@ -205,7 +206,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
   async #node(ref: Ref): Promise<PagerDutyNode | null> {
     if (ref.kind === "account") return { ref: "account", kind: "account", title: new URL(webOrigin(await this.#me())).host };
     try {
-      const body = await this.#read(api => api.get<Record<string, unknown>>(`${OBJECT_PATHS[ref.kind]}${ref.id}`));
+      const body = await this.#read(api => api.object(ref.kind, ref.id));
       const wire = body[ref.kind];
       if (typeof wire !== "object" || wire === null) throw new Error(`PagerDuty's ${ref.kind} was malformed.`);
       switch (ref.kind) {
@@ -237,6 +238,6 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
       const found = (await Promise.all(kinds.map(kind => this.#node({ kind, id: query })))).filter(node => node !== null);
       if (found.length > 0) return { items: found };
     }
-    return await this.#chain([teams({ query }), services({ query }), schedules({ query })], cursor);
+    return await this.#chain([teams({ query }), services({ query }), ...schedules({ query })], cursor);
   }
 }

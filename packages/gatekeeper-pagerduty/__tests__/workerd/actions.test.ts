@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, PRIORITY, SCHEDULE, SERVICE, TEAM, failure, hooks,
-  accountStub, seedAccount, sub, unwrap,
+  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM, failure,
+  hooks, accountStub, seedAccount, sub, unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -159,6 +159,36 @@ describe("each change", () => {
       ["PUT", `/incidents/${t.incident.id}`, { incident: { ...incidentRef, status: "acknowledged" } }],
       ["POST", `/incidents/${t.incident.id}/snooze`, { duration: 3600 }],
     ]);
+  });
+
+  it("won't acknowledge an incident that is resolved, or that a pending resolve closes, since that would reopen it", async () => {
+    const t = await setup();
+    const resolved = t.pd.incident(SERVICE, { status: "resolved" });
+    expect(await t.attempt(onIncident("acknowledge")(resolved.id))).toMatch(/resolved incident can't be acknowledged/);
+    await t.run(onIncident("resolve")(t.incident.id));
+    expect(await t.attempt(onIncident("acknowledge")(t.incident.id))).toMatch(/resolved incident can't be acknowledged/);
+    expect((await t.submitted()).map(({ description }) => description.actionKind?.tag)).toEqual(["resolve-incidents"]);
+  });
+
+  it.each([
+    ["an account", { resourceKind: "account" }],
+    ["a team", { resourceKind: "team", id: TEAM.id }],
+  ] as [string, Binding][])("leaves resolved, sending nothing, an incident resolved since %s binding staged its acknowledgement", async (_name, binding) => {
+    const t = await setup(binding);
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    const [{ actionId }] = await t.submitted();
+    t.incident.status = "resolved";
+    expect(await t.tryApply(actionId)).toMatch(/resolved in the meantime/);
+    expect(t.pd.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["createOverride", [ALICE.email, START, END]],
+    ["deleteOverride", ["POVR003"]],
+  ])("refuses %s on a shift-based schedule, staging nothing", async (method, args) => {
+    const t = await setup({ resourceKind: "schedule", id: SHIFT_SCHEDULE.id });
+    expect(await t.attempt([[method, ...args]])).toMatch(/not supported for shift-based schedules yet/);
+    expect(await t.submitted()).toEqual([]);
   });
 
   it("removes an override, which is not auto-approvable", async () => {

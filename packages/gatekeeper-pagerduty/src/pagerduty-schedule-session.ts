@@ -1,15 +1,18 @@
 // The schedule capability: what a schedule binding holds, and what an account or team capability
-// opens. Reads report the schedule; overrides are staged as actions, none reaching PagerDuty before
-// approval.
+// opens. Reads report the schedule, layer-based or shift-based alike; overrides are staged as
+// actions, none reaching PagerDuty before approval, and only on a layer-based schedule: a
+// shift-based one's override replaces one rotation's member rather than whoever the schedule has.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { Query } from "./pagerduty-api";
+import { schedulePath } from "./pagerduty-api";
 import { isProvisional, overrideKind } from "./pagerduty-actions";
-import { toOverride, toScheduleDetails, toShift, type WireOverride, type WireSchedule } from "./pagerduty-normalize";
+import {
+  toOverrides, toScheduleDetails, toShifts, type Schedule, type WireOverride, type WireShiftOverride,
+} from "./pagerduty-normalize";
 import { overlayOverrides, overlayShifts } from "./pagerduty-simulation";
 import {
-  countOf, readSchedule, requireTeam, text, time, usersNamed, windowOf, type SessionContext,
+  countOf, readSchedule, requireTeam, text, time, usersNamed, windowOf, type ScheduleQuery, type SessionContext,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID } from "./pagerduty-urls";
 import type { PagerDutyOverride, PagerDutySchedule, PagerDutyScheduleDetails, PagerDutyShift, PagerDutyTimeWindow } from "./types";
@@ -31,24 +34,28 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     this.#teamId = within.teamId;
   }
 
-  async #read(query: Query = {}): Promise<WireSchedule> {
-    const wire = await readSchedule(this.#ctx, this.#id, query);
-    requireTeam(wire, this.#teamId, "schedule");
-    return wire;
+  async #read(query?: ScheduleQuery): Promise<Schedule> {
+    const schedule = await readSchedule(this.#ctx, this.#id, query);
+    requireTeam(schedule, this.#teamId, "schedule");
+    return schedule;
+  }
+
+  /** @throws Error for a shift-based schedule, whose overrides this can't add or remove. */
+  async #requireLayerBased(): Promise<void> {
+    if ((await this.#read()).shiftBased) throw new Error("Adding or removing overrides is not supported for shift-based schedules yet.");
   }
 
   async getDetails(): Promise<PagerDutyScheduleDetails> {
-    const wire = await this.#read();
+    const schedule = await this.#read();
     await this.#ctx.authorize({ title: "Read a PagerDuty schedule", description: "Read the schedule's details." },
       { filter: [], result: [] });
-    return toScheduleDetails(wire);
+    return toScheduleDetails(schedule);
   }
 
   async listShifts(window?: PagerDutyTimeWindow): Promise<PagerDutyShift[]> {
     const span = windowOf(window, 7, MAX_SHIFT_DAYS);
-    const wire = await this.#read(span);
     const { host } = this.#ctx;
-    const shifts = overlayShifts((wire.final_schedule?.rendered_schedule_entries ?? []).map(toShift), this.#id, span,
+    const shifts = overlayShifts(toShifts(await this.#read({ window: span, users: true })), this.#id, span,
       host.pending(), id => host.resolve(id));
     await this.#ctx.authorize({ title: "Read who is on call on a PagerDuty schedule", description: `Read ${countOf(shifts.length, "shift")}.` },
       { filter: [], result: [] });
@@ -58,10 +65,11 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
   async listOverrides(window?: PagerDutyTimeWindow): Promise<PagerDutyOverride[]> {
     const span = windowOf(window, 30);
     const { host } = this.#ctx;
-    if (this.#teamId) await this.#read();
-    const rows = await host.read(api =>
-      api.get<{ overrides: WireOverride[] }>(`/schedules/${this.#id}/overrides`, span));
-    const overrides = overlayOverrides(rows.overrides.map(toOverride), this.#id, span, host.pending(), id => host.resolve(id));
+    // Which API keeps its overrides, and on a shift-based schedule, its users' names.
+    const schedule = await this.#read({ users: true });
+    const rows = await host.read(api => api.get<{ overrides: WireOverride[] | WireShiftOverride[] }>(
+      `${schedulePath(this.#id, schedule.shiftBased)}/overrides`, span));
+    const overrides = overlayOverrides(toOverrides(schedule, rows.overrides), this.#id, span, host.pending(), id => host.resolve(id));
     await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` },
       { filter: [], result: [] });
     return overrides;
@@ -71,7 +79,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     const from = time(text(start, "start"), "start")!;
     const until = time(text(end, "end"), "end")!;
     if (Date.parse(until) <= Date.parse(from)) throw new Error("end must be after start.");
-    if (this.#teamId) await this.#read();
+    await this.#requireLayerBased();
     const [target] = await usersNamed(this.#ctx, [user], "user");
     const me = await this.#ctx.host.me();
     const ref = this.#ctx.host.allocate(overrideKind(this.#id));
@@ -89,7 +97,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     if (isProvisional(id) && host.kindOf(id) !== overrideKind(this.#id)) {
       throw new Error("That override isn't one this gadget added to this schedule.");
     }
-    if (this.#teamId) await this.#read();
+    await this.#requireLayerBased();
     await host.submit(this.#ctx.queue, "deleteOverride",
       { scheduleId: this.#id, overrideId: id, stagedAt: new Date().toISOString() });
   }

@@ -46,7 +46,7 @@ import {
   OAuthClient, createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { OBJECT_PATHS, PagerDutyApi, isAuthError, isDenial } from "./pagerduty-api";
+import { PagerDutyApi, isAuthError, isDenial } from "./pagerduty-api";
 import {
   RECONNECT_MESSAGE,
   identityOf,
@@ -117,7 +117,7 @@ const PROBE_CONCURRENCY = 6;
  */
 async function probe(accessToken: string, { region, object }: Subresource): Promise<boolean> {
   try {
-    await new PagerDutyApi(accessToken, region).get(`${OBJECT_PATHS[object!.kind]}${object!.id}`);
+    await new PagerDutyApi(accessToken, region).object(object!.kind, object!.id);
     return true;
   } catch (error) {
     if (isDenial(error)) return false;

@@ -6,8 +6,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ALICE, BOB, CAROL, DAVE, FakePagerDuty, POLICY, SCHEDULE, SERVICE, TEAM, accountStub, failure, hooks, json, seedAccount, sub,
-  unwrap,
+  ALICE, BOB, CAROL, DAVE, FakePagerDuty, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM, accountStub, failure, hooks, json,
+  seedAccount, sub, unwrap,
 } from "./fake-pagerduty";
 import type { GatekeeperProps } from "./worker";
 
@@ -55,12 +55,25 @@ describe("verifyObserverAccess", () => {
     ];
     const bob = [{ id: "bob", userObjectId: await seedAccount(t.pd, BOB) }];
     expect(unwrap(await t.verify(bob, [sub(), ...objects]))).toEqual({ allowedObserverIds: ["bob"] });
+    // A layer-based schedule is opened by v2 once v3 refuses it.
     expect(t.pd.matching("GET", /./, BOB.id).map(r => r.url.pathname).filter(path => path !== "/users/me").toSorted()).toEqual([
       `/escalation_policies/${POLICY.id}`, `/incidents/${incident.id}`, `/schedules/${SCHEDULE.id}`, `/teams/${TEAM.id}`,
+      `/v3/schedules/${SCHEDULE.id}`,
     ]);
     t.pd.hide(ALICE.id, SCHEDULE.id);
     const alice = [{ id: "alice", userObjectId: await seedAccount(t.pd, ALICE) }];
     expect(unwrap(await t.verify(alice, [sub(), ...objects]))).toEqual({ allowedObserverIds: [] });
+  });
+
+  it("opens a shift-based schedule through PagerDuty's v3 API, denying an observer it refuses", async () => {
+    const t = await setup();
+    t.pd.hide(BOB.id, SHIFT_SCHEDULE.id, 404);
+    const observers = [
+      { id: "alice", userObjectId: await seedAccount(t.pd, ALICE) },
+      { id: "bob", userObjectId: await seedAccount(t.pd, BOB) },
+    ];
+    expect(unwrap(await t.verify(observers, [sub(), sub("schedule", SHIFT_SCHEDULE.id)]))).toEqual({ allowedObserverIds: ["alice"] });
+    expect(t.pd.matching("GET", /^\/schedules\//)).toEqual([]);
   });
 
   it("denies an observer connected to another account, without asking PagerDuty about its objects", async () => {
