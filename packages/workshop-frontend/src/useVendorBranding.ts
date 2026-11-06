@@ -1,7 +1,7 @@
-import { logRpcFailure } from './rpcErrors'
-import { useEffect, useState } from 'react'
+import { useMemo } from 'react'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import { useGatekeeperVendors } from './hooks/useGatekeeperVendors'
 
 /**
  * How a vendor asks to be shown: its logo, and the background that logo was drawn for.
@@ -15,49 +15,21 @@ export type VendorBranding = {
   color?: string
 }
 
-// Shared per-session cache so every consumer reuses a single fetch.
-const cachedPromises = new WeakMap<RpcStub<AuthenticatedApi>, Promise<Map<string, VendorBranding>>>()
-
-const EMPTY: Map<string, VendorBranding> = new Map()
-
 /** Maps each vendor id to its branding so connection rows can show the service's icon. */
 export function useVendorBranding(
   authenticatedApi: RpcStub<AuthenticatedApi> | null,
 ): Map<string, VendorBranding> {
-  const [branding, setBranding] = useState<Map<string, VendorBranding>>(EMPTY)
-
-  useEffect(() => {
-    if (!authenticatedApi) return
-    let cancelled = false
-
-    let promise = cachedPromises.get(authenticatedApi)
-    if (!promise) {
-      const api = authenticatedApi
-      promise = (async () => {
-        const vendors = await api.listGatekeeperVendors()
-        const map = new Map<string, VendorBranding>()
-        for (const vendor of vendors) {
-          const { logo, color } = vendor.description
-          if (logo?.url || color) {
-            map.set(vendor.id, { logoUrl: logo?.url, color })
-          }
-        }
-        return map
-      })().catch((err) => {
-        cachedPromises.delete(api)
-        throw err
-      })
-      cachedPromises.set(api, promise)
+  const vendors = useGatekeeperVendors(authenticatedApi)
+  // Memoized on the catalog so the map keeps its identity across renders; the composer memoizes
+  // its tokens on it.
+  return useMemo(() => {
+    const map = new Map<string, VendorBranding>()
+    for (const vendor of vendors.values()) {
+      const { logo, color } = vendor.description
+      if (logo?.url || color) {
+        map.set(vendor.id, { logoUrl: logo?.url, color })
+      }
     }
-
-    promise
-      .then((map) => { if (!cancelled) setBranding(map) })
-      .catch((err) => {
-        logRpcFailure('Failed to load vendor branding:', err)
-      })
-
-    return () => { cancelled = true }
-  }, [authenticatedApi])
-
-  return branding
+    return map
+  }, [vendors])
 }

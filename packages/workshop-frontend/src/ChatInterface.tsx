@@ -110,6 +110,7 @@ import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
+import { addsChatBinding } from "./features/chat-bindings/useChatBindings";
 import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
@@ -2594,6 +2595,9 @@ interface ChatInterfaceProps {
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
+  // Called when a message for the selected chat binds it a resource (see addsChatBinding), which
+  // can arrive before its turn ends.
+  onSelectedChatBindingsChange?: () => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
   onAutoApproveChange?: () => void;
@@ -2797,6 +2801,7 @@ function ChatInterface({
   onChatCountChange,
   onAgentActiveChange,
   onAutoApproveChange,
+  onSelectedChatBindingsChange,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -3057,6 +3062,8 @@ function ChatInterface({
   const selectedChatIdRef = useRef<number | null>(null);
   const onNavigateToChatRef = useRef(onNavigateToChat);
   onNavigateToChatRef.current = onNavigateToChat;
+  const onSelectedChatBindingsChangeRef = useRef(onSelectedChatBindingsChange);
+  onSelectedChatBindingsChangeRef.current = onSelectedChatBindingsChange;
 
   // Subscription stub (wrapped in object for useState)
   const subscriptionRef = useRef<RpcStub<{}> | null>(null);
@@ -3770,6 +3777,10 @@ function ChatInterface({
       // updates with the new epoch's (empty) pin set.
       if (msg.type === "changes" || msg.type === "revert") {
         setProposedChangesVersion((prev) => prev + 1);
+      }
+
+      if (msg.chatId === selectedChatIdRef.current && addsChatBinding(msg)) {
+        onSelectedChatBindingsChangeRef.current?.();
       }
 
       // A revert reaching past the oldest loaded boundary changed it on the server; see

@@ -13,8 +13,9 @@ import type {
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, or the one a notification opens),
-// and which gadget stub a use-only collaborator's view is given while gadgets are admitted.
-// Everything the editor composes is stubbed down to the callbacks that drive its layout.
+// when it shows the output rail, and which gadget stub a use-only collaborator's view is given
+// while gadgets are admitted. Everything the editor composes is stubbed down to the callbacks that
+// drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -52,6 +53,7 @@ const mocks = vi.hoisted(() => {
           },
           getGadget: () => disposable,
           listHooks: async () => [],
+          listChatBindings: async () => [],
           subscribeToConsoleLogs: async () => disposable,
         },
       },
@@ -140,7 +142,7 @@ vi.mock('./components/WorkshopControls', () => ({
 }))
 
 vi.mock('./WorkpiecePicker', () => ({
-  default: () => null,
+  default: () => <div>output rail</div>,
   WORKPIECE_RAIL_COLLAPSED_WIDTH: 48,
   WORKPIECE_RAIL_EXPANDED_WIDTH: 220,
 }))
@@ -353,6 +355,37 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     mocks.search = { chat: 3 }
     await openEditor('desktop')
     expect(isChatVisible('workspace', 3)).toBe(true)
+  })
+})
+
+describe('GadgetEditor, showing the output rail', () => {
+  const workspace = mocks.workspace
+  const original = workspace.overseer
+
+  beforeEach(() => {
+    workspace.overseer = {
+      stub: {
+        ...original.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          await subscriber.ready()
+          return { [Symbol.dispose]() {} }
+        },
+      },
+    }
+  })
+
+  afterEach(() => {
+    workspace.overseer = original
+  })
+
+  // It lists the selected chat's connections, so a workspace with no gadgets has it only for a chat.
+  it('shows beside a chat in a workspace with no gadgets', async () => {
+    await openEditor('desktop')
+    expect(container.textContent).not.toContain('output rail')
+
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(container.textContent).toContain('output rail')
   })
 })
 

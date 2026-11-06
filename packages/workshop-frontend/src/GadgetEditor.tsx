@@ -67,6 +67,7 @@ import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
+import { useChatBindings } from './features/chat-bindings/useChatBindings'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -911,14 +912,17 @@ export default function GadgetEditor() {
   // navigates to that chat), but the pane can only show one visible for the selected chat, so
   // it opens for an app only when there is one: with no chat selected in a workspace of drafts
   // and worktrees alone, an open pane would be empty -- and on mobile would replace the chat
-  // list.
+  // list. The rail also lists the selected chat's connections, so it shows for a chat whatever
+  // the workspace holds.
   const hasAnyApps = allGadgets.length > 0 || allWorktrees.length > 0
   const hasVisibleWorkpieces = visibleWorkpieces.length > 0
   const showingActivity = workspaceView?.mode === 'activity'
   const showFullEditor = layoutModeReady && (
     showingActivity || (hasVisibleWorkpieces && (workspaceView === null ? !simpleMode : workspaceView.mode === 'app'))
   )
-  const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
+  const showOutputRail = layoutModeReady && (hasAnyApps || effectiveSelectedChatId !== null) && !showFullEditor
+  const { chatBindings, invalidate: invalidateChatBindings } =
+    useChatBindings(overseerStub, showOutputRail ? effectiveSelectedChatId : null)
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {
     if (!activityClosing) return
@@ -1123,11 +1127,14 @@ export default function GadgetEditor() {
       return
     }
 
+    // A chat lists its starting connections once its first turn has begun, which no message
+    // announces (see onSelectedChatBindingsChange for the bindings messages add).
+    invalidateChatBindings()
     let output = turnOutputRef.current
     turnOutputRef.current = null
     if (!output || output.chatId !== chatId || output.userSelectedTab) return
     if (output.showedCode) setActiveTab('app')
-  }, [])
+  }, [invalidateChatBindings])
 
   const handleStreamingActiveFileChange = useCallback(
       (chatId: number, file: ActiveFileTarget | null | undefined) => {
@@ -2008,6 +2015,7 @@ export default function GadgetEditor() {
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
+                  onSelectedChatBindingsChange={invalidateChatBindings}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
@@ -2266,6 +2274,7 @@ export default function GadgetEditor() {
               gadgets={allGadgets}
               worktrees={allWorktrees}
               selectedId={null}
+              chatBindings={chatBindings}
               agentEditingId={streamingActiveFile?.workpieceId ?? null}
               hookedGadgetIds={hookedGadgetIds}
               expanded={workpieceRailExpanded}
