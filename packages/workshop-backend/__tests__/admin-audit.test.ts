@@ -293,6 +293,22 @@ describe("AdminAuditDurableObject schema", () => {
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(0);
   });
 
+  it("stores an over-long owner cut, and finds its records by the whole id", async () => {
+    let log = auditLog();
+    let owner = "o".repeat(800_000);
+    for (let i = 0; i < 3; i++) await log.append(access({ workspaceOwner: owner }), RETENTION);
+
+    let page = await log.list({ limit: 50 }, RETENTION);
+    let cut = `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`;
+    expect(page.records.map(r => (r as AdminAccessRecord).workspaceOwner)).toEqual([cut, cut, cut]);
+    expect((await log.list({ limit: 50, owner: owner.slice(0, 1000) }, RETENTION)).records)
+        .toHaveLength(3);
+    expect((await log.list({ limit: 50, owner: cut }, RETENTION)).records).toHaveLength(3);
+    let [{ size }] = await sql<{ size: number }>(log,
+        "SELECT max(length(record)) AS size FROM admin_audit");
+    expect(size).toBeLessThan(10_000);
+  });
+
   it("stores an over-long title cut, once, whatever the caller sent", async () => {
     let log = auditLog();
     let title = "t".repeat(3 * 2 ** 20);

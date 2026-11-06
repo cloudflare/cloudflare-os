@@ -90,9 +90,10 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
    * Prunes first with `retentionDays`, which only a caller holding the authoritative config passes:
    * an AdminWorkspaceView reads the KV mirror, whose retention may be one an admin has since raised,
    * so its records are stored without pruning, and the next listing prunes. An access record's
-   * workspaceTitle is stored cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH whatever the
-   * caller sent: the one field a workspace member writes. An access record without `exposed` fails
-   * the table's CHECK, so its append throws. */
+   * workspaceTitle and workspaceOwner are stored cut by cutAdminAuditText() to
+   * MAX_ADMIN_AUDIT_ARG_LENGTH whatever the caller sent: the fields a workspace's members choose,
+   * neither bounded otherwise. An access record without `exposed` fails the table's CHECK, so its
+   * append throws. */
   append(record: AdminAuditRecord, retentionDays?: number): void {
     if (retentionDays !== undefined) this.#prune(retentionDays);
     // Each field is stored once, in its column or in the JSON, never both: a title stored twice let
@@ -104,15 +105,18 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     if (record.kind === "workspace") {
       let {
         kind: _kind, at: _at, admin: _admin, workspaceId: id, workspaceTitle: title,
-        exposed: shown, ...fields
+        workspaceOwner: owner, exposed: shown, ...fields
       } = record;
       workspaceId = id ?? null;
       exposed = shown ?? null;
-      // Its callers cut it already, but a title has no length limit of its own and is the one field
-      // of a record a workspace member writes, so the store holds the bound itself.
+      // Its callers cut the title already, but neither a title nor a username has a length limit of
+      // its own, and a page of records holding them whole could pass the RPC size limit, so the store
+      // holds the bound itself.
       workspaceTitle = typeof title === "string"
           ? cutAdminAuditText(title, MAX_ADMIN_AUDIT_ARG_LENGTH) : null;
-      rest = fields;
+      rest = typeof owner === "string"
+          ? { ...fields, workspaceOwner: cutAdminAuditText(owner, MAX_ADMIN_AUDIT_ARG_LENGTH) }
+          : fields;
     } else {
       let { kind: _kind, at: _at, admin: _admin, ...fields } = record;
       rest = fields;
@@ -160,8 +164,9 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       params.push(query.exposed);
     }
     if (query.owner !== undefined) {
+      // Cut as append() cuts it, so a long owner's whole id finds its records.
       where.push(`${OWNER} = ?`);
-      params.push(query.owner);
+      params.push(cutAdminAuditText(query.owner, MAX_ADMIN_AUDIT_ARG_LENGTH));
     }
     if (query.since !== undefined) {
       let since = query.since.getTime();
