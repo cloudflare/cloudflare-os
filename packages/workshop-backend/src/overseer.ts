@@ -12806,10 +12806,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         {prefix: agentActionsPrefix(chatId)}));
     let bindings = replayChatBindings(chatMessages, seeds, checkpoint?.chatBindings);
     return [...bindings].flatMap(([name, entry]) => {
-      // Gadgets and worktrees have no gatekeeper record; nor has a deleted connection.
+      // Gadgets and worktrees have no gatekeeper record; nor has a deleted connection. One
+      // blocked pending a scope-widening restart is left out until the reset lands, like on the
+      // other enumerating routes (see gatekeeperUsable).
       let gatekeeper =
           entry.type === "workpiece" ? this.impl.storage.gatekeepers.get(entry.id) : undefined;
-      if (!gatekeeper) return [];
+      if (!gatekeeper || !this.impl.gatekeeperUsable(gatekeeper.id)) return [];
       let spec = gatekeeper.creationSpec;
       return [{
         name,
