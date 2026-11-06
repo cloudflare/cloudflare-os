@@ -117,8 +117,10 @@ for public reads: the Workshop's copy of their description and their action prev
 X returned about a private post or List, which only the Workshop can sanitize. Their history export
 is `user/<id>` until it does. This replaces the bound-post/List visibility probe that admitted
 anyone who could see it. Older Account and Profile bindings keep only their recorded legacy private
-reads (`observed:owner`); neither they nor new bindings check the collaborator's credentials in
-`addObserver()` any more. Newly minted bindings carry immutable `redactsActionPreviews: true` props.
+reads (`observed:owner`). `addObserver()` checks those reads, and legacy Post/List bindings, against
+the collaborator's stored X identity, which fails if their connection has expired; otherwise it
+makes no credential or visibility check. Newly minted bindings carry immutable
+`redactsActionPreviews: true` props.
 A legacy Post or List binding without a stored pinned identity fails closed.
 
 ## Troubleshooting
