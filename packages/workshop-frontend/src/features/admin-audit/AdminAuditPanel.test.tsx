@@ -26,6 +26,7 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => ({
 }))
 
 import { AdminAuditPanel } from './AdminAuditPanel'
+import { AUDIT_COLUMN_WIDTHS_KEY } from './AuditLog'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -113,6 +114,16 @@ const button = (name: string) => {
   return element
 }
 
+// The column widths the log has stored, and its resize handles and the events that move them.
+const stored = () => JSON.parse(localStorage.getItem(AUDIT_COLUMN_WIDTHS_KEY) ?? 'null') as unknown
+const handle = (column: string) => button(`Resize the ${column} column`)
+const pointer = (eventType: string, target: HTMLElement, clientX: number) => act(async () => {
+  target.dispatchEvent(new MouseEvent(eventType, { bubbles: true, cancelable: true, clientX }))
+})
+const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
+  target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+})
+
 // The log's page controls.
 const pages = () => document.body.querySelector('nav[aria-label="Audit log pages"]')!
 
@@ -193,9 +204,13 @@ describe('AdminAuditPanel', () => {
     act(() => root.unmount())
     container.remove()
     document.body.innerHTML = ''
+    localStorage.clear()
     addToast.mockReset()
     vi.restoreAllMocks()
   })
+
+  // The log's <col> widths, toggle, Time, Admin, Action, Changes (none: it takes what is left), Via.
+  const widths = () => [...card('Activity log').querySelectorAll('col')].map((col) => col.style.width)
 
   describe('the summary', () => {
     it('loads the last week’s counts', async () => {
@@ -644,6 +659,77 @@ describe('AdminAuditPanel', () => {
       expect(container.querySelector('[role="alert"]')).toBeNull()
       expect(hasButton('Retry')).toBe(false)
       expect(logRows()[0].textContent).toContain('setSiteName')
+    })
+  })
+
+  describe('the log’s column widths', () => {
+    it('starts from the defaults, the Changes column taking what is left', async () => {
+      await render()
+
+      expect(widths()).toEqual(['48px', '180px', '160px', '220px', '', '64px'])
+      expect(stored()).toBeNull()
+    })
+
+    it('resizes a column by keyboard, more with Shift, storing each width', async () => {
+      await render()
+      handle('Time').focus()
+
+      await key(handle('Time'), { key: 'ArrowRight' })
+      expect(widths()[1]).toBe('196px')
+      await key(handle('Time'), { key: 'ArrowLeft', shiftKey: true })
+      expect(widths()[1]).toBe('132px')
+
+      expect(stored()).toEqual({ time: 132, admin: 160, action: 220, via: 64 })
+    })
+
+    it('resizes a column by dragging its edge, storing the width once the drag ends', async () => {
+      await render()
+
+      await pointer('pointerdown', handle('Action'), 500)
+      await pointer('pointermove', handle('Action'), 560)
+      expect(widths()[3]).toBe('280px')
+      expect(stored()).toBeNull()
+      await pointer('pointerup', handle('Action'), 580)
+
+      expect(widths()[3]).toBe('300px')
+      expect(stored()).toEqual({ time: 180, admin: 160, action: 300, via: 64 })
+    })
+
+    it('keeps a column within its bounds', async () => {
+      await render()
+
+      await pointer('pointerdown', handle('Via'), 500)
+      await pointer('pointerup', handle('Via'), 0)
+      expect(widths()[5]).toBe('64px')
+      await pointer('pointerdown', handle('Admin'), 0)
+      await pointer('pointerup', handle('Admin'), 5000)
+      expect(widths()[2]).toBe('800px')
+    })
+
+    it('resets a column on double click', async () => {
+      await render()
+      await key(handle('Admin'), { key: 'ArrowRight' })
+
+      await act(async () => { handle('Admin').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
+
+      expect(widths()[2]).toBe('160px')
+      expect(stored()).toEqual({ time: 180, admin: 160, action: 220, via: 64 })
+    })
+
+    it('starts from the widths stored, bounded, and the defaults for any missing or malformed', async () => {
+      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, JSON.stringify({ admin: 333, time: 5, via: 'wide' }))
+
+      await render()
+
+      expect(widths()).toEqual(['48px', '64px', '333px', '220px', '', '64px'])
+    })
+
+    it('ignores stored widths that are not JSON', async () => {
+      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, '{not json')
+
+      await render()
+
+      expect(widths()).toEqual(['48px', '180px', '160px', '220px', '', '64px'])
     })
   })
 

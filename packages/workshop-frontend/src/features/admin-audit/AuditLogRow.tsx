@@ -99,10 +99,10 @@ export const AuditLogRow = ({ record, onAdminSelect }: {
             />
           </Button>
         </Table.Cell>
-        <Table.Cell className="whitespace-nowrap text-sm text-kumo-subtle">
+        <Table.Cell className="truncate text-sm text-kumo-subtle">
           <time dateTime={record.at.toISOString()} title={record.at.toISOString()}>{time}</time>
         </Table.Cell>
-        <Table.Cell className="max-w-56">
+        <Table.Cell className="overflow-hidden">
           <Button
             variant="ghost"
             size="sm"
@@ -113,13 +113,13 @@ export const AuditLogRow = ({ record, onAdminSelect }: {
             <span className="truncate">{record.admin}</span>
           </Button>
         </Table.Cell>
-        <Table.Cell className="font-mono text-xs text-kumo-default">{record.method}</Table.Cell>
-        <Table.Cell className="max-w-80 font-mono text-xs text-kumo-subtle">
+        <Table.Cell className="truncate font-mono text-xs text-kumo-default" title={record.method}>{record.method}</Table.Cell>
+        <Table.Cell className="font-mono text-xs text-kumo-subtle">
           <span className="block truncate" title={changesSummary(record.changes)}>
             {changesSummary(record.changes)}
           </span>
         </Table.Cell>
-        <Table.Cell className="text-sm text-kumo-subtle">{VIA_NAMES[record.via]}</Table.Cell>
+        <Table.Cell className="truncate text-sm text-kumo-subtle">{VIA_NAMES[record.via]}</Table.Cell>
       </Table.Row>
       <Table.Row id={detailsId} hidden={!expanded}>
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">

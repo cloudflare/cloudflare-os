@@ -7,9 +7,24 @@ import { logRpcFailure } from '../../rpcErrors'
 import type { AuditFilter } from './auditFilter'
 import { AuditFilters } from './AuditFilters'
 import { AUDIT_LOG_COLUMNS, AuditLogRow } from './AuditLogRow'
+import { ColumnResizeHandle } from './ColumnResizeHandle'
+import { useColumnWidths } from './useColumnWidths'
 
 /** How many records one page of the Audit tab's log shows. */
 export const AUDIT_PAGE_SIZE = 50
+
+/** Where the log's column widths are kept, per browser. */
+export const AUDIT_COLUMN_WIDTHS_KEY = 'gadgets:workshop:adminAuditColumnWidths'
+
+// The log's resizable columns, by the name each is shown and announced with, and their widths
+// before any is resized, in pixels. Changes is not among them: it takes the width left over, at
+// least CHANGES_MIN_WIDTH, so widening one column never narrows another.
+const RESIZABLE_COLUMNS = { time: 'Time', admin: 'Admin', action: 'Action', via: 'Via' } as const
+type ResizableColumn = keyof typeof RESIZABLE_COLUMNS
+// Sized so that, with Changes at its least, the log fits the Audit tab at a 1440 px window.
+const DEFAULT_WIDTHS: Record<ResizableColumn, number> = { time: 180, admin: 160, action: 220, via: 64 }
+const TOGGLE_WIDTH = 48
+const CHANGES_MIN_WIDTH = 160
 
 // The answer to one load, for the request it answered (see `request` below).
 type Answer = { request: string } & ({ page: AdminAuditPage } | { failed: true })
@@ -92,6 +107,21 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
     enabled?.focus()
   }, [busy, pageNumber])
 
+  const columns = useColumnWidths(AUDIT_COLUMN_WIDTHS_KEY, DEFAULT_WIDTHS)
+  const tableWidth = TOGGLE_WIDTH + CHANGES_MIN_WIDTH +
+    Object.values<number>(columns.widths).reduce((sum, width) => sum + width, 0)
+  const head = (column: ResizableColumn) => (
+    <Table.Head>
+      {RESIZABLE_COLUMNS[column]}
+      <ColumnResizeHandle
+        column={RESIZABLE_COLUMNS[column]}
+        width={columns.widths[column]}
+        onResize={(width, done) => columns.setWidth(column, width, done)}
+        onReset={() => columns.reset(column)}
+      />
+    </Table.Head>
+  )
+
   // A row's admin button is gone once the page filtered by that admin replaces the row, so focus
   // goes to the admin field, which now shows the admin chosen, rather than drop to the page.
   const filters = useRef<HTMLDivElement>(null)
@@ -122,15 +152,24 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       {page !== null && !failed && (
         <>
           <div className={`overflow-x-auto${busy ? ' opacity-60' : ''}`} aria-busy={busy}>
-            <Table>
+            {/* Fixed, so the columns take the widths set here rather than their content's. */}
+            <Table layout="fixed" style={{ minWidth: tableWidth }}>
+              <colgroup>
+                <col style={{ width: TOGGLE_WIDTH }} />
+                <col style={{ width: columns.widths.time }} />
+                <col style={{ width: columns.widths.admin }} />
+                <col style={{ width: columns.widths.action }} />
+                <col />
+                <col style={{ width: columns.widths.via }} />
+              </colgroup>
               <Table.Header>
                 <Table.Row>
                   <Table.Head><span className="sr-only">Details</span></Table.Head>
-                  <Table.Head>Time</Table.Head>
-                  <Table.Head>Admin</Table.Head>
-                  <Table.Head>Action</Table.Head>
+                  {head('time')}
+                  {head('admin')}
+                  {head('action')}
                   <Table.Head>Changes</Table.Head>
-                  <Table.Head>Via</Table.Head>
+                  {head('via')}
                 </Table.Row>
               </Table.Header>
               <Table.Body>
