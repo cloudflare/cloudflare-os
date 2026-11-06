@@ -70,6 +70,30 @@ describe("parseReview", () => {
     }
   });
 
+  it("fails on heading forms the parser does not read", () => {
+    for (const form of ["Backend\n---", "Missing authorization\n===", "<h2>Backend</h2>", "<H3 class=x>Missing</H3>",
+      "> ## Backend", "> ### Missing authorization", "- ### Missing authorization", "1. ## Backend"]) {
+      assert.match(error(review("None.", `ok\n\n${form}\n\`a.ts:1\`\nMERGE-CONFIDENCE: 9`)), /unsupported heading form/, form);
+    }
+    assert.equal(parsed(review("None.", "ok\n\n---\n\nMERGE-CONFIDENCE: 9")).mergeConfidence, 9);
+  });
+
+  it("fails when mismatched fences would hide a section", () => {
+    const tail = "## Backend\n### Missing authorization\n`a.ts:1`\n### [P0] Token leak";
+    for (const fences of ["```\n~~~\n```\n", "````\n```\n", "    ```\n"]) {
+      const text = review("None.", `ok\nMERGE-CONFIDENCE: 9\n${fences}${tail}`);
+      assert.match(error(text), /code fence|unknown section/, JSON.stringify(fences));
+    }
+    assert.match(error(review("### [P3] Naming\n`a.ts:1`\n````\n```\n### Missing authorization", "MERGE-CONFIDENCE: 9")),
+      /never closed/);
+  });
+
+  it("reads past a fence that holds a shorter or different fence", () => {
+    const { findings } = parsed(review("### [P2] Quoted\n`a.ts:1`\n````md\n```\n### [P0] in the quote\n~~~\n````\n### Missing authorization",
+      "MERGE-CONFIDENCE: 9"));
+    assert.deepEqual(findings.map(finding => finding.severity), ["P2", "P1"]);
+  });
+
   it("fails on an untagged entry heading outside the findings section", () => {
     assert.match(error(review("None.", "### Missing authorization\n`a.ts:1`\nMERGE-CONFIDENCE: 9")), /untagged heading/);
     assert.match(error(`### Missing authorization\n${review("None.", "MERGE-CONFIDENCE: 9")}`), /untagged heading/);

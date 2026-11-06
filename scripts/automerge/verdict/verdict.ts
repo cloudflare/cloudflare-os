@@ -114,7 +114,9 @@ A short summary, then any NEEDS-A-PERSON lines, then the MERGE-CONFIDENCE line l
 
 Each finding is one "###" entry whose title starts with exactly one of [P0], [P1], [P2] or [P3],
 with its file and line alone on the next line. With no findings, write "None." under
-"## Findings". Write the words NEEDS-A-PERSON and MERGE-CONFIDENCE only on those lines.
+"## Findings". Use no other headings: every heading under "## Findings" counts as a finding,
+and any other section makes the review invalid. Write the words NEEDS-A-PERSON and
+MERGE-CONFIDENCE only on those lines.
 `;
 
 /**

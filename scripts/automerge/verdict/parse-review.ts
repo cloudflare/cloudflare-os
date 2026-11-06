@@ -30,8 +30,13 @@ const TAG = /\[(P[0-3])\]/g;
 const LEADING_TAG = /^\[(P[0-3])\]\s+(.+)$/;
 const LOCATION = /^`?([^\s`:]+):(\d+)(?:-\d+)?`?$/;
 const SCORE = /^MERGE-CONFIDENCE: (10|[0-9])$/;
-const FENCE = /^\s*(```|~~~)/;
+const FENCE_LIKE = /^\s*(```|~~~)/;
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
 const HEADING = /^ {0,3}(#{1,6})(?:\s|$)/;
+/** Headings markdown renders that the parser does not read: HTML, setext, quoted or listed ones. */
+const HTML_HEADING = /^\s*<h[1-6][\s>]/i;
+const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
+const CONTAINED_HEADING = /^\s*(?:>\s*|[-*+]\s+|\d+[.)]\s+)+#{1,6}(?:\s|$)/;
 /** Markdown that can open a line before a tag: headings, emphasis, quotes, bullets, numbering. */
 const LINE_MARKUP = /^[\s#*_>+\-\d.)]*/;
 const LINE_TAG = /^[\s#*_>+\-\d.)]*\[P[0-3]\]/;
@@ -57,21 +62,54 @@ function titleSeverity(title: string): { severity: Severity; title: string } {
   return { severity: mostSevere(["P1", ...tags]), title };
 }
 
-/** Lines with a flag for whether each sits inside a fenced code block (fence lines count as inside). */
-function classifyLines(text: string): { text: string; fenced: boolean }[] {
-  let open = false;
-  return text.split("\n").map(line => {
-    if (FENCE.test(line)) {
-      open = !open;
-      return { text: line, fenced: true };
+interface Line {
+  text: string;
+  /** Inside a fenced code block; fence lines count as inside. */
+  fenced: boolean;
+}
+
+/**
+ * Lines with their fence state, following CommonMark: a fence closes only on the same character
+ * repeated at least as often, indented at most three spaces. A fence-like line that is neither an
+ * opener nor a closer, or a fence left open, is an error: renderers disagree on those, and a
+ * disagreement would let a rendered finding read as code here.
+ */
+function classifyLines(text: string): { lines: Line[] } | { error: string } {
+  let open: string | null = null;
+  const lines: Line[] = [];
+  for (const line of text.split("\n")) {
+    if (open !== null) {
+      const closer = new RegExp(`^ {0,3}${open[0] === "`" ? "`" : "~"}{${open.length},}[ \\t]*$`);
+      if (closer.test(line)) open = null;
+      lines.push({ text: line, fenced: true });
+      continue;
     }
-    return { text: line, fenced: open };
-  });
+    const opener = FENCE_OPEN.exec(line);
+    if (opener) {
+      open = opener[1];
+      lines.push({ text: line, fenced: true });
+      continue;
+    }
+    if (FENCE_LIKE.test(line)) return { error: `ambiguous code fence ${JSON.stringify(line.trim())}` };
+    lines.push({ text: line, fenced: false });
+  }
+  if (open !== null) return { error: "a code fence is never closed" };
+  return { lines };
 }
 
 export function parseReview(raw: string): ParseResult {
-  const lines = classifyLines(raw.replaceAll("\r\n", "\n"));
+  const classified = classifyLines(raw.replaceAll("\r\n", "\n"));
+  if ("error" in classified) return { ok: false, error: classified.error };
+  const { lines } = classified;
   if (lines.every(line => line.text.trim() === "")) return { ok: false, error: "the review is empty" };
+  const unsupported = lines.find((line, index) => {
+    if (line.fenced) return false;
+    const previous = index > 0 ? lines[index - 1] : undefined;
+    const underlines = previous !== undefined && !previous.fenced && previous.text.trim() !== "" &&
+      !HEADING.test(previous.text) && SETEXT_UNDERLINE.test(line.text);
+    return underlines || HTML_HEADING.test(line.text) || CONTAINED_HEADING.test(line.text);
+  });
+  if (unsupported) return { ok: false, error: `unsupported heading form near ${JSON.stringify(unsupported.text.trim())}` };
 
   // Both markers are matched anywhere, fenced or not and in any case. A pull request that gets its
   // own text quoted back adds a second score (an error) or a NEEDS-A-PERSON (a person), never a pass.
