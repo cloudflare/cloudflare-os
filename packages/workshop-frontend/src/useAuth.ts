@@ -131,8 +131,8 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
 
   const logout = () => {
     try {
-      nativeApp()?.sessionEnded?.()
       disconnectNativeNotificationEnrollment()
+      nativeApp()?.sessionEnded?.()
     } catch (error) {
       console.error('Failed to disconnect native notifications:', error)
     }

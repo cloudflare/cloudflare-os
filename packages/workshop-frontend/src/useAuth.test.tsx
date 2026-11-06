@@ -167,13 +167,18 @@ describe('useAuth error reporting identity', () => {
     expect(sessionEnded).toHaveBeenCalledOnce()
   })
 
-  it('finishes local logout when the native notification bridge throws', async () => {
+  it.each(['disconnect', 'session-ended'] as const)('finishes local logout when the native %s callback throws', async callback => {
     using _ = vi.spyOn(console, 'error').mockImplementation(() => {})
     localStorage.setItem('authToken', 'stored-token')
-    vi.mocked(disconnectNativeNotificationEnrollment)
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {}, returnToInstalls: () => {},
+      sessionEnded: () => { if (callback === 'session-ended') throw new Error('native bridge unavailable') },
+    })
+    if (callback === 'disconnect') vi.mocked(disconnectNativeNotificationEnrollment)
       .mockImplementationOnce(() => { throw new Error('native bridge unavailable') })
     const { controls } = await mount(stubPublicApi(person))
     act(() => controls.logout())
+    expect(disconnectNativeNotificationEnrollment).toHaveBeenCalledOnce()
     expect(localStorage.getItem('authToken')).toBeNull()
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
   })
