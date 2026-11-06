@@ -54,7 +54,7 @@ describe("unified GitLab pack stream", () => {
     input.headers.set("authorization", "Guest credentials must not pass through");
     input.headers.set("cf-access-client-secret", "guest-secret");
     expect(await hooks().gitRequest(name, props, input)).toEqual({ok: {body: PACK, observations: ["Fetch Git repository"]}});
-    const upstream = gitlab.requests.at(-1)!;
+    const upstream = gitlab.requests.filter(isGit).at(-1)!;
     expect(upstream.url.origin).toBe(API);
     expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("oauth2:test-token")}`);
     expect(upstream.headers.get("cf-access-client-secret")).toBe(ACCESS.secret);

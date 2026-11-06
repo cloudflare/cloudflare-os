@@ -36,7 +36,8 @@ describe("unified GitHub pack stream", () => {
     let sent = false;
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const upstream = new Request(input, init);
-      if (upstream.url === "https://api.github.com/repos/acme/widgets") return Response.json({id: 1});
+      if (upstream.url === "https://api.github.com/repos/acme/widgets" ||
+          upstream.url === "https://api.github.com/repositories/1") return Response.json(REPOSITORY);
       sent = true;
       expect(upstream.url).toBe(`https://github.com/acme/widgets.git${path}`);
       expect(upstream.method).toBe(method);
