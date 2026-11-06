@@ -25,7 +25,7 @@ type SensitivityChoice = AuditSensitivity | typeof ANY_SENSITIVITY
  * into) are typed, with `adminSuggestions` and `targetSuggestions` offered, and apply on Enter or
  * once a suggestion is picked. The action is
  * searched by typing, and the sensitivity chosen; both apply at once. The workspace filter is set
- * from the log or Most inspected workspaces, and shows as a chip named `workspaceLabel` that removes
+ * from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
  * it.
  */
 export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, workspaceLabel, onFilterChange }: {
