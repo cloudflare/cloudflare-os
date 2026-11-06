@@ -28,9 +28,10 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
   last 30 days), list who is on call, look up users by name or email, and list priorities. Account
   and Team also list and open services and schedules; a Team lists its members; a Service opens
   new incidents. Opening something from a broader binding returns the same interface a narrower
-  binding gets, and a narrower binding refuses IDs outside it, such as another team's incident. An
-  incident a change targets, or a listing walks, that has since moved out of a team or service
-  binding is refused too.
+  binding gets, and a narrower binding refuses IDs outside it, such as another team's incident. A
+  change to an incident that has since moved out of a team or service binding, or to a service or
+  schedule that has since left a team binding, is refused when it would apply; so is a listing's
+  page of such an incident.
 - **Incident** reads its details, log, notes and alerts, and acknowledges, snoozes, resolves,
   reassigns, escalates, requests responders, sets the title, priority or urgency, adds notes and
   posts status updates.
