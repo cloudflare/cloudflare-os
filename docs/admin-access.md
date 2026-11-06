@@ -410,8 +410,8 @@ the workspace list is empty. A window reaching past the retention counts nothing
 
 The Audit tab shows the week's content reads in all and for each top admin and workspace, a
 sensitivity on each record (Content read, Workspace metadata, Setting change), the level an
-inspection asked for where its view got less, and filters its log by admin, action, sensitivity,
-workspace and owner.
+inspection asked for where its view got less, each call's target user (the workspace's owner) in a
+column of its own, and filters its log by admin, action, sensitivity, workspace and target user.
 
 ## Error codes
 

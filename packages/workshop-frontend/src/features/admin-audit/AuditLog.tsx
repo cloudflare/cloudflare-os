@@ -71,6 +71,9 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
   const nextCursor = page?.nextCursor
   const pageNumber = cursors.length + 1
   const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
+  // The target users the shown page names, to offer in the target user filter.
+  const targetSuggestions = [...new Set(page?.records.flatMap((record) =>
+    record.kind === 'workspace' && record.workspaceOwner ? [record.workspaceOwner] : []))]
   const workspaceRecord = page?.records.find((record) =>
     record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
   const workspaceLabel = workspace === undefined ? undefined
@@ -103,6 +106,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
         filter={filter}
         adminSuggestions={adminSuggestions}
         workspaceLabel={workspaceLabel}
+        targetSuggestions={targetSuggestions}
         onFilterChange={onFilterChange}
       />
 
@@ -125,12 +129,13 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, work
             <Table>
               <Table.Header>
                 <Table.Row>
-                  <Table.Head><span className="sr-only">Details</span></Table.Head>
+                  <Table.Head><span className="sr-only">Expand</span></Table.Head>
                   <Table.Head>Time</Table.Head>
                   <Table.Head>Admin</Table.Head>
                   <Table.Head>Action</Table.Head>
                   <Table.Head>Sensitivity</Table.Head>
-                  <Table.Head>Target</Table.Head>
+                  <Table.Head className="whitespace-nowrap">Target user</Table.Head>
+                  <Table.Head>Details</Table.Head>
                   <Table.Head>Via</Table.Head>
                 </Table.Row>
               </Table.Header>
