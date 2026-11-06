@@ -33,6 +33,7 @@ async function setup(impl: Impl) {
   // Pure ingestion tests avoid the pool's loopback wrapper; transfer tests below exercise
   // native persistence and RPC serialization through a separate Worker.
   const session = {
+    putBlob: (bytes: Uint8Array) => impl.putWorktreeBlob(sessionId, bytes),
     submitChanges: (batchId: string, revision: string, changes: Parameters<Impl["submitWorktreeChanges"]>[3]) =>
       impl.submitWorktreeChanges(sessionId, batchId, revision, changes),
     subscribe: (subscriber: Parameters<Impl["subscribeWorktree"]>[1], after?: string) =>
@@ -249,6 +250,47 @@ describe("mounted worktree canonical synchronization", () => {
     await expect(f.session.submitChanges("missing", ack.revision,
       [{path: "missing.bin", change: {setBytes: {oid: "0".repeat(40), byteLength: 4}}}])).rejects.toThrow();
     await subscription.unsubscribe();
+  }));
+
+  it("stages whole raw Git blobs idempotently without changing files or the OT revision", () => within(async (impl, f) => {
+    const revision = impl.replicaHistoryRevision(1), bytes = Uint8Array.of(0, 255, 13, 10);
+    const before = await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!);
+    const blob = await f.session.putBlob(bytes);
+    expect(blob.byteLength).toBe(4);
+    expect(await f.session.putBlob(bytes)).toEqual(blob);
+    expect(impl.gitStore.readBlob(blob.oid, blob.byteLength)).toEqual(bytes);
+    expect(impl.replicaHistoryRevision(1)).toBe(revision);
+    expect(await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!)).toEqual(before);
+    for (const invalid of [new ArrayBuffer(4), [0, 255], {byteLength: 0, length: 8_000_001}])
+      await expect(Reflect.apply(f.session.putBlob, undefined, [invalid])).rejects.toThrow(/raw Git blob bytes/);
+    await expect(f.session.putBlob(new Uint8Array(8_000_001))).rejects.toThrow(/too large/);
+    impl.storage.gadgets.delete(f.tree.id);
+    await expect(f.session.putBlob(bytes)).rejects.toThrow();
+  }));
+
+  it.each(["replace", "remove"] as const)("orders binary %s after a concurrent canonical text edit", operation => within(async (impl, f) => {
+    const revision = impl.replicaHistoryRevision(1);
+    const blob = await f.session.putBlob(Uint8Array.of(0, 255, 42));
+    await step(impl, f.tree.id, "a.txt", diffFiles("abc", "DO abc"));
+    const change = operation === "replace" ? {setBytes: {oid: blob.oid, byteLength: 3}} : {remove: true as const};
+    const receipt = await f.session.submitChanges("binary-race", revision, [{path: "a.txt", change}]);
+    expect(await text(impl, f.tree.id)).toEqual(operation === "replace" ? change.setBytes : undefined);
+    // Retry after another edit returns the first receipt and never overwrites newer work.
+    await step(impl, f.tree.id, "a.txt", {set: "later"});
+    expect(await f.session.submitChanges("binary-race", revision, [{path: "a.txt", change}])).toEqual(receipt);
+    expect(await text(impl, f.tree.id)).toBe("later");
+  }));
+
+  it("rejects an invalid binary batch atomically without discarding other edits", () => within(async (impl, f) => {
+    await step(impl, f.tree.id, "a.txt", {set: "ordinary edit"});
+    const revision = impl.replicaHistoryRevision(1);
+    await expect(f.session.submitChanges("bad-binary", revision, [
+      {path: "a.txt", change: {set: "must not land"}},
+      {path: "b.bin", change: {setBytes: {oid: "0".repeat(40), byteLength: 3}}},
+    ])).rejects.toThrow();
+    expect(await text(impl, f.tree.id)).toBe("ordinary edit");
+    await step(impl, f.tree.id, "a.txt", {set: "still usable"});
+    expect(await text(impl, f.tree.id)).toBe("still usable");
   }));
 
   it("keeps an unacknowledged binary event fetchable after the same path changes again", () => within(async (impl, f) => {
