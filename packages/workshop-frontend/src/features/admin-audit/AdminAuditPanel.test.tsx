@@ -790,6 +790,20 @@ describe('AdminAuditPanel', () => {
       expect(accessSelect().hasAttribute('data-disabled') || accessSelect().hasAttribute('disabled')).toBe(false)
     })
 
+    // Chosen by keyboard, from an option of the popup, which is gone once the save settles.
+    it('gives focus back to its trigger once a delayed change settles', async () => {
+      const admin = fakeAdmin()
+      const call = deferred()
+      admin.setAdminWorkspaceAccess.mockReturnValueOnce(call.promise)
+      await render(settingsWith(), admin)
+
+      await choose(accessSelect(), 'Full')
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(accessSelect())
+    })
+
     it('reports a failed change and keeps the server’s level', async () => {
       const admin = fakeAdmin()
       admin.setAdminWorkspaceAccess.mockRejectedValueOnce(new Error('ADMIN_WORKSPACE_ACCESS_MAX allows at most "metadata"'))
