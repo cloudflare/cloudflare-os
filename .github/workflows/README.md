@@ -21,8 +21,8 @@ medium, high) and area, and decides whether it could merge without a person; the
 commit: [`maintainers`](../maintainers), [`automerge-bands.json`](../automerge-bands.json) and
 [`automerge-escape-files.json`](../automerge-escape-files.json).
 
-It runs only from `main`'s definition, through `workflow_run` (when a producer workflow or the
-review relay finishes) and `issue_comment`, and never checks out or runs pull request code.
+It runs only from `main`'s definition, through `workflow_run` (when a producer workflow, CI or
+the review relay finishes) and `issue_comment`, and never checks out or runs pull request code.
 [`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
 group events to it; the gate decides a merge group only when the merge queue lists its commit.
 Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact each

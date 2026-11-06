@@ -565,8 +565,14 @@ describe("decide", () => {
         const mixed = decide(inputs({ ...route, commits }), both, NOW);
         assert.equal(mixed.would.decision, "person");
         assert.match(mixed.would.reasons.join("\n"), /commit ac686c1 is not a verified Dependabot commit/);
-        const unsigned = { ...dependabotCommit, commit: { verification: { verified: false } } };
-        assert.equal(decide(inputs({ ...route, commits: [unsigned] }), both, NOW).would.decision, "person");
+        for (const other of [
+          { ...dependabotCommit, commit: { verification: { verified: false } } },
+          { ...dependabotCommit, author: { login: "ndisidore", type: "User" } },
+          { ...dependabotCommit, author: null },
+          { ...dependabotCommit, committer: { login: "ndisidore", type: "User" } },
+        ]) {
+          assert.equal(decide(inputs({ ...route, commits: [dependabotCommit, other] }), both, NOW).would.decision, "person", JSON.stringify(other));
+        }
         assert.equal(decide(inputs({ ...route, commits: undefined }), both, NOW).would.decision, "person");
       }
       // Past the API's 250-commit listing, the commits count as unlisted.
@@ -986,13 +992,17 @@ describe("runRiskReview proof freshness", () => {
 describe("runRiskReview in enforce mode", () => {
   it("keeps the published check when GitHub refuses the enqueue, and tries again when CI finishes", async () => {
     const bands = bandsJson("enforce", true, [{ area: "scored", band: "low" }]);
-    const refused = harness({ policy: { bands }, runs: [verdicts()], enqueueRefused: true });
-    await assert.rejects(refused.evaluate("workflow_run", producerCompleted()), /required status checks are pending/);
-    assert.deepEqual(refused.calls.updates.map(({ conclusion }) => conclusion), ["success"]);
+    const options: HarnessOptions = { policy: { bands }, runs: [verdicts()], enqueueRefused: true };
+    const { calls, evaluate } = harness(options);
+    await assert.rejects(evaluate("workflow_run", producerCompleted()), /required status checks are pending/);
+    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success"]);
+    assert.deepEqual(calls.enqueued, []);
+    // CI finishes, its completion wakes the gate, and GitHub now admits the pull request.
     assert.ok(/workflows: \[[^\]]*\bCI\b/.test(gateWorkflow), "CI's completion wakes the gate");
-    const retried = harness({ policy: { bands }, runs: [verdicts()] });
-    await retried.evaluate("workflow_run", producerCompleted());
-    assert.equal(retried.calls.enqueued.length, 1);
+    options.enqueueRefused = undefined;
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success", "success"]);
+    assert.equal(calls.enqueued.length, 1);
   });
 
   it("approves the head and enqueues it for an open band when App approvals count", async () => {

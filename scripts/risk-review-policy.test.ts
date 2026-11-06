@@ -280,12 +280,21 @@ describe("addedDependencies", () => {
   });
 
   it("counts a spec changed to anything that can name another package as added", () => {
-    for (const spec of ["npm:evil-zod@4.7.0", "github:evil/zod", "https://evil.example/zod.tgz", "file:../zod", "link:../zod", "latest"]) {
+    for (const spec of ["npm:evil-zod@4.7.0", "github:evil/zod", "https://evil.example/zod.tgz", "file:../zod", "link:../zod",
+      "latest", "x-evil", "4beta", "*evil", "4.7.0.tgz", "git+ssh://git@github.com/evil/zod.git"]) {
       assert.deepEqual(addedDependencies(manifest("^4.6.7"), manifest(spec)), ["zod"], spec);
     }
-    for (const spec of ["^4.7.0", "4.7.0", "~4.7", ">=4.6.7 <5", "4.x", "5.0.0-beta.1", "catalog:", "catalog:next", "workspace:*"]) {
+    for (const spec of ["^4.7.0", "4.7.0", "~4.7", ">=4.6.7 <5", "4.x", "5.0.0-beta.1", "^4 || ^5", "4.6.7 - 4.9.0", "catalog:", "catalog:next", "workspace:*"]) {
       assert.deepEqual(addedDependencies(manifest("^4.6.7"), manifest(spec)), [], spec);
     }
+  });
+
+  it("compares each dependency field on its own, so a duplicate in another field hides nothing", () => {
+    const base = JSON.stringify({ dependencies: { zod: "^4.6.7" } });
+    const swapped = JSON.stringify({ dependencies: { zod: "npm:evil@1.0.0" }, devDependencies: { zod: "^4.7.0" } });
+    assert.deepEqual(addedDependencies(base, swapped), ["zod"]);
+    const hidden = JSON.stringify({ dependencies: { zod: "^4.6.7", evil: "^1.0.0" }, devDependencies: { evil: "workspace:*" } });
+    assert.deepEqual(addedDependencies(base, hidden), ["evil"]);
   });
 });
 

@@ -407,16 +407,25 @@ function catalogEntry(line: string): { indent: string; key: string } | undefined
 
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
+/** One comparator of a semver range: an optional operator, then a full or partial version. */
+const RANGE_PART =
+  /^(?:[\^~]|[<>]=?|=)?v?(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:\d+|[xX*])(?:\.(?:\d+|[xX*])){0,2})$/;
+
 /**
- * A spec that names a version of the same package: a version or range, `catalog:` or `workspace:`.
- * Anything else (`npm:`, `github:`, `file:`, `link:`, a URL or a dist-tag) can bring in another package.
+ * Whether a spec names a version of the same package: a version or range, `catalog:` or
+ * `workspace:`. Anything else (`npm:`, `github:`, `file:`, `link:`, a URL or a dist-tag) can bring
+ * in another package, or one an attacker controls.
  */
-const SAME_PACKAGE_SPEC = /^(?:catalog:[\w.-]*|workspace:\S*|(?:[\^~<>=]*\s*(?:\d|x\b|\*))[\w\s.*^~<>=|+-]*)$/;
+function namesSamePackage(spec: string): boolean {
+  if (/^catalog:[\w.-]*$/.test(spec) || spec.startsWith("workspace:")) return true;
+  return spec.trim().split(/\s+/).every((part) => part === "||" || part === "-" || RANGE_PART.test(part));
+}
 
 /**
  * The dependencies a `package.json` declares in `head` but not in `base`, and those whose spec
- * changed to one that can name another package. A new `workspace:` dependency names a package in
- * this repository, not a new third-party one, so it is left out.
+ * changed to one that can name another package. Each field is compared on its own, since pnpm
+ * reads a name from one field, not the last one listed. A new `workspace:` dependency names a
+ * package in this repository, not a new third-party one, so it is left out.
  *
  * @returns The names, or `undefined` when either side is not a JSON object.
  */
@@ -424,11 +433,12 @@ export function addedDependencies(base: string | undefined, head: string | undef
   const before = base === undefined ? new Map<string, string>() : dependencyMap(base);
   const after = head === undefined ? new Map<string, string>() : dependencyMap(head);
   if (!before || !after) return undefined;
-  return [...after].filter(([name, spec]) => {
-    const was = before.get(name);
+  const added = [...after].filter(([key, spec]) => {
+    const was = before.get(key);
     if (was === undefined) return !spec.startsWith("workspace:");
-    return spec !== was && !SAME_PACKAGE_SPEC.test(spec.trim());
-  }).map(([name]) => name);
+    return spec !== was && !namesSamePackage(spec);
+  });
+  return [...new Set(added.map(([key]) => key.slice(key.indexOf(" ") + 1)))];
 }
 
 /** A JSON value, as `JSON.parse` returns it. */
@@ -451,6 +461,7 @@ export function parseJson(text: string): Json | undefined {
   }
 }
 
+/** Every declared dependency's spec, keyed `<field> <name>`. */
 function dependencyMap(text: string): Map<string, string> | undefined {
   const manifest = asObject(parseJson(text));
   if (!manifest) return undefined;
@@ -462,7 +473,7 @@ function dependencyMap(text: string): Map<string, string> | undefined {
     if (!object) return undefined;
     for (const [name, spec] of Object.entries(object)) {
       if (typeof spec !== "string") return undefined;
-      map.set(name, spec);
+      map.set(`${field} ${name}`, spec);
     }
   }
   return map;
