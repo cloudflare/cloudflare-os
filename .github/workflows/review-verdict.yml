@@ -6,11 +6,11 @@ name: Review verdict
 # every instruction file taken from the base commit, and the gateway secrets reach only the step
 # that runs opencode.
 #
-# The scripts run from the head checkout, so this job runs pull request code next to the gateway
-# secrets. That adds no exposure: on `pull_request` this file is the head's too, so any same-repo
-# pull request could already change what the job runs, as it can for Bonk's workflow. Fork pull
-# requests never get here. Verdict trust comes from the gate, which gives no AI decision to a pull
-# request that touches this workflow or `scripts/automerge/**`.
+# Nothing from the head's working tree configures or runs anything here: the checkout, the
+# toolchain setup and the scripts are the base commit's, and the head is fetched only as git objects
+# for the review copy and the patch. This file is the head's on `pull_request`, so verdict trust
+# still rests on the gate, which gives no AI decision to a pull request that touches `.github/**`
+# or `scripts/automerge/**`. Fork pull requests never get here.
 
 on:
   pull_request:
@@ -46,12 +46,21 @@ jobs:
       MODEL: ${{ matrix.model }}
     steps:
       # Full history for the merge base and earlier reviewed heads.
-      - name: Check out the head with history
+      - name: Check out the base commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Fetch the head commit's objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "$HEAD_SHA"
 
       - name: Set up Node.js
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
