@@ -1,0 +1,75 @@
+{
+  "numTotalTestSuites": 2,
+  "numPassedTestSuites": 0,
+  "numFailedTestSuites": 2,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 3,
+  "numPassedTests": 1,
+  "numFailedTests": 2,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1793988858377,
+  "success": false,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "hook"
+          ],
+          "fullName": "hook never runs its body",
+          "status": "failed",
+          "title": "never runs its body",
+          "duration": 3.9640830000000733,
+          "benchmarks": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "fails its body",
+          "status": "failed",
+          "title": "fails its body",
+          "duration": 11.577458999999976,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "failed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "passes",
+          "status": "passed",
+          "title": "passes",
+          "duration": 0.5520410000000311,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        }
+      ],
+      "startTime": 1793988859132,
+      "endTime": 1793988859148.552,
+      "status": "failed",
+      "name": "/workspace/packages/error-reporting/src/zz/plain.test.ts"
+    }
+  ]
+}

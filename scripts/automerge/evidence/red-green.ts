@@ -8,16 +8,19 @@
 // config; then every changed source file is put back to its merge-base version (files the pull
 // request added are removed) with the head tests left in place, the workspace is rebuilt, and the
 // same tests run again. It holds when every changed test file is in both parsed reports, passes at
-// head and has at least one failing test on the base source: the tests check the behaviour the
-// change adds. What was not seen is an `error`, never a result: no readable report, a changed test
-// file missing from it, or a file that crashed before its tests ran. A dependency change is out of
-// scope, since the base source would run against the head's install.
+// head and has, on the base source, at least one test whose own body ran and failed: the tests
+// check the behaviour the change adds. What was not seen is an `error`, never a result: no
+// readable report, a changed test file missing from it, a file that crashed before its tests ran,
+// or a test that failed outside its body (a `beforeEach`, a fixture) or whose body was not seen to
+// run (FileResult.unattributed). A dependency change is out of scope, since the base source would
+// run against the head's install.
 //
 // This job runs the pull request's code and holds no secrets.
 //
 //   node scripts/automerge/evidence/red-green.ts   (env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA)
 
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "../proofs/artifact.ts";
 import type { FileDiff } from "../proofs/diff.ts";
@@ -69,7 +72,8 @@ export function headVerdict(tests: string[], head: TestRun[]): Outcome | undefin
   const { found, unseen } = resultsFor(tests, head, "head");
   const reasons: string[] = [];
   for (const [test, result] of found) {
-    if (result.failed > 0) reasons.push(`${test} fails at head: ${result.failures.join("; ")}`);
+    if (result.unattributed > 0) unseen.push(`${test} has ${result.unattributed} test(s) at head whose body was not seen to decide the outcome`);
+    else if (result.bodyFailed > 0) reasons.push(`${test} fails at head: ${result.failures.join("; ")}`);
     else if (result.status !== "passed" || result.passed === 0) unseen.push(`${test} ran no passing test at head (status ${result.status})`);
   }
   // vitest exits non-zero for an unhandled error even when every reported test passed.
@@ -86,8 +90,10 @@ export function evaluateRedGreen(tests: string[], head: TestRun[], base: TestRun
   const { found, unseen } = resultsFor(tests, base, "base source");
   const reasons: string[] = [];
   for (const [test, result] of found) {
-    if (result.failed > 0) continue;
-    if (result.status !== "passed" || result.passed === 0) unseen.push(`${test} ran no test on the base source (status ${result.status})`);
+    // A failing `beforeEach` or fixture is reported as a failed test whose body never ran.
+    if (result.unattributed > 0) unseen.push(`${test} has ${result.unattributed} test(s) on the base source that failed outside their body or were not seen to run it`);
+    else if (result.bodyFailed > 0) continue;
+    else if (result.status !== "passed" || result.passed === 0) unseen.push(`${test} ran no test on the base source (status ${result.status})`);
     else if (!base.every((run) => run.exitOk)) unseen.push(`vitest exited non-zero on the base source with ${test} passing`);
     else reasons.push(`${test} passes on the base source, so it does not check the change`);
   }
@@ -95,11 +101,19 @@ export function evaluateRedGreen(tests: string[], head: TestRun[], base: TestRun
   return decide(reasons, details);
 }
 
-function revertSources(from: string, sources: string[]): void {
+/**
+ * Puts each of `sources` (relative to `root`) back to its version at `from`, removing those that
+ * did not exist there. A file whose folder the pull request removed gets the folder back.
+ */
+export function revertSources(from: string, sources: string[], root = process.cwd()): void {
   for (const path of sources) {
-    const text = fileAt(from, path);
-    if (text === undefined) rmSync(path, { force: true });
-    else writeFileSync(path, text);
+    const text = fileAt(from, path, root);
+    if (text === undefined) {
+      rmSync(join(root, path), { force: true });
+    } else {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
   }
 }
 
@@ -119,8 +133,8 @@ async function main(): Promise<void> {
     const decided = headVerdict(scope.tests, headRuns);
     if (decided) return decided;
 
-    revertSources(from, scope.sources);
     try {
+      revertSources(from, scope.sources);
       // The merge base built on its own, so a failure here says nothing about the tests.
       if (!runCommand("pnpm", ["build"], ".").ok) return errored("pnpm build failed on the base source");
       const baseRuns = [...groups].map(([config, files]) => runTests(config, files));

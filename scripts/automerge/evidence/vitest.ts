@@ -1,10 +1,11 @@
 // Runs chosen test files under a package's own vitest config and reads the JSON report, for the
 // evidence producers that compare one set of tests across two versions of the source.
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { asArray, asObject, asString, parseJson, type JsonObject } from "../proofs/json.ts";
+import { fileURLToPath } from "node:url";
+import { asArray, asObject, asString, isObject, parseJson, type JsonObject } from "../proofs/json.ts";
 import { runCommand } from "./exec.ts";
 
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
@@ -80,6 +81,13 @@ export interface FileResult {
   status: string;
   passed: number;
   failed: number;
+  /** Failed tests whose own body ran and threw (BODY_MARK `failed`). */
+  bodyFailed: number;
+  /**
+   * Passed or failed tests the body mark does not explain: one that failed before or after its
+   * body (a hook or fixture), or any test when the mark was never set (its setup file not loaded).
+   */
+  unattributed: number;
   /** Tests that did not run: skipped, pending or todo. */
   notRun: number;
   /** Full names of its failing tests, at most 20. */
@@ -99,20 +107,34 @@ export interface TestRun {
   tail: string;
 }
 
+/**
+ * The key in a test's `meta` that body-mark.setup.mjs sets to `passed` or `failed` once the test's
+ * own body has run. vitest reports a failing `beforeEach` or fixture as a failed test whose body
+ * never ran, and the report has no other way to tell the two apart.
+ */
+export const BODY_MARK = "automergeBody";
+
+const BODY_SETUP = fileURLToPath(new URL("./body-mark.setup.mjs", import.meta.url));
+
 /** The per-file results in a vitest JSON report, with paths relative to `root`. */
 export function fileResults(report: JsonObject, root: string): FileResult[] {
   return asArray(report.testResults, "testResults").map((entry) => {
     const suite = asObject(entry, "suite");
     const result: FileResult = {
       path: relative(root, asString(suite.name, "suite name")), status: asString(suite.status, "suite status"),
-      passed: 0, failed: 0, notRun: 0, failures: [],
+      passed: 0, failed: 0, bodyFailed: 0, unattributed: 0, notRun: 0, failures: [],
     };
     for (const assertion of asArray(suite.assertionResults, "assertionResults")) {
       const a = asObject(assertion, "assertion");
       const status = asString(a.status, "assertion status");
-      if (status === "passed") result.passed++;
-      else if (status === "failed") {
+      const mark = isObject(a.meta) ? a.meta[BODY_MARK] : undefined;
+      if (status === "passed") {
+        result.passed++;
+        if (mark !== "passed") result.unattributed++;
+      } else if (status === "failed") {
         result.failed++;
+        if (mark === "failed") result.bodyFailed++;
+        else result.unattributed++;
         if (result.failures.length < 20) result.failures.push(asString(a.fullName, "fullName"));
       } else result.notRun++;
     }
@@ -120,15 +142,35 @@ export function fileResults(report: JsonObject, root: string): FileResult[] {
   });
 }
 
-/** Runs `files` (repo-relative) under `config` from its package directory. */
+const WRAPPER_CONFIG = "vitest.automerge.config.ts";
+const WRAPPER_SETUP = "vitest.automerge.setup.mjs";
+
+/**
+ * Runs `files` (repo-relative) under `config` from its package directory, with
+ * body-mark.setup.mjs added to the config's setup files through a wrapper config written beside it
+ * and removed after. The wrapper resolves a config exported as a function or a promise. A config
+ * with `test.projects` makes the wrapper throw, so vitest writes no report and the run reads as
+ * unseen: projects do not all inherit the root's setup files.
+ */
 export function runTests(config: string, files: string[]): TestRun {
   const pkg = packageOf(config);
   if (!pkg) throw new Error(`${config} is not in a package`);
   const dir = mkdtempSync(join(tmpdir(), "automerge-vitest-"));
   const out = join(dir, "report.json");
   try {
+    copyFileSync(BODY_SETUP, join(pkg, WRAPPER_SETUP));
+    writeFileSync(join(pkg, WRAPPER_CONFIG), [
+      `import config from "./${relative(pkg, config)}";`,
+      `export default async (env) => {`,
+      `  const resolved = await (typeof config === "function" ? config(env) : config);`,
+      `  if (resolved.test?.projects) throw new Error("automerge: a vitest config with test.projects is not supported");`,
+      `  const setupFiles = [resolved.test?.setupFiles ?? []].flat();`,
+      `  return { ...resolved, test: { ...resolved.test, setupFiles: [...setupFiles, "./${WRAPPER_SETUP}"] } };`,
+      `};`,
+      "",
+    ].join("\n"));
     const result = runCommand("pnpm", [
-      "exec", "vitest", "run", "--config", relative(pkg, config), "--reporter=json", `--outputFile=${out}`,
+      "exec", "vitest", "run", "--config", WRAPPER_CONFIG, "--reporter=json", `--outputFile=${out}`,
       ...files.map((file) => relative(pkg, file)),
     ], pkg);
     let results: FileResult[] | undefined;
@@ -140,6 +182,8 @@ export function runTests(config: string, files: string[]): TestRun {
     return { config, files, results, exitOk: result.ok, seconds: result.seconds, tail: result.ok ? "" : result.tail };
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(join(pkg, WRAPPER_CONFIG), { force: true });
+    rmSync(join(pkg, WRAPPER_SETUP), { force: true });
   }
 }
 
