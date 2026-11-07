@@ -94,6 +94,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async getDetails(): Promise<PagerDutyIncidentDetails> {
     const { host } = this.#ctx;
     const loaded = await this.#load(INCIDENT_INCLUDES);
+    const you = await this.#you();
     let details: PagerDutyIncidentDetails;
     if (loaded.wire) {
       const id = loaded.wire.id;
@@ -101,11 +102,11 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
         { limit: 1, sort_by: "created_at:asc" }));
       details = toIncidentDetails(loaded.wire, alerts[0] ?? null);
     } else {
-      details = pendingIncident(loaded.pending);
+      details = pendingIncident(loaded.pending, you);
     }
     await this.#ctx.authorize({ title: "Read a PagerDuty incident", description: "Read the incident's details." },
       { filter: [], result: this.#result(loaded) });
-    return overlayIncident(details, host.pending(), id => host.resolve(id), await this.#you());
+    return overlayIncident(details, host.pending(), id => host.resolve(id), you);
   }
 
   async getTimeline(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyTimelineEntry>> {
@@ -165,8 +166,9 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async #target(): Promise<{ target: IncidentTarget; status: PagerDutyIncidentSummary["status"] }> {
     const { host } = this.#ctx;
     const loaded = await this.#load();
-    const summary = loaded.wire ? toIncidentSummary(loaded.wire) : pendingIncident(loaded.pending);
-    const { status } = overlayIncident(summary, host.pending(), id => host.resolve(id), await this.#you());
+    const you = await this.#you();
+    const summary = loaded.wire ? toIncidentSummary(loaded.wire) : pendingIncident(loaded.pending, you);
+    const { status } = overlayIncident(summary, host.pending(), id => host.resolve(id), you);
     if (!loaded.wire) return { target: { id: this.#id }, status };
     // PagerDuty's ID and number reach the approval text, so they are held to PagerDuty's grammar.
     const { id, incident_number: number } = loaded.wire;

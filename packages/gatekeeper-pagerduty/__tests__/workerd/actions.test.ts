@@ -6,7 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { WireIncident } from "../../src/pagerduty-normalize";
-import type { PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
+import type { PagerDutyIncidentDetails, PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
   ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
   failure, hooks, accountStub, seedAccount, sub, unwrap,
@@ -50,6 +50,11 @@ const incidentRef = { type: "incident_reference" };
 /** An on-call entry for `user` at the first level of the platform policy, through its schedule. */
 const onCallEntry = (user: { id: string }, start: string, end: string) =>
   ({ user: { id: user.id }, level: 1, escalationPolicy: { id: POLICY.id }, schedule: { id: SCHEDULE.id }, start, end });
+/** A time zone where it is now noon to one, so support hours on either side of it hold all through a test. */
+const noonZone = () => {
+  const behind = new Date().getUTCHours() - 12;
+  return behind === 0 ? "Etc/GMT" : `Etc/GMT${behind > 0 ? "+" : ""}${behind}`;
+};
 
 type Case = {
   binding?: Binding;
@@ -431,6 +436,46 @@ describe("simulation", () => {
     await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
     const [[opened]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect([opened.id, opened.team?.id]).toEqual(["~1", OTHER_TEAM.id]);
+  });
+
+  it("opens an incident assigned to oneself alone acknowledged by them, as PagerDuty does, and one assigned to another triggered", async () => {
+    const t = await setup({ resourceKind: "service", id: SERVICE.id });
+    const own = await t.run([["createIncident", { title: "Checkout failing", assignTo: [ALICE.email] }], ["getDetails"]]) as PagerDutyIncidentDetails;
+    expect(own).toMatchObject({ status: "acknowledged", acknowledgers: [{ user: { id: ALICE.id }, at: own.createdAt }] });
+    expect(await t.run([["createIncident", { title: "Refunds failing", assignTo: [BOB.email] }], ["getDetails"]]))
+      .toMatchObject({ status: "triggered", acknowledgers: [] });
+    expect(await t.run([["listIncidents", { statuses: ["acknowledged"] }]], 5)).toMatchObject([[{ id: own.id }]]);
+    await t.run([["getIncident", own.id], ["snooze", 3600]]);
+    expect((await t.submitted()).at(-1)?.description).toMatchObject({ actionKind: { tag: "acknowledge-incidents" } });
+  });
+
+  it("opens an incident without an urgency at the one its service's rule gives, leaving it to PagerDuty", async () => {
+    const t = await setup({ resourceKind: "service", id: SERVICE.id });
+    t.pd.services.get(SERVICE.id)!.incident_urgency_rule = { type: "constant", urgency: "low" };
+    await t.run([["createIncident", { title: "Checkout failing" }]]);
+    await t.run([["createIncident", { title: "Refunds failing", urgency: "high" }]]);
+    expect(await t.run([["listIncidents", { urgencies: ["low"] }]], 5)).toMatchObject([[{ id: "~1", urgency: "low" }]]);
+    expect(await t.run([["getIncident", "~2"], ["getDetails"]])).toMatchObject({ urgency: "high" });
+    const [create] = await t.submitted();
+    await t.apply(create.actionId);
+    expect(JSON.parse(t.pd.writes()[0].body!)).toEqual({
+      incident: { type: "incident", title: "Checkout failing", service: { id: SERVICE.id, type: "service_reference" } },
+    });
+  });
+
+  it.each([
+    ["within", "10:00:00", "14:00:00", "low"],
+    ["outside", "14:00:00", "18:00:00", "high"],
+  ])("opens an incident without an urgency %s its service's support hours at the urgency its rule gives then", async (_name, start, end, urgency) => {
+    const t = await setup({ resourceKind: "service", id: SERVICE.id });
+    Object.assign(t.pd.services.get(SERVICE.id)!, {
+      incident_urgency_rule: {
+        type: "use_support_hours",
+        during_support_hours: { type: "constant", urgency: "low" }, outside_support_hours: { type: "constant", urgency: "high" },
+      },
+      support_hours: { type: "fixed_time_per_day", time_zone: noonZone(), start_time: start, end_time: end, days_of_week: [1, 2, 3, 4, 5, 6, 7] },
+    });
+    expect(await t.run([["createIncident", { title: "Checkout failing" }], ["getDetails"]])).toMatchObject({ urgency });
   });
 
   it("returns an acknowledged incident a pending change raises to high urgency to triggered, so it can't be snoozed", async () => {

@@ -36,13 +36,16 @@ export type NewIncident = {
   escalationPolicy: PagerDutyRef;
   title: string;
   details?: string;
-  urgency?: PagerDutyUrgency;
   priority?: PriorityTarget;
   assignTo?: UserTarget[];
   incidentKey?: string;
   /** When it was staged, which is when a simulated read says it was created. */
   stagedAt: string;
-};
+} & (
+  | { urgency: PagerDutyUrgency; serviceUrgency?: never }
+  /** Left to PagerDuty, whose service rule gave `serviceUrgency` when it was staged: what reads show meanwhile. */
+  | { urgency?: never; serviceUrgency: PagerDutyUrgency }
+);
 
 export type NewOverride = {
   /** The `~N` the pending override goes by until PagerDuty assigns its ID. */

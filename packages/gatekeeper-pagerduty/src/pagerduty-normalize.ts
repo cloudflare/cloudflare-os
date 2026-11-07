@@ -28,6 +28,19 @@ export type WireUser = WireRef & {
 
 export type WireTeam = WireRef & { description?: string | null };
 
+/** How a service sets an incident's urgency: one urgency, or one each for within and outside its support hours. */
+type WireUrgencyRule = { type: "constant" | "use_support_hours"; urgency?: PagerDutyUrgency | "severity_based" };
+
+export type WireSupportHours = {
+  type: "fixed_time_per_day";
+  time_zone: string;
+  /** Times of day, such as "09:00:00". */
+  start_time: string;
+  end_time: string;
+  /** 1 is Monday. */
+  days_of_week: number[];
+};
+
 export type WireService = WireRef & {
   description?: string | null;
   status?: PagerDutyServiceSummary["status"];
@@ -36,6 +49,8 @@ export type WireService = WireRef & {
   acknowledgement_timeout?: number | null;
   auto_resolve_timeout?: number | null;
   created_at?: string;
+  incident_urgency_rule?: WireUrgencyRule & { during_support_hours?: WireUrgencyRule; outside_support_hours?: WireUrgencyRule };
+  support_hours?: WireSupportHours | null;
 };
 
 export type WireIncident = WireRef & {
