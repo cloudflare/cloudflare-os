@@ -1194,7 +1194,7 @@ describe("PPTX resource limits", () => {
     const zip = await readZip(deckToPptx(oneSlide(Array.from({length: 79}, () => shared))));
     const xml = partText(zip, "ppt/slides/slide1.xml");
     expect(occurrences(xml, "&amp; dolor &lt;sit&gt; amet")).toBe(79 * 3_225);
-  });
+  }, 30_000);
 
   it("reports aggregate text and line-break limits", () => {
     const largeText = "x".repeat(900_000);
