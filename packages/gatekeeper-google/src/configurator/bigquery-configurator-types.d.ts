@@ -20,7 +20,7 @@ export type BigQueryNode = {
   id: string;
   kind: BigQueryNodeKind;
   title: string;
-  /** A project's or dataset's friendly name (or a dataset's description), or a table's kind when it is not a plain table. */
+  /** A project's or dataset's friendly name (or a dataset's description); a table's friendly name, or its kind when it is not a plain table. */
   subtitle?: string;
   /** Set on a table that is a view or materialized view. */
   view?: true;

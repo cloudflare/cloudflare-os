@@ -955,8 +955,8 @@ describe("the Office import grant on a stored account", () => {
 describe("BigQuery picker", () => {
   const dataset = (projectId: string, datasetId: string, extra = {}) =>
     ({ datasetReference: { projectId, datasetId }, location: "US", ...extra });
-  const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE") =>
-    ({ tableReference: { projectId, datasetId, tableId }, type });
+  const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE", friendlyName?: string) =>
+    ({ tableReference: { projectId, datasetId, tableId }, type, friendlyName });
 
   /** An account holding a role in `mine` only, which was shared `theirs.events`. */
   function bigQuery() {
@@ -974,7 +974,7 @@ describe("BigQuery picker", () => {
         case "/projects/mine/datasets":
           return Response.json({ datasets: [dataset("mine", "web", { friendlyName: "Web v2.0" }), dataset("mine", "sales", { friendlyName: "Sales" })] });
         case "/projects/mine/datasets/sales/tables":
-          return Response.json({ tables: [table("mine", "sales", "orders"), table("mine", "sales", "daily", "VIEW")] });
+          return Response.json({ tables: [table("mine", "sales", "orders", "TABLE", "Customer purchases"), table("mine", "sales", "daily", "VIEW")] });
         case "/projects/mine/datasets/web/tables":
           // Date-sharded, as a GA4 export is: one table a day.
           return Response.json({ tables: Array.from({ length: 250 }, (_, i) => table("mine", "web", `events_${20240000 + i}`)) });
@@ -1004,6 +1004,10 @@ describe("BigQuery picker", () => {
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "dai", null)).toMatchObject({ nodes: [
       { id: "table:mine/sales/daily", kind: "table", subtitle: "View", view: true, path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
+    ] });
+    // A table's friendly name is shown and searched, as before the picker.
+    expect(await ui.listNodes("dataset:mine/sales", "customer", null)).toMatchObject({ nodes: [
+      { id: "table:mine/sales/orders", subtitle: "Customer purchases", view: undefined },
     ] });
     expect(await ui.listProjects("proj")).toEqual([{ value: "mine", title: "mine", subtitle: "My project" }]);
   });

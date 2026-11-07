@@ -308,7 +308,7 @@ function bigQueryDatasetNode(dataset: BigQueryDataset, listed: boolean): BigQuer
 function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
-    kind: "table", title: table.tableId, subtitle: BIGQUERY_TABLE_KINDS[table.type], listed,
+    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], listed,
     view: BIGQUERY_VIEW_TYPES.has(table.type) || undefined,
     path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
   };
