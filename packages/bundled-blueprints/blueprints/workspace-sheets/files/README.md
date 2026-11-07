@@ -1,268 +1,111 @@
-# Sheets
+# Sheets — real-time collaborative spreadsheet Gadget
 
-A lightweight, persistent spreadsheet Gadget with a familiar grid interface, formulas, formatting, multiple sheets, and live synchronization.
+A spreadsheet with formulas, formatting, filters, charts, pivot tables and multiple sheets. The workbook is stored in the gadget's Durable Object with a version per cell; every open grid syncs live, and concurrent edits to different cells never overwrite each other. Exports to Excel, CSV and PDF.
 
-## Features
+## How agents should edit this sheet (read this first)
 
-- Editable spreadsheet title and multiple sheet tabs
-- Add, rename, duplicate, and delete sheets
-- Cell and range selection with keyboard navigation
-- Formula bar and A1-style references
-- Cross-sheet references such as `Sheet2!A1` and `'Sales Data'!B4`
-- 100+ spreadsheet functions across math, statistics, logic, text, lookup, date/time, and information categories
-- Number, currency, percent, scientific, date, and time formatting
-- Bold, italic, underline, strikethrough, text color, fill color, alignment, and wrapping
-- Row and column insertion, deletion, and resizing
-- Range sorting, AutoSum, copy/paste via TSV, and local undo/redo for cell edits
-- Automatic persistent saving with optimistic per-cell conflict detection
-- Real-time operation and presence synchronization in the server architecture
-- Excel workbook and per-sheet CSV export
+The people using this sheet watch it change live: each cell API call appears in their grid as its own animated step (new values fade in, changed characters light up, cleared cells fade out). So:
 
-## Using the spreadsheet
+1. **Read first.** `listSheets()` gives sheet names, sizes and used ranges; `readRange({ sheet, range })` gives the stored values (formulas as text, e.g. `"=SUM(B2:B9)"`). The server doesn't evaluate formulas for `readRange` (only exports do), so compute results yourself if you need them.
+2. **One cell, row or small range per call.** `setCell` / `setCells` for scattered cells, `setRange` for a row or small block, `formatRange` for styling. Several calls can go in one `executeCode` run: loop and `await` each one. For a table, write the header row, then one row per call, top to bottom.
+3. **Pause briefly between calls**, about `await new Promise(r => setTimeout(r, 150))`, so each change lands as a distinct step.
+4. **Change only what changed.** Writing a cell with the same value and format is a no-op, but don't rewrite whole ranges to fix one cell. For a small edit, keep the rest of the cell's text so only the changed characters light up.
+5. **Never replace a whole sheet** (`applyOperation({ sheetReplacements })`) when it already has content: that path skips per-cell version checks and isn't animated. Use the cell API.
+6. **Leave the cell the user is typing in alone.** Their open editor keeps their text and their commit then wins.
 
-- Click a cell to select it.
-- Double-click a cell, press **F2**, or begin typing to edit it.
-- Start formulas with `=`, for example:
-  - `=SUM(A1:A10)`
-  - `=IF(B2>100,"High","Low")`
-  - `=VLOOKUP(E2,A2:C20,3,FALSE)`
-  - `=Sheet2!A1*2`
-- Use the name box to jump to a cell or range such as `D12` or `A1:C8`.
-- Right-click the grid for cut/copy/paste and row or column actions.
-- Double-click a sheet tab to rename it; right-click it to duplicate or delete it.
+**Reaching this gadget.** In `executeCode` a gadget is `env.<NAME>`, where `<NAME>` is the binding name the workspace gave it, derived from the gadget's title (e.g. `LAUNCH_PLAN`, or `GADGET` when none could be made). Read it from the chat's binding list rather than guessing. The methods below are on its `.rpc` stub (`env.<NAME>.rpc.listSheets()`), and `env.<NAME>.exports` exports it as a file. The examples call it `MY_SHEET`.
 
-## Keyboard shortcuts
+Example: add a small table with a total, then style it.
 
-| Shortcut | Action |
+```js
+const sheet = env.MY_SHEET.rpc; // the binding's name varies: see above
+const pause = () => new Promise((r) => setTimeout(r, 150));
+const { sheets } = await sheet.listSheets();
+const name = sheets[0].name;
+const rows = [["Region", "Q1", "Q2"], ["North", 1200, 1350], ["South", 980, 1110], ["West", 1430, 1520]];
+for (let i = 0; i < rows.length; i++) {
+  await sheet.setRange({ sheet: name, start: `A${i + 1}`, values: [rows[i]] });
+  await pause();
+}
+await sheet.setCells({ sheet: name, cells: { A5: "Total", B5: "=SUM(B2:B4)", C5: "=SUM(C2:C4)" } }); await pause();
+await sheet.formatRange({ sheet: name, range: "A1:C1", fmt: { b: true, bg: "#fbf0c2" } }); await pause();
+await sheet.formatRange({ sheet: name, range: "B2:C5", fmt: { nf: "currency", d: 0 } });
+```
+
+## Cell API
+
+Every write runs in the Durable Object's mutation queue, bumps versions only for cells whose value or format changed, and, when anything changed, persists and broadcasts an `operation` event with `senderId: "agent"` (which is what the grid animates). Writes return `{ status: "applied" | "unchanged", revision, updated?, cleared? }`. Bad input throws a readable error (bad ref or range, unknown sheet, non-object `cells`, non-array `values`, missing or invalid `fmt`, unknown chart type, out-of-range sizes).
+
+**Addressing.** `sheet` is a sheet id or name (case-insensitive); omitted means the first sheet. Cells are A1 refs (`$` allowed); ranges are `"A1:C9"`. Row arguments are 1-based numbers; column arguments are letters (`"C"`) or 1-based numbers. Writing past a sheet's edge grows it, up to 50,000 rows and 702 columns (`ZZ`).
+
+**Values** are stored as text, at most 8,192 characters: numbers are stringified (written out in full, since the grid reads `1.5e-7` as text), booleans become `TRUE`/`FALSE`, a leading `=` makes a formula, and a leading `'` forces text. Text such as `1,200`, `$1,200` and `15%` reads as a number; dates do not (`2024-01-15` stays text), so write dates as `=DATE(2024,1,15)` or a 1900-based serial with `nf: "date"`.
+
+| Method | Notes |
 | --- | --- |
-| Arrow keys | Move the active cell |
-| Shift + Arrow | Extend the selection |
-| Enter / F2 | Edit the active cell |
-| Tab / Shift + Tab | Move right / left |
-| Delete / Backspace | Clear selected cells |
-| Ctrl/Cmd + C, X, V | Copy, cut, paste |
-| Ctrl/Cmd + Z | Undo |
-| Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z | Redo |
-| Ctrl/Cmd + B | Bold |
-| Ctrl/Cmd + I | Italic |
-| Ctrl/Cmd + U | Underline |
-| Ctrl/Cmd + A | Select the whole sheet |
-| Ctrl/Cmd + Arrow | Jump across populated or empty regions |
-| Alt + Enter | Insert a line break while editing |
+| `listSheets()` | `{ revision, sheets: [{ id, name, rows, cols, usedRange, cellCount, filter, charts, pivot }] }`. `filter` is `{ headerRow, columns }` or null; `charts` are `{ id, type, range, title }`; `pivot` is a boolean. |
+| `readRange({ sheet?, range?, formats? })` | `{ revision, sheetId, sheet, range, values: [[…]], formats? }`; empty cells read as `""`. No range reads the used range. At most 50,000 cells per call. |
+| `setCells({ sheet?, cells })` | `cells` maps refs to values: `{ A1: "Revenue", B2: 42, C3: "=SUM(B1:B9)", D4: null, E5: { value?, fmt? } }`. A plain value keeps the cell's format; `null` clears the cell; `fmt` merges into the existing format (a key set to `null` removes it; `fmt: null` removes all formatting). |
+| `setCell({ sheet?, ref, value, fmt? })` | One cell, same rules. |
+| `setRange({ sheet?, start = "A1", values: [[…], …], fmt? })` | A rectangular block; `undefined` entries are skipped; `fmt` merges into every written cell (`null` clears their formatting). |
+| `formatRange({ sheet?, range, fmt })` | Merges `fmt` into every cell (`fmt: null` clears formatting). At most 50,000 cells. |
+| `clearRange({ sheet?, range, formats = false })` | Clears values; formatting stays unless `formats: true`. Any size. |
+| `insertRows({ sheet?, at, count = 1 })` / `deleteRows(…)` | Inserts before row `at`. As in the grid, formula references from every sheet move, references into deleted lines become `#REF!`, ranges shrink, and chart ranges, pivot sources, the filter and row heights follow. A sheet keeps at least one row. |
+| `insertCols({ sheet?, at, count = 1 })` / `deleteCols(…)` | Same, with `at` a column letter or number. |
+| `addSheet({ name?, rows?, cols?, index? })` | Returns `{ sheetId, name }`. Names are trimmed to 60 characters and must be unique (default `SheetN`). New sheets default to 100 × 26. |
+| `renameSheet({ sheet, name })` | Rewrites references to the sheet in every formula. |
+| `deleteSheet({ sheet })` | Never the last sheet. |
+| `addChart({ sheet?, range, type = "line", title?, xAxisTitle?, yAxisTitle?, legend?, firstRowHeaders?, firstColLabels?, x?, y?, width?, height? })` | Returns `{ chartId }`. `type` is `line`, `pie`, `area` or `stackedBar`. `legend`, `firstRowHeaders` and `firstColLabels` default to true. Size is clamped to 280–1200 × 200–900 px (default 520 × 320). Without `x`/`y` it's placed beside the data, past any filled columns next to it, or under it when there's no room. At most 50 charts per sheet. |
+| `setColumnWidths({ sheet?, widths: { A: 180, C: 120 } })` | In px, 24–2000; `null` resets a column to the default (92). |
 
-## Programmatic population
+There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are recalculated by an open grid, so after a change to its source data, an export taken before anyone opens the workbook has the earlier totals.
 
-The spreadsheet can be read and populated through the Gadget's server RPC methods. This is useful for scripts, agents, migrations, or seeding a workbook without using the grid UI.
+**Formats** (`fmt`):
 
-### Read the workbook
+- `b`, `i`, `u`, `s`, `wrap`: `true`.
+- `c` text colour and `bg` fill: hex such as `#2f6fd1`. Palette fills: `#ececee #fbdedb #fde6d2 #fbf0c2 #d9f0e2 #d4eeed #dbe6fa #e8defa #f9ddeb`; palette text colours: `#6b6b73 #d0473f #d9731f #b48a00 #2f9e66 #13898a #2f6fd1 #7c4dcc #c94a8c`. A filled cell without a text colour gets legible ink automatically, in light and dark mode.
+- `a`: `"l" | "c" | "r"`.
+- `nf`: `auto`, `text`, `number`, `integer`, `percent`, `scientific`, `currency` (`$`), `date` (`MM/DD/YYYY`), `time`, `datetime`. `d`: decimals, 0–10. `text` keeps what a person types into the cell as text; through the API, write `'00123` to keep a number-like value as text.
+- `fs`: font size in px, 6–96 (13 is the default).
 
-Call `getDocument()` to retrieve the complete persisted workbook:
+## Formulas
 
-```js
-const doc = await gadget.getDocument();
-```
+The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and follows Excel's results, so an exported workbook almost always recalculates to the values the grid shows. What matters when writing formulas:
 
-The returned object contains `revision`, `title`, `sheetOrder`, `sheets`, `cells`, and `lastModified`. Cells are grouped by sheet ID and keyed by A1 reference:
+- Cross-sheet references: `Sheet2!A1`, `'Sales Data'!B4`; a name with an apostrophe is `'Owner\'s Sheet'!A1` (or `'Owner''s Sheet'!A1`). `HYPERLINK(url, label)` and plain `http(s)` values are links.
+- Not supported (the formula is invalid): whole-column/row references (`A:A`, `1:1`), structured references (`[ ]`), `@`, and `;` outside an array constant.
+- Array constants `{1,2;3,4}` work wherever a range does. Nothing spills: a formula returning an array shows its first item. Where one value is expected, a range gives the cell in the formula's own row or column (implicit intersection), else `#VALUE!`. Only `SUMPRODUCT` evaluates operators over ranges item by item, so `=SUMPRODUCT((A2:A9="North")*B2:B9)` works; elsewhere use `SUMIFS`/`COUNTIFS`/`AVERAGEIFS`.
+- Criteria such as `">1"` match only numbers; a single cell reference in `SUM`/`AVERAGE` counts only a number.
+- Dates are Excel 1900 serials (including its fictional 29 February 1900). `NOW()`/`TODAY()` use the browser's clock in the grid and UTC in exports.
+- Cycles show `#CYCLE!`.
 
-```js
-const firstSheetId = doc.sheetOrder[0];
-const a1 = doc.cells[firstSheetId].A1;
-// { value: "Revenue", fmt: { b: true }, version: 1 }
-```
+## Data model
 
-### Write cells
+- `meta`: revision, title, sheet order, and per-sheet metadata (`rows`, `cols`, `colWidths`, `rowHeights`, frozen panes, `filter`, `charts`, `pivot`). `title` isn't edited in the grid; the browser tab shows it when set, and otherwise the active sheet's name. Frozen panes exist in the model but have no UI.
+- Cells are `{ value, fmt, version }`, stored in blocks of 32 rows (`b:<sheetId>:<block>`), packed as parallel arrays.
+- Clients send per-cell edits with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. Layout-changing edits (sort, row/column insert or delete) are sent as whole-sheet replacements guarded by `baseRevision`, refused if the document moved on.
+- Presence events flow between clients, but no remote cursors are drawn.
+- Older storage layouts are converted to blocks the first time a workbook loads.
 
-Use `applyOperation()` with per-cell operations. For a new cell, use `baseVersion: 0`; when replacing or deleting an existing cell, use its current `version` from `getDocument()`.
+## Export formats
 
-```js
-const doc = await gadget.getDocument();
-const sheetId = doc.sheetOrder[0];
-const cells = doc.cells[sheetId];
+Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells (and 40 million characters of text) across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
 
-const result = await gadget.applyOperation({
-  senderId: "seed-script",
-  cellOps: [
-    {
-      sheetId,
-      ref: "A1",
-      value: "Revenue",
-      fmt: { b: true, bg: "#fff3a3" },
-      baseVersion: cells.A1?.version ?? 0,
-    },
-    {
-      sheetId,
-      ref: "B1",
-      value: "=SUM(B2:B10)",
-      fmt: { nf: "currency", d: 2 },
-      baseVersion: cells.B1?.version ?? 0,
-    },
-  ],
-});
-```
+- **Excel** (`.xlsx`): every sheet with values, formulas (rewritten for Excel) and cached results, number formats, fonts, colours, alignment, wrap, column widths, row heights, frozen panes, filters, hyperlinks and native Excel charts. Excel recalculates on open. Sheet names are made Excel-safe (31 characters, no `:\/?*[]`). Rows the grid grew to fit wrapped text are written at Excel's default height.
+- **CSV**: one format per sheet (up to 30): displayed values through the used range, UTF-8 with BOM, CRLF. Rows hidden by a filter are included. With several sheets each file is named after its sheet.
+- **PDF** (browser): the whole workbook in the print layout, light palette, wide sheets split into column groups, filtered rows left out, charts included. A sheet whose used range exceeds 100,000 cells gets a note instead of its table; use Excel or CSV for those.
 
-A cell's `value` is always stored as text. Begin a value with `=` to create a formula. To delete a cell completely, send both `value: null` and `fmt: null` with the current `baseVersion`.
+## Limitations
 
-Check `result.status` after writing. It is `applied`, `unchanged`, or `conflict`. On a conflict, inspect `result.conflicts`, re-read the document, and retry against the latest cell versions rather than overwriting blindly.
+- No file import; the clipboard uses tab-separated text.
+- No Replace in Find.
+- A filter covers the rows it had when it was turned on, plus rows inserted inside it; rows written below it aren't filtered or sorted until it is turned off and on again.
+- Structural edits and sorting clear local undo history.
+- The whole workbook is held in the browser's memory; about a million filled cells is the practical ceiling.
 
-### Replace a whole sheet
+## Code map
 
-For bulk imports, `sheetReplacements` is more efficient than sending many individual cell operations:
+The gadget is `client.js` (the grid) and `server.js` (the Durable Object and exports). Both are self-contained bundles: each inlined module starts with a `// lib/<name>.ts` comment.
 
-```js
-await gadget.applyOperation({
-  senderId: "csv-import",
-  sheetReplacements: [{
-    sheetId,
-    cells: {
-      A1: { value: "Name", fmt: { b: true }, version: 1 },
-      B1: { value: "Total", fmt: { b: true }, version: 1 },
-      A2: { value: "Example", fmt: null, version: 1 },
-      B2: { value: "1250", fmt: { nf: "currency", d: 2 }, version: 1 },
-    },
-  }],
-});
-```
-
-A whole-sheet replacement overwrites that sheet's complete cell map, so merge with existing data first if it must be preserved. It does not use per-cell conflict checks.
-
-### Change workbook structure
-
-Pass a complete structure snapshot to change the title, sheet order, names, dimensions, or sizing metadata. Because structure uses last-writer-wins semantics, start with the latest document and preserve every sheet that should remain:
-
-```js
-const doc = await gadget.getDocument();
-const sheetId = doc.sheetOrder[0];
-
-await gadget.applyOperation({
-  senderId: "setup-script",
-  structure: {
-    title: "Quarterly plan",
-    sheetOrder: doc.sheetOrder,
-    sheets: {
-      ...doc.sheets,
-      [sheetId]: {
-        ...doc.sheets[sheetId],
-        name: "Summary",
-        colWidths: { ...doc.sheets[sheetId].colWidths, 0: 180 },
-      },
-    },
-  },
-});
-```
-
-Omitting an existing sheet from `sheetOrder` deletes it and its stored cells. Adding a new sheet ID creates empty storage for it. When adding a sheet and its initial data together, include both `structure` and a matching `sheetReplacements` entry in the same operation.
-
-Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underline), `s` (strikethrough), `c` (text color), `bg` (fill color), `a` (`l`, `c`, or `r` alignment), `nf` (number format), `d` (decimal places), `fs` (font size), and `wrap`. Colors must be hexadecimal strings such as `#1d1d20`.
-
-## Architecture
-
-Both sides are built on the shared gadget libraries in `packages/bundled-blueprints/libraries`, which the build
-inlines into the `client.js` and `server.js` it ships.
-
-`@gadgets/bundled-blueprints/libraries/ui/client` draws the chrome: the element builder, the shared
-toolbar icons and controls (icon and segment buttons, groups, colour pickers, the dropdown behind the
-number-format menu), the in-page prompt that stands in for the `window.prompt` the sandbox blocks,
-and the save-status dot. `@gadgets/bundled-blueprints/libraries/sync/client` and `.../sync/server` are the
-collaboration loop: the debounced, serialized, retrying save scheduler, the presence roster and
-heartbeat, the subscriber object the server calls back on, and in the Durable Object the mutation
-queue and the subscriber registry with its presence announcements (whose broadcasts are never
-awaited, so a callback may re-enter the queue). `@gadgets/bundled-blueprints/libraries/zip/server`
-provides the streaming ZIP writer used by XLSX export. The cell model, the formula engine, the grid,
-sheet tabs and the export-specific code are this gadget's own.
-
-In the repository the source is TypeScript under `blueprints/workspace-sheets/files/`
-(`client.ts`, `server.ts`, `lib/protocol.ts`, `lib/formula.ts`, `lib/xlsx.ts`), which the build bundles
-into the `client.js` and `server.js` shipped here.
-
-### `client.js`
-
-Builds the entire browser interface in JavaScript. It contains:
-
-- Grid rendering and selection behavior
-- Cell editing, formatting, sorting, and structural operations
-- Formula tokenization, parsing, evaluation, and display formatting
-- Clipboard and keyboard support
-- A local model whose saves are queued per cell and flushed by the library's scheduler
-- RPC callbacks for live server operations and presence events
-
-Formula evaluation happens in the browser. The engine caches computed cells, detects circular references, supports ranges and cross-sheet references, and displays standard errors including `#DIV/0!`, `#VALUE!`, `#REF!`, `#NAME?`, `#N/A`, `#NUM!`, and `#CYCLE!`.
-
-### `server.js`
-
-Exports the Durable Object class `Gadget`, which is the authoritative persistence and synchronization layer. It:
-
-- Stores spreadsheet metadata and each sheet's cells in Durable Object storage
-- Serializes mutations and document snapshots through the library's mutation queue
-- Applies per-cell optimistic concurrency using cell versions
-- Uses last-writer-wins semantics for document structure
-- Broadcasts operations and presence events through the library's subscriber registry after the queue releases, best-effort and without awaiting them, so a callback may itself read or write the document and a hung subscriber holds up only its own client
-- Sanitizes titles, dimensions, cell contents, references, and formatting
-- Advertises and produces the server-side workbook and CSV exports
-
-### XLSX and ZIP modules (bundled into `server.js`)
-
-The XLSX module converts a complete document snapshot into a streaming XLSX workbook: sparse
-worksheet XML with inline strings, deduplicated styles, and frozen panes. The ZIP module is a
-dependency-free streaming ZIP writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data
-descriptors). Both are bundled into `server.js`.
-
-## Storage model
-
-The server stores:
-
-- `meta`: revision, title, sheet order, sheet metadata, and modification time
-- `cells:<sheetId>`: a map of A1 references to `{ value, fmt, version }`
-
-Default sheets have 100 rows and 26 columns. Server validation permits up to 50,000 rows and 702 columns per sheet. Cell values are limited to 8,192 characters, and titles are limited to 200 characters.
-
-## Collaboration notes
-
-The server and client synchronization code support multiple connected clients and live updates. Each
-tab introduces itself with the guest name and colour the sync library derives from its client ID, and
-reports its selected range on the library's throttle and heartbeat. Remote collaborator badges and
-selection overlays are currently disabled in the UI, so the app presents as a single-user spreadsheet
-even though remote operations still synchronize.
-
-## Current limitations
-
-- There is no file import workflow; clipboard operations use tab-separated text.
-- Structural edits and sorting clear local undo/redo history.
-- Formula reference adjustment during row/column changes is limited to references on the current sheet.
-- Formula support is broad but is not intended to be fully compatible with Excel or Google Sheets.
-- Frozen row/column metadata exists in the model, but the current UI does not expose controls for it.
-
-## CSV export
-
-Up to 31 worksheets are exposed as individual **CSV** export options, leaving one of the platform's
-32 format slots for XLSX. CSV files contain the stored cell values through the worksheet's used
-range. Formula cells are exported as their raw formulas (for example, `=SUM(A1:A10)`), not as
-browser-computed display values. Fields use standard CSV quoting and CRLF line endings.
-
-## XLSX export
-
-**Excel Workbook** exports one XLSX file with the worksheets in workbook order. Cells keep their
-font, color, fill, alignment, number format, decimal places and wrapping; sheets keep column widths,
-row heights and frozen panes. Pixel sizes are converted to points (rows, fonts) or approximate
-character widths (columns), so layout is close but not pixel-identical.
-
-Cell values follow the grid's own literal rules: a leading apostrophe forces text, a leading `=` is
-a formula (whatever the number format), `TRUE`/`FALSE` are booleans, and numbers may carry a sign,
-commas, a leading `$` or a trailing `%`. Everything else is text; date-looking text is not parsed.
-
-Formulas are written without cached results and the workbook requests a full recalculation on open,
-so Excel evaluates them itself. To keep them valid there, the exporter rewrites cross-sheet
-references to the exported worksheet names, prefixes OOXML "future functions" (`IFS`, `CONCAT`, ...)
-with `_xlfn.`, renames `ERRORTYPE()` to `ERROR.TYPE()`, and drops whitespace between a function
-name and its `(`. A formula that is empty, structurally unbalanced (unterminated string or quoted
-name, mismatched parentheses or brackets — the grid's parser tolerates these) or that would exceed
-Excel's 8,192-character limit after rewriting is exported as text, since one such formula makes
-Excel report the whole workbook as damaged. Formula semantics are otherwise not translated (for
-example `^` associativity differs, and a reference outside the grid such as `XFE1` is empty here
-but `#NAME?` in Excel), and compatibility with Excel is not claimed beyond this.
-
-Worksheet names are made Excel-safe: invalid characters become `_`, blank names become `Sheet`,
-names are cut to 31 characters, and case-insensitive collisions get ` (2)`, ` (3)`, ... suffixes.
-References resolve to the first worksheet with a matching source name, as in the grid.
-
-Filters, charts, comments and pivot tables are not exported; cells already materialized from them
-export as ordinary values.
+- `server.js` — the `Gadget` Durable Object: storage (`CellWriter`, 32-row blocks), the client RPC (`subscribe`, `openDocument`, `getCellsPage`, `getSheetSlices`, `applyOperation`, `stageCells`, presence), the cell API above, input sanitizers, and `ExportHandler`; inlined are `lib/formula.ts`, `lib/export-data.ts` (paged export reader, `ExportEvaluator`), `lib/xlsx.ts` (Excel writer), `lib/charts.ts` (chart placement, value axis) and a streaming ZIP writer.
+- `client.js` — the whole UI. Numbered sections indexed at the top of the file: helpers, styles, formula engine, model, chrome, menus, save queue and undo, rendering (pivots, charts, filters, the windowed grid, print), editing/keyboard/clipboard/find, live-edit animation, collaboration.
+- The formula engine (`lib/formula.ts`: `makeEngine`, `FUNCTIONS`, `FUNCTION_HELP`, `displayValue`) is inlined into **both** files, so the grid and the exports compute alike; a change to it must be made in both.
