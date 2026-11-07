@@ -3,13 +3,16 @@
 // urgency returns it to triggered, as PagerDuty does), incidents and overrides a pending action
 // creates are listed (a created override's user is in shifts and on call), an override pending
 // removal is gone (or, if under way, ends when the removal was staged), and a note waiting to be
-// added is among the incident's notes. Every function is pure over the journal's pending entries.
+// added is among the incident's notes. An incident a pending action opens starts as PagerDuty would
+// open it: acknowledged if assigned to the connected user alone, and with the urgency its service's
+// rule gives if none was chosen. Every function is pure over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
+import type { WireService, WireSupportHours } from "./pagerduty-normalize";
 import type {
   PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote, PagerDutyOnCall,
-  PagerDutyOverride, PagerDutyRef, PagerDutyShift, PagerDutyUserRef,
+  PagerDutyOverride, PagerDutyRef, PagerDutyShift, PagerDutyUrgency, PagerDutyUserRef,
 } from "./types";
 
 /** The journal's pending entries, in submission order. */
@@ -83,14 +86,16 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
 }
 
 /** An incident a pending action opens, as reads show it until PagerDuty has it. */
-export function pendingIncident(payload: NewIncident): PagerDutyIncidentDetails {
+export function pendingIncident(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentDetails {
+  // PagerDuty opens an incident its creator assigns to themselves already acknowledged, by them.
+  const own = payload.assignTo?.length === 1 && payload.assignTo[0].id === me.id;
   return {
     id: payload.ref,
     // PagerDuty numbers an incident when it opens it.
     number: 0,
     title: payload.title,
-    status: "triggered",
-    urgency: payload.urgency ?? "high",
+    status: own ? "acknowledged" : "triggered",
+    urgency: payload.urgency ?? payload.serviceUrgency,
     priority: payload.priority?.name ?? null,
     service: payload.service,
     team: payload.teams[0] ?? null,
@@ -100,13 +105,47 @@ export function pendingIncident(payload: NewIncident): PagerDutyIncidentDetails 
     htmlUrl: "",
     details: payload.details ?? null,
     escalationPolicy: payload.escalationPolicy,
-    acknowledgers: [],
+    acknowledgers: own ? [{ user: me, at: payload.stagedAt }] : [],
     incidentKey: payload.incidentKey ?? null,
     resolvedAt: null,
     alertCount: 0,
     firstAlert: null,
     conferenceUrl: null,
   };
+}
+
+/**
+ * The urgency `service`'s rule gives an incident opened at `at` without one. A severity-based
+ * urgency, which only events carry, and support hours in a time zone the runtime doesn't know
+ * read as high.
+ */
+export function serviceUrgency({ incident_urgency_rule: rule, support_hours: hours }: WireService, at: Date): PagerDutyUrgency {
+  let chosen: { urgency?: string } | undefined = rule;
+  if (rule?.type === "use_support_hours") {
+    const within = hours ? withinSupportHours(hours, at) : undefined;
+    chosen = within === undefined ? undefined : within ? rule.during_support_hours : rule.outside_support_hours;
+  }
+  return chosen?.urgency === "low" ? "low" : "high";
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Whether `at` falls within `hours` in their time zone, or undefined if the runtime doesn't know it. */
+function withinSupportHours(hours: WireSupportHours, at: Date): boolean | undefined {
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone: hours.time_zone, weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+  } catch {
+    return undefined;
+  }
+  const part = Object.fromEntries(format.formatToParts(at).map(({ type, value }) => [type, value]));
+  const time = `${part.hour}:${part.minute}:${part.second}`;
+  // 1 is Monday; Sunday is 7, or 0.
+  const day = WEEKDAYS.indexOf(part.weekday);
+  return (hours.days_of_week.includes(day) || (day === 0 && hours.days_of_week.includes(7)))
+    && hours.start_time <= time && time < hours.end_time;
 }
 
 /**
@@ -117,7 +156,7 @@ export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDu
                                  include: (payload: NewIncident) => boolean): PagerDutyIncidentDetails[] {
   return pending.flatMap(({ action }) => action.kind === "createIncident"
     && resolve(action.payload.ref) === action.payload.ref && include(action.payload)
-    ? [overlayIncident(pendingIncident(action.payload), pending, resolve, me)] : []);
+    ? [overlayIncident(pendingIncident(action.payload, me), pending, resolve, me)] : []);
 }
 
 /** The filter a listing applies, with its defaults filled in. */

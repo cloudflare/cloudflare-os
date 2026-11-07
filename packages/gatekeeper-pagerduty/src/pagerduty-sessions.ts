@@ -15,6 +15,7 @@ import {
 } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
+import { serviceUrgency } from "./pagerduty-simulation";
 import {
   CATALOG_TTL_MS, MAX_NOTE_LENGTH, cachedService, countOf, escalationPolicy, findUsers, ids, listIncidents, listOnCalls,
   listPriorities, listSchedules, namedListing, priorityNamed, readSchedule, readService, requireTeam, schedule, service,
@@ -249,12 +250,13 @@ export class PagerDutyServiceImpl extends RpcTarget implements PagerDutyService 
     if (!wire.escalation_policy) throw new Error("PagerDuty described the service without its escalation policy.");
     const summary = toServiceSummary(wire);
     const ref = ctx.host.allocate("incident");
+    const stagedAt = new Date();
     const payload: NewIncident = {
       ref, service: { id: summary.id, name: summary.name, htmlUrl: summary.htmlUrl },
       teams: (wire.teams ?? []).map(toRef), escalationPolicy: toRef(wire.escalation_policy),
-      title, stagedAt: new Date().toISOString(),
+      title, stagedAt: stagedAt.toISOString(),
       ...(details !== undefined ? { details } : {}),
-      ...(chosenUrgency ? { urgency: chosenUrgency } : {}),
+      ...(chosenUrgency ? { urgency: chosenUrgency } : { serviceUrgency: serviceUrgency(wire, stagedAt) }),
       ...(priority ? { priority } : {}),
       ...(assignTo ? { assignTo } : {}),
       ...(incidentKey !== undefined ? { incidentKey } : {}),
