@@ -36,7 +36,8 @@ function request(
     overrides: Partial<CachedRequest> = {}) {
   const resend = vi.fn(async () => ({ usage: await answer() }));
   const cached: CachedRequest = {
-    sentAt: Date.now(), cacheLifetime: 5 * MINUTE, resendCost: 1, expiryCost: 11.5, resend,
+    sentAt: Date.now(), cacheLifetime: 5 * MINUTE, resendCost: 1, ownTokens: 100_000,
+    expiryCost: 11.5, prefixes: () => false, resend,
     ...overrides,
   };
   return { cached, resend };
@@ -49,10 +50,12 @@ const pauseEnded = (fields: object) =>
 describe("ChatCacheWarmer", () => {
   let warmer: ChatCacheWarmer;
   let resent: ReturnType<typeof vi.fn<ConstructorParameters<typeof ChatCacheWarmer>[1]>>;
+  let expiring: ReturnType<typeof vi.fn<(expiresAt: number) => void>>;
 
   beforeEach(() => {
     vi.useFakeTimers();
     resent = vi.fn();
+    expiring = vi.fn();
     warmer = new ChatCacheWarmer(WORKSPACE, resent);
   });
 
@@ -214,6 +217,59 @@ describe("ChatCacheWarmer", () => {
     expect(resent).toHaveBeenCalledExactlyOnceWith(CHAT, { usage: usage(100_000) });
   });
 
+  it.each([
+    // Pings at 29.5 and 59 minutes; the next would come after an hour.
+    { name: "an hour after the turn", overrides: { cacheLifetime: 30 * MINUTE, expiryCost: 1000 },
+      pings: 2, due: 88.5 * MINUTE },
+    // Eleven pings cost 11, and a twelfth would take them past the 11.5 a miss costs.
+    { name: "at its cost cap", overrides: {}, pings: 11, due: 12 * FIRST_PING },
+  ])("calls onExpiring once, when the next ping would go out, if warming stops $name",
+      async ({ overrides, pings, due }) => {
+    warmer.view(CHAT);
+    const { cached, resend } = request(undefined, overrides);
+    const startedAt = Date.now();
+    warmer.start(CHAT, cached, MODEL, expiring);
+
+    await vi.advanceTimersByTimeAsync(due - 1);
+    expect(resend).toHaveBeenCalledTimes(pings);
+    expect(expiring).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    // With when the last ping's cached copy expires.
+    expect(expiring).toHaveBeenCalledExactlyOnceWith(startedAt + due + 30_000);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(6 * 60 * MINUTE);
+    expect(expiring).toHaveBeenCalledTimes(1);
+    expect(resend).toHaveBeenCalledTimes(pings);
+  });
+
+  it.each([
+    { name: "a ping finds the cache gone", stop: async () => {
+      warmer.start(CHAT, request(async () => usage(0)).cached, MODEL, expiring);
+    } },
+    { name: "a ping fails", stop: async () => {
+      warmer.start(CHAT, request(async () => { throw new Error("overloaded"); }).cached, MODEL,
+          expiring);
+    } },
+    { name: "the next turn starts", stop: async () => {
+      warmer.start(CHAT, request().cached, MODEL, expiring);
+      await vi.advanceTimersByTimeAsync(11 * FIRST_PING);
+      warmer.end(CHAT, "turn");
+    } },
+    { name: "the last viewer leaves", stop: async (leave: () => void) => {
+      warmer.start(CHAT, request().cached, MODEL, expiring);
+      await vi.advanceTimersByTimeAsync(11 * FIRST_PING);
+      leave();
+    } },
+    // A request whose miss costs no more than one ping is due its call right away.
+    { name: "the call's timer fires after the cached copy expired", stop: async () => {
+      warmer.start(CHAT, request(undefined, { expiryCost: 1 }).cached, MODEL, expiring);
+      vi.setSystemTime(Date.now() + 5 * MINUTE);
+    } },
+  ])("doesn't call onExpiring when $name", async ({ stop }) => {
+    await stop(warmer.view(CHAT));
+    await vi.advanceTimersByTimeAsync(6 * 60 * MINUTE);
+    expect(expiring).not.toHaveBeenCalled();
+  });
   describe("logs each pause", () => {
     let logs: MockInstance<typeof console.info>;
 

@@ -2086,6 +2086,49 @@ describe("Resending a request to keep its cache", () => {
     expect(ownTokens).toBeLessThan(90_100);
   }, 15000);
 
+  it("tells which Anthropic requests read a kept request's cached prompt", async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    await send(handle);
+    const kept = handle.lastRequest!;
+    const sent = z.looseObject({ messages: z.array(z.unknown()), system: z.unknown() })
+        .parse(JSON.parse(capturedRequests[0].body));
+    const withoutMarkers: unknown = JSON.parse(JSON.stringify(sent, (key, value: unknown) =>
+        key === "cache_control" ? undefined : value));
+    const reply = { role: "assistant", content: [{ type: "text", text: "Hi." }] };
+
+    expect(kept.prefixes(sent)).toBe(true);
+    // A compaction of the conversation so far, or a request that goes on from it, wherever it
+    // marks the prompt for caching.
+    expect(kept.prefixes({ ...sent, max_tokens: 4_096, betas: ["compact-2026-09-04"],
+      compaction: { type: "summarize" } })).toBe(true);
+    expect(kept.prefixes({ ...sent, messages: [...sent.messages, reply] })).toBe(true);
+    expect(kept.prefixes(withoutMarkers)).toBe(true);
+
+    expect(kept.prefixes({ ...sent, system: "Other instructions." })).toBe(false);
+    expect(kept.prefixes({ ...sent, tools: [] })).toBe(false);
+    expect(kept.prefixes({ ...sent, temperature: 0 })).toBe(false);
+    expect(kept.prefixes({ ...sent, messages: [] })).toBe(false);
+    expect(kept.prefixes({ ...sent, messages: [reply, ...sent.messages.slice(1)] })).toBe(false);
+  }, 15000);
+
+  it("shows a request as it will be sent before sending it, and sends none it refuses",
+      async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    const seen: unknown[] = [];
+    await send(handle, { beforeSend: payload => { seen.push(payload); } });
+    // The SDK sends the payload's betas as a header.
+    expect(seen).toEqual([{ ...JSON.parse(capturedRequests[0].body), betas: expect.any(Array) }]);
+
+    const message = await handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }],
+    }, { fetch: answering(), maxRetries: 0, beforeSend: () => { throw new Error("Refused."); } })
+        .result();
+    expect(message.stopReason).toBe("error");
+    expect(capturedRequests).toHaveLength(1);
+  }, 15000);
+
   it.each([
     { name: "a Claude given a thinking budget, which must stay below the cap",
       config: { provider: "anthropic", model: "claude-haiku-4-5", reasoning: "high" } },

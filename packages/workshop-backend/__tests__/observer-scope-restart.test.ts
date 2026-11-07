@@ -1413,4 +1413,40 @@ describe("ambient resources a chat gains", () => {
     expect(seeds.find(seed => seed.target === 3)).toMatchObject({ name: "RES_3", catalog: null });
     expect(impl.getChatAgentContext(2).bindings).toEqual({});
   }));
+
+  // E.g. a message whose attachment gave the chat a scratch worktree started a turn, which
+  // cancelled an idle chat's compaction while it prepared.
+  it("aren't persisted over what the chat's context gained once the caller is cancelled",
+      () => withImpl(async (impl) => {
+    let described = Promise.withResolvers<void>();
+    let answer = Promise.withResolvers<void>();
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () => {
+        described.resolve();
+        await answer.promise;
+        return { title: `T${id}`, url: "https://example.com", suggestedBindingName: "RES" };
+      },
+      getAgentCatalog: async () => null,
+    });
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    impl.storage.chatContext.put({ chatId: 1, bindings: {}, alwaysAvailableCapsuleIds: [] });
+    seedGatekeeper(impl, 3);
+    let gained = impl.storage.gatekeepers.get(3);
+    gained.creationSpec = { type: "ambient", vendorId: "v3" };
+    impl.storage.gatekeepers.put(gained);
+
+    let cancel = new AbortController();
+    let preparing = impl.prepareChatBindings(1, [], cancel.signal);
+    await described.promise;
+    impl.storage.chatContext.put({
+      ...impl.getChatAgentContext(1), scratch: { worktreeId: 50, bindingName: "SCRATCH" },
+    });
+    cancel.abort();
+    answer.resolve();
+    await preparing;
+
+    expect(impl.getChatAgentContext(1)).toMatchObject(
+        { scratch: { worktreeId: 50, bindingName: "SCRATCH" }, alwaysAvailableCapsuleIds: [] });
+  }));
 });
