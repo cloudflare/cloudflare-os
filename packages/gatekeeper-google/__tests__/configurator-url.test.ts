@@ -23,6 +23,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Section: "Section",
   TextInput: "TextInput",
 }));
+import bigQueryConfigurator from "../src/configurator/bigquery-configurator-ui";
 import driveConfigurator from "../src/configurator/drive-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
@@ -31,7 +32,7 @@ import chatAccountConfigurator from "../src/configurator/chat-account-configurat
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   parseResourceUrl,
@@ -329,5 +330,25 @@ describe("Drive configurator URLs", () => {
     expect(ready("file:F1", [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern])).toBe(true);
     expect(ready("file:F1")).toBe(true);
     expect(ready("shared-drives")).toBe(false);
+  });
+});
+
+describe("BigQuery configurator URLs", () => {
+  const url = (values: Record<string, unknown>) => bigQueryConfigurator.resourceUrl({ values, ui: noUi });
+  const values = (resourceUrl: string) => bigQueryConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: BIGQUERY_RESOURCE.urlPattern, ui: noUi,
+  });
+
+  it.each([
+    [{ target: "project:example.com:warehouse" }, { projectId: "example.com:warehouse" }],
+    [{ target: "dataset:mine/sales" }, { projectId: "mine", datasetId: "sales" }],
+    [{ target: "table:mine/sales/orders", queryProject: "mine" }, { projectId: "mine", datasetId: "sales", tableId: "orders" }],
+    [{ target: "dataset:theirs/events", queryProject: "mine" }, { projectId: "theirs", datasetId: "events", queryProjectId: "mine" }],
+  ])("mints %o as the capability the backend reads, and reads it back", (chosen, target) => {
+    const minted = url(chosen);
+    expect(parseResourceUrl(minted)).toEqual({ kind: "bigquery", datasetId: undefined, tableId: undefined, queryProjectId: undefined, ...target });
+    // The data project itself is the default, so naming it as the query project leaves no mark.
+    expect(values(minted)).toEqual({ target: chosen.target, queryProject: target.queryProjectId ?? null });
+    expect(new URLPattern(BIGQUERY_RESOURCE.urlPattern).test(minted)).toBe(true);
   });
 });

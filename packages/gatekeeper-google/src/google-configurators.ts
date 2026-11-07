@@ -1,7 +1,8 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { displayText } from "@gadgets/configurator-ui/options";
-import { BigQueryApi } from "./bigquery-api";
+import { BigQueryApi, BigQueryApiError } from "./bigquery-api";
+import type { BigQueryDataset, BigQueryProject, BigQueryTable } from "./bigquery-types";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
@@ -11,7 +12,9 @@ import {
   DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
   isListableFolderFile, isListableFolderNode, type DriveFile, type DriveFileList, type DriveScopeNode,
 } from "./drive-api";
-import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
+import type {
+  BigQueryConfiguratorRpc, BigQueryNode, BigQueryNodeKind, BigQueryNodePage,
+} from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
@@ -27,7 +30,7 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import { BIGQUERY_HOST, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -38,14 +41,11 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
-const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
+const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
-const BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS = { maxPages: 1, maxResults: 200 };
-const BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
-
-function bigQueryConfiguratorListOptions(query: string) {
-  return query.trim() ? BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS : BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS;
-}
+const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
+/** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
+const BIGQUERY_ROOT_ID = "bigquery";
 
 function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleAccessToken> {
   let getToken = googleTokenGetters.get(target);
@@ -80,23 +80,24 @@ async function calendarApi(target: object): Promise<GoogleCalendarApi> {
   return new GoogleCalendarApi(googleTokenProvider(target));
 }
 
-async function cachedBigQueryOptions(
-  target: object,
-  key: string,
-  load: () => Promise<ConfiguratorOption[]>,
-): Promise<ConfiguratorOption[]> {
+/**
+ * Answers a BigQuery picker request once per frame: the picker asks again for a location it returns
+ * to, and the same project list stands behind every lookup. A failed request is asked again.
+ */
+function cachedBigQuery<T>(target: object, key: string, load: () => Promise<T>): Promise<T> {
   let cache = bigQueryConfiguratorCaches.get(target);
   if (!cache) {
     cache = new Map();
     bigQueryConfiguratorCaches.set(target, cache);
   }
   let cached = cache.get(key);
-  if (cached) return cached;
-  let result = await load();
+  if (cached) return cached as Promise<T>;
   if (cache.size >= BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES) {
     let oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) cache.delete(oldestKey);
   }
+  let result = load();
+  result.catch(() => cache.delete(key));
   cache.set(key, result);
   return result;
 }
@@ -195,6 +196,111 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
   }
 }
 
+type BigQueryNodeRef = { kind: BigQueryNodeKind; projectId: string; datasetId?: string; tableId?: string };
+
+/** `<kind>:<project>[/<dataset>[/<table>]]`; must mirror `idOf` in configurator/bigquery-configurator-ui.tsx. */
+function bigQueryNodeId({ kind, projectId, datasetId, tableId }: BigQueryNodeRef): string {
+  return `${kind}:${[projectId, datasetId, tableId].filter(Boolean).join("/")}`;
+}
+
+function parseBigQueryNodeId(id: string): BigQueryNodeRef | undefined {
+  let colon = id.indexOf(":");
+  if (colon < 0) return undefined;
+  let kind = id.slice(0, colon);
+  let [projectId, datasetId, tableId, ...rest] = id.slice(colon + 1).split("/");
+  if (!projectId || rest.length > 0) return undefined;
+  if (kind === "project" && datasetId === undefined) return { kind, projectId };
+  if (kind === "dataset" && datasetId && tableId === undefined) return { kind, projectId, datasetId };
+  if (kind === "table" && datasetId && tableId) return { kind, projectId, datasetId, tableId };
+  return undefined;
+}
+
+/**
+ * `project.dataset.table`, `project.dataset` or a project ID, as BigQuery writes them, where a legacy
+ * project ID carries a domain (`example.com:proj`). Dataset and table IDs are BigQuery identifiers.
+ */
+const BIGQUERY_REFERENCE_RE =
+  /^((?:[a-z0-9][a-z0-9.-]*:)?[a-z0-9][a-z0-9-]*)(?:\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?)?$/i;
+
+const kindOf = (datasetId?: string, tableId?: string): BigQueryNodeKind =>
+  tableId ? "table" : datasetId ? "dataset" : "project";
+
+/**
+ * What typing into the picker's search names, when it names a place rather than searches for one: a
+ * connection's URL, a Cloud Console link (`?p=<project>&d=<dataset>&t=<table>`), a node id or a
+ * reference. `explicit` is false for a bare word, which is as likely a search as a project ID.
+ */
+function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit: boolean } | undefined {
+  let text = input.trim().replace(/^`(.*)`$/, "$1");
+  if (!text) return undefined;
+  if (URL.canParse(text)) {
+    let url = new URL(text);
+    if (url.hostname === BIGQUERY_HOST) {
+      try {
+        let target = parseResourceUrl(text);
+        if (target.kind !== "bigquery") return undefined;
+        let { projectId, datasetId, tableId } = target;
+        return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true };
+      } catch {
+        return undefined;
+      }
+    }
+    if (url.hostname === "console.cloud.google.com" && url.pathname.startsWith("/bigquery")) {
+      let projectId = url.searchParams.get("p");
+      let datasetId = url.searchParams.get("d") ?? undefined;
+      let tableId = datasetId ? url.searchParams.get("t") ?? undefined : undefined;
+      return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true } : undefined;
+    }
+    return undefined;
+  }
+  let node = parseBigQueryNodeId(text);
+  if (node) return { ref: node, explicit: true };
+  let match = BIGQUERY_REFERENCE_RE.exec(text);
+  if (!match) return undefined;
+  let [, projectId, datasetId, tableId] = match;
+  return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: datasetId !== undefined };
+}
+
+/** BigQuery's answers for what this account cannot see: denied (which also hides existence), unknown, or not a project. */
+function isBigQueryNotVisible(error: unknown): boolean {
+  return error instanceof BigQueryApiError &&
+    (error.status === 404 || error.status === 400 || (error.status === 403 && error.reason === "accessDenied"));
+}
+
+const BIGQUERY_TABLE_KINDS: Record<string, string> = {
+  VIEW: "View", MATERIALIZED_VIEW: "Materialized view", EXTERNAL: "External table", SNAPSHOT: "Snapshot",
+};
+
+const bigQueryProjectCrumb = (projectId: string) =>
+  ({ id: bigQueryNodeId({ kind: "project", projectId }), kind: "project" as const, title: projectId });
+const bigQueryDatasetCrumb = (projectId: string, datasetId: string) =>
+  ({ id: bigQueryNodeId({ kind: "dataset", projectId, datasetId }), kind: "dataset" as const, title: datasetId });
+
+function bigQueryProjectNode(project: BigQueryProject, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "project", projectId: project.projectId }), kind: "project",
+    title: project.projectId, subtitle: project.friendlyName, listed,
+  };
+}
+
+function bigQueryDatasetNode(dataset: BigQueryDataset, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "dataset", projectId: dataset.projectId, datasetId: dataset.datasetId }), kind: "dataset",
+    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, listed,
+    path: [bigQueryProjectCrumb(dataset.projectId)],
+  };
+}
+
+function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
+    kind: "table", title: table.tableId, subtitle: BIGQUERY_TABLE_KINDS[table.type], listed,
+    path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
+  };
+}
+
+const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
+
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfiguratorRpc {
@@ -203,53 +309,91 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
     googleTokenGetters.set(this, getToken);
   }
 
+  /** The projects BigQuery lists for this account, by id: those it holds a role in. */
+  #heldProjects(): Promise<Map<string, BigQueryProject>> {
+    return cachedBigQuery(this, "projects", async () => {
+      let api = await bigQueryApi(this);
+      let projects = await api.listProjects(BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+      return new Map(projects.map(project => [project.projectId, project]));
+    });
+  }
+
   async listProjects(query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `projects:${query.trim().toLowerCase()}`, async () => {
+    let projects = [...(await this.#heldProjects()).values()];
+    return projects
+      .filter(project => optionMatches([project.projectId, project.friendlyName, project.numericId], query))
+      .toSorted((a, b) => a.projectId.localeCompare(b.projectId))
+      .slice(0, 100)
+      .map(project => ({ value: project.projectId, title: project.projectId, subtitle: project.friendlyName }));
+  }
+
+  async listNodes(parentId: string, query: string): Promise<BigQueryNodePage> {
+    let linked = linkedBigQueryNodeRef(query);
+    if (linked?.explicit) {
+      let node = await this.#node(linked.ref);
+      return node ? { nodes: [node] } : { nodes: [], notice: "This account can't see what that names, or it doesn't exist." };
+    }
+    let nodes = await this.#children(parentId);
+    let matching = nodes.filter(node => optionMatches([node.title, node.subtitle], query));
+    // A project the account holds no role in is never listed, but BigQuery still answers for it
+    // when a dataset in it was shared with the account, so a project ID nothing listed matches is
+    // looked up.
+    if (matching.length === 0 && linked && parentId === BIGQUERY_ROOT_ID) {
+      let node = await this.#node(linked.ref);
+      if (node) return { nodes: [node] };
+    }
+    return { nodes: matching };
+  }
+
+  async getNode(id: string): Promise<BigQueryNode | null> {
+    let ref = parseBigQueryNodeId(id);
+    return ref ? this.#node(ref) : null;
+  }
+
+  #children(parentId: string): Promise<BigQueryNode[]> {
+    return cachedBigQuery(this, `children:${parentId}`, async () => {
+      if (parentId === BIGQUERY_ROOT_ID) {
+        return [...(await this.#heldProjects()).values()].map(project => bigQueryProjectNode(project, true)).toSorted(byTitle);
+      }
+      let ref = parseBigQueryNodeId(parentId);
+      if (!ref || ref.kind === "table") throw new Error("Unknown BigQuery location.");
       let api = await bigQueryApi(this);
-      let projects = await api.listProjects(bigQueryConfiguratorListOptions(query));
-      return projects
-        .filter(project => optionMatches([project.projectId, project.friendlyName, project.numericId], query))
-        .slice(0, 100)
-        .map(project => ({
-          value: project.projectId,
-          title: project.projectId,
-          subtitle: project.friendlyName,
-        }));
+      let listed = (await this.#heldProjects()).has(ref.projectId);
+      if (ref.kind === "project") {
+        let datasets = await api.listDatasets(ref.projectId, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+        return datasets.map(dataset => bigQueryDatasetNode(dataset, listed)).toSorted(byTitle);
+      }
+      let tables = await api.listTables(ref.projectId, ref.datasetId!, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+      return tables.map(table => bigQueryTableNode(table, listed)).toSorted(byTitle);
     });
   }
 
-  async listDatasets(projectId: string, query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `datasets:${projectId}:${query.trim().toLowerCase()}`, async () => {
+  /** The node `ref` names, asked of BigQuery, or null when this account cannot see it. */
+  #node(ref: BigQueryNodeRef): Promise<BigQueryNode | null> {
+    return cachedBigQuery(this, `node:${bigQueryNodeId(ref)}`, async () => {
+      let held = await this.#heldProjects();
+      let listed = held.has(ref.projectId);
       let api = await bigQueryApi(this);
-      let datasets = await api.listDatasets(projectId, bigQueryConfiguratorListOptions(query));
-      return datasets
-        .filter(dataset => optionMatches([dataset.datasetId, dataset.friendlyName, dataset.description, dataset.location], query))
-        .slice(0, 100)
-        .map(dataset => ({
-          value: dataset.datasetId,
-          title: dataset.datasetId,
-          subtitle: dataset.friendlyName ?? dataset.description,
-          meta: dataset.location,
-        }));
+      try {
+        if (ref.kind === "project") {
+          let project = held.get(ref.projectId);
+          if (project) return bigQueryProjectNode(project, true);
+          // Listing a project's datasets needs no role in it: one that was shared a dataset sees that
+          // dataset, and a project the account cannot see at all refuses.
+          await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
+          return bigQueryProjectNode({ projectId: ref.projectId }, false);
+        }
+        if (ref.kind === "dataset") {
+          return bigQueryDatasetNode(await api.getDataset(ref.projectId, ref.datasetId!), listed);
+        }
+        let { table } = await api.getTable(ref.projectId, ref.datasetId!, ref.tableId!);
+        return bigQueryTableNode(table, listed);
+      } catch (error) {
+        if (isBigQueryNotVisible(error)) return null;
+        throw error;
+      }
     });
   }
-
-  async listTables(projectId: string, datasetId: string, query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `tables:${projectId}:${datasetId}:${query.trim().toLowerCase()}`, async () => {
-      let api = await bigQueryApi(this);
-      let tables = await api.listTables(projectId, datasetId, bigQueryConfiguratorListOptions(query));
-      return tables
-        .filter(table => optionMatches([table.tableId, table.friendlyName, table.type], query))
-        .slice(0, 100)
-        .map(table => ({
-          value: table.tableId,
-          title: table.tableId,
-          subtitle: table.friendlyName,
-          meta: table.type,
-        }));
-    });
-  }
-
 }
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.

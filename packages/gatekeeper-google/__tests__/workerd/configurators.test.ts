@@ -951,3 +951,79 @@ describe("the Office import grant on a stored account", () => {
       .toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT].toSorted());
   });
 });
+
+describe("BigQuery picker", () => {
+  const dataset = (projectId: string, datasetId: string, extra = {}) =>
+    ({ datasetReference: { projectId, datasetId }, location: "US", ...extra });
+  const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE") =>
+    ({ tableReference: { projectId, datasetId, tableId }, type });
+
+  /** An account holding a role in `mine` only, which was shared `theirs.events`. */
+  function bigQuery() {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      const path = decodeURIComponent(url.pathname.replace("/bigquery/v2", ""));
+      calls.push(path);
+      switch (path) {
+        case "/projects":
+          return Response.json({ projects: [{ id: "mine", friendlyName: "My project", projectReference: { projectId: "mine" } }] });
+        case "/projects/mine/datasets":
+          return Response.json({ datasets: [dataset("mine", "web"), dataset("mine", "sales", { friendlyName: "Sales" })] });
+        case "/projects/mine/datasets/sales/tables":
+          return Response.json({ tables: [table("mine", "sales", "orders"), table("mine", "sales", "daily", "VIEW")] });
+        case "/projects/theirs/datasets":
+          return Response.json({ datasets: [dataset("theirs", "events")] });
+        case "/projects/theirs/datasets/events":
+          return Response.json(dataset("theirs", "events", { description: "Shared events" }));
+        case "/projects/theirs/datasets/events/tables/clicks":
+          return Response.json(table("theirs", "events", "clicks"));
+      }
+      return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
+    }));
+    return { ui: new BigQueryConfiguratorUI(async () => token("t")), calls };
+  }
+
+  it("lists the projects the account holds a role in, and inside one its datasets and tables, by name", async () => {
+    const { ui } = bigQuery();
+    expect(await ui.listNodes("bigquery", "")).toEqual({ nodes: [
+      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
+    ] });
+    expect(await ui.listNodes("project:mine", "")).toMatchObject({ nodes: [
+      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
+      { id: "dataset:mine/web", title: "web" },
+    ] });
+    expect(await ui.listNodes("dataset:mine/sales", "dai")).toMatchObject({ nodes: [
+      { id: "table:mine/sales/daily", kind: "table", subtitle: "View", path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
+    ] });
+    expect(await ui.listProjects("proj")).toEqual([{ value: "mine", title: "mine", subtitle: "My project" }]);
+  });
+
+  it("reaches a project the account holds no role in by its ID, a Console link or a reference", async () => {
+    const { ui, calls } = bigQuery();
+    expect(await ui.listNodes("bigquery", "theirs")).toEqual({ nodes: [
+      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
+    ] });
+    expect(calls).toContain("/projects/theirs/datasets");
+    expect(await ui.listNodes("project:theirs", "")).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
+    const console = "https://console.cloud.google.com/bigquery?project=mine&p=theirs&d=events&page=dataset";
+    expect(await ui.listNodes("bigquery", console)).toMatchObject({ nodes: [
+      { id: "dataset:theirs/events", subtitle: "Shared events", listed: false, path: [{ id: "project:theirs" }] },
+    ] });
+    expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`")).toMatchObject({ nodes: [
+      { id: "table:theirs/events/clicks", kind: "table", listed: false },
+    ] });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
+  });
+
+  it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
+    const { ui } = bigQuery();
+    expect(await ui.getNode("project:nowhere")).toBeNull();
+    expect(await ui.getNode("not an id")).toBeNull();
+    expect(await ui.listNodes("bigquery", "nowhere")).toEqual({ nodes: [] });
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?p=nowhere"))
+      .toEqual({ nodes: [], notice: expect.stringContaining("can't see") });
+    // A listing's own words, not a project ID, never trigger a lookup.
+    expect(await ui.listNodes("project:mine", "nowhere")).toEqual({ nodes: [] });
+  });
+});
