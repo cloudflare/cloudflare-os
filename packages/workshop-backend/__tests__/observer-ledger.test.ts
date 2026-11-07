@@ -15,8 +15,9 @@ import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { CollaboratorAccess, CollaboratorGrant } from "@gadgets/workshop-shared/api";
-import type {
-  ObservationAuthorizer, ObservationDescription,
+import {
+  OBSERVER_ACCESS_DENIED_CODE,
+  type ObservationAuthorizer, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
@@ -738,6 +739,60 @@ describe("observations reporting subresources", () => {
     expect(world.checks.map(check => check.profileId).toSorted()).toEqual(profiles);
     expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
+  }));
+
+  // Only a refusal after every collaborator asked was answered, with one denied, carries the
+  // definite-denial code, so a gatekeeper may retry the read with fewer subresources.
+  it("mark a definite denial with an enumerable access-denied code", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    world.roles.set("carol", "build");
+    world.roles.set("dave", "build");
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+    impl.storage.observers.put(
+        { profileId: "dave", observerId: "obs-d", accountChoices: { [CONN]: 21 } });
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+
+    let refusal = await impl.authorizeObservation(CONN, withSubresources(["x"]), { from: "user" })
+        .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal.message).toMatch(/could not be confirmed/);
+    // Own and enumerable, which is what survives RPC error serialization.
+    expect({ ...refusal }).toEqual({ code: OBSERVER_ACCESS_DENIED_CODE });
+  }));
+
+  it.each<[string, (world: World) => void]>([
+    ...refusingAnswers.filter(([name]) => name !== "an omitted observer")
+        .map(([name, verify]): [string, (world: World) => void] =>
+            [name, world => fakeFacets(world.impl, { verify })]),
+    ["a disconnected account",
+      world => world.verifiers.set("dave", new Error("This account is no longer connected."))],
+    ["a denial beside a failed check", world => {
+      world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+      world.verifiers.set("dave", observerVerifier(() => world, "dave", () => {
+        throw new Error("provider down");
+      }));
+    }],
+  ])("leave a refusal on %s without the access-denied code", (_name, arrange) =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    world.roles.set("carol", "build");
+    world.roles.set("dave", "build");
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+    impl.storage.observers.put(
+        { profileId: "dave", observerId: "obs-d", accountChoices: { [CONN]: 21 } });
+    arrange(world);
+
+    let refusal = await impl.authorizeObservation(CONN, withSubresources(["x"]), { from: "user" })
+        .catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal.message).toMatch(/could not be confirmed/);
+    expect(refusal.code).toBeUndefined();
+    expect(rows(impl, WORKSPACE)).toEqual([]);
   }));
 
   it("does not admit a collaborator alongside an unreadable concurrent observation", () =>

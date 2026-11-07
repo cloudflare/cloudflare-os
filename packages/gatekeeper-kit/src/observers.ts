@@ -1,11 +1,12 @@
 /** Observer-policy strategies and per-read authorization. */
 
 import type { RpcStub } from "cloudflare:workers";
-import type {
-  Gatekeeper,
-  GatekeeperUserVerifier,
-  ObservationAuthorizer,
-  ObservationDescription,
+import {
+  OBSERVER_ACCESS_DENIED_CODE,
+  type Gatekeeper,
+  type GatekeeperUserVerifier,
+  type ObservationAuthorizer,
+  type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   asVerifier,
@@ -49,6 +50,21 @@ export function isObservationRefused(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === OBSERVATION_REFUSED_CODE
     || ("code" in error && error.code === OBSERVATION_REFUSED_CODE);
+}
+
+/**
+ * Matches an `authorizeObservation()` refusal the overseer marked with
+ * `OBSERVER_ACCESS_DENIED_CODE`, by `name` or `code`: every collaborator asked about the read's
+ * subresources was answered and at least one was denied, so a read reporting fewer may succeed.
+ * Failed or malformed access checks, outages, and disconnected accounts never match. A match is not
+ * `isObservationRefused()`: `ObservationGate` still treats it as an unknown outcome.
+ * @param error Caught error.
+ * @returns Whether a collaborator was definitely denied the read's subresources.
+ */
+export function isObserverAccessDenied(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === OBSERVER_ACCESS_DENIED_CODE
+    || ("code" in error && error.code === OBSERVER_ACCESS_DENIED_CODE);
 }
 
 /**

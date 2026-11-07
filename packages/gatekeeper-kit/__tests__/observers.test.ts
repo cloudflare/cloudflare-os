@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  GatekeeperUserVerifier,
-  ObservationAuthorizer,
+import {
+  OBSERVER_ACCESS_DENIED_CODE,
+  type GatekeeperUserVerifier,
+  type ObservationAuthorizer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { RpcStub } from "cloudflare:workers";
 import {
   aclObservers,
   escapeObservationValue,
   isObservationRefused,
+  isObserverAccessDenied,
   OBSERVATION_REFUSED_CODE,
   ObservationGate,
   OBSERVER_ATTEMPT_LIFETIME_MS,
@@ -713,6 +715,35 @@ describe("isObservationRefused", () => {
   it("reads an unmarked failure as an unknown outcome", () => {
     expect(isObservationRefused(new Error("connection lost"))).toBe(false);
     expect(isObservationRefused(OBSERVATION_REFUSED_CODE)).toBe(false);
+  });
+});
+
+describe("isObserverAccessDenied", () => {
+  // As the overseer throws it and the transport rebuilds it: message, plus enumerable own props.
+  const denial = Object.assign(new Error("a collaborator may not see this"),
+    { code: OBSERVER_ACCESS_DENIED_CODE });
+
+  it("matches the overseer's definite-denial code on a rebuilt error", () => {
+    expect(OBSERVER_ACCESS_DENIED_CODE).toBe("ObserverAccessDenied");
+    expect(isObserverAccessDenied(denial)).toBe(true);
+  });
+
+  it("matches the mark on `name`", () => {
+    const thrown = new Error("denied");
+    thrown.name = OBSERVER_ACCESS_DENIED_CODE;
+    expect(isObserverAccessDenied(thrown)).toBe(true);
+  });
+
+  it("does not match unmarked failures, other marks, or non-errors", () => {
+    expect(isObserverAccessDenied(new Error("This service returned an invalid access check.")))
+      .toBe(false);
+    expect(isObserverAccessDenied(refusal())).toBe(false);
+    expect(isObserverAccessDenied(OBSERVER_ACCESS_DENIED_CODE)).toBe(false);
+    expect(isObserverAccessDenied({ code: OBSERVER_ACCESS_DENIED_CODE })).toBe(false);
+  });
+
+  it("is not an overseer refusal mark, so the gate keeps durable fences", () => {
+    expect(isObservationRefused(denial)).toBe(false);
   });
 });
 

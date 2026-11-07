@@ -1105,6 +1105,17 @@ kernel change marks them, every failure takes the fail-closed unknown-outcome pa
 `abandon` latches the binding unshareable for good, so a refused owner-only read costs the
 workspace its sharing until the kernel distinguishes the two.
 
+### Definite denials of reported subresources
+
+When `authorizeObservation()` refuses a read that reported `subresources` because every
+collaborator asked was answered and at least one was denied, the overseer marks the error with
+`code: OBSERVER_ACCESS_DENIED_CODE` (from `@gadgets/workshop-shared/gatekeeper`).
+`isObserverAccessDenied(error)` from `./observers` matches it. Only such a refusal carries the
+mark, so a read may retry once with fewer subresources (for example, only items every collaborator
+can read) and authorize that. A failed or malformed access check, an outage, a disconnected
+account, or any other refusal is unmarked: propagate it unchanged. The mark is not
+`OBSERVATION_REFUSED_CODE`, and `ObservationGate` still treats a denial as an unknown outcome.
+
 ### Subresource IDs name resources
 
 Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global)

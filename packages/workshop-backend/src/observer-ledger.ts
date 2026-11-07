@@ -15,8 +15,9 @@
 //   admission runs every connection's addObserver() as well as the checks here.
 
 import type { WorkpieceId } from "@gadgets/workshop-shared/api";
-import type {
-  Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
+import {
+  OBSERVER_ACCESS_DENIED_CODE,
+  type Gatekeeper, type GatekeeperUserVerifier, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectionVendorId, observerContextOf, observerRequirementPrefix, observerRequirementSubresource,
@@ -238,6 +239,7 @@ export class ObserverLedger {
         }));
         denied = await this.#deniedObservers(connection, observers, subresources);
       } catch (error) {
+        // Unmarked: a failed or malformed check, or a disconnected account, is no definite denial.
         this.host.logger.warn("observer check refused an observation", {
           event: "observer.ledger.observation.refused", gatekeeperId, error,
         });
@@ -249,7 +251,8 @@ export class ObserverLedger {
             event: "observer.ledger.observation.refused", gatekeeperId, observerId,
           });
         }
-        throw new Error(OBSERVATION_REFUSED);
+        // Every observer asked was answered: marked so the gatekeeper may retry with less.
+        throw Object.assign(new Error(OBSERVATION_REFUSED), {code: OBSERVER_ACCESS_DENIED_CODE});
       }
       for (let observer of unverified) verified.add(observer.key);
     }

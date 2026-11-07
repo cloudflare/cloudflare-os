@@ -1271,6 +1271,15 @@ export interface Gatekeeper<Session> extends DurableObject {
       Promise<void | {message?: string, canRetry?: boolean, restart?: boolean}>;
 }
 
+/**
+ * The `code` an `ObservationAuthorizer.authorizeObservation()` refusal carries when every
+ * collaborator asked about `ObservationDescription.subresources` was answered and at least one was
+ * definitely denied. It is an enumerable own property, so it survives RPC error serialization.
+ * Its absence proves nothing: other refusals, including failed or malformed access checks and
+ * disconnected accounts, are unmarked.
+ */
+export const OBSERVER_ACCESS_DENIED_CODE = "ObserverAccessDenied";
+
 export interface ObservationAuthorizer extends RpcTarget {
   /**
    * Check whether the gadget should be permitted to make an observation (that is, to read some
@@ -1287,6 +1296,11 @@ export interface ObservationAuthorizer extends RpcTarget {
    * When `description.subresources` is present, returning normally also means the Workshop
    * recorded them and confirmed that every collaborator who can see the read may access them (see
    * `ObservationDescription.subresources`).
+   *
+   * A refusal whose `code` is `OBSERVER_ACCESS_DENIED_CODE` means every collaborator asked about
+   * those subresources was answered and at least one was denied, so the same read with fewer
+   * subresources may be authorized. Every other failure, including an access check that failed or
+   * answered malformed, carries no such mark and says nothing about who may see what.
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
 
