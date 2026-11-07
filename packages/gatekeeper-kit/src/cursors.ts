@@ -39,10 +39,11 @@ export class ArrayCursor<T> extends RpcTarget implements Cursor<T> {
 }
 
 /**
- * Rows the agent's own simulation adds to a provider listing, such as an item it created that the
- * provider does not list yet. Each is merged before the first visible provider row it sorts
+ * The agent's own simulation of a provider listing. Its rows add what the provider does not list
+ * yet, such as an item it created. Each is merged before the first visible provider row it sorts
  * at-or-before; the rest follow the last provider page. They are not provider rows: they never
- * reach `authorizePage`'s `items`, and a page made only of them is not authorized. Their
+ * reach `authorizePage`'s `items`, and a page made only of them is not authorized, so a row the
+ * provider supplied is injected only once its observation was authorized up front. Their
  * position still says a little -- an injected row served ahead of the queue means no fetched
  * provider row sorts before it -- so a listing whose order is itself sensitive authorizes its
  * observation up front.
@@ -93,6 +94,13 @@ type CursorShape<T> = {
   /** Simulated rows to merge into the provider's; see `CursorInjection`. */
   inject?: CursorInjection<T>;
   /**
+   * Re-derives a provider row as it is served, applying the gatekeeper's simulated changes the
+   * provider does not show yet: the row to serve, or `null` to drop it. A row can sit in the buffer
+   * long after it was fetched, so this runs at serve time, not fetch time. Must keep the row's sort
+   * position and identity. Authorization sees the row it returns.
+   */
+  overlay?(item: T): T | null;
+  /**
    * Authorizes what `next()` is about to return, before it leaves the cursor. Runs on every page
    * carrying provider rows, including one served entirely from the buffer with no provider fetch,
    * on a spent window's empty page, and once for a walk that ends having disclosed nothing — a
@@ -100,8 +108,9 @@ type CursorShape<T> = {
    * injected rows is not authorized.
    *
    * A throw holds the outgoing page, so the retry offers no provider row beyond it, with no further
-   * provider fetch and no chance of a capped page growing between refusal and retry. Its injected
-   * rows are re-read, and a provider row one of them no longer hides leads the next page instead.
+   * provider fetch and no chance of a capped page growing between refusal and retry. Its rows are
+   * re-read, and a provider row the refusal did not cover -- one an injected row no longer hides,
+   * or one `overlay` had dropped -- leads the next page instead.
    * The exception is an empty page from a spent window: nothing was disclosed, so the retry opens a
    * fresh window rather than pinning the walk on a failure that may have been transient.
    *
@@ -135,8 +144,10 @@ type Entry<T> = { readonly item: T; readonly injected: boolean };
 // An outgoing page, built before authorization and committed only after it succeeds.
 type Outgoing<T> = {
   readonly items: T[];
-  // The provider rows among `items`: what authorization sees.
+  // The provider rows among `items`, as served: what authorization sees.
   readonly provided: T[];
+  // The queue entries behind `provided`: what a refusal covers, whatever `overlay` made of them.
+  readonly covered: Set<Entry<T>>;
   // Leading queue entries it used.
   consumed: number;
   // Identities it serves, and the injected rows among them, which are re-keyed at each check.
@@ -152,6 +163,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   readonly #dispose?: () => void;
   readonly #authorizePage: CursorShape<T>["authorizePage"];
   readonly #inject: CursorInjection<T>;
+  readonly #overlay?: (item: T) => T | null;
   readonly #buffer: Entry<T>[] = [];
   readonly #servedIds = new Set<string>();
   readonly #servedInjected: T[] = [];
@@ -174,6 +186,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
     this.#dispose = options.dispose;
     this.#authorizePage = options.authorizePage;
     this.#inject = options.inject ?? { items: [], compare: () => 0 };
+    this.#overlay = options.overlay;
     // Assigned first, so a rejected size releases what the caller already acquired for this
     // cursor -- the documented pattern leases a gate before constructing one.
     try {
@@ -261,12 +274,13 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   /**
    * Builds the next outgoing page from the queue without consuming it, fetching only when the
    * queue runs dry. A refused page's retry instead rebuilds from the entries that page consumed,
-   * re-reading its injected rows, and stops before a provider row the refusal did not cover -- one
-   * a dropped injected row no longer hides -- which then leads the next page.
+   * re-reading every row, and stops before a provider row the refusal did not cover -- one a
+   * dropped injected row no longer hides, or one `overlay` had dropped -- which then leads the
+   * next page.
    */
   async #take(held?: Outgoing<T>): Promise<Outgoing<T>> {
-    const refused = held && new Set(held.provided);
-    const page: Outgoing<T> = { items: [], provided: [], consumed: 0, ids: [], injected: [] };
+    const page: Outgoing<T> =
+      { items: [], provided: [], covered: new Set(), consumed: 0, ids: [], injected: [] };
     let fetches = 0;
     while (page.items.length < this.#pageSize) {
       if (page.consumed === (held?.consumed ?? this.#buffer.length)) {
@@ -275,11 +289,10 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
         continue;
       }
       const entry = this.#buffer[page.consumed];
-      if (refused && !entry.injected && !refused.has(entry.item) && !this.#served(page, entry.item)) {
-        break;
-      }
+      const item = this.#serve(page, entry);
+      if (held && item !== null && !entry.injected && !held.covered.has(entry)) break;
       page.consumed++;
-      this.#admit(page, entry);
+      if (item !== null) this.#admit(page, entry, item);
     }
     return page;
   }
@@ -295,16 +308,24 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   }
 
   /**
-   * Adds an entry to a page unless it drops out. Revalidation and identity run here, at serve time,
-   * so a dropped row never costs a page while the fetch window lasts.
+   * The row an entry serves now, or `null` when it drops out. Re-derivation and identity run here,
+   * at serve time, so a dropped row never costs a page while the fetch window lasts.
    */
-  #admit(page: Outgoing<T>, entry: Entry<T>): void {
-    const { revalidate, identity } = this.#inject;
-    const item = entry.injected && revalidate ? revalidate(entry.item) : entry.item;
-    if (item === null || this.#served(page, item)) return;
-    if (identity) page.ids.push(identity(item));
+  #serve(page: Outgoing<T>, entry: Entry<T>): T | null {
+    const derive = entry.injected ? this.#inject.revalidate : this.#overlay;
+    const item = derive ? derive(entry.item) : entry.item;
+    return item === null || this.#served(page, item) ? null : item;
+  }
+
+  /** Adds the row an entry serves to the page. */
+  #admit(page: Outgoing<T>, entry: Entry<T>, item: T): void {
+    if (this.#inject.identity) page.ids.push(this.#inject.identity(item));
     page.items.push(item);
-    (entry.injected ? page.injected : page.provided).push(item);
+    if (entry.injected) page.injected.push(item);
+    else {
+      page.provided.push(item);
+      page.covered.add(entry);
+    }
   }
 }
 

@@ -1071,22 +1071,30 @@ return new TokenCursor<Project>({
 });
 ```
 
-### Merge simulated rows with `inject`
+### Merge simulated rows with `inject`, and change provider rows with `overlay`
 
 Rows the gatekeeper's own simulation adds to a listing — a branch a queued push will create, a
 commit queued for push — go in `inject: { items, compare, revalidate?, identity? }` rather than a
 wrapper cursor, so they share the walk's serialization, fetch bound and refusal hold. Each injected
-row is served before the first provider row `compare` places it at-or-before, and the rest after the
-last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
-made only of them is not authorized, so do not inject anything the provider supplied. Their
-position still says a little — an injected row served first means no fetched provider row sorts
-ahead of it — so a listing whose order is itself sensitive authorizes its observation up front.
+row is served before the first provider row `compare` places it at-or-before, and the rest after
+the last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
+made only of them is not authorized, so inject a row the provider supplied only after authorizing
+its observation up front. Their position still says a little — an injected row served first means
+no fetched provider row sorts ahead of it — so a listing whose order is itself sensitive authorizes
+its observation up front.
 `revalidate` re-reads a row when it is served (`null` drops it), since a page may be drained long
 after the cursor was built. `identity` drops a later row of either source whose identity was
 already served, such as the provider's copy of a create that landed mid-walk; an injected row's
 identity is re-read at each check, so a temporary id that became the provider's still matches.
-A refused page's retry re-reads its injected rows and offers no provider row the refusal did not
-cover; one a dropped injected row had hidden leads the next page instead, with the rows after it.
+
+The cursor's own `overlay` does for provider rows what `revalidate` does for injected ones. They
+sit in the buffer as fetched until served, so apply the simulation's changes to them there rather
+than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
+It must keep a row's sort position and identity, and authorization sees the row it returns.
+
+A refused page's retry re-reads its rows and offers no provider row the refusal did not cover; one
+a dropped injected row had hidden, or one `overlay` had dropped, leads the next page instead, with
+the rows after it.
 
 ### Existing-code migration only: refusal and failure
 
