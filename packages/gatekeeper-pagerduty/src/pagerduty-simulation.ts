@@ -1,11 +1,14 @@
-// Reads as if every pending action had been applied: an incident shows the status, title,
-// priority, urgency and assignees its pending changes give it (raising an acknowledged incident's
-// urgency returns it to triggered, as PagerDuty does), incidents and overrides a pending action
-// creates are listed (a created override's user is in shifts and on call), an override pending
-// removal is gone (or, if under way, ends when the removal was staged), and a note waiting to be
-// added is among the incident's notes. An incident a pending action opens starts as PagerDuty would
-// open it: acknowledged if assigned to the connected user alone, and with the urgency its service's
-// rule gives if none was chosen. Every function is pure over the journal's pending entries.
+// Reads as if pending actions had been applied, as far as PagerDuty's data allows: an incident
+// shows the status, title, priority, urgency and assignees its pending changes give it (raising an
+// acknowledged incident's urgency returns it to triggered, as PagerDuty does), incidents and
+// overrides a pending action creates are listed (a created override's user is in shifts and on
+// call), an override pending removal is gone from overrides (or, if under way, ends when the
+// removal was staged), and a note waiting to be added is among the incident's notes. An incident a
+// pending action opens starts as PagerDuty would open it: acknowledged if assigned to the connected
+// user alone, and with the urgency its service's rule gives if none was chosen. Not shown: a
+// reassignment to an escalation policy, whose assignees PagerDuty picks; the removal of an override
+// PagerDuty already has from shifts and on-call entries, which don't say whom it displaced; and any
+// pending change in an incident's log. Every function is pure over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
