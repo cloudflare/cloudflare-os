@@ -162,7 +162,8 @@ Every read reports what it disclosed as subresource IDs, qualified by region and
 `region/us/account/PABC123/service/PXYZ789`: the account, plus the bound team, service, incident or
 schedule, plus every team, service, schedule or escalation policy a filter named or a page
 contained, a team's own listings included. An incident read, and a hook's event, also reports the
-incident and its service. Empty pages and cached reads report the same.
+incident and its service, or only its service for an incident still waiting to be opened, which has
+no ID yet. Empty pages and cached reads report the same.
 
 A collaborator may observe a read only if their own PagerDuty connection can see every one of
 those, checked with their login: the account by being the same account in the same region, with a
