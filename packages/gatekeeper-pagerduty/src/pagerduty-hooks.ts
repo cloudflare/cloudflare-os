@@ -30,7 +30,7 @@ import { VENDOR_ID, webOrigin, type Env, type Tenant } from "./pagerduty-env";
 import { toIncidentSummary, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import {
-  SessionContext, outsideOf, readIncident, youRef, type HookScope, type SessionHost,
+  SessionContext, outsideOf, readIncident, withinOf, youRef, type HookScope, type SessionHost,
 } from "./pagerduty-session-shared";
 import { overlayIncident } from "./pagerduty-simulation";
 import { OBJECT_ID, parseResourceUrl, sameTenant } from "./pagerduty-urls";
@@ -94,9 +94,10 @@ export function watchedKinds(options: PagerDutySubscribeOptions | undefined): Pa
 }
 
 /** How the Workshop asks the user to approve a hook; by object IDs only, as descriptions are public. */
-export function hookDescription(tenant: Tenant, { within, incidentId }: HookScope, kinds: PagerDutyEventKind[]): HookDescription {
-  const on = incidentId ? `incident ${incidentId}` : within.serviceId ? `service ${within.serviceId}`
-    : within.teamId ? `team ${within.teamId}` : new URL(webOrigin(tenant)).host;
+export function hookDescription(tenant: Tenant, { scope, incidentId }: HookScope, kinds: PagerDutyEventKind[]): HookDescription {
+  const { teamId, serviceId } = withinOf(scope);
+  const on = incidentId ? `incident ${incidentId}` : serviceId ? `service ${serviceId}`
+    : teamId ? `team ${teamId}` : new URL(webOrigin(tenant)).host;
   const which = kinds.length === KINDS.length ? "every incident event" : `each ${kinds.join(", ")} event`;
   return {
     title: `Watch PagerDuty incidents on ${on}`,
@@ -132,7 +133,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
   async deliver(callback: RpcStub<PagerDutyEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
                 event: StoredEvent): Promise<void> {
     const host = this.#host;
-    const { scope, within, incidentId } = this.#scope;
+    const { scope, incidentId } = this.#scope;
     if (!sameTenant(event.tenant, host.tenant)) return;
     if (incidentId !== undefined && event.incidentId !== incidentId) return;
     let wire: WireIncident;
@@ -140,7 +141,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
     try {
       // The webhook sees the whole account, so each event is re-read as the hook's owner.
       wire = await readIncident({ host }, event.incidentId);
-      if (await outsideOf({ host }, wire.service.id, within)) return;
+      if (await outsideOf({ host }, wire.service.id, withinOf(scope))) return;
       if (event.trimmedNoteId !== undefined) {
         // Left out if deleted since.
         const { notes } = await host.read(api => api.get<{ notes: WireNote[] }>(`/incidents/${wire.id}/notes`));
@@ -153,7 +154,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
     const you = youRef(await host.me());
     const ctx = new SessionContext(host, approvalQueue.dup(), scope);
     // Owns `ctx`. Released when receiveEvent() returns, or here if it is never called.
-    const incident = new PagerDutyIncidentImpl(ctx, wire.id, within);
+    const incident = new PagerDutyIncidentImpl(ctx, wire.id);
     const { statusUpdate } = event;
     try {
       const extra = note !== undefined ? " and the note" : statusUpdate !== undefined ? " and the status update" : "";

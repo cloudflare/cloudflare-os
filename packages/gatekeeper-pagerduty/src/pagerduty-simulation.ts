@@ -195,9 +195,9 @@ function createdOverrides(pending: Pending, resolve: Resolve): { scheduleId: str
       : []);
 }
 
-/** Whether an override is pending creation, which can put someone on call PagerDuty doesn't list yet. */
-export const overridesPending = (pending: Pending, resolve: Resolve): boolean =>
-  createdOverrides(pending, resolve).length > 0;
+/** The users overrides pending creation put on call, where PagerDuty doesn't list them yet. */
+export const overridingUsers = (pending: Pending, resolve: Resolve): string[] =>
+  createdOverrides(pending, resolve).map(({ override }) => override.user.id);
 
 /**
  * `overrides` on schedule `scheduleId` as if pending ones were made and removed: those pending

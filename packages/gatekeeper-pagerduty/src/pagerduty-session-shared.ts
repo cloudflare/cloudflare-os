@@ -23,7 +23,7 @@ import {
   type WireUser,
 } from "./pagerduty-normalize";
 import {
-  changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridesPending, pendingIncidents,
+  changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridingUsers, pendingIncidents,
   type IncidentQuery, type Pending,
 } from "./pagerduty-simulation";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
@@ -48,8 +48,8 @@ const MAX_USERS = 50;
 /** PagerDuty's longest note. */
 export const MAX_NOTE_LENGTH = 25_000;
 
-/** The capability a hook subscribed through: its scope, what it may reach, and its incident, if one. */
-export type HookScope = { scope: readonly ObjectRef[]; within: Within; incidentId?: string };
+/** The capability a hook subscribed through: its scope, and its incident, if one. */
+export type HookScope = { scope: readonly ObjectRef[]; incidentId?: string };
 
 /** What a session may ask of the gatekeeper Durable Object. */
 export type SessionHost = {
@@ -82,18 +82,22 @@ export type ReadReport = { filter: readonly ObjectRef[]; result: readonly Object
 
 /**
  * What one capability owns: the gatekeeper host, its own approval-queue stub, and its scope -- the
- * objects every read through it depends on besides the account. A capability handed out takes a
- * duplicate stub, so disposing one never disturbs another.
+ * objects every read through it depends on besides the account, whose team and service bound what
+ * it may reach. A capability handed out takes a duplicate stub, so disposing one never disturbs another.
  */
 export class SessionContext implements Disposable {
-  constructor(readonly host: SessionHost, readonly queue: RpcStub<ApprovalQueue>, readonly scope: readonly ObjectRef[]) {}
+  readonly within: Within;
+
+  constructor(readonly host: SessionHost, readonly queue: RpcStub<ApprovalQueue>, readonly scope: readonly ObjectRef[]) {
+    this.within = withinOf(scope);
+  }
 
   dup(): SessionContext {
     return new SessionContext(this.host, this.queue.dup(), this.scope);
   }
 
   /** A context for an object opened from this one, which every read through it also depends on. */
-  within(object: ObjectRef): SessionContext {
+  opening(object: ObjectRef): SessionContext {
     return new SessionContext(this.host, this.queue.dup(), [...this.scope, object]);
   }
 
@@ -119,6 +123,11 @@ export class SessionContext implements Disposable {
 
 /** The objects a capability may reach beyond itself: those in this team, or on this service. */
 export type Within = { teamId?: string; serviceId?: string };
+
+/** What a capability with `scope` may reach: its scope's team and service, if any. */
+export function withinOf(scope: readonly ObjectRef[]): Within {
+  return { teamId: scope.find(({ kind }) => kind === "team")?.id, serviceId: scope.find(({ kind }) => kind === "service")?.id };
+}
 
 /** A team a read depends on. */
 export const team = (id: string): ObjectRef => ({ kind: "team", id });
@@ -426,9 +435,9 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, within: With
 }
 
 /** Incidents, newest first, as pending actions leave them. */
-export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncidentFilter | undefined,
-                                    within: Within): Promise<Cursor<PagerDutyIncidentSummary>> {
-  const { host } = ctx;
+export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncidentFilter | undefined):
+  Promise<Cursor<PagerDutyIncidentSummary>> {
+  const { host, within } = ctx;
   const me = await host.me();
   const { query, params } = incidentQuery(filter, within, me);
   const you = youRef(me);
@@ -498,10 +507,12 @@ export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWi
   const { resolve } = host;
   const since = time(window?.since, "since");
   const until = time(window?.until, "until");
-  // A pending override can put a user on call where PagerDuty doesn't list them yet, so users and
-  // the window are then picked out here instead.
-  const overriding = overridesPending(pending, resolve);
-  const params = { ...options.params, user_ids: overriding ? undefined : options.users, since, until };
+  // A pending override can put a user on call where PagerDuty doesn't list them yet, and cut short
+  // the entry it covers, so entries are then split and picked out here; users too, when the filter
+  // names one an override puts on call, as PagerDuty would leave out the entry they cover.
+  const overriding = overridingUsers(pending, resolve);
+  const covering = options.users?.some(id => overriding.includes(id));
+  const params = { ...options.params, user_ids: covering ? undefined : options.users, since, until };
   const rows = options.none ? [] : await host.read(api => api.all<WireOnCall>("/oncalls", "oncalls", params));
   const fetched = rows.map(toOnCall);
   // PagerDuty answers for the window, each end now by default, and an override can leave part of an
@@ -509,7 +520,7 @@ export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWi
   const now = Date.now();
   const from = since ? Date.parse(since) : now;
   const to = Math.max(until ? Date.parse(until) : now, from + 1);
-  const simulated = !overriding ? fetched : overlayOnCalls(fetched, pending, resolve).filter(entry =>
+  const simulated = overriding.length === 0 ? fetched : overlayOnCalls(fetched, pending, resolve).filter(entry =>
     (!options.users || options.users.includes(entry.user.id))
     && (entry.start === null || Date.parse(entry.start) < to) && (entry.end === null || Date.parse(entry.end) > from));
   const entries = simulated.filter(entry => !levels || levels.includes(entry.level));
@@ -522,8 +533,8 @@ export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWi
   return entries;
 }
 
-/** Binds `hook` to events on the incidents `ctx` reaches: those `within`, or the one `incidentId` names. */
+/** Binds `hook` to events on the incidents `ctx` reaches: those it is within, or the one `incidentId` names. */
 export function subscribed(ctx: SessionContext, hook: RpcStub<PagerDutyEventHookTarget>,
-                           options: PagerDutySubscribeOptions | undefined, within: Within, incidentId?: string): Promise<void> {
-  return ctx.host.subscribe(ctx.queue, hook, options, { scope: ctx.scope, within, ...(incidentId ? { incidentId } : {}) });
+                           options: PagerDutySubscribeOptions | undefined, incidentId?: string): Promise<void> {
+  return ctx.host.subscribe(ctx.queue, hook, options, { scope: ctx.scope, ...(incidentId ? { incidentId } : {}) });
 }
