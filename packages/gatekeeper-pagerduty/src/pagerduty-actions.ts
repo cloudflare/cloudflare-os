@@ -10,7 +10,7 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, sanitizeTitle, type ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
-import { PagerDutyApiError, type PagerDutyApi } from "./pagerduty-api";
+import { PagerDutyApiError, isRefusal, type PagerDutyApi } from "./pagerduty-api";
 import type { Identity } from "./pagerduty-credentials";
 import { VENDOR_ID, type Tenant } from "./pagerduty-env";
 import type { WireIncident, WireOverride } from "./pagerduty-normalize";
@@ -168,23 +168,27 @@ async function once<T>(host: PagerDutyActionHost, op: (api: PagerDutyApi, me: Id
     try {
       return await op(api, me);
     } catch (error) {
-      if (error instanceof PagerDutyApiError && (error.status === 401 || error.status === 429)) throw error;
-      if (error instanceof PagerDutyApiError && error.status < 500) throw new ActionApplyError(error.message);
+      if (error instanceof PagerDutyApiError && error.status < 500) throw isRefusal(error) ? new ActionApplyError(error.message) : error;
       throw new ActionOutcomeUnknownError(error instanceof Error ? error.message : "PagerDuty did not answer.");
     }
   });
 }
 
+/**
+ * `work`, failing the action for good if PagerDuty refuses it: nothing it refused was done, so
+ * there is nothing to retry. Any other failure is retried as it came.
+ */
+export async function refusalsFail<T>(work: Promise<T>): Promise<T> {
+  try {
+    return await work;
+  } catch (error) {
+    throw isRefusal(error) ? new ActionApplyError(error.message) : error;
+  }
+}
+
 /** Sends a change that repeating leaves the same, so a failure is retried as it came. */
 async function idempotent(host: PagerDutyActionHost, op: (api: PagerDutyApi, me: Identity) => Promise<unknown>): Promise<void> {
-  try {
-    await host.write(op);
-  } catch (error) {
-    if (error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429) {
-      throw new ActionApplyError(error.message);
-    }
-    throw error;
-  }
+  await refusalsFail(host.write(op));
 }
 
 /** Updates the incident `id` with the `PUT /incidents/{id}` fields in `incident`. */

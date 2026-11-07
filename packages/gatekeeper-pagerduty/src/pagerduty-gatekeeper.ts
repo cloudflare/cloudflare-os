@@ -16,10 +16,10 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import {
-  actions, dependedRefs, isProvisional, providedRefs, type PagerDutyAction, type PagerDutyActionHost,
+  actions, dependedRefs, isProvisional, providedRefs, refusalsFail, type PagerDutyAction, type PagerDutyActionHost,
   type PagerDutyActions,
 } from "./pagerduty-actions";
-import { PagerDutyApi, PagerDutyApiError } from "./pagerduty-api";
+import { PagerDutyApi } from "./pagerduty-api";
 import {
   accountSource, parseSubresource, type AccountKey, type Identity, type PagerDutyVerifierApi,
 } from "./pagerduty-credentials";
@@ -50,12 +50,12 @@ const PINNED_KEY = "pinned";
 type Pinned = AccountKey & { userId: string };
 
 /** How each kind of binding is described, and the interfaces it and its hooks implement. */
-const BINDINGS: Record<ResourceKind, { noun: string; bindingName: string; tsType: string; hookTsType?: string }> = {
-  account: { noun: "account", bindingName: "PAGERDUTY", tsType: "PagerDutyAccount", hookTsType: "PagerDutyEventHook" },
-  team: { noun: "team", bindingName: "PAGERDUTY_TEAM", tsType: "PagerDutyTeam", hookTsType: "PagerDutyEventHook" },
-  service: { noun: "service", bindingName: "PAGERDUTY_SERVICE", tsType: "PagerDutyService", hookTsType: "PagerDutyEventHook" },
-  incident: { noun: "incident", bindingName: "PAGERDUTY_INCIDENT", tsType: "PagerDutyIncident", hookTsType: "PagerDutyEventHook" },
-  schedule: { noun: "schedule", bindingName: "PAGERDUTY_SCHEDULE", tsType: "PagerDutySchedule" },
+const BINDINGS: Record<ResourceKind, { bindingName: string; tsType: string; hookTsType?: string }> = {
+  account: { bindingName: "PAGERDUTY", tsType: "PagerDutyAccount", hookTsType: "PagerDutyEventHook" },
+  team: { bindingName: "PAGERDUTY_TEAM", tsType: "PagerDutyTeam", hookTsType: "PagerDutyEventHook" },
+  service: { bindingName: "PAGERDUTY_SERVICE", tsType: "PagerDutyService", hookTsType: "PagerDutyEventHook" },
+  incident: { bindingName: "PAGERDUTY_INCIDENT", tsType: "PagerDutyIncident", hookTsType: "PagerDutyEventHook" },
+  schedule: { bindingName: "PAGERDUTY_SCHEDULE", tsType: "PagerDutySchedule" },
 };
 
 const SCHEDULE_TAGS = ["manage-overrides", "delete-overrides"];
@@ -74,18 +74,6 @@ const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
 };
 
 type PagerDutySession = PagerDutyAccount | PagerDutyTeam | PagerDutyService | PagerDutyIncident | PagerDutySchedule;
-
-/** An apply-time check's fresh reads: nothing has been sent yet, so PagerDuty refusing one fails the action for good. */
-async function checked<T>(reads: Promise<T>): Promise<T> {
-  try {
-    return await reads;
-  } catch (error) {
-    if (error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429) {
-      throw new ActionApplyError(error.message);
-    }
-    throw error;
-  }
-}
 
 @validateRpc()
 export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekeeperImplProps>
@@ -116,11 +104,11 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     // PagerDuty can move an incident to another service, or a service or schedule to another team,
     // after the action was staged: a team or service binding checks again that it still reaches it.
     requireInScope: async object => {
-      const outside = await checked(objectOutside({ host: this.#sessionHost }, object, this.#within));
+      const outside = await refusalsFail(objectOutside({ host: this.#sessionHost }, object, this.#within));
       if (outside) throw new ActionApplyError(outside);
     },
     currentIncident: async id => {
-      const { wire, outside } = await checked(currentIncident({ host: this.#sessionHost }, id, this.#within, [], readService));
+      const { wire, outside } = await refusalsFail(currentIncident({ host: this.#sessionHost }, id, this.#within, [], readService));
       if (outside) throw new ActionApplyError(outside);
       return wire;
     },
@@ -159,14 +147,14 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
 
   async describe(): Promise<ResourceDescription> {
     const props = this.ctx.props;
-    const { noun, bindingName, tsType, hookTsType } = BINDINGS[props.resourceKind];
+    const { bindingName, tsType, hookTsType } = BINDINGS[props.resourceKind];
     const host = new URL(webOrigin(props)).host;
     const types = { suggestedBindingName: bindingName, tsType, ...(hookTsType ? { hookTsType } : {}) };
     // Descriptions are visible outside observation authorization, so they name objects by ID only.
     return props.resourceKind === "account"
       ? { url: resourceUrl({ ...props, kind: "account" }), title: host, snippet: "PagerDuty account", ...types }
       : {
-        url: resourceUrl({ ...props, kind: props.resourceKind }), title: `PagerDuty ${noun} ${props.id}`, snippet: host,
+        url: resourceUrl({ ...props, kind: props.resourceKind }), title: `PagerDuty ${props.resourceKind} ${props.id}`, snippet: host,
         ...types,
       };
   }

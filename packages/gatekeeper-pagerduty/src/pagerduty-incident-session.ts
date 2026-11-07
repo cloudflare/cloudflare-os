@@ -6,7 +6,7 @@ import { RpcTarget, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
-import type { Query } from "./pagerduty-api";
+import { listing, type Query } from "./pagerduty-api";
 import { isProvisional, type IncidentTarget, type NewIncident, type PagerDutyActions } from "./pagerduty-actions";
 import {
   toAlert, toIncidentDetails, toIncidentSummary, toNote, toTimelineEntry,
@@ -15,7 +15,7 @@ import {
 import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
   MAX_NOTE_LENGTH, countOf, currentIncident, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed,
-  service, subscribed, text, urgency, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
+  service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -31,6 +31,30 @@ const MAX_SNOOZE_SECONDS = 604_800;
 type Loaded = { wire: WireIncident; pending?: never } | { wire?: never; pending: NewIncident };
 
 const INCIDENT_INCLUDES = ["acknowledgers", "assignees", "conference_bridge", "priorities", "body"];
+
+/** The kinds of action that act on one incident. */
+type IncidentActionKind = { [K in keyof PagerDutyActions]: PagerDutyActions[K] extends { incident: IncidentTarget } ? K : never }[keyof PagerDutyActions];
+
+/**
+ * The incident `id` names now, checked against `within`: PagerDuty's ID, or the `~N` of one a
+ * pending action opens.
+ */
+async function load(ctx: SessionContext, id: string, within: Within, includes: readonly string[] = []): Promise<Loaded> {
+  const { host } = ctx;
+  const resolved = host.resolve(id);
+  if (!isProvisional(resolved)) {
+    const { wire, outside } = await currentIncident(ctx, resolved, within, includes);
+    if (outside) throw new Error(outside);
+    return { wire };
+  }
+  const created = host.pending().find(({ action }) => action.kind === "createIncident" && action.payload.ref === resolved);
+  if (created?.action.kind !== "createIncident") {
+    throw new Error("This incident was never opened: opening it was rejected or failed.");
+  }
+  const why = await outsideOf(ctx, created.action.payload.service.id, within);
+  if (why) throw new Error(why);
+  return { pending: created.action.payload };
+}
 
 @validateRpc()
 export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyIncident {
@@ -54,32 +78,13 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     if (!OBJECT_ID.test(idOrNumber) && !isProvisional(idOrNumber)) {
       throw new Error('idOrNumber must be an incident ID, such as "Q2W3E4R5T6Y7U8", or its number.');
     }
-    const opened = new PagerDutyIncidentImpl(ctx.dup(), idOrNumber, within);
-    try {
-      const loaded = await opened.#load();
-      return loaded.wire ? new PagerDutyIncidentImpl(opened.#ctx, loaded.wire.id, within) : opened;
-    } catch (error) {
-      opened.#ctx[Symbol.dispose]();
-      throw error;
-    }
+    const loaded = await load(ctx, idOrNumber, within);
+    return new PagerDutyIncidentImpl(ctx.dup(), loaded.wire?.id ?? idOrNumber, within);
   }
 
   /** The incident now, checked against the capability's scope. */
-  async #load(includes: readonly string[] = []): Promise<Loaded> {
-    const { host } = this.#ctx;
-    const id = host.resolve(this.#id);
-    if (!isProvisional(id)) {
-      const { wire, outside } = await currentIncident(this.#ctx, id, this.#within, includes);
-      if (outside) throw new Error(outside);
-      return { wire };
-    }
-    const created = host.pending().find(({ action }) => action.kind === "createIncident" && action.payload.ref === id);
-    if (created?.action.kind !== "createIncident") {
-      throw new Error("This incident was never opened: opening it was rejected or failed.");
-    }
-    const why = await outsideOf(this.#ctx, created.action.payload.service.id, this.#within);
-    if (why) throw new Error(why);
-    return { pending: created.action.payload };
+  #load(includes: readonly string[] = []): Promise<Loaded> {
+    return load(this.#ctx, this.#id, this.#within, includes);
   }
 
   /** What this incident's reads depend on: itself, once PagerDuty has it, and its service. */
@@ -106,7 +111,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     }
     await this.#ctx.authorize({ title: "Read a PagerDuty incident", description: "Read the incident's details." },
       { filter: [], result: this.#result(loaded) });
-    return overlayIncident(details, host.pending(), id => host.resolve(id), you);
+    return overlayIncident(details, host.pending(), host.resolve, you);
   }
 
   async getTimeline(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyTimelineEntry>> {
@@ -123,7 +128,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       ? (await host.read(api => api.get<{ notes: WireNote[] }>(`/incidents/${loaded.wire.id}/notes`))).notes.map(toNote)
       : [];
     const id = loaded.wire ? loaded.wire.id : loaded.pending.ref;
-    const notes = [...rows, ...pendingNotes(id, host.pending(), ref => host.resolve(ref), await this.#you())]
+    const notes = [...rows, ...pendingNotes(id, host.pending(), host.resolve, await this.#you())]
       .toSorted((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     await this.#ctx.authorize({ title: "Read a PagerDuty incident's notes", description: `Read ${countOf(notes.length, "note")}.` },
       { filter: [], result: this.#result(loaded) });
@@ -150,10 +155,9 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       return new ArrayCursor<T>([], pageSize);
     }
     const { id } = loaded.wire;
-    return offsetCursor<W, T>(this.#ctx, {
+    return offsetCursor(this.#ctx, {
       pageSize,
-      sources: [(api, offset, limit) => api.page<W>(`/incidents/${id}/${key}`, key, query, offset, limit)],
-      convert: rows => rows.map(convert),
+      sources: [listing(`/incidents/${id}/${key}`, key, query, convert)],
       describe,
       filter: [],
       // The incident can move to another service while the walk is open, so each page reads it
@@ -168,7 +172,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     const loaded = await this.#load();
     const you = await this.#you();
     const summary = loaded.wire ? toIncidentSummary(loaded.wire) : pendingIncident(loaded.pending, you);
-    const { status } = overlayIncident(summary, host.pending(), id => host.resolve(id), you);
+    const { status } = overlayIncident(summary, host.pending(), host.resolve, you);
     if (!loaded.wire) return { target: { id: this.#id }, status };
     // PagerDuty's ID and number reach the approval text, so they are held to PagerDuty's grammar.
     const { id, incident_number: number } = loaded.wire;
@@ -176,77 +180,78 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     return { target: { id, number }, status };
   }
 
-  async #stage<K extends Exclude<keyof PagerDutyActions, "createIncident" | "createOverride" | "createOverrideForOthers" | "deleteOverride">>(
-    kind: K, payload: (target: IncidentTarget) => PagerDutyActions[K],
-  ): Promise<void> {
-    const { target } = await this.#target();
-    await this.#ctx.host.submit(this.#ctx.queue, kind, payload(target));
+  /** Stages `kind` against this incident, once `check` passes for its status as pending actions leave it. */
+  async #stage<K extends IncidentActionKind>(kind: K, fields: Omit<PagerDutyActions[K], "incident">,
+                                             check?: (status: PagerDutyIncidentSummary["status"]) => void): Promise<void> {
+    const { target, status } = await this.#target();
+    check?.(status);
+    await this.#ctx.host.submit(this.#ctx.queue, kind, { incident: target, ...fields } as PagerDutyActions[K]);
   }
 
   async acknowledge(): Promise<void> {
-    const { target, status } = await this.#target();
-    // PagerDuty reopens a resolved incident it is asked to acknowledge.
-    if (status === "resolved") throw new Error("A resolved incident can't be acknowledged.");
-    await this.#ctx.host.submit(this.#ctx.queue, "acknowledge", { incident: target });
+    await this.#stage("acknowledge", {}, status => {
+      // PagerDuty reopens a resolved incident it is asked to acknowledge.
+      if (status === "resolved") throw new Error("A resolved incident can't be acknowledged.");
+    });
   }
 
   async resolve(resolution?: string): Promise<void> {
     const note = resolution === undefined ? undefined : text(resolution, "resolution", MAX_NOTE_LENGTH);
-    await this.#stage("resolve", target => ({ incident: target, ...(note !== undefined ? { resolution: note } : {}) }));
+    await this.#stage("resolve", note !== undefined ? { resolution: note } : {});
   }
 
   async snooze(seconds: number): Promise<void> {
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > MAX_SNOOZE_SECONDS) {
       throw new Error(`seconds must be a whole number from 1 to ${MAX_SNOOZE_SECONDS}.`);
     }
-    const { target, status } = await this.#target();
-    if (status !== "acknowledged") throw new Error("Only an acknowledged incident can be snoozed.");
-    await this.#ctx.host.submit(this.#ctx.queue, "snooze", { incident: target, seconds });
+    await this.#stage("snooze", { seconds }, status => {
+      if (status !== "acknowledged") throw new Error("Only an acknowledged incident can be snoozed.");
+    });
   }
 
   async addNote(content: string): Promise<void> {
     text(content, "content", MAX_NOTE_LENGTH);
     const ref = this.#ctx.host.allocate("note");
-    await this.#stage("addNote", target => ({ incident: target, ref, content, stagedAt: new Date().toISOString() }));
+    await this.#stage("addNote", { ref, content, stagedAt: new Date().toISOString() });
   }
 
   async reassign(to: { users: string[] } | { escalationPolicyId: string }): Promise<void> {
     const assignee = "users" in to
       ? { users: await usersNamed(this.#ctx, to.users, "users") }
       : { escalationPolicyId: objectId(to.escalationPolicyId, "escalationPolicyId") };
-    await this.#stage("reassign", target => ({ incident: target, to: assignee }));
+    await this.#stage("reassign", { to: assignee });
   }
 
   async escalate(level: number): Promise<void> {
     if (!Number.isInteger(level) || level < 1) throw new Error("level must be a whole number from 1.");
-    await this.#stage("escalate", target => ({ incident: target, level }));
+    await this.#stage("escalate", { level });
   }
 
   async requestResponders(options: PagerDutyResponderRequest): Promise<void> {
-    const message = text(options?.message, "message", MAX_NOTE_LENGTH);
+    const message = text(options.message, "message", MAX_NOTE_LENGTH);
     const users = options.users?.length ? await usersNamed(this.#ctx, options.users, "users") : [];
     const escalationPolicyIds = ids(options.escalationPolicyIds, "escalationPolicyIds") ?? [];
     if (users.length + escalationPolicyIds.length === 0) throw new Error("Name at least one user or escalation policy.");
-    await this.#stage("requestResponders", target => ({ incident: target, message, users, escalationPolicyIds }));
+    await this.#stage("requestResponders", { message, users, escalationPolicyIds });
   }
 
   async setPriority(priority: string | null): Promise<void> {
     const chosen = priority === null ? null : await priorityNamed(this.#ctx, priority);
-    await this.#stage("setPriority", target => ({ incident: target, priority: chosen }));
+    await this.#stage("setPriority", { priority: chosen });
   }
 
   async setUrgency(value: PagerDutyUrgency): Promise<void> {
-    await this.#stage(urgency(value) === "high" ? "raiseUrgency" : "lowerUrgency", target => ({ incident: target }));
+    await this.#stage(value === "high" ? "raiseUrgency" : "lowerUrgency", {});
   }
 
   async setTitle(title: string): Promise<void> {
     text(title, "title", 1024);
-    await this.#stage("setTitle", target => ({ incident: target, title }));
+    await this.#stage("setTitle", { title });
   }
 
   async postStatusUpdate(message: string): Promise<void> {
     text(message, "message", MAX_NOTE_LENGTH);
-    await this.#stage("postStatusUpdate", target => ({ incident: target, message }));
+    await this.#stage("postStatusUpdate", { message });
   }
 
   async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {

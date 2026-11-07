@@ -47,8 +47,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
 
   async getDetails(): Promise<PagerDutyScheduleDetails> {
     const schedule = await this.#read();
-    await this.#ctx.authorize({ title: "Read a PagerDuty schedule", description: "Read the schedule's details." },
-      { filter: [], result: [] });
+    await this.#ctx.authorize({ title: "Read a PagerDuty schedule", description: "Read the schedule's details." });
     return toScheduleDetails(schedule);
   }
 
@@ -56,9 +55,8 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     const span = windowOf(window, 7, MAX_SHIFT_DAYS);
     const { host } = this.#ctx;
     const shifts = overlayShifts(toShifts(await this.#read({ window: span, users: true })), this.#id, span,
-      host.pending(), id => host.resolve(id));
-    await this.#ctx.authorize({ title: "Read who is on call on a PagerDuty schedule", description: `Read ${countOf(shifts.length, "shift")}.` },
-      { filter: [], result: [] });
+      host.pending(), host.resolve);
+    await this.#ctx.authorize({ title: "Read who is on call on a PagerDuty schedule", description: `Read ${countOf(shifts.length, "shift")}.` });
     return shifts;
   }
 
@@ -69,9 +67,8 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     const schedule = await this.#read({ users: true });
     const rows = await host.read(api => api.get<{ overrides: WireOverride[] | WireShiftOverride[] }>(
       `${schedulePath(this.#id, schedule.shiftBased)}/overrides`, span));
-    const overrides = overlayOverrides(toOverrides(schedule, rows.overrides), this.#id, span, host.pending(), id => host.resolve(id));
-    await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` },
-      { filter: [], result: [] });
+    const overrides = overlayOverrides(toOverrides(schedule, rows.overrides), this.#id, span, host.pending(), host.resolve);
+    await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` });
     return overrides;
   }
 
@@ -79,9 +76,9 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     const from = time(text(start, "start"), "start")!;
     const until = time(text(end, "end"), "end")!;
     if (Date.parse(until) <= Date.parse(from)) throw new Error("end must be after start.");
-    await this.#requireLayerBased();
-    const [target] = await usersNamed(this.#ctx, [user], "user");
-    const me = await this.#ctx.host.me();
+    const [, [target], me] = await Promise.all([
+      this.#requireLayerBased(), usersNamed(this.#ctx, [user], "user"), this.#ctx.host.me(),
+    ]);
     const ref = this.#ctx.host.allocate(overrideKind(this.#id));
     await this.#ctx.host.submit(this.#ctx.queue, target.id === me.userId ? "createOverride" : "createOverrideForOthers",
       { ref, scheduleId: this.#id, user: target, start: from, end: until });
@@ -89,7 +86,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
   }
 
   async deleteOverride(id: string): Promise<void> {
-    if (typeof id !== "string" || (!OBJECT_ID.test(id) && !isProvisional(id))) {
+    if (!OBJECT_ID.test(id) && !isProvisional(id)) {
       throw new Error('id must be an override ID, such as "Q3X6MJ1LUKD6QW".');
     }
     const { host } = this.#ctx;

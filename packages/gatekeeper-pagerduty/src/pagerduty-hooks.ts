@@ -87,7 +87,7 @@ const driver = (exports: Cloudflare.Exports) => exports.PagerDutyHookDriver.getB
 /** The kinds `options` asks for, by default all. */
 export function watchedKinds(options: PagerDutySubscribeOptions | undefined): PagerDutyEventKind[] {
   const kinds = [...new Set(options?.events ?? KINDS)];
-  if (kinds.length === 0 || kinds.some(kind => !KINDS.includes(kind))) {
+  if (kinds.length === 0) {
     throw new TypeError(`events must name at least one of ${KINDS.join(", ")}.`);
   }
   return kinds;
@@ -167,7 +167,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
     await callback.receiveEvent({
       id: event.id, kind: event.kind, occurredAt: event.occurredAt,
       actor: event.agent && { ...event.agent, isYou: event.agent.id === you.id },
-      info: overlayIncident(toIncidentSummary(wire), host.pending(), id => host.resolve(id), you),
+      info: overlayIncident(toIncidentSummary(wire), host.pending(), host.resolve, you),
       incident,
       ...(note !== undefined ? { note } : {}),
       ...(statusUpdate !== undefined ? { statusUpdate } : {}),
