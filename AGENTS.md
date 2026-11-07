@@ -80,6 +80,7 @@ Each Worker's `cloudflare.config.ts` (`@cloudflare/config` format, built from th
 
 IMPORTANT: This repository uses pnpm, not npm. Always use pnpm.
 
+- Pull requests carry a `risk-review` check run (`scripts/risk-review.ts`; band, area and policy rules in `scripts/risk-review-policy.ts`). In shadow mode, set in `.github/automerge-bands.json`, it mirrors today's approval rule, is not required, and records what the auto-merge gate would decide. A change to `.github/`, the gate or judge code (`scripts/risk-review*`, `scripts/automerge/`), reviewer instructions (`REVIEW.md`, any `AGENTS.md` or `CLAUDE.md`, `.agents/`, opencode config), auth config, `.npmrc`, `pnpm-workspace.yaml` beyond catalog versions, release scripts, or a Durable Object class deletion always needs a person. The one exception is a Dependabot Actions bump of workflows the gate does not read, whose `proof-actions` holds.
 - Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build.
 - `pnpm build` runs type-checks and codegen. For one package use `pnpm exec vp run -F <package> build`; most builds are tasks, not package.json scripts.
 - Use `pnpm --filter <package> test:run` while iterating and `pnpm test` for workspace verification. Cached tasks may replay results; cold-checkout tests must generate their own prerequisites on both entrypoints.
