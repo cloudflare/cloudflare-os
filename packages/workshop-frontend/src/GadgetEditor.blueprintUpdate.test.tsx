@@ -159,7 +159,8 @@ vi.mock('./GadgetUseView', () => ({
   },
 }))
 vi.mock('./ObserverConfigModal', () => ({ default: () => null }))
-vi.mock('./ShareModal', () => ({ default: () => null }))
+vi.mock('./features/sharing/WorkspaceInviteModal', () => ({ WorkspaceInviteModal: () => null }))
+vi.mock('./features/sharing/GadgetShareModal', () => ({ GadgetShareModal: () => null }))
 vi.mock('./TopBarNotice', () => ({ default: () => null }))
 vi.mock('./components/DeleteConfirmationDialog', () => ({ default: () => null }))
 vi.mock('./components/ReconnectingChip', () => ({ default: () => null }))
