@@ -3,8 +3,8 @@
 Connects PagerDuty users to Gadgets. A gadget can read incidents, services, teams, schedules and
 who is on call, and act on incidents and schedules as the connected user: acknowledge, resolve,
 add notes, reassign, open incidents, put people on call. Nothing reaches PagerDuty until a user
-approves it, or an auto-approval rule the user enabled for its kind applies it. Every pending
-change is shown to the gadget as if it had already happened, so a gadget keeps working while it
+approves it, or an auto-approval rule the user enabled for its kind applies it. Most pending
+changes are shown to the gadget as if they had already happened, so a gadget keeps working while it
 waits. Everything a gadget sees is what the connected user can see in PagerDuty.
 
 Five resource types, each its own grant, all picked from one connect card:
@@ -29,9 +29,9 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
   and Team also list and open services and schedules; a Team lists its members; a Service opens
   new incidents. Opening something from a broader binding returns the same interface a narrower
   binding gets, and a narrower binding refuses IDs outside it, such as another team's incident. A
-  change to an incident that has since moved out of a team or service binding, or to a service or
-  schedule that has since left a team binding, is refused when it would apply; so is a listing's
-  page of such an incident.
+  change to an incident that has since moved off the team or service it was reached through (the
+  binding, or one opened from it), or to a service or schedule that has since left that team, is
+  refused when it would apply; so is a listing's page of such an incident.
 - **Incident** reads its details, log, notes and alerts, and acknowledges, snoozes, resolves,
   reassigns, escalates, requests responders, sets the title, priority or urgency, adds notes and
   posts status updates. A resolved incident isn't acknowledged, since PagerDuty would reopen it:
@@ -184,6 +184,11 @@ or team membership goes unnoticed for up to 15 minutes. See `docs/observers.md`.
 - **No overrides on shift-based schedules yet.** A shift-based schedule's override replaces one
   rotation's member rather than whoever the schedule has, so `createOverride()` and
   `deleteOverride()` refuse one; its shifts and overrides can still be read.
+- **Some pending changes don't show in reads.** A reassignment to an escalation policy leaves the
+  incident's policy and assignees as they were, since PagerDuty picks the new assignees; removing
+  an override PagerDuty already has leaves its user on call in shifts and on-call listings (its
+  overrides show it removed), since PagerDuty doesn't say whom it displaced; and an incident's log
+  shows no pending change at all.
 
 ## Troubleshooting
 

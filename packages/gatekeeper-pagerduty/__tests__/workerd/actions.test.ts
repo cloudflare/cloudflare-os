@@ -284,6 +284,24 @@ describe("narrow bindings", () => {
     expect(t.pd.writes()).toEqual([]);
   });
 
+  it("refuses, sending nothing, a resolve staged through an account's service once the incident has moved off it", async () => {
+    const t = await setup();
+    await t.run([["getService", SERVICE.id], ["getIncident", t.incident.id], ["resolve"]]);
+    const [{ actionId }] = await t.submitted();
+    t.incident.service = OTHER_SERVICE;
+    expect(await t.tryApply(actionId)).toMatch(/belongs to another service/);
+    expect(t.pd.writes()).toEqual([]);
+  });
+
+  it("refuses, sending nothing, an override staged through an account's team once the schedule has left it", async () => {
+    const t = await setup();
+    await t.run([["getTeam", TEAM.id], ["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, START, END]]);
+    const [{ actionId }] = await t.submitted();
+    t.pd.schedules.get(SCHEDULE.id)!.teams = [OTHER_TEAM];
+    expect(await t.tryApply(actionId)).toMatch(/doesn't belong to this team/);
+    expect(t.pd.writes()).toEqual([]);
+  });
+
   it.each([
     ["createOverride", [ALICE.email, START, END]],
     ["deleteOverride", ["POVR001"]],

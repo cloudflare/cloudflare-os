@@ -213,7 +213,7 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
     const payload: NewIncident = {
       ref, service: toRef(wire),
       teams: (wire.teams ?? []).map(toRef), escalationPolicy: toRef(wire.escalation_policy),
-      title, stagedAt: stagedAt.toISOString(),
+      title, stagedAt: stagedAt.toISOString(), within: ctx.within,
       ...(details !== undefined ? { details } : {}),
       ...(options.urgency ? { urgency: options.urgency } : { serviceUrgency: serviceUrgency(wire, stagedAt) }),
       ...(priority ? { priority } : {}),

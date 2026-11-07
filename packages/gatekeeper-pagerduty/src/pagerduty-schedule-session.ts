@@ -79,7 +79,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     ]);
     const ref = this.#ctx.host.allocate(overrideKind(this.#id));
     await this.#ctx.host.submit(this.#ctx.queue, target.id === me.userId ? "createOverride" : "createOverrideForOthers",
-      { ref, scheduleId: this.#id, user: target, start: from, end: until });
+      { ref, scheduleId: this.#id, user: target, start: from, end: until, within: this.#ctx.within });
     return ref;
   }
 
@@ -94,7 +94,7 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     }
     await this.#requireLayerBased();
     await host.submit(this.#ctx.queue, "deleteOverride",
-      { scheduleId: this.#id, overrideId: id, stagedAt: new Date().toISOString() });
+      { scheduleId: this.#id, overrideId: id, stagedAt: new Date().toISOString(), within: this.#ctx.within });
   }
 
   [Symbol.dispose](): void {

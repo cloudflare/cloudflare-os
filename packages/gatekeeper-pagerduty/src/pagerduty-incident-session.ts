@@ -166,16 +166,16 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
 
   /** The incident an action stages against, checked against the capability's scope. */
   async #target(): Promise<{ target: IncidentTarget; status: PagerDutyIncidentSummary["status"] }> {
-    const { host } = this.#ctx;
+    const { host, within } = this.#ctx;
     const loaded = await this.#load();
     const you = await this.#you();
     const summary = loaded.wire ? toIncidentSummary(loaded.wire) : pendingIncident(loaded.pending, you);
     const { status } = overlayIncident(summary, host.pending(), host.resolve, you);
-    if (!loaded.wire) return { target: { id: this.#id }, status };
+    if (!loaded.wire) return { target: { id: this.#id, within }, status };
     // PagerDuty's ID and number reach the approval text, so they are held to PagerDuty's grammar.
     const { id, incident_number: number } = loaded.wire;
     if (!OBJECT_ID.test(id) || !Number.isSafeInteger(number)) throw new Error("PagerDuty described the incident in an unexpected form.");
-    return { target: { id, number }, status };
+    return { target: { id, number, within }, status };
   }
 
   /** Stages `kind` against this incident, once `check` passes for its status as pending actions leave it. */
