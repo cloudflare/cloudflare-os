@@ -30,7 +30,8 @@ export interface CommitFileReader {
 
 /**
  * A file as the store holds it: a FileAtCommit as the server sends it for a small file. A
- * streamed file has been read and decoded into `text`, or `unreadable` if it is not text.
+ * streamed file has been read and decoded into `text`, or is the `blob` it names if it is not
+ * text.
  */
 export type CommitFile = Exclude<FileAtCommit, { kind: 'stream' }>
 
@@ -196,10 +197,11 @@ function settle(slot: FileSlot, value: CommitFile): void {
 const TEXT_DECODER_STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // Reads a streamed file whole, and decodes it as the server decodes a small file: text with no
-// NUL byte and valid UTF-8, else the same `unreadable` entry the server would have sent.
+// NUL byte and valid UTF-8, else the same `blob` entry the server would have sent.
 async function readStreamedFile(
-  path: string, { byteLength, content }: { byteLength: number; content: ReadableStream<Uint8Array> },
+  path: string, { blob, content }: Extract<FileAtCommit, { kind: 'stream' }>,
 ): Promise<CommitFile> {
+  const { byteLength } = blob
   const bytes = new Uint8Array(byteLength)
   let filled = 0
   const reader = content.getReader()
@@ -216,12 +218,11 @@ async function readStreamedFile(
     throw err
   }
   if (filled !== byteLength) throw new Error(`${path}: fewer bytes than expected`)
-  const unreadable: CommitFile = { kind: 'unreadable', message: `${path} is not a text file` }
-  if (bytes.includes(0)) return unreadable
+  if (bytes.includes(0)) return { kind: 'blob', blob }
   try {
     return { kind: 'text', text: TEXT_DECODER_STRICT.decode(bytes) }
   } catch {
-    return unreadable
+    return { kind: 'blob', blob }
   }
 }
 

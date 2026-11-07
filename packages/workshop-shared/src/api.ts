@@ -25,7 +25,7 @@
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
-import type { CodeChange } from "./code-change.js";
+import type { BytesRef, CodeChange } from "./code-change.js";
 import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -3089,19 +3089,22 @@ export type TreeNode =
 
 /**
  * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
- * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
- * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
- * a submodule, or binary content (never a matter of size) -- and carries a descriptive,
- * path-flavored message suitable for display in place of the file.
+ * the file's UTF-8 content; `blob` names content that is not text (it has a NUL byte or is not
+ * valid UTF-8) by its git blob, whose bytes Overseer.readBlob() returns; `absent` means the path
+ * names no entry at that commit (or names a directory); `unreadable` means the entry exists but
+ * is not a regular file -- a symlink or a submodule -- and carries a descriptive, path-flavored
+ * message suitable for display in place of the file.
  *
- * `stream` is how a regular file over MAX_BUFFERED_BLOB_SIZE arrives instead of `text`: its raw
- * bytes, `byteLength` of them, as a stream. The server has not checked that they are text, so
- * the caller applies the same rules it would have (no NUL byte, valid UTF-8). The caller must
+ * `stream` is how a regular file over MAX_BUFFERED_BLOB_SIZE arrives instead of `text` or
+ * `blob`: its `blob`, and that blob's raw bytes as a stream. The server has not checked that
+ * they are text, so the caller applies the same rules it would have (no NUL byte, valid UTF-8),
+ * and takes content that is not text as the `blob` entry it would have sent. The caller must
  * consume or cancel every stream it receives.
  */
 export type FileAtCommit =
   | { kind: "text"; text: string }
-  | { kind: "stream"; byteLength: number; content: ReadableStream<Uint8Array> }
+  | { kind: "blob"; blob: BytesRef }
+  | { kind: "stream"; blob: BytesRef; content: ReadableStream<Uint8Array> }
   | { kind: "absent" }
   | { kind: "unreadable"; message: string };
 
@@ -3770,6 +3773,12 @@ export interface Overseer extends RpcTarget {
    */
   uploadBlob(content: Uint8Array | { stream: ReadableStream<Uint8Array>; byteLength: number })
       : Promise<GitOid>;
+
+  /**
+   * Read a blob in this workspace's Git store, such as one a `blob` FileAtCommit or a chat's
+   * `setBytes` change names: the counterpart of uploadBlob().
+   */
+  readBlob(oid: GitOid): Promise<ReadableStream<Uint8Array>>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already

@@ -1608,12 +1608,12 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let result = await t.cache.readFilesAtCommit(commit, ["text.txt", "binary.png", "huge.txt"]);
     expect(result.slice(0, 2)).toStrictEqual([
       ["text.txt", { kind: "text", text: "hello\n" }],
-      ["binary.png", { kind: "unreadable", message: "binary.png is not a text file" }],
+      ["binary.png", { kind: "blob", blob: { oid: binaryOid, byteLength: binary.byteLength } }],
     ]);
     let [path, file] = result[2];
     expect(path).toBe("huge.txt");
     if (file.kind !== "stream") throw new Error(`expected a stream, got ${file.kind}`);
-    expect(file.byteLength).toBe(huge.byteLength);
+    expect(file.blob).toStrictEqual({ oid: hugeOid, byteLength: huge.byteLength });
     expect(sameBytes(await contentBytes(file.content), huge)).toBe(true);
     // One batch, no retry round trip.
     expect(t.pulls).toHaveLength(1);
@@ -1672,7 +1672,7 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     ]);
     for (let [, file] of result.slice(8, 12)) {
       if (file.kind !== "stream") throw new Error("expected a stream");
-      expect(file.byteLength).toBe(over.length);
+      expect(file.blob).toStrictEqual({ oid: overOid, byteLength: over.length });
       expect(sameBytes(await contentBytes(file.content), over)).toBe(true);
     }
   });

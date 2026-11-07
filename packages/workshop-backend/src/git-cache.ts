@@ -1201,11 +1201,12 @@ export class WorkspaceGitCache {
    * The content of several files at a commit in one round trip (the read behind
    * `Overseer.readFilesAtCommit`; see its doc for the contract). Entries resolve along the
    * eager-tree walk, every missing blob is pulled in one batch (`ensureBlobs`), and the results
-   * come back in request order -- stopping once the accumulated blob bytes exceed
+   * come back in request order -- stopping once the accumulated text bytes exceed
    * READ_FILES_RESPONSE_BUDGET, so the remaining paths are simply omitted. Per-file conditions
-   * become `absent`/`unreadable` entries; a pull failure throws. A regular file over
+   * become `absent`/`blob`/`unreadable` entries; a pull failure throws. A regular file over
    * MAX_BUFFERED_BLOB_SIZE comes back as a `stream` of its raw bytes, never read whole here and
-   * not counted toward the budget; a smaller one is decoded as text.
+   * not counted toward the budget; a smaller one is decoded as text, or is a `blob` if it is not
+   * text.
    */
   async readFilesAtCommit(commitOid: GitOid, paths: string[])
       : Promise<[path: string, FileAtCommit][]> {
@@ -1233,26 +1234,25 @@ export class WorkspaceGitCache {
       } else if (entry.kind === "submodule") {
         out.push([path, { kind: "unreadable", message: submoduleMessage(path, entry.oid) }]);
       } else {
-        try {
-          // Local by now (ensureBlobs), so this opens the blob, never faults.
-          let reader = await this.openBlob(entry.oid, entry.referencedBy);
-          if (entry.kind !== "symlink" && reader.size > MAX_BUFFERED_BLOB_SIZE) {
-            // Its bytes travel outside the response message, so they count against no budget.
-            out.push([path, { kind: "stream", byteLength: reader.size,
-                              content: blobByteStream(reader) }]);
-            continue;
-          }
-          let payload = reader.read(0, reader.size);
-          if (entry.kind === "symlink") {
-            out.push([path, { kind: "unreadable", message: symlinkMessage(path, payload) }]);
-          } else {
-            let text = decodeBlobText(payload, path);
-            bytes += payload.byteLength;
-            out.push([path, { kind: "text", text }]);
-          }
-        } catch (err) {
-          if (!(err instanceof UnreadableContentError)) throw err;
-          out.push([path, { kind: "unreadable", message: err.message }]);
+        // Local by now (ensureBlobs), so this opens the blob, never faults.
+        let reader = await this.openBlob(entry.oid, entry.referencedBy);
+        let blob = { oid: entry.oid, byteLength: reader.size };
+        if (entry.kind !== "symlink" && reader.size > MAX_BUFFERED_BLOB_SIZE) {
+          // Its bytes travel outside the response message, so they count against no budget.
+          out.push([path, { kind: "stream", blob, content: blobByteStream(reader) }]);
+          continue;
+        }
+        let payload = reader.read(0, reader.size);
+        if (entry.kind === "symlink") {
+          out.push([path, { kind: "unreadable", message: symlinkMessage(path, payload) }]);
+          continue;
+        }
+        let text = blobText(payload);
+        if (text === undefined) {
+          out.push([path, { kind: "blob", blob }]);
+        } else {
+          bytes += payload.byteLength;
+          out.push([path, { kind: "text", text }]);
         }
       }
     }
@@ -1911,14 +1911,21 @@ function submoduleMessage(path: string, target: GitOid): string {
   return `${path} is a submodule (gitlink) pointing at commit ${target}`;
 }
 
-/** Decode a Git blob payload as strict text. */
-export function decodeBlobText(payload: Uint8Array, path: string): string {
-  if (payload.includes(0)) throw new UnreadableContentError(`${path} is not a text file`);
+// A Git blob payload as strict text, or undefined if it is not text.
+function blobText(payload: Uint8Array): string | undefined {
+  if (payload.includes(0)) return undefined;
   try {
     return TEXT_DECODER_STRICT.decode(payload);
   } catch {
-    throw new UnreadableContentError(`${path} is not a text file`);
+    return undefined;
   }
+}
+
+/** Decode a Git blob payload as strict text. */
+export function decodeBlobText(payload: Uint8Array, path: string): string {
+  let text = blobText(payload);
+  if (text === undefined) throw new UnreadableContentError(`${path} is not a text file`);
+  return text;
 }
 
 /**
