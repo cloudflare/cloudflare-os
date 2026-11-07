@@ -241,9 +241,10 @@ const kindOf = (datasetId?: string, tableId?: string): BigQueryNodeKind =>
  * What typing into the picker's search names, when it names a place rather than searches for one: a
  * connection's URL, a Cloud Console link (`?p=<project>&d=<dataset>&t=<table>`, or the console's
  * own `?project=` when it names nothing narrower), a node id or a reference. `explicit` is false for
- * a bare word, which is as likely a search as a project ID.
+ * a bare word, which is as likely a search as a project ID; `link` is true for a URL or node id,
+ * which can name nothing else.
  */
-function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit: boolean } | undefined {
+function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit: boolean; link?: true } | undefined {
   let text = input.trim().replace(/^`(.*)`$/, "$1");
   if (!text) return undefined;
   // Only a known host is read as a link: a legacy project ID (`example.com:proj`) parses as a URL too.
@@ -253,7 +254,7 @@ function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit:
       let target = parseResourceUrl(text);
       if (target.kind !== "bigquery") return undefined;
       let { projectId, datasetId, tableId } = target;
-      return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true };
+      return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true, link: true };
     } catch {
       return undefined;
     }
@@ -262,10 +263,10 @@ function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit:
     let projectId = url.searchParams.get("p") ?? url.searchParams.get("project");
     let datasetId = url.searchParams.get("d") ?? undefined;
     let tableId = datasetId ? url.searchParams.get("t") ?? undefined : undefined;
-    return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true } : undefined;
+    return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true, link: true } : undefined;
   }
   let node = parseBigQueryNodeId(text);
-  if (node) return { ref: node, explicit: true };
+  if (node) return { ref: node, explicit: true, link: true };
   let match = BIGQUERY_REFERENCE_RE.exec(text);
   if (!match) return undefined;
   let [, projectId, datasetId, tableId] = match;
@@ -345,14 +346,16 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
     let linked = linkedBigQueryNodeRef(query);
     if (linked?.explicit) {
       let node = await this.#node(linked.ref);
-      return node ? { nodes: [node] } : { nodes: [], notice: "This account can't see what that names, or it doesn't exist." };
+      if (node) return { nodes: [node] };
+      if (linked.link) return { nodes: [], notice: "This account can't see what that names, or it doesn't exist." };
+      // A dotted term that names nothing (`q3.report`) is searched for like any other.
     }
     let nodes = await this.#children(parentId);
     let matching = nodes.filter(node => optionMatches([node.title, node.subtitle], query));
     // A project the account holds no role in is never listed, but BigQuery still answers for it
     // when a dataset in it was shared with the account, so a project ID no listed project has is
     // looked up, even where listed names contain it.
-    if (linked && parentId === BIGQUERY_ROOT_ID && !matching.some(node => node.title === linked.ref.projectId)) {
+    if (linked && !linked.explicit && parentId === BIGQUERY_ROOT_ID && !matching.some(node => node.title === linked.ref.projectId)) {
       let node = await this.#node(linked.ref);
       if (node) matching = [node, ...matching];
     }

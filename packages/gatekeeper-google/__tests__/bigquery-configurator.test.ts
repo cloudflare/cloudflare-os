@@ -131,8 +131,10 @@ describe("the query project", () => {
     frame.picker().onChange("dataset:theirs/events", null);
     expect(frame.ready()).toBe(false);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
-    expect(frame.autocomplete()).toMatchObject({ name: "queryProject", value: null });
+    // Nothing can be typed while the suggestion is on its way, so it cannot land on an edit.
+    expect(frame.autocomplete()).toMatchObject({ name: "queryProject", value: null, disabled: true });
     await vi.waitFor(() => expect(frame.values().queryProject).toBe("mine"));
+    expect(frame.autocomplete()).toMatchObject({ value: "mine", disabled: false });
     expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events?queryProject=mine");
   });
@@ -142,7 +144,7 @@ describe("the query project", () => {
     frame.ui.listNodes.mockResolvedValueOnce({ nodes: [SHARED_DATASET, MINE] });
     await frame.list("bigquery");
     frame.picker().onChange("dataset:theirs/events", null);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(frame.autocomplete().disabled).toBe(false));
     expect(frame.values().queryProject).toBeNull();
     expect(frame.ready()).toBe(false);
     frame.autocomplete().onChange("other");

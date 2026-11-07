@@ -112,7 +112,10 @@ function unlistedProject(target: string | null | undefined): string | undefined 
 
 /** The account's one project, offered as the query project before the user has to look for it. */
 let onlyProject: Promise<string | null> | undefined;
-/** The choice the suggestion is for, so a late answer does not land on a later choice or the user's own. */
+/**
+ * The choice a suggestion is pending for; the field waits, disabled, until the answer lands, so
+ * nothing typed meanwhile can be overridden. Cleared by the answer or by a later choice.
+ */
 let suggestedFor: string | null = null;
 /**
  * A pre-filled choice that arrived with a query project it did not need: the field stays in view,
@@ -128,7 +131,9 @@ function suggestQueryProject({ ui, setValues }: Context, target: string | null):
     options => options.length === 1 ? options[0]!.value : null,
     () => { onlyProject = undefined; return null; });
   void onlyProject.then(project => {
-    if (project && suggestedFor === target) setValues({ queryProject: project });
+    if (suggestedFor !== target) return;
+    suggestedFor = null;
+    setValues(project ? { queryProject: project } : {});
   });
 }
 
@@ -234,13 +239,10 @@ export default {
           value={queryProject}
           placeholder="Search your projects..."
           loadOptions={query => ui.listProjects(query)}
-          onChange={next => {
-            suggestedFor = null;
-            setValues({ queryProject: next });
-          }}
+          onChange={next => setValues({ queryProject: next })}
+          disabled={suggestedFor !== null && suggestedFor === target && queryProject === null}
           optional={override !== undefined}
           onClear={() => {
-            suggestedFor = null;
             overrideFor = null;
             clearFields("queryProject");
             setValues({ queryProject: null });

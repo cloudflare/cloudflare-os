@@ -972,7 +972,7 @@ describe("BigQuery picker", () => {
             { id: "theirs-app", projectReference: { projectId: "theirs-app" } },
           ] });
         case "/projects/mine/datasets":
-          return Response.json({ datasets: [dataset("mine", "web"), dataset("mine", "sales", { friendlyName: "Sales" })] });
+          return Response.json({ datasets: [dataset("mine", "web", { friendlyName: "Web v2.0" }), dataset("mine", "sales", { friendlyName: "Sales" })] });
         case "/projects/mine/datasets/sales/tables":
           return Response.json({ tables: [table("mine", "sales", "orders"), table("mine", "sales", "daily", "VIEW")] });
         case "/projects/mine/datasets/web/tables":
@@ -1057,6 +1057,9 @@ describe("BigQuery picker", () => {
       .toEqual({ nodes: [], notice: expect.stringContaining("can't see") });
     // A listing's own words, not a project ID, never trigger a lookup.
     expect(await ui.listNodes("project:mine", "nowhere", null)).toEqual({ nodes: [] });
+    // A dotted term is tried as a reference, then searched for like any other word.
+    expect(await ui.listNodes("project:mine", "sales.v2", null)).toEqual({ nodes: [] });
+    expect(await ui.listNodes("project:mine", "v2.0", null)).toMatchObject({ nodes: [{ id: "dataset:mine/web" }] });
     expect(calls.filter(path => path.startsWith("/projects/nowhere"))).toHaveLength(1);
   });
 
