@@ -205,7 +205,6 @@ export function HomePageContent({ prompt }: HomeSearch) {
           onModelChange={handleModelChange}
           newChat
           offerFormats
-          autoFocus
           minRows={3}
           seedText={seed?.text}
           seedNonce={seed?.nonce}

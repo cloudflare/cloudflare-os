@@ -425,6 +425,15 @@ html {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-kumo-line) 80%, transparent);
 }
 
+/* Windows High Contrast drops box-shadows, so Tailwind focus rings (ring-*) disappear and
+   outline-none leaves nothing behind. Restore a real outline for keyboard focus. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+  }
+}
+
 [data-mode="dark"] .themed-user-bubble-shadow {
   box-shadow:
     0 1px 1px rgba(0, 0, 0, 0.15),
@@ -848,6 +857,19 @@ html {
   }
   .press:active {
     transform: none;
+  }
+}
+
+/* Only some animations above carry their own reduced-motion guard. This covers the rest: Tailwind's
+   pulse, Kumo's skeletons and shimmer, slide/bounce/toast entrances and the thinking bar. Spinners
+   keep turning because a frozen one no longer says "loading". */
+@media (prefers-reduced-motion: reduce) {
+  *:not(.animate-spin),
+  *:not(.animate-spin)::before,
+  *:not(.animate-spin)::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
 
