@@ -15,7 +15,7 @@ import {
 import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
   MAX_NOTE_LENGTH, countOf, currentIncident, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed,
-  service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext, type Within,
+  service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -36,11 +36,11 @@ const INCIDENT_INCLUDES = ["acknowledgers", "assignees", "conference_bridge", "p
 type IncidentActionKind = { [K in keyof PagerDutyActions]: PagerDutyActions[K] extends { incident: IncidentTarget } ? K : never }[keyof PagerDutyActions];
 
 /**
- * The incident `id` names now, checked against `within`: PagerDuty's ID, or the `~N` of one a
- * pending action opens.
+ * The incident `id` names now, checked against what `ctx` is within: PagerDuty's ID, or the `~N` of
+ * one a pending action opens.
  */
-async function load(ctx: SessionContext, id: string, within: Within, includes: readonly string[] = []): Promise<Loaded> {
-  const { host } = ctx;
+async function load(ctx: SessionContext, id: string, includes: readonly string[] = []): Promise<Loaded> {
+  const { host, within } = ctx;
   const resolved = host.resolve(id);
   if (!isProvisional(resolved)) {
     const { wire, outside } = await currentIncident(ctx, resolved, within, includes);
@@ -60,31 +60,29 @@ async function load(ctx: SessionContext, id: string, within: Within, includes: r
 export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyIncident {
   readonly #ctx: SessionContext;
   readonly #id: string;
-  readonly #within: Within;
 
   /**
+   * @param ctx Scoped to the team or service the incident was opened from, which it must still belong to.
    * @param id PagerDuty's ID, or the `~N` of an incident a pending action opens.
-   * @param within The team or service the incident was opened from, which it must still belong to.
    */
-  constructor(ctx: SessionContext, id: string, within: Within) {
+  constructor(ctx: SessionContext, id: string) {
     super();
     this.#ctx = ctx;
     this.#id = id;
-    this.#within = within;
   }
 
-  /** Opens an incident by ID or number, refusing one outside `within`. */
-  static async open(ctx: SessionContext, idOrNumber: string, within: Within): Promise<PagerDutyIncidentImpl> {
+  /** Opens an incident by ID or number, refusing one outside what `ctx` is within. */
+  static async open(ctx: SessionContext, idOrNumber: string): Promise<PagerDutyIncidentImpl> {
     if (!OBJECT_ID.test(idOrNumber) && !isProvisional(idOrNumber)) {
       throw new Error('idOrNumber must be an incident ID, such as "Q2W3E4R5T6Y7U8", or its number.');
     }
-    const loaded = await load(ctx, idOrNumber, within);
-    return new PagerDutyIncidentImpl(ctx.dup(), loaded.wire?.id ?? idOrNumber, within);
+    const loaded = await load(ctx, idOrNumber);
+    return new PagerDutyIncidentImpl(ctx.dup(), loaded.wire?.id ?? idOrNumber);
   }
 
   /** The incident now, checked against the capability's scope. */
   #load(includes: readonly string[] = []): Promise<Loaded> {
-    return load(this.#ctx, this.#id, this.#within, includes);
+    return load(this.#ctx, this.#id, includes);
   }
 
   /** What this incident's reads depend on: itself, once PagerDuty has it, and its service. */
@@ -257,7 +255,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
     const loaded = await this.#load();
     if (!loaded.wire) throw new Error("This incident can't be watched until PagerDuty has opened it.");
-    await subscribed(this.#ctx, hook, options, this.#within, loaded.wire.id);
+    await subscribed(this.#ctx, hook, options, loaded.wire.id);
   }
 
   [Symbol.dispose](): void {

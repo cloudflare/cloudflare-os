@@ -16,7 +16,7 @@ import { serviceUrgency } from "./pagerduty-simulation";
 import {
   CATALOG_TTL_MS, MAX_NOTE_LENGTH, cachedService, countOf, escalationPolicy, findUsers, ids, listIncidents, listOnCalls,
   listPriorities, listSchedules, listServices, listTeams, priorityNamed, readSchedule, readService, requireTeam, schedule,
-  service, subscribed, team, text, usersNamed, type SessionContext, type Within,
+  service, subscribed, team, text, usersNamed, type SessionContext,
 } from "./pagerduty-session-shared";
 import { objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -30,20 +30,20 @@ import type {
 
 // ---------------------------------------------------------------------------
 // What the account, team and service capabilities share: their incidents, users and hooks, each
-// reaching only what is `within` the capability.
+// reaching only what is within the capability.
 
 @validateRpc()
 abstract class PagerDutyScopeImpl extends RpcTarget {
-  constructor(protected readonly ctx: SessionContext, protected readonly within: Within) {
+  constructor(protected readonly ctx: SessionContext) {
     super();
   }
 
   async listIncidents(filter?: PagerDutyIncidentFilter): Promise<Cursor<PagerDutyIncidentSummary>> {
-    return await listIncidents(this.ctx, filter, this.within);
+    return await listIncidents(this.ctx, filter);
   }
 
   async getIncident(idOrNumber: string): Promise<PagerDutyIncident> {
-    return await PagerDutyIncidentImpl.open(this.ctx, idOrNumber, this.within);
+    return await PagerDutyIncidentImpl.open(this.ctx, idOrNumber);
   }
 
   async findUsers(query?: string): Promise<PagerDutyUser[]> {
@@ -55,7 +55,7 @@ abstract class PagerDutyScopeImpl extends RpcTarget {
   }
 
   async subscribe(hook: RpcStub<PagerDutyEventHookTarget>, options?: PagerDutySubscribeOptions): Promise<void> {
-    await subscribed(this.ctx, hook, options, this.within);
+    await subscribed(this.ctx, hook, options);
   }
 
   [Symbol.dispose](): void {
@@ -68,10 +68,6 @@ abstract class PagerDutyScopeImpl extends RpcTarget {
 
 @validateRpc()
 export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDutyAccount {
-  constructor(ctx: SessionContext) {
-    super(ctx, {});
-  }
-
   async getMetadata(): Promise<PagerDutyAccountMetadata> {
     const me = await this.ctx.host.me();
     await this.ctx.authorize({ title: "Read the PagerDuty account", description: "Read the account and the connected user." });
@@ -84,7 +80,7 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
 
   async getService(id: string): Promise<PagerDutyService> {
     objectId(id, "id");
-    return new PagerDutyServiceImpl(this.ctx.within(service(id)), id, {});
+    return new PagerDutyServiceImpl(this.ctx.opening(service(id)), id);
   }
 
   async listTeams(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyTeamSummary>> {
@@ -93,7 +89,7 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
 
   async getTeam(id: string): Promise<PagerDutyTeam> {
     objectId(id, "id");
-    return new PagerDutyTeamImpl(this.ctx.within(team(id)), id);
+    return new PagerDutyTeamImpl(this.ctx.opening(team(id)), id);
   }
 
   async listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>> {
@@ -102,7 +98,7 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {
     objectId(id, "id");
-    return new PagerDutyScheduleImpl(this.ctx.within(schedule(id)), id, {});
+    return new PagerDutyScheduleImpl(this.ctx.opening(schedule(id)), id);
   }
 
   async listOnCalls(filter?: PagerDutyOnCallFilter): Promise<PagerDutyOnCall[]> {
@@ -126,7 +122,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   readonly #id: string;
 
   constructor(ctx: SessionContext, id: string) {
-    super(ctx, { teamId: id });
+    super(ctx);
     this.#id = id;
   }
 
@@ -150,7 +146,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
 
   async getService(id: string): Promise<PagerDutyService> {
     requireTeam(await cachedService(this.ctx, objectId(id, "id")), this.#id, "service");
-    return new PagerDutyServiceImpl(this.ctx.within(service(id)), id, this.within);
+    return new PagerDutyServiceImpl(this.ctx.opening(service(id)), id);
   }
 
   async listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>> {
@@ -159,7 +155,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {
     requireTeam(await readSchedule(this.ctx, objectId(id, "id")), this.#id, "schedule");
-    return new PagerDutyScheduleImpl(this.ctx.within(schedule(id)), id, this.within);
+    return new PagerDutyScheduleImpl(this.ctx.opening(schedule(id)), id);
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {
@@ -181,16 +177,16 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
 export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDutyService {
   readonly #id: string;
 
-  /** @param within The team the service was opened from, which it must still belong to. */
-  constructor(ctx: SessionContext, id: string, within: { teamId?: string }) {
-    super(ctx, { ...within, serviceId: id });
+  /** @param ctx Scoped to the service, and to the team it was opened from, which it must still belong to. */
+  constructor(ctx: SessionContext, id: string) {
+    super(ctx);
     this.#id = id;
   }
 
   /** The service, checked against the team it was opened from; cached briefly unless `fresh`. */
   async #service(fresh = false) {
     const wire = fresh ? await readService(this.ctx, this.#id) : await cachedService(this.ctx, this.#id);
-    requireTeam(wire, this.within.teamId, "service");
+    requireTeam(wire, this.ctx.within.teamId, "service");
     return wire;
   }
 
@@ -225,7 +221,7 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
       ...(incidentKey !== undefined ? { incidentKey } : {}),
     };
     await ctx.host.submit(ctx.queue, "createIncident", payload);
-    return new PagerDutyIncidentImpl(ctx.dup(), ref, this.within);
+    return new PagerDutyIncidentImpl(ctx.dup(), ref);
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {

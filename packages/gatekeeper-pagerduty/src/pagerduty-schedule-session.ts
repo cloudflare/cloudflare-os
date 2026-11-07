@@ -24,19 +24,17 @@ const MAX_SHIFT_DAYS = 90;
 export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedule {
   readonly #ctx: SessionContext;
   readonly #id: string;
-  readonly #teamId?: string;
 
-  /** @param within The team the schedule was opened from, which it must still belong to. */
-  constructor(ctx: SessionContext, id: string, within: { teamId?: string }) {
+  /** @param ctx Scoped to the schedule, and to the team it was opened from, which it must still belong to. */
+  constructor(ctx: SessionContext, id: string) {
     super();
     this.#ctx = ctx;
     this.#id = id;
-    this.#teamId = within.teamId;
   }
 
   async #read(query?: ScheduleQuery): Promise<Schedule> {
     const schedule = await readSchedule(this.#ctx, this.#id, query);
-    requireTeam(schedule, this.#teamId, "schedule");
+    requireTeam(schedule, this.#ctx.within.teamId, "schedule");
     return schedule;
   }
 

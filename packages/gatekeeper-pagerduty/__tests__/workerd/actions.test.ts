@@ -534,6 +534,14 @@ describe("simulation", () => {
       ]);
       expect(await t.run([["listOnCalls", { since: hour(2), until: hour(3) }]])).toMatchObject([onCallEntry(BOB, hour(1), hour(12))]);
     });
+
+    it("still asks PagerDuty only for a user filter's users when no pending override puts one of them on call", async () => {
+      const t = await covered();
+      expect(await t.run([["listOnCalls", { users: [BOB.email], since: hour(-2), until: hour(2) }]])).toMatchObject([
+        onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(BOB, hour(1), hour(12)),
+      ]);
+      expect(t.pd.matching("GET", /^\/oncalls/).at(-1)?.url.searchParams.getAll("user_ids[]")).toEqual([BOB.id]);
+    });
   });
 
   it("shows an override already under way ending when its removal was staged, and tells the approver", async () => {

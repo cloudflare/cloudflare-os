@@ -31,8 +31,7 @@ import {
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 import {
-  SessionContext, currentIncident, objectOutside, readService, type HookScope, type ObjectRef, type SessionHost,
-  type Within,
+  SessionContext, currentIncident, objectOutside, readService, withinOf, type HookScope, type ObjectRef, type SessionHost,
 } from "./pagerduty-session-shared";
 import { PagerDutyAccountImpl, PagerDutyServiceImpl, PagerDutyTeamImpl } from "./pagerduty-sessions";
 import { resourceUrl, sameTenant } from "./pagerduty-urls";
@@ -83,9 +82,14 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
   readonly #refs = new ProvisionalIds<string>(this.ctx.storage.kv, { namespace: "refs:", isProvisional });
   readonly #cache = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#creds, { name: "pagerduty" });
   #identity?: { value: Identity; at: number };
+  /**
+   * What every read through the binding depends on besides the account. An incident's reads report
+   * the incident by the ID PagerDuty gives it, which a link by number doesn't carry.
+   */
+  readonly #scope: readonly ObjectRef[] = this.ctx.props.resourceKind === "account" || this.ctx.props.resourceKind === "incident"
+    ? [] : [{ kind: this.ctx.props.resourceKind, id: this.ctx.props.id }];
   /** The team or service a team or service binding is scoped to, which every change must still be in. */
-  readonly #within: Within = this.ctx.props.resourceKind === "team" ? { teamId: this.ctx.props.id }
-    : this.ctx.props.resourceKind === "service" ? { serviceId: this.ctx.props.id } : {};
+  readonly #within = withinOf(this.#scope);
 
   // Every ID a read reports names the pinned account (see `verifyObserverAccess`), and each
   // observer's own connection answers for them.
@@ -134,11 +138,12 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
       // Refuses a binding its connection no longer matches before the user is asked.
       await this.#me();
       using delivery: RpcStub<PagerDutyHookDelivery> = await this.ctx.restore(scope);
+      const { serviceId } = withinOf(scope.scope);
       const controller = this.ctx.exports.PagerDutyHookController({ props: {
         key: crypto.randomUUID(), events, delivery,
         tenant: { subdomain: this.ctx.props.subdomain, region: this.ctx.props.region },
         ...(scope.incidentId ? { incidentId: scope.incidentId } : {}),
-        ...(scope.within.serviceId ? { serviceId: scope.within.serviceId } : {}),
+        ...(serviceId ? { serviceId } : {}),
       } });
       // @ts-expect-error Workers widens the controller's hook type across bindHook RPC.
       await queue.bindHook(controller, hook, hookDescription(this.ctx.props, scope, events));
@@ -170,15 +175,13 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<PagerDutySession> {
     const props = this.ctx.props;
-    const ctx = (...scope: ObjectRef[]) => new SessionContext(this.#sessionHost, approvalQueue.dup(), scope);
+    const ctx = new SessionContext(this.#sessionHost, approvalQueue.dup(), this.#scope);
     switch (props.resourceKind) {
-      case "account": return new PagerDutyAccountImpl(ctx());
-      case "team": return new PagerDutyTeamImpl(ctx({ kind: "team", id: props.id }), props.id);
-      case "service": return new PagerDutyServiceImpl(ctx({ kind: "service", id: props.id }), props.id, {});
-      // An incident's reads report the incident by the ID PagerDuty gives it, which a link by
-      // number doesn't carry.
-      case "incident": return new PagerDutyIncidentImpl(ctx(), props.id, {});
-      case "schedule": return new PagerDutyScheduleImpl(ctx({ kind: "schedule", id: props.id }), props.id, {});
+      case "account": return new PagerDutyAccountImpl(ctx);
+      case "team": return new PagerDutyTeamImpl(ctx, props.id);
+      case "service": return new PagerDutyServiceImpl(ctx, props.id);
+      case "incident": return new PagerDutyIncidentImpl(ctx, props.id);
+      case "schedule": return new PagerDutyScheduleImpl(ctx, props.id);
     }
   }
 
