@@ -81,6 +81,7 @@ vi.mock("./AuthContext", () => ({
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface TestHost extends RpcTarget {
+  downloadFile(url: string): Promise<void>;
   subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
   setPresenting(active: boolean): Promise<{
     rect: { left: number; top: number; width: number; height: number } | null;
@@ -190,6 +191,43 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await tick();
     return done;
   }
+
+  it("downloads a gatekeeper attachment in the trusted host without opening the iframe sandbox", async () => {
+    const { iframe } = await mountApp();
+    const attachments: { href: string; download: string; referrerPolicy: string; attached: boolean }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      attachments.push({
+        href: this.href,
+        download: this.download,
+        referrerPolicy: this.referrerPolicy,
+        attached: this.ownerDocument === document && document.body.contains(this),
+      });
+    });
+    const url = `${window.location.origin}/gatekeeper/scheduler/exports/one-use-ticket`;
+
+    await host!.downloadFile(url);
+
+    expect(attachments).toEqual([{ href: url, download: "", referrerPolicy: "no-referrer", attached: true }]);
+    expect(document.querySelector(`a[href="${url}"]`)).toBeNull();
+    expect(iframe.getAttribute("sandbox")).toBe("allow-scripts allow-modals");
+  });
+
+  it.each([
+    "https://foreign.example/gatekeeper/scheduler/exports/file",
+    `${window.location.protocol}//user:password@${window.location.host}/gatekeeper/scheduler/exports/file`,
+    "/gatekeeper/computeroperator/enrollment/ticket",
+    "/gatekeeper/scheduler-other/exports/file",
+    "/api/export",
+    "/gatekeeper/scheduler/../computeroperator/enrollment/ticket",
+    "/gatekeeper/scheduler/exports/file?credential=secret",
+    "/gatekeeper/scheduler/exports/file#credential",
+  ])("refuses a download outside the calling gatekeeper's credential-free route: %s", async (path) => {
+    await mountApp();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await expect(host!.downloadFile(new URL(path, window.location.origin).href))
+      .rejects.toThrow("Invalid gatekeeper download URL.");
+    expect(click).not.toHaveBeenCalled();
+  });
 
   it("delivers each pick to the app's receiver while the picker is open, one picker at a time", async () => {
     await mountApp();
