@@ -27,7 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { FileChangeByPath, WorktreeSubscriber } from "@gadgets/workshop-shared/agent-integration";
+import type { FileChangeByPath, WorktreeSubscriber } from "@gadgets/workshop-shared/worktree-replica";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
@@ -42,7 +42,7 @@ import type { SpawnCallableOptions } from "../agent-spawner-binding";
 // A worktree replica is a copy of a worktree's files kept outside the workspace -- typically by a
 // container gatekeeper that runs shell commands against them -- and kept in sync in both
 // directions with the chat's uncommitted changes. The public API is in
-// `@gadgets/workshop-shared/agent-integration`, which explains the concepts; these records are
+// `@gadgets/workshop-shared/worktree-replica`, which explains the concepts; these records are
 // the workspace's side of it. All of them are keyed by strings the workspace generates.
 //
 // Positions in a chat's change stream ("revisions") are stored in the form the API hands out:
@@ -1492,7 +1492,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
     collections: {
       // Worktree replicas: copies of a worktree's files kept in sync outside the workspace (e.g.
-      // in a container), through the APIs in `@gadgets/workshop-shared/agent-integration`.
+      // in a container), through the APIs in `@gadgets/workshop-shared/worktree-replica`.
       // One row per sync session handed out, i.e. per replica (see WorktreeSyncRecord).
       worktreeSyncSessions: collection<WorktreeSyncRecord>()({primaryKey: "id"}),
       // One row per batch of edits a replica submitted and the workspace accepted, so that

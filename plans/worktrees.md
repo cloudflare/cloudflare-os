@@ -37,7 +37,7 @@ agent-facing `Worktree` binding API).
 
 The pull signature in this original plan is superseded by
 `Gatekeeper.gitPull(request, observer?): Promise<Response>`; see
-[`agent-worktree-replicas.md`](../docs/agent-worktree-replicas.md). Providers return authenticated
+[`worktree-replicas.md`](../docs/worktree-replicas.md). Providers return authenticated
 smart-HTTP protocol bytes. The kernel still owns provenance checks, exact-OID composition,
 raw-PACK demultiplexing and bounded cache ingestion. New native Git observations require
 whole-repository scope and an observer; known-object cache/bootstrap pulls do not.

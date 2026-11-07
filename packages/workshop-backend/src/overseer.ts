@@ -68,8 +68,8 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import type { WorktreeSyncSession, WorktreeSubscription, WorktreeSubscriber, WorktreeIntegration, FileChangeByPath }
-  from "@gadgets/workshop-shared/agent-integration";
+import type { WorktreeSyncSession, WorktreeSubscription, WorktreeSubscriber, ReplicableWorktree, FileChangeByPath }
+  from "@gadgets/workshop-shared/worktree-replica";
 import type { Worktree } from "./worktree-binding";
 import { ReplicaChangedError, worktreeBatch } from "./worktree-replica";
 import { worktreeGitPull } from "./worktree-git";
@@ -1250,7 +1250,7 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
-    const invalidateBindings = () => { this.#integrationBindingCache = undefined; };
+    const invalidateBindings = () => { this.#chatBindingsCache = undefined; };
     this.storage.chats.subscribe({add: invalidateBindings, update: invalidateBindings, remove: invalidateBindings});
     this.gitStore = new GitStore(this.storage.gitObjects);
     this.gitCache = new WorkspaceGitCache(this.storage, {
@@ -6420,7 +6420,7 @@ class OverseerImpl implements AgentHooks {
   // along.
   #gatekeepersPendingRestart = new Set<number>();
   // Keep at most one paused chat's replay; advancing history or changing its inputs invalidates it.
-  #integrationBindingCache?: {key: string; bindings: Map<string, ChatBindingEntry>};
+  #chatBindingsCache?: {key: string; bindings: Map<string, ChatBindingEntry>};
 
   // Whether `id` is NOT blocked pending a scheduled restart (see #gatekeepersPendingRestart).
   // For callers that enumerate connections (listSlashCommands, prepareChatBindings' ambient
@@ -6463,18 +6463,18 @@ class OverseerImpl implements AgentHooks {
   // The chat's bindings, for finding the connection a GitCache.gitPull() URL names. While a turn
   // runs, its live map (which includes worktrees created this step); otherwise, e.g. while an
   // approval has suspended the turn, the map replayed from the stored chat log.
-  #integrationBindings(chatId: number): Map<string, ChatBindingEntry> {
+  #currentChatBindings(chatId: number): Map<string, ChatBindingEntry> {
     const context = this.getChatAgentContext(chatId);
     const active = this.#worktreeReplicaTurns.get(chatId);
     if (active) {
-      this.#integrationBindingCache = undefined;
+      this.#chatBindingsCache = undefined;
       return new Map(active.bindings());
     }
     const checkpoint = this.getActiveChatCompaction(chatId);
     const key = JSON.stringify([chatId, this.nextChatSequencePeek(chatId), context.bindings,
       checkpoint?.compactedTo, checkpoint?.chatBindings]);
-    if (this.#integrationBindingCache?.key === key)
-      return new Map(this.#integrationBindingCache.bindings);
+    if (this.#chatBindingsCache?.key === key)
+      return new Map(this.#chatBindingsCache.bindings);
     const initial = new Map<string, ChatBindingEntry>(checkpoint?.chatBindings ?? []);
     for (const [name, id] of Object.entries(context.bindings ?? {})) {
       if (!initial.has(name)) initial.set(name, {type: "workpiece", id});
@@ -6482,7 +6482,7 @@ class OverseerImpl implements AgentHooks {
     const messages = this.storage.chats.list({prefix: chatKeyPrefix(chatId),
       start: checkpoint && chatKey(chatId, checkpoint.compactedTo)});
     const bindings = replayChatBindings(messages, initial);
-    this.#integrationBindingCache = {key, bindings};
+    this.#chatBindingsCache = {key, bindings};
     return new Map(bindings);
   }
 
@@ -6496,7 +6496,7 @@ class OverseerImpl implements AgentHooks {
     const target = normalize(url);
     const gadget = caller.from === "gadget" && caller.gadgetId !== undefined
       ? this.storage.gadgets.get(caller.gadgetId) : undefined;
-    const bindings = caller.from === "agent" ? this.#integrationBindings(caller.chatId)
+    const bindings = caller.from === "agent" ? this.#currentChatBindings(caller.chatId)
       : new Map(Object.entries(gadget?.type === "gadget" ? gadget.bindings : {})
         .map(([name, edge]) => [name, {type: "workpiece" as const, id: edge.target}]));
     for (const entry of bindings.values()) {
@@ -14037,11 +14037,11 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
 /**
  * The Worktree stub handed to an agent's code (restored from "worktree" params). The file
  * methods work only while the code execution it was handed to is running. The replica methods
- * (WorktreeIntegration) keep working afterwards, so that a gatekeeper the stub was passed to can
+ * (ReplicableWorktree) keep working afterwards, so that a gatekeeper the stub was passed to can
  * keep syncing the worktree.
  */
 @validateRpc()
-class WorktreeEndpoint extends NativeRpcTarget implements Worktree, WorktreeIntegration {
+class WorktreeEndpoint extends NativeRpcTarget implements Worktree, ReplicableWorktree {
   constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
   // The returned persistent stub already targets a validated RpcTarget. The validator's
   // additional server-side Proxy around a native stub loses its RPC methods on serialization.

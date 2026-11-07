@@ -34,8 +34,8 @@ import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
 
-import type {WorktreeIntegration, WorktreeSubscriber, FileChangeByPath}
-  from "@gadgets/workshop-shared/agent-integration";
+import type {ReplicableWorktree, WorktreeSubscriber, FileChangeByPath}
+  from "@gadgets/workshop-shared/worktree-replica";
 import {buildGitFetchRequest, demuxGitFetchResponse} from "@gadgets/gatekeeper-kit/git-transport";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
@@ -429,7 +429,7 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         { ...input, chatGatewayRpcTarget });
   }
 
-  async mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string> {
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
     const key = crypto.randomUUID();
     using session = await worktree.getSyncSession();
     using subscriber = await this.ctx.restore<RpcStub<WorktreeSubscriber>>({worktree: key});
@@ -683,7 +683,7 @@ export interface TestSession {
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
   /** Exercises worktree capability delegation through the real code-mode bridge. */
-  mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string>;
+  mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
@@ -755,7 +755,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return Promise.all(values.map(value => this.writeValue(value)));
   }
 
-  async mountWorktree(worktree: RpcStub<WorktreeIntegration>): Promise<string> {
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
     return this.state.mountWorktree(worktree);
   }
 

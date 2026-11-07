@@ -1,4 +1,4 @@
-# Mounted worktree integrations
+# Worktree replicas
 
 A gatekeeper receives the Worktree capability directly. The kernel knows the selected worktree,
 its Git provenance and canonical change history; it knows nothing about containers, guest paths,
@@ -17,13 +17,13 @@ and synchronous `exec(command, options)`. The mount lives at `/workspace/<mountN
   integration harness does this in `packages/integration-tests/scripts/build-upgrade-base.ts`.
 - Restore a warm snapshot and replay missed canonical changes before running another command.
 
-## Integration API
+## API
 
 These methods are on the actual Worktree capability, but omitted from the agent's file-tool type
 text. Hiding the declarations is for discoverability, not authorization.
 
 ```ts
-interface WorktreeIntegration {
+interface ReplicableWorktree {
   getSyncSession(): Promise<WorktreeSyncSession>;
   gitPull(request: Request): Promise<Response>;
 }

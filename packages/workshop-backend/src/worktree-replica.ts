@@ -1,11 +1,11 @@
-import type {FileChangeByPath} from "@gadgets/workshop-shared/agent-integration";
+import type {FileChangeByPath} from "@gadgets/workshop-shared/worktree-replica";
 import {codeChangeSerializedSize, validateCodeChangeSchema, type CodeChange}
   from "@gadgets/workshop-shared/code-change";
 
 /** An expected pre-commit conflict; retry before accepting an agent step. */
 export class ReplicaChangedError extends Error {}
 
-/** Reject filesystem aliases and private Git metadata at the integration boundary. */
+/** Reject filesystem aliases and private Git metadata at the API boundary. */
 export function requireReplicaPath(path: string): void {
   if (!path || path.length > 4096 || path.includes("\0") || path.includes("\\") ||
       path.split("/").some(part => !part || part === "." || part === ".." || part === ".git"))

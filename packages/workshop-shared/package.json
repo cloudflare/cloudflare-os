@@ -15,9 +15,9 @@
       "types": "./src/gatekeeper.ts",
       "import": "./src/gatekeeper.ts"
     },
-    "./agent-integration": {
-      "types": "./src/agent-integration.ts",
-      "import": "./src/agent-integration.ts"
+    "./worktree-replica": {
+      "types": "./src/worktree-replica.ts",
+      "import": "./src/worktree-replica.ts"
     },
     "./cloudflare-gatekeeper": {
       "types": "./src/cloudflare-gatekeeper.ts",

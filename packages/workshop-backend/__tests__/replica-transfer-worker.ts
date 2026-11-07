@@ -1,6 +1,6 @@
 import {DurableObject, RpcTarget, restore, type RpcStub} from "cloudflare:workers";
-import type {WorktreeIntegration, WorktreeSubscriber, WorktreeSubscription, WorktreeSyncSession, FileChangeByPath}
-  from "@gadgets/workshop-shared/agent-integration";
+import type {ReplicableWorktree, WorktreeSubscriber, WorktreeSubscription, WorktreeSyncSession, FileChangeByPath}
+  from "@gadgets/workshop-shared/worktree-replica";
 import {demuxGitFetchResponse, buildGitFetchRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import {decodePackStream, type PackableObject} from "../src/git-codec";
 
@@ -45,14 +45,14 @@ export class TestReplicaTransfer extends DurableObject {
   async submit(id: string, revision: string, changes: FileChangeByPath[]) {
     return this.ctx.storage.kv.get<RpcStub<WorktreeSyncSession>>("session")!.submitChanges(id, revision, changes);
   }
-  async mount(worktree: RpcStub<WorktreeIntegration>) {
+  async mount(worktree: RpcStub<ReplicableWorktree>) {
     using session = await worktree.getSyncSession();
     using subscriber = await this.subscriber();
     using subscription = await session.subscribe(subscriber);
     await subscription.unsubscribe();
     return this.events();
   }
-  async transfer(worktree: RpcStub<WorktreeIntegration>, head: string) {
+  async transfer(worktree: RpcStub<ReplicableWorktree>, head: string) {
     const response = await worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
       method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
       body: buildGitFetchRequest([head], {type: "commit", commitHistory: {kind: "full"}}),

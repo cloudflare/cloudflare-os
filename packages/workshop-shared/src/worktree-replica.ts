@@ -35,7 +35,7 @@
 // It does not depend on an agent turn being in progress, and lasts until the worktree's chat is
 // deleted or the connection the worktree came from is removed.
 //
-// See docs/agent-worktree-replicas.md for more detail, including what a container
+// See docs/worktree-replicas.md for more detail, including what a container
 // implementation must do to keep its replica correct.
 
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
@@ -81,7 +81,7 @@ export interface FileChangeByPath {
  * API omits these methods, because agents don't need them; that omission is not a security
  * boundary.)
  */
-export interface WorktreeIntegration extends RpcTarget {
+export interface ReplicableWorktree extends RpcTarget {
   /**
    * Create a new sync session: the handle a replica uses to receive and submit changes. The
    * returned stub is persistent, so store it along with the replica. Each call creates an
@@ -111,7 +111,7 @@ export interface WorktreeIntegration extends RpcTarget {
 }
 
 /**
- * One replica's connection to a worktree, from `WorktreeIntegration.getSyncSession()`. Use it to
+ * One replica's connection to a worktree, from `ReplicableWorktree.getSyncSession()`. Use it to
  * receive the workspace's changes (`subscribe()`) and to send the replica's own edits back
  * (`submitChanges()`).
  */
@@ -178,7 +178,7 @@ export interface WorktreeSubscriber extends RpcTarget {
    * Sets the commit that the chat's uncommitted changes apply on top of.
    *
    * On a fresh start, this is the first call, before any changes: fetch `head` with
-   * `WorktreeIntegration.gitPull()` and use its files as the starting point. Later calls
+   * `ReplicableWorktree.gitPull()` and use its files as the starting point. Later calls
    * happen when the base moves without the files changing -- typically when the user accepts
    * the chat's changes, which turns the pending edits into a new commit. By then the replica's
    * files already include those edits, so update your record of the base, but do not reset any

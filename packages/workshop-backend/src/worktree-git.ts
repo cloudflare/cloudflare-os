@@ -4,7 +4,7 @@ import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
 import type {GitObjectType} from "@gadgets/workshop-shared/gatekeeper";
 import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
-import type {FileChangeByPath} from "@gadgets/workshop-shared/agent-integration";
+import type {FileChangeByPath} from "@gadgets/workshop-shared/worktree-replica";
 
 /**
  * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer. The
@@ -48,7 +48,7 @@ export interface WorktreeGitSource {
 }
 
 /**
- * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `WorktreeIntegration.gitPull()`.
+ * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `ReplicableWorktree.gitPull()`.
  * The worktree's own commits are built from workspace storage, while the base commit's files
  * from a connected repository are streamed through from the provider rather than loaded into
  * the workspace.

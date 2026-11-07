@@ -3,12 +3,12 @@
 The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the bar in the root
 `AGENTS.md` (The kernel).
 
-## Mounted worktree integrations
+## Worktree replicas
 
-See [`../../docs/agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md) before changing
+See [`../../docs/worktree-replicas.md`](../../docs/worktree-replicas.md) before changing
 worktree Git transport or replica synchronization. Delegate the Worktree capability directly;
 reuse canonical OT rows and durable receipts. Guest paths, command completion and mount lifetimes
-belong to the integration, not the kernel.
+belong to the gatekeeper, not the kernel.
 
 ## Bundled blueprints
 

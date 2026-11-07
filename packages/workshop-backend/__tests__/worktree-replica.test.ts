@@ -121,7 +121,7 @@ describe("mounted worktree canonical synchronization", () => {
     } finally { registration.mockRestore(); paths.mockRestore(); }
   }));
 
-  it("does not require a container binding, turn identity, or integration deployment grant", () => within(async (impl, f) => {
+  it("accepts changes without a container binding or a live agent turn", () => within(async (impl, f) => {
     const revision = impl.replicaHistoryRevision(1);
     await f.session.submitChanges("one", revision, [{path: "new.txt", change: {set: "from replica"}}]);
     expect(await text(impl, f.tree.id, "new.txt")).toBe("from replica");

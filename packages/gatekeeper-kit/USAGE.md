@@ -948,17 +948,16 @@ draining; query `status()` on failure for the adapter's demultiplexing error, pr
 consumer's own error otherwise. RPC may still replace an upstream transport failure with a
 generic disconnect. Cancel unfinished streams and dispose the transfer when done.
 
-Container integrations receive the Worktree capability directly. Open its persistable
+Container gatekeepers receive the Worktree capability directly. Open its persistable
 `getSyncSession()` and subscribe with a native persistent callback; hydrate the subscription's
 file-base commit through `worktree.gitPull(request)`, then apply its canonical OTs before running.
-The integration invents its own guest-local Git URL. The workspace serves upstream and locally
-created commits through the same smart-HTTP endpoint, including ordinary Git ref discovery; the
-container does not select sources or install private DO refs. Never buffer a whole pack or use
-base64. See the [mount contract](../../docs/agent-worktree-replicas.md) for initialization,
+The gatekeeper invents its own guest-local Git URL. The workspace serves upstream and locally
+created commits through the same smart-HTTP endpoint, including ordinary Git ref discovery.
+Never buffer a whole pack or use base64. See the [mount contract](../../docs/worktree-replicas.md) for initialization,
 backpressure, durable ACKs, optimistic OT reconciliation and reconnect behavior.
 
 Changes stream in both directions while a command runs. `submitChanges(batchId, baseRevision,
-changes)` transforms against canonical history and durably deduplicates retries. The integration
+changes)` transforms against canonical history and durably deduplicates retries. The gatekeeper
 owns command approvals and mount lifetime, and does not resolve its synchronous command result
 until outbound changes are acknowledged and inbound canonical application has caught up through
 those ACKs.
