@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 6;
+export const OVERSEER_STORAGE_VERSION = 7;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -376,5 +376,22 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
+  });
+}
+
+/**
+ * Version 6 -> 7: backfill the actions agentActionsByChat index, so chats from before it list
+ * what their agent created and changed (see listChatBindings()). Only a backfill: no update to an
+ * existing record removes one of its keys, so nothing throws without it. Synchronous and atomic,
+ * like migrateToActionIndexes.
+ */
+export function migrateToAgentActionsByChat(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 6) return;
+  host.ctx.storage.transactionSync(() => {
+    host.storage.actions.agentActionsByChat.rebuild();
+    host.storage.version.put(7);
+  });
+  host.logger.info("backfilled the agent-actions-by-chat index", {
+    event: "storage.migration.agent-actions-by-chat.completed",
   });
 }

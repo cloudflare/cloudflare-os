@@ -1272,6 +1272,17 @@ export function observerRequirementSubresource(key: string): string {
   return key.slice(key.indexOf(":", key.indexOf(":") + 1) + 1);
 }
 
+/** `listKeys()` prefix selecting one chat's keys in the actions `agentActionsByChat` index. */
+export function agentActionsPrefix(chatId: number): string {
+  return `${keyString(chatId)}:`;
+}
+
+/** Key of the actions `agentActionsByChat` index: a chat, a connection, and what was done. */
+export function agentActionKey(
+    chatId: number, gatekeeperId: WorkpieceId, kind: "create" | "approved"): string {
+  return `${agentActionsPrefix(chatId)}${keyString(gatekeeperId)}:${kind}`;
+}
+
 // =======================================================================================
 // Blueprints
 
@@ -1573,9 +1584,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // The first three indexes are backfilled by the version-3 migration;
-        // byObserverRequirement needs none: no gatekeeper reported subresources before the
-        // Workshop enforced them, so no earlier observation is a requirement.
+        // The first three indexes are backfilled by the version-3 migration, and
+        // agentActionsByChat by the version-7 one; byObserverRequirement needs none: no
+        // gatekeeper reported subresources before the Workshop enforced them, so no earlier
+        // observation is a requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1611,6 +1623,20 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
               keys.add(observerRequirementKey(record.gatekeeperId, context, id));
             }
             return [...keys];
+          },
+
+          // What each chat's agent did through each connection, for listChatBindings(): every
+          // creation it queued, and each of its other actions once approved. Records written before
+          // 2026-02-24 have no `caller`, so they aren't indexed; the version 7 backfill skips them
+          // rather than throwing.
+          agentActionsByChat(record: ActionRecord) {
+            if (record.type !== "action" || record.caller?.from !== "agent") return null;
+            let {chatId} = record.caller;
+            if (record.action === "create") {
+              return agentActionKey(chatId, record.gatekeeperId, "create");
+            }
+            return record.state === "approved"
+                ? agentActionKey(chatId, record.gatekeeperId, "approved") : null;
           },
         }
       }),

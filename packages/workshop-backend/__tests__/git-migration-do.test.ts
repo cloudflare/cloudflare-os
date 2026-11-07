@@ -12,8 +12,8 @@
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
 // The version-3 action-index backfill, the version-4 workpiece-type stamp, the version-5
-// blueprint-upstream backfill and the version-6 spawner-bindings move ride the same constructor
-// trigger, so their tests live here too.
+// blueprint-upstream backfill, the version-6 spawner-bindings move and the version-7
+// agent-actions backfill ride the same constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -23,6 +23,7 @@ import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migrat
 import {
   OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
 } from "../src/storage-schema/overseer-migrations";
+import { agentActionKey } from "../src/storage-schema/overseer-storage";
 import {
   LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
 } from "./legacy-workspace";
@@ -193,6 +194,8 @@ describe("action-index backfills via the Overseer constructor", () => {
       putAction(legacy, 1);
       putAction(legacy, 2, { state: "approved" });
       putAction(legacy, 3, { gatekeeperId: 2 });
+      // Records written before 2026-02-24 have no caller; the version 7 backfill must skip them.
+      legacy.actions.put({ ...legacy.actions.get(3)!, caller: undefined as never });
       // Last write: arm the constructor's version-2 migration.
       impl.storage.version.put(2);
     });
@@ -212,6 +215,9 @@ describe("action-index backfills via the Overseer constructor", () => {
       // The last-changed index covers the whole log, in change-time order.
       expect([...impl.storage.actions.byLastChanged.list()].map((r: any) => r.id))
           .toEqual([1, 2, 3]);
+      // The agent-actions index lists the agent's approved action (putAction's caller).
+      expect([...impl.storage.actions.agentActionsByChat.listKeys()])
+          .toEqual([agentActionKey(1, 1, "approved")]);
 
       // Resolving a backfilled record must not throw on the index updates -- the failure mode
       // that makes these backfills mandatory rather than an optimization.
