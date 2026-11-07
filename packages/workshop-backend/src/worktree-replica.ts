@@ -1,7 +1,6 @@
 import type {FileChangeByPath} from "@gadgets/workshop-shared/agent-integration";
 import {codeChangeSerializedSize, validateCodeChangeSchema, type CodeChange}
   from "@gadgets/workshop-shared/code-change";
-export type {WorktreeSyncCommit} from "./storage-schema/overseer-storage";
 
 /** An expected pre-commit conflict; retry before accepting an agent step. */
 export class ReplicaChangedError extends Error {}

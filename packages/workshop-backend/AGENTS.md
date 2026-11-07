@@ -8,7 +8,7 @@ The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the b
 See [`../../docs/agent-worktree-replicas.md`](../../docs/agent-worktree-replicas.md) before changing
 worktree Git transport or replica synchronization. Delegate the Worktree capability directly;
 reuse canonical OT rows and durable receipts. Guest paths, command completion and mount lifetimes
-belong to the integration, without kernel turn hooks or recipient-environment lookups.
+belong to the integration, not the kernel.
 
 ## Bundled blueprints
 

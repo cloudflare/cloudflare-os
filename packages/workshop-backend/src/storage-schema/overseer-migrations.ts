@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 8;
+export const OVERSEER_STORAGE_VERSION = 6;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -377,18 +377,4 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
   });
-}
-
-/**
- * Versions 6/7 -> 8: introduces worktree replica syncing (see the `worktreeSync*` collections).
- * Its collections start empty, so there is nothing to backfill. Version 7 exists only in
- * workspaces that ran an earlier, unreleased design for running commands against worktrees;
- * this skips past it too.
- */
-export function migrateToWorktreeSync(host: OverseerMigrationHost): void {
-  const version = host.storage.version.get();
-  if (version !== 6 && version !== 7) return;
-  // Leave any data the version-7 design stored in place, for diagnosis. Nothing reads it, so the
-  // access it once granted cannot be used again.
-  host.storage.version.put(8);
 }

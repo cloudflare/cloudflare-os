@@ -1424,11 +1424,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
-      //   7 = reached only by builds of an earlier, unreleased design for running commands
-      //       against worktrees, which added an index of "command leases". Nothing reads that
-      //       data anymore.
-      //   8 = worktree replica syncing (the `worktreeSync*` collections) is available. Nothing
-      //       was backfilled: those collections start empty.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)

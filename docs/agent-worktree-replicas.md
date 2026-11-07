@@ -45,9 +45,8 @@ interface WorktreeSubscription {
 All capabilities, including receiver callbacks, must be persistable native RPC stubs. Mint them
 inside their owning Durable Object with `ctx.restore()`. The kernel's regular file methods retain
 the original agent-execution guard; mounted synchronization is an explicitly delegated,
-worktree-scoped capability. It does not depend on an agent turn, recipient lookup, deployment
-integration grant, or lifecycle subscription. Removing the worktree/chat or its source connection
-ends access. The receiving gatekeeper controls its own mount lifetime and command approvals.
+worktree-scoped capability that outlives the agent turn that passed it on. Removing the
+worktree/chat or its source connection ends access. The receiving gatekeeper controls its own mount lifetime and command approvals.
 
 ## Initial capture and continuous delivery
 
@@ -102,7 +101,7 @@ not register URLs or expose a guest filesystem layout. Normal ref discovery repo
 Git HEAD and ancestry, including explicit commits that have not yet been accepted in the UI. The
 subscription's commit is the base for its canonical file transforms; it may differ from Git HEAD,
 just as a checkout can have working changes. The guest materializes that file base and its OTs
-without replacing HEAD with the base. No private DO refs or source-selection rules are exposed.
+without replacing HEAD with the base.
 Workspace-created commits are real Git objects, not approximated by text changes. The original
 remote base remains the shallow boundary.
 
@@ -129,8 +128,7 @@ Push and general network access are outside this interface.
 The kernel does not execute commands. The gatekeeper must catch up before starting a shell, stream
 edits continuously while it runs, and stop tracked background writers before completing it. Before
 resolving `exec`, it must drain captured outbound batches, await their durable ACKs, and persist
-canonical application through the latest acknowledged revision. There is no separate fence call
-or public execution-polling handle. Concurrent DO edits accepted after that revision may arrive later.
+canonical application through the latest acknowledged revision. Concurrent DO edits accepted after that revision may arrive later.
 A command that produced no changes needs no artificial empty batch.
 
 Between approved commands the gatekeeper seals tracked writers while keeping the guest warm. Its
@@ -142,6 +140,4 @@ the container implementation.
 
 A synchronization failure rejects completion instead of returning a supposedly synchronized
 command result. Persist execution identity and receipts before effects, reconcile lost replies,
-and surface an indeterminate shell outcome if it cannot be established. See
-[`container-do-reset-recovery.md`](container-do-reset-recovery.md) for the broader reset discipline;
-older command-lease implementation details there are not this API's authority model.
+and surface an indeterminate shell outcome if it cannot be established.

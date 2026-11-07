@@ -317,7 +317,10 @@ export function findCompactionBoundary(
   return boundary > compactedTo ? boundary : undefined;
 }
 
-/** Replay the stamped binding layer shared by compaction and stored integration scope. */
+/**
+ * Replay the chat bindings that `messages` add (capsules, created gadgets and worktrees) on top of
+ * `initialBindings`. Shared by compaction and by the overseer's view of a paused chat's bindings.
+ */
 export function replayChatBindings(messages: Iterable<AiChatMessage>,
     initialBindings: Iterable<[string, ChatBindingEntry]>): Map<string, ChatBindingEntry> {
   let chatBindings = new Map(initialBindings);
@@ -369,8 +372,9 @@ export function replayChatBindings(messages: Iterable<AiChatMessage>,
 }
 
 /**
- * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's frozen seed
- * layer, which `previous` already contains once a chat has compacted before.
+ * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
+ * layer. `previous` already contains it, apart from the always-available resources the chat gained
+ * since.
  */
 export function buildCompactionState(
     messages: AiChatMessage[], compactedTo: number,

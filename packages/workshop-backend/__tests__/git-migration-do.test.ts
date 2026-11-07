@@ -18,7 +18,6 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
-import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
 import {
@@ -179,47 +178,6 @@ describe("git-storage migration via the Overseer constructor", () => {
       // Gadget 3's intermediate commit is the batch's end state, checked against the replay.
       expect(await impl.gitStore.readCommitFiles(rightLog[1].oid))
           .toEqual(readDocFiles(ws.docAt(6), "3"));
-    });
-  });
-});
-
-describe("mounted worktree storage initialization", () => {
-  it.each([6, 7])("preserves version %s prototype records without restoring obsolete command authority", async version => {
-    const name = "replica-retention-" + crypto.randomUUID();
-    const old = {id: "old-command", worktreeId: 7, closed: true};
-    await inOverseer(name, async impl => {
-      const legacy = createTypedStorage(impl.ctx.storage, {collections: {
-        worktreeReplicaLeases: collection<typeof old>()({primaryKey: "id"}),
-      }});
-      legacy.worktreeReplicaLeases.put(old);
-      impl.storage.version.put(version);
-    });
-    await abortAllDurableObjects();
-    await inOverseer(name, async impl => {
-      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
-      const legacy = createTypedStorage(impl.ctx.storage, {collections: {
-        worktreeReplicaLeases: collection<typeof old>()({primaryKey: "id"}),
-      }});
-      expect(legacy.worktreeReplicaLeases.get(old.id)).toEqual(old);
-      expect([...impl.storage.worktreeSyncSessions.list()]).toEqual([]);
-      expect([...impl.storage.worktreeSyncCommits.list()]).toEqual([]);
-    });
-  });
-
-  it("opens empty sync collections on wake without eagerly loading workspace files", async () => {
-    const name = "replica-initialization-" + crypto.randomUUID();
-    await inOverseer(name, async impl => {
-      impl.storage.chatContext.put({chatId: 1, bindings: {REPO: 7}});
-      impl.storage.version.put(5);
-    });
-    await abortAllDurableObjects();
-    await inOverseer(name, async impl => {
-      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
-      expect(impl.storage.chatContext.get(1)).toEqual({chatId: 1, bindings: {REPO: 7}});
-      expect([...impl.storage.worktreeSyncSessions.list()]).toEqual([]);
-      expect([...impl.storage.worktreeSyncCommits.list()]).toEqual([]);
-      expect([...impl.storage.worktreeSyncSubscriptions.list()]).toEqual([]);
-      expect([...impl.storage.gitObjects.list()]).toEqual([]);
     });
   });
 });

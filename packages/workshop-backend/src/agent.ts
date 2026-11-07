@@ -33,7 +33,7 @@ import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-store";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
-  StoredChatMessage, StoredToolCall,
+  StoredChatMessage, StoredToolCall, WorktreeSyncCommit,
 } from "./storage-schema/overseer-storage";
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
@@ -45,17 +45,10 @@ import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
-import { ReplicaChangedError, type WorktreeSyncCommit } from "./worktree-replica";
+import { ReplicaChangedError } from "./worktree-replica";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
-
-/** Apply the same spawned-agent write restriction to file tools and replica ingestion. */
-export function assertAgentMayModifyWorkpiece(context: AiChatAgentContext, isWorktree: boolean): void {
-  if (context.spawnerConfig && !isWorktree) {
-    throw new Error("You do not have permission to edit this gadget's code.");
-  }
-}
 
 /** Content-free counters for rejected transforms; diagnostics must contain no paths or text. */
 export function agentCodeChangeShape(change: CodeChange) {
@@ -2170,7 +2163,9 @@ async function runAgentPass(
   // Refuses a file-tool write the chat may not make: a spawned agent runs with no user present to
   // review changes, so it may modify only worktrees, never a gadget's code.
   let assertMayModifyWorkpiece = (workpieceId: WorkpieceId) => {
-    assertAgentMayModifyWorkpiece(agentContext, hooks.isWorktree(workpieceId));
+    if (agentContext.spawnerConfig && !hooks.isWorktree(workpieceId)) {
+      throw new Error("You do not have permission to edit this gadget's code.");
+    }
   };
 
   // Always-available resources (e.g. the Context Library) describe the agent's environment, so
@@ -3031,8 +3026,6 @@ async function runAgentPass(
     }
     // Apply first: an inapplicable change must throw before anything buffers.
     let newContent = sessionContent;
-    // An awaited first-pin read may finish after a replica already established the pin.
-    if (pinnedGadgets.has(workpieceId)) pin = undefined;
     if (pin !== undefined) {
       newContent = new Map(newContent);
       newContent.set(workpieceId, pin.baseFiles);
@@ -3050,28 +3043,19 @@ async function runAgentPass(
     noteWorktreeRemovals(change);
   };
 
+  // A replica batch (WorktreeSyncSession.submitChanges()) only ever touches one worktree, so,
+  // unlike a gadget's first edit, it never establishes a pin with base files to declare.
   let prepareReplicaChanges = async (change: CodeChange, revision: number) => {
-    let prepared: {workpieceId: number, entries: CodeChange[number],
-      pin?: {baseCommit: string, baseFiles: Map<string, string>}, knowledge?: Map<string, string | undefined>}[] = [];
+    let prepared: {workpieceId: number, entries: CodeChange[number]}[] = [];
     for (let [key, entries] of Object.entries(change)) {
       let workpieceId = Number(key);
-      assertMayModifyWorkpiece(workpieceId);
-      let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
-      if (hooks.isWorktree(workpieceId)) {
-        // A replica can edit a file no DO tool has read. Fault only the touched edit bases,
-        // using the same lazy, tombstone-aware read path as ordinary file operations.
-        for (const [path, fileChange] of entries) if ("edit" in fileChange) {
-          await readWorktreeBase(workpieceId, path);
-        }
-      } else if (!pinnedGadgets.has(workpieceId)) {
-        let head = hooks.getGadgetHead(workpieceId);
-        if (head !== undefined) {
-          pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
-          // Knowledge is settled only if this first pin survives the revision check below.
-        }
+      if (!hooks.isWorktree(workpieceId)) throw new Error("Replica changes must target a worktree.");
+      // A replica can edit a file no DO tool has read. Fault only the touched edit bases,
+      // using the same lazy, tombstone-aware read path as ordinary file operations.
+      for (const [path, fileChange] of entries) if ("edit" in fileChange) {
+        await readWorktreeBase(workpieceId, path);
       }
-      const knowledge = pin && await knowledgeAtPin(workpieceId, pin.baseCommit);
-      prepared.push({workpieceId, entries, pin, knowledge});
+      prepared.push({workpieceId, entries});
     }
     // Source reads may yield to another edit. Validate once, before the synchronous batch,
     // rather than after each append (which itself advances workspaceRevision).
@@ -3085,27 +3069,17 @@ async function runAgentPass(
       throw new Error("Too many code changes in one step. End this response; the changes made so far " +
         "are being saved, and you can continue the work in your next step.");
     }
-    let content = sessionContent;
-    for (const {workpieceId, entries, pin} of prepared) {
-      if (pin) {
-        content = new Map(content);
-        content.set(workpieceId, pin.baseFiles);
-      }
-      content = applyCodeChange(content, {[workpieceId]: entries});
-    }
+    let content = applyCodeChange(sessionContent, change);
     return {
-      changes: prepared.map(({workpieceId, entries, pin}): AgentStepChange => ({
+      changes: prepared.map(({workpieceId, entries}): AgentStepChange => ({
         change: {[workpieceId]: entries},
-        ...(pin ? {pin: {gadgetId: workpieceId, baseCommit: pin.baseCommit}} : {}),
       })),
       accept: () => {
         // The transaction rechecks the live revision before accepting. Rejected replica edits
         // never enter the tool view or its pending buffer; ordinary effects remain untouched.
         sessionContent = content;
-        for (const {workpieceId, entries, pin, knowledge} of prepared) {
-          if (pin) pinnedGadgets.add(workpieceId);
+        for (const {workpieceId, entries} of prepared) {
           pinWorktreeInSession(workpieceId);
-          if (knowledge !== undefined) filesRead.set(workpieceId, knowledge);
           for (const [path, fileChange] of entries) {
             if (!("remove" in fileChange)) markFileRead(workpieceId, path);
           }
@@ -3117,10 +3091,9 @@ async function runAgentPass(
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
-  // drained with the change buffer at the step barrier or an earlier replica flush. A replica
-  // export must persist the head before handing out its frozen pack readers, so those advancements
-  // can survive an aborted step. Otherwise an aborted step drops the buffer (the commit objects
-  // it named stay -- dangling and harmless).
+  // drained with the change buffer at the step barrier or an earlier replica flush: an
+  // advancement is durable iff the barrier that drained it is, and an aborted or crashed step
+  // simply drops the rest (the commit objects it named stay -- dangling and harmless).
   let pendingWorktreeCommits:
       {worktreeId: WorkpieceId, commit: string, previousHead: string}[] = [];
 
@@ -3135,9 +3108,8 @@ async function runAgentPass(
         pendingWorktreeCommits.findLast(entry => entry.worktreeId === id)?.commit,
     getOverlayFiles: id => sessionContent.get(id) ?? new Map(),
     getRemovedPaths: id => worktreeRemovedPaths.get(id) ?? new Set(),
-    readFile: async (id, path) => hooks.isWorktree(id)
-        ? await readSessionText(id, path) ?? await readWorktreeBase(id, path)
-        : (await readToolFile(id, path))?.text,
+    readFile: async (id, path) =>
+        await readSessionText(id, path) ?? await readWorktreeBase(id, path),
     appendChange: (id, path, change) => {
       appendAgentEdit(id, {[id]: [[path, change]]});
       // A write leaves the caller knowing the file's exact content, so it counts as a read for
@@ -3549,7 +3521,6 @@ async function runAgentPass(
           }
 
           let knowledge = pin && await knowledgeAtPin(resolved.workpieceId, pin.baseCommit);
-          if (pinnedGadgets.has(resolved.workpieceId)) {pin = undefined; knowledge = undefined;}
           // A whole-file write is a `set`: valid against any state, so replay and concurrent
           // transforms can never mis-anchor it.
           appendAgentEdit(resolved.workpieceId,
@@ -3628,11 +3599,6 @@ async function runAgentPass(
             }
           }
 
-          if (pinnedGadgets.has(resolved.workpieceId)) pin = undefined;
-
-          let knowledge = pin && await knowledgeAtPin(resolved.workpieceId, pin.baseCommit);
-          if (pinnedGadgets.has(resolved.workpieceId)) {pin = undefined; knowledge = undefined;}
-
           // Compute the edit against the file as the agent sees it (the pinned base's content
           // when this edit establishes the pin -- byte-identical to what the read observed, per
           // the gate above; for a worktree, the accepted commit's, read by path). The matched
@@ -3650,6 +3616,7 @@ async function runAgentPass(
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
+            let knowledge = pin && await knowledgeAtPin(resolved.workpieceId, pin.baseCommit);
             appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin, toolCallId);
             if (knowledge !== undefined) filesRead.set(resolved.workpieceId, knowledge);

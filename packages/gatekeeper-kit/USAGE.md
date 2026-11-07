@@ -961,7 +961,7 @@ Changes stream in both directions while a command runs. `submitChanges(batchId, 
 changes)` transforms against canonical history and durably deduplicates retries. The integration
 owns command approvals and mount lifetime, and does not resolve its synchronous command result
 until outbound changes are acknowledged and inbound canonical application has caught up through
-those ACKs. There is no kernel command lease or end-of-turn cleanup hook.
+those ACKs.
 
 Native Git fetches for a separately discovered, already-connected repository use
 `ApprovalQueue.getGitCache().gitPull(repositoryUrl, request)` during approved execution. They

@@ -1,8 +1,8 @@
 import {encodePktLine, FLUSH_PKT, DELIM_PKT, gitPullPath, parsePktItems, pktText}
   from "@gadgets/gatekeeper-kit/git-transport";
 import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
-import {buildPackStream, mergePackStreams} from "./git-codec";
-import {replicaCommitPack} from "./replica-git";
+import type {GitObjectType} from "@gadgets/workshop-shared/gatekeeper";
+import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
 import type {FileChangeByPath} from "@gadgets/workshop-shared/agent-integration";
 
@@ -85,7 +85,7 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
   if (!lines.includes("done")) return response([encodePktLine("acknowledgments"), encodePktLine("NAK"), FLUSH_PKT]);
   let pack: ReadableStream<Uint8Array>;
   if (wants.some(oid => localHeads.has(oid))) {
-    const local = await replicaCommitPack(cache, {baseCommit: source.shallowCommit, acceptedCommit: source.head, headCommit: wants.find(oid => localHeads.has(oid))},
+    const local = await localPack(cache, source.shallowCommit, wants.filter(oid => localHeads.has(oid)),
       source.check, source.pending);
     pack = source.shallowCommit ? await mergePackStreams([await source.upstream(), local]) : local;
   } else {
@@ -136,4 +136,66 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
     async cancel() { await reader.cancel(); await iterator.return(undefined); },
   }, {highWaterMark: 0});
   return new Response(stream, {headers: {"content-type": "application/x-git-upload-pack-result"}});
+}
+
+/**
+ * Pack the workspace-stored history of `heads` back to `shallowCommit` (exclusive), plus the
+ * blobs `pending` edits reference. With a `shallowCommit`, objects already in its tree are
+ * omitted, since the upstream pack streamed alongside this one supplies them.
+ */
+async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallowCommit: string | null,
+    heads: string[], requireLive: () => void, pending: FileChangeByPath[]): Promise<ReadableStream<Uint8Array>> {
+  const objects = new Map<string, {type: GitObjectType; referencedBy?: string}>();
+  const add = (oid: string, type: GitObjectType, referencedBy?: string) => {
+    objects.set(oid, {type, referencedBy});
+    if (objects.size > 100_000) throw new Error("Worktree history exceeds its object budget.");
+  };
+  const read = async (oid: string, type: GitObjectType, referencedBy?: string) => {
+    requireLive();
+    const object = await cache.ensureObject(oid, {type, referencedBy});
+    requireLive();
+    return object;
+  };
+  const baseTree = shallowCommit
+    ? parseGitCommitRefs((await read(shallowCommit, "commit")).payload).tree : undefined;
+  const trees = async (oid: string, previous?: string) => {
+    if (oid === previous || objects.has(oid)) return;
+    add(oid, "tree");
+    const entries = parseGitTree((await read(oid, "tree")).payload);
+    const prior = new Map(previous
+      ? parseGitTree((await read(previous, "tree")).payload).map(entry => [entry.name, entry]) : []);
+    for (const entry of entries) {
+      const old = prior.get(entry.name);
+      if (entry.oid === old?.oid || entry.mode === "160000") continue;
+      if (entry.mode === "40000") await trees(entry.oid, old?.mode === "40000" ? old.oid : undefined);
+      else add(entry.oid, "blob", oid);
+    }
+  };
+  const commits = [...new Set(heads)];
+  while (commits.length) {
+    const oid = commits.pop()!;
+    if (oid === shallowCommit || objects.has(oid)) continue;
+    add(oid, "commit");
+    const commit = parseGitCommitRefs((await read(oid, "commit")).payload);
+    await trees(commit.tree, baseTree);
+    commits.push(...commit.parents);
+  }
+  for (const {change} of pending) if ("setBytes" in change) add(change.setBytes.oid, "blob");
+  // The upstream pack already supplies the complete shallow base. A rename/copy can reuse a
+  // base blob at another path: same-path comparisons above alone cannot prevent duplicate
+  // objects, which native Git rejects in a single combined pack. Inspect tree metadata only;
+  // never fault a base blob into DO storage or retain the base's file contents in memory.
+  const excludeBase = async (oid: string) => {
+    objects.delete(oid);
+    for (const entry of parseGitTree((await read(oid, "tree")).payload)) {
+      objects.delete(entry.oid);
+      if (entry.mode === "40000") await excludeBase(entry.oid);
+    }
+  };
+  if (baseTree && [...objects.values()].some(object => object.type !== "commit")) await excludeBase(baseTree);
+  async function* contents() {
+    for (const [oid, hint] of objects) yield await read(oid, hint.type, hint.referencedBy);
+    requireLive();
+  }
+  return buildPackStream(objects.size, contents());
 }

@@ -846,8 +846,7 @@ substitutes transport endpoints and REST lookups:
   binding and authorizes the new native Git read. Without one, the kernel requests known objects
   using recorded provenance. The kernel's `startGitPull()` strips protocol framing and retains
   terminal status; lazy cache reads apply pack/object limits and verify requested objects, while
-  container bootstrap imports the complete shallow base without DO cache ingestion. Native Git
-  can fetch again during a command; the final writeback closes that command's Git capability.
+  container bootstrap imports the complete shallow base without DO cache ingestion.
   `fetchGitUploadPack` chooses the bound project's upstream and supplies protocol headers,
   OAuth and optional Access credentials. Guest URLs and credentials cannot select its upstream.
 - **`push(branch, commitId, {force?})`**: `preparePush` reads the live branch head (`GET

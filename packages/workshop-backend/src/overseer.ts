@@ -29,7 +29,7 @@ import {
 } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToWorktreeSync, migrateToBlueprintUpstreams,
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -45,7 +45,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, assertAgentMayModifyWorkpiece, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -1293,7 +1293,6 @@ class OverseerImpl implements AgentHooks {
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
-      migrateToWorktreeSync(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -2915,9 +2914,6 @@ class OverseerImpl implements AgentHooks {
         throw error;
       }
       this.#validateByteChanges(change);
-      if (step.replicaCommit) for (const id of changedGadgets(change)) {
-        assertAgentMayModifyWorkpiece(this.getChatAgentContext(chatId), this.isWorktree(id));
-      }
     }
 
     // The worktrees this step pins: every worktree of this chat its rows or commits touch that
@@ -6455,19 +6451,18 @@ class OverseerImpl implements AgentHooks {
   // loopbacks carry the execution their authorizers belong to.
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
       id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
-      executionId?: string)
-      : Promise<RpcStub<Session>> {
+      executionId?: string): Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
-        ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId)
+        ? new AgentSpawnerQueueImpl(this, id, caller)
         : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
-    const session = facet.startSession(queue);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
-    return session;
+    return facet.startSession(queue);
   }
 
-  // Freeze names and immutable bases at the capability-minting boundary. The live agent map
-  // includes worktrees created this step; the stored map is used after an approval suspends it.
+  // The chat's bindings, for finding the connection a GitCache.gitPull() URL names. While a turn
+  // runs, its live map (which includes worktrees created this step); otherwise, e.g. while an
+  // approval has suspended the turn, the map replayed from the stored chat log.
   #integrationBindings(chatId: number): Map<string, ChatBindingEntry> {
     const context = this.getChatAgentContext(chatId);
     const active = this.#worktreeReplicaTurns.get(chatId);

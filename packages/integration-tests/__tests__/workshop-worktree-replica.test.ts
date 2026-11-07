@@ -28,7 +28,7 @@ afterAll(async () => {
 
 it("passes a worktree directly from code mode to a gatekeeper for Git hydration and OT writeback", async () => {
   using publicApi = connect(harness.url);
-  using api = await signUp(publicApi, nextUsernames("export")[0]!);
+  using api = await signUp(publicApi, nextUsernames("replica")[0]!);
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
@@ -45,7 +45,7 @@ it("passes a worktree directly from code mode to a gatekeeper for Git hydration 
     {toolCall: {id: "create", name: "createWorktree", arguments: {
       title: "Repo", bindingName: "REPO", commitId: baseCommit,
     }}},
-    {toolCall: {id: "export", name: "executeCode", arguments: {code: `
+    {toolCall: {id: "mount", name: "executeCode", arguments: {code: `
       export default async function(self, env) {
         console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
       }`}}},
@@ -56,7 +56,7 @@ it("passes a worktree directly from code mode to a gatekeeper for Git hydration 
     {text: "Done."},
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  const chatId = await ws.newChat("Export and return changes.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Mount the worktree and return changes.", SCRIPTED_MODEL_ID);
   await waitFor("the model's final request", async () => model.requests.length === 4 || null);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));

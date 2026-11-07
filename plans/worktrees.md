@@ -40,7 +40,7 @@ The pull signature in this original plan is superseded by
 [`agent-worktree-replicas.md`](../docs/agent-worktree-replicas.md). Providers return authenticated
 smart-HTTP protocol bytes. The kernel still owns provenance checks, exact-OID composition,
 raw-PACK demultiplexing and bounded cache ingestion. New native Git observations require
-whole-repository scope and a command-scoped observer; known-object cache/bootstrap pulls do not.
+whole-repository scope and an observer; known-object cache/bootstrap pulls do not.
 Historical OID/hints signatures below describe the earlier implementation, not a second API.
 
 ## Locked decisions

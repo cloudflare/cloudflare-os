@@ -24,11 +24,11 @@ selects immutable objects from recorded provenance and demultiplexes the respons
 `startGitPull()`. Lazy reads ingest those objects through the bounded DO cache; container bootstrap
 instead streams a complete shallow base pack without filling that cache.
 
-During an authorized container command, native Git can also discover refs and fetch objects through
-an already-connected whole-project binding. The kernel supplies `observer` for those new reads;
+Native Git in a container (via `GitCache.gitPull(repositoryUrl, request)`) can also discover refs
+and fetch objects through an already-connected whole-project binding. The kernel supplies `observer` for those new reads;
 the provider checks project-level scope and authorizes the observation. An issue or merge-request
-connection does not grant whole-project native fetch. The command's final writeback closes its Git
-capability. This does not add push or arbitrary URL forwarding. OAuth and optional Cloudflare
+connection does not grant whole-project native fetch. Access ends with the agent execution or
+approved action that obtained the `GitCache`. This does not add push or arbitrary URL forwarding. OAuth and optional Cloudflare
 Access credentials stay in the gatekeeper, including on self-hosted instances.
 
 ## Auto-approval
