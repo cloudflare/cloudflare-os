@@ -8,7 +8,9 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
-import { MAX_LIMIT, PagerDutyApi, isDenial, type Page, type Query } from "./pagerduty-api";
+import {
+  PagerDutyApi, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type Query,
+} from "./pagerduty-api";
 import { RECONNECT_MESSAGE, accountSource, type Identity, type PublicGrant } from "./pagerduty-credentials";
 import { webOrigin } from "./pagerduty-env";
 import type { WireIncident, WireSchedule, WireService, WireTeam } from "./pagerduty-normalize";
@@ -32,7 +34,7 @@ const REF = /^(team|service|incident|schedule):([A-Z0-9]{1,64})$/;
 /** The ref a frame handed back. */
 function parseRef(ref: string): Ref {
   if (ref === "account") return { kind: "account" };
-  const match = typeof ref === "string" ? REF.exec(ref) : null;
+  const match = REF.exec(ref);
   if (!match) throw new Error("That can't be opened.");
   return { kind: match[1] as ObjectKind, id: match[2]! };
 }
@@ -68,47 +70,12 @@ function incidentNode(wire: WireIncident): PagerDutyNode {
   };
 }
 
-/** One listing a page can draw on: rows from `offset`, at most `limit`. */
-type Source = (api: PagerDutyApi, offset: number, limit: number) => Promise<Page<PagerDutyNode>>;
-
-const teams = (query: Query): Source => async (api, offset, limit) => {
-  const page = await api.page<WireTeam>("/teams", "teams", query, offset, limit);
-  return { ...page, items: page.items.map(teamNode) };
-};
-const services = (query: Query): Source => async (api, offset, limit) => {
-  const page = await api.page<WireService>("/services", "services", { sort_by: "name", ...query }, offset, limit);
-  return { ...page, items: page.items.map(serviceNode) };
-};
-/** Layer-based schedules, then shift-based ones, which PagerDuty lists apart. */
-const schedules = (query: Query): Source[] => ["/schedules", "/v3/schedules"].map((path): Source => async (api, offset, limit) => {
-  const page = await api.page<WireSchedule>(path, "schedules", query, offset, limit);
-  return { ...page, items: page.items.map(scheduleNode) };
-});
-const incidents = (query: Query): Source => async (api, offset, limit) => {
-  // PagerDuty lists the last month by default; an incident open longer is still open.
-  const page = await api.page<WireIncident>("/incidents", "incidents",
-    { statuses: OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query }, offset, limit);
-  return { ...page, items: page.items.map(incidentNode) };
-};
-
-/**
- * One page drawn from `sources` in turn: a cursor `<source>:<offset>` says where the last page
- * stopped, and the next source starts once one runs out.
- */
-async function chain(api: PagerDutyApi, sources: readonly Source[], cursor: string | undefined): Promise<PagerDutyBrowsePage> {
-  let [index, offset] = cursor === undefined ? [0, 0] : (cursor.split(":").map(Number) as [number, number]);
-  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(offset) || index < 0 || index >= sources.length || offset < 0) {
-    throw new Error("That page has expired. Try again.");
-  }
-  const items: PagerDutyNode[] = [];
-  while (index < sources.length && items.length < PAGE_SIZE) {
-    const page = await sources[index]!(api, offset, Math.min(MAX_LIMIT, PAGE_SIZE - items.length));
-    items.push(...page.items);
-    offset += page.items.length;
-    if (!page.more || page.items.length === 0) [index, offset] = [index + 1, 0];
-  }
-  return { items, ...(index < sources.length ? { nextCursor: `${index}:${offset}` } : {}) };
-}
+const teams = (query: Query) => listing("/teams", "teams", query, teamNode);
+const services = (query: Query) => listing("/services", "services", { sort_by: "name", ...query }, serviceNode);
+const schedules = (query: Query) => scheduleListings(query, scheduleNode);
+// PagerDuty lists the last month by default; an incident open longer is still open.
+const incidents = (query: Query) => listing("/incidents", "incidents",
+  { statuses: OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query }, incidentNode);
 
 /** The PagerDuty configurator frame's capability. */
 @validateRpc()
@@ -139,7 +106,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     if ([parent, query, section].filter(value => value !== undefined).length !== 1) {
       throw new Error("Ask for one listing at a time.");
     }
-    if (cursor !== undefined && (typeof cursor !== "string" || cursor.length > MAX_CURSOR_LENGTH)) {
+    if (cursor !== undefined && cursor.length > MAX_CURSOR_LENGTH) {
       throw new Error("That page has expired. Try again.");
     }
     if (query !== undefined) return await this.#search(query, cursor);
@@ -161,7 +128,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
   }
 
   async locate(urlOrRef: string): Promise<PagerDutyNode | null> {
-    if (typeof urlOrRef !== "string" || urlOrRef.length > 2048) return null;
+    if (urlOrRef.length > 2048) return null;
     let ref: Ref;
     if (urlOrRef === "account" || REF.test(urlOrRef)) {
       ref = parseRef(urlOrRef);
@@ -198,8 +165,10 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     return await this.#creds.run(creds => op(new PagerDutyApi(creds.accessToken, region)), { replayable: true });
   }
 
-  #chain(sources: readonly Source[], cursor: string | undefined): Promise<PagerDutyBrowsePage> {
-    return this.#read(api => chain(api, sources, cursor));
+  /** One page drawn from `sources` in turn, from where `cursor` says the last one stopped. */
+  async #chain(sources: readonly OffsetSource<PagerDutyNode>[], cursor: string | undefined): Promise<PagerDutyBrowsePage> {
+    const { items, nextToken } = await this.#read(api => chainedPage(api, sources, cursor, PAGE_SIZE));
+    return { items, ...(nextToken ? { nextCursor: nextToken } : {}) };
   }
 
   /** The object a ref names, or null when this connection can't open it. */
@@ -226,7 +195,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
    * what it names.
    */
   async #search(raw: string, cursor: string | undefined): Promise<PagerDutyBrowsePage> {
-    const query = typeof raw === "string" ? raw.trim() : "";
+    const query = raw.trim();
     if (query.length === 0 || query.length > MAX_QUERY_LENGTH) throw new Error("Search for a name, or paste a PagerDuty link.");
     if (/^https?:\/\//i.test(query)) {
       const located = await this.locate(query);

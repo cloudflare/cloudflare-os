@@ -56,7 +56,7 @@ export function resourceUrl(ref: ResourceRef): string {
  * @throws Error naming `what` for anything else.
  */
 export function objectId(value: string, what: string): string {
-  if (typeof value !== "string" || !OBJECT_ID.test(value)) {
+  if (!OBJECT_ID.test(value)) {
     throw new Error(`${what} must be a PagerDuty ID, such as "PABC123".`);
   }
   return value;

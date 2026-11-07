@@ -11,12 +11,14 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
-import { MAX_LIMIT, MAX_OFFSET, isDenial, schedulePath, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
+import {
+  MAX_LIMIT, chainedPage, isDenial, listing, scheduleListings, schedulePath, type OffsetSource, type PagerDutyApi, type Query,
+} from "./pagerduty-api";
 import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
 import {
-  toIncidentSummary, toOnCall, toPriority, toScheduleSummary, toUser,
+  toIncidentSummary, toOnCall, toPriority, toScheduleSummary, toServiceSummary, toTeam, toUser,
   type Schedule, type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireSchedule, type WireService,
   type WireUser,
 } from "./pagerduty-normalize";
@@ -28,8 +30,8 @@ import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
 import type {
   Cursor, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyListOptions, PagerDutyOnCall,
-  PagerDutyOnCallWindow, PagerDutyPageOptions, PagerDutyPriority, PagerDutyScheduleSummary, PagerDutySubscribeOptions,
-  PagerDutyTimeWindow, PagerDutyUrgency, PagerDutyUser,
+  PagerDutyOnCallWindow, PagerDutyPageOptions, PagerDutyPriority, PagerDutyScheduleSummary, PagerDutyServiceSummary,
+  PagerDutySubscribeOptions, PagerDutyTeamSummary, PagerDutyTimeWindow, PagerDutyUser,
 } from "./types";
 
 /** How long a service's team and escalation policy, read to check a binding's scope, stay cached. */
@@ -61,7 +63,7 @@ export type SessionHost = {
   /** Actions waiting for a decision, for simulation. */
   pending(): Pending;
   /** The ID PagerDuty assigned a temporary ID, or the ID itself. */
-  resolve(id: string): string;
+  readonly resolve: (id: string) => string;
   /** Allocates a temporary ID for something a pending action creates, of `kind`. */
   allocate(kind: "incident" | "note" | `override:${string}`): string;
   /** The kind a temporary ID was allocated with. */
@@ -100,7 +102,7 @@ export class SessionContext implements Disposable {
    * result. Every read goes through here, whether it found anything or came from cache, so no read
    * can leave out the account or the scope.
    */
-  async authorize(observation: ObservationInput, report: ReadReport): Promise<void> {
+  async authorize(observation: ObservationInput, report: ReadReport = { filter: [], result: [] }): Promise<void> {
     const { region, accountId } = await this.host.me();
     const account = { region, accountId };
     const objects = [...this.scope, ...report.filter, ...report.result].filter(({ id }) => !isProvisional(id));
@@ -147,8 +149,8 @@ export function pageSizeOf(options: PagerDutyPageOptions | undefined): number {
 }
 
 /** An agent-supplied string, non-empty and at most `max` characters. */
-export function text(value: unknown, what: string, max = Infinity): string {
-  if (typeof value !== "string" || value.trim() === "") throw new Error(`${what} must be a non-empty string.`);
+export function text(value: string, what: string, max = Infinity): string {
+  if (value.trim() === "") throw new Error(`${what} must be a non-empty string.`);
   if (value.length > max) throw new Error(`${what} can be at most ${max} characters.`);
   return value;
 }
@@ -156,21 +158,13 @@ export function text(value: unknown, what: string, max = Infinity): string {
 /** An agent-supplied ISO 8601 time, normalized, or undefined when none was given. */
 export function time(value: string | undefined, what: string): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new Error(`${what} must be an ISO 8601 time.`);
+  if (Number.isNaN(Date.parse(value))) throw new Error(`${what} must be an ISO 8601 time.`);
   return new Date(value).toISOString();
-}
-
-/** An agent-supplied urgency, checked. */
-export function urgency(value: unknown): PagerDutyUrgency {
-  if (value !== "high" && value !== "low") throw new Error('urgency must be "high" or "low".');
-  return value;
 }
 
 /** Agent-supplied object IDs, each checked, or undefined when none were given. */
 export function ids(values: readonly string[] | undefined, what: string): string[] | undefined {
-  if (values === undefined) return undefined;
-  if (!Array.isArray(values)) throw new Error(`${what} must be an array of PagerDuty IDs.`);
-  return values.map(value => objectId(value, what));
+  return values?.map(value => objectId(value, what));
 }
 
 /** A window between ISO times, defaulting to `days` from now and at most `maxDays` long. */
@@ -217,8 +211,8 @@ export async function readSchedule({ host }: { host: SessionHost }, id: string,
     probed.schedule = { ...probe.body.schedule, shiftBased: probe.shiftBased };
     return probe.shiftBased;
   });
-  // The probe serves a read that asks for nothing more.
-  if (probed.schedule && !window && !users) return probed.schedule;
+  // The probe serves a read that asks for nothing more; v2 has no `users` to include.
+  if (probed.schedule && !window && !(users && shiftBased)) return probed.schedule;
   // v3 sends a schedule's shifts and users only when asked to include them.
   const query: Query = shiftBased
     ? { ...window, include: [...(window ? ["final_schedule"] : []), ...(users ? ["users"] : [])] }
@@ -289,8 +283,7 @@ export async function objectOutside(ctx: { host: SessionHost }, { kind, id }: Sc
 export async function findUsers(ctx: SessionContext, query: string | undefined): Promise<PagerDutyUser[]> {
   if (query !== undefined) text(query, "query", 200);
   const users = await ctx.host.read(api => api.all<WireUser>("/users", "users", { query }, MAX_USERS));
-  await ctx.authorize({ title: "Looked up PagerDuty users", description: `Found ${countOf(users.length, "user")}.` },
-    { filter: [], result: [] });
+  await ctx.authorize({ title: "Looked up PagerDuty users", description: `Found ${countOf(users.length, "user")}.` });
   return users.map(toUser);
 }
 
@@ -303,8 +296,7 @@ function priorities(ctx: SessionContext): Promise<WirePriority[]> {
 /** The account's priorities, as an agent lists them. */
 export async function listPriorities(ctx: SessionContext): Promise<PagerDutyPriority[]> {
   const rows = await priorities(ctx);
-  await ctx.authorize({ title: "Listed PagerDuty priorities", description: `Listed ${countOf(rows.length, "priority")}.` },
-    { filter: [], result: [] });
+  await ctx.authorize({ title: "Listed PagerDuty priorities", description: `Listed ${countOf(rows.length, "priority")}.` });
   return rows.map(toPriority);
 }
 
@@ -318,7 +310,7 @@ export async function priorityNamed(ctx: SessionContext, name: string): Promise<
 
 /** Users named by email or ID, for an action's payload or a filter. */
 export async function usersNamed(ctx: SessionContext, given: readonly string[], what: string): Promise<UserTarget[]> {
-  if (!Array.isArray(given) || given.length === 0) throw new Error(`${what} must name at least one user.`);
+  if (given.length === 0) throw new Error(`${what} must name at least one user.`);
   return await Promise.all(given.map(async value => {
     text(value, what);
     if (OBJECT_ID.test(value)) {
@@ -332,23 +324,19 @@ export async function usersNamed(ctx: SessionContext, given: readonly string[], 
   }));
 }
 
-/** One page of a listing from `offset`, at most `limit` rows. */
-type OffsetFetch<W> = (api: PagerDutyApi, offset: number, limit: number) => Promise<Page<W>>;
-
 /**
  * Listings walked by offset, one after another, authorizing each page as it leaves: the cursor
  * owns a duplicate of the capability's queue stub and releases it when the walk is dropped.
  */
-export function offsetCursor<W, T>(ctx: SessionContext, options: {
+export function offsetCursor<T>(ctx: SessionContext, options: {
   pageSize: number;
-  /** The listings walked in turn. */
-  sources: readonly OffsetFetch<W>[];
-  /** Converts a page as fetched; pending actions apply as rows are served, in `inject`. */
-  convert(rows: W[]): T[];
+  /** The listings walked in turn; pending actions apply as rows are served, in `overlay` and `inject`. */
+  sources: readonly OffsetSource<T>[];
   describe(rows: readonly T[], terminal: boolean): ObservationInput;
   filter: readonly ObjectRef[];
   /** What a page shows, as it is served: a page it throws for is refused. */
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
+  overlay?(row: T): T | null;
   inject?: CursorInjection<T>;
 }): Cursor<T> {
   const walk = ctx.dup();
@@ -356,17 +344,9 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
     pageSize: options.pageSize,
     remotePageSize: Math.max(options.pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
+    ...(options.overlay ? { overlay: options.overlay } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
-    // A token is `<source>:<offset>`, where the walk stopped in which listing.
-    fetchPage: async (token, perPage) => {
-      const [source, offset] = token === undefined ? [0, 0] : token.split(":").map(Number) as [number, number];
-      const page = await walk.host.read(api => options.sources[source]!(api, offset, Math.min(perPage, MAX_OFFSET - offset)));
-      const next = offset + page.items.length;
-      // PagerDuty refuses an offset past its cap, so the listing ends there.
-      const more = page.more && page.items.length > 0 && next < MAX_OFFSET;
-      const nextToken = more ? `${source}:${next}` : source + 1 < options.sources.length ? `${source + 1}:0` : undefined;
-      return { items: options.convert(page.items), ...(nextToken ? { nextToken } : {}) };
-    },
+    fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, options.sources, token, perPage)),
     authorizePage: async (rows, { terminal }) =>
       walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: await options.result(rows) }),
   });
@@ -385,46 +365,39 @@ export function listed(title: string, noun: string) {
  * Listings of services, teams or schedules, walked in turn, reporting each row: a team's listing
  * too, since PagerDuty showing the team needn't mean it shows everything the team owns.
  */
-export function namedListing<W extends WireRef, T extends { id: string }>(ctx: SessionContext, options: {
-  key: string; kind: ObjectKind; noun: string; teamId?: string; list?: PagerDutyListOptions;
-  /** Each listing's path, and how its rows convert. */
-  sources: readonly { path: string; convert(wire: W): T }[];
-}): Cursor<T> {
-  const query = options.list?.query === undefined ? undefined : text(options.list.query, "query", 200);
-  const filters: Query = { query, ...(options.teamId ? { team_ids: [options.teamId] } : {}) };
-  if (options.kind === "service") filters.sort_by = "name";
-  return offsetCursor<T, T>(ctx, {
-    pageSize: pageSizeOf(options.list),
-    sources: options.sources.map(({ path, convert }): OffsetFetch<T> => async (api, offset, limit) => {
-      const page = await api.page<W>(path, options.key, filters, offset, limit);
-      return { ...page, items: page.items.map(convert) };
-    }),
-    convert: rows => rows,
-    describe: listed(`Listed PagerDuty ${plural(options.noun)}`, options.noun),
+function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "service" | "team" | "schedule",
+                                               list: PagerDutyListOptions | undefined, teamId: string | undefined,
+                                               sources: (filters: Query) => readonly OffsetSource<T>[]): Cursor<T> {
+  const query = list?.query === undefined ? undefined : text(list.query, "query", 200);
+  return offsetCursor<T>(ctx, {
+    pageSize: pageSizeOf(list),
+    sources: sources({ query, ...(teamId ? { team_ids: [teamId] } : {}) }),
+    describe: listed(`Listed PagerDuty ${plural(kind)}`, kind),
     filter: [],
-    result: rows => rows.map(({ id }) => ({ kind: options.kind, id })),
+    result: rows => rows.map(({ id }) => ({ kind, id })),
   });
 }
 
+/** Services, by name. */
+export const listServices = (ctx: SessionContext, list: PagerDutyListOptions | undefined,
+                             teamId?: string): Cursor<PagerDutyServiceSummary> =>
+  namedListing(ctx, "service", list, teamId,
+    filters => [listing("/services", "services", { ...filters, sort_by: "name" }, toServiceSummary)]);
+
+/** The account's teams. */
+export const listTeams = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyTeamSummary> =>
+  namedListing(ctx, "team", list, undefined, filters => [listing("/teams", "teams", filters, toTeam)]);
+
 /** Schedules: layer-based ones, by name, then shift-based ones, which PagerDuty lists apart. */
-export function listSchedules(ctx: SessionContext, list: PagerDutyListOptions | undefined,
-                              teamId?: string): Cursor<PagerDutyScheduleSummary> {
-  return namedListing<WireSchedule, PagerDutyScheduleSummary>(ctx, {
-    key: "schedules", kind: "schedule", noun: "schedule", list, teamId,
-    sources: [false, true].map(shiftBased => ({
-      path: shiftBased ? "/v3/schedules" : "/schedules",
-      convert: (wire: WireSchedule) => toScheduleSummary({ ...wire, shiftBased }),
-    })),
-  });
-}
+export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | undefined,
+                              teamId?: string): Cursor<PagerDutyScheduleSummary> =>
+  namedListing(ctx, "schedule", list, teamId,
+    filters => scheduleListings(filters, (wire: WireSchedule, shiftBased) => toScheduleSummary({ ...wire, shiftBased })));
 
 /** The defaults and bounds of an incident filter, as PagerDuty's query and the simulation's. */
 function incidentQuery(filter: PagerDutyIncidentFilter | undefined, within: Within, me: Identity): { query: IncidentQuery; params: Query } {
   const statuses = filter?.statuses ?? ["triggered", "acknowledged"];
-  if (!Array.isArray(statuses) || statuses.some(status => !["triggered", "acknowledged", "resolved"].includes(status))) {
-    throw new Error('statuses must list "triggered", "acknowledged" or "resolved".');
-  }
-  const urgencies = filter?.urgencies?.map(urgency);
+  const urgencies = filter?.urgencies;
   let serviceIds = ids(filter?.serviceIds, "serviceIds");
   if (within.serviceId) serviceIds = (serviceIds ?? [within.serviceId]).filter(id => id === within.serviceId);
   let since: string | undefined;
@@ -459,7 +432,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const me = await host.me();
   const { query, params } = incidentQuery(filter, within, me);
   const you = youRef(me);
-  const resolve = (id: string) => host.resolve(id);
+  const { resolve } = host;
   // A row as pending actions leave it, or null once they move it out of the listing. A row is
   // simulated as it is served, since pending actions can change while the walk is open.
   const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary | null => {
@@ -486,17 +459,17 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     await ctx.authorize({ title: "Listed PagerDuty incidents", description: `Read ${countOf(injected.length, "incident")} as pending changes leave them.` },
       { filter: named, result: injected.map(row => service(row.service.id)) });
   }
-  return offsetCursor<WireIncident, PagerDutyIncidentSummary>(ctx, {
+  return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize: pageSizeOf(filter),
     // A filter naming none of a service binding's services matches nothing, so PagerDuty isn't asked.
-    sources: [(api, offset, limit) => query.serviceIds?.length === 0
-      ? Promise.resolve({ items: [], more: false })
-      : api.page<WireIncident>("/incidents", "incidents", params, offset, limit)],
-    convert: rows => rows.map(toIncidentSummary),
+    sources: [query.serviceIds?.length === 0
+      ? async () => ({ items: [], more: false })
+      : listing("/incidents", "incidents", params, toIncidentSummary)],
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,
     // One check per service rather than per incident: an incident is as visible as its service.
     result: rows => rows.map(row => service(row.service.id)),
+    overlay: simulate,
     inject: {
       items: injected,
       compare: newestFirst,
@@ -504,7 +477,6 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
         const read = changed.get(row.id);
         return read ? simulate(read) : opened().find(({ id }) => id === row.id) ?? null;
       },
-      overlay: simulate,
       identity: row => resolve(row.id),
     },
   });
@@ -518,12 +490,12 @@ export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWi
   params: Query; users?: readonly string[]; filter: readonly ObjectRef[]; fixed: readonly ObjectRef[]; none?: boolean;
 }): Promise<PagerDutyOnCall[]> {
   const levels = window?.levels;
-  if (levels !== undefined && (!Array.isArray(levels) || levels.some(level => !Number.isInteger(level) || level < 1))) {
+  if (levels?.some(level => !Number.isInteger(level) || level < 1)) {
     throw new Error("levels must be whole numbers from 1.");
   }
   const { host } = ctx;
   const pending = host.pending();
-  const resolve = (id: string) => host.resolve(id);
+  const { resolve } = host;
   const since = time(window?.since, "since");
   const until = time(window?.until, "until");
   // A pending override can put a user on call where PagerDuty doesn't list them yet, so users and

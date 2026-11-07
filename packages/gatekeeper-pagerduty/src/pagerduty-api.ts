@@ -54,8 +54,53 @@ export function isDenial(error: unknown): boolean {
   return error instanceof PagerDutyApiError && (error.status === 403 || error.status === 404);
 }
 
+/**
+ * Whether PagerDuty refused the request itself, so repeating it would only be refused again: any
+ * 4xx but a credential rejection or a rate limit.
+ */
+export function isRefusal(error: unknown): error is PagerDutyApiError {
+  return error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429;
+}
+
 /** One page of a classic offset listing. */
 export type Page<T> = { items: T[]; more: boolean };
+
+/** One listing a walk draws on: its rows from `offset`, at most `limit`. */
+export type OffsetSource<T> = (api: PagerDutyApi, offset: number, limit: number) => Promise<Page<T>>;
+
+/** The listing at `path`, whose rows PagerDuty returns under `key`, each converted. */
+export const listing = <W, T>(path: string, key: string, query: Query, convert: (wire: W) => T): OffsetSource<T> =>
+  async (api, offset, limit) => {
+    const page = await api.page<W>(path, key, query, offset, limit);
+    return { ...page, items: page.items.map(convert) };
+  };
+
+/** Schedules: layer-based ones, then shift-based ones, which PagerDuty lists apart. */
+export const scheduleListings = <W, T>(query: Query, convert: (wire: W, shiftBased: boolean) => T): OffsetSource<T>[] =>
+  [false, true].map(shiftBased =>
+    listing<W, T>(shiftBased ? "/v3/schedules" : "/schedules", "schedules", query, wire => convert(wire, shiftBased)));
+
+/**
+ * Up to `limit` rows of `sources`, walked in turn from `token`, `<source>:<offset>`, where the last
+ * page stopped. The next source starts once one runs out, or reaches PagerDuty's offset cap.
+ * @throws Error for a token no walk of `sources` hands out.
+ */
+export async function chainedPage<T>(api: PagerDutyApi, sources: readonly OffsetSource<T>[], token: string | undefined,
+                                     limit: number): Promise<{ items: T[]; nextToken?: string }> {
+  let [index, offset] = token === undefined ? [0, 0] : token.split(":").map(Number) as [number, number];
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(offset) || index < 0 || index >= sources.length
+    || offset < 0 || offset >= MAX_OFFSET) {
+    throw new Error("That page has expired. Try again.");
+  }
+  const items: T[] = [];
+  while (index < sources.length && items.length < limit) {
+    const page = await sources[index]!(api, offset, Math.min(MAX_LIMIT, limit - items.length, MAX_OFFSET - offset));
+    items.push(...page.items);
+    offset += page.items.length;
+    if (!page.more || page.items.length === 0 || offset >= MAX_OFFSET) [index, offset] = [index + 1, 0];
+  }
+  return { items, ...(index < sources.length ? { nextToken: `${index}:${offset}` } : {}) };
+}
 
 type ErrorBody = { error?: { code?: unknown; message?: unknown; errors?: unknown } };
 
