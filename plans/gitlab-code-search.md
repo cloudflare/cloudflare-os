@@ -145,6 +145,10 @@ Classify by status first; replace provider body text on every search error and n
 
 Known 400 strings are matched exactly (18.11.13 source); anything else is "query rejected".
 
+The GraphQL lookup of a page's projects (path, default branch, visibility) fails the same way: 429
+rate limited, 401/403/404 refused, 5xx or transport unavailable, GraphQL errors in a 200 internal.
+Its text is fixed and keeps no cause, since GraphQL error text can name private projects.
+
 ## Configuration
 
 | Variable | Default | Meaning |

@@ -280,6 +280,29 @@ function codeSearchFailure(error: unknown, engine?: CodeSearchEngine): unknown {
   });
 }
 
+/**
+ * `error`, a failed lookup of the projects a search page matched in (GitLab's GraphQL API), as a
+ * GitLabCodeSearchError with its fixed message: GitLab's text and error list can name private
+ * projects and internal hosts, so neither is kept, not even as a cause. A 429 is `rateLimited`, a
+ * 401, 403 or 404 `refused`, a 5xx `unavailable`, and anything else (GraphQL errors in a 200)
+ * `internal`. As with codeSearchFailure, credential refusals, redirects and anything not a
+ * GitLabApiError (whose text is this gatekeeper's own) are returned unchanged.
+ */
+export function projectFactsFailure(error: unknown): unknown {
+  if (!(error instanceof GitLabApiError) || error.isAuthError || (error.status >= 300 && error.status < 400)) {
+    return error;
+  }
+  const { status } = error;
+  const category: CodeSearchErrorCategory = status === 429 ? "rateLimited"
+    : status === 401 || status === 403 || status === 404 ? "refused"
+    : status >= 500 ? "unavailable"
+    : "internal";
+  logger.warn("GitLab failed the project lookup for a code search page", { event: "code.search.facts.failed", status });
+  return new GitLabCodeSearchError(category, {
+    status, retryAfterSeconds: category === "rateLimited" ? error.retryAfterSeconds : undefined,
+  });
+}
+
 /** The category of a failed search request; see codeSearchFailure. */
 function categoryOf(error: GitLabApiError): CodeSearchErrorCategory {
   const { status } = error;

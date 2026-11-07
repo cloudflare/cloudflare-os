@@ -26,7 +26,7 @@ import { isObserverAccessDenied } from "@gadgets/gatekeeper-kit/observers";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import { GitLabApiError, type GitLabProjectResponse } from "./gitlab-api";
 import {
-  GitLabCodeSearchError, resolveGroupId, searchCodePage,
+  GitLabCodeSearchError, projectFactsFailure, resolveGroupId, searchCodePage,
   type CodeSearchEngine, type CodeSearchFilters, type CodeSearchPage, type CodeSearchScope, type RawCodeHit,
 } from "./gitlab-code-search-api";
 import type { GitLabApiRunner } from "./gitlab-env";
@@ -361,7 +361,9 @@ export class CodeSearchPager {
       return null;
     }
     const facts = await this.#context.caches.projectFacts(page.hits.map(hit => hit.projectId),
-      missing => this.#context.read(api => fetchProjectFacts(api, missing)));
+      missing => this.#context.read(api => fetchProjectFacts(api, missing))).catch((error: unknown) => {
+      throw projectFactsFailure(error);
+    });
     const hits = page.hits.flatMap(raw => {
       const project = facts.get(raw.projectId);
       return project === undefined ? [] : [this.#hit(raw, project, page.engine)];

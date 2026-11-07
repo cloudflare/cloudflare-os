@@ -62,6 +62,8 @@ class FakeGitLab {
   tree: (page: number) => TreePage | null = () => null;
   /** A status every project read answers instead of the project. */
   projectStatus: number | undefined;
+  /** A whole answer every GraphQL facts query gets instead of the projects. */
+  factsAnswer: (() => Response) | undefined;
 
   constructor() {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init: RequestInit = {}) =>
@@ -102,6 +104,7 @@ class FakeGitLab {
   #facts(body: { variables: { ids: string[] } }): Response {
     const ids = body.variables.ids.map(gid => Number(gid.slice(gid.lastIndexOf("/") + 1)));
     this.factsAsked.push(ids);
+    if (this.factsAnswer !== undefined) return this.factsAnswer();
     const nodes = ids.flatMap(id => {
       const project = this.projects.get(id);
       return project === undefined ? [] : [{
@@ -391,6 +394,53 @@ describe("instance search routing", () => {
     const pager = instanceSearch(contextOf(), workshop(refusal).authorize, { text: "needle", groupPath: "acme/hidden" });
     await expect(pager.next()).rejects.toBe(refusal);
     await expect(pager.next()).rejects.toBe(refusal);
+  });
+
+  describe("when the project lookup for a page fails", () => {
+    const SECRET = "acme/secret-project on gitlab-zoekt-gateway.gitlab.svc.cluster.local:8080";
+
+    /** The failure, checked to carry nothing of GitLab's answer, anywhere an agent or log could see. */
+    async function sanitizedFailure(category: CodeSearchErrorCategory): Promise<GitLabCodeSearchError> {
+      gitlab.answer = engines([row(1, "a.ts")]);
+      const { observations, authorize } = workshop();
+      const pager = instanceSearch(contextOf(), authorize);
+      const error = await pager.next().then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GitLabCodeSearchError);
+      const failed = error as GitLabCodeSearchError;
+      expect(failed.category).toBe(category);
+      expect(failed.cause).toBeUndefined();
+      expect(JSON.stringify({ ...failed, message: failed.message })).not.toMatch(/secret|cluster\.local/);
+      expect(observations).toEqual([]);
+      return failed;
+    }
+
+    it("fails with fixed text, never GitLab's, for an HTTP error", async () => {
+      gitlab.factsAnswer = () => json({ message: `500 Internal Server Error: ${SECRET}` }, 500);
+      expect((await sanitizedFailure("unavailable")).status).toBe(500);
+      gitlab.factsAnswer = () => json({ message: `403 Forbidden: ${SECRET}` }, 403);
+      await sanitizedFailure("refused");
+    });
+
+    it("keeps a rate limit's retry delay and nothing else", async () => {
+      gitlab.factsAnswer = () => new Response(JSON.stringify({ message: SECRET }),
+        { status: 429, headers: { "content-type": "application/json", "retry-after": "7" } });
+      expect((await sanitizedFailure("rateLimited")).retryAfterSeconds).toBe(7);
+    });
+
+    it("fails with fixed text, without GitLab's error list, for GraphQL errors", async () => {
+      gitlab.factsAnswer = () => json({ data: null, errors: [{ message: `Project ${SECRET} timed out` }] });
+      await sanitizedFailure("internal");
+    });
+
+    it("asks again for the same page on the next call", async () => {
+      gitlab.factsAnswer = () => json({ message: SECRET }, 502);
+      gitlab.answer = engines([row(1, "a.ts")]);
+      const pager = instanceSearch(contextOf(), workshop().authorize);
+      await failure(pager.next(), "unavailable");
+      gitlab.factsAnswer = undefined;
+      expect(await pager.next()).toMatchObject([{ path: "a.ts" }]);
+      expect(gitlab.searches.map(search => search.page)).toEqual([1, 1]);
+    });
   });
 });
 

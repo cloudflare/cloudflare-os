@@ -159,7 +159,8 @@ project the connected account can read. See `plans/gitlab-code-search.md` for th
   engine available, a group too large for Zoekt right now (search a subgroup, or the whole
   instance), a rejected query, a refusal (with its HTTP status), rate limiting (with
   `retryAfterSeconds` when GitLab said), or GitLab being unavailable (retry), which includes an
-  answer that is not a list of matches.
+  answer that is not a list of matches. The lookup of a page's projects fails the same way, with
+  fixed text.
 
 ## Sharing with collaborators
 
