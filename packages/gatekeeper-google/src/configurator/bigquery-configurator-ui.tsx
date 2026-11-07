@@ -114,6 +114,11 @@ function unlistedProject(target: string | null | undefined): string | undefined 
 let onlyProject: Promise<string | null> | undefined;
 /** The choice the suggestion is for, so a late answer does not land on a later choice or the user's own. */
 let suggestedFor: string | null = null;
+/**
+ * A pre-filled choice that arrived with a query project it did not need: the field stays in view,
+ * while that choice stands, until the user clears it, so it does not vanish mid-edit.
+ */
+let overrideFor: string | null = null;
 
 /** Fills in the query project a choice in a shared project needs, when the account has only one. */
 function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
@@ -168,9 +173,7 @@ export default {
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
     const shared = unlistedProject(target);
-    // A query project the connection arrived with stays in view where none is needed, so the user
-    // sees what is billed and can drop it.
-    const override = shared === undefined && queryProject !== null && target !== null ? refOf(target)?.projectId : undefined;
+    const override = shared === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -200,6 +203,7 @@ export default {
             if (!known) {
               setValues({});
               if (queryProject === null) suggestQueryProject(context, id);
+              else if (listed.get(refOf(id)?.projectId ?? "") === true) overrideFor = id;
             }
             return item;
           }}
@@ -208,7 +212,10 @@ export default {
             // picked for a shared project stays while the choice moves within it.
             const nextShared = unlistedProject(next);
             const keep = nextShared !== undefined && nextShared === shared;
-            if (!keep) clearFields("queryProject");
+            if (!keep) {
+              clearFields("queryProject");
+              overrideFor = null;
+            }
             setValues({ target: next, queryProject: keep ? queryProject : null });
             if (!keep) suggestQueryProject(context, next);
           }}
@@ -234,6 +241,7 @@ export default {
           optional={override !== undefined}
           onClear={() => {
             suggestedFor = null;
+            overrideFor = null;
             clearFields("queryProject");
             setValues({ queryProject: null });
           }}

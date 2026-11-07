@@ -350,11 +350,11 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
     let nodes = await this.#children(parentId);
     let matching = nodes.filter(node => optionMatches([node.title, node.subtitle], query));
     // A project the account holds no role in is never listed, but BigQuery still answers for it
-    // when a dataset in it was shared with the account, so a project ID nothing listed matches is
-    // looked up.
-    if (matching.length === 0 && linked && parentId === BIGQUERY_ROOT_ID) {
+    // when a dataset in it was shared with the account, so a project ID no listed project has is
+    // looked up, even where listed names contain it.
+    if (linked && parentId === BIGQUERY_ROOT_ID && !matching.some(node => node.title === linked.ref.projectId)) {
       let node = await this.#node(linked.ref);
-      if (node) return { nodes: [node] };
+      if (node) matching = [node, ...matching];
     }
     // The whole listing is in hand, so the cursor is an offset into it.
     let offset = cursor === null ? 0 : Number(cursor);

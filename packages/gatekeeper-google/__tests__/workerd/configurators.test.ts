@@ -967,7 +967,10 @@ describe("BigQuery picker", () => {
       calls.push(path);
       switch (path) {
         case "/projects":
-          return Response.json({ projects: [{ id: "mine", friendlyName: "My project", projectReference: { projectId: "mine" } }] });
+          return Response.json({ projects: [
+            { id: "mine", friendlyName: "My project", projectReference: { projectId: "mine" } },
+            { id: "theirs-app", projectReference: { projectId: "theirs-app" } },
+          ] });
         case "/projects/mine/datasets":
           return Response.json({ datasets: [dataset("mine", "web"), dataset("mine", "sales", { friendlyName: "Sales" })] });
         case "/projects/mine/datasets/sales/tables":
@@ -993,6 +996,7 @@ describe("BigQuery picker", () => {
     const { ui } = bigQuery();
     expect(await ui.listNodes("bigquery", "", null)).toEqual({ nodes: [
       { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
     ] });
     expect(await ui.listNodes("project:mine", "", null)).toMatchObject({ nodes: [
       { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
@@ -1020,8 +1024,10 @@ describe("BigQuery picker", () => {
 
   it("reaches a project the account holds no role in by its ID, a Console link or a reference", async () => {
     const { ui, calls } = bigQuery();
+    // Ahead of a listed project whose name merely contains the ID typed.
     expect(await ui.listNodes("bigquery", "theirs", null)).toEqual({ nodes: [
       { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
     ] });
     expect(calls).toContain("/projects/theirs/datasets");
     expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
@@ -1056,8 +1062,8 @@ describe("BigQuery picker", () => {
 
   it("looks up a word typed at the root only once it is long enough to be a project ID", async () => {
     const { ui, calls } = bigQuery();
-    for (const prefix of ["th", "thei", "their"]) expect(await ui.listNodes("bigquery", prefix, null)).toEqual({ nodes: [] });
+    for (const prefix of ["th", "thei", "their"]) await ui.listNodes("bigquery", prefix, null);
     expect(calls.filter(path => path !== "/projects")).toEqual([]);
-    expect(await ui.listNodes("bigquery", "theirs", null)).toMatchObject({ nodes: [{ id: "project:theirs" }] });
+    expect((await ui.listNodes("bigquery", "theirs", null)).nodes[0]).toMatchObject({ id: "project:theirs" });
   });
 });
