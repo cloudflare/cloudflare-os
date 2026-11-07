@@ -91,7 +91,8 @@ export class PagerDutyAccountImpl extends RpcTarget implements PagerDutyAccount 
     const policyIds = ids(filter?.escalationPolicyIds, "escalationPolicyIds");
     const users = filter?.users === undefined ? undefined : await usersNamed(this.#ctx, filter.users, "users");
     return await listOnCalls(this.#ctx, filter, {
-      params: { user_ids: users?.map(({ id }) => id), schedule_ids: scheduleIds, escalation_policy_ids: policyIds },
+      params: { schedule_ids: scheduleIds, escalation_policy_ids: policyIds },
+      users: users?.map(({ id }) => id),
       filter: [...(scheduleIds ?? []).map(schedule), ...(policyIds ?? []).map(escalationPolicy)],
       fixed: [],
     });

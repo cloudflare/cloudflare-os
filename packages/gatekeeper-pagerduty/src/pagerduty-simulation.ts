@@ -1,15 +1,15 @@
 // Reads as if every pending action had been applied: an incident shows the status, title,
 // priority, urgency and assignees its pending changes give it (raising an acknowledged incident's
 // urgency returns it to triggered, as PagerDuty does), incidents and overrides a pending action
-// creates are listed, an override pending removal is gone (or, if under way, ends when the removal
-// was staged), and a note waiting to be added is among the incident's notes. Every function is pure
-// over the journal's pending entries.
+// creates are listed (a created override's user is in shifts and on call), an override pending
+// removal is gone (or, if under way, ends when the removal was staged), and a note waiting to be
+// added is among the incident's notes. Every function is pure over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
-import type { NewIncident, PagerDutyAction } from "./pagerduty-actions";
+import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
 import type {
-  PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote,
-  PagerDutyOverride, PagerDutyShift, PagerDutyUserRef,
+  PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote, PagerDutyOnCall,
+  PagerDutyOverride, PagerDutyRef, PagerDutyShift, PagerDutyUserRef,
 } from "./types";
 
 /** The journal's pending entries, in submission order. */
@@ -22,6 +22,18 @@ export type Resolve = (id: string) => string;
 function actionsOn(id: string, pending: Pending, resolve: Resolve): PagerDutyAction[] {
   return pending.map(({ action }) => action)
     .filter(action => "incident" in action.payload && resolve(action.payload.incident.id) === id);
+}
+
+/**
+ * The incidents PagerDuty already has whose status, urgency or assignees pending actions change:
+ * what PagerDuty's incident filters look at.
+ */
+export function changedIncidents(pending: Pending, resolve: Resolve): string[] {
+  const ids = pending.flatMap(({ action }) => action.kind === "acknowledge" || action.kind === "resolve"
+    || action.kind === "lowerUrgency" || action.kind === "raiseUrgency"
+    || (action.kind === "reassign" && "users" in action.payload.to)
+    ? [resolve(action.payload.incident.id)] : []);
+  return [...new Set(ids)].filter(id => !isProvisional(id));
 }
 
 /** `incident` with its pending changes applied. */
@@ -132,6 +144,22 @@ export function pendingNotes(id: string, pending: Pending, resolve: Resolve, me:
     ? [{ id: action.payload.ref, content: action.payload.content, author: me, createdAt: action.payload.stagedAt }] : []);
 }
 
+/** The overrides pending creation that PagerDuty doesn't have yet, each with its schedule. */
+function createdOverrides(pending: Pending, resolve: Resolve): { scheduleId: string; override: PagerDutyOverride }[] {
+  return pending.flatMap(({ action }) =>
+    (action.kind === "createOverride" || action.kind === "createOverrideForOthers")
+      && resolve(action.payload.ref) === action.payload.ref
+      ? [{ scheduleId: action.payload.scheduleId, override: {
+        id: action.payload.ref, user: { id: action.payload.user.id, name: action.payload.user.name },
+        start: action.payload.start, end: action.payload.end,
+      } }]
+      : []);
+}
+
+/** Whether an override is pending creation, which can put someone on call PagerDuty doesn't list yet. */
+export const overridesPending = (pending: Pending, resolve: Resolve): boolean =>
+  createdOverrides(pending, resolve).length > 0;
+
 /**
  * `overrides` on schedule `scheduleId` as if pending ones were made and removed: those pending
  * creation added, and those pending removal gone. As PagerDuty does, a removal cuts one already
@@ -139,12 +167,7 @@ export function pendingNotes(id: string, pending: Pending, resolve: Resolve, me:
  */
 function withPending(overrides: readonly PagerDutyOverride[], scheduleId: string, pending: Pending,
                      resolve: Resolve): PagerDutyOverride[] {
-  const created = pending.flatMap(({ action }) =>
-    (action.kind === "createOverride" || action.kind === "createOverrideForOthers")
-      && action.payload.scheduleId === scheduleId && resolve(action.payload.ref) === action.payload.ref
-      ? [{ id: action.payload.ref, user: { id: action.payload.user.id, name: action.payload.user.name },
-        start: action.payload.start, end: action.payload.end }]
-      : []);
+  const created = createdOverrides(pending, resolve).flatMap(made => made.scheduleId === scheduleId ? [made.override] : []);
   const removedAt = new Map(pending.flatMap(({ action }) =>
     action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId
       ? [[resolve(action.payload.overrideId), action.payload.stagedAt] as const] : []));
@@ -155,9 +178,24 @@ function withPending(overrides: readonly PagerDutyOverride[], scheduleId: string
   });
 }
 
-/** Whether two ISO 8601 spans overlap. */
-const overlaps = (a: { start: string; end: string }, b: { start: string; end: string }): boolean =>
+/** A span between ISO 8601 times. */
+type Span = { start: string; end: string };
+
+/** Whether two spans overlap. */
+const overlaps = (a: Span, b: Span): boolean =>
   Date.parse(a.start) < Date.parse(b.end) && Date.parse(b.start) < Date.parse(a.end);
+
+/** `span` with its part within `cut` replaced by `within(part)`; its parts outside `cut` stay as they were. */
+function replaceWithin<S extends Span>(span: S, cut: Span, within: (part: S) => S[]): S[] {
+  if (!overlaps(span, cut)) return [span];
+  const before = Date.parse(span.start) < Date.parse(cut.start);
+  const after = Date.parse(span.end) > Date.parse(cut.end);
+  return [
+    ...(before ? [{ ...span, end: cut.start }] : []),
+    ...within({ ...span, ...(before ? { start: cut.start } : {}), ...(after ? { end: cut.end } : {}) }),
+    ...(after ? [{ ...span, start: cut.end }] : []),
+  ];
+}
 
 /** A schedule's overrides in `window` as if pending ones were made and removed, ordered by start. */
 export function overlayOverrides(
@@ -185,11 +223,27 @@ export function overlayShifts(
     const end = Math.min(Date.parse(override.end), Date.parse(window.until));
     if (!(start < end)) continue;
     const span = { start: iso(start), end: iso(end) };
-    result = result.flatMap(shift => !overlaps(shift, span) ? [shift] : [
-      ...(Date.parse(shift.start) < start ? [{ ...shift, end: span.start }] : []),
-      ...(Date.parse(shift.end) > end ? [{ ...shift, start: span.end }] : []),
-    ]);
-    result.push({ user: override.user, ...span });
+    result = [...result.flatMap(shift => replaceWithin(shift, span, () => [])), { user: override.user, ...span }];
   }
   return result.toSorted((a, b) => Date.parse(a.start) - Date.parse(b.start));
+}
+
+/** An on-call entry a schedule gives for a span. */
+type ScheduledOnCall = PagerDutyOnCall & Span & { schedule: PagerDutyRef };
+
+const scheduled = (entry: PagerDutyOnCall): entry is ScheduledOnCall =>
+  entry.schedule !== null && entry.start !== null && entry.end !== null;
+
+/**
+ * On-call entries as if the overrides pending creation were made, less any pending removal takes
+ * back: an entry of an override's schedule keeps its user outside the override, and the part the
+ * override covers goes to the override's user at the entry's escalation policy and level. Entries
+ * without a schedule or times are left alone, and so is an override PagerDuty already has that a
+ * removal is pending for, since the entries don't say who it displaced. An override spanning two
+ * entries shows as a piece of each.
+ */
+export function overlayOnCalls(entries: readonly PagerDutyOnCall[], pending: Pending, resolve: Resolve): PagerDutyOnCall[] {
+  return entries.flatMap(entry => !scheduled(entry) ? [entry]
+    : withPending([], entry.schedule.id, pending, resolve).reduce<ScheduledOnCall[]>((parts, override) =>
+      parts.flatMap(part => replaceWithin(part, override, covered => [{ ...covered, user: override.user }])), [entry]));
 }

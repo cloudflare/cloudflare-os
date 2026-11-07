@@ -11,7 +11,7 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
-import { MAX_LIMIT, MAX_OFFSET, schedulePath, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
+import { MAX_LIMIT, MAX_OFFSET, isDenial, schedulePath, type Page, type PagerDutyApi, type Query } from "./pagerduty-api";
 import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
@@ -21,7 +21,8 @@ import {
   type WireUser,
 } from "./pagerduty-normalize";
 import {
-  matchesQuery, newestFirst, overlayIncident, pendingIncidents, type IncidentQuery, type Pending,
+  changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridesPending, pendingIncidents,
+  type IncidentQuery, type Pending,
 } from "./pagerduty-simulation";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -342,12 +343,13 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
   pageSize: number;
   /** The listings walked in turn. */
   sources: readonly OffsetFetch<W>[];
-  /** Converts a page, applying pending actions; may drop rows they move out of the listing. */
+  /** Converts a page as fetched; pending actions apply as rows are served, in `overlay` and `inject`. */
   convert(rows: W[]): T[];
   describe(rows: readonly T[], terminal: boolean): ObservationInput;
   filter: readonly ObjectRef[];
   /** What a page shows, as it is served: a page it throws for is refused. */
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
+  overlay?(row: T): T | null;
   inject?: CursorInjection<T>;
 }): Cursor<T> {
   const walk = ctx.dup();
@@ -355,6 +357,7 @@ export function offsetCursor<W, T>(ctx: SessionContext, options: {
     pageSize: options.pageSize,
     remotePageSize: Math.max(options.pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
+    ...(options.overlay ? { overlay: options.overlay } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
     // A token is `<source>:<offset>`, where the walk stopped in which listing.
     fetchPage: async (token, perPage) => {
@@ -458,17 +461,31 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const me = await host.me();
   const { query, params } = incidentQuery(filter, within, me);
   const you = youRef(me);
-  const overlay = (row: PagerDutyIncidentSummary) => overlayIncident(row, host.pending(), id => host.resolve(id), you);
+  const resolve = (id: string) => host.resolve(id);
+  // A row as pending actions leave it, or null once they move it out of the listing. A row is
+  // simulated as it is served, since pending actions can change while the walk is open.
+  const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary | null => {
+    const simulated = overlayIncident(row, host.pending(), resolve, you);
+    return matchesQuery(simulated, query, you) ? simulated : null;
+  };
   const inScope = (payload: NewIncident) => (!within.serviceId || payload.service.id === within.serviceId)
     && inTeam(payload, within.teamId);
-  const fresh = () => pendingIncidents(host.pending(), id => host.resolve(id), you, inScope)
-    .filter(row => matchesQuery(row, query, you));
-  const injected = fresh().toSorted(newestFirst);
+  const opened = () => pendingIncidents(host.pending(), resolve, you, inScope).filter(row => matchesQuery(row, query, you));
+  // PagerDuty filters before pending changes apply, so it leaves out an incident they move into the
+  // filter: each incident they act on is read afresh, and listed if they leave it matching. One the
+  // user can no longer open is left out, as one outside the binding is.
+  const current = (id: string) => currentIncident(ctx, id, within).catch((error: unknown) => {
+    if (!isDenial(error)) throw error;
+    return undefined;
+  });
+  const reads = query.serviceIds?.length === 0 ? [] : await Promise.all(changedIncidents(host.pending(), resolve).map(current));
+  const changed = new Map(reads.flatMap(found => !found || found.outside ? [] : [[found.wire.id, toIncidentSummary(found.wire)] as const]));
+  const injected = [...opened(), ...[...changed.values()].flatMap(row => simulate(row) ?? [])].toSorted(newestFirst);
   const named = (query.serviceIds ?? []).map(service);
-  // Pending incidents show what staging read of their services, and the cursor authorizes no page
-  // made only of them, so their services are reported before the walk serves any.
+  // Injected incidents show what staging or this call read of their services, and the cursor
+  // authorizes no page made only of them, so their services are reported before the walk serves any.
   if (injected.length > 0) {
-    await ctx.authorize({ title: "Listed PagerDuty incidents", description: `Read ${countOf(injected.length, "incident")} waiting to be opened.` },
+    await ctx.authorize({ title: "Listed PagerDuty incidents", description: `Read ${countOf(injected.length, "incident")} as pending changes leave them.` },
       { filter: named, result: injected.map(row => service(row.service.id)) });
   }
   return offsetCursor<WireIncident, PagerDutyIncidentSummary>(ctx, {
@@ -477,31 +494,55 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     sources: [(api, offset, limit) => query.serviceIds?.length === 0
       ? Promise.resolve({ items: [], more: false })
       : api.page<WireIncident>("/incidents", "incidents", params, offset, limit)],
-    convert: rows => rows.map(row => overlay(toIncidentSummary(row))).filter(row => matchesQuery(row, query, you)),
+    convert: rows => rows.map(toIncidentSummary),
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,
     // One check per service rather than per incident: an incident is as visible as its service.
     result: rows => rows.map(row => service(row.service.id)),
+    overlay: simulate,
     inject: {
       items: injected,
       compare: newestFirst,
-      revalidate: row => fresh().find(({ id }) => id === row.id) ?? null,
-      identity: row => host.resolve(row.id),
+      revalidate: row => {
+        const read = changed.get(row.id);
+        return read ? simulate(read) : opened().find(({ id }) => id === row.id) ?? null;
+      },
+      identity: row => resolve(row.id),
     },
   });
 }
 
-/** Who is on call, as `GET /oncalls` answers for `params`, reporting `fixed` even when empty. */
+/**
+ * Who is on call, as `GET /oncalls` answers for `params` with pending overrides applied, reporting
+ * `fixed` even when empty; only `users`, when given.
+ */
 export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
-  params: Query; filter: readonly ObjectRef[]; fixed: readonly ObjectRef[]; none?: boolean;
+  params: Query; users?: readonly string[]; filter: readonly ObjectRef[]; fixed: readonly ObjectRef[]; none?: boolean;
 }): Promise<PagerDutyOnCall[]> {
   const levels = window?.levels;
   if (levels !== undefined && (!Array.isArray(levels) || levels.some(level => !Number.isInteger(level) || level < 1))) {
     throw new Error("levels must be whole numbers from 1.");
   }
-  const params = { ...options.params, since: time(window?.since, "since"), until: time(window?.until, "until") };
-  const rows = options.none ? [] : await ctx.host.read(api => api.all<WireOnCall>("/oncalls", "oncalls", params));
-  const entries = rows.map(toOnCall).filter(entry => !levels || levels.includes(entry.level));
+  const { host } = ctx;
+  const pending = host.pending();
+  const resolve = (id: string) => host.resolve(id);
+  const since = time(window?.since, "since");
+  const until = time(window?.until, "until");
+  // A pending override can put a user on call where PagerDuty doesn't list them yet, so users and
+  // the window are then picked out here instead.
+  const overriding = overridesPending(pending, resolve);
+  const params = { ...options.params, user_ids: overriding ? undefined : options.users, since, until };
+  const rows = options.none ? [] : await host.read(api => api.all<WireOnCall>("/oncalls", "oncalls", params));
+  const fetched = rows.map(toOnCall);
+  // PagerDuty answers for the window, each end now by default, and an override can leave part of an
+  // entry outside it. An empty window is the moment `from`; an entry without a start or end is open.
+  const now = Date.now();
+  const from = since ? Date.parse(since) : now;
+  const to = Math.max(until ? Date.parse(until) : now, from + 1);
+  const simulated = !overriding ? fetched : overlayOnCalls(fetched, pending, resolve).filter(entry =>
+    (!options.users || options.users.includes(entry.user.id))
+    && (entry.start === null || Date.parse(entry.start) < to) && (entry.end === null || Date.parse(entry.end) > from));
+  const entries = simulated.filter(entry => !levels || levels.includes(entry.level));
   await ctx.authorize({ title: "Listed who is on call in PagerDuty", description: `Read ${countOf(entries.length, "on-call entry")}.` }, {
     filter: options.filter,
     result: [...options.fixed, ...entries.flatMap(entry => [

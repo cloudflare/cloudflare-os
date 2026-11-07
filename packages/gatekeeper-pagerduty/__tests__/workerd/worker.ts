@@ -131,30 +131,32 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   /**
    * Opens a session and makes each call in `steps` on what the call before returned, starting with
    * the session. The last call's result comes back; with `pages`, it is a cursor, walked for at most
-   * that many pages.
+   * that many pages, making the calls `between[i]` from the session after page `i`.
    */
-  async run(facetName: string, props: GatekeeperProps, steps: Step[], options: { pages?: number } = {}):
-      Promise<Outcome<unknown>> {
+  async run(facetName: string, props: GatekeeperProps, steps: Step[],
+            options: { pages?: number; between?: Step[][] } = {}): Promise<Outcome<unknown>> {
     return await outcome(async () => {
       const session = await this.#gatekeeper(facetName, props).startSession(this.#queue(facetName));
       // Every capability a step returned and the scenario walked on from, the session's included.
       const owned: Callable[] = [session];
-      try {
+      const call = async (chain: Step[]) => {
         let target: Callable = session;
-        for (const [index, [method, ...args]] of steps.entries()) {
-          const result = await target[method](...args);
-          if (index === steps.length - 1) {
-            if (options.pages === undefined) return result;
-            const cursor = result as Callable & { next(): Promise<unknown[] | null> };
-            owned.push(cursor);
-            const pages: unknown[][] = [];
-            for (let page; pages.length < options.pages && (page = await cursor.next()) !== null;) pages.push(page);
-            return pages;
-          }
-          target = result as Callable;
-          owned.push(target);
+        for (const [method, ...args] of chain.slice(0, -1)) owned.push(target = await target[method](...args) as Callable);
+        const [method, ...args] = chain.at(-1)!;
+        return await target[method](...args);
+      };
+      try {
+        const result = await call(steps);
+        if (options.pages === undefined) return result;
+        const cursor = result as Callable & { next(): Promise<unknown[] | null> };
+        owned.push(cursor);
+        const pages: unknown[][] = [];
+        for (let page; pages.length < options.pages && (page = await cursor.next()) !== null;) {
+          pages.push(page);
+          const staged = options.between?.[pages.length - 1];
+          if (staged) await call(staged);
         }
-        return undefined;
+        return pages;
       } finally {
         for (const capability of owned.toReversed()) capability[Symbol.dispose]?.();
       }
