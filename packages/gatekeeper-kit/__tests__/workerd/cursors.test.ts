@@ -841,11 +841,7 @@ describe("injected rows", () => {
     const authorized = vi.fn(async () => {});
     const cursor = new TokenCursor<Issue>({
       fetchPage,
-      inject: {
-        items: [],
-        compare: byId,
-        overlay: row => gone.has(row.id) ? null : issue(row.id, !closed.has(row.id)),
-      },
+      overlay: row => gone.has(row.id) ? null : issue(row.id, !closed.has(row.id)),
       authorizePage: authorized,
       pageSize: 1,
     });
@@ -872,7 +868,7 @@ describe("injected rows", () => {
     });
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
-      inject: { items: [], compare: byId, overlay: row => hidden.has(row.id) ? null : { ...row } },
+      overlay: row => hidden.has(row.id) ? null : { ...row },
       authorizePage: authorized,
       pageSize: 2,
     });

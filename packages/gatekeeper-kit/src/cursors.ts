@@ -46,7 +46,7 @@ export class ArrayCursor<T> extends RpcTarget implements Cursor<T> {
  * provider supplied is injected only once its observation was authorized up front. Their
  * position still says a little -- an injected row served ahead of the queue means no fetched
  * provider row sorts before it -- so a listing whose order is itself sensitive authorizes its
- * observation up front. `overlay` shows the simulation's changes to the provider's own rows.
+ * observation up front.
  */
 export type CursorInjection<T> = {
   /** The rows to merge, sorted by `compare`. */
@@ -62,13 +62,6 @@ export type CursorInjection<T> = {
    * position.
    */
   revalidate?(item: T): T | null;
-  /**
-   * Re-derives a provider row as it is served, applying simulated changes the provider does not
-   * show yet: the row to serve, or `null` to drop it. A row can sit in the buffer long after it was
-   * fetched, so this runs at serve time, not fetch time. Must keep the row's sort position and
-   * identity. Authorization sees the row it returns.
-   */
-  overlay?(item: T): T | null;
   /**
    * What a row *is*. A later row from either source whose identity was already served is dropped,
    * e.g. the injected stand-in for a create that landed mid-walk and the real row a later provider
@@ -100,6 +93,13 @@ type CursorShape<T> = {
   dispose?(): void;
   /** Simulated rows to merge into the provider's; see `CursorInjection`. */
   inject?: CursorInjection<T>;
+  /**
+   * Re-derives a provider row as it is served, applying the gatekeeper's simulated changes the
+   * provider does not show yet: the row to serve, or `null` to drop it. A row can sit in the buffer
+   * long after it was fetched, so this runs at serve time, not fetch time. Must keep the row's sort
+   * position and identity. Authorization sees the row it returns.
+   */
+  overlay?(item: T): T | null;
   /**
    * Authorizes what `next()` is about to return, before it leaves the cursor. Runs on every page
    * carrying provider rows, including one served entirely from the buffer with no provider fetch,
@@ -163,6 +163,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   readonly #dispose?: () => void;
   readonly #authorizePage: CursorShape<T>["authorizePage"];
   readonly #inject: CursorInjection<T>;
+  readonly #overlay?: (item: T) => T | null;
   readonly #buffer: Entry<T>[] = [];
   readonly #servedIds = new Set<string>();
   readonly #servedInjected: T[] = [];
@@ -185,6 +186,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
     this.#dispose = options.dispose;
     this.#authorizePage = options.authorizePage;
     this.#inject = options.inject ?? { items: [], compare: () => 0 };
+    this.#overlay = options.overlay;
     // Assigned first, so a rejected size releases what the caller already acquired for this
     // cursor -- the documented pattern leases a gate before constructing one.
     try {
@@ -310,8 +312,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
    * at serve time, so a dropped row never costs a page while the fetch window lasts.
    */
   #serve(page: Outgoing<T>, entry: Entry<T>): T | null {
-    const { revalidate, overlay } = this.#inject;
-    const derive = entry.injected ? revalidate : overlay;
+    const derive = entry.injected ? this.#inject.revalidate : this.#overlay;
     const item = derive ? derive(entry.item) : entry.item;
     return item === null || this.#served(page, item) ? null : item;
   }
