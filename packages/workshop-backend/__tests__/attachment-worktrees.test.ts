@@ -230,6 +230,23 @@ describe("scratch worktree attachment ingress", () => {
     expect(replay).toEqual(results);
   }));
 
+  it("accepts a workpiece written with the env. prefix the attachment note uses", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const ref = await impl.gitStore.writeBlob(new TextEncoder().encode("hello needle\n"));
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined,
+      [{oid: ref.oid, mimeType: "text/plain", name: "notes.txt"}]);
+    const requests = await scriptedTurn(impl, chatId, [
+      fauxToolCall("readFile", {workpiece: "env.SCRATCH", filename: "notes.txt"}),
+      fauxToolCall("grep", {workpiece: "env.SCRATCH", pattern: "needle"}),
+    ]);
+    const results = fileToolResults(requests.at(-1)!);
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.isError).toBe(false);
+      expect(JSON.stringify(result.content)).toContain("needle");
+    }
+  }));
+
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const ref = await impl.gitCache.writeBlob(Uint8Array.of(0, 255));

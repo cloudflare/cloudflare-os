@@ -1915,9 +1915,11 @@ async function runAgentPass(
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
   // workpiece -- to a workpiece id (or undefined, meaning the workspace's default gadget,
-  // resolved downstream by resolveWorkpieceRoot).
+  // resolved downstream by resolveWorkpieceRoot). Prompts write workpieces as `env.NAME`, so a
+  // model that copies that form is understood rather than refused.
   let resolveToolWorkpieceId = (workpiece?: string): WorkpieceId | undefined => {
     if (workpiece === undefined) return undefined;
+    workpiece = workpiece.replace(/^env\./, "");
     let entry = chatBindings.get(workpiece);
     if (!entry) {
       throw new Error(
