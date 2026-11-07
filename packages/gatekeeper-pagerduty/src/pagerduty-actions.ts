@@ -1,9 +1,9 @@
 // What a gadget can change in PagerDuty, as kit actions: each kind's approval text, auto-approval
 // verdict and REST call. Sessions validate and stage them (the pagerduty-*session*.ts modules);
-// nothing here runs until a user approves, and apply first checks that a team or service binding
-// still reaches what the action changes, and that an incident being acknowledged isn't resolved.
-// Incidents and overrides a pending action creates have temporary `~N` IDs, which later actions can
-// name and which apply resolves to PagerDuty's.
+// nothing here runs until a user approves, and apply first checks that what the action changes is
+// still within the team or service of the capability that staged it, and that an incident being
+// acknowledged isn't resolved. Incidents and overrides a pending action creates have temporary `~N`
+// IDs, which later actions can name and which apply resolves to PagerDuty's.
 
 import {
   ActionApplyError, ActionOutcomeUnknownError, defineActions, type ActionPresentation, type TaggedAction,
@@ -14,12 +14,15 @@ import { PagerDutyApiError, isRefusal, type PagerDutyApi } from "./pagerduty-api
 import type { Identity } from "./pagerduty-credentials";
 import { VENDOR_ID, type Tenant } from "./pagerduty-env";
 import type { WireIncident, WireOverride } from "./pagerduty-normalize";
-import type { ScopedObject } from "./pagerduty-session-shared";
+import type { ScopedObject, Within } from "./pagerduty-session-shared";
 import { resourceUrl } from "./pagerduty-urls";
 import type { PagerDutyRef, PagerDutyUrgency } from "./types";
 
-/** An incident an action acts on: PagerDuty's ID, or the `~N` of one a pending action creates. */
-export type IncidentTarget = { id: string; number?: number };
+/**
+ * An incident an action acts on: PagerDuty's ID, or the `~N` of one a pending action creates; and
+ * the team or service of the capability that staged it, which the incident must still be in.
+ */
+export type IncidentTarget = { id: string; number?: number; within: Within };
 
 /** A user named by the agent (email or ID), as the gatekeeper resolved them when staging. */
 export type UserTarget = { id: string; name: string; given: string };
@@ -41,6 +44,8 @@ export type NewIncident = {
   incidentKey?: string;
   /** When it was staged, which is when a simulated read says it was created. */
   stagedAt: string;
+  /** The team or service of the capability that staged it, which the service must still be in. */
+  within: Within;
 } & (
   | { urgency: PagerDutyUrgency; serviceUrgency?: never }
   /** Left to PagerDuty, whose service rule gave `serviceUrgency` when it was staged: what reads show meanwhile. */
@@ -54,6 +59,8 @@ export type NewOverride = {
   user: UserTarget;
   start: string;
   end: string;
+  /** The team of the capability that staged it, which the schedule must still be in. */
+  within: Within;
 };
 
 /** Every action's payload, by kind. */
@@ -77,7 +84,7 @@ export type PagerDutyActions = {
   /** As `createOverride`, for an override putting someone other than the connected user on call. */
   createOverrideForOthers: NewOverride;
   /** `stagedAt` is when a simulated read says an override already under way ended. */
-  deleteOverride: { scheduleId: string; overrideId: string; stagedAt: string };
+  deleteOverride: { scheduleId: string; overrideId: string; stagedAt: string; within: Within };
 };
 
 export type PagerDutyAction = TaggedAction<PagerDutyActions>;
@@ -90,14 +97,14 @@ export type PagerDutyActionHost = {
   write<T>(op: (api: PagerDutyApi, me: Identity) => Promise<T>): Promise<T>;
   /**
    * @throws ActionApplyError once `object` (an incident, or the service or schedule an action adds
-   * to) has left the team or service the binding is scoped to.
+   * to) has left `within`.
    */
-  requireInScope(object: ScopedObject): Promise<void>;
+  requireInScope(object: ScopedObject, within: Within): Promise<void>;
   /**
    * The incident `id` as PagerDuty has it now, read afresh.
-   * @throws ActionApplyError once it has left the team or service the binding is scoped to.
+   * @throws ActionApplyError once it has left `within`.
    */
-  currentIncident(id: string): Promise<WireIncident>;
+  currentIncident(id: string, within: Within): Promise<WireIncident>;
   /** Drops every cached read, once an action changed what they hold. */
   invalidate(): void;
 };
@@ -107,11 +114,11 @@ export const isProvisional = (id: string): boolean => id.startsWith("~");
 
 /**
  * Which incident `target` is now (PagerDuty's ID once the action creating it applied), refused once
- * it has left the binding's scope.
+ * it has left the scope it was staged in.
  */
 async function incidentId(host: PagerDutyActionHost, target: IncidentTarget): Promise<string> {
   const id = host.refs.requireResolved(target.id, { expectedKind: "incident" });
-  await host.requireInScope({ kind: "incident", id });
+  await host.requireInScope({ kind: "incident", id }, target.within);
   return id;
 }
 
@@ -196,7 +203,7 @@ async function putIncident(host: PagerDutyActionHost, id: string, incident: Reco
   await idempotent(host, api => api.write("PUT", `/incidents/${id}`, { incident: { type: "incident_reference", ...incident } }));
 }
 
-/** Updates the incident `target` is, refused once it has left the binding's scope. */
+/** Updates the incident `target` is, refused once it has left the scope it was staged in. */
 async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
   await putIncident(host, await incidentId(host, target), incident);
 }
@@ -231,7 +238,7 @@ function overrideDefinition(autoApprovable: boolean) {
         .inline("From", payload.start)
         .inline("Until", payload.end)),
     apply: async (payload: NewOverride, host: PagerDutyActionHost) => {
-      await host.requireInScope({ kind: "schedule", id: payload.scheduleId });
+      await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
       const [result] = await once(host, api => api.write<{ status: number; errors?: string[]; override?: WireOverride }[]>(
         "POST", `/schedules/${payload.scheduleId}/overrides`,
         { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] }));
@@ -273,7 +280,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     apply: async (payload, host) => {
       const id = host.refs.requireResolved(payload.incident.id, { expectedKind: "incident" });
       // PagerDuty reopens a resolved incident it is asked to acknowledge.
-      if ((await host.currentIncident(id)).status === "resolved") {
+      if ((await host.currentIncident(id, payload.incident.within)).status === "resolved") {
         throw new ActionApplyError("The incident was resolved in the meantime, so it was left resolved.");
       }
       await putIncident(host, id, { status: "acknowledged" });
@@ -430,7 +437,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       return present(`Open a PagerDuty incident: ${payload.title}`, description);
     },
     apply: async (payload, host) => {
-      await host.requireInScope({ kind: "service", id: payload.service.id });
+      await host.requireInScope({ kind: "service", id: payload.service.id }, payload.within);
       const { incident } = await once(host, api => api.write<{ incident: WireIncident }>("POST", "/incidents", {
         incident: {
           type: "incident",
@@ -461,7 +468,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "or ends it now if it has already begun.")
         .inline("Override", payload.overrideId)),
     apply: async (payload, host) => {
-      await host.requireInScope({ kind: "schedule", id: payload.scheduleId });
+      await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });
       await idempotent(host, async api => {
         try {

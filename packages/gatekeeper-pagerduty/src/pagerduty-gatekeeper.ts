@@ -88,8 +88,6 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
    */
   readonly #scope: readonly ObjectRef[] = this.ctx.props.resourceKind === "account" || this.ctx.props.resourceKind === "incident"
     ? [] : [{ kind: this.ctx.props.resourceKind, id: this.ctx.props.id }];
-  /** The team or service a team or service binding is scoped to, which every change must still be in. */
-  readonly #within = withinOf(this.#scope);
 
   // Every ID a read reports names the pinned account (see `verifyObserverAccess`), and each
   // observer's own connection answers for them.
@@ -106,13 +104,14 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
       return await this.#creds.run(creds => op(new PagerDutyApi(creds.accessToken, me.region, me.email), me));
     },
     // PagerDuty can move an incident to another service, or a service or schedule to another team,
-    // after the action was staged: a team or service binding checks again that it still reaches it.
-    requireInScope: async object => {
-      const outside = await refusalsFail(objectOutside({ host: this.#sessionHost }, object, this.#within));
+    // after the action was staged: apply checks again that it is within the capability that staged
+    // it, whose scope starts with the binding's.
+    requireInScope: async (object, within) => {
+      const outside = await refusalsFail(objectOutside({ host: this.#sessionHost }, object, within));
       if (outside) throw new ActionApplyError(outside);
     },
-    currentIncident: async id => {
-      const { wire, outside } = await refusalsFail(currentIncident({ host: this.#sessionHost }, id, this.#within, [], readService));
+    currentIncident: async (id, within) => {
+      const { wire, outside } = await refusalsFail(currentIncident({ host: this.#sessionHost }, id, within, [], readService));
       if (outside) throw new ActionApplyError(outside);
       return wire;
     },
