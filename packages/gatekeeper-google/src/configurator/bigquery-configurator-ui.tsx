@@ -130,8 +130,9 @@ function suggestQueryProject({ ui, setValues }: Context, target: string | null):
   onlyProject ??= ui.listProjects("").then(
     options => options.length === 1 ? options[0]!.value : null,
     () => { onlyProject = undefined; return null; });
+  // Every answer is the same project, so any pending suggestion takes the first to arrive.
   void onlyProject.then(project => {
-    if (suggestedFor !== target) return;
+    if (suggestedFor === null) return;
     suggestedFor = null;
     setValues(project ? { queryProject: project } : {});
   });
@@ -220,6 +221,8 @@ export default {
             if (!keep) {
               clearFields("queryProject");
               overrideFor = null;
+            } else if (suggestedFor !== null) {
+              suggestedFor = next;
             }
             setValues({ target: next, queryProject: keep ? queryProject : null });
             if (!keep) suggestQueryProject(context, next);

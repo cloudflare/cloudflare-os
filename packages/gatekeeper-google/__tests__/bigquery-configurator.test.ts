@@ -131,12 +131,15 @@ describe("the query project", () => {
     frame.picker().onChange("dataset:theirs/events", null);
     expect(frame.ready()).toBe(false);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
-    // Nothing can be typed while the suggestion is on its way, so it cannot land on an edit.
+    // Nothing can be typed while the suggestion is on its way, so it cannot land on an edit, even
+    // after the choice moves within the shared project.
     expect(frame.autocomplete()).toMatchObject({ name: "queryProject", value: null, disabled: true });
+    frame.picker().onChange("project:theirs", null);
+    expect(frame.autocomplete()).toMatchObject({ value: null, disabled: true });
     await vi.waitFor(() => expect(frame.values().queryProject).toBe("mine"));
     expect(frame.autocomplete()).toMatchObject({ value: "mine", disabled: false });
     expect(frame.ready()).toBe(true);
-    expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events?queryProject=mine");
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/?queryProject=mine");
   });
 
   it("is chosen by the user when the account has several projects, and dropped on leaving the shared project", async () => {
