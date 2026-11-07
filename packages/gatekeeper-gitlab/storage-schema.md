@@ -1,7 +1,8 @@
 # GitLab gatekeeper storage schema
 
-Durable Object storage layout for `UserAccount` and `GitLabGatekeeperImpl`. Written from the code
-as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape this mirrors.
+Durable Object storage layout for `UserAccount`, `GitLabGatekeeperImpl` and
+`GitLabInstanceGatekeeperImpl`. Written from the code as each piece lands; the GitHub gatekeeper's
+`storage-schema.md` is the shape this mirrors.
 
 ## UserAccount
 
@@ -16,14 +17,16 @@ as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape th
 | `user` | `{ id, generation }` | The GitLab user behind the connection, read from `GET /user` on first need (the observer probe) and trusted only while the connection generation is unchanged. |
 | `expiredNotified`, `expiredNotifiedArm` | kit `credential-expiry` latch | `credentialsExpired()` sent once per dead grant: latched after the Workshop acknowledges, re-armed by every credential replacement. |
 | `stagedCredentials` | kit `credential-stage` record of `{ grant, startedUnder }` | A reconnect's grant and the connection generation it replaces, until `commitReconnect(stageId)`. Once another reconnect has moved the generation, the commit revokes the staged tokens instead. |
-| `cache:@access:*` | kit `KvTtlCache` | This account's own answers about project access, keyed by `project/<projectId>` subresource (with `/role/developer` or `/role/maintainer` for the role it names) and partitioned by the connection generation, which every connect, reconnect and disconnect replaces: its `members/all` probe by the project's id, asked when it observes another's binding. A grant is reused for 15 minutes and a denial for 15 seconds, and only while the grant is live: the partition is read through it on every use, so a disconnected or confirmed-dead grant fails the check instead. A failure to answer is never stored. |
+| `cache:@access:*` | kit `KvTtlCache` | This account's own answers about its access, keyed by the subresource asked about and partitioned by the connection generation, which every connect, reconnect and disconnect replaces. Three key families: `project/<projectId>` (with `/role/developer` or `/role/maintainer` for the role it names), its `members/all` probe by the project's id, a grant reused for 15 minutes; `repository/<projectId>`, GraphQL's `userPermissions.downloadCode` for the project, every unanswered one asked in one batch of ≤100-id queries (a project GitLab leaves out is stored as a denial); and `instance/<host>`, whether `GET /user` is `state: active` and `external: false`. The last two reuse a grant for `GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS` (a day by default), so a revoked code-read grant can go unnoticed that long. Every denial is reused for 15 seconds, and every answer only while the grant is live: the partition is read through it on every use, so a disconnected or confirmed-dead grant fails the check instead. A failure to answer, or an answer learned under a connection a reconnect replaced meanwhile, is never stored. Each entry holds a boolean, under the TTL its value is given when read. |
 
 ## GitLabGatekeeperImpl
 
-KV only. Three families: a TTL cache that any queued/applied/rejected action invalidates wholesale
+KV only. Four families: a TTL cache that any queued/applied/rejected action invalidates wholesale
 (one generation counter, not a sweep), the cache of finished CI job logs (`ciLog:*`, its own TTL
-and size budget, outside the generation: no action changes a finished log), and durable state
-that survives cache clears.
+and size budget, outside the generation: no action changes a finished log), the code-read caches
+(`code:*`, see [Code-read caches](#code-read-caches), also outside the generation: code search and
+file reads show GitLab as it is, never queued pushes), and durable state that survives cache
+clears.
 
 Newly minted binding props include `reportsSubresources: true`, proving that all reads were
 reported to the kernel. This is immutable binding metadata, not a KV marker. Those bindings'
@@ -32,7 +35,7 @@ older bindings.
 
 | Key | Value | Notes |
 |---|---|---|
-| `projectId` | `number` | The bound project's GitLab id, read once from `/projects/<encoded path>`, following a moved project's redirect from it to its id, as GitHub's pin does. Every REST request beneath the project is then sent beneath `/projects/<projectId>`, git fetches and pushes go to the path that id has now (a push's read by id before it, a fetch's from the cached project and checked by id after), and every read reports `project/<projectId>` as its subresource, or that with the role CI data needs. Absent until first use, and nothing is read or written until it is stored. `addObserver` reads it as stored and never stores it: without it, the binding has read nothing by id, and admission checks the path alone. A binding that read before ids were pinned was pinned to whichever project its path named at its first read since. |
+| `projectId` | `number` | The bound project's GitLab id, read once from `/projects/<encoded path>`, following a moved project's redirect from it to its id, as GitHub's pin does. Every REST request beneath the project is then sent beneath `/projects/<projectId>`, git fetches and pushes go to the path that id has now (a push's read by id before it, a fetch's from the cached project and checked by id after), and every read reports `project/<projectId>` as its subresource, or that with the role CI data needs, except code-only reads (code search, files, branches, tags, refs, commit history, metadata), which report `repository/<projectId>` (metadata of a project whose repository is disabled reports `project/<projectId>`). Absent until first use, and nothing is read or written until it is stored. `addObserver` reads it as stored and never stores it: without it, the binding has read nothing by id, and admission checks the path alone. A binding that read before ids were pinned was pinned to whichever project its path named at its first read since. |
 | `cachesByProjectId` | `true` | Set once the caches hold only what was read by the pinned id. A binding without it may hold reads a release that addressed the project by path made, from whichever project had the path then, so on start `cacheGeneration` is moved, invalidating every `cache:*` entry, `observerRoster` is deleted, and this is set. `ciLog:*` stays, since each log is revalidated by job id beneath the pinned project before use. |
 | `cacheGeneration` | `number` | Bumped by `#clearCaches()`; every `cache:*` entry records the generation it was written under and is ignored once it differs. |
 | `cache:<kind>:<parts…>` | `{ fetchedAt, value, generation }` | TTL cache. Families: `version` (1 h); `viewer` (5 min); `project-raw`, `project-by-id`, `issue`, `mr-raw`, `mr`, `mr-approvals`, `discussions`, `compare`, `commit-raw`, `branch-head`, `mr-diffs`, `mr-simulated`, `pipeline`, `job` (30 s); `list-issues`, `list-mrs`, `list-branches`, `list-tags`, `list-commits`, `mr-commits`, `mr-pipelines` (15 s); `merge-base` and `ci-config` (never expire -- pure functions of their shas: `ci-config:<sha>:<path>` is whether the CI configuration file exists at that commit). `project-raw` and `commit-raw` hold GitLab's responses as returned, normalised on each read (an earlier version cached normalised data under `project` and `commit`; those entries are never read again and expire). `mr-diffs` pages are keyed by the merge request's whole revision (`baseSha`, `mergeBaseSha`, `headSha`): the target branch can move under an unchanged head. CI status is never served from these: `pipeline` and `job` serve the opens' checks, while `getDetails()` re-reads them (refreshing the entry), and a log read re-reads the job too, since its status says whether the log is final and `erased_at` whether it may be served; pipeline listings, push events and test reports are not cached. A merge request's `getDetails()` re-reads it for `ci`, refreshing `mr-raw` and dropping an `mr` entry cached at an older head. `mr-pipelines` holds a merge request's pipeline rows (id, project, commit; at most 1000), which decide the pipelines and jobs its binding may open; one not in the cached rows is looked for once more in a fresh listing before it is refused, and `listPipelines()` on the merge request pages uncached. No ETags: GitLab REST does not reliably answer conditional requests. |
@@ -54,3 +57,29 @@ older bindings.
 
 The kit reserves the `observer-withhold-fence:*` and `observer-withhold-latch` keys for owner-only
 reads; this gatekeeper has none, so they are never written.
+
+## GitLabInstanceGatekeeperImpl
+
+KV only, and only the code-read caches below. An instance binding queues no actions, stores no
+observers (`addObserver` and `removeObserver` are no-ops), and pins nothing in storage: a
+repository `getRepository()` opens is pinned by its project id in that session.
+
+## Code-read caches
+
+Both bindings keep these in their own facet storage (`CodeCaches` in `src/gitlab-code.ts`), as the
+binding owner's account sees GitLab. Search results are never cached. The three timed families
+(`code:facts:*`, `code:repositoryOpen:*`, `code:noZoekt:*`) are kept bounded: a read that finds
+an entry expired deletes it, and every write sweeps its own family for expired entries, looking at
+the next `max(32, 2 × entries written)` keys in key order from where the previous sweep of that
+family stopped (held in memory; it starts over from the first key at the end, or when the Durable
+Object restarts). Since a sweep looks at at least twice what its write added, it laps the family
+faster than writes grow it, so a family holds little more than its entries written in the last 10
+minutes.
+
+| Key | Value | Notes |
+|---|---|---|
+| `code:facts:<projectId>` | `{ at, value }`, `value` a `GitLabProjectFacts` | The owner's view of a project a code search named: path, name, namespace, URL, default branch, visibility, archived. From GraphQL `projects(ids:)`, every id not fresh asked at once; reused for 10 minutes from `at`. A project the owner can't see is not stored, and is asked about again by the next search; its hits are dropped. Entries an earlier release wrote may also carry `repositoryOpenToAllUsers`, which nothing reads. |
+| `code:repositoryOpen:<projectId>` | `{ at, value: boolean }` | Whether the project's repository is open to everyone who can see the project (REST `repository_access_level` `enabled`; `private` and `disabled` store `false`). Asked of GitLab (`GET /projects/:id`) only when an instance search page is refused with a definite denial, for that page's internal and public projects; reused for 10 minutes from `at`. A level GitLab did not send, or a read that failed, is not stored and counts as not open. The narrowing keeps only hits whose project is internal or public with `value: true`. |
+| `code:noZoekt:<scope>` | `{ at, value: true }` | Zoekt answered that it cannot search `<scope>`: `instance`, `group/<groupId>` or `project/<projectId>`. For 10 minutes from `at`, a project search starts at advanced search, and an instance or group search fails without asking GitLab. |
+| `code:file:<projectId>:<commitId>:<path>` | `Uint8Array` | A text file's bytes at a commit (`<path>` percent-encoded with `encodeURIComponent`), stored after a successful `readFile()` under the commit its ref resolved to, and served when a later read's `ref` is that 40-hex commit id. Immutable, so never expired, only evicted. Each read, a cached one included, is authorized before it is answered. A binary or over-1-MiB file is never stored. |
+| `code:files` | `{ key, bytes }[]` | Eviction index of the `code:file:*` entries, oldest first; storing a file again moves it last. At most 128 entries and 16 MiB together: past either, the oldest are deleted. |

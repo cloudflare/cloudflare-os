@@ -515,8 +515,12 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   // A tunnel's public origin, for GitHub to deliver hook events to; unset, hooks are refused.
   "gatekeeper-github": ["WEBHOOK_ORIGIN"],
   // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
-  // behind Cloudflare Access; unset, it talks to gitlab.com.
-  "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
+  // behind Cloudflare Access; unset, it talks to gitlab.com. Instance code search is off unless
+  // GITLAB_INSTANCE_CODE_SEARCH turns it on.
+  "gatekeeper-gitlab": [
+    "GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET",
+    "GITLAB_INSTANCE_CODE_SEARCH", "GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS",
+  ],
   // Each connection's daily read limit; unset, the in-code default.
   "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
   // The Entra tenant (or allowlist of tenant IDs) to accept, which must be set or the gatekeeper

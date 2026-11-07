@@ -34,6 +34,13 @@ export type GitLabUserResponse = {
   confirmed_at?: string | null;
   /** Sent to administrators only, as `true`; absent for everyone else. */
   is_admin?: boolean;
+  /** The account's state: `"active"` for a user who can sign in and use the instance. */
+  state?: string;
+  /**
+   * Whether the user is an external user, who sees only the projects they are a member of, never
+   * internal ones (https://docs.gitlab.com/administration/external_users/).
+   */
+  external?: boolean;
 };
 
 /** A user as it appears nested in issuables and elsewhere. */
@@ -72,11 +79,30 @@ export type GitLabProjectResponse = {
   archived?: boolean;
   empty_repo?: boolean;
   /**
+   * Who may read the repository among those who can see the project: `"enabled"` (everyone who
+   * can see it), `"private"` (members only) or `"disabled"`. Sent to signed-in users, members or
+   * not, on the instance it was checked against (GitLab 18.11), never to anonymous callers.
+   */
+  repository_access_level?: "enabled" | "private" | "disabled";
+  /**
    * Where the project's CI configuration lives, relative to the repository root; empty or absent
    * for the default `.gitlab-ci.yml`. `path@group/project` names another project's file, and a
    * URL a remote one.
    */
   ci_config_path?: string | null;
+};
+
+/**
+ * One row of a code search (`GET …/search?scope=blobs`): a match in the file at `path` of project
+ * `project_id` at `ref`, its snippet (`data`) starting at line `startline`. `basename`, `filename`
+ * and `id` are also sent and not read.
+ */
+export type GitLabBlobSearchRow = {
+  project_id: number;
+  path: string;
+  ref: string;
+  startline: number;
+  data: string;
 };
 
 /** A label object, as returned with `with_labels_details=true`. */
@@ -422,6 +448,7 @@ export type GitLabCompareResponse = {
  * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx it did
  * not follow: a renamed or transferred project answers its old path with a `301` to its numeric-id
  * URL, which is followed only for a GET of the project's root (see redirectTarget).
+ * `retryAfterSeconds` is a 429's `Retry-After`, in whole seconds, when it carried a usable one.
  */
 export class GitLabApiError extends Error {
   status: number;
@@ -429,16 +456,32 @@ export class GitLabApiError extends Error {
   /** Whether the credentials themselves were refused (see `CREDENTIAL_PROBE_PATH`). */
   isAuthError: boolean;
   movedTo?: string;
+  /** How long a rate-limited (429) caller should wait before retrying, when GitLab said. */
+  retryAfterSeconds?: number;
 
-  constructor(status: number, message: string,
-              options: { details?: unknown; movedTo?: string; isAuthError?: boolean; cause?: unknown } = {}) {
+  constructor(status: number, message: string, options: {
+    details?: unknown; movedTo?: string; isAuthError?: boolean; retryAfterSeconds?: number; cause?: unknown;
+  } = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "GitLabApiError";
     this.status = status;
     this.details = options.details;
     this.isAuthError = options.isAuthError ?? false;
     this.movedTo = options.movedTo;
+    this.retryAfterSeconds = options.retryAfterSeconds;
   }
+}
+
+/**
+ * A `Retry-After` header as whole seconds from `now`: its delay-seconds form, or its HTTP-date
+ * form counted from `now` (never negative), or undefined when absent or unparseable.
+ */
+export function retryAfterSecondsOf(header: string | null, now = Date.now()): number | undefined {
+  if (header === null) return undefined;
+  const value = header.trim();
+  if (/^\d+$/.test(value)) return Number.isSafeInteger(Number(value)) ? Number(value) : undefined;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - now) / 1000));
 }
 
 /** The one path whose 401 means the credentials themselves were refused. */
@@ -465,6 +508,8 @@ type RequestOptions = {
   timeoutMs?: number;
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
+  /** Where `path` is rooted on the API origin; defaults to REST's `REST_ROOT`. */
+  apiRoot?: typeof REST_ROOT | typeof GRAPHQL_ROOT;
 };
 
 export type RequestResult<T> = {
@@ -477,6 +522,10 @@ export type RequestResult<T> = {
 export type GitLabPage<T> = { items: T[]; nextPage: number | null };
 
 export const DEFAULT_INSTANCE_URL = "https://gitlab.com";
+/** Where every REST path is rooted. */
+const REST_ROOT = "/api/v4";
+/** GitLab's one GraphQL endpoint (https://docs.gitlab.com/api/graphql/). */
+const GRAPHQL_ROOT = "/api/graphql";
 const USER_AGENT = "Cloudflare-Gadgets";
 const REQUEST_TIMEOUT_MS = 30_000;
 const GIT_TIMEOUT_MS = 120_000;
@@ -695,7 +744,7 @@ async function send(
   options: RequestOptions & { accept?: string },
   credentials?: GitLabCredentialSource,
 ): Promise<Response> {
-  const url = new URL(`/api/v4${path}`, instance.apiOrigin);
+  const url = new URL(`${options.apiRoot ?? REST_ROOT}${path}`, instance.apiOrigin);
   appendQuery(url, options.query);
 
   const headers = new Headers({ "User-Agent": USER_AGENT, ...instance.headers });
@@ -734,13 +783,15 @@ async function send(
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
     const parsed = await parseErrorBody(response);
     let message = errorMessageFromBody(parsed, `${response.status} ${response.statusText}`);
+    let retryAfterSeconds: number | undefined;
     if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      if (retryAfter) message += ` (retry after ${retryAfter}s)`;
+      retryAfterSeconds = retryAfterSecondsOf(response.headers.get("retry-after"));
+      if (retryAfterSeconds !== undefined) message += ` (retry after ${retryAfterSeconds}s)`;
     }
     throw new GitLabApiError(response.status, message, {
       details: parsed,
-      isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH,
+      isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH && options.apiRoot === undefined,
+      retryAfterSeconds,
     });
   }
 
@@ -944,6 +995,22 @@ export class GitLabApi {
     return { items: data, nextPage: nextPageOf(headers, page, perPage, data.length) };
   }
 
+  /**
+   * Runs one GraphQL query (`POST /api/graphql`) with `variables` and returns its `data`. GitLab
+   * answers a query it could not fully run with 200 and an `errors` list, which fails here as a
+   * `GitLabApiError` of that status whose `details` hold the errors: the answer is incomplete, not
+   * a denial. Its message is fixed, since GraphQL error text can name the resources queried.
+   */
+  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const { data, status } = await this.#request<{ data?: T | null; errors?: unknown[] }>("POST", "",
+      { body: { query, variables }, apiRoot: GRAPHQL_ROOT });
+    if (data === null || typeof data !== "object" || (data.errors?.length ?? 0) > 0 || data.data == null) {
+      throw new GitLabApiError(status, "GitLab's GraphQL API did not answer the query.",
+        { details: typeof data === "object" && data !== null ? data.errors : undefined });
+    }
+    return data.data;
+  }
+
   // -- users
 
   /** The token's own user. `email` + non-null `confirmed_at` is the provider-verified identity. */
@@ -982,6 +1049,35 @@ export class GitLabApi {
   /** A project by numeric id -- how a merge request from a fork names its source project. */
   async getProjectById(id: number): Promise<GitLabProjectResponse> {
     return await this.#get<GitLabProjectResponse>(`/projects/${id}`);
+  }
+
+  /**
+   * The numeric id of the group at `groupPath` (`GET /groups/:path`, which follows no redirect),
+   * or null when no group there is visible to the user.
+   */
+  async getGroupId(groupPath: string): Promise<number | null> {
+    const { data, status } = await this.#request<{ id: number }>("GET",
+      `/groups/${encodeURIComponent(groupPath)}`, { query: { with_projects: false }, okStatuses: [404] });
+    return status === 404 ? null : data.id;
+  }
+
+  /**
+   * One page of code search results (`scope=blobs`) from `scopePath` -- `/search`,
+   * `/groups/:id/search` or `/projects/:id/search` -- with `query`'s parameters, and the engine
+   * GitLab says ran it (`X-Search-Type`: `zoekt`, `advanced` or `basic`; null when absent).
+   * @throws GitLabApiError (502) when the answer is not a list, rather than read it as no matches.
+   */
+  async searchBlobs(scopePath: string, query: Record<string, string | number | boolean | undefined>,
+                    page: number, perPage: number):
+      Promise<GitLabPage<GitLabBlobSearchRow> & { searchType: string | null }> {
+    const { data, headers } = await this.#request<GitLabBlobSearchRow[]>("GET", scopePath,
+      { query: { ...query, scope: "blobs", page, per_page: perPage } });
+    if (!Array.isArray(data)) throw new GitLabApiError(502, "GitLab's code search answer was not a list.");
+    return {
+      items: data,
+      nextPage: nextPageOf(headers, page, perPage, data.length),
+      searchType: headers.get("x-search-type"),
+    };
   }
 
   /**
@@ -1385,6 +1481,64 @@ export class GitLabApi {
       { query: { ref }, okStatuses: [404] });
     await response.body?.cancel().catch(() => {});
     return response.status !== 404;
+  }
+
+  /**
+   * A file's bytes at `ref` and the commit `ref` resolved to, or null when the project, ref or
+   * file does not exist (404): `GET …/repository/files/:path/raw?ref=`, whose `X-Gitlab-Commit-Id`
+   * and `X-Gitlab-Size` headers come with the bytes, so the three always agree. A file over
+   * `maxBytes` is not read: its `content` is null (a size header that understated it is caught as
+   * the bytes arrive).
+   */
+  async getRepositoryFile(projectId: number, filePath: string, ref: string, maxBytes: number):
+      Promise<{ commitId: string; size: number; content: Uint8Array | null } | null> {
+    const response = await this.#send("GET",
+      `/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}/raw`,
+      { query: { ref }, okStatuses: [404] });
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    const commitId = response.headers.get("x-gitlab-commit-id");
+    const size = Number(response.headers.get("x-gitlab-size"));
+    if (!commitId || response.headers.get("x-gitlab-size") === null || !Number.isSafeInteger(size) || size < 0) {
+      await response.body?.cancel().catch(() => {});
+      throw new GitLabApiError(502, "GitLab's file response did not say which commit or size it was.");
+    }
+    if (size > maxBytes) {
+      await response.body?.cancel().catch(() => {});
+      return { commitId, size, content: null };
+    }
+    try {
+      return { commitId, size, content: await readBytesCapped(response, maxBytes) };
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) return { commitId, size, content: null };
+      throw transportError(error);
+    }
+  }
+
+  /**
+   * One page of the repository's tree at `ref` (the default branch when unset) beneath `path`,
+   * the whole subtree with `recursive`: `GET …/repository/tree`. Files and directories only;
+   * submodules (`commit` entries) are left out, so a page can be short with more behind it. Null
+   * when GitLab answers 404: no such ref or path, or an empty repository.
+   */
+  async listRepositoryTree(projectId: number, options: {
+    ref?: string; path?: string; recursive?: boolean; page: number; perPage: number;
+  }): Promise<GitLabPage<{ path: string; type: "file" | "directory" }> | null> {
+    const { data, headers, status } = await this.#request<{ path: string; type: string }[]>("GET",
+      `/projects/${projectId}/repository/tree`, {
+        query: {
+          ref: options.ref, path: options.path || undefined, recursive: options.recursive || undefined,
+          page: options.page, per_page: options.perPage,
+        },
+        okStatuses: [404],
+      });
+    if (status === 404) return null;
+    const items = data.flatMap((entry): { path: string; type: "file" | "directory" }[] =>
+      entry.type === "blob" ? [{ path: entry.path, type: "file" }]
+      : entry.type === "tree" ? [{ path: entry.path, type: "directory" }] : []);
+    return { items, nextPage: nextPageOf(headers, options.page, options.perPage, data.length) };
   }
 
   // -- CI

@@ -27,6 +27,16 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   /** Optional Cloudflare Access service token, attached to every Worker→GitLab request (secrets). */
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+  /**
+   * Offers the Instance resource type (code search and reads across every project the account can
+   * read) when `true`; see instanceCodeSearchEnabled. Off by default.
+   */
+  GITLAB_INSTANCE_CODE_SEARCH?: string;
+  /**
+   * How long an account reuses a grant of code-read access (`repository/*`, `instance/*`
+   * subresources), in seconds; see codeAccessCacheTtlMs. Defaults to a day.
+   */
+  GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS?: string;
 };
 
 export const VENDOR_ID = "gitlab";
@@ -86,6 +96,26 @@ function instanceOrigin(name: "GITLAB_URL" | "GITLAB_API_URL", raw: string): str
 /** The instance users visit: OAuth authorization, links in results, resource URLs. */
 export function instanceUrl(env: Env): string {
   return instanceOrigin("GITLAB_URL", env.GITLAB_URL || DEFAULT_INSTANCE_URL);
+}
+
+/** The default of GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS: a day. */
+const DEFAULT_CODE_ACCESS_CACHE_TTL_SECONDS = 86_400;
+
+/**
+ * How long an account reuses a grant of code-read access -- its answer that it can download a
+ * repository's code, or is an active non-external user of the instance -- in milliseconds, from
+ * GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS (a day by default). A revoked grant can go unnoticed this
+ * long; denials and project memberships keep their own, shorter lifetimes.
+ * @throws Error naming the variable when it is set to anything but a positive whole number.
+ */
+export function codeAccessCacheTtlMs(env: Env): number {
+  const raw = env.GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS;
+  if (raw === undefined || raw === "") return DEFAULT_CODE_ACCESS_CACHE_TTL_SECONDS * 1000;
+  const ms = Number(raw) * 1000;
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(ms)) {
+    throw new Error("GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS must be a positive whole number of seconds.");
+  }
+  return ms;
 }
 
 /**
@@ -233,6 +263,27 @@ function effectiveAccessLevel(
 }
 
 /**
+ * Whether the Instance resource type is offered, from GITLAB_INSTANCE_CODE_SEARCH: `true` or `1`
+ * turns it on; unset, empty, `false` or `0` leaves it off (any case, surrounding space ignored).
+ * Off by default because gitlab.com has no instance-wide code search.
+ * @throws Error naming the variable for any other value, rather than guessing what it meant.
+ */
+export function instanceCodeSearchEnabled(env: Env): boolean {
+  const raw = (env.GITLAB_INSTANCE_CODE_SEARCH ?? "").trim().toLowerCase();
+  if (raw === "true" || raw === "1") return true;
+  if (raw === "" || raw === "false" || raw === "0") return false;
+  throw new Error('GITLAB_INSTANCE_CODE_SEARCH must be "true" or "false".');
+}
+
+/**
+ * The configured instance's host as `URL.host` spells it (port included when not the default):
+ * what `instanceSubresourceId` names the instance by.
+ */
+export function instanceHost(env: Env): string {
+  return new URL(instanceUrl(env)).host;
+}
+
+/**
  * The connectable resource types, with URL patterns on the configured instance. Ordered most
  * specific first: `:project+` also matches an issue or merge request URL, and resource
  * resolution is first-match. The issue and merge request patterns accept anything after the
@@ -240,11 +291,19 @@ function effectiveAccessLevel(
  * `/pipelines`, `/issues/3/designs` -- and without it such a URL would match only `:project+`
  * and pre-select a capability over the whole project for an agent that asked about one merge
  * request. `parseResourceUrl` accepts the same suffixes.
+ *
+ * The instance type, offered only with GITLAB_INSTANCE_CODE_SEARCH, is the instance root,
+ * `<origin>/`: that pattern matches the root alone (with or without its slash), and `:project+`
+ * never matches it, so it overlaps no other type and its place in the order does not matter. It
+ * is not the whole-instance `https://*` catch-all, which would claim every URL no other type
+ * matches on any host. It is its own connect card (no `groupedWith`): reading code across the
+ * instance is a different grant from managing one project.
  */
 export function supportedResources(env: Env): {
   mergeRequest: SupportedResource;
   issue: SupportedResource;
   project: SupportedResource;
+  instance?: SupportedResource;
   all: SupportedResource[];
 } {
   const origin = instanceUrl(env);
@@ -263,9 +322,16 @@ export function supportedResources(env: Env): {
     title: "GitLab Project",
     description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",
   };
-  return { mergeRequest, issue, project, all: [mergeRequest, issue, project] };
+  if (!instanceCodeSearchEnabled(env)) return { mergeRequest, issue, project, all: [mergeRequest, issue, project] };
+  const instance: SupportedResource = {
+    urlPattern: `${origin}/`,
+    title: "GitLab instance code",
+    description: `Search and read code in every project you can read on ${instanceHost(env)}.`,
+  };
+  return { mergeRequest, issue, project, instance, all: [mergeRequest, issue, project, instance] };
 }
 
+/** The resource kinds a project-scoped binding (GitLabGatekeeperImpl) serves. */
 export type ResourceKind = "project" | "issue" | "mergeRequest";
 
 /** What a bound gatekeeper DO is told about itself (`ctx.props`). */
@@ -281,4 +347,12 @@ export type GitLabGatekeeperImplProps = {
    * have no legacy reads for addObserver to check (see GitLabGatekeeperImpl.addObserver).
    */
   reportsSubresources?: true;
+};
+
+/**
+ * What an instance binding (GitLabInstanceGatekeeperImpl) is told about itself. The instance is
+ * the deployment's configured one, so nothing names it here.
+ */
+export type GitLabInstanceGatekeeperProps = {
+  userObjectId: string;
 };

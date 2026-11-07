@@ -2,12 +2,17 @@
 // must be advertised to the workspace git cache, or a later attempt to mount it as a worktree
 // fails as unknown. Only this suite can catch a session method that forgets to wrap its cursor
 // or advertise its shas -- removing any `#gitCache.wrap()`/`#gitCache.advertise()` call in
-// gitlab-sessions.ts must fail this file. Sessions are instantiated directly against fake
-// gatekeepers; the REST/caching layer below is not under test here.
+// gitlab-sessions.ts must fail this file. It also checks which subresource each code-only read
+// reports (the repository), that a file read advertises the commit it was read at once
+// authorized, and that metadata, listings and code search, served through gitlab-code.ts,
+// advertise nothing. Sessions are instantiated directly against fake gatekeepers; the
+// REST/caching layer below is not under test here.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
+import type { GitLabApi } from "../../src/gitlab-api";
+import { CodeCaches, type CodeReadContext } from "../../src/gitlab-code";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper";
 import { GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "../../src/gitlab-sessions";
 import type { Cursor, GitLabCommitSummary, GitLabMergeRequestSummary, GitLabProjectRef } from "../../src/types";
@@ -76,6 +81,8 @@ function commitSummary(id: string, parents: string[]): GitLabCommitSummary {
 
 /** The subresource the fake gatekeepers report for a read that names none: the bound project. */
 const BOUND = "project/1";
+/** What the fake gatekeepers report for a code-only read: the bound project's repository. */
+const REPOSITORY = "repository/1";
 
 function fakeGatekeeper(methods: Partial<Record<string, unknown>>): GitLabGatekeeperImpl {
   return {
@@ -83,6 +90,7 @@ function fakeGatekeeper(methods: Partial<Record<string, unknown>>): GitLabGateke
     // As GitLabGatekeeperImpl.authorizeRead: forward the observation with the subresource it depends on.
     authorizeRead: async (queue: RpcStub<ApprovalQueue>, observation: object, subresource?: string) =>
       await queue.authorizeObservation({ ...observation, subresources: [subresource ?? BOUND] } as never),
+    repositorySubresource: async () => REPOSITORY,
     ...methods,
   } as unknown as GitLabGatekeeperImpl;
 }
@@ -172,6 +180,8 @@ describe("GitLabProjectSessionImpl advertising", () => {
     await drain(await session.listTags());
     await drain(await session.listCommits());
     expect(queue.cache.advertised.toSorted()).toEqual([oid(1), oid(2), oid(3), oid(4)]);
+    // Refs and history are code-only reads, reported by the repository.
+    expect(queue.subresources).toEqual([[REPOSITORY], [REPOSITORY], [REPOSITORY]]);
   });
 
   it("advertises getCommit and resolveRef results only when served from GitLab", async () => {
@@ -190,6 +200,8 @@ describe("GitLabProjectSessionImpl advertising", () => {
       `Read commit ${oid(1).slice(0, 12)}`, "Resolve main to a commit id",
       `Read commit ${oid(1).slice(0, 12)}`, "Resolve pending to a commit id",
     ]);
+    // A commit's details carry CI, so getCommit reports the project; resolveRef only the repository.
+    expect(queue.subresources).toEqual([[BOUND], [REPOSITORY], [BOUND], [REPOSITORY]]);
   });
 
   it("records no observation for its internal branch-head read and declares pushedCommits", async () => {
@@ -208,6 +220,70 @@ describe("GitLabProjectSessionImpl advertising", () => {
     expect(submitted[0].presentation).not.toHaveProperty("description");
     await expect(session.push("main", "abc123")).rejects.toThrow(/full 40-character commit id/);
     await expect(session.push("bad..name", oid(2))).rejects.toThrow();
+  });
+});
+
+/** Facet KV over a Map, as CodeCaches uses it. */
+function memoryKv() {
+  const entries = new Map<string, unknown>();
+  return {
+    get: <T>(key: string) => entries.get(key) as T | undefined,
+    put: <T>(key: string, value: T) => { entries.set(key, value); },
+    delete: (key: string) => { entries.delete(key); },
+    list: <T>({ prefix }: { prefix: string }) =>
+      [...entries].filter(([key]) => key.startsWith(prefix)).toSorted(([a], [b]) => a < b ? -1 : 1) as [string, T][],
+  };
+}
+
+/** A gatekeeper whose codeTarget reads `api` as the bound project, id 1 at `group/project`. */
+function codeGatekeeper(api: Partial<GitLabApi>): Partial<Record<string, unknown>> {
+  const context: CodeReadContext = {
+    read: fn => fn(api as GitLabApi), caches: new CodeCaches(memoryKv()),
+    instanceUrl: "https://gitlab.example.com", host: "gitlab.example.com",
+  };
+  return {
+    codeTarget: async () => ({ context, projectId: 1, projectPath: "group/project", defaultBranch: "main" }),
+    projectMetadata: async () => ({ path: "group/project" }),
+    metadataSubresource: async () => REPOSITORY,
+  };
+}
+
+describe("GitLabProjectSessionImpl code reads", () => {
+  it("reports the repository for metadata, files, listings and code search, advertising only a file's commit", async () => {
+    const queue = new TestApprovalQueue();
+    const session = projectSession(queue, codeGatekeeper({
+      getRepositoryFile: async () => ({ commitId: oid(7), size: 4, content: new TextEncoder().encode("a\nb\n") }),
+      listRepositoryTree: async () => ({ items: [{ path: "a", type: "file" }], nextPage: null }),
+      searchBlobs: async () => ({
+        items: [{ project_id: 1, path: "a", ref: "main", startline: 1, data: "a" }],
+        nextPage: null, searchType: "zoekt",
+      }),
+      graphql: async <T>() => ({
+        projects: {
+          nodes: [{ id: "gid://gitlab/Project/1", fullPath: "group/project", name: "project",
+            webUrl: "https://gitlab.example.com/group/project", visibility: "private", archived: false,
+            repository: { rootRef: "main" } }],
+          pageInfo: { hasNextPage: false },
+        },
+      }) as T,
+    }));
+
+    await session.getMetadata();
+    expect(await session.readFile("a")).toMatchObject({ path: "a", commitId: oid(7), text: "a\nb", totalLines: 2 });
+    expect(await drain(await session.listFiles())).toEqual([{ path: "a", type: "file" }]);
+    expect(await drain(await session.searchCode({ text: "a" }))).toMatchObject([
+      { projectId: 1, projectPath: "group/project", path: "a", matchedAs: "exact" },
+    ]);
+    expect(queue.observations).toEqual([
+      "Read project metadata for group/project", "Read a in group/project", "List files in group/project",
+      "Search GitLab code: a in group/project",
+    ]);
+    expect(queue.subresources).toEqual([[REPOSITORY], [REPOSITORY], [REPOSITORY], [REPOSITORY]]);
+    // The file's commit, once its read was authorized; nothing else.
+    expect(queue.events.slice(0, 3)).toEqual([
+      "authorize Read project metadata for group/project", "authorize Read a in group/project", `advertise ${oid(7)}`,
+    ]);
+    expect(queue.cache.advertised).toEqual([oid(7)]);
   });
 });
 

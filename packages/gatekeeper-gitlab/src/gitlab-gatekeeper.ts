@@ -112,6 +112,7 @@ import {
   VENDOR_ID,
   hasProjectMembership,
   projectMembershipLevel,
+  instanceHost,
   instanceUrl as instanceUrlOf,
   withAccountApi,
   type Env,
@@ -171,7 +172,8 @@ import {
 import { StreamingCursor, mapPage } from "./gitlab-cursors";
 import type { GitLabVerifierApi } from "./gitlab";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
-import { parseProjectSubresource, projectSubresourceId } from "./project-subresources";
+import { metadataSubresourceId, parseGitLabSubresource, projectSubresourceId, repositorySubresourceId } from "./project-subresources";
+import { CodeCaches, type CodeReadContext } from "./gitlab-code";
 import type {
   GitLabActor,
   GitLabBranchFilter,
@@ -257,9 +259,13 @@ const CI_DATA_ACCESS_LEVELS: Record<CiDataSet, number> = {
   "ci-logs": DEVELOPER_ACCESS_LEVEL,
   "ci-test-reports": MAINTAINER_ACCESS_LEVEL,
 };
-// Admits an observer only if their own account can read every project subresource a binding's
-// reads reported, as its UserAccount last learned (see UserAccount.checkSubresourceAccess).
-const verifyProjectAccess = observerAccessVerifier({
+/**
+ * Admits an observer only if their own account can read every subresource a binding's reads
+ * reported -- project memberships, repositories and the instance -- as its UserAccount last learned
+ * (see UserAccount.checkSubresourceAccess). The instance binding (gitlab-instance.ts) admits through
+ * it too.
+ */
+export const verifyProjectAccess = observerAccessVerifier({
   hasCollectionAccess: (verifier: Fetcher<GitLabVerifierApi>, subresources: readonly string[]) =>
     verifier.checkSubresourceAccess([...subresources]),
 });
@@ -460,11 +466,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Authorizes a read made through this binding, reporting what it depends on as its subresource:
-   * the project it was made in, by its id (see projectSubresourceId), or `subresource`, the ID a
+   * the project it was made in, by its id (see projectSubresourceId), or `subresource`: the ID a
    * job-log or test-report read chose when it fetched its data (see readJobLog, #readTestReport),
-   * which also names the role that data needs. Whatever a read returned, an observer can see it only
-   * if their own membership of that project reaches the role. Every read, each page of a listing
-   * included, authorizes through here, so none can leave it out.
+   * which also names the role that data needs, or the repository a code-only read depends on (see
+   * repositorySubresource). Whatever a read returned, an observer can see it only if their own
+   * account can read that. Every read, each page of a listing included, authorizes through here
+   * (code search and file reads through gitlab-code.ts, reporting the repository), so none can
+   * leave it out.
    */
   async authorizeRead(
     approvalQueue: RpcStub<ApprovalQueue>, observation: Omit<ObservationDescription, "subresources">,
@@ -472,6 +480,49 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   ): Promise<void> {
     const required = subresource ?? projectSubresourceId((await this.#pinnedProject()).id);
     await approvalQueue.authorizeObservation({ ...observation, subresources: [required] });
+  }
+
+  /**
+   * What a code-only read through this binding reports: the bound project's repository, by its
+   * pinned id (`repository/<id>`), which any account GitLab lets download the code may see.
+   */
+  async repositorySubresource(): Promise<string> {
+    return repositorySubresourceId((await this.#pinnedProject()).id);
+  }
+
+  /**
+   * What `getMetadata` reports: the bound project's repository, or the project when its repository
+   * is disabled (see metadataSubresourceId), as the project's cached response says.
+   */
+  async metadataSubresource(): Promise<string> {
+    const { id } = await this.#pinnedProject();
+    return metadataSubresourceId(id, (await this.#getProjectResponse()).repository_access_level);
+  }
+
+  readonly #codeCaches = new CodeCaches(this.ctx.storage.kv);
+
+  /**
+   * What the session's code search and file reads need (see gitlab-code.ts): GitLab as the
+   * binding's account with the project pinned, the binding's code caches, and the bound project:
+   * its pinned id, its path now (for titles and links), and its default branch, which decides
+   * where a search on a given ref can run.
+   */
+  async codeTarget(): Promise<{
+    context: CodeReadContext; projectId: number; projectPath: string; defaultBranch: string | null;
+  }> {
+    const { id } = await this.#pinnedProject();
+    const project = await this.#getProjectResponse();
+    return {
+      context: {
+        read: fn => this.#readApi(fn),
+        caches: this.#codeCaches,
+        instanceUrl: this.#instanceUrl(),
+        host: instanceHost(this.env),
+      },
+      projectId: id,
+      projectPath: project.path_with_namespace,
+      defaultBranch: project.default_branch ?? null,
+    };
   }
 
   /**
@@ -2062,16 +2113,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Checks the project subresources this binding's reads report (see authorizeRead), failing the
-   * whole call for any other ID. An observer is allowed when their own membership of each project
-   * reaches the role its ID names, or Reporter for none, as their UserAccount last learned (see
+   * Checks the subresources this binding's reads report (see authorizeRead): project IDs, the
+   * repository IDs its code-only reads report, and instance IDs, failing the whole call for any
+   * other ID. An observer is allowed when their own account can read every one -- a project
+   * membership reaching the role its ID names (or Reporter for none), a repository GitLab lets them
+   * download, the instance as an active non-external user -- as their UserAccount last learned (see
    * UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    for (const subresource of subresources) parseProjectSubresource(subresource);
+    for (const subresource of subresources) parseGitLabSubresource(subresource);
     return await verifyProjectAccess(observers, subresources);
   }
 

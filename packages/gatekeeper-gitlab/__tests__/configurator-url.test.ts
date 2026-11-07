@@ -1,22 +1,25 @@
-// The three configurator UIs each parse and build resource URLs that `parseResourceUrl` then has
-// to accept, but they cannot share it: each configurator module is transpiled on its own by
-// `scripts/build-gatekeeper-configurator.ts`, which only strips `@gadgets/configurator-ui` and
-// type-only imports, so a runtime import would not resolve inside the sandboxed frame. The
-// duplication is deliberate, and this test is what keeps the copies honest: every configurator's
-// real `resourceUrl` must round-trip through the server-side parser to the values it was built
-// from, and every configurator's pre-fill must agree with the server-side parser on the same
-// URLs. A drift on either side -- a changed `/-/` marker, a lost `.git` strip -- shows up here
-// rather than as a resource the backend rejects after the user has filled the form.
+// The configurator UIs each parse and build resource URLs that `parseResourceUrl` (or, for the
+// instance, `isInstanceRootUrl`) then has to accept, but they cannot share it: each configurator
+// module is transpiled on its own by `scripts/build-gatekeeper-configurator.ts`, which only strips
+// `@gadgets/configurator-ui` and type-only imports, so a runtime import would not resolve inside
+// the sandboxed frame. The duplication is deliberate, and this test is what keeps the copies
+// honest: every configurator's real `resourceUrl` must round-trip through the server-side parser
+// to the values it was built from, and every configurator's pre-fill must agree with the
+// server-side parser on the same URLs. A drift on either side -- a changed `/-/` marker, a lost
+// `.git` strip -- shows up here rather than as a resource the backend rejects after the user has
+// filled the form.
 
 import { describe, expect, it } from "vitest";
+import { matchesResourceUrlPattern } from "@gadgets/workshop-shared/gatekeeper";
+import instanceConfigurator from "../src/configurator/gitlab-instance-configurator-ui.js";
 import issueConfigurator from "../src/configurator/gitlab-issue-configurator-ui.js";
 import mergeRequestConfigurator from "../src/configurator/gitlab-merge-request-configurator-ui.js";
 import projectConfigurator from "../src/configurator/gitlab-project-configurator-ui.js";
 import { supportedResources } from "../src/gitlab-env.js";
-import { parseResourceUrl } from "../src/gitlab-normalize.js";
+import { isInstanceRootUrl, parseResourceUrl } from "../src/gitlab-normalize.js";
 
 const INSTANCE = "https://gitlab.example.com";
-const PATTERNS = supportedResources({ GITLAB_URL: INSTANCE } as never);
+const PATTERNS = supportedResources({ GITLAB_URL: INSTANCE, GITLAB_INSTANCE_CODE_SEARCH: "true" } as never);
 
 // `resourceUrl` may only ask the ui capability where the instance is, and pre-filling from a
 // URL may not ask it anything: neither is a question the frame should put to the gatekeeper.
@@ -44,6 +47,16 @@ describe("configurator resource URLs round-trip through the server-side parser",
   it("merge request", async () => {
     const url = await mergeRequestConfigurator.resourceUrl!({ values: { projectPath: "group/project", mergeRequestIid: "7" }, ui });
     expect(parseResourceUrl(INSTANCE, url as string)).toEqual({ projectPath: "group/project", kind: "mergeRequest", iid: 7 });
+  });
+
+  it("instance", async () => {
+    const url = await instanceConfigurator.resourceUrl({ values: {}, ui }) as string;
+    expect(url).toBe(`${INSTANCE}/`);
+    expect(isInstanceRootUrl(INSTANCE, url)).toBe(true);
+    expect(matchesResourceUrlPattern(PATTERNS.instance!.urlPattern, url)).toBe(true);
+    expect(parseResourceUrl(INSTANCE, url)).toBeNull();
+    // There is nothing to choose, so nothing to pre-fill.
+    expect(instanceConfigurator.initialValuesFromResourceUrl()).toEqual({});
   });
 });
 

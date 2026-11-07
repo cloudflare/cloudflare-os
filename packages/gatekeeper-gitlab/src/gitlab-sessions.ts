@@ -7,6 +7,15 @@
 // cache rather than from the provider are never advertised. CI reads advertise nothing: a
 // pipeline's commit may be GitLab's merge commit for a merge request, or a fork's, neither of which
 // this project's branches reach.
+//
+// A project's code-only reads -- code search, files, branches, tags, refs, commit history, and its
+// metadata -- report its repository (`repository/<id>`), which a collaborator who can download the
+// code may see without being a member; everything else reports the project (see
+// project-subresources.ts). Metadata of a project whose repository is disabled reports the project
+// too, since nobody may download its code (see metadataSubresourceId). `getCommit` reports the
+// project, since its answer carries CI. Code search and file reads go through gitlab-code.ts, as an
+// instance binding's do; they read GitLab as it is, without the queued pushes a worktree mounted
+// from this project would show. Of those, only `readFile` advertises: the commit it read at.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -15,15 +24,18 @@ import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import { advertisePages, commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
 import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
-import { ObservedCursor } from "./gitlab-cursors";
+import { PagerCursor, ObservedCursor } from "./gitlab-cursors";
+import { CodeSearchPager, RepositoryTreePager, queueAuthorizer, readRepositoryFile } from "./gitlab-code";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
 import { commitIdsOfMergeRequestSummary } from "./gitlab-normalize";
 import type {
   GitLabBranchFilter,
   GitLabBranchSummary,
+  GitLabCodeHit,
   GitLabCommitDetails,
   GitLabCommitFilter,
   GitLabCommitSummary,
+  GitLabFileContent,
   GitLabCreateIssueOptions,
   GitLabCreateMergeRequestOptions,
   GitLabDiffThread,
@@ -38,6 +50,7 @@ import type {
   GitLabJobDetails,
   GitLabJobFilter,
   GitLabJobSummary,
+  GitLabListFilesOptions,
   GitLabLogOptions,
   GitLabLogPage,
   GitLabMergeRequest,
@@ -54,10 +67,13 @@ import type {
   GitLabPipelineFilter,
   GitLabPipelineSummary,
   GitLabProject,
+  GitLabProjectCodeSearch,
   GitLabProjectMetadata,
+  GitLabReadFileOptions,
   GitLabTagSummary,
   GitLabTestCase,
   GitLabTestReportSummary,
+  GitLabTreeEntry,
 } from "./types";
 
 /**
@@ -68,7 +84,7 @@ import type {
  * `null` at once, hiding a non-empty result. Capped at one remote page (100), which is also the
  * most a `next()` buffers.
  */
-function pageSize(options: GitLabPageOptions | undefined, fallback = 50): number {
+export function pageSize(options: GitLabPageOptions | undefined, fallback = 50): number {
   const requested = options?.resultsPerPage;
   if (requested === undefined) return fallback;
   if (!Number.isInteger(requested) || requested < 1) throw new Error("resultsPerPage must be a positive integer.");
@@ -133,8 +149,38 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read project metadata for ${metadata.path}`,
       description: `Read basic metadata for the GitLab project ${metadata.path}.`,
-    });
+    }, await this.#gatekeeper.metadataSubresource());
     return metadata;
+  }
+
+  async searchCode(query: GitLabProjectCodeSearch): Promise<Cursor<GitLabCodeHit>> {
+    const { context, ...project } = await this.#gatekeeper.codeTarget();
+    const queue = this.#approvalQueue.dup();
+    return new PagerCursor(new CodeSearchPager(context, queueAuthorizer(queue), { kind: "project", query, ...project }),
+      () => queue[Symbol.dispose]());
+  }
+
+  /**
+   * Advertises the commit the file was read at once the read is authorized, so it can be mounted
+   * as a worktree. Read from GitLab (or kept from such a read), it is never a simulated one.
+   */
+  async readFile(path: string, options?: GitLabReadFileOptions): Promise<GitLabFileContent> {
+    const { context, ...project } = await this.#gatekeeper.codeTarget();
+    const file = await readRepositoryFile(context, queueAuthorizer(this.#approvalQueue), project, path, options);
+    await this.#gitCache.advertise([file.commitId]);
+    return file;
+  }
+
+  async listFiles(options?: GitLabListFilesOptions): Promise<Cursor<GitLabTreeEntry>> {
+    const size = pageSize(options, 100);
+    const { context, ...project } = await this.#gatekeeper.codeTarget();
+    const queue = this.#approvalQueue.dup();
+    return new PagerCursor(new RepositoryTreePager(context, queueAuthorizer(queue), project, {
+      ...(options?.ref === undefined ? {} : { ref: options.ref }),
+      ...(options?.path === undefined ? {} : { path: options.path }),
+      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
+      pageSize: size,
+    }), () => queue[Symbol.dispose]());
   }
 
   async createIssue(options: GitLabCreateIssueOptions): Promise<GitLabIssue> {
@@ -208,7 +254,10 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List branches`,
       description: `List branches in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: branch => [branch.headCommit] } });
+    }, {
+      subresource: await this.#gatekeeper.repositorySubresource(),
+      advertising: { gitCache: this.#gitCache, commitIds: branch => [branch.headCommit] },
+    });
   }
 
   async listTags(options?: GitLabPageOptions): Promise<Cursor<GitLabTagSummary>> {
@@ -216,7 +265,10 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List tags`,
       description: `List tags in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: tag => [tag.commit] } });
+    }, {
+      subresource: await this.#gatekeeper.repositorySubresource(),
+      advertising: { gitCache: this.#gitCache, commitIds: tag => [tag.commit] },
+    });
   }
 
   async resolveRef(ref?: string): Promise<string> {
@@ -225,7 +277,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       title: `Resolve ${ref ?? "the default branch"} to a commit id`,
       description: `Resolve ${ref === undefined ? "the default branch" : `"${ref}"`}`
         + ` to commit ${id} in the GitLab project.`,
-    });
+    }, await this.#gatekeeper.repositorySubresource());
     // A cache-served resolution is never advertised, for the same reasons as getCommit.
     if (!fromCache) {
       await this.#gitCache.advertise([id]);
@@ -272,7 +324,10 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List commit history`,
       description: `List commits in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary } });
+    }, {
+      subresource: await this.#gatekeeper.repositorySubresource(),
+      advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary },
+    });
   }
 
   async listPipelines(options?: GitLabPipelineFilter): Promise<Cursor<GitLabPipelineSummary>> {

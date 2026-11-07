@@ -78,7 +78,7 @@ type TestExports = {
   TestUser(options: { props: UserProps }): {
     describe(): Promise<{ displayName?: string; uniqueName?: string }>;
     getAuthenticatedEmail(): Promise<string | null>;
-    getGatekeeperClassFor(url: string): Promise<{ resource: { urlPattern: string } }>;
+    getGatekeeperClassFor(url: string): Promise<{ class: DurableObjectClass; resource: { urlPattern: string } }>;
     getSupportedResources(): Promise<Array<{ urlPattern: string; title: string; description: string }>>;
     ensureResources(patterns: string[]): Promise<{ url?: string }>;
   };
@@ -134,6 +134,16 @@ type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   applyAction(actionId: number, cache: unknown): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
   revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
+};
+
+/** A binding `getGatekeeperClassFor` minted, as the Workshop reaches it; see `TestHooks.#bound`. */
+type BoundFacet = {
+  describe(): Promise<{ url: string; title: string; snippet: string; suggestedBindingName: string; tsType: string }>;
+  getAutoApprovableActions(): Promise<string[]>;
+  getHistoricalSubresources(): Promise<string[]>;
+  startSession(queue: unknown): Promise<Record<string, (...args: unknown[]) => Promise<unknown>>>;
+  verifyObserverAccess(observers: Array<{ id: string; verifier: unknown }>, subresources: string[]):
+    Promise<{ allowedObserverIds: string[] }>;
 };
 
 /**
@@ -563,6 +573,51 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   /** Which resource `getGatekeeperClassFor(url)` resolves to, by its URL pattern. */
   async resourceFor(userObjectId: string, url: string): Promise<Outcome<string>> {
     return await outcome(async () => (await this.#user(userObjectId).getGatekeeperClassFor(url)).resource.urlPattern);
+  }
+
+  /**
+   * The binding `getGatekeeperClassFor(url)` mints for the account, started as a facet as the
+   * Workshop starts it: what an instance binding is tested through. Fresh names per scenario, as
+   * for `#gatekeeper`.
+   */
+  #bound(facetName: string, userObjectId: string, url: string): BoundFacet {
+    return this.ctx.facets.get(facetName, async () => ({
+      class: (await this.#user(userObjectId).getGatekeeperClassFor(url)).class,
+    })) as unknown as BoundFacet;
+  }
+
+  async boundDescribe(facetName: string, userObjectId: string, url: string) {
+    return await outcome(() => this.#bound(facetName, userObjectId, url).describe());
+  }
+
+  /** The bound binding's auto-approvable actions and historical subresources. */
+  async boundObserverBaseline(facetName: string, userObjectId: string, url: string):
+      Promise<Outcome<{ autoApprovable: string[]; historical: string[] }>> {
+    return await outcome(async () => {
+      const bound = this.#bound(facetName, userObjectId, url);
+      return { autoApprovable: await bound.getAutoApprovableActions(), historical: await bound.getHistoricalSubresources() };
+    });
+  }
+
+  /** `session` on the bound binding; observations land in `queueLog(facetName)`. */
+  async boundSession(facetName: string, userObjectId: string, url: string, steps: SessionStep[]): Promise<Outcome<unknown>> {
+    return await outcome(async () => {
+      let target: unknown = await this.#bound(facetName, userObjectId, url).startSession(this.#queue(facetName));
+      for (const step of steps) {
+        const result = await (target as Record<string, (...args: unknown[]) => Promise<unknown>>)[step.method]!(...(step.args ?? []));
+        target = step.drain ? await drain(result as Pages<unknown>) : result;
+      }
+      return target;
+    });
+  }
+
+  /** `verifyObservers` on the bound binding. */
+  async boundVerifyObservers(facetName: string, userObjectId: string, url: string,
+                             observers: Array<{ id: string; userObjectId: string }>, subresources: string[]): Promise<Outcome<string[]>> {
+    return await outcome(async () => (await this.#bound(facetName, userObjectId, url).verifyObserverAccess(
+      observers.map(({ id, userObjectId: observer }) => ({
+        id, verifier: (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId: observer } }),
+      })), subresources)).allowedObserverIds);
   }
 
   async supportedResources(userObjectId: string): Promise<Outcome<Array<{ urlPattern: string; title: string; description: string }>>> {

@@ -18,6 +18,7 @@ import {
   lineCode,
   refreshAccessToken,
   revokeToken,
+  retryAfterSecondsOf,
   supportsReviewerState,
   type GitLabInstance,
 } from "../src/gitlab-api";
@@ -727,5 +728,100 @@ describe("lineCode", () => {
     const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
     expect(code).toBe(`${hex}_10_10`);
     expect(code).toMatch(/^[0-9a-f]{40}_10_10$/);
+  });
+});
+
+describe("retryAfterSeconds", () => {
+  it("carries a 429's Retry-After on the error, in either of its forms", async () => {
+    fakeFetch([new Response("Retry later", { status: 429, headers: { "retry-after": "30" } })]);
+    expect(await api().getCurrentUser().catch(e => e)).toMatchObject({ status: 429, retryAfterSeconds: 30 });
+
+    const now = Date.parse("2026-11-06T12:00:00Z");
+    expect(retryAfterSecondsOf("Fri, 06 Nov 2026 12:00:42 GMT", now)).toBe(42);
+    expect(retryAfterSecondsOf("Fri, 06 Nov 2026 11:00:00 GMT", now)).toBe(0);
+    expect(retryAfterSecondsOf(" 7 ", now)).toBe(7);
+    expect(retryAfterSecondsOf("soon", now)).toBeUndefined();
+    expect(retryAfterSecondsOf(null, now)).toBeUndefined();
+  });
+
+  it("is absent on other failures, and on a 429 without a usable header", async () => {
+    fakeFetch([json({ message: "boom" }, { status: 503 }), new Response("x", { status: 429 })]);
+    expect((await api().getCurrentUser().catch(e => e)).retryAfterSeconds).toBeUndefined();
+    const limited = await api().getCurrentUser().catch(e => e);
+    expect(limited.retryAfterSeconds).toBeUndefined();
+    expect(limited.message).toBe("x");
+  });
+});
+
+describe("graphql", () => {
+  it("POSTs the query and variables to /api/graphql with the instance's headers and the bearer token", async () => {
+    const calls = fakeFetch([json({ data: { ok: true } })]);
+    expect(await api(ACCESS_INSTANCE).graphql("query { ok }", { ids: [1] })).toEqual({ ok: true });
+    const [call] = calls;
+    expect(call.init.method).toBe("POST");
+    expect(call.url.toString()).toBe("https://gitlab-access.example.com/api/graphql");
+    expect(JSON.parse(call.body!)).toEqual({ query: "query { ok }", variables: { ids: [1] } });
+    expect(call.headers.get("authorization")).toBe("Bearer tok-1");
+    expect(call.headers.get("cf-access-client-id")).toBe("id.access");
+  });
+
+  it("fails on GraphQL errors with a fixed message, keeping them only in details", async () => {
+    fakeFetch([json({ data: null, errors: [{ message: "secret detail" }] })]);
+    const error = await api().graphql("query { ok }", {}).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitLabApiError);
+    expect(error).toMatchObject({ status: 200, details: [{ message: "secret detail" }] });
+    expect((error as GitLabApiError).message).not.toContain("secret");
+  });
+
+  it("never marks a GraphQL 401 as a credential refusal", async () => {
+    fakeFetch([json({ message: "401 Unauthorized" }, { status: 401 })]);
+    expect(await api().graphql("query { ok }", {}).catch(e => e)).toMatchObject({ status: 401, isAuthError: false });
+  });
+});
+
+describe("repository files and trees", () => {
+  const file = (bytes: string, headers: Record<string, string>) => new Response(bytes, { headers });
+
+  it("reads a file's bytes with the commit its ref resolved to", async () => {
+    const calls = fakeFetch([file("hello", { "x-gitlab-commit-id": "c".repeat(40), "x-gitlab-size": "5" })]);
+    const read = await api().getRepositoryFile(42, "docs/a b.md", "main", 1024);
+    expect(read).toEqual({ commitId: "c".repeat(40), size: 5, content: new TextEncoder().encode("hello") });
+    expect(calls[0].url.pathname).toBe("/api/v4/projects/42/repository/files/docs%2Fa%20b.md/raw");
+    expect(calls[0].url.searchParams.get("ref")).toBe("main");
+  });
+
+  it("does not read a file over the cap, whatever its size header said", async () => {
+    fakeFetch([
+      file("0123456789", { "x-gitlab-commit-id": "c", "x-gitlab-size": "10" }),
+      file("0123456789", { "x-gitlab-commit-id": "c", "x-gitlab-size": "2" }),
+    ]);
+    expect(await api().getRepositoryFile(1, "big", "main", 4)).toEqual({ commitId: "c", size: 10, content: null });
+    expect(await api().getRepositoryFile(1, "lying", "main", 4)).toEqual({ commitId: "c", size: 2, content: null });
+  });
+
+  it("answers null for a missing file, ref or project, and fails without the metadata headers", async () => {
+    fakeFetch([json({ message: "404 File Not Found" }, { status: 404 }), file("x", {})]);
+    expect(await api().getRepositoryFile(1, "nope", "main", 4)).toBeNull();
+    await expect(api().getRepositoryFile(1, "x", "main", 4)).rejects.toMatchObject({ status: 502 });
+  });
+
+  it("lists files and directories, leaving out submodules, with the next page", async () => {
+    const calls = fakeFetch([json([
+      { id: "1", name: "src", type: "tree", path: "src", mode: "040000" },
+      { id: "2", name: "a.ts", type: "blob", path: "src/a.ts", mode: "100644" },
+      { id: "3", name: "vendor", type: "commit", path: "vendor", mode: "160000" },
+    ], { headers: { "x-next-page": "2" } })]);
+    const tree = await api().listRepositoryTree(42, { ref: "main", path: "src", recursive: true, page: 1, perPage: 3 });
+    expect(tree).toEqual({
+      items: [{ path: "src", type: "directory" }, { path: "src/a.ts", type: "file" }], nextPage: 2,
+    });
+    expect(calls[0].url.pathname).toBe("/api/v4/projects/42/repository/tree");
+    expect(Object.fromEntries(calls[0].url.searchParams))
+      .toEqual({ ref: "main", path: "src", recursive: "true", page: "1", per_page: "3" });
+  });
+
+  it("answers null when GitLab has no such tree", async () => {
+    fakeFetch([json({ message: "404 Tree Not Found" }, { status: 404 })]);
+    expect(await api().listRepositoryTree(42, { path: "nope", page: 1, perPage: 20 })).toBeNull();
   });
 });

@@ -91,6 +91,32 @@ export function userUrl(instanceUrl: string, username: string): string {
   return `${instanceUrl}/${username}`;
 }
 
+/**
+ * A file's line on GitLab's web UI: `<instance>/<project>/-/blob/<ref>/<file>#L<line>`. Each path
+ * segment of the ref and the file is percent-encoded on its own, so their slashes stay separators,
+ * as in GitLab's own links to a branch carrying a slash, and a `#` or `?` in a name stays in it.
+ */
+export function blobUrl(instanceUrl: string, projectPath: string, ref: string, filePath: string, line: number): string {
+  const file = filePath.split("/").map(encodeURIComponent).join("/");
+  const refPath = ref.split("/").map(encodeURIComponent).join("/");
+  return `${projectUrl(instanceUrl, projectPath)}/-/blob/${refPath}/${file}#L${line}`;
+}
+
+/**
+ * Whether `url` is the instance root (`https://<instance>` or `https://<instance>/`, a query or
+ * fragment ignored): the Instance resource's URL. No project URL is the root, and the root names
+ * no project, so this and `parseResourceUrl` never both accept one URL.
+ */
+export function isInstanceRootUrl(instanceUrl: string, url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return parsed.origin === new URL(instanceUrl).origin && stripTrailingSlashes(parsed.pathname) === "";
+}
+
 /** The namespace part of a full project path (`group/sub` of `group/sub/project`). */
 export function namespaceOf(projectPath: string): string {
   const slash = projectPath.lastIndexOf("/");

@@ -5,7 +5,9 @@ import {
 /**
  * No `vars`: GITLAB_URL defaults to https://gitlab.com in code, and GITLAB_API_URL to GITLAB_URL,
  * so an unconfigured deployment talks to gitlab.com. Self-hosted instances set the vars (and,
- * behind Cloudflare Access, the CF_ACCESS_CLIENT_ID/SECRET secrets) per deployment.
+ * behind Cloudflare Access, the CF_ACCESS_CLIENT_ID/SECRET secrets) per deployment. So do
+ * GITLAB_INSTANCE_CODE_SEARCH, off unless set (gitlab.com has no instance-wide code search), and
+ * GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS, which defaults to a day.
  */
 export default defineGadgetsWorker({
   name: "gatekeeper-gitlab",
@@ -18,4 +20,5 @@ export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
 
 export const migrations: DurableObjectMigration[] = [
   { tag: "v0", new_sqlite_classes: ["UserAccount", "GitLabGatekeeperImpl"] },
+  { tag: "v1", new_sqlite_classes: ["GitLabInstanceGatekeeperImpl"] },
 ];

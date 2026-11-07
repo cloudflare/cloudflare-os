@@ -1,21 +1,98 @@
 /**
+ * Code in every project you can read on this GitLab instance: search it across projects with
+ * `searchCode()`, then open a project's repository with `getRepository()` to read its files.
+ * Nothing here changes anything on GitLab.
+ */
+export interface GitLabInstance {
+  /**
+   * Searches the code on the default branch of every project you can read, or of the projects
+   * under `query.groupPath`. See `GitLabCodeSearchQuery` for how `text` matches.
+   *
+   * Results are streamed through the returned cursor, one page of up to 100 matches per
+   * `next()`. Call `next()` repeatedly on that same cursor until it returns `null`. A page may be
+   * shorter, or even `[]`, when some of its matches were left out; keep calling `next()` until
+   * `null`. A search returns at most 500 matches: exactly 500 may mean there are more, so narrow
+   * the query (`groupPath`, `path`, `extension`, more specific `text`) rather than paging on.
+   *
+   * Fails with an error when exact code search is not available on this instance, when
+   * `groupPath` names no group you can read, when the group has too many projects to search at
+   * once (search a subgroup, or the whole instance), when search is turned off, when GitLab
+   * rejects the query, or when GitLab is rate limiting (wait and retry) or unavailable (retry
+   * later).
+   */
+  searchCode(query: GitLabInstanceCodeSearch): Promise<Cursor<GitLabCodeHit>>;
+
+  /**
+   * Opens a project's repository for reading, by the project's numeric id (`"123"`, e.g. a
+   * hit's `projectId`) or its full path (`"group/subgroup/project"`). The repository stays the
+   * same project even if it is renamed or moved later. Fails if no project you can read has that
+   * id or path.
+   */
+  getRepository(idOrPath: string): Promise<GitLabRepository>;
+}
+
+/** A project's repository, read-only: its metadata, its files, and their content. */
+export interface GitLabRepository {
+  /** Returns basic metadata about the project. */
+  getMetadata(): Promise<GitLabProjectMetadata>;
+
+  /**
+   * Reads a text file at `options.ref` (a branch, tag, or commit id; the default branch when
+   * omitted), at most 2,000 lines per call: `options.startLine` and `options.endLine` (1-based,
+   * inclusive) choose which, and the first 2,000 are returned when they are omitted. Compare
+   * `endLine` with `totalLines` to see whether more remain.
+   *
+   * To read several files at the same version, pass the returned `commitId` as `ref` to the
+   * later reads: a branch can move between calls.
+   *
+   * Fails if the file does not exist at that ref, is a binary file, or is larger than 1 MiB, or
+   * if the line range is out of bounds.
+   */
+  readFile(path: string, options?: GitLabReadFileOptions): Promise<GitLabFileContent>;
+
+  /**
+   * Lists files and directories at `options.ref` (the default branch when omitted), in
+   * `options.path` (the repository root when omitted), and with `options.recursive` everything
+   * beneath it.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`. Fails if the path or ref does not exist, or the
+   * repository is empty.
+   */
+  listFiles(options?: GitLabListFilesOptions): Promise<Cursor<GitLabTreeEntry>>;
+}
+
+/**
  * A GitLab project.
  *
  * A GitLab project is a Git repository *plus* issues, merge requests, etc. Projects live under
  * namespaces that may nest (`group/subgroup/project`); the project's `path` is always the full
  * path with its namespace.
  *
- * Git-level access works in terms of commit ids: use `listBranches()`, `listTags()`,
- * `listCommits()`, `resolveRef()`, or `getCommit()` to discover commit ids, then mount a commit
- * as a worktree (see the `createWorktree` tool) to read or edit the files it contains. The
- * repository's file *content* is not readable through this interface directly.
+ * Code: `searchCode()` finds code in the project, and `readFile()` and `listFiles()` read its
+ * files as GitLab has them. Git-level access works in terms of commit ids: use `listBranches()`,
+ * `listTags()`, `listCommits()`, `resolveRef()`, or `getCommit()` to discover commit ids, then
+ * mount a commit as a worktree (see the `createWorktree` tool) to edit the files it contains, or
+ * to read commits you pushed that `readFile()` does not show yet.
  *
  * CI: `getCommit(ref).ci` reports a commit's pipeline (for example "is `main` green?");
  * `listPipelines()`, `getPipeline()`, and `getJob()` reach pipelines, jobs, logs, and test reports.
  */
-export interface GitLabProject {
-  /** Returns basic metadata about the project. */
-  getMetadata(): Promise<GitLabProjectMetadata>;
+export interface GitLabProject extends GitLabRepository {
+  /**
+   * Searches the code in this project: its default branch, or `query.ref`. See
+   * `GitLabCodeSearchQuery` for how `text` matches; `regex` and `language` work only on the
+   * default branch.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that same
+   * cursor until it returns `null`. A search returns at most 500 matches: exactly 500 may mean
+   * there are more, so narrow the query rather than paging on.
+   *
+   * Fails with an error when `regex` or `language` is given but exact code search is not
+   * available here, when search is turned off, when GitLab rejects the query, or when GitLab is
+   * rate limiting (wait and retry) or unavailable (retry later).
+   */
+  searchCode(query: GitLabProjectCodeSearch): Promise<Cursor<GitLabCodeHit>>;
 
   /**
    * Lists branches in this project.
@@ -415,6 +492,138 @@ export type GitLabProjectMetadata = GitLabProjectRef & {
   visibility: "public" | "private" | "internal";
   /** Name of the project's default branch (e.g. `"main"`). */
   defaultBranch: string;
+}
+
+/**
+ * What a code search looks for. `text` is matched exactly, as written, where GitLab's exact
+ * code search is available (case may be ignored); elsewhere GitLab matches its words instead,
+ * ranked by relevance. Each hit's `matchedAs` says which happened.
+ */
+export type GitLabCodeSearchQuery = {
+  /** What to search for. */
+  text: string;
+  /**
+   * Treat `text` as a regular expression. Only where exact code search is available, and only on
+   * the default branch; otherwise the search fails rather than matching `text` another way.
+   */
+  regex?: boolean;
+  /** Only files under this directory, e.g. `"src/"`. */
+  path?: string;
+  /** Only files whose name matches this, e.g. `"*.md"` or `"Dockerfile"`. */
+  filename?: string;
+  /** Only files with this extension, without the dot, e.g. `"ts"`. */
+  extension?: string;
+  /**
+   * Only files in this language: one of the names `GitLabCodeLanguage` lists, e.g.
+   * `"typescript"`. `"typescript"` does not include `.tsx` files; use `"tsx"` for those. For a
+   * language not listed, filter by `extension` or `filename` instead. Only where exact code
+   * search is available, and only on the default branch, like `regex`.
+   */
+  language?: GitLabCodeLanguage;
+}
+
+/** The languages `GitLabCodeSearchQuery.language` accepts, spelled exactly as listed. */
+export type GitLabCodeLanguage =
+  | "typescript" | "tsx" | "javascript" | "python" | "go" | "rust" | "java" | "kotlin" | "swift"
+  | "c" | "c++" | "c#" | "objective-c" | "ruby" | "php" | "shell" | "powershell" | "batchfile"
+  | "sql" | "html" | "css" | "scss" | "less" | "markdown" | "restructuredtext" | "asciidoc"
+  | "json" | "jsonnet" | "yaml" | "toml" | "xml" | "ini" | "csv" | "hcl" | "dockerfile"
+  | "makefile" | "cmake" | "starlark" | "nix" | "protobuf" | "graphql" | "lua" | "scala"
+  | "groovy" | "elixir" | "erlang" | "haskell" | "ocaml" | "clojure" | "perl" | "r" | "dart"
+  | "julia" | "zig" | "solidity" | "vue" | "svelte" | "jinja" | "handlebars" | "nginx"
+  | "vimscript" | "assembly" | "webassembly" | "cue" | "diff" | "text";
+
+/** A code search across the instance. Only each project's default branch is searched. */
+export type GitLabInstanceCodeSearch = GitLabCodeSearchQuery & {
+  /** Only projects in this group and its subgroups, by the group's full path, e.g. `"group/subgroup"`. */
+  groupPath?: string;
+  /** Include archived projects, which are left out by default. */
+  includeArchived?: boolean;
+}
+
+/** A code search in one project. */
+export type GitLabProjectCodeSearch = GitLabCodeSearchQuery & {
+  /**
+   * The branch, tag, or commit to search; the default branch when omitted. On any other ref,
+   * `text` is matched as written, ignoring case, and `regex` and `language` are refused.
+   */
+  ref?: string;
+}
+
+/** One code search match: a snippet of a file around a matching line. */
+export type GitLabCodeHit = {
+  /** The project's numeric id; `GitLabInstance.getRepository(String(projectId))` opens it. */
+  projectId: number;
+  /** The project's full path, e.g. `"group/subgroup/project"`. */
+  projectPath: string;
+  /** The file's path in the repository. */
+  path: string;
+  /** The branch or commit that was searched. */
+  ref: string;
+  /** The line number (1-based) `snippet` starts at. */
+  startLine: number;
+  /** The matching lines with some context, starting at `startLine`. */
+  snippet: string;
+  /** The file at `startLine` on GitLab's web UI. */
+  webUrl: string;
+  /**
+   * How `text` was matched: `"exact"` as written (case may be ignored), `"regex"` as a regular
+   * expression, or `"words"` as words ranked by relevance, where a hit need not contain `text`
+   * as written.
+   */
+  matchedAs: "exact" | "regex" | "words";
+}
+
+/** Which file version and lines `GitLabRepository.readFile()` reads. */
+export type GitLabReadFileOptions = {
+  /** A branch, tag, or commit id; the default branch when omitted. */
+  ref?: string;
+  /** The first line to return (1-based); defaults to 1. */
+  startLine?: number;
+  /**
+   * The last line to return (1-based, inclusive); defaults to the end of the file. At most 2,000
+   * lines are returned per call, so the result's `endLine` may come earlier.
+   */
+  endLine?: number;
+}
+
+/** Some lines of a text file, from `GitLabRepository.readFile()`. */
+export type GitLabFileContent = {
+  /** The file's path in the repository. */
+  path: string;
+  /**
+   * The full id of the commit the file was read at. Pass it as `ref` to read other files at the
+   * same version. Read through a project connection (`GitLabProject.readFile()`), it can also be
+   * mounted as a worktree (see the `createWorktree` tool). Read through `GitLabInstance`, it is
+   * for reading files only: pass it as `ref`, but it cannot be mounted as a worktree (connect the
+   * project itself for that).
+   */
+  commitId: string;
+  /** The first line returned (1-based). */
+  startLine: number;
+  /** The last line returned (1-based, inclusive); less than `startLine` for an empty file. */
+  endLine: number;
+  /** How many lines the whole file has. */
+  totalLines: number;
+  /** Lines `startLine` to `endLine`, joined with `\n`. */
+  text: string;
+}
+
+/** Which entries `GitLabRepository.listFiles()` lists. */
+export type GitLabListFilesOptions = GitLabPageOptions & {
+  /** A branch, tag, or commit id; the default branch when omitted. */
+  ref?: string;
+  /** The directory to list, e.g. `"src/lib"`; the repository root when omitted. */
+  path?: string;
+  /** List everything beneath the directory, not only what is directly in it. */
+  recursive?: boolean;
+}
+
+/** One entry of `GitLabRepository.listFiles()`. */
+export type GitLabTreeEntry = {
+  /** The entry's path from the repository root, e.g. `"src/lib/index.ts"`. */
+  path: string;
+  type: "file" | "directory";
 }
 
 /** A GitLab label attached to an issue or merge request. */

@@ -1,13 +1,16 @@
 // Resource resolution and observer admission: the URL patterns are ordered most-specific first
 // (the project pattern also matches issue and merge request URLs, and resolution is first-match),
-// `getGatekeeperClassFor` parses nested namespaces via the `/-/` separator, stale stub-era props
-// fail closed, and the observer probe requires Reporter membership whatever the project's visibility.
+// `getGatekeeperClassFor` parses nested namespaces via the `/-/` separator and binds the instance
+// root (GITLAB_INSTANCE_CODE_SEARCH is on in this suite) to the read-only instance binding, stale
+// stub-era props fail closed, and the observer probe requires Reporter membership whatever the
+// project's visibility.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchesResourceUrlPattern, resolveRequestedResource } from "@gadgets/workshop-shared/gatekeeper";
 import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
+import type { SessionStep } from "./worker.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -16,16 +19,29 @@ afterEach(() => {
 const PROJECT = "https://gitlab.example.com/group/sub/project";
 
 describe("supported resources", () => {
-  it("lists merge request, issue, then project, all on the configured instance", async () => {
+  it("lists merge request, issue, project, then the instance, all on the configured instance", async () => {
     new FakeGitLab().install();
     const id = await seedAccount();
     const resources = await unwrap(await hooks().supportedResources(id));
-    expect(resources.map(r => r.title)).toEqual(["GitLab Merge Request", "GitLab Issue", "GitLab Project"]);
+    expect(resources.map(r => r.title)).toEqual(["GitLab Merge Request", "GitLab Issue", "GitLab Project", "GitLab instance code"]);
     expect(resources.map(r => r.urlPattern)).toEqual([
       "https://gitlab.example.com/:project+/-/merge_requests/:iid{/*}?",
       "https://gitlab.example.com/:project+/-/issues/:iid{/*}?",
       "https://gitlab.example.com/:project+",
+      "https://gitlab.example.com/",
     ]);
+  });
+
+  it("resolves the instance root, and only the root, to the instance resource", async () => {
+    new FakeGitLab().install();
+    const id = await seedAccount();
+    const resources = await unwrap(await hooks().supportedResources(id));
+    for (const root of ["https://gitlab.example.com", "https://gitlab.example.com/"]) {
+      expect(resolveRequestedResource(resources, root), root).toEqual({ ok: true, resource: resources[3] });
+    }
+    // A project URL never matches the root pattern, which is why the order does not matter.
+    expect(matchesResourceUrlPattern(resources[3].urlPattern, PROJECT)).toBe(false);
+    expect(resolveRequestedResource(resources, PROJECT)).toEqual({ ok: true, resource: resources[2] });
   });
 
   it("resolves a merge request URL to the merge request resource, not the project one", async () => {
@@ -71,6 +87,106 @@ describe("getGatekeeperClassFor", () => {
     await expect(unwrap(await hooks().resourceFor(id, "https://gitlab.example.com/onlyone"))).rejects.toThrow(/Unsupported GitLab URL/);
     // An issue route with a malformed number is refused, not widened to the whole project.
     await expect(unwrap(await hooks().resourceFor(id, `${PROJECT}/-/issues/abc`))).rejects.toThrow(/Unsupported GitLab URL/);
+  });
+
+  it("binds the instance root to the instance resource, and a project URL never to it", async () => {
+    new FakeGitLab().install();
+    const id = await seedAccount();
+    for (const root of ["https://gitlab.example.com", "https://gitlab.example.com/", "https://gitlab.example.com/?tab=1#top"]) {
+      expect(await unwrap(await hooks().resourceFor(id, root)), root).toBe("https://gitlab.example.com/");
+    }
+    expect(await unwrap(await hooks().resourceFor(id, PROJECT))).toBe("https://gitlab.example.com/:project+");
+    // Another instance's root is not this one.
+    await expect(unwrap(await hooks().resourceFor(id, "https://gitlab.com/"))).rejects.toThrow(/Unsupported GitLab URL/);
+  });
+});
+
+describe("instance binding", () => {
+  const ROOT = "https://gitlab.example.com/";
+  const PROJECT_ID = 7;
+  let scenarios = 0;
+
+  /**
+   * GitLab with `group/sub/project` (id 7) and nothing else, and `GET /user` answering for every
+   * token as an active user, internal unless named in `external`.
+   */
+  function instanceGitLab(external: string[] = []): FakeGitLab {
+    const project = { ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: "group/sub/project", web_url: PROJECT };
+    return new FakeGitLab()
+      .on("GET", /^\/api\/v4\/projects\//, () => json({ message: "404 Project Not Found" }, { status: 404 }))
+      .on("GET", new RegExp(`^/api/v4/projects/(group%2Fsub%2Fproject|${PROJECT_ID})(\\?|$)`), () => json(project))
+      .on("GET", /^\/api\/v4\/user$/, request => {
+        const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+        return json({
+          id: token.length, username: token, name: token, web_url: `${ROOT}${token}`,
+          state: "active", external: external.includes(token),
+        });
+      });
+  }
+
+  async function binding() {
+    const name = `instance-${++scenarios}`;
+    const owner = await seedAccount({ accessToken: "owner" });
+    return {
+      describe: () => hooks().boundDescribe(name, owner, ROOT),
+      baseline: () => hooks().boundObserverBaseline(name, owner, ROOT),
+      read: (steps: SessionStep[]) => hooks().boundSession(name, owner, ROOT, steps),
+      observations: async () => {
+        const log = await hooks().queueLog(name);
+        return log.observations.map((title, index) => ({ title, subresources: log.subresources[index] }));
+      },
+      verify: (observers: Record<string, string>, subresources: string[]) => hooks().boundVerifyObservers(
+        name, owner, ROOT, Object.entries(observers).map(([id, userObjectId]) => ({ id, userObjectId })), subresources),
+    };
+  }
+
+  it("is the GitLabInstance the root binds to: read-only, with nothing recorded before it", async () => {
+    instanceGitLab().install();
+    const gk = await binding();
+    expect(await gk.describe()).toEqual({ ok: {
+      url: ROOT,
+      title: "GitLab code on gitlab.example.com",
+      snippet: "Search and read code in every project you can read on gitlab.example.com.",
+      suggestedBindingName: "GITLAB_INSTANCE",
+      tsType: "GitLabInstance",
+    } });
+    expect(await gk.baseline()).toEqual({ ok: { autoApprovable: [], historical: [] } });
+  });
+
+  it("opens a repository whose reads report it, reporting the opening, found or not, as the instance", async () => {
+    instanceGitLab().install();
+    const gk = await binding();
+    expect(await gk.read([{ method: "getRepository", args: ["group/sub/project"] }, { method: "getMetadata" }]))
+      .toMatchObject({ ok: { path: "group/sub/project" } });
+    await expect(unwrap(await gk.read([{ method: "getRepository", args: ["group/missing"] }])))
+      .rejects.toThrow(/no GitLab project "group\/missing"/);
+    expect(await gk.observations()).toEqual([
+      { title: "Open GitLab repository group/sub/project", subresources: ["instance/gitlab.example.com"] },
+      { title: "Read project metadata for group/sub/project", subresources: [`repository/${PROJECT_ID}`] },
+      { title: "Open GitLab repository group/missing", subresources: ["instance/gitlab.example.com"] },
+    ]);
+  });
+
+  it("refuses a language not on the list before asking GitLab", async () => {
+    const gitlab = instanceGitLab();
+    gitlab.install();
+    const gk = await binding();
+    expect(await gk.read([{ method: "searchCode", args: [{ text: "x", language: "py" }], drain: true }]))
+      .toEqual({ error: expect.stringMatching(/searchCode\[0\]\.language/) });
+    expect(gitlab.requests.filter(request => request.url.pathname.endsWith("/search"))).toEqual([]);
+    expect(await gk.observations()).toEqual([]);
+  });
+
+  it("admits observers through their own accounts, and refuses a requirement its reads never report", async () => {
+    instanceGitLab(["bob"]).install();
+    const gk = await binding();
+    const [alice, bob] = await Promise.all([seedAccount({ accessToken: "alice" }), seedAccount({ accessToken: "bob" })]);
+    expect(await gk.verify({ alice, bob }, ["instance/gitlab.example.com"])).toEqual({ ok: ["alice"] });
+    // A project's membership, which metadata of a project whose repository is disabled reports:
+    // neither is a member here.
+    expect(await gk.verify({ alice, bob }, [`project/${PROJECT_ID}`])).toEqual({ ok: [] });
+    await expect(unwrap(await gk.verify({ alice, bob }, [`project/${PROJECT_ID}/role/developer`])))
+      .rejects.toThrow(/reports no subresource like project\/7\/role\/developer/);
   });
 });
 

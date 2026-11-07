@@ -22,6 +22,8 @@ const PROJECT = `project/${PROJECT_ID}`;
 const DEVELOPER = `project/${PROJECT_ID}/role/developer`;
 /** What a read of data only Maintainers may see reports. */
 const MAINTAINER = `project/${PROJECT_ID}/role/maintainer`;
+/** What a code-only read (metadata, refs, history, files, code search) reports. */
+const REPOSITORY = `repository/${PROJECT_ID}`;
 /** A project that takes the bound one's path once it has left it. */
 const OTHER_ID = 43;
 const HEAD = "a".repeat(40);
@@ -59,6 +61,8 @@ class ObserverGitLab extends FakeGitLab {
   probeStatus: number | undefined;
   /** The bound project's open issues. */
   issues: number[] = [];
+  /** The `repository_access_level` every project is answered with; left out while undefined. */
+  repositoryAccessLevel: "enabled" | "private" | "disabled" | undefined;
   /** The paths git requests reached. */
   readonly gitRequests: string[] = [];
   /** Runs as a git request reaches GitLab, before it is answered. */
@@ -188,6 +192,7 @@ class ObserverGitLab extends FakeGitLab {
     return {
       ...fx.projectResponse.data, id, name: path.slice(path.lastIndexOf("/") + 1), path_with_namespace: path,
       web_url: `${WEB}/${path}`, namespace: { ...fx.projectResponse.data.namespace, full_path: path.slice(0, path.lastIndexOf("/")) },
+      ...(this.repositoryAccessLevel === undefined ? {} : { repository_access_level: this.repositoryAccessLevel }),
     };
   }
 }
@@ -271,14 +276,24 @@ describe("reads", () => {
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getDetails" }]))
       .toMatchObject({ ok: { id: "6" } });
 
+    // Project metadata is a code-only read, reported by the repository; the rest by the project.
     expect(await gk.observations()).toEqual([
-      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT] },
-      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT] },
+      { title: `Read project metadata for ${PATH}`, subresources: [REPOSITORY] },
+      { title: `Read project metadata for ${PATH}`, subresources: [REPOSITORY] },
       { title: "List issues", subresources: [PROJECT] },
       { title: "List issues (page 2)", subresources: [PROJECT] },
       { title: "List issues", subresources: [PROJECT] },
       { title: "Read pipeline #6", subresources: [PROJECT] },
     ]);
+  });
+
+  it("report metadata of a project whose repository is disabled by the project, since nobody may download its code", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.repositoryAccessLevel = "disabled";
+    gitlab.install();
+    const gk = await binding();
+    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: { path: PATH } });
+    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [PROJECT] }]);
   });
 
   it("report the role CI data needs, chosen as it was read and never again", async () => {
@@ -342,7 +357,7 @@ describe("reads", () => {
     expect(await gk.read([{ method: "listIssues", drain: true }])).toMatchObject({ ok: [{ id: "1" }] });
     expect(gitlab.requestsWith(OWNER_TOKEN).filter(path => !path.startsWith(`/api/v4/projects/${PROJECT_ID}`)))
       .toEqual([]);
-    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT], [PROJECT]]);
+    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[REPOSITORY], [PROJECT]]);
   });
 
   it("returns current issue and merge request references when the original path is reused", async () => {
@@ -479,7 +494,7 @@ describe("reads", () => {
 
     gitlab.probeStatus = undefined;
     expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });
-    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [PROJECT] }]);
+    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [REPOSITORY] }]);
   });
 });
 

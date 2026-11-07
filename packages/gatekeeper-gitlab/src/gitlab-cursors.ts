@@ -1,7 +1,8 @@
 // The RPC cursors shared by the GitLab gatekeeper's sessions, the same shapes as
 // gatekeeper-github's: a streaming cursor that overlays simulation onto remote pages and merges
-// provisional rows at their sort positions, and the wrapper that authorizes each page a session
-// returns. In-memory listings use the kit's `ArrayCursor`.
+// provisional rows at their sort positions, the wrapper that authorizes each page a session
+// returns, and the cursor over a code pager, which authorizes its own (see gitlab-code.ts).
+// In-memory listings use the kit's `ArrayCursor`.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -207,6 +208,37 @@ export class ObservedCursor<T> extends RpcTarget implements Cursor<T>, Disposabl
   }
 
   /** Releases the hooks' stubs. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#release();
+  }
+}
+
+/**
+ * A cursor serving a code search or file listing (`CodeSearchPager`, `RepositoryTreePager` in
+ * gitlab-code.ts), which authorizes each page itself, since what a page reports depends on what
+ * is on it. `release` disposes the approval-queue stub the pager authorizes through, when the
+ * cursor is disposed.
+ */
+@validateRpc()
+export class PagerCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
+  readonly #pager: { next(): Promise<T[] | null> };
+  readonly #release: () => void;
+  #disposed = false;
+
+  constructor(pager: { next(): Promise<T[] | null> }, release: () => void) {
+    super();
+    this.#pager = pager;
+    this.#release = release;
+  }
+
+  /** @returns The next page, or `null` at the end. */
+  next(): Promise<T[] | null> {
+    return this.#pager.next();
+  }
+
+  /** Releases the pager's queue stub. Idempotent, since the runtime may dispose a target twice. */
   [Symbol.dispose](): void {
     if (this.#disposed) return;
     this.#disposed = true;

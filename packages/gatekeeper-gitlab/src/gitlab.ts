@@ -1,7 +1,8 @@
 // The GitLab gatekeeper's main module: the HTTP entrypoint (connect URL and OAuth callback), the
 // vendor and per-account entrypoints, the account Durable Object that holds the OAuth grant, and
-// the observer verifier. The per-binding gatekeeper Durable Object and its sessions live in
-// gitlab-gatekeeper.ts and are re-exported here so wrangler finds every class on the main module.
+// the observer verifier. The per-binding gatekeeper Durable Objects and their sessions live in
+// gitlab-gatekeeper.ts (project, issue, merge request) and gitlab-instance.ts (instance code
+// search), and are re-exported here so wrangler finds every class on the main module.
 //
 // A mirror of gatekeeper-github (see plans/gitlab-gatekeeper.md). What differs is instance
 // configuration (any GitLab, optionally behind Cloudflare Access) and credentials: GitLab access
@@ -46,12 +47,15 @@ import {
   exchangeAuthCode,
   refreshAccessToken,
   revokeToken,
+  type GitLabApi,
   type GitLabOAuthGrant,
 } from "./gitlab-api";
+import { fetchDownloadCode } from "./gitlab-graphql";
 import {
   AUTH_SCOPES,
   OAUTH_SCOPES,
   VENDOR_ID,
+  codeAccessCacheTtlMs,
   getBasePath,
   getBaseUrl,
   getRedirectUri,
@@ -65,23 +69,28 @@ import {
   type Env,
   type GitLabApiRunner,
   type GitLabGatekeeperImplProps,
+  type GitLabInstanceGatekeeperProps,
 } from "./gitlab-env";
-import { parseResourceUrl } from "./gitlab-normalize";
-import { parseProjectSubresource } from "./project-subresources";
+import { isInstanceRootUrl, parseResourceUrl } from "./gitlab-normalize";
+import { parseGitLabSubresource } from "./project-subresources";
 import {
+  GitLabInstanceConfiguratorUI,
   GitLabIssueConfiguratorUI,
   GitLabMergeRequestConfiguratorUI,
   GitLabProjectConfiguratorUI,
 } from "./gitlab-configurators";
 import GITLAB_LOGO_SVG from "./gitlab-logo.svg";
 import TYPES_CODE from "./types.txt";
+import GITLAB_INSTANCE_CONFIGURATOR_HTML from "./generated/gitlab-instance-configurator-ui.txt";
 import GITLAB_ISSUE_CONFIGURATOR_HTML from "./generated/gitlab-issue-configurator-ui.txt";
 import GITLAB_MERGE_REQUEST_CONFIGURATOR_HTML from "./generated/gitlab-merge-request-configurator-ui.txt";
 import GITLAB_PROJECT_CONFIGURATOR_HTML from "./generated/gitlab-project-configurator-ui.txt";
 import { obsContext } from "./observability";
 
 export { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
+export { GitLabInstanceGatekeeperImpl } from "./gitlab-instance";
 export { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
+export { GitLabInstanceSessionImpl, GitLabRepositoryImpl } from "./gitlab-code-sessions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorId: VENDOR_ID });
 
@@ -229,7 +238,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       tagline: "Triage issues, review merge requests, and push to projects",
       description:
           "Connect your GitLab account so Cloudflare OS can read and update issues, merge requests, " +
-          "and reviews, and pull from and push to the projects you choose.",
+          "and reviews, search and read code, and pull from and push to the projects you choose.",
       providesAuth: true,
     };
   }
@@ -279,6 +288,10 @@ type StoredUser = { id: number; generation: string };
 // is noticed soon.
 const PROJECT_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const PROJECT_ACCESS_DENIED_TTL_MS = 15_000;
+// The same for code-read access (`repository/*`, `instance/*`): a denial is kept as briefly, while
+// a grant lasts codeAccessCacheTtlMs (a day by default), since an instance search page asks about
+// every project on it, and a shared workspace asks again at every collaborator's open.
+const CODE_ACCESS_DENIED_TTL_MS = 15_000;
 
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
@@ -514,27 +527,79 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
   }
 
   /**
-   * Whether this account can read each project subresource (see projectSubresourceId), in order:
-   * whether its GitLab user's effective membership of the project reaches the role the ID names,
-   * or Reporter for none (see hasProjectMembership). An allowed answer is reused for up to
-   * PROJECT_ACCESS_ALLOWED_TTL_MS and a denial for up to PROJECT_ACCESS_DENIED_TTL_MS, while this
-   * connection lasts. Throws for an ID it can't check, or when access can't be determined, which is
-   * never reused.
+   * Whether this account can read each subresource (see project-subresources.ts), in order:
+   * - `project/*`: whether its GitLab user's effective membership of the project reaches the role
+   *   the ID names, or Reporter for none (see hasProjectMembership). An allowed answer is reused for
+   *   up to PROJECT_ACCESS_ALLOWED_TTL_MS and a denial for up to PROJECT_ACCESS_DENIED_TTL_MS.
+   * - `repository/*`: whether GitLab lets it download the project's code (see fetchDownloadCode),
+   *   asked for every ID not already answered in one batch.
+   * - `instance/*`: whether it is an active, non-external user of this gatekeeper's instance; an
+   *   ID naming another host is refused.
+   * Code-read answers are reused for codeAccessCacheTtlMs when allowed and
+   * CODE_ACCESS_DENIED_TTL_MS when denied. Every answer lasts only while this connection does.
+   * Throws for an ID it can't check, or when access can't be determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
-    const required = subresources.map(parseProjectSubresource);
+    const required = subresources.map(parseGitLabSubresource);
+    const host = new URL(instanceUrl(this.env)).host;
+    if (required.some(subresource => subresource.kind === "instance" && subresource.host !== host)) {
+      throw new Error("Access to another GitLab instance can't be checked here.");
+    }
+    const answers = new Map<string, boolean>();
+    /** Each repository ID asked about, with its project id. */
+    const repositories = new Map<string, number>();
+    let instance: string | undefined;
     // GitLab answers for one project's membership per request, so each ID is cached on its own, and
     // a later failure keeps what earlier requests learned. One at a time, though a binding's reads
     // report at most its one project's IDs.
-    const answers: boolean[] = [];
     for (const [index, subresource] of subresources.entries()) {
-      const { projectId, minAccessLevel } = required[index];
-      answers.push(await this.#access.cached(subresource,
+      const parsed = required[index];
+      if (parsed.kind === "repository") repositories.set(subresource, parsed.projectId);
+      if (parsed.kind === "instance") instance = subresource;
+      if (parsed.kind !== "project" || answers.has(subresource)) continue;
+      const { projectId, minAccessLevel } = parsed;
+      answers.set(subresource, await this.#access.cached(subresource,
         allowed => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
         () => hasProjectMembership(this.env, this, projectId, minAccessLevel)));
     }
-    return answers;
+    if (repositories.size > 0 || instance !== undefined) {
+      const grantTtl = codeAccessCacheTtlMs(this.env);
+      const ttl = (allowed: boolean) => allowed ? grantTtl : CODE_ACCESS_DENIED_TTL_MS;
+      if (repositories.size > 0) {
+        // Every repository not already answered goes to one load, which asks GitLab about all of
+        // them at once (in chunks; see fetchDownloadCode) and stores nothing if any chunk fails.
+        const keys = [...repositories.keys()];
+        const verdicts = await this.#access.cachedMany(keys, ttl, async missing => {
+          const ids = missing.map(key => repositories.get(key)!);
+          const downloadable = await this.#asThisConnection(api => fetchDownloadCode(api, ids));
+          return ids.map(id => downloadable.get(id) === true);
+        });
+        keys.forEach((subresource, index) => answers.set(subresource, verdicts[index]));
+      }
+      if (instance !== undefined) {
+        answers.set(instance, await this.#access.cached(instance, ttl, async () => {
+          const user = await this.#asThisConnection(api => api.getCurrentUser());
+          return user.state === "active" && user.external === false;
+        }));
+      }
+    }
+    return subresources.map(subresource => answers.get(subresource)!);
+  }
+
+  /**
+   * Runs the replay-safe read `fn` as this account, and returns its answer only if the connection
+   * it ran under is still the live one: a reconnect (possibly as another GitLab user) landing
+   * meanwhile makes the answer someone else's, so it fails instead, as undetermined, rather than
+   * be returned (the cache would not store it either; see KvTtlCache).
+   */
+  async #asThisConnection<T>(fn: (api: GitLabApi) => Promise<T>): Promise<T> {
+    const generation = this.#creds.connectionGeneration();
+    const answer = await withAccountApi(this.env, this, fn, { replayable: true });
+    if (this.#creds.connectionGeneration() !== generation) {
+      throw new Error("GitLab credentials changed while access was being checked. Please try again.");
+    }
+    return answer;
   }
 
   /**
@@ -637,11 +702,19 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
+    const resources = supportedResources(this.env);
+    if (isInstanceRootUrl(instanceUrl(this.env), url)) {
+      if (!resources.instance) throw new Error(`Unsupported GitLab URL: ${url}`);
+      const props: GitLabInstanceGatekeeperProps = { userObjectId: this.ctx.props.userObjectId };
+      return {
+        class: this.ctx.exports.GitLabInstanceGatekeeperImpl({ props }),
+        resource: resources.instance,
+      };
+    }
     const parsed = parseResourceUrl(instanceUrl(this.env), url);
     if (!parsed) {
       throw new Error(`Unsupported GitLab URL: ${url}`);
     }
-    const resources = supportedResources(this.env);
     const props: GitLabGatekeeperImplProps = {
       userObjectId: this.ctx.props.userObjectId,
       projectPath: parsed.projectPath,
@@ -680,6 +753,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         ui: new RpcStub(new GitLabMergeRequestConfiguratorUI(context)),
       };
     }
+    if (resources.instance && resourceUrlPattern === resources.instance.urlPattern) {
+      return {
+        iframeHtml: GITLAB_INSTANCE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new GitLabInstanceConfiguratorUI(context.instanceUrl)),
+      };
+    }
     throw new Error(`Unsupported GitLab resource configurator type: ${resourceUrlPattern}`);
   }
 
@@ -714,9 +793,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   /**
    * Mint a verifier representing this account, used by GitLabGatekeeperImpl's addObserver and
-   * verifyObserverAccess to confirm a prospective observer may read a bound project (see those
-   * methods). The verifier carries this user's own account id, so its checks run against the
-   * observer's *own* GitLab token.
+   * verifyObserverAccess, and GitLabInstanceGatekeeperImpl's verifyObserverAccess, to confirm a
+   * prospective observer may read what a binding read (see those methods). The verifier carries
+   * this user's own account id, so its checks run against the observer's *own* GitLab token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -753,6 +832,32 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // artifacts, test reports included, to Maintainers (https://docs.gitlab.com/ci/yaml/#artifactsaccess).
 // Such reads report the role their data needs (see projectSubresourceId), rather than telling debug
 // logs or restricted reports apart from others.
+//
+// Code-only reads -- code search, file reads and listings, refs and commits, the project's metadata
+// -- disclose the repository and nothing of its issues or notes, so they report `repository/<id>`
+// instead (see repositorySubresourceId), and an observer passes when GitLab itself would let their
+// account download that code: GraphQL's `userPermissions.downloadCode`, asked with the observer's
+// own token for up to 100 projects a query (see fetchDownloadCode). That is GitLab's `download_code`
+// ability, which already weighs everything the membership probe would have to reimplement: the
+// project's visibility (a public project's code is anyone's, an internal one's any signed-in
+// non-external user's), external users (who see only what they are members of), a repository its
+// project restricts to members, roles below Reporter on a private project, and membership inherited
+// from ancestor groups or a group the project is shared with. A project GitLab leaves out of the
+// answer -- deleted, or hidden from the observer -- is a denial.
+//
+// An instance-wide search reveals a little beyond the repositories on its page: that a term is
+// absent from every project the owner can read, or that no project has a path. That is accepted
+// for anyone who could have run the search themselves, so `instance/<host>` (see
+// instanceSubresourceId) passes when the observer's `GET /user` is `state: active` and
+// `external: false` on this gatekeeper's instance; an ID naming any other host is refused.
+//
+// Code-read verdicts are asked about much more often -- every project on every instance search
+// page, again at each collaborator's open -- so a grant is reused for
+// GITLAB_CODE_ACCESS_CACHE_TTL_SECONDS (a day by default; see codeAccessCacheTtlMs), and a revoked
+// grant (a membership removed from a private project, a user made external or blocked) can go
+// unnoticed by a shared workspace for that long. Denials are kept 15 seconds, so new access is
+// noticed soon; a failure to answer is never kept; and every answer is dropped with the connection
+// it was learned under. Project memberships (`project/*`) keep their 15-minute lifetime.
 
 type GitLabVerifierProps = {
   userObjectId: string;
@@ -775,9 +880,9 @@ export interface GitLabVerifierApi extends GatekeeperUserVerifier {
    */
   hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
   /**
-   * Whether the user's account can read each project subresource, in order, reusing recent answers
-   * (see UserAccount.checkSubresourceAccess). Throws for an ID it can't check, or when access can't
-   * be determined (expired credentials, an outage).
+   * Whether the user's account can read each subresource -- project memberships, repositories, this
+   * instance -- in order, reusing recent answers (see UserAccount.checkSubresourceAccess). Throws for
+   * an ID it can't check, or when access can't be determined (expired credentials, an outage).
    */
   checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }

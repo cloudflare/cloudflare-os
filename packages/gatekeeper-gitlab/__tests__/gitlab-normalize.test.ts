@@ -7,11 +7,13 @@ import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { describe, expect, it } from "vitest";
 import * as fx from "./fixtures/gitlab-docs";
 import {
+  blobUrl,
   branchNameMatchesSearch,
   commentTargetFromPosition,
   commitIdsOfMergeRequestSummary,
   diffAnchor,
   hasDraftPrefix,
+  isInstanceRootUrl,
   issuableComparator,
   issueMatchesFilter,
   labelFromResponse,
@@ -68,6 +70,34 @@ describe("parseResourceUrl", () => {
     const ref = projectRef(INSTANCE, "group/sub/project");
     expect(ref).toEqual({ path: "group/sub/project", name: "project", namespace: "group/sub", url: `${INSTANCE}/group/sub/project` });
     expect(parseResourceUrl(INSTANCE, ref.url)?.projectPath).toBe(ref.path);
+  });
+});
+
+describe("isInstanceRootUrl", () => {
+  it("accepts the instance root with or without its slash, ignoring a query or fragment", () => {
+    for (const url of [INSTANCE, `${INSTANCE}/`, `${INSTANCE}/?x=1`, `${INSTANCE}/#top`]) {
+      expect(isInstanceRootUrl(INSTANCE, url)).toBe(true);
+    }
+  });
+
+  it("rejects project URLs, other origins and garbage, and is never true where parseResourceUrl parses", () => {
+    for (const url of [`${INSTANCE}/group/project`, `${INSTANCE}/group`, "https://other.example.com/",
+      "http://gitlab.example.com/", "https://gitlab.example.com:8443/", "not a url", ""]) {
+      expect(isInstanceRootUrl(INSTANCE, url)).toBe(false);
+    }
+    expect(parseResourceUrl(INSTANCE, `${INSTANCE}/`)).toBeNull();
+  });
+});
+
+describe("blobUrl", () => {
+  it("links a file's line on the web UI", () => {
+    expect(blobUrl(INSTANCE, "group/sub/project", "main", "src/app.ts", 12))
+      .toBe(`${INSTANCE}/group/sub/project/-/blob/main/src/app.ts#L12`);
+  });
+
+  it("encodes each segment of the ref and the file on its own, keeping their slashes as separators", () => {
+    expect(blobUrl(INSTANCE, "g/p", "feature/a b", "docs/#1 notes?.md", 3))
+      .toBe(`${INSTANCE}/g/p/-/blob/feature/a%20b/docs/%231%20notes%3F.md#L3`);
   });
 });
 

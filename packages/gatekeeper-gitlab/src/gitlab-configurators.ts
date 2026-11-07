@@ -4,6 +4,7 @@ import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabIssueResponse, GitLabMergeRequestResponse, GitLabProjectResponse } from "./gitlab-api";
 import type { GitLabApiRunner } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
+import type { GitLabInstanceConfiguratorRpc } from "./configurator/gitlab-instance-configurator-types";
 import type { GitLabIssueConfiguratorRpc } from "./configurator/gitlab-issue-configurator-types";
 import type { GitLabMergeRequestConfiguratorRpc } from "./configurator/gitlab-merge-request-configurator-types";
 import type { GitLabProjectConfiguratorRpc } from "./configurator/gitlab-project-configurator-types";
@@ -171,5 +172,20 @@ export class GitLabMergeRequestConfiguratorUI extends GitLabProjectConfiguratorU
     }
 
     return options.slice(0, AUTOCOMPLETE_OPTION_LIMIT);
+  }
+}
+
+/** The instance configurator's capability: it only confirms the instance, so it only says where it is. */
+@validateRpc()
+export class GitLabInstanceConfiguratorUI extends RpcTarget implements GitLabInstanceConfiguratorRpc {
+  readonly #instanceUrl: string;
+
+  constructor(instanceUrl: string) {
+    super();
+    this.#instanceUrl = instanceUrl;
+  }
+
+  async instanceUrl(): Promise<string> {
+    return this.#instanceUrl;
   }
 }

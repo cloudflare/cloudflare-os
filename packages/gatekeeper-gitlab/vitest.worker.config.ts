@@ -23,6 +23,7 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITLAB_GATEKEEPER: { className: "GitLabGatekeeperImpl", useSQLite: true },
+          INSTANCE_GATEKEEPER: { className: "GitLabInstanceGatekeeperImpl", useSQLite: true },
           // A facet class only: the gatekeeper with storage a test can seed (worker.ts).
           SEEDED_GATEKEEPER: { className: "SeededGatekeeper", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
@@ -38,6 +39,8 @@ export default defineConfig({
           GITLAB_API_URL: "https://gitlab-api.example.com",
           CF_ACCESS_CLIENT_ID: "test-access-id",
           CF_ACCESS_CLIENT_SECRET: "test-access-secret",
+          // The Instance type is listed, so its resolution and binding run as deployed.
+          GITLAB_INSTANCE_CODE_SEARCH: "true",
         },
       },
     }),
