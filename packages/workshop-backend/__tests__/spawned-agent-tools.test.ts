@@ -263,3 +263,169 @@ describe("spawned agent tools", () => {
          "requestConnection"]));
   }));
 });
+
+// An executeCode call that shows `count` views.
+function showViews(count: number) {
+  return fauxToolCall("executeCode", {
+    code: `export default async function() {
+      for (let i = 0; i < ${count}; i++) embedView({ title: "View " + i, html: "<p>hi</p>" });
+    }`,
+  });
+}
+
+// withImpl, in a regular chat, 1, with the user's prompt, unless `open` is false. executeCode
+// looks its caller up by name.
+function withChat(fn: Parameters<typeof withImpl>[0], { open = true } = {}) {
+  return withImpl(async impl => {
+    impl.users = { ...impl.users, idFromName: (name: string) => name };
+    if (open) {
+      impl.storage.chatMeta.put({ id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      impl.storage.chats.put({
+        chatId: 1, sequence: impl.nextChatSequence(1), timestamp: new Date(0), author: OWNER,
+        type: "message", message: "Chart it.",
+      });
+    }
+    await fn(impl);
+  });
+}
+
+// embedView (plans/live-views.md): a step that showed a view is the answer, unless an executeCode
+// call in it failed. Only chats a person reads have it.
+describe("embedView", () => {
+  it("asks the model nothing more after a step that showed a view", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(1)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Here it is.")),
+    ]);
+    expect(offered).toHaveLength(1);
+    expect(toolCalls(impl, 1)[0]?.views).toEqual([{ title: "View 0", html: "<p>hi</p>" }]);
+  }));
+
+  it("ends a step that read data in one call and showed a view in another", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([
+        fauxToolCall("executeCode", { code: `export default async function() { console.log(42); }` }),
+        showViews(1),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Here it is.")),
+    ]);
+    expect(offered).toHaveLength(1);
+  }));
+
+  it("goes on after a step in which another call threw, so the agent can fix it", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([
+        showViews(1),
+        fauxToolCall("executeCode", { code: `export default async function() { throw new Error("x"); }` }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Fixed.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    expect(toolCalls(impl, 1)[1]).toMatchObject({ failed: true });
+  }));
+
+  it("goes on after a step in which another executeCode call's input was refused", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(1), fauxToolCall("executeCode", { source: "x" })],
+          { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Fixed.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    expect(toolCalls(impl, 1)[1]?.error).toBeDefined();
+  }));
+
+  it("fails a call past 4 views or with an empty view, and goes on", () => withChat(async impl => {
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([showViews(5)], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("executeCode", {
+        code: `export default async function() { embedView({ title: "Empty", html: "" }); }`,
+      })], { stopReason: "toolUse" }),
+      // The limit is each call's, so two calls in one step show all five.
+      fauxAssistantMessage([showViews(3), showViews(2)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Unreached.")),
+    ]);
+    expect(offered).toHaveLength(3);
+    let [five, empty, three, two] = toolCalls(impl, 1);
+    expect(five).toMatchObject({ failed: true });
+    expect(five.views).toBeUndefined();
+    expect(empty).toMatchObject({ failed: true });
+    expect(empty.views).toBeUndefined();
+    expect(three.views).toHaveLength(3);
+    expect(two.views).toHaveLength(2);
+  }));
+
+  it("refuses a call whose views would overfill what its step can save, saves the step, and " +
+      "gives the next step its own budget", () => withChat(async impl => {
+    // Each call shows 4 views of about 250 KiB, within its own limits; nine of them are more than
+    // one stored record holds.
+    let showBigViews = () => fauxToolCall("executeCode", {
+      code: `export default async function() {
+        for (let i = 0; i < 4; i++) embedView({ title: "View " + i, html: "x".repeat(250 * 1024) });
+      }`,
+    });
+    let offered = await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage(Array.from({ length: 9 }, showBigViews), { stopReason: "toolUse" }),
+      fauxAssistantMessage([showBigViews()], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Unreached.")),
+    ]);
+    let calls = toolCalls(impl, 1);
+    expect(calls).toHaveLength(10);
+    let [first, ...rest] = calls;
+    expect(first.views).toHaveLength(4);
+    let refused = rest.at(-2);
+    expect(refused).toMatchObject({ failed: true });
+    expect(refused?.views).toBeUndefined();
+    expect(refused?.output).toContain("embedView:");
+    // A refused call means the step did not answer, so the agent goes on, and its next step shows
+    // views the first step had no more room for, which answers.
+    expect(rest.at(-1)?.views).toHaveLength(4);
+    expect(offered).toHaveLength(2);
+  }));
+
+  it("counts the output lines naming a step's views", () => withChat(async impl => {
+    // Each call logs a line and shows a small view with a long title outside Latin-1, which its
+    // output names too, so the output is stored at two bytes per code unit.
+    let showTitled = (length: number) => fauxToolCall("executeCode", {
+      code: `export default async function() {
+        console.log("y".repeat(20000));
+        embedView({ title: "\\u0100".repeat(${length}), html: "<p>x</p>" });
+      }`,
+    });
+    await runScriptedTurn(impl, 1, [
+      fauxAssistantMessage([...Array.from({ length: 15 }, () => showTitled(131000)), showTitled(33000)],
+          { stopReason: "toolUse" }),
+      // The step's output fills the model's window, so the next request compacts it first.
+      fauxAssistantMessage(fauxText("Summary.")),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    let calls = toolCalls(impl, 1);
+    // The step was saved.
+    expect(calls).toHaveLength(16);
+    expect(calls[0].views).toHaveLength(1);
+    let refused = calls.filter(call => call.failed);
+    expect(refused).not.toHaveLength(0);
+    for (let call of refused) {
+      expect(call.views).toBeUndefined();
+      expect(call.output).toContain("embedView:");
+    }
+  }));
+
+  it.each(["spawned", "callable"])("is not in a %s agent's code", kind => withChat(async impl => {
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+    if (kind === "callable") {
+      impl.storage.chatContext.put({ ...impl.getChatAgentContext(chatId), spawnerTypes: {
+        types: "/** Drafts replies. */\ninterface Drafter { composeEmail(to: string): void; }",
+        mainType: "Drafter",
+      } });
+    }
+    let offered = await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([showViews(1)], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    expect(offered).toHaveLength(2);
+    let [call] = toolCalls(impl, chatId);
+    expect(call).toMatchObject({ failed: true });
+    expect(call.views).toBeUndefined();
+    expect(call.output).toContain("ReferenceError");
+  }, { open: false }));
+});
