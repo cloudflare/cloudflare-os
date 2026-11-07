@@ -171,9 +171,13 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);
       seedGatekeeper(impl, 1);
+      impl.storage.gadgets.put({
+        type: "gadget", id: 100, title: "Gadget", created: new Date(0), bindingName: "GADGET",
+        bindings: {},
+      });
       impl.storage.collaborators.put({
         profile: { id: "bob", name: "Bob" },
-        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "use" }],
+        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "use", gadgetId: 100 }],
       });
 
       let restarts: string[] = [];
@@ -186,7 +190,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
       expect(restarts).toEqual([]);
       expect((await impl.getSharingManager()).getEffectiveAccess("bob"))
-          .toEqual({ role: "use", gadgetIds: "all" });
+          .toEqual({ role: "use", gadgetIds: [100] });
     });
   });
 });

@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
-import { SharingManager, SharingStorage, accessIncludesGadget } from "../src/sharing.js";
-import type { CollaboratorRecord, ShareKeyRecord } from "../src/storage-schema/overseer-storage.js";
+import {
+  SharingManager, SharingStorage, accessIncludesGadget,
+} from "../src/sharing.js";
+import {
+  makeOverseerStorage, type CollaboratorRecord, type ShareKeyRecord,
+} from "../src/storage-schema/overseer-storage.js";
+import {
+  migrateToFrozenGadgetGrants, type OverseerMigrationHost,
+} from "../src/storage-schema/overseer-migrations.js";
+import { createWorkshopLogger } from "../src/observability.js";
 import {
   AiChatAuthorInfo, PermissionEdge, CollaboratorRole, CollaboratorAccess, WorkpieceId,
   getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES,
@@ -46,8 +54,6 @@ function makeManagerWithFlag() {
 }
 
 const BUILD: CollaboratorAccess = { role: "build" };
-// Access to every gadget, held only through grants made before gadgets were shared individually.
-const ALL: CollaboratorAccess = { role: "use", gadgetIds: "all" };
 function only(...gadgetIds: WorkpieceId[]): CollaboratorAccess {
   return { role: "use", gadgetIds };
 }
@@ -56,7 +62,7 @@ function profile(id: string): AiChatAuthorInfo {
   return { type: "user", id, name: id };
 }
 
-// A user edge. `role: "use"` without `gadgetId` is a legacy grant of every gadget.
+// A user edge. Legacy `use` edges without a gadget are seeded only for the version 7 migration.
 function userEdge(sharer: string, role: CollaboratorRole = "build", gadgetId?: WorkpieceId)
     : PermissionEdge {
   return { type: "user", sharer, created: new Date(), role, ...(gadgetId !== undefined ? { gadgetId } : {}) };
@@ -86,6 +92,12 @@ function seedLink(
   });
 }
 
+// Seed a link to several gadgets, as frozen by migrateToFrozenGadgetGrants().
+function seedLinkToGadgets(
+    storage: SharingStorage, linkId: string, createdBy: string, gadgetIds: WorkpieceId[]) {
+  storage.shareKeys.put({ id: linkId, created: new Date(), createdBy, role: "use", gadgetIds });
+}
+
 // Read back a link record, asserting that the id names a link rather than one of its aliases.
 function link(storage: SharingStorage, linkId: string) {
   let record = storage.shareKeys.get(linkId)!;
@@ -93,12 +105,12 @@ function link(storage: SharingStorage, linkId: string) {
   return record;
 }
 
-// A redeemable link sharing every gadget, as created before gadgets were shared individually.
-// Such links can no longer be made, so mint a link and rewrite it into the legacy shape.
-async function legacyAllUseLink(storage: SharingStorage, mgr: SharingManager)
+// A redeemable link to several gadgets. No such link can be created, so mint a link and rewrite
+// it into that shape.
+async function linkToGadgets(storage: SharingStorage, mgr: SharingManager, gadgetIds: WorkpieceId[])
     : Promise<{ key: string; linkId: string }> {
   let result = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-  storage.shareKeys.put({ ...link(storage, result.linkId), role: "use" });
+  storage.shareKeys.put({ ...link(storage, result.linkId), role: "use", gadgetIds });
   return result;
 }
 
@@ -135,10 +147,8 @@ describe("authorization", () => {
 
   it("getEffectiveAccess reflects the granted access", () => {
     let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "legacy", [userEdge(OWNER, "use")]);
     seedCollaborator(storage, "builder", [userEdge(OWNER, "build")]);
     seedCollaborator(storage, "one", [gadgetEdge(OWNER, 2)]);
-    expect(mgr.getEffectiveAccess("legacy")).toEqual(ALL);
     expect(mgr.getEffectiveAccess("builder")).toEqual(BUILD);
     expect(mgr.getEffectiveAccess("one")).toEqual(only(2));
   });
@@ -151,9 +161,8 @@ describe("authorization", () => {
 });
 
 describe("accessIncludesGadget", () => {
-  it("includes every id for build and legacy all-gadget access, else only the listed ones", () => {
+  it("includes every id for build access, else only the listed ones", () => {
     expect(accessIncludesGadget(BUILD, 99)).toBe(true);
-    expect(accessIncludesGadget(ALL, 99)).toBe(true);
     expect(accessIncludesGadget(only(1, 3), 3)).toBe(true);
     expect(accessIncludesGadget(only(1, 3), 2)).toBe(false);
   });
@@ -238,9 +247,11 @@ describe("redeemShareKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("grants a newcomer every gadget, including later ones, through a legacy all-gadget link", async () => {
-    let { storage, mgr } = makeManager();
-    let { key, linkId } = await legacyAllUseLink(storage, mgr);
+  it("gives a newcomer one edge per shareable gadget of a link to several, and just those",
+      async () => {
+    let { storage, gadgets, mgr } = makeManager();
+    // Gadget 9 was deleted after the link was frozen.
+    let { key, linkId } = await linkToGadgets(storage, mgr, [1, 3, 9]);
 
     await mgr.redeemShareKey({
       rawKey: key, profileId: "newbie",
@@ -248,23 +259,27 @@ describe("redeemShareKey", () => {
     });
 
     expect(edgesOf(storage, "newbie")).toEqual([
-      expect.objectContaining({ type: "shareKey", keyId: linkId, role: "use" }),
+      expect.objectContaining({ type: "shareKey", keyId: linkId, role: "use", gadgetId: 1 }),
+      expect.objectContaining({ type: "shareKey", keyId: linkId, role: "use", gadgetId: 3 }),
     ]);
-    expect(edgesOf(storage, "newbie")[0]).not.toHaveProperty("gadgetId");
-    let access = mgr.getEffectiveAccess("newbie")!;
-    expect(access).toEqual(ALL);
-    expect(accessIncludesGadget(access, 99)).toBe(true);
+    // A gadget published later is not among them.
+    gadgets.add(42);
+    expect(mgr.getEffectiveAccess("newbie")).toEqual(only(1, 3));
   });
 
-  it("widens an existing gadget collaborator through a legacy all-gadget link", async () => {
+  it("restores only the gadgets removed when a link to several is redeemed again", async () => {
     let { storage, mgr } = makeManager();
-    let { key } = await legacyAllUseLink(storage, mgr);
-    seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
+    let { key } = await linkToGadgets(storage, mgr, [1, 3]);
+    let redeem = () => mgr.redeemShareKey(
+        { rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
 
-    await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
+    await redeem();
+    mgr.removeCollaborator(owner, "a", [], 3);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1));
 
+    await redeem();
     expect(edgesOf(storage, "a")).toHaveLength(2);
-    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1, 3));
   });
 
   it("treats a link to a gadget that can no longer be shared as unknown", async () => {
@@ -355,14 +370,6 @@ describe("addCollaborator", () => {
     mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 1 }, note: "n" });
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
   });
-
-  it("never narrows a legacy all-gadget grant by granting one gadget", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
-
-    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 2 } });
-    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
-  });
 });
 
 describe("computeEffectiveAccess", () => {
@@ -376,12 +383,9 @@ describe("computeEffectiveAccess", () => {
     expect(access.get("b")).toEqual(BUILD);
   });
 
-  it.each([
-    { name: "one gadget", edge: gadgetEdge(OWNER, 1) },
-    { name: "every gadget", edge: userEdge(OWNER, "use") },
-  ])("does not support downstream grants from a holder of $name", ({ edge }) => {
+  it("does not support downstream grants from a holder of gadgets", () => {
     let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [edge]);
+    seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
     seedCollaborator(storage, "builder", [userEdge("a", "build")]);
     seedCollaborator(storage, "viewer", [gadgetEdge("a", 1)]);
     seedLink(storage, "k1", "a", "use", 1);
@@ -412,22 +416,6 @@ describe("computeEffectiveAccess", () => {
     expect(mgr.getEffectiveAccess("a")).toEqual(only(9));
     gadgets.delete(9);
     expect(mgr.getEffectiveAccess("a")).toBeUndefined();
-  });
-
-  it("keeps legacy all-gadget grants covering every gadget, including later ones, never build",
-      () => {
-    let { storage, gadgets, mgr } = makeManager({ gadgets: [1] });
-    seedLink(storage, "k1", OWNER, "use");
-    seedCollaborator(storage, "direct", [userEdge(OWNER, "use")]);
-    seedCollaborator(storage, "linked", [keyEdge("k1", "use")]);
-    // A gadget published after the grants were made.
-    gadgets.add(42);
-
-    for (let id of ["direct", "linked"]) {
-      let access = mgr.getEffectiveAccess(id)!;
-      expect(access).toEqual(ALL);
-      expect(accessIncludesGadget(access, 42)).toBe(true);
-    }
   });
 
   it("grants nothing through a cycle unreachable from the owner", () => {
@@ -468,13 +456,17 @@ describe("computeEffectiveAccess", () => {
     expect(access.has("b")).toBe(false);
   });
 
-  it("uses the link's grant and creator, not the edge's stamped fields", () => {
+  it("grants at most what the link does, through its creator, whatever the edge claims", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "creator", [userEdge(OWNER, "build")]);
     seedLink(storage, "k1", "creator", "use", 1);
+    seedLinkToGadgets(storage, "k2", "creator", [1, 2]);
     // A forged edge claiming build through a gadget link grants only what the link does.
     seedCollaborator(storage, "a", [keyEdge("k1", "build")]);
+    // Each edge of a link to several gadgets grants its own gadget, if the link grants it.
+    seedCollaborator(storage, "b", [keyEdge("k2", "use", 2), keyEdge("k2", "use", 3)]);
     expect(mgr.getEffectiveAccess("a")).toEqual(only(1));
+    expect(mgr.getEffectiveAccess("b")).toEqual(only(2));
   });
 });
 
@@ -600,19 +592,6 @@ describe("removeCollaborator", () => {
         expect.arrayContaining([["use", 3], ["use", 1], ["use", 2]]));
   });
 
-  it("keeps a legacy all-gadget user's access without upgrading it", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    seedCollaborator(storage, "b", [userEdge("a", "use")]);
-
-    mgr.removeCollaborator(owner, "a", ["b"]);
-
-    expect(mgr.getEffectiveAccess("b")).toEqual(ALL);
-    let restored = edgesOf(storage, "b").find(e => e.type === "user" && e.sharer === OWNER)!;
-    expect(restored.role).toBe("use");
-    expect(restored.gadgetId).toBeUndefined();
-  });
-
   it("narrows a non-kept user instead of removing them", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
@@ -676,12 +655,19 @@ describe("removeCollaborator", () => {
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
   });
 
-  it("does not sever build or legacy all-gadget edges when removing one gadget", () => {
+  it("removes one gadget of a link to several, but never a build edge", () => {
     let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "b", [userEdge(OWNER, "use"), gadgetEdge(OWNER, 1)]);
-    let affected = mgr.removeCollaborator(owner, "b", [], 1);
-    expect(affected).toEqual([]);
-    expect(mgr.getEffectiveAccess("b")).toEqual(ALL);
+    seedLinkToGadgets(storage, "k1", OWNER, [1, 2]);
+    seedCollaborator(storage, "b", [userEdge(OWNER, "build"), gadgetEdge(OWNER, 1)]);
+    seedCollaborator(storage, "c", [keyEdge("k1", "use", 1), keyEdge("k1", "use", 2)]);
+
+    expect(mgr.removeCollaborator(owner, "b", [], 1)).toEqual([]);
+    expect(mgr.getEffectiveAccess("b")).toEqual(BUILD);
+
+    expect(mgr.removeCollaborator(owner, "c", [], 1)).toEqual([
+      expect.objectContaining({ profile: profile("c"), oldAccess: only(1, 2), newAccess: only(2) }),
+    ]);
+    expect(edgesOf(storage, "c")).toEqual([expect.objectContaining({ keyId: "k1", gadgetId: 2 })]);
   });
 
   it("lets a non-owner remove their own grant of one gadget", () => {
@@ -765,19 +751,20 @@ describe("revokeShareLink", () => {
         expect.objectContaining({ type: "user", sharer: OWNER, role: "use", gadgetId: 1 }));
   });
 
-  it("revokes a legacy all-gadget link, keeping recipients only on request", () => {
+  it("revokes a link to several gadgets, keeping recipients only on request", () => {
     let { storage, mgr } = makeManager();
-    seedLink(storage, "k1", OWNER, "use");
-    seedCollaborator(storage, "a", [keyEdge("k1", "use")]);
-    seedCollaborator(storage, "b", [keyEdge("k1", "use"), gadgetEdge(OWNER, 3)]);
+    seedLinkToGadgets(storage, "k1", OWNER, [1, 2]);
+    let linkEdges = [keyEdge("k1", "use", 1), keyEdge("k1", "use", 2)];
+    seedCollaborator(storage, "a", linkEdges);
+    seedCollaborator(storage, "b", [...linkEdges, gadgetEdge(OWNER, 3)]);
 
     let affected = mgr.revokeShareLink(owner, "k1", ["b"]);
     expect(affected).toEqual([
-      expect.objectContaining({ profile: profile("a"), oldAccess: ALL, newAccess: null }),
+      expect.objectContaining({ profile: profile("a"), oldAccess: only(1, 2), newAccess: null }),
     ]);
     expect(mgr.getEffectiveAccess("a")).toBeUndefined();
-    // b keeps all gadgets, still not build.
-    expect(mgr.getEffectiveAccess("b")).toEqual(ALL);
+    // b keeps the link's gadgets beside their own.
+    expect(mgr.getEffectiveAccess("b")).toEqual(only(1, 2, 3));
   });
 
   it("a revoked link's keys can no longer be redeemed", async () => {
@@ -878,15 +865,18 @@ describe("newShareLinkKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("copies a legacy all-gadget link to a key that redeems to every gadget", async () => {
+  it("copies a link to several gadgets to a key that redeems to the same gadgets", async () => {
     let { storage, mgr } = makeManager();
-    let { linkId } = await legacyAllUseLink(storage, mgr);
+    let { linkId } = await linkToGadgets(storage, mgr, [1, 3]);
     let { key } = await mgr.newShareLinkKey({ caller: owner, linkId });
 
     await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
 
-    expect(edgesOf(storage, "a")).toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId })]);
-    expect(mgr.getEffectiveAccess("a")).toEqual(ALL);
+    expect(edgesOf(storage, "a")).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId, gadgetId: 1 }),
+      expect.objectContaining({ type: "shareKey", keyId: linkId, gadgetId: 3 }),
+    ]);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1, 3));
   });
 
   it("refuses to copy a link to a gadget that can no longer be shared", async () => {
@@ -957,11 +947,9 @@ describe("listCollaborators", () => {
   it("includes each collaborator's effective access", () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    seedCollaborator(storage, "b", [userEdge(OWNER, "use")]);
     seedCollaborator(storage, "c", [gadgetEdge(OWNER, 3), gadgetEdge(OWNER, 1)]);
     let list = mgr.listCollaborators();
     expect(list.find(x => x.profile.id === "a")!.access).toEqual(BUILD);
-    expect(list.find(x => x.profile.id === "b")!.access).toEqual(ALL);
     expect(list.find(x => x.profile.id === "c")!.access).toEqual(only(1, 3));
   });
 
@@ -1212,5 +1200,210 @@ describe("ownerInvitesOnly", () => {
 
     mgr.addCollaborator({ caller: owner, profile: profile("b"), grant: { gadgetId: 1 } });
     expect(mgr.getEffectiveAccess("b")).toEqual(only(1));
+  });
+});
+
+describe("migrateToFrozenGadgetGrants", () => {
+  function makeMigrationManager(gadgetIds: WorkpieceId[]) {
+    let raw = makeMockStorage();
+    let storage = makeOverseerStorage(raw);
+    storage.version.put(6);
+    for (let id of gadgetIds) {
+      storage.gadgets.put({
+        type: "gadget", id, title: `Gadget ${id}`, created: new Date(), bindings: {},
+      });
+    }
+    let gadgets = new Set(gadgetIds);
+    let mgr = new SharingManager(storage, OWNER, () => false, id => gadgets.has(id));
+    // Only storage, transactions and logging are used by this synchronous migration.
+    let host = {
+      storage, ctx: {storage: raw}, logger: createWorkshopLogger("test.sharing-migration"),
+    } as OverseerMigrationHost;
+    return {storage, gadgets, mgr, host};
+  }
+
+  it("splits each grant of every gadget into one edge per gadget, keeping who gave it", () => {
+    let { storage, gadgets, mgr, host } = makeMigrationManager([2, 1]);
+    let direct = { ...userEdge(OWNER, "use"), note: "trip" };
+    seedCollaborator(storage, "builder", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "a", [direct, gadgetEdge(OWNER, 2)]);
+    seedCollaborator(storage, "b", [userEdge("builder", "use")]);
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(edgesOf(storage, "a")).toEqual([
+      { ...direct, gadgetId: 1 },
+      { ...direct, gadgetId: 2 },
+      expect.objectContaining({ sharer: OWNER, gadgetId: 2 }),
+    ]);
+    expect(edgesOf(storage, "b")).toEqual([
+      expect.objectContaining({ sharer: "builder", role: "use", gadgetId: 1 }),
+      expect.objectContaining({ sharer: "builder", role: "use", gadgetId: 2 }),
+    ]);
+    expect(edgesOf(storage, "builder")).toEqual([expect.objectContaining({ role: "build" })]);
+    expect(storage.version.get()).toBe(7);
+    // A gadget published afterwards is shared with no one.
+    gadgets.add(3);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1, 2));
+    expect(mgr.getEffectiveAccess("b")).toEqual(only(1, 2));
+    expect(mgr.getEffectiveAccess("builder")).toEqual(BUILD);
+  });
+
+  it("freezes grants that confer nothing yet, so a sharer regaining build restores only those",
+      () => {
+    let { storage, gadgets, mgr, host } = makeMigrationManager([1, 2]);
+    // a was narrowed from build to one gadget, leaving b's grant from a inert.
+    seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
+    seedCollaborator(storage, "b", [userEdge("a", "use")]);
+    seedLink(storage, "inactive-link", "a", "use");
+    seedCollaborator(storage, "c", [keyEdge("inactive-link", "use")]);
+
+    migrateToFrozenGadgetGrants(host);
+    gadgets.add(3);
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: "workspace" });
+
+    expect(mgr.getEffectiveAccess("b")).toEqual(only(1, 2));
+    expect(link(storage, "inactive-link")).toMatchObject({gadgetIds: [1, 2]});
+    expect(mgr.getEffectiveAccess("c")).toEqual(only(1, 2));
+  });
+
+  it("freezes a link to every gadget to those gadgets, and its keys still redeem", async () => {
+    let { storage, gadgets, mgr, host } = makeMigrationManager([1, 2]);
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
+    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    // As stored before schema version 7.
+    let original = { ...link(storage, linkId), role: "use" as const, note: "trip" };
+    storage.shareKeys.put(original);
+    let edge = { ...keyEdge(linkId, "use"), note: "redeemed" };
+    seedCollaborator(storage, "a", [edge]);
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(link(storage, linkId)).toEqual({ ...original, gadgetIds: [1, 2] });
+    expect(edgesOf(storage, "a")).toEqual([
+      { ...edge, gadgetId: 1 },
+      { ...edge, gadgetId: 2 },
+    ]);
+    gadgets.add(3);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1, 2));
+    for (let [rawKey, profileId] of [[key, "b"], [copy, "c"]]) {
+      await mgr.redeemShareKey({ rawKey, profileId, fetchProfile: async () => profile(profileId) });
+      expect(mgr.getEffectiveAccess(profileId)).toEqual(only(1, 2));
+    }
+  });
+
+  it("freezes a link to every gadget of a one-gadget workspace to an ordinary gadget link", () => {
+    let { storage, host } = makeMigrationManager([5]);
+    seedLink(storage, "k1", OWNER, "use");
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(link(storage, "k1")).toMatchObject({ role: "use", gadgetId: 5 });
+    expect(link(storage, "k1")).not.toHaveProperty("gadgetIds");
+  });
+
+  it("revokes a link to every gadget of a workspace with none, dropping its grants", async () => {
+    let { storage, gadgets, mgr, host } = makeMigrationManager([]);
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
+    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    storage.shareKeys.put({ ...link(storage, linkId), role: "use" });
+    seedCollaborator(storage, "a", [keyEdge(linkId, "use"), userEdge(OWNER, "use")]);
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(link(storage, linkId).revoked).toBe(true);
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
+    expect(edgesOf(storage, "a")).toEqual([]);
+    gadgets.add(1);
+    for (let rawKey of [key, copy]) {
+      await mgr.redeemShareKey({ rawKey, profileId: "b", fetchProfile: async () => profile("b") });
+    }
+    expect(storage.collaborators.get("b")).toBeUndefined();
+    expect(mgr.getEffectiveAccess("a")).toBeUndefined();
+  });
+
+  it("leaves newer schemas unchanged, so later gadgets do not expand frozen grants", () => {
+    let { storage, host } = makeMigrationManager([1]);
+    seedLink(storage, "k1", OWNER, "use");
+    migrateToFrozenGadgetGrants(host);
+    storage.gadgets.put({
+      type: "gadget", id: 2, title: "Later", created: new Date(), bindings: {},
+    });
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(link(storage, "k1")).toMatchObject({gadgetId: 1});
+    expect(link(storage, "k1")).not.toHaveProperty("gadgetIds");
+    expect(storage.version.get()).toBe(7);
+  });
+
+  it("does not touch an earlier or never-initialized schema", () => {
+    for (let version of [0, 5]) {
+      let { storage, host } = makeMigrationManager([1]);
+      storage.version.put(version);
+      seedLink(storage, "k1", OWNER, "use");
+      let original = link(storage, "k1");
+
+      migrateToFrozenGadgetGrants(host);
+
+      expect(link(storage, "k1")).toEqual(original);
+      expect(storage.version.get()).toBe(version);
+    }
+  });
+
+  it("excludes provisional gadgets and worktrees", () => {
+    let { storage, host } = makeMigrationManager([1, 2]);
+    storage.gadgets.put({...storage.gadgets.get(2)!, pending: {chatId: 10}});
+    storage.gadgets.put({
+      type: "worktree", id: 3, title: "Worktree", created: new Date(), chatId: 10,
+      baseCommit: "base", headCommit: "base", pinBase: "base",
+    });
+    seedLink(storage, "k1", OWNER, "use");
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+
+    migrateToFrozenGadgetGrants(host);
+
+    expect(link(storage, "k1")).toMatchObject({gadgetId: 1});
+    expect(link(storage, "k1")).not.toHaveProperty("gadgetIds");
+    expect(edgesOf(storage, "a")).toEqual([
+      expect.objectContaining({gadgetId: 1}),
+    ]);
+  });
+
+  it("rolls back converted links and edges if the version stamp fails, then retries atomically", () => {
+    let { storage, host } = makeMigrationManager([1, 2]);
+    seedLink(storage, "k1", OWNER, "use");
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+    let originalLink = link(storage, "k1");
+    let originalEdges = edgesOf(storage, "a");
+    let stamp = vi.spyOn(storage.version, "put").mockImplementationOnce(() => {
+      throw new Error("interrupted migration");
+    });
+
+    expect(() => migrateToFrozenGadgetGrants(host)).toThrow("interrupted migration");
+
+    expect(storage.version.get()).toBe(6);
+    expect(link(storage, "k1")).toEqual(originalLink);
+    expect(edgesOf(storage, "a")).toEqual(originalEdges);
+    stamp.mockRestore();
+    migrateToFrozenGadgetGrants(host);
+    expect(storage.version.get()).toBe(7);
+    expect(link(storage, "k1")).toEqual({...originalLink, gadgetIds: [1, 2]});
+    expect(edgesOf(storage, "a")).toEqual([
+      {...originalEdges[0], gadgetId: 1}, {...originalEdges[0], gadgetId: 2},
+    ]);
+  });
+
+  it("lets each migrated gadget grant be removed independently", () => {
+    let { storage, mgr, host } = makeMigrationManager([1, 2]);
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+
+    migrateToFrozenGadgetGrants(host);
+    mgr.removeCollaborator(owner, "a", [], 1);
+
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(2));
+    expect(edgesOf(storage, "a")).toEqual([expect.objectContaining({gadgetId: 2})]);
+    mgr.removeCollaborator(owner, "a", [], 2);
+    expect(mgr.getEffectiveAccess("a")).toBeUndefined();
   });
 });

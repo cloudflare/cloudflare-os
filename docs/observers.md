@@ -91,9 +91,7 @@ The check works as follows:
     connections with the spawner creator's authority), plus every connection through which any
     of those gadgets recorded requirements (§10). See `#gadgetReach`. Opening the workspace shell
     verifies nothing, since it shows nothing a gadget read. Failing to verify
-    for one gadget never affects another the collaborator holds. A collaborator who still holds
-    a legacy workspace-wide `use` grant (docs/sharing.md) holds every gadget, but is verified the
-    same way, for each gadget they get.
+    for one gadget never affects another the collaborator holds.
 - **Account selection.** A collaborator must have their own connected account for each vendor the
   Gadget depends on. For ordinary bindings, they choose which account to use (e.g. work or personal
   Google). If an account cannot be selected automatically, the configuration modal prompts them to
