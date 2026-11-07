@@ -5263,7 +5263,7 @@ function ChatInterface({
     const stateLabel = isApproved
       ? "Approved"
       : isRejected
-        ? "Denied"
+        ? log.outcomeUnconfirmed ? "Denied (may have already happened)" : "Denied"
         : null;
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
