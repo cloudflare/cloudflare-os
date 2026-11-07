@@ -107,7 +107,7 @@ import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
 import {
-  BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
@@ -1048,6 +1048,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
           scopedProjectId: target.projectId,
           scopedDatasetId: target.datasetId,
           scopedTableId: target.tableId,
+          queryProjectId: target.queryProjectId,
         };
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
@@ -3815,6 +3816,13 @@ export type BigQueryGatekeeperImplProps = {
   scopedProjectId?: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
+  /**
+   * The project query jobs run in and are billed to, when it is not the scoped project: what a
+   * dataset shared from a project the account holds no role in needs, since BigQuery requires
+   * `bigquery.jobs.create` wherever the job runs. It changes nothing about which tables a query
+   * may read, which the scope above decides.
+   */
+  queryProjectId?: string;
 };
 
 @validateRpc()
@@ -3832,19 +3840,22 @@ export class BigQueryGatekeeperImpl
   }
 
   async describe(): Promise<ResourceDescription> {
-    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t } = this.ctx.props;
+    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t, queryProjectId } = this.ctx.props;
     let path = p ? (d ? (t ? `/${p}/${d}/${t}` : `/${p}/${d}`) : `/${p}`) : "";
     let label = t ? `${p}.${d}.${t}` : d ? `${p}.${d}` : p ?? null;
+    let url = new URL(`https://${BIGQUERY_HOST}${path}`);
+    if (queryProjectId) url.searchParams.set(BIGQUERY_QUERY_PROJECT_PARAM, queryProjectId);
+    let snippet = t
+        ? `Query BigQuery table "${p}.${d}.${t}" (read-only)`
+        : d
+            ? `Query BigQuery dataset "${p}.${d}" (read-only)`
+            : p
+                ? `Query BigQuery datasets in project "${p}" (read-only)`
+                : "Browse BigQuery projects and datasets (read-only)";
     return {
-      url: `https://${BIGQUERY_HOST}${path}`,
+      url: url.toString(),
       title: label ? `BigQuery (${label})` : "BigQuery",
-      snippet: t
-          ? `Query BigQuery table "${p}.${d}.${t}" (read-only)`
-          : d
-              ? `Query BigQuery dataset "${p}.${d}" (read-only)`
-              : p
-                  ? `Query BigQuery datasets in project "${p}" (read-only)`
-                  : "Browse BigQuery projects and datasets (read-only)",
+      snippet: queryProjectId ? `${snippet}; query jobs run in "${queryProjectId}"` : snippet,
       suggestedBindingName: "BIGQUERY",
       tsType: "BigQuerySession",
     };
@@ -3866,6 +3877,7 @@ export class BigQueryGatekeeperImpl
       this.ctx.props.scopedProjectId,
       this.ctx.props.scopedDatasetId,
       this.ctx.props.scopedTableId,
+      this.ctx.props.queryProjectId,
     );
   }
 
@@ -3933,6 +3945,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #scopedProjectId?: string;
   #scopedDatasetId?: string;
   #scopedTableId?: string;
+  #queryProjectId?: string;
 
   constructor(
     api: BigQueryApi,
@@ -3940,6 +3953,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     scopedProjectId: string | undefined,
     scopedDatasetId: string | undefined,
     scopedTableId: string | undefined,
+    queryProjectId?: string,
   ) {
     super();
     this.#api = api;
@@ -3947,6 +3961,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     this.#scopedProjectId = scopedProjectId;
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
+    this.#queryProjectId = queryProjectId;
   }
 
   // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
@@ -3975,14 +3990,40 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
 
   // --- helpers -----------------------------------------------------------
 
-  // Pick the project to bill the query against. When scoped, the scoped project is used and
-  // the caller cannot override. When unscoped, the caller must declare a default project via
-  // `defaultDataset.projectId` (BigQuery requires a billing project on every query).
+  // The project every query job runs in and is billed to: the connection's query project when it
+  // names one, else the scoped project. Fixed by the connection, never by the caller. BigQuery
+  // requires `bigquery.jobs.create` here, which a dataset shared from another project does not
+  // grant, so a connection to such a dataset names a project of the account's own.
   #billingProject(): string {
+    if (this.#queryProjectId) return this.#queryProjectId;
     if (this.#scopedProjectId) return this.#scopedProjectId;
     throw new Error(
       "This session is not scoped to a project. Connect to a specific BigQuery project " +
       "(e.g. https://bigquery.googleapis.com/my-project) to run queries.");
+  }
+
+  // The default dataset lives in the data's project, whichever project the job runs in, so an
+  // unqualified table name resolves where the connection points.
+  #jobDefaultDataset(datasetId: string | undefined): { projectId: string; datasetId: string } | undefined {
+    return datasetId ? { projectId: this.#scopedProjectId!, datasetId } : undefined;
+  }
+
+  // BigQuery's answer when the account cannot create jobs in the billing project, said in terms of
+  // what the user can do about it; the gatekeeper's own cross-project checks never reach BigQuery.
+  async #asJob<T>(billingProject: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof BigQueryApiError && error.status === 403 &&
+          error.reason === "accessDenied" && error.message.includes("bigquery.jobs.create")) {
+        throw new Error(
+          `This Google account cannot run query jobs in project "${billingProject}" (it lacks ` +
+          "bigquery.jobs.create there), which BigQuery requires of every query, including a dry run. " +
+          "Reconnect this BigQuery resource choosing a project of yours to run queries in; it can " +
+          "still read this data, and that project is billed instead.", { cause: error });
+      }
+      throw error;
+    }
   }
 
   #effectiveDataset(opts: { defaultDataset?: string } | undefined): string | undefined {
@@ -4084,9 +4125,9 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     // (BigQuery doesn't bill for them), and the response includes `referencedTables`
     // parsed by Google's own SQL engine — the only reliable way to check scope on
     // arbitrary SQL.
-    let estimate = await this.#api.dryRun(billingProject, sql, {
-      defaultDataset, params: opts?.params,
-    });
+    let estimate = await this.#asJob(billingProject, () => this.#api.dryRun(billingProject, sql, {
+      defaultDataset: this.#jobDefaultDataset(defaultDataset), params: opts?.params,
+    }));
     this.#assertReadOnlyEstimate(estimate);
     this.#checkScopedTables(estimate.referencedTables);
     if (estimate.bytesProcessed > maxBytes) {
@@ -4110,13 +4151,11 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       containsRestrictedData: true,
     });
 
-    let result = await this.#api.query(billingProject, sql, {
+    return this.#asJob(billingProject, () => this.#api.query(billingProject, sql, {
       ...opts,
-      defaultDataset,
+      defaultDataset: this.#jobDefaultDataset(defaultDataset),
       maximumBytesBilled: maxBytes,
-    });
-
-    return result;
+    }));
   }
 
   async dryRun(
@@ -4126,9 +4165,9 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     let billingProject = this.#billingProject();
     let defaultDataset = this.#effectiveDataset(opts);
 
-    let estimate = await this.#api.dryRun(billingProject, sql, {
-      defaultDataset, params: opts?.params,
-    });
+    let estimate = await this.#asJob(billingProject, () => this.#api.dryRun(billingProject, sql, {
+      defaultDataset: this.#jobDefaultDataset(defaultDataset), params: opts?.params,
+    }));
     this.#assertReadOnlyEstimate(estimate);
     this.#checkScopedTables(estimate.referencedTables);
 
