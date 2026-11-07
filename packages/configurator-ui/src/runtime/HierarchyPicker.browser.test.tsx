@@ -888,33 +888,32 @@ describe("search", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("sits compact beside the breadcrumb, and takes its place while in use", async () => {
+  // Its layout is checked in the styled frame (build/frame.test.ts); here, what is shown.
+  it("shows the search box with its placeholder throughout, and the breadcrumb only while not searching", async () => {
     await render({ loadItems: source(), searchPlaceholder: "Search Drive" });
     const search = page.getByRole("searchbox", { name: "Search Drive" });
-    await expect.element(search).toHaveAttribute("placeholder", "Search");
+    await expect.element(search).toHaveAttribute("placeholder", "Search Drive");
     await expect.element(crumbs()).toBeVisible();
 
+    // Focus alone changes nothing: the box is already as it is in use.
     await userEvent.click(search);
-    expect(crumbs().elements()).toHaveLength(0);
-    await expect.element(search).toHaveAttribute("placeholder", "Search Drive");
+    await expect.element(crumbs()).toBeVisible();
     await userEvent.fill(search, "nothing");
     await expect.element(list()).toHaveAccessibleName("Search results");
-
-    // Emptied but still in use, it keeps the breadcrumb's place until the user leaves it.
-    await userEvent.keyboard("{Escape}");
     expect(crumbs().elements()).toHaveLength(0);
-    await userEvent.tab();
+
+    await userEvent.keyboard("{Escape}");
     await expect.element(crumbs()).toBeVisible();
     await expect.element(list()).toHaveAccessibleName("My Drive");
   });
 
-  it("returns Shift+Tab from the empty search box to the breadcrumb it covered", async () => {
+  it("reaches the breadcrumb with Tab from the search box above it", async () => {
     await render({ loadItems: source(), searchPlaceholder: "Search Drive" });
 
     await userEvent.click(option("Reports"));
     await userEvent.click(page.getByRole("searchbox", { name: "Search Drive" }));
-    await userEvent.tab({ shift: true });
-    await expect.element(crumb("Reports")).toHaveFocus();
+    await userEvent.tab();
+    await expect.element(page.getByRole("button", { name: "Up one level" })).toHaveFocus();
   });
 
   it("clears the search with Escape, unless an input method takes it, and says when nothing matched", async () => {

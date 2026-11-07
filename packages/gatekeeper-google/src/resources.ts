@@ -569,7 +569,11 @@ export type ResourceTarget =
   | { kind: "sheets"; spreadsheetId: string }
   | { kind: "slides"; presentationId: string }
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
-  | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
+  | {
+      kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string;
+      /** Where query jobs run and are billed when not the data's own project (see parseBigQueryUrl). */
+      queryProjectId?: string;
+    }
   | { kind: "driveAccount" }
   | { kind: "driveFolder"; folderId: string }
   | { kind: "driveFile"; fileId: string }
@@ -770,12 +774,31 @@ function parseChatUrl(parsed: URL): ResourceTarget {
   throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);
 }
 
+/** The one query parameter a BigQuery resource URL may carry. */
+export const BIGQUERY_QUERY_PROJECT_PARAM = "queryProject";
+
+/**
+ * A Google Cloud project ID as BigQuery accepts one in a job or table reference: the modern form
+ * (`my-project`) or a legacy domain-scoped one (`example.com:my-project`). Every downstream request
+ * interpolates it into a path, so anything else is refused here.
+ */
+const BIGQUERY_PROJECT_ID_RE = /^[a-z0-9][a-z0-9.-]{0,62}(?::[a-z0-9][a-z0-9-]{0,62})?$/;
+
+/**
+ * Synthetic URL: `/<projectId>[/<datasetId>[/<tableId>]]`, naming the data the connection reaches.
+ * `?queryProject=<id>` names the project query jobs run in and are billed to when the account cannot
+ * create jobs in the data's project, which BigQuery requires of every query but which a dataset
+ * shared from another project never grants. The query project widens nothing: scope checks and
+ * observer reporting stay on the data project. Naming the data project itself is the default, and
+ * is dropped so the URL has one spelling.
+ */
 function parseBigQueryUrl(parsed: URL): ResourceTarget {
-  if (parsed.search || parsed.hash) {
-    throw new Error("BigQuery resource URLs must not include query strings or fragments.");
+  if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== BIGQUERY_QUERY_PROJECT_PARAM)) {
+    throw new Error(
+        `BigQuery resource URLs must not include fragments or query parameters other than ` +
+        `${BIGQUERY_QUERY_PROJECT_PARAM}.`);
   }
 
-  // Synthetic path: /<projectId>/<datasetId>/<tableId> (each segment optional after the first).
   let segments = parsed.pathname.split("/").filter(Boolean).map(s => decodeURIComponent(s));
   if (segments.length > 3) {
     throw new Error(
@@ -789,5 +812,10 @@ function parseBigQueryUrl(parsed: URL): ResourceTarget {
   if (tableId && !datasetId) {
     throw new Error("Cannot scope to a table without specifying a dataset.");
   }
-  return { kind: "bigquery", projectId, datasetId, tableId };
+  let queryProjectId = parsed.searchParams.get(BIGQUERY_QUERY_PROJECT_PARAM) ?? undefined;
+  if (queryProjectId !== undefined && !BIGQUERY_PROJECT_ID_RE.test(queryProjectId)) {
+    throw new Error(`"${BIGQUERY_QUERY_PROJECT_PARAM}" must be a Google Cloud project ID.`);
+  }
+  if (queryProjectId === projectId) queryProjectId = undefined;
+  return { kind: "bigquery", projectId, datasetId, tableId, queryProjectId };
 }

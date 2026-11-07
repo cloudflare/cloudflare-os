@@ -134,20 +134,16 @@ const Navigator = (props: HierarchyPickerProps) => {
   const [activeId, setActiveId] = useState<string | null>(null);
   // A pre-filled leaf, which its parent's listing may not show: on a later page, or with no path.
   const [prefilledLeaf, setPrefilledLeaf] = useState<Item | null>(null);
-  const [searchFocused, setSearchFocused] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
-  const crumbsRef = useRef<HTMLElement>(null);
   // Rows are memoized, so the handler they share keeps its identity and acts on the latest render.
   const activate = useRef((_id: string) => {});
   const activateRow = useCallback((id: string) => activate.current(id), []);
   // Where focus goes once that location's listing is shown (the row named, or else the first),
   // after the control that had it went away with what it did.
   const focusTarget = useRef<{ location: string; row: string | null } | null>(null);
-  // Set when Shift+Tab leaves the search box, whose focus hid the breadcrumb it should reach.
-  const focusCrumb = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
   const typeAhead = useRef({ typed: "", at: 0 });
@@ -251,10 +247,6 @@ const Navigator = (props: HierarchyPickerProps) => {
   const actionOf = (item: Item) =>
     item.kind === "container" && item !== scope ? "open" : item.selectable ? "choose" : "none";
   const hasTabs = tabs.length > 0;
-  // Without tabs, the search box sits compact beside the breadcrumb until used, then takes its place;
-  // beside tabs, it has room of its own. Either way the breadcrumb gives way to what a search finds,
-  // which is not in the open location.
-  const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
   const rootChosen = root.selectable === true && value === root.id;
   // Rows about to give way to the search being typed are no longer in view; the root's card is.
@@ -300,14 +292,6 @@ const Navigator = (props: HierarchyPickerProps) => {
     focusTarget.current = null;
     const index = target.row === null ? 0 : Math.max(0, rowIds.indexOf(target.row));
     (list.querySelectorAll<HTMLElement>('[role="option"]')[index] ?? list).focus();
-  });
-
-  useEffect(() => {
-    if (!focusCrumb.current) return;
-    const crumb = crumbsRef.current?.querySelector<HTMLElement>('[aria-current="location"]');
-    if (!crumb) return;
-    focusCrumb.current = false;
-    crumb.focus();
   });
 
   // "/" goes to the search box, selecting what it holds, and PageUp/PageDown scroll the list a page,
@@ -472,13 +456,6 @@ const Navigator = (props: HierarchyPickerProps) => {
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // An input method's own, as Escape is when it cancels what the user is composing.
     if (event.nativeEvent.isComposing) return;
-    // Without tabs, the breadcrumb comes before the search box, which hid it while focused.
-    if (!hasTabs && event.key === "Tab" && event.shiftKey && !text) {
-      event.preventDefault();
-      focusCrumb.current = true;
-      setSearchFocused(false);
-      return;
-    }
     if (event.key !== "Escape" || !text) return;
     event.preventDefault();
     search("");
@@ -520,22 +497,15 @@ const Navigator = (props: HierarchyPickerProps) => {
       top={openTab?.title ?? root.title}
       location={location}
       disabled={disabled}
-      navRef={crumbsRef}
       onGo={depth => goTo(depth, false)}
     />
   );
 
   const searchBox = searchPlaceholder && (
-    <div
-      className={hasTabs
-        ? "min-w-40 flex-1"
-        : cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
-      onFocus={() => setSearchFocused(true)}
-      onBlur={() => setSearchFocused(false)}
-    >
+    <div className="min-w-40 flex-1">
       <FilterInput
         label={searchPlaceholder}
-        placeholder={hasTabs || searchOpen ? searchPlaceholder : "Search"}
+        placeholder={searchPlaceholder}
         value={text}
         disabled={disabled}
         onChange={search}
@@ -579,45 +549,39 @@ const Navigator = (props: HierarchyPickerProps) => {
           </button>
         </div>
       )}
-      {hasTabs ? (
-        <>
-          {/* Wraps the search box below the tabs where both do not fit, rather than scroll the tabs. */}
-          <div className={cn(bar, "flex-wrap py-2")}>
-            {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
-            <div inert={disabled || undefined} className="min-w-0">
-              <Tabs
-                variant="segmented"
-                size="sm"
-                tabs={tabs.map(({ id, title, icon }) => {
-                  const drawn = customIcon(icon);
-                  // Hidden from assistive technology, which names the tab by its title.
-                  return { value: id, label: drawn ? (
-                    <span className="flex items-center gap-1.5">
-                      <span aria-hidden="true" className="flex size-3.5 shrink-0 [&>svg]:size-3.5">{drawn}</span>
-                      {title}
-                    </span>
-                  ) : title };
-                })}
-                value={location.tab ?? undefined}
-                onValueChange={tab => navigate({ tab, trail: [], detached: false }, false)}
-              />
-            </div>
-            {searchBox}
-          </div>
-          {/* Kept while searching, so the list does not move. */}
-          <div className={cn(bar, "min-h-8")}>
-            {text === "" ? breadcrumb : (
-              <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-xs text-kumo-subtle">Search results</span>
-            )}
-            {shownCount}
-          </div>
-        </>
-      ) : (
-        <div className={cn(bar, "min-h-10 py-1.5")}>
-          {!searchOpen && <>{breadcrumb}{shownCount}</>}
+      {/* The search box keeps one size and place whether or not it is in use, beside the tabs when
+          there are any, and the breadcrumb's row below stays too, so searching moves nothing. Wraps
+          the search box below the tabs where both do not fit, rather than scroll the tabs. */}
+      {(hasTabs || searchBox) && (
+        <div className={cn(bar, "flex-wrap py-2")}>
+          {/* Kumo's Tabs cannot be disabled; `inert` keeps a disabled picker's out of reach. */}
+          {hasTabs && <div inert={disabled || undefined} className="min-w-0">
+            <Tabs
+              variant="segmented"
+              size="sm"
+              tabs={tabs.map(({ id, title, icon }) => {
+                const drawn = customIcon(icon);
+                // Hidden from assistive technology, which names the tab by its title.
+                return { value: id, label: drawn ? (
+                  <span className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className="flex size-3.5 shrink-0 [&>svg]:size-3.5">{drawn}</span>
+                    {title}
+                  </span>
+                ) : title };
+              })}
+              value={location.tab ?? undefined}
+              onValueChange={tab => navigate({ tab, trail: [], detached: false }, false)}
+            />
+          </div>}
           {searchBox}
         </div>
       )}
+      <div className={cn(bar, "min-h-8")}>
+        {text === "" ? breadcrumb : (
+          <span aria-hidden="true" className="min-w-0 flex-1 px-1 text-xs text-kumo-subtle">Search results</span>
+        )}
+        {shownCount}
+      </div>
       {/* One fixed height, so neither a navigation nor the listing it loads moves the form. Scrolling
           near the end loads the next page; Load more stays for the keyboard. Only scrolling does, so
           a short page cannot chain into many, and a page that failed waits for its Retry. Not while

@@ -713,11 +713,28 @@ describe("parseResourceUrl", () => {
         .toEqual({ kind: "bigquery", projectId: "proj", datasetId: "my ds", tableId: undefined });
     });
 
+    // A dataset shared from another project: the account can read it but not create jobs there,
+    // so the URL names a project of the account's own to run queries in.
+    it("names the project query jobs run in, at any scope, dropping the data project itself", () => {
+      expect(parseResourceUrl("https://bigquery.googleapis.com/theirs/events?queryProject=mine"))
+        .toMatchObject({ projectId: "theirs", datasetId: "events", queryProjectId: "mine" });
+      expect(parseResourceUrl("https://bigquery.googleapis.com/theirs/?queryProject=example.com:mine"))
+        .toMatchObject({ projectId: "theirs", datasetId: undefined, queryProjectId: "example.com:mine" });
+      expect(parseResourceUrl("https://bigquery.googleapis.com/proj/ds/tbl?queryProject=proj"))
+        .toEqual({ kind: "bigquery", projectId: "proj", datasetId: "ds", tableId: "tbl", queryProjectId: undefined });
+      for (const resource of SUPPORTED_RESOURCES) {
+        expect(new URLPattern(resource.urlPattern).test("https://bigquery.googleapis.com/theirs/events?queryProject=mine"))
+          .toBe(resource.urlPattern === "https://bigquery.googleapis.com/:projectId/*");
+      }
+    });
+
     it.each([
       ["no project", "https://bigquery.googleapis.com/", /must include a project ID/],
       ["too many segments", "https://bigquery.googleapis.com/a/b/c/d", /must be/],
-      ["a query string", "https://bigquery.googleapis.com/proj?x=1", /query strings or fragments/],
-      ["a fragment", "https://bigquery.googleapis.com/proj#x", /query strings or fragments/],
+      ["a query string", "https://bigquery.googleapis.com/proj?x=1", /query parameters other than queryProject/],
+      ["a fragment", "https://bigquery.googleapis.com/proj#x", /fragments or query parameters/],
+      ["a query project that is not a project ID", "https://bigquery.googleapis.com/proj?queryProject=a%2Fb", /must be a Google Cloud project ID/],
+      ["an empty query project", "https://bigquery.googleapis.com/proj?queryProject=", /must be a Google Cloud project ID/],
     ])("rejects %s", (_name, url, message) => {
       expect(() => parseResourceUrl(url)).toThrow(message);
     });
