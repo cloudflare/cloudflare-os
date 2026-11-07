@@ -107,6 +107,33 @@ The check works as follows:
   sharing graph (`computeEffectiveAccess`), and for a gadget, whether their access includes a
   gadget that reaches it -- never off whether they currently have it open.
 
+### Admin access: a deliberate exception
+
+A deployment admin (a user the backend's `ADMINS` variable lists) can inspect a workspace through
+`AdminApi.inspectWorkspace()` without being verified against its gatekeepers and without being
+seen by its members: `OverseerDurableObject.openForAdmin()` skips `authorizeCollaborator()` and
+observer verification by explicit policy, and the admin is never registered as an observer. So
+`excludeObservers` never names an admin, and no observation is blocked on an admin's account.
+
+The exception is bounded. Restricted data (chat messages, file contents, the descriptions and
+fields of observations) is visible only at the `"full"` access level, which only a deployment config
+change permits and which an inspection must ask for: `ADMIN_WORKSPACE_ACCESS_MAX` caps the level,
+`metadata` by default, and fails closed to `off` for any value that is not a level. Titles stay
+visible at `"metadata"`, and can echo content. The compensating controls are:
+
+- the admin list and the access cap are environment variables, out of reach of an admin session;
+- every inspection takes a reason, recorded with every call made through the view;
+- an inspection gets `"metadata"` unless it asks for `"full"` and the deployment allows it, so
+  reading content is a separate, recorded step with its own reason;
+- a view expires (15 minutes by default, an hour at most);
+- every call re-checks that the view is live and its admin still an admin;
+- every call is recorded, with whether its answer held content, before anything it read leaves the
+  server, in the deployment-wide audit log (nothing is written to the workspace); a call whose
+  record cannot be written fails, returning nothing;
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
+
+[admin-access.md](admin-access.md) is the design record.
+
 ---
 
 ## 2. Background: relevant existing code

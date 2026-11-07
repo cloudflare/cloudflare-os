@@ -85,7 +85,11 @@ export default defineConfig({
           compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
         }],
-        bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
+        bindings: {
+          PUBLIC_BASE_URL: 'https://workshop.example/',
+          // The deployment admin of the admin-view suites.
+          ADMINS: ['deployment-admin@example.test'],
+        },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
         // Where a blueprint's content is published to and read back from.
@@ -100,7 +104,7 @@ export default defineConfig({
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
           // Likewise only reached through `ctx.exports`, by the overseer deleting a blueprint.
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
-          // AdminSettings also reaches it through `ctx.exports`.
+          // The Overseer and AdminSettings also reach it through `ctx.exports`.
           TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },

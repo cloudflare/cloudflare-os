@@ -105,8 +105,8 @@ export default function AdminPage() {
   // saved only once that later one has applied.
   const [reloadUpdateStatus] = useState(() => latestReads<DeploymentUpdateStatus | null>(setUpdateStatus))
 
-  // The audit retention, null while the backend is older than the admin audit log and has no Audit
-  // tab.
+  // The admin access level and audit retention, null while the backend is older than the admin
+  // audit log and has no Audit tab.
   const [auditSettings, setAuditSettings] = useState<AuditSettings | null>(null)
   // Only the latest re-read applies (see latestReads).
   const [reloadAuditSettings] = useState(() =>
@@ -510,7 +510,7 @@ export default function AdminPage() {
           )
       )}
 
-      {/* Admin audit log and its retention */}
+      {/* Admin audit log, workspace access and retention */}
       {activeTab === 'audit' && auditSettings !== null && (
         <AdminAuditPanel
           admin={admin.api}

@@ -4,12 +4,13 @@
 //
 // This covers the "soft" deployment customizations only (branding, agent instructions, which
 // gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, and
-// the audit retention admins choose within the bound admin-access.ts reads from the environment).
+// the access level and audit retention admins choose within the bounds admin-access.ts reads from
+// the environment).
 // Authentication/authorization config (sign-in providers, password login) is deliberately NOT
 // here — it stays env-var driven so it can't be changed by a compromised admin session. Everything
 // here is enabled by default; the admin UI opts things *out*.
 
-import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { adminSettingChange } from "./admin-access.js";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
@@ -452,8 +453,11 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     updateNoticeSnoozeHours: isUpdateHours(p.updateNoticeSnoozeHours)
       ? p.updateNoticeSnoozeHours
       : DEFAULT_ADMIN_CONFIG.updateNoticeSnoozeHours,
-    // The admins' choice, kept as chosen: adminAccessPolicy() (admin-access.ts) holds it within the
-    // environment's bound wherever it is enforced, so changing the bound needs no rewrite.
+    // The admins' choices, kept as chosen: adminAccessPolicy() (admin-access.ts) holds them within
+    // the environment's bounds wherever they are enforced, so changing a bound needs no rewrite.
+    adminWorkspaceAccess: isAdminWorkspaceAccess(p.adminWorkspaceAccess)
+      ? p.adminWorkspaceAccess
+      : DEFAULT_ADMIN_CONFIG.adminWorkspaceAccess,
     adminAuditRetentionDays: isAdminAuditRetention(p.adminAuditRetentionDays)
       ? p.adminAuditRetentionDays
       : DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays,

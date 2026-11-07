@@ -409,7 +409,7 @@ describe("AdminSettings promotes bundled formats", () => {
   });
 });
 
-describe("AdminSettings audit retention bound", () => {
+describe("AdminSettings admin access bounds", () => {
   it("records a logo with the retention committed, not one still in flight", async () => {
     const { inDo, seed, put, appended } = adminSettings();
     await seed({ adminAuditRetentionDays: 365 });
@@ -459,6 +459,30 @@ describe("AdminSettings audit retention bound", () => {
     });
   });
 
+  it("refuses an access level above ADMIN_WORKSPACE_ACCESS_MAX", async () => {
+    const { inDo, appended, config, records } = adminSettings();
+    await expect(inDo(admin => admin.setAdminWorkspaceAccess("full", ACTOR)))
+        .rejects.toThrow("ADMIN_WORKSPACE_ACCESS_MAX");
+    expect(appended).toEqual([]);
+
+    await inDo(admin => admin.setAdminWorkspaceAccess("off", ACTOR));
+    expect(records()[0]!.changes).toStrictEqual(
+        [{ setting: "adminWorkspaceAccess", before: "metadata", after: "off" }]);
+
+    await inDo(admin => admin.setAdminWorkspaceAccess("full", ACTOR),
+        { more: { ADMIN_WORKSPACE_ACCESS_MAX: "full" } });
+    expect((await config()).adminWorkspaceAccess).toBe("full");
+  });
+
+  it("allows nothing while ADMIN_WORKSPACE_ACCESS_MAX is not a level", async () => {
+    const { inDo, appended } = adminSettings({ ADMIN_WORKSPACE_ACCESS_MAX: "none" });
+    await expect(inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR)))
+        .rejects.toThrow("ADMIN_WORKSPACE_ACCESS_MAX");
+    expect(appended).toEqual([]);
+    expect((await inDo(admin => admin.getSettings("admin"))).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "off", chosen: "metadata", max: "off" });
+  });
+
   it("refuses a retention below ADMIN_AUDIT_RETENTION_MIN_DAYS", async () => {
     const { inDo, appended, config } = adminSettings();
     for (let days of [30, 89, 90.5, 3651]) {
@@ -476,17 +500,21 @@ describe("AdminSettings audit retention bound", () => {
     expect((await config()).adminAuditRetentionDays).toBe(400);
   });
 
-  it("reports the retention enforced, chosen and bounded", async () => {
+  it("reports the level and retention enforced, chosen and bounded", async () => {
     const { inDo, appended } = adminSettings();
+    const full = { more: { ADMIN_WORKSPACE_ACCESS_MAX: "full" } };
+    await inDo(admin => admin.setAdminWorkspaceAccess("full", ACTOR), full);
     await inDo(admin => admin.setAdminAuditRetentionDays(100, ACTOR));
 
     const settings = (more: object) =>
         inDo(admin => admin.getSettings("admin"), { more });
-    expect(await settings({})).toMatchObject({
+    expect(await settings({ ADMIN_WORKSPACE_ACCESS_MAX: "full" })).toMatchObject({
+      adminWorkspaceAccess: { effective: "full", chosen: "full", max: "full" },
       adminAuditRetentionDays: { effective: 100, chosen: 100, min: 90 },
     });
-    // Raising the bound keeps the admins' choice, but enforces the bound.
+    // Lowering the bounds keeps the admins' choices, but enforces the bounds.
     expect(await settings({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "180" })).toMatchObject({
+      adminWorkspaceAccess: { effective: "metadata", chosen: "full", max: "metadata" },
       adminAuditRetentionDays: { effective: 180, chosen: 100, min: 180 },
     });
 

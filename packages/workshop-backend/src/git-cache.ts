@@ -1260,6 +1260,77 @@ export class WorkspaceGitCache {
   }
 
   /**
+   * A commit's whole tree, as readCommitTree() gives it, read only from objects this store holds:
+   * never pulls, so it never reaches a connection. Throws when the commit or a tree is missing or
+   * of another type.
+   */
+  readLocalCommitTree(commitOid: GitOid): TreeNode[] {
+    let walk = (treeOid: GitOid): TreeNode[] =>
+        parseGitTree(this.#localObject(treeOid, "tree").payload, treeOid).map(entry => {
+          let kind = MODE_KINDS[entry.mode];
+          return kind === "dir"
+              ? { name: entry.name, kind, children: walk(entry.oid) }
+              : { name: entry.name, kind };
+        });
+    return walk(parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree);
+  }
+
+  /**
+   * One file of a commit, as readFilesAtCommit() reports it ("absent" for a path naming nothing or
+   * a directory, "unreadable" for a submodule, a symlink or content that is not text, "stream" for
+   * a regular file over MAX_BUFFERED_BLOB_SIZE, never read whole here, else "text"), read only from
+   * objects this store holds: never pulls. Throws for an invalid path and when an object along the
+   * path, or the file's blob, is missing.
+   */
+  readLocalFileAtCommit(commitOid: GitOid, path: string): FileAtCommit {
+    let segments = splitTreePath(path);
+    let name = segments.pop()!;
+    let treeOid = parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree;
+    let entryIn = (oid: GitOid, segment: string) =>
+        parseGitTree(this.#localObject(oid, "tree").payload, oid).find(e => e.name === segment);
+    for (let segment of segments) {
+      let dir = entryIn(treeOid, segment);
+      if (dir === undefined || dir.mode !== "40000") return { kind: "absent" };
+      treeOid = dir.oid;
+    }
+    let entry = entryIn(treeOid, name);
+    if (entry === undefined || entry.mode === "40000") return { kind: "absent" };
+    switch (entry.mode) {
+      case "160000":
+        return { kind: "unreadable", message: submoduleMessage(path, entry.oid) };
+      case "120000":
+        return { kind: "unreadable",
+                 message: symlinkMessage(path, this.#localObject(entry.oid, "blob").payload) };
+      default: {
+        let reader = this.openLocalBlob(entry.oid);
+        if (reader === undefined) {
+          throw new Error(`git object ${entry.oid} is not stored in this workspace`);
+        }
+        if (reader.size > MAX_BUFFERED_BLOB_SIZE) {
+          return { kind: "stream", byteLength: reader.size, content: blobByteStream(reader) };
+        }
+        let payload = reader.read(0, reader.size);
+        try {
+          return { kind: "text", text: decodeBlobText(payload, path) };
+        } catch (err) {
+          if (!(err instanceof UnreadableContentError)) throw err;
+          return { kind: "unreadable", message: err.message };
+        }
+      }
+    }
+  }
+
+  // A locally-stored object of the expected type, for the reads that must never pull.
+  #localObject(oid: GitOid, type: GitObjectType): PackableObject {
+    let local = this.readLocalObject(oid);
+    if (local === undefined) throw new Error(`git object ${oid} is not stored in this workspace`);
+    if (local.type !== type) {
+      throw new Error(`git object ${oid} is a ${local.type}, but a ${type} was expected`);
+    }
+    return local;
+  }
+
+  /**
    * The set of paths whose non-directory entry differs between two commits' trees (added,
    * removed, or changed in oid or mode), walking only differing subtrees and fault-pulling
    * whatever is missing. Blob content is never read. Symlink and gitlink entries are reported like files (callers render

@@ -7,8 +7,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { RpcStub } from 'capnweb'
 import { MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
 import type {
+  AdminAccessRecord,
   AdminApi,
   AdminAuditPage,
+  AdminAuditRecord,
   AdminAuditStats,
   AdminSettingRecord,
 } from '@gadgets/workshop-shared/api'
@@ -49,8 +51,10 @@ function deferred<T = void>() {
 const RETENTION_LABEL = 'Keep audit records for (days)'
 
 const settingsWith = (patch: {
+  access?: Partial<AuditSettings['adminWorkspaceAccess']>
   retention?: Partial<AuditSettings['adminAuditRetentionDays']>
 } = {}): AuditSettings => ({
+  adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'full', ...patch.access },
   adminAuditRetentionDays: { effective: 90, chosen: 90, min: 90, ...patch.retention },
 })
 
@@ -66,11 +70,32 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
     { day: '2026-10-20', count: 0 },
     { day: '2026-10-21', count: 2 },
   ],
-  topAdmins: [{ admin: 'admin', count: 4 }, { admin: 'second-admin', count: 1 }],
+  topAdmins: [{ admin: 'admin', count: 4, contentReads: 2 }, { admin: 'second-admin', count: 1, contentReads: 0 }],
+  contentReads: 2,
   ...patch,
 })
 
 const SETTING_AT = new Date('2026-10-21T08:00:00Z')
+const ACCESS_AT = new Date('2026-10-21T09:15:00Z')
+
+const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord => ({
+  kind: 'workspace',
+  at: ACCESS_AT,
+  admin: 'admin',
+  sessionId: 'session-1',
+  via: 'cli',
+  workspaceId: 'ws-titled',
+  workspaceOwner: 'owner@example.test',
+  workspaceTitle: 'Quarterly report',
+  method: 'getChat',
+  args: { chatId: 3 },
+  reason: 'Ticket 42: agent stuck',
+  requested: 'full',
+  access: 'metadata',
+  exposed: 'metadata',
+  refused: 'ADMIN_CONTENT_WITHHELD',
+  ...patch,
+})
 
 const settingRecord = (patch: Partial<AdminSettingRecord> = {}): AdminSettingRecord => ({
   kind: 'setting',
@@ -83,12 +108,13 @@ const settingRecord = (patch: Partial<AdminSettingRecord> = {}): AdminSettingRec
   ...patch,
 })
 
-const testPage = (records = [settingRecord()], nextCursor?: string): AdminAuditPage =>
+const testPage = (records: AdminAuditRecord[] = [settingRecord()], nextCursor?: string): AdminAuditPage =>
   nextCursor === undefined ? { records } : { records, nextCursor }
 
 const fakeAdmin = () => ({
   getAdminAuditStats: vi.fn<AdminApi['getAdminAuditStats']>(async () => testStats()),
   listAdminAudit: vi.fn<AdminApi['listAdminAudit']>(async () => testPage()),
+  setAdminWorkspaceAccess: vi.fn<AdminApi['setAdminWorkspaceAccess']>(async () => {}),
   setAdminAuditRetentionDays: vi.fn<AdminApi['setAdminAuditRetentionDays']>(async () => {}),
 })
 
@@ -112,6 +138,35 @@ const button = (name: string) => {
     .find((b) => (b.getAttribute('aria-label') ?? b.textContent?.trim()) === name)
   if (!element) throw new Error(`no button ${name}`)
   return element
+}
+
+/** The options of the list `select` opens, which is left open. */
+const openOptions = async (select: HTMLElement) => {
+  if (select.getAttribute('aria-expanded') !== 'true') await click(select)
+  const list = document.getElementById(select.getAttribute('aria-controls') ?? '')
+  return [...list?.querySelectorAll<HTMLElement>('[role="option"]') ?? []]
+}
+
+const enabledOptions = async (select: HTMLElement) => (await openOptions(select))
+  .filter((option) => option.getAttribute('aria-disabled') !== 'true' && !option.hasAttribute('data-disabled'))
+  .map((option) => option.textContent)
+
+// By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom
+// lacks, so the window has a stand-in for as long as the choice takes.
+const choose = async (select: HTMLElement, label: string) => {
+  const option = (await openOptions(select)).find((element) => element.textContent === label)
+  if (!option) throw new Error(`no option ${label}`)
+  const view: { PointerEvent?: typeof MouseEvent } = window
+  const previous = view.PointerEvent
+  view.PointerEvent = MouseEvent
+  try {
+    await act(async () => { option.focus() })
+    await act(async () => {
+      option.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+  } finally {
+    view.PointerEvent = previous
+  }
 }
 
 // The column widths the log has stored, and its resize handles and the events that move them.
@@ -175,6 +230,21 @@ describe('AdminAuditPanel', () => {
     return heading.parentElement
   }
 
+  // The select a card holds, by its label.
+  const selectIn = (title: string) => {
+    const element = card(title).querySelector<HTMLElement>('[role="combobox"]')
+    if (!element) throw new Error(`no select in ${title}`)
+    return element
+  }
+  const accessSelect = () => selectIn('Workspace access')
+  // The log's one select; its other comboboxes are text fields.
+  const sensitivitySelect = () => {
+    const element = [...card('Activity log').querySelectorAll<HTMLElement>('[role="combobox"]')]
+      .find((combobox) => !(combobox instanceof HTMLInputElement))
+    if (!element) throw new Error('no sensitivity select')
+    return element
+  }
+
   const retentionInput = () => {
     const labelElement = [...container.querySelectorAll('label')]
       .find((element) => element.textContent?.startsWith(RETENTION_LABEL))
@@ -204,12 +274,13 @@ describe('AdminAuditPanel', () => {
     act(() => root.unmount())
     container.remove()
     document.body.innerHTML = ''
-    localStorage.clear()
     addToast.mockReset()
+    localStorage.clear()
     vi.restoreAllMocks()
   })
 
-  // The log's <col> widths, toggle, Time, Admin, Action, Changes (none: it takes what is left), Via.
+  // The log's <col> widths: toggle, Time, Admin, Action (none: it takes what is left), Sensitivity,
+  // Target user.
   const widths = () => [...card('Activity log').querySelectorAll('col')].map((col) => col.style.width)
 
   describe('the summary', () => {
@@ -233,12 +304,23 @@ describe('AdminAuditPanel', () => {
     it('shows the top admins, and filters the log by the one chosen', async () => {
       const { listAdminAudit, onFilterChange } = await render()
 
-      expect([...card('Most active admins').querySelectorAll('tbody tr')].map((row) => row.textContent))
-        .toEqual(['admin4', 'second-admin1'])
+      expect([...card('Most active admins').querySelectorAll('tbody tr')]
+        .map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent)))
+        .toEqual([['admin', '4', '2'], ['second-admin', '1', '0']])
       await click(within(card('Most active admins'), 'Show only second-admin’s activity'))
 
       expect(onFilterChange).toHaveBeenCalledExactlyOnceWith({ admin: 'second-admin' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'second-admin' }))
+    })
+
+    it('counts the week’s content reads, in all and for each top admin, setting apart those with some', async () => {
+      await render()
+
+      expect(card('Admin actions, last 7 days').textContent).toContain('2 content reads')
+      const rows = [...card('Most active admins').querySelectorAll('tbody tr')]
+      const [some, none] = rows.map((row) => row.lastElementChild!)
+      expect(some.className).toContain('text-kumo-danger')
+      expect(none.className).not.toContain('text-kumo-danger')
     })
 
     it('says when the window holds no activity', async () => {
@@ -283,7 +365,7 @@ describe('AdminAuditPanel', () => {
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
-        formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'siteName', 'API',
+        formatFullTimestamp(SETTING_AT), 'second-admin', 'setSiteName', 'Setting change', '—Deployment-wide',
       ])
       expect(logRows()[0].querySelector('time')?.getAttribute('dateTime')).toBe(SETTING_AT.toISOString())
     })
@@ -299,19 +381,13 @@ describe('AdminAuditPanel', () => {
       expect(logRows().map((row) => row.classList.contains('bg-kumo-elevated'))).toEqual([false, true, false, true])
     })
 
-    it('summarizes several changes as the first and how many more', async () => {
-      const admin = fakeAdmin()
-      admin.listAdminAudit.mockResolvedValue(testPage([settingRecord({
-        method: 'setBanner',
-        changes: [
-          { setting: 'banner', key: 'message', after: 'Maintenance tonight' },
-          { setting: 'banner', key: 'color', before: 'blue', after: 'red' },
-        ],
-      })]))
+    it('shows how a setting change came, and its action whole however long, from its row', async () => {
+      await render()
 
-      await render(settingsWith(), admin)
-
-      expect(logRows()[0].textContent).toContain('banner · message + 1 more')
+      const action = logRows()[0].querySelectorAll('td')[3].querySelector('span')!
+      expect(action.getAttribute('title')).toBe('setSiteName')
+      expect(action.className).toContain('truncate')
+      expect((await expand()).textContent).toContain('ViaAPI')
     })
 
     it('shows a record’s changes, before and after, from a toggle', async () => {
@@ -437,14 +513,31 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'setSignupsEnabled' }))
     })
 
-    it('gives focus to the admin field once an admin is chosen in a row, whose button the filtered page replaces', async () => {
-      await render()
+    it('clears text typed and not applied in the admin and owner fields with every filter', async () => {
+      await render(settingsWith(), fakeAdmin(), { method: 'getChat' })
+      const [admin, , owner] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+      await type(admin, 'alice')
+      await type(owner, 'bob')
 
-      await click(within(logRows()[0], 'Show only second-admin’s activity'))
+      await click(button('Clear filters'))
 
-      const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
-      expect(document.activeElement).toBe(field)
-      expect(field.value).toBe('second-admin')
+      expect(admin.value).toBe('')
+      expect(owner.value).toBe('')
+    })
+
+    it('gives focus to the field showing a name chosen in a row, whose button the filtered page replaces', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord(), settingRecord()]))
+      await render(settingsWith(), admin)
+      const [adminField, , ownerField] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+
+      await click(within(logRows()[1], 'Show only second-admin’s activity'))
+      expect(document.activeElement).toBe(adminField)
+      expect(adminField.value).toBe('second-admin')
+
+      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
+      expect(document.activeElement).toBe(ownerField)
+      expect(ownerField.value).toBe('owner@example.test')
     })
 
     it('abandons what was typed on Escape, showing the admin filter still applied', async () => {
@@ -452,12 +545,8 @@ describe('AdminAuditPanel', () => {
       const field = card('Activity log').querySelector<HTMLInputElement>('input[role="combobox"]')!
       await type(field, 'half-typed')
 
-      await act(async () => {
-        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
-      })
-      await act(async () => {
-        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
-      })
+      await key(field, { key: 'Escape' })
+      await key(field, { key: 'Escape' })
 
       expect(field.value).toBe('admin')
       expect(onFilterChange).not.toHaveBeenCalled()
@@ -475,13 +564,9 @@ describe('AdminAuditPanel', () => {
 
       await click(button('Clear filters'))
       await type(field, 'adm')
-      await act(async () => {
-        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-      })
+      await key(field, { key: 'ArrowDown' })
       expect(field.getAttribute('aria-activedescendant')).toBeTruthy()
-      await act(async () => {
-        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-      })
+      await key(field, { key: 'Enter' })
       expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin' })
       expect(onFilterChange).not.toHaveBeenCalledWith({ admin: 'adm' })
     })
@@ -624,6 +709,104 @@ describe('AdminAuditPanel', () => {
       expect(card('Activity log').querySelector('nav')).toBeNull()
     })
 
+    it('shows a call into a workspace: its sensitivity and refusal, its workspace, and in its details the owner, reason, access and arguments', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
+      expect(cells.slice(1)).toEqual([
+        formatFullTimestamp(ACCESS_AT), 'admin', 'getChat', 'Workspace metadataRefused', 'owner@example.test',
+      ])
+      const details = await expand()
+      expect(details.textContent).toContain('Quarterly report')
+      expect(details.textContent).toContain('ws-titled')
+      expect(details.textContent).toContain('ViaCLI')
+      expect(details.textContent).toContain('Ticket 42: agent stuck')
+      expect(details.textContent).toContain('Metadata only (Full requested) · refused: Content withheld')
+      expect(details.textContent).toContain('chatId: 3')
+    })
+
+    it('marks a content read as one, and names an untitled workspace in its details', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ exposed: 'content', access: 'full', refused: undefined, workspaceId: 'ws-untitled', workspaceTitle: '' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
+      expect(cells.slice(4)).toEqual(['Content read', 'owner@example.test'])
+      const details = await expand()
+      expect(details.textContent).toContain('Untitled')
+      expect(details.textContent).toContain('ws-untitled')
+    })
+
+    it('filters by sensitivity: a content read by what it exposed, a setting change by its kind', async () => {
+      const { listAdminAudit, onFilterChange } = await render()
+
+      await choose(sensitivitySelect(), 'Content read')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ sensitivity: 'content' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ exposed: 'content' }))
+
+      await choose(sensitivitySelect(), 'Setting change')
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
+    })
+
+    it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(await expand(), 'Show only calls into Quarterly report'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ workspace: 'ws-titled' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ workspace: 'ws-titled' }))
+
+      const chip = button('Show every workspace, not only Quarterly report')
+      expect(chip.textContent).toBe('Workspace: Quarterly report')
+      await click(chip)
+      expect(onFilterChange).toHaveBeenLastCalledWith({ workspace: undefined })
+      // The chip removed itself, so focus goes to the admin field rather than the page.
+      expect(document.activeElement).toBe(card('Activity log').querySelector('input[role="combobox"]'))
+    })
+
+    it('filters by the target user a row names, offering the page’s target users in the filter', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ workspaceOwner: 'grace' }), accessRecord({ workspaceOwner: 'linus' }),
+        accessRecord({ workspaceOwner: 'grace' }), settingRecord(),
+      ]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(logRows()[1], 'Show only calls into workspaces linus owns'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus' }))
+
+      const target = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      await type(target, '')
+      await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })) })
+      expect([...document.body.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+        .toEqual(expect.arrayContaining(['grace', 'linus']))
+    })
+
+    it('filters by the owner and the workspace a record’s details name, and by the owner typed', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'owner@example.test' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'owner@example.test' }))
+
+      const owner = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      expect(owner.value).toBe('owner@example.test')
+      await type(owner, 'grace')
+      await act(async () => {
+        owner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      })
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'grace' })
+    })
+
     it('loads the counts and the page again on Refresh, keeping the page shown until then', async () => {
       const { getAdminAuditStats, listAdminAudit } = await render()
       const reloaded = deferred<AdminAuditPage>()
@@ -673,11 +856,101 @@ describe('AdminAuditPanel', () => {
     })
   })
 
+  describe('workspace access', () => {
+    it('shows the level enforced', async () => {
+      await render(settingsWith({ access: { effective: 'metadata', chosen: 'full', max: 'metadata' } }))
+
+      expect(accessSelect().textContent).toContain('Metadata only')
+      expect(card('Workspace access').textContent)
+        .toContain('The level set here is Full, which that maximum limits to Metadata only. Choose ' +
+          'Metadata only to set it here, so that a higher maximum does not raise it.')
+    })
+
+    it('disables the levels above the deployment’s maximum, naming it', async () => {
+      await render(settingsWith({ access: { max: 'metadata' } }))
+
+      expect(await enabledOptions(accessSelect())).toEqual(['Off', 'Metadata only'])
+      expect(card('Workspace access').textContent).toContain('This deployment allows at most Metadata only')
+    })
+
+    it('leaves only Off when the deployment allows no inspection', async () => {
+      await render(settingsWith({ access: { effective: 'off', chosen: 'metadata', max: 'off' } }))
+
+      expect(await enabledOptions(accessSelect())).toEqual(['Off'])
+      expect(card('Workspace access').textContent).toContain('ADMIN_WORKSPACE_ACCESS_MAX allows no inspection')
+    })
+
+    it('sets the level chosen, then re-reads the settings and the log', async () => {
+      const { setAdminWorkspaceAccess, onSettingsChanged, listAdminAudit } = await render()
+
+      await choose(accessSelect(), 'Full')
+
+      expect(setAdminWorkspaceAccess).toHaveBeenCalledExactlyOnceWith('full')
+      expect(onSettingsChanged).toHaveBeenCalledOnce()
+      expect(listAdminAudit).toHaveBeenCalledTimes(2)
+    })
+
+    it('stores the level shown as the admins’ choice while the maximum holds a higher one down, and sends nothing for the choice itself', async () => {
+      const held = await render(settingsWith({ access: { effective: 'metadata', chosen: 'full', max: 'metadata' } }))
+      await choose(accessSelect(), 'Metadata only')
+      expect(held.setAdminWorkspaceAccess).toHaveBeenCalledExactlyOnceWith('metadata')
+
+      act(() => root.unmount())
+      root = createRoot(container)
+      const own = await render()
+      await choose(accessSelect(), 'Metadata only')
+      expect(own.setAdminWorkspaceAccess).not.toHaveBeenCalled()
+    })
+
+    it('is disabled while its change is in flight', async () => {
+      const admin = fakeAdmin()
+      const call = deferred()
+      admin.setAdminWorkspaceAccess.mockReturnValueOnce(call.promise)
+      await render(settingsWith(), admin)
+
+      await choose(accessSelect(), 'Full')
+      expect(accessSelect().hasAttribute('data-disabled') || accessSelect().hasAttribute('disabled')).toBe(true)
+
+      await act(async () => call.resolve())
+      expect(accessSelect().hasAttribute('data-disabled') || accessSelect().hasAttribute('disabled')).toBe(false)
+    })
+
+    // Chosen by keyboard, from an option of the popup, which is gone once the save settles.
+    it('gives focus back to its trigger once a delayed change settles', async () => {
+      const admin = fakeAdmin()
+      const call = deferred()
+      admin.setAdminWorkspaceAccess.mockReturnValueOnce(call.promise)
+      await render(settingsWith(), admin)
+
+      await choose(accessSelect(), 'Full')
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(accessSelect())
+    })
+
+    it('reports a failed change and keeps the server’s level', async () => {
+      const admin = fakeAdmin()
+      admin.setAdminWorkspaceAccess.mockRejectedValueOnce(new Error('ADMIN_WORKSPACE_ACCESS_MAX allows at most "metadata"'))
+      const { onSettingsChanged } = await render(settingsWith(), admin)
+
+      await choose(accessSelect(), 'Full')
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith({
+        title: 'Couldn’t update “Workspace access”',
+        description: 'ADMIN_WORKSPACE_ACCESS_MAX allows at most "metadata"',
+        variant: 'error',
+      })
+      expect(onSettingsChanged).not.toHaveBeenCalled()
+      expect(accessSelect().textContent).toContain('Metadata only')
+    })
+  })
+
   describe('the log’s column widths', () => {
-    it('starts from the defaults, the Changes column taking what is left', async () => {
+    it('starts from the defaults, the Action column taking what is left', async () => {
       await render()
 
-      expect(widths()).toEqual(['48px', '180px', '160px', '220px', '', '64px'])
+      expect(widths()).toEqual(['48px', '170px', '140px', '', '240px', '140px'])
       expect(stored()).toBeNull()
     })
 
@@ -686,44 +959,44 @@ describe('AdminAuditPanel', () => {
       handle('Time').focus()
 
       await key(handle('Time'), { key: 'ArrowRight' })
-      expect(widths()[1]).toBe('196px')
+      expect(widths()[1]).toBe('186px')
       await key(handle('Time'), { key: 'ArrowLeft', shiftKey: true })
-      expect(widths()[1]).toBe('132px')
+      expect(widths()[1]).toBe('122px')
 
-      expect(stored()).toEqual({ time: 132, admin: 160, action: 220, via: 64 })
+      expect(stored()).toEqual({ time: 122, admin: 140, sensitivity: 240, target: 140 })
     })
 
     it('resizes a column by dragging its edge, storing the width once the drag ends', async () => {
       await render()
 
-      await pointer('pointerdown', handle('Action'), 500)
-      await pointer('pointermove', handle('Action'), 560)
-      expect(widths()[3]).toBe('280px')
+      await pointer('pointerdown', handle('Admin'), 500)
+      await pointer('pointermove', handle('Admin'), 560)
+      expect(widths()[2]).toBe('200px')
       expect(stored()).toBeNull()
-      await pointer('pointerup', handle('Action'), 580)
+      await pointer('pointerup', handle('Admin'), 580)
 
-      expect(widths()[3]).toBe('300px')
-      expect(stored()).toEqual({ time: 180, admin: 160, action: 300, via: 64 })
+      expect(widths()[2]).toBe('220px')
+      expect(stored()).toEqual({ time: 170, admin: 220, sensitivity: 240, target: 140 })
     })
 
     it('puts back the width a drag began from when the drag is cancelled, storing nothing', async () => {
       await render()
-      await pointer('pointerdown', handle('Action'), 500)
-      await pointer('pointermove', handle('Action'), 600)
-      expect(widths()[3]).toBe('320px')
+      await pointer('pointerdown', handle('Admin'), 500)
+      await pointer('pointermove', handle('Admin'), 600)
+      expect(widths()[2]).toBe('240px')
 
       // A cancel may report any position: 0 here, which would narrow the column to its least.
-      await pointer('pointercancel', handle('Action'), 0)
+      await pointer('pointercancel', handle('Admin'), 0)
 
-      expect(widths()[3]).toBe('220px')
+      expect(widths()[2]).toBe('140px')
       expect(stored()).toBeNull()
     })
 
     it('keeps a column within its bounds', async () => {
       await render()
 
-      await pointer('pointerdown', handle('Via'), 500)
-      await pointer('pointerup', handle('Via'), 0)
+      await pointer('pointerdown', handle('Target user'), 500)
+      await pointer('pointerup', handle('Target user'), 0)
       expect(widths()[5]).toBe('64px')
       await pointer('pointerdown', handle('Admin'), 0)
       await pointer('pointerup', handle('Admin'), 5000)
@@ -736,16 +1009,16 @@ describe('AdminAuditPanel', () => {
 
       await act(async () => { handle('Admin').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })) })
 
-      expect(widths()[2]).toBe('160px')
-      expect(stored()).toEqual({ time: 180, admin: 160, action: 220, via: 64 })
+      expect(widths()[2]).toBe('140px')
+      expect(stored()).toEqual({ time: 170, admin: 140, sensitivity: 240, target: 140 })
     })
 
     it('starts from the widths stored, bounded, and the defaults for any missing or malformed', async () => {
-      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, JSON.stringify({ admin: 333, time: 5, via: 'wide' }))
+      localStorage.setItem(AUDIT_COLUMN_WIDTHS_KEY, JSON.stringify({ admin: 333, time: 5, target: 'wide' }))
 
       await render()
 
-      expect(widths()).toEqual(['48px', '64px', '333px', '220px', '', '64px'])
+      expect(widths()).toEqual(['48px', '64px', '333px', '', '240px', '140px'])
     })
 
     it('ignores stored widths that are not JSON', async () => {
@@ -753,7 +1026,7 @@ describe('AdminAuditPanel', () => {
 
       await render()
 
-      expect(widths()).toEqual(['48px', '180px', '160px', '220px', '', '64px'])
+      expect(widths()).toEqual(['48px', '170px', '140px', '', '240px', '140px'])
     })
   })
 

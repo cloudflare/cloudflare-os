@@ -1,11 +1,12 @@
-import { useEffect, useId, useState } from 'react'
-import { Button, Loader, Table, useKumoToastManager } from '@cloudflare/kumo'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Button, Loader, Select, Table, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsClockwise } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import { MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
-import type { AdminApi, AdminAuditStats } from '@gadgets/workshop-shared/api'
+import { ADMIN_WORKSPACE_ACCESS_LEVELS, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
+import type { AdminApi, AdminAuditStats, AdminWorkspaceAccess } from '@gadgets/workshop-shared/api'
 import { DurationSetting } from '../../components/DurationSetting'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
+import { ACCESS_LEVEL_NAMES } from './accessNames'
 import type { AuditFilter } from './auditFilter'
 import { AuditLog } from './AuditLog'
 import type { AuditSettings } from './auditSettings'
@@ -25,6 +26,7 @@ type AdminAuditPanelProps = {
 }
 
 const CARD = 'bg-kumo-elevated border border-kumo-line rounded-xl p-6'
+const ACCESS_LABEL = 'Workspace access'
 const RETENTION_LABEL = 'Keep audit records for (days)'
 const STATS_DAYS = 7
 
@@ -40,16 +42,27 @@ const dayName = (day: string) => {
 // The answer to one load of the statistics, for the value of `loads` it answered.
 type StatsAnswer = { loads: number } & ({ stats: AdminAuditStats } | { failed: true })
 
-const StatsCards = ({ stats, onAdminSelect }: {
+// A count of content reads, set apart once there is one, since those are what an admin should look
+// at first.
+const ContentReads = ({ count }: { count: number }) => (
+  <Table.Cell className={`text-right tabular-nums${count > 0 ? ' font-semibold text-kumo-danger' : ' text-kumo-subtle'}`}>
+    {NUMBER.format(count)}
+  </Table.Cell>
+)
+
+const StatsCards = ({ stats, onFilterBy }: {
   stats: AdminAuditStats
-  onAdminSelect: (admin: string) => void
+  onFilterBy: (filter: AuditFilter) => void
 }) => (
-  <div className="grid items-start gap-6 md:grid-cols-2">
+  <div className="grid items-start gap-6 lg:grid-cols-2">
     <div className={CARD}>
       <h3 className="text-lg font-semibold text-kumo-strong mb-1">Admin actions, last {stats.days} days</h3>
       <p className="text-sm text-kumo-subtle mb-4">
         <span className="text-2xl font-semibold text-kumo-default tabular-nums">{NUMBER.format(stats.totalEvents)}</span>
         {' '}{stats.totalEvents === 1 ? 'action' : 'actions'}, by UTC day
+        <span className="block mt-1">
+          {NUMBER.format(stats.contentReads)} {stats.contentReads === 1 ? 'content read' : 'content reads'}
+        </span>
       </p>
       <Table>
         <Table.Header>
@@ -72,7 +85,8 @@ const StatsCards = ({ stats, onAdminSelect }: {
     <div className={CARD}>
       <h3 className="text-lg font-semibold text-kumo-strong mb-1">Most active admins</h3>
       <p className="text-sm text-kumo-subtle mb-4">
-        By actions in the last {stats.days} days. Choose an admin to see only their activity.
+        By actions in the last {stats.days} days, with the content reads among them. Choose an
+        admin to see only their activity.
       </p>
       {stats.topAdmins.length === 0
         ? <p className="text-sm text-kumo-subtle">No admin activity in this window.</p>
@@ -82,10 +96,11 @@ const StatsCards = ({ stats, onAdminSelect }: {
               <Table.Row>
                 <Table.Head>Admin</Table.Head>
                 <Table.Head className="text-right">Actions</Table.Head>
+                <Table.Head className="whitespace-nowrap text-right">Content reads</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {stats.topAdmins.map(({ admin, count }) => (
+              {stats.topAdmins.map(({ admin, count, contentReads }) => (
                 <Table.Row key={admin}>
                   <Table.Cell className="max-w-0 w-full">
                     <Button
@@ -93,12 +108,13 @@ const StatsCards = ({ stats, onAdminSelect }: {
                       size="sm"
                       className="-ml-2 max-w-full text-base"
                       aria-label={`Show only ${admin}’s activity`}
-                      onClick={() => onAdminSelect(admin)}
+                      onClick={() => onFilterBy({ admin })}
                     >
                       <span className="truncate">{admin}</span>
                     </Button>
                   </Table.Cell>
                   <Table.Cell className="text-right tabular-nums">{NUMBER.format(count)}</Table.Cell>
+                  <ContentReads count={contentReads} />
                 </Table.Row>
               ))}
             </Table.Body>
@@ -108,18 +124,45 @@ const StatsCards = ({ stats, onAdminSelect }: {
   </div>
 )
 
+const accessHelp = ({ chosen, effective, max }: AuditSettings['adminWorkspaceAccess']): string[] => {
+  const help = [
+    'The most of a workspace an admin may see when inspecting it: each inspection asks for ' +
+      'Metadata only (the default) or Full, and gets the lower of that and this level. Metadata ' +
+      'only withholds chat messages, file contents, and the descriptions of actions, observations ' +
+      'and hooks; titles stay, and can echo content. Off refuses inspection. Lowering it reaches ' +
+      'views already open within about a minute.',
+  ]
+  if (max === 'off') {
+    help.push('This deployment’s ADMIN_WORKSPACE_ACCESS_MAX allows no inspection (a value that is ' +
+      'not a level counts as off).')
+  } else {
+    help.push(`This deployment allows at most ${ACCESS_LEVEL_NAMES[max]}, which only a change to ` +
+      'its ADMIN_WORKSPACE_ACCESS_MAX variable can raise.')
+  }
+  if (chosen !== effective) {
+    help.push(`The level set here is ${ACCESS_LEVEL_NAMES[chosen]}, which that maximum limits to ` +
+      `${ACCESS_LEVEL_NAMES[effective]}. Choose ${ACCESS_LEVEL_NAMES[effective]} to set it here, ` +
+      'so that a higher maximum does not raise it.')
+  }
+  return help
+}
+
+const accessRank = (level: AdminWorkspaceAccess) => ADMIN_WORKSPACE_ACCESS_LEVELS.indexOf(level)
+
 /**
  * The admin Audit tab: what the deployment-wide admin audit log holds for the last week, the log
- * itself, filtered and a page at a time, and the log's retention.
+ * itself, filtered and a page at a time, and the settings that bound admin access to workspaces and
+ * the log's retention.
  */
 export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, onFilterChange }: AdminAuditPanelProps) => {
   const toasts = useKumoToastManager()
   // Each load is one value of this; a new one supersedes those before it.
   const [loads, setLoads] = useState(0)
   const [statsAnswer, setStatsAnswer] = useState<StatsAnswer | null>(null)
+  const [savingAccess, setSavingAccess] = useState(false)
   const activityHeading = useId()
   const logHeading = useId()
-  const retention = settings.adminAuditRetentionDays
+  const { adminWorkspaceAccess: access, adminAuditRetentionDays: retention } = settings
 
   useEffect(() => {
     let current = true
@@ -141,6 +184,21 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
   const reload = () => setLoads((n) => n + 1)
   // Each settings change is one value of this, which sends the log back to its newest page.
   const [changes, setChanges] = useState(0)
+
+  // The access select is disabled while its change is in flight, and a browser takes focus from a
+  // control that becomes disabled without giving it back. So its trigger gets focus again once the
+  // change settles, unless focus has gone elsewhere since. The trigger, not the control focused
+  // when the change began: a choice by keyboard is made from an option of the popup, which is gone
+  // by then. Kumo's Select hands out no ref to its trigger, so it is found through this wrapper.
+  const accessField = useRef<HTMLDivElement>(null)
+  const refocusAccess = useRef(false)
+  useEffect(() => {
+    if (savingAccess || !refocusAccess.current) return
+    refocusAccess.current = false
+    if (document.activeElement === document.body) {
+      accessField.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus()
+    }
+  }, [savingAccess])
 
   const reportFailure = (title: string, err: unknown) => {
     logRpcFailure(`${title}:`, err)
@@ -167,7 +225,21 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
     }
   }
 
-  const selectAdmin = (selected: string) => onFilterChange({ ...filter, admin: selected })
+  const changeAccess = async (level: AdminWorkspaceAccess) => {
+    // Against the stored choice, not the level shown: picking the shown level again while the
+    // maximum holds a higher choice down makes it the admins' choice, which a later rise of
+    // ADMIN_WORKSPACE_ACCESS_MAX then cannot raise.
+    if (level === access.chosen) return
+    refocusAccess.current = true
+    setSavingAccess(true)
+    try {
+      await change(`Couldn’t update “${ACCESS_LABEL}”`, () => admin.setAdminWorkspaceAccess(level))
+    } finally {
+      setSavingAccess(false)
+    }
+  }
+
+  const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
 
   return (
     <div className="space-y-6">
@@ -176,8 +248,8 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
           <div className="min-w-0 flex-1">
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
-              Every change an admin makes to the deployment&rsquo;s settings, kept
-              for {NUMBER.format(retention.effective)} days.
+              Every change an admin makes to the deployment&rsquo;s settings, and every admin call into a
+              workspace, kept for {NUMBER.format(retention.effective)} days.
             </p>
           </div>
           <Button
@@ -203,7 +275,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <Button variant="secondary" size="sm" className="mt-3" onClick={reload}>Retry</Button>
           </div>
         )}
-        {stats !== null && !statsFailed && <StatsCards stats={stats} onAdminSelect={selectAdmin} />}
+        {stats !== null && !statsFailed && <StatsCards stats={stats} onFilterBy={filterBy} />}
 
         <section className={CARD} aria-labelledby={logHeading}>
           <h3 id={logHeading} className="text-lg font-semibold text-kumo-strong mb-4">Activity log</h3>
@@ -217,6 +289,30 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
           />
         </section>
       </section>
+
+      <div className={CARD}>
+        <h2 className="text-lg font-semibold text-kumo-strong mb-4">{ACCESS_LABEL}</h2>
+        <div ref={accessField}>
+          <Select<AdminWorkspaceAccess>
+            label="Access level"
+            value={access.effective}
+            disabled={savingAccess}
+            onValueChange={(level) => { if (level !== null) void changeAccess(level) }}
+            renderValue={(level) => ACCESS_LEVEL_NAMES[level]}
+            description={(
+              <span className="block space-y-1">
+                {accessHelp(access).map((text) => <span key={text} className="block">{text}</span>)}
+              </span>
+            )}
+          >
+            {ADMIN_WORKSPACE_ACCESS_LEVELS.map((level) => (
+              <Select.Option key={level} value={level} disabled={accessRank(level) > accessRank(access.max)}>
+                {ACCESS_LEVEL_NAMES[level]}
+              </Select.Option>
+            ))}
+          </Select>
+        </div>
+      </div>
 
       <div className={CARD}>
         <h2 className="text-lg font-semibold text-kumo-strong mb-4">Audit retention</h2>

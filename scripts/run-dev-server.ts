@@ -593,8 +593,9 @@ for (const gk of gatekeepers) {
     // needs the token even when the binding is present.
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
-    // The admin audit log's minimum retention (see docs/admin-access.md).
-    "ADMIN_AUDIT_RETENTION_MIN_DAYS",
+    // The bounds on admin access to workspaces (see docs/admin-access.md), e.g.
+    // `ADMIN_WORKSPACE_ACCESS_MAX=full pnpm dev-server` lets the dev admin try full inspection.
+    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).

@@ -38,12 +38,26 @@ through logs and errors, then everything else.
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
   `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
-  for the audit log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The
-  admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
-- `ADMIN_AUDIT_RETENTION_MIN_DAYS` is env-driven, like auth config. Flag code that enforces or
-  prunes with `adminAuditRetentionDays` without `adminAccessPolicy()`.
+  in two places: `inspectWorkspace()`, so that a KV mirror still holding a higher access level never
+  mints a view at it, and the audit log's retention in `listAdminAudit()` and
+  `getAdminAuditStats()`. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+- `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
+  through a capability a user holds, and refuses an uninitialised workspace without writing. Every
+  `AdminWorkspaceView` method runs through `#call()`, which checks the view again once it has read
+  the deployment's setting and once it has read its answer, with nothing awaited before its record
+  is sent; never reaches a connection (admin file reads never pull); and records the call, with what
+  its answer exposed, in the deployment-wide log before anything it read leaves the server, so that
+  a call whose record cannot be written returns nothing. The record follows the read because
+  `exposed` must describe the answer actually returned. Flag a path that returns workspace data to
+  an admin without these, or that sets `exposed` from anything but that answer.
+- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
+  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
+  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
+- Text a user or workspace member controls (display names, titles) enters the directory or the
+  audit log only bounded: clamped to `MAX_DIRECTORY_TEXT_LENGTH`, or cut by `cutAdminAuditText()`.
+  Flag a new copy of such text into either store without a bound.
 - `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
   (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
   harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump
