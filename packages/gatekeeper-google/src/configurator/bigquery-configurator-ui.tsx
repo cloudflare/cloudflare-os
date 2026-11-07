@@ -37,7 +37,6 @@ const idOf = ({ kind, projectId, datasetId, tableId }: Ref) =>
 /** Material Symbols Outlined, as the Cloud console draws BigQuery's resources, on its 960-unit grid. */
 const symbol = (d: string, fill = "currentColor") => <svg viewBox="0 -960 960 960" fill={fill}><path d={d} /></svg>;
 
-
 const ICONS = {
   // BigQuery's product mark: a magnifier over bars, on Google Cloud's hexagon.
   bigquery: <svg viewBox="0 0 24 24">
@@ -75,12 +74,11 @@ const toAncestor = ({ id, kind, title }: BigQueryCrumb): ConfiguratorUIHierarchy
 function toItem(node: BigQueryNode): ConfiguratorUIHierarchyItem {
   const ref = refOf(node.id);
   if (ref) listed.set(ref.projectId, node.listed);
-  const view = node.kind === "table" && node.subtitle !== undefined;
   return {
     id: node.id,
     title: node.title,
     kind: node.kind === "table" ? "leaf" : "container",
-    icon: view ? "view" : node.kind,
+    icon: node.view ? "view" : node.kind,
     subtitle: node.subtitle,
     badge: node.kind === "project" && !node.listed ? SHARED : undefined,
     selectable: true,
@@ -99,16 +97,18 @@ function unlistedProject(target: string | null | undefined): string | undefined 
 
 /** The account's one project, offered as the query project before the user has to look for it. */
 let onlyProject: Promise<string | null> | undefined;
+/** The choice the suggestion is for, so a late answer does not land on a later choice or the user's own. */
+let suggestedFor: string | null = null;
 
-function suggestQueryProject({ ui, values, setValues }: Context): void {
+/** Fills in the query project a choice in a shared project needs, when the account has only one. */
+function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
+  suggestedFor = unlistedProject(target) === undefined ? null : target;
+  if (suggestedFor === null) return;
   onlyProject ??= ui.listProjects("").then(
     options => options.length === 1 ? options[0]!.value : null,
     () => { onlyProject = undefined; return null; });
-  const target = values.target;
   void onlyProject.then(project => {
-    if (project && values.queryProject == null && unlistedProject(target) !== undefined) {
-      setValues({ queryProject: project });
-    }
+    if (project && suggestedFor === target) setValues({ queryProject: project });
   });
 }
 
@@ -131,8 +131,8 @@ export default {
   isReady({ values: { target, queryProject } }) {
     const ref = target ? refOf(target) : undefined;
     if (!ref) return false;
-    // Not yet known whether the account holds a role in the project is not ready: the picker's lookup
-    // of a pre-filled choice says, and until then a connection could be made that cannot query.
+    // Until the picker's lookup of a pre-filled choice says whether the account holds a role in its
+    // project, the form is not ready: a connection made before then might not be able to query.
     const held = listed.get(ref.projectId);
     return held === true || (held === false && typeof queryProject === "string" && queryProject.length > 0);
   },
@@ -153,7 +153,6 @@ export default {
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
     const shared = unlistedProject(target);
-    if (shared !== undefined) suggestQueryProject(context);
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -170,15 +169,20 @@ export default {
             const known = listed.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
             // Whether a pre-filled choice can be connected is known only now.
-            if (!known) setValues({});
+            if (!known) {
+              setValues({});
+              if (queryProject === null) suggestQueryProject(context, id);
+            }
             return item;
           }}
           onChange={next => {
             // A choice in a project the account holds a role in needs no query project; the one
             // picked for a shared project stays while the choice moves within it.
-            const keep = unlistedProject(next) !== undefined && unlistedProject(next) === shared;
+            const nextShared = unlistedProject(next);
+            const keep = nextShared !== undefined && nextShared === shared;
             if (!keep) clearFields("queryProject");
             setValues({ target: next, queryProject: keep ? queryProject : null });
+            if (!keep) suggestQueryProject(context, next);
           }}
           icons={ICONS}
           searchPlaceholder="Search here, or paste a link or project ID"
@@ -191,9 +195,12 @@ export default {
         <Autocomplete
           name="queryProject"
           value={queryProject}
-          placeholder="Search your projects…"
+          placeholder="Search your projects..."
           loadOptions={query => ui.listProjects(query)}
-          onChange={next => setValues({ queryProject: next })}
+          onChange={next => {
+            suggestedFor = null;
+            setValues({ queryProject: next });
+          }}
         />
       </Field>}
     </Section>;

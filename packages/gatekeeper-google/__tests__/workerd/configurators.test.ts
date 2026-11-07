@@ -978,6 +978,8 @@ describe("BigQuery picker", () => {
           return Response.json(dataset("theirs", "events", { description: "Shared events" }));
         case "/projects/theirs/datasets/events/tables/clicks":
           return Response.json(table("theirs", "events", "clicks"));
+        case "/projects/example.com:legacy/datasets/events/tables/clicks":
+          return Response.json(table("example.com:legacy", "events", "clicks", "SNAPSHOT"));
       }
       return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
     }));
@@ -994,7 +996,7 @@ describe("BigQuery picker", () => {
       { id: "dataset:mine/web", title: "web" },
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "dai")).toMatchObject({ nodes: [
-      { id: "table:mine/sales/daily", kind: "table", subtitle: "View", path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
+      { id: "table:mine/sales/daily", kind: "table", subtitle: "View", view: true, path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
     ] });
     expect(await ui.listProjects("proj")).toEqual([{ value: "mine", title: "mine", subtitle: "My project" }]);
   });
@@ -1012,6 +1014,13 @@ describe("BigQuery picker", () => {
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`")).toMatchObject({ nodes: [
       { id: "table:theirs/events/clicks", kind: "table", listed: false },
+    ] });
+    // A legacy domain-scoped project ID parses as a URL, but is a reference all the same.
+    expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks")).toMatchObject({ nodes: [
+      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, listed: false },
+    ] });
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs")).toMatchObject({ nodes: [
+      { id: "project:theirs", listed: false },
     ] });
     expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
   });

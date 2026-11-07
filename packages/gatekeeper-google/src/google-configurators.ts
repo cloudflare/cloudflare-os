@@ -82,7 +82,8 @@ async function calendarApi(target: object): Promise<GoogleCalendarApi> {
 
 /**
  * Answers a BigQuery picker request once per frame: the picker asks again for a location it returns
- * to, and the same project list stands behind every lookup. A failed request is asked again.
+ * to, and the same project list stands behind every lookup. A failed request is asked again. The
+ * least recently used answer makes room when the cache is full.
  */
 function cachedBigQuery<T>(target: object, key: string, load: () => Promise<T>): Promise<T> {
   let cache = bigQueryConfiguratorCaches.get(target);
@@ -91,13 +92,19 @@ function cachedBigQuery<T>(target: object, key: string, load: () => Promise<T>):
     bigQueryConfiguratorCaches.set(target, cache);
   }
   let cached = cache.get(key);
-  if (cached) return cached as Promise<T>;
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached as Promise<T>;
+  }
   if (cache.size >= BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES) {
     let oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) cache.delete(oldestKey);
   }
   let result = load();
-  result.catch(() => cache.delete(key));
+  result.catch(() => {
+    if (cache.get(key) === result) cache.delete(key);
+  });
   cache.set(key, result);
   return result;
 }
@@ -220,38 +227,37 @@ function parseBigQueryNodeId(id: string): BigQueryNodeRef | undefined {
  * project ID carries a domain (`example.com:proj`). Dataset and table IDs are BigQuery identifiers.
  */
 const BIGQUERY_REFERENCE_RE =
-  /^((?:[a-z0-9][a-z0-9.-]*:)?[a-z0-9][a-z0-9-]*)(?:\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?)?$/i;
+  /^((?:[a-z0-9][a-z0-9.-]*:)?[a-z0-9][a-z0-9-]*)(?:\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?)?$/;
 
 const kindOf = (datasetId?: string, tableId?: string): BigQueryNodeKind =>
   tableId ? "table" : datasetId ? "dataset" : "project";
 
 /**
  * What typing into the picker's search names, when it names a place rather than searches for one: a
- * connection's URL, a Cloud Console link (`?p=<project>&d=<dataset>&t=<table>`), a node id or a
- * reference. `explicit` is false for a bare word, which is as likely a search as a project ID.
+ * connection's URL, a Cloud Console link (`?p=<project>&d=<dataset>&t=<table>`, or the console's
+ * own `?project=` when it names nothing narrower), a node id or a reference. `explicit` is false for
+ * a bare word, which is as likely a search as a project ID.
  */
 function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit: boolean } | undefined {
   let text = input.trim().replace(/^`(.*)`$/, "$1");
   if (!text) return undefined;
-  if (URL.canParse(text)) {
-    let url = new URL(text);
-    if (url.hostname === BIGQUERY_HOST) {
-      try {
-        let target = parseResourceUrl(text);
-        if (target.kind !== "bigquery") return undefined;
-        let { projectId, datasetId, tableId } = target;
-        return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true };
-      } catch {
-        return undefined;
-      }
+  // Only a known host is read as a link: a legacy project ID (`example.com:proj`) parses as a URL too.
+  let url = URL.canParse(text) ? new URL(text) : undefined;
+  if (url?.hostname === BIGQUERY_HOST) {
+    try {
+      let target = parseResourceUrl(text);
+      if (target.kind !== "bigquery") return undefined;
+      let { projectId, datasetId, tableId } = target;
+      return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true };
+    } catch {
+      return undefined;
     }
-    if (url.hostname === "console.cloud.google.com" && url.pathname.startsWith("/bigquery")) {
-      let projectId = url.searchParams.get("p");
-      let datasetId = url.searchParams.get("d") ?? undefined;
-      let tableId = datasetId ? url.searchParams.get("t") ?? undefined : undefined;
-      return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true } : undefined;
-    }
-    return undefined;
+  }
+  if (url?.hostname === "console.cloud.google.com" && url.pathname.startsWith("/bigquery")) {
+    let projectId = url.searchParams.get("p") ?? url.searchParams.get("project");
+    let datasetId = url.searchParams.get("d") ?? undefined;
+    let tableId = datasetId ? url.searchParams.get("t") ?? undefined : undefined;
+    return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true } : undefined;
   }
   let node = parseBigQueryNodeId(text);
   if (node) return { ref: node, explicit: true };
@@ -270,6 +276,7 @@ function isBigQueryNotVisible(error: unknown): boolean {
 const BIGQUERY_TABLE_KINDS: Record<string, string> = {
   VIEW: "View", MATERIALIZED_VIEW: "Materialized view", EXTERNAL: "External table", SNAPSHOT: "Snapshot",
 };
+const BIGQUERY_VIEW_TYPES = new Set(["VIEW", "MATERIALIZED_VIEW"]);
 
 const bigQueryProjectCrumb = (projectId: string) =>
   ({ id: bigQueryNodeId({ kind: "project", projectId }), kind: "project" as const, title: projectId });
@@ -295,6 +302,7 @@ function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode 
   return {
     id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
     kind: "table", title: table.tableId, subtitle: BIGQUERY_TABLE_KINDS[table.type], listed,
+    view: BIGQUERY_VIEW_TYPES.has(table.type) || undefined,
     path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
   };
 }

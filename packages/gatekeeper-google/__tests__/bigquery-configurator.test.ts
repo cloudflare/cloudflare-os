@@ -22,7 +22,7 @@ const SHARED_DATASET: BigQueryNode = {
   path: [{ id: "project:theirs", kind: "project", title: "theirs" }],
 };
 const VIEW: BigQueryNode = {
-  id: "table:mine/sales/daily", kind: "table", title: "daily", subtitle: "View", listed: true,
+  id: "table:mine/sales/daily", kind: "table", title: "daily", subtitle: "View", view: true, listed: true,
   path: [{ id: "project:mine", kind: "project", title: "mine" }, { id: "dataset:mine/sales", kind: "dataset", title: "sales" }],
 };
 

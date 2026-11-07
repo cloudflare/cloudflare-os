@@ -782,7 +782,7 @@ export const BIGQUERY_QUERY_PROJECT_PARAM = "queryProject";
  * (`my-project`) or a legacy domain-scoped one (`example.com:my-project`). Every downstream request
  * interpolates it into a path, so anything else is refused here.
  */
-const BIGQUERY_PROJECT_ID_RE = /^[a-z0-9][a-z0-9.-]{0,62}(?::[a-z0-9][a-z0-9-]{0,62})?$/i;
+const BIGQUERY_PROJECT_ID_RE = /^[a-z0-9][a-z0-9.-]{0,62}(?::[a-z0-9][a-z0-9-]{0,62})?$/;
 
 /**
  * Synthetic URL: `/<projectId>[/<datasetId>[/<tableId>]]`, naming the data the connection reaches.

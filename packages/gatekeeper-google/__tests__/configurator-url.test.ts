@@ -339,7 +339,8 @@ describe("BigQuery configurator URLs", () => {
     resourceUrl, resourceUrlPattern: BIGQUERY_RESOURCE.urlPattern, ui: noUi,
   });
 
-  it.each([
+  type Target = { projectId: string; datasetId?: string; tableId?: string; queryProjectId?: string };
+  it.each<[{ target: string; queryProject?: string }, Target]>([
     [{ target: "project:example.com:warehouse" }, { projectId: "example.com:warehouse" }],
     [{ target: "dataset:mine/sales" }, { projectId: "mine", datasetId: "sales" }],
     [{ target: "table:mine/sales/orders", queryProject: "mine" }, { projectId: "mine", datasetId: "sales", tableId: "orders" }],

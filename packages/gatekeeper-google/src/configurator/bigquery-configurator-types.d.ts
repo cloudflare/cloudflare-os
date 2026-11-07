@@ -22,6 +22,8 @@ export type BigQueryNode = {
   title: string;
   /** A project's or dataset's friendly name (or a dataset's description), or a table's kind when it is not a plain table. */
   subtitle?: string;
+  /** Set on a table that is a view or materialized view. */
+  view?: true;
   /**
    * Whether the node's project is one BigQuery lists for this account: the projects it holds a role
    * in, where it can usually run query jobs. A dataset shared from another project is reached by
