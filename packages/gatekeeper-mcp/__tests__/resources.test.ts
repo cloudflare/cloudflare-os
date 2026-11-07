@@ -11,6 +11,11 @@ describe("mcpResources", () => {
     ]);
   });
 
+  it("gives the insecure entry a title that differs from the https one", () => {
+    const [https, http] = mcpResources(true);
+    expect(http.title).not.toBe(https.title);
+  });
+
   it("returns the resource matching the connected endpoint", () => {
     expect(mcpResourceFor("https://mcp.example.com/mcp").urlPattern).toBe("https://*");
     expect(mcpResourceFor("http://localhost:3000/mcp").urlPattern).toBe("http://*");
