@@ -192,11 +192,11 @@ export class ObserverLedger {
    * made while its resource's creation is pending (so simulated), is otherwise checked by nothing
    * here: it commits with undefined, recording no requirement. Otherwise this attributes the read to
    * its caller's context and checks the reported IDs for everyone that context reaches, then
-   * recomputes that audience after the awaits and checks whoever it gained: sharing changes,
-   * newly published observers, and changed account choices. Calls `commit` synchronously with the
-   * validated IDs at the final decision, so no admission can publish between the audience check
-   * and the audit write; resolving a promise first would let one publish before the caller writes
-   * the requirement. The callback must not await.
+   * recomputes that audience after the awaits and, if it gained anyone (through sharing changes,
+   * newly published observers, or changed account choices), checks the whole audience again.
+   * Calls `commit` synchronously with the validated IDs at the final decision, so no admission
+   * can publish between the audience check and the audit write; resolving a promise first would
+   * let one publish before the caller writes the requirement. The callback must not await.
    */
   async authorizeObservation(
       gatekeeperId: WorkpieceId, description: ObservationDescription,
@@ -223,12 +223,12 @@ export class ObserverLedger {
     let connection = this.#storage.gatekeepers.get(gatekeeperId)!;
     let vendorId = connectionVendorId(connection)!;
     let sharing = await this.host.getSharingManager();
-    let verified = new Set<string>();
+    // Who the previous pass checked: an audience still within it is confirmed.
+    let checked = new Set<string>();
     for (let pass = 0; ; pass++) {
       this.#assertLive(gatekeeperId, caller, executionId);
-      let unverified = this.#audience(sharing, context, gatekeeperId)
-          .filter(observer => !verified.has(observer.key));
-      if (unverified.length === 0) return commit(subresources);
+      let audience = this.#audience(sharing, context, gatekeeperId);
+      if (audience.every(observer => checked.has(observer.key))) return commit(subresources);
       if (pass > MAX_VERIFICATION_PASSES) {
         throw new Error(
             "Collaborators' access kept changing while this was being checked. Please retry.");
@@ -236,7 +236,7 @@ export class ObserverLedger {
       let denied: string[];
       try {
         // Looked up for every observer even when one would do: a disconnected account is refused.
-        let observers = await Promise.all(unverified.map(async observer => {
+        let observers = await Promise.all(audience.map(async observer => {
           let user = this.host.wrapUserDo(
               this.host.users.get(this.host.users.idFromName(observer.profileId)));
           let verifier = await requireVerifier(user, observer.accountId, vendorId);
@@ -257,7 +257,7 @@ export class ObserverLedger {
         }
         throw new Error(OBSERVATION_REFUSED);
       }
-      for (let observer of unverified) verified.add(observer.key);
+      checked = new Set(audience.map(observer => observer.key));
     }
   }
 
@@ -388,24 +388,22 @@ export class ObserverLedger {
     }
   }
 
-  // Asks the connection's verifyObserverAccess() about `subresources` for `observers`, in bounded
-  // batches. Returns the IDs of the observers denied by the first batch that denies anyone.
-  // Throws if the gatekeeper fails to answer or answers malformed.
+  // Asks the connection's verifyObserverAccess() about `subresources` for `observers`, one call at
+  // a time, each carrying at most CHECK_OBSERVER_BATCH_SIZE observers and MAX_SUBRESOURCES IDs.
+  // Returns the IDs of the observers denied by the first call that denies anyone. Throws if the
+  // gatekeeper fails to answer or answers malformed.
   async #deniedObservers(connection: GatekeeperRecord, observers: ObserverVerifier[],
                          subresources: string[]): Promise<string[]> {
-    let chunks: ObserverVerifier[][] = [];
-    for (let i = 0; i < observers.length; i += CHECK_OBSERVER_BATCH_SIZE) {
-      chunks.push(observers.slice(i, i + CHECK_OBSERVER_BATCH_SIZE));
-    }
     let facet = await this.host.getGatekeeperFacet(connection.id) as VerifyingGatekeeper;
-    let denied = new Set<string>();
-    for (let i = 0; i < subresources.length && denied.size === 0; i += MAX_SUBRESOURCES) {
+    for (let i = 0; i < subresources.length; i += MAX_SUBRESOURCES) {
       let batch = subresources.slice(i, i + MAX_SUBRESOURCES);
-      await Promise.all(chunks.map(async chunk => {
-        for (let id of await askGatekeeper(facet, chunk, batch)) denied.add(id);
-      }));
+      for (let j = 0; j < observers.length; j += CHECK_OBSERVER_BATCH_SIZE) {
+        let denied = await askGatekeeper(
+            facet, observers.slice(j, j + CHECK_OBSERVER_BATCH_SIZE), batch);
+        if (denied.length > 0) return denied;
+      }
     }
-    return [...denied];
+    return [];
   }
 }
 
