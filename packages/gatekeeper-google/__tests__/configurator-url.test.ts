@@ -23,6 +23,8 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Section: "Section",
   TextInput: "TextInput",
 }));
+import bigQueryConfigurator from "../src/configurator/bigquery-configurator-ui";
+import { nodes } from "./configurator-tree";
 import driveConfigurator from "../src/configurator/drive-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
@@ -329,5 +331,42 @@ describe("Drive configurator URLs", () => {
     expect(ready("file:F1", [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern])).toBe(true);
     expect(ready("file:F1")).toBe(true);
     expect(ready("shared-drives")).toBe(false);
+  });
+});
+
+
+describe("BigQuery query-project configuration", () => {
+  it.each([
+    [{ projectId: "query-project" }, { projectId: "query-project" }],
+    [{ projectId: "query-project", datasetId: "sales" }, { projectId: "query-project", datasetId: "sales" }],
+    [{ projectId: "query-project", datasetId: "sales", tableId: "orders" },
+      { projectId: "query-project", datasetId: "sales", tableId: "orders" }],
+  ])("grants the selected scope for %o", (values, target) => {
+    expect(parseResourceUrl(bigQueryConfigurator.resourceUrl({ values, ui: noUi })))
+      .toEqual({ kind: "bigquery", datasetId: undefined, tableId: undefined, ...target });
+  });
+
+  it("preserves autocomplete and dependent field resets", async () => {
+    const values: { projectId?: string | null; datasetId?: string | null; tableId?: string | null } = {};
+    const ui = { listProjects: vi.fn(async () => []), listDatasets: vi.fn(async () => []), listTables: vi.fn(async () => []) };
+    const input = (name: string) => nodes(bigQueryConfigurator.render({
+      values, ui, clearFields() {}, ensureResources: async () => false,
+      setValues: update => Object.assign(values, update),
+    })).find(node => node.props?.name === name)!;
+    expect(input("projectId").component).toBe("Autocomplete");
+    await input("projectId").props.loadOptions("query");
+    expect(ui.listProjects).toHaveBeenCalledWith("query");
+    input("projectId").props.onChange("query-project");
+    expect(bigQueryConfigurator.isReady({ values })).toBe(true);
+    expect(bigQueryConfigurator.resourceUrl({ values, ui: noUi }))
+      .toBe("https://bigquery.googleapis.com/query-project/");
+    input("datasetId").props.onChange("sales");
+    await input("datasetId").props.loadOptions("sale");
+    expect(ui.listDatasets).toHaveBeenCalledWith("query-project", "sale");
+    await input("tableId").props.loadOptions("order");
+    expect(ui.listTables).toHaveBeenCalledWith("query-project", "sales", "order");
+    input("tableId").props.onChange("orders");
+    input("projectId").props.onChange("another-project");
+    expect(values).toEqual({ projectId: "another-project", datasetId: null, tableId: null });
   });
 });

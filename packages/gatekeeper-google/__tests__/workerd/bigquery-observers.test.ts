@@ -30,6 +30,8 @@ type Observation = {
 
 /** What the fake BigQuery answers with, which tests set. */
 type BigQueryBackendState = {
+  jobs: Array<{projectId: string; operation: string}>;
+  statementType: string;
   /** The tables every dry run reports. */
   referencedTables: TableRef[];
   /** The datasets every project lists. */
@@ -57,6 +59,7 @@ type BigQueryBackend = {
  */
 function bigQueryBackend(): BigQueryBackend {
   const state: BigQueryBackendState = {
+    jobs: [], statementType: "SELECT",
     referencedTables: [], datasets: [], access: new Map(), refusals: new Map(), lookups: [],
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
@@ -64,11 +67,12 @@ function bigQueryBackend(): BigQueryBackend {
     const token = new Headers(init.headers).get("Authorization")?.replace(/^Bearer /, "") ?? "";
     // /bigquery/v2/projects/<project>/...
     const [projectId, ...rest] = url.pathname.split("/").slice(4).map(decodeURIComponent);
+    if (method === "POST") state.jobs.push({projectId, operation: rest[0]});
     if (method === "POST" && rest[0] === "jobs") {
       return json({
         status: {state: "DONE"},
         statistics: {query: {
-          totalBytesProcessed: "1024", statementType: "SELECT", referencedTables: state.referencedTables,
+          totalBytesProcessed: "1024", statementType: state.statementType, referencedTables: state.referencedTables,
         }},
       });
     }
@@ -385,5 +389,77 @@ describe("BigQuery addObserver", () => {
     backend.state.refusals.set("analyst-token proj/sales", {status: 403, reason: "rateLimitExceeded"});
 
     await expect(bigQuery.addObserver("analyst", analyst)).rejects.toThrow(/http=403.*rateLimitExceeded/);
+  });
+});
+
+
+describe("BigQuery query project independent of data scope", () => {
+  it("allows existing project-only connections to query across projects without listing", async () => {
+    const backend = bigQueryBackend();
+    backend.state.referencedTables = [{projectId: "netstrat-analysis", datasetId: "prometheus_aggregates", tableId: "cpu"}];
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "query-project"});
+    using session = await bigQuery.session();
+    const sql = "SELECT * FROM `netstrat-analysis.prometheus_aggregates.cpu`";
+    expect(await session.query(sql)).toMatchObject({rows: [{n: "1"}]});
+    await session.dryRun(sql);
+    expect(backend.state.jobs).toEqual([
+      {projectId: "query-project", operation: "jobs"},
+      {projectId: "query-project", operation: "queries"},
+      {projectId: "query-project", operation: "jobs"},
+    ]);
+    await session.describeTable("cpu", "prometheus_aggregates", "netstrat-analysis");
+    const source = ["bigquery/project/netstrat-analysis/dataset/prometheus_aggregates"];
+    expect(await bigQuery.reported()).toEqual([source, source, source]);
+    expect(await session.getProject()).toEqual({projectId: "query-project"});
+    backend.state.datasets = ["prometheus_aggregates"];
+    expect(await session.listDatasets("netstrat-analysis"))
+      .toMatchObject([{projectId: "netstrat-analysis", datasetId: "prometheus_aggregates"}]);
+    expect(await session.listDatasets())
+      .toMatchObject([{projectId: "query-project", datasetId: "prometheus_aggregates"}]);
+    expect(await session.listTables("prometheus_aggregates", "netstrat-analysis"))
+      .toMatchObject([{projectId: "netstrat-analysis"}, {projectId: "netstrat-analysis"}]);
+    const observers = [
+      {id: "reader", userObjectId: await bigQuery.observer("reader-token", ["netstrat-analysis/prometheus_aggregates"])},
+      {id: "outsider", userObjectId: await bigQuery.observer("outsider-token", ["query-project/other"])},
+    ];
+    expect(await bigQuery.verify(observers, source)).toEqual({allowedObserverIds: ["reader"]});
+  });
+
+  it.each([
+    {scopedProjectId: "query-project", scopedDatasetId: "sales"},
+    {scopedProjectId: "query-project", scopedDatasetId: "sales", scopedTableId: "orders"},
+  ])("preserves dataset and table project restrictions: %o", async scope => {
+    const backend = bigQueryBackend();
+    backend.state.referencedTables = [{projectId: "elsewhere", datasetId: "sales", tableId: "orders"}];
+    const bigQuery = bigQueryHarness(backend, scope);
+    using session = await bigQuery.session();
+    await expect(Promise.resolve(session.query("SELECT * FROM `elsewhere.sales.orders`")))
+      .rejects.toThrow("Query references project");
+    expect(backend.state.jobs).toHaveLength(1);
+    await expect(Promise.resolve(session.describeTable("orders", "sales", "elsewhere"))).rejects.toThrow("scoped to");
+  });
+
+  it("keeps read-only and cost guards on cross-project queries", async () => {
+    const backend = bigQueryBackend();
+    backend.state.referencedTables = [{projectId: "elsewhere", datasetId: "sales", tableId: "orders"}];
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "query-project"});
+    using session = await bigQuery.session();
+    backend.state.statementType = "DELETE";
+    await expect(Promise.resolve(session.query("DELETE FROM `elsewhere.sales.orders` WHERE true")))
+      .rejects.toThrow("Only read-only SELECT");
+    backend.state.statementType = "SELECT";
+    await expect(Promise.resolve(session.query("SELECT * FROM `elsewhere.sales.orders`", {maximumBytesBilled: 1})))
+      .rejects.toThrow("exceeding");
+    expect(backend.state.jobs.every(job => job.operation === "jobs")).toBe(true);
+  });
+
+  it("still rejects out-of-scope datasets and tables", async () => {
+    const backend = bigQueryBackend();
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "proj", scopedDatasetId: "sales", scopedTableId: "orders"});
+    using session = await bigQuery.session();
+    backend.state.referencedTables = [{projectId: "proj", datasetId: "other", tableId: "orders"}];
+    await expect(Promise.resolve(session.query("SELECT * FROM other.orders"))).rejects.toThrow("Query references dataset");
+    backend.state.referencedTables = [{projectId: "proj", datasetId: "sales", tableId: "other"}];
+    await expect(Promise.resolve(session.query("SELECT * FROM sales.other"))).rejects.toThrow("Query references table");
   });
 });

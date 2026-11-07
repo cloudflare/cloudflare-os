@@ -3811,7 +3811,7 @@ function parseBigQueryDatasetSubresource(id: string): BigQueryDatasetRef {
 
 export type BigQueryGatekeeperImplProps = {
   userObjectId: string;
-  /** When set, narrows the session's authority. Project is required for any narrower scope. */
+  /** Project used for query jobs. Data access is restricted only when a dataset is specified. */
   scopedProjectId?: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
@@ -3843,7 +3843,7 @@ export class BigQueryGatekeeperImpl
           : d
               ? `Query BigQuery dataset "${p}.${d}" (read-only)`
               : p
-                  ? `Query BigQuery datasets in project "${p}" (read-only)`
+                  ? `Query any accessible BigQuery project; run jobs in "${p}" (read-only)`
                   : "Browse BigQuery projects and datasets (read-only)",
       suggestedBindingName: "BIGQUERY",
       tsType: "BigQuerySession",
@@ -3975,9 +3975,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
 
   // --- helpers -----------------------------------------------------------
 
-  // Pick the project to bill the query against. When scoped, the scoped project is used and
-  // the caller cannot override. When unscoped, the caller must declare a default project via
-  // `defaultDataset.projectId` (BigQuery requires a billing project on every query).
+  // Query jobs always run in the connection's project, independently of its data scope.
   #billingProject(): string {
     if (this.#scopedProjectId) return this.#scopedProjectId;
     throw new Error(
@@ -4020,7 +4018,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         throw new Error(`Could not parse referenced table "${ref}".`);
       }
       let [proj, ds, tbl] = parts;
-      if (proj !== this.#scopedProjectId) {
+      if (this.#scopedDatasetId && proj !== this.#scopedProjectId) {
         throw new Error(
           `Query references project "${proj}" but this connection is scoped to ` +
           `"${this.#scopedProjectId}".`);
@@ -4150,19 +4148,19 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     // Echoes the project id the Gadget was bound to — reveals no dataset data, so no attribution.
     await this.#authorizeDatasets([], {
       title: "Get BigQuery project",
-      description: `Returned the scoped project: \`${this.#scopedProjectId}\`.`,
+      description: `Returned the query project: \`${this.#scopedProjectId}\`.`,
       containsRestrictedData: true,
     });
     return result;
   }
 
   async listDatasets(projectId?: string): Promise<BigQueryDataset[]> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (this.#scopedDatasetId && projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot list datasets in "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
+    let p = projectId ?? this.#scopedProjectId;
     if (!p) {
       throw new Error("listDatasets requires a projectId when the session is unscoped.");
     }
@@ -4188,7 +4186,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   }
 
   async listTables(datasetId?: string, projectId?: string): Promise<BigQueryTable[]> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (this.#scopedDatasetId && projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot list tables in project "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
@@ -4198,7 +4196,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Cannot list tables in dataset "${datasetId}" — this connection is scoped to ` +
         `"${this.#scopedDatasetId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
+    let p = projectId ?? this.#scopedProjectId;
     let d = this.#scopedDatasetId ?? datasetId;
     if (!p) throw new Error("listTables requires a projectId when the session is unscoped.");
     if (!d) throw new Error("listTables requires a datasetId when the session is unscoped.");
@@ -4227,7 +4225,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     datasetId?: string,
     projectId?: string,
   ): Promise<{ table: BigQueryTable; schema: BigQueryField[] }> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (this.#scopedDatasetId && projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot describe table in project "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
@@ -4242,7 +4240,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Cannot describe table "${tableId}" — this connection is scoped to ` +
         `"${this.#scopedTableId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
+    let p = projectId ?? this.#scopedProjectId;
     let d = this.#scopedDatasetId ?? datasetId;
     let t = this.#scopedTableId ?? tableId;
     if (!p) throw new Error("describeTable requires a projectId when the session is unscoped.");

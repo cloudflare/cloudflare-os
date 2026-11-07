@@ -27,7 +27,7 @@ export default {
 
   render({ values, setValues, clearFields, ui }) {
     return <Section>
-      <Field label="Project" description="Start with the Google Cloud project this connection can query.">
+      <Field label="Query project" description="Run query jobs in this project. Your Google account must have permission to create jobs here.">
         <Autocomplete
           name="projectId"
           value={values.projectId}
@@ -40,7 +40,7 @@ export default {
         />
       </Field>
 
-      <Field label="Dataset" description="Leave blank to allow all datasets in the project." optional>
+      <Field label="Dataset" description="Restrict access to this dataset in the query project. Leave blank to allow queries across any project your Google account can access." optional>
         <Autocomplete
           name="datasetId"
           value={values.datasetId}

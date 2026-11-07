@@ -120,8 +120,9 @@ export type BigQueryQueryOptions = {
 
 /** Session interface for querying BigQuery. All operations are read-only.
  *
- * Scoping: every session is scoped to one Google Cloud project via the URL passed to the
- * connection. The URL may narrow access further to one dataset or one table. Queries are
+ * The connection fixes the project used to run and bill query jobs. Without a dataset scope,
+ * connections can query any project the Google account can access using fully qualified
+ * table names. Connections may restrict data access to one dataset or table in the query project. Queries are
  * validated server-side (via dry-run table reference analysis) to ensure they only reference
  * allowed tables, and `defaultDataset` is enforced for dataset-scoped sessions. BigQuery reports
  * the underlying tables referenced by views, so querying a view may be rejected if the view reads
@@ -161,14 +162,14 @@ export interface BigQuerySession {
   dryRun(sql: string, opts?: Pick<BigQueryQueryOptions, "defaultDataset" | "params">):
       Promise<BigQueryDryRunResult>;
 
-  /** Return the GCP project this session is scoped to. */
+  /** Return the GCP project used to run query jobs. */
   getProject(): Promise<BigQueryProject>;
 
   /** List datasets visible to the authenticated user in a project.
    *
    * If the session is scoped to a specific dataset, only that dataset is returned.
    *
-   * @param projectId - Project to list datasets in. Defaults to the scoped project.
+   * @param projectId - Project to list datasets in. Defaults to the connection's query project.
    */
   listDatasets(projectId?: string): Promise<BigQueryDataset[]>;
 
@@ -177,7 +178,7 @@ export interface BigQuerySession {
    * If the session is scoped to a specific table, only that table is returned.
    *
    * @param datasetId - Dataset ID. Defaults to the scoped dataset, if any.
-   * @param projectId - Project ID. Defaults to the scoped project.
+   * @param projectId - Project ID. Defaults to the connection's query project.
    */
   listTables(datasetId?: string, projectId?: string): Promise<BigQueryTable[]>;
 
@@ -185,7 +186,7 @@ export interface BigQuerySession {
    *
    * @param tableId - Table ID. Defaults to the scoped table, if any.
    * @param datasetId - Dataset ID. Defaults to the scoped dataset, if any.
-   * @param projectId - Project ID. Defaults to the scoped project.
+   * @param projectId - Project ID. Defaults to the connection's query project.
    */
   describeTable(tableId?: string, datasetId?: string, projectId?: string):
       Promise<{ table: BigQueryTable; schema: BigQueryField[] }>;

@@ -137,7 +137,7 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
   urlPattern: `https://${BIGQUERY_HOST}/:projectId/*`,
   title: "BigQuery",
   description:
-      "Choose a Google Cloud project, then optionally narrow access to a dataset or table.",
+      "Choose a query project. Access any readable project, or restrict access to a dataset or table in the query project.",
   grantable: true,
 };
 
