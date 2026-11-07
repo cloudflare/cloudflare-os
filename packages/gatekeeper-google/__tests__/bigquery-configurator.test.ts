@@ -159,6 +159,20 @@ describe("the query project", () => {
     expect(frame.fields()).toEqual(["What to connect"]);
   });
 
+  it("keeps a pre-filled query project in view for a project of the account's own, until cleared", async () => {
+    const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
+    frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", listed: true });
+    await frame.load("dataset:mine/sales");
+    expect(frame.ready()).toBe(true);
+    expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
+    expect(frame.autocomplete()).toMatchObject({ value: "other", optional: true });
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales?queryProject=other");
+    frame.autocomplete().onClear();
+    expect(frame.values()).toEqual({ target: "dataset:mine/sales", queryProject: null });
+    expect(frame.fields()).toEqual(["What to connect"]);
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales");
+  });
+
   it("holds a pre-filled choice back until the lookup says whether its project is the account's", async () => {
     const frame = await open({ target: "dataset:theirs/events", queryProject: "mine" });
     expect(frame.ready()).toBe(false);

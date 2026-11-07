@@ -168,6 +168,9 @@ export default {
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
     const shared = unlistedProject(target);
+    // A query project the connection arrived with stays in view where none is needed, so the user
+    // sees what is billed and can drop it.
+    const override = shared === undefined && queryProject !== null && target !== null ? refOf(target)?.projectId : undefined;
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -213,9 +216,11 @@ export default {
           searchPlaceholder="Search here, or paste a link or project ID"
         />
       </Field>
-      {shared !== undefined && <Field
+      {(shared !== undefined || override !== undefined) && <Field
         label="Run queries in"
-        description={`You have no role in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`}
+        description={shared !== undefined
+          ? `You have no role in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
+          : `Queries run in, and are billed to, this project rather than "${override}". Clear it to use "${override}".`}
       >
         <Autocomplete
           name="queryProject"
@@ -225,6 +230,12 @@ export default {
           onChange={next => {
             suggestedFor = null;
             setValues({ queryProject: next });
+          }}
+          optional={override !== undefined}
+          onClear={() => {
+            suggestedFor = null;
+            clearFields("queryProject");
+            setValues({ queryProject: null });
           }}
         />
       </Field>}
