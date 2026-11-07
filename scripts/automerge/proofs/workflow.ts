@@ -1,0 +1,429 @@
+// What proof-actions reads from a GitHub Actions workflow: whether it can hold a credential, run
+// inside another workflow or off a GitHub-hosted runner (workflowReasons), and whether a job that
+// holds a credential restores an Actions cache (cacheReasons).
+//
+// A workflow holds no credential when it names no secret, passes none to a reusable workflow, runs
+// no job in an environment (environment secrets reach any step of such a job), calls no reusable
+// workflow (whose jobs may name an environment), and grants its token nothing beyond `read`. It
+// must also not be a reusable workflow itself (`workflow_call`), since it would then run inside
+// whatever workflow calls it, and every job must name one GitHub-hosted runner label, since a
+// self-hosted or larger runner can carry credentials of its own.
+//
+// The structure is read by a deliberately small YAML reader: block mappings, block sequences, block
+// scalars, single-line quoted and plain scalars, and single-line flow collections. Anything else,
+// including anchors, aliases, merge keys, tags, multi-line flow collections, multi-line plain or
+// quoted scalars, and line breaks other than LF and CRLF, is a parse error, and a parse error fails
+// the proof. GitHub reads anchors and aliases, so a reader that skipped them could be shown a
+// different permissions block than GitHub runs with.
+
+/** A block mapping, and the source lines (start inclusive, end exclusive) of each entry. */
+type YamlMap = { kind: "map"; entries: Map<string, YamlNode>; spans: Map<string, [number, number]> };
+
+/** A YAML node as this reader sees it. Flow collections stay as their source text. */
+export type YamlNode =
+  | YamlMap
+  | { kind: "seq"; items: YamlNode[] }
+  | { kind: "scalar"; value: string }
+  | { kind: "flow"; text: string };
+
+const KEY = /^("(?:[^"\\]*)"|'(?:[^']|'')*'|[A-Za-z0-9_][A-Za-z0-9_. /-]*?)[ \t]*:(?:[ \t]+(.*))?$/;
+const BLOCK_SCALAR = /^[|>](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?$/;
+
+class Reader {
+  readonly lines: string[];
+  index = 0;
+
+  constructor(text: string) {
+    this.lines = text.replace(/\r\n/g, "\n").split("\n");
+    // YAML parsers also break lines at a lone CR, NEL, LS and PS, so text after one is a new line to
+    // them and part of this line here. Those, other control characters and a byte order mark fail.
+    // oxlint-disable-next-line no-control-regex -- matching control characters is the point.
+    const odd = this.lines.findIndex((line) => /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\ufeff]/.test(line));
+    if (odd !== -1) this.fail("a control character, a line break other than LF or CRLF, or a byte order mark", odd);
+  }
+
+  fail(message: string, line = this.index): never {
+    throw new Error(`line ${line + 1}: ${message}`);
+  }
+
+  /** The indent of the next line that is not blank or a comment, or -1 at the end. */
+  peek(): number {
+    while (this.index < this.lines.length) {
+      const line = this.lines[this.index];
+      if (/^\s*(#.*)?$/.test(line)) {
+        this.index++;
+        continue;
+      }
+      const indent = /^ */.exec(line)?.[0].length ?? 0;
+      if (line[indent] === "\t") this.fail("a tab in indentation");
+      if (indent === 0 && /^(---|\.\.\.|%)/.test(line)) this.fail("a document marker or directive");
+      return indent;
+    }
+    return -1;
+  }
+
+  text(indent: number): string {
+    return this.lines[this.index].slice(indent);
+  }
+}
+
+function isSeqItem(text: string): boolean {
+  return text === "-" || text.startsWith("- ");
+}
+
+/** A key without its quotes. */
+function keyName(raw: string): string {
+  if (raw.startsWith('"')) return raw.slice(1, -1);
+  if (raw.startsWith("'")) return raw.slice(1, -1).replaceAll("''", "'");
+  return raw;
+}
+
+/** Strips a trailing ` # comment` from what follows a closed scalar, or fails on anything else. */
+function expectEnd(reader: Reader, rest: string): void {
+  if (!/^(?:[ \t]+#.*|[ \t]*)$/.test(rest)) reader.fail(`unexpected text after a scalar: ${JSON.stringify(rest)}`);
+}
+
+/** Whether the brackets of a one-line flow collection close, outside quotes. */
+function flowCloses(text: string): boolean {
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote !== "") {
+      if (c === "\\" && quote === '"') i++;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return /^(?:[ \t]+#.*|[ \t]*)$/.test(text.slice(i + 1));
+    } else if (c === "&" || c === "*" || c === "!") {
+      // An anchor, alias or tag inside a flow collection; inside a plain flow scalar these
+      // characters are legal, but nothing this proof accepts needs them.
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Reads the value that follows `key:` or `- ` on one line. `owner` is that line's indent. */
+function inlineValue(reader: Reader, raw: string, owner: number): YamlNode {
+  const value = raw.trim();
+  if (/^[&*!]/.test(value)) reader.fail("an anchor, alias or tag");
+  if (BLOCK_SCALAR.test(value)) {
+    reader.index++;
+    const content: string[] = [];
+    while (reader.index < reader.lines.length) {
+      const line = reader.lines[reader.index];
+      const indent = /^ */.exec(line)?.[0].length ?? 0;
+      if (line.trim() !== "" && indent <= owner) break;
+      content.push(line);
+      reader.index++;
+    }
+    return { kind: "scalar", value: content.join("\n") };
+  }
+  let node: YamlNode;
+  if (value.startsWith('"')) {
+    const match = /^"((?:[^"\\]|\\.)*)"(.*)$/.exec(value);
+    if (!match) reader.fail("an unterminated double-quoted scalar");
+    expectEnd(reader, match[2]);
+    node = { kind: "scalar", value: match[1] };
+  } else if (value.startsWith("'")) {
+    const match = /^'((?:[^']|'')*)'(.*)$/.exec(value);
+    if (!match) reader.fail("an unterminated single-quoted scalar");
+    expectEnd(reader, match[2]);
+    node = { kind: "scalar", value: match[1].replaceAll("''", "'") };
+  } else if (value.startsWith("{") || value.startsWith("[")) {
+    if (!flowCloses(value)) reader.fail("a flow collection this reader does not accept");
+    node = { kind: "flow", text: value.replace(/[ \t]+#.*$/, "") };
+  } else {
+    if (/^[%@`|>]/.test(value)) reader.fail(`a reserved indicator: ${value}`);
+    node = { kind: "scalar", value: value.replace(/[ \t]+#.*$/, "") };
+  }
+  reader.index++;
+  const next = reader.peek();
+  if (next > owner) reader.fail("an indented line after a scalar (a multi-line scalar is not accepted)");
+  return node;
+}
+
+function parseNode(reader: Reader, indent: number): YamlNode {
+  return isSeqItem(reader.text(indent)) ? parseSeq(reader, indent) : parseMap(reader, indent);
+}
+
+/** The node after `key:` with nothing else on its line. */
+function nestedValue(reader: Reader, owner: number): YamlNode {
+  const next = reader.peek();
+  if (next > owner) return parseNode(reader, next);
+  // A block sequence may sit at its key's own indent.
+  if (next === owner && isSeqItem(reader.text(owner))) return parseSeq(reader, owner);
+  return { kind: "scalar", value: "" };
+}
+
+function parseMap(reader: Reader, indent: number): YamlMap {
+  const entries = new Map<string, YamlNode>();
+  const spans = new Map<string, [number, number]>();
+  while (reader.peek() === indent && !isSeqItem(reader.text(indent))) {
+    const line = reader.index;
+    const match = KEY.exec(reader.text(indent));
+    if (!match) reader.fail(`not a mapping entry: ${reader.text(indent)}`);
+    const key = keyName(match[1]);
+    if (key === "<<") reader.fail("a quoted << key");
+    const folded = key.toLowerCase();
+    if ([...entries.keys()].some((existing) => existing.toLowerCase() === folded)) reader.fail(`a duplicate key: ${key}`, line);
+    const rest = match[2] ?? "";
+    if (rest.trim() === "" || rest.trim().startsWith("#")) {
+      reader.index++;
+      entries.set(key, nestedValue(reader, indent));
+    } else {
+      entries.set(key, inlineValue(reader, rest, indent));
+    }
+    spans.set(key, [line, reader.index]);
+  }
+  const next = reader.peek();
+  if (next > indent) reader.fail("unexpected indentation");
+  return { kind: "map", entries, spans };
+}
+
+function parseSeq(reader: Reader, indent: number): YamlNode {
+  const items: YamlNode[] = [];
+  while (reader.peek() === indent && isSeqItem(reader.text(indent))) {
+    const rest = reader.text(indent).slice(1);
+    const content = rest.replace(/^[ \t]+/, "");
+    if (content === "" || content.startsWith("#")) {
+      reader.index++;
+      const next = reader.peek();
+      if (next <= indent) reader.fail("an empty sequence item");
+      items.push(parseNode(reader, next));
+    } else if (KEY.test(content)) {
+      // `- key: value` opens a mapping at the column of `key`.
+      const column = indent + 1 + (rest.length - content.length);
+      reader.lines[reader.index] = " ".repeat(column) + content;
+      items.push(parseMap(reader, column));
+    } else {
+      items.push(inlineValue(reader, content, indent));
+    }
+  }
+  const next = reader.peek();
+  if (next > indent) reader.fail("unexpected indentation");
+  return { kind: "seq", items };
+}
+
+/** Parses a workflow file into its root mapping, or throws naming the line it cannot read. */
+export function parseWorkflow(text: string): YamlMap {
+  const reader = new Reader(text);
+  const first = reader.peek();
+  if (first !== 0) reader.fail("the document does not start with a mapping at column 0");
+  const root = parseMap(reader, 0);
+  if (reader.peek() !== -1) reader.fail("text after the root mapping");
+  return root;
+}
+
+/** The entry for `key`, compared without case (keys are unique that way, see parseMap). */
+function entry(map: Map<string, YamlNode>, key: string): YamlNode | undefined {
+  for (const [name, node] of map) if (name.toLowerCase() === key) return node;
+  return undefined;
+}
+
+/** The text a double-quoted YAML scalar could decode to: escapes resolved, escaped breaks joined. */
+function decodedEscapes(text: string): string {
+  return text
+    .replace(/\\\r?\n[ \t]*/g, "")
+    .replace(/\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})/g,
+      (_, x: string | undefined, u: string | undefined, big: string | undefined) =>
+        String.fromCodePoint(Number.parseInt(x ?? u ?? big ?? "0", 16)));
+}
+
+const SECRETS = /\bsecrets\b/i;
+const WORKFLOW_CALL = /\bworkflow_call\b/i;
+const INPUT_VARIABLE = /\bINPUT_/i;
+
+/** Whether `word` is in `text` as written, with YAML escapes decoded, or after Unicode case mapping. */
+function mentions(word: RegExp, text: string): boolean {
+  // Case mapping, because `ſ` upper-cases to `S` and GitHub compares context names without case.
+  return [text, decodedEscapes(text)].some((variant) =>
+    word.test(variant) || word.test(variant.toUpperCase()) || word.test(variant.toLowerCase()));
+}
+
+/** Why `permissions` at `where` may grant more than read, or nothing when it cannot. */
+function permissionReasons(node: YamlNode, where: string): string[] {
+  if (node.kind === "flow") return node.text.replace(/\s/g, "") === "{}" ? [] : [`${where} permissions are not {} or a block mapping`];
+  if (node.kind === "scalar") return node.value === "read-all" ? [] : [`${where} permissions are "${node.value}"`];
+  if (node.kind === "seq") return [`${where} permissions are a sequence`];
+  const reasons: string[] = [];
+  for (const [scope, level] of node.entries) {
+    if (level.kind !== "scalar" || (level.value !== "read" && level.value !== "none")) {
+      reasons.push(`${where} permission ${scope} is ${level.kind === "scalar" ? level.value : `a ${level.kind}`}`);
+    }
+  }
+  return reasons;
+}
+
+/** GitHub-hosted runner labels. A self-hosted or larger runner may carry credentials of its own. */
+const HOSTED_RUNNERS = new Set([
+  "ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "ubuntu-24.04-arm", "ubuntu-22.04-arm",
+  "windows-latest", "windows-2025", "windows-2022", "macos-latest", "macos-15", "macos-14",
+]);
+
+/** A parsed workflow: the root mapping and each job's source lines. */
+interface Workflow {
+  root: YamlMap;
+  jobs: { id: string; job: YamlNode; text: string }[];
+  /** Every line outside the jobs, where workflow-level `env:` and triggers live. */
+  outside: string;
+}
+
+function readWorkflow(text: string): Workflow | string {
+  let root: YamlMap;
+  try {
+    root = parseWorkflow(text);
+  } catch (error) {
+    return `cannot be parsed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const jobsKey = [...root.entries.keys()].find((key) => key.toLowerCase() === "jobs");
+  const jobs = jobsKey === undefined ? undefined : root.entries.get(jobsKey);
+  if (jobs?.kind !== "map") return "has no jobs mapping";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const owned = new Set<number>();
+  const parsed = [...jobs.entries].map(([id, job]) => {
+    const [start, end] = jobs.spans.get(id) ?? [0, lines.length];
+    for (let i = start; i < end; i++) owned.add(i);
+    return { id, job, text: lines.slice(start, end).join("\n") };
+  });
+  return { root, jobs: parsed, outside: lines.filter((_, i) => !owned.has(i)).join("\n") };
+}
+
+/**
+ * Every way `text` (a workflow at the pull request's base) could hold a credential, run inside
+ * another workflow, or run off a GitHub-hosted runner, or could not be read. Empty means none.
+ */
+export function workflowReasons(text: string): string[] {
+  const reasons: string[] = [];
+  // Matched on the whole text, so a mention in a comment counts too: comments are not parsed here,
+  // and inside a block scalar a shell comment is still expression text GitHub evaluates.
+  if (mentions(SECRETS, text)) reasons.push("names secrets");
+  // A reusable workflow runs inside its callers, producers among them, and the gate knows
+  // workflows only by path.
+  if (mentions(WORKFLOW_CALL, text)) reasons.push("can be called by another workflow (workflow_call)");
+  const workflow = readWorkflow(text);
+  if (typeof workflow === "string") return [...reasons, workflow];
+  const top = entry(workflow.root.entries, "permissions");
+  if (top === undefined) reasons.push("has no top-level permissions");
+  else reasons.push(...permissionReasons(top, "top-level"));
+  for (const { id, job } of workflow.jobs) {
+    if (job.kind !== "map") {
+      reasons.push(`job ${id} is not a block mapping`);
+      continue;
+    }
+    if (entry(job.entries, "environment") !== undefined) reasons.push(`job ${id} runs in an environment`);
+    if (entry(job.entries, "uses") !== undefined) reasons.push(`job ${id} calls a reusable workflow`);
+    if (entry(job.entries, "secrets") !== undefined) reasons.push(`job ${id} passes secrets`);
+    const permissions = entry(job.entries, "permissions");
+    if (permissions !== undefined) reasons.push(...permissionReasons(permissions, `job ${id}`));
+    const runsOn = entry(job.entries, "runs-on");
+    if (runsOn?.kind !== "scalar" || !HOSTED_RUNNERS.has(runsOn.value)) {
+      reasons.push(`job ${id} runs-on is not one GitHub-hosted runner label`);
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Whether a job holds a credential in workflowReasons' sense: it or the workflow around it names
+ * secrets, it runs in an environment or calls a reusable workflow, or its token may write. A
+ * workflow other workflows can call holds whatever its callers pass it, a secret through `with:`
+ * included, so every job in one counts.
+ */
+function holdsCredential(workflow: Workflow, id: string, job: YamlMap, text: string): boolean {
+  if (mentions(SECRETS, text) || mentions(SECRETS, workflow.outside) || mentions(WORKFLOW_CALL, workflow.outside)) return true;
+  if (entry(job.entries, "environment") !== undefined || entry(job.entries, "uses") !== undefined) return true;
+  // Without permissions at either level the token gets the repository's default, which may write.
+  const permissions = entry(job.entries, "permissions") ?? entry(workflow.root.entries, "permissions");
+  return permissions === undefined || permissionReasons(permissions, `job ${id}`).length > 0;
+}
+
+/** A step's `with:` inputs, by name. */
+type Inputs = Map<string, YamlNode>;
+
+const isFalse = (node: YamlNode | undefined) => node?.kind === "scalar" && node.value === "false";
+
+/**
+ * The only actions a job that holds a credential may use, each known not to restore an Actions
+ * cache with the inputs it is given, and what is wrong with those inputs. Keyed by `owner/repo` (or
+ * `owner/repo/path`) in lower case. Any other action, composite or not, is a reason: what it runs,
+ * or what the actions it calls in turn run, is not read here. Kept to what this repository uses.
+ */
+const NO_CACHE_ACTIONS = new Map<string, (inputs: Inputs) => string[]>([
+  ["actions/checkout", () => []],
+  ["actions/upload-artifact", () => []],
+  ["actions/download-artifact", () => []],
+  ["actions/github-script", () => []],
+  ["actions/create-github-app-token", () => []],
+  ["actions/labeler", () => []],
+  ["contributor-assistant/github-action", () => []],
+  // setup-vp restores the dependency cache with `cache`, Vite+ and Node.js with `cache-toolchain`,
+  // and the sfw binary with `sfw` (v1.22.0: src/index.ts, src/install-sfw.ts). `cache: false` must be
+  // written out, so a later release that turns the default on cannot slip past.
+  ["voidzero-dev/setup-vp", (inputs) => [
+    ...isFalse(inputs.get("cache")) ? [] : ["setup-vp cache is not stated as false"],
+    ...["cache-toolchain", "sfw"].flatMap((name) =>
+      !inputs.has(name) || isFalse(inputs.get(name)) ? [] : [`setup-vp ${name} is not false`]),
+  ]],
+]);
+
+/** Why `step`, in a job that holds a credential, may restore a cache. */
+function stepCacheReasons(step: YamlNode, where: string): string[] {
+  if (step.kind !== "map") return [`${where}: a step that is not a block mapping`];
+  const uses = entry(step.entries, "uses");
+  if (uses === undefined) return [];
+  if (uses.kind !== "scalar") return [`${where}: a uses that is not a scalar`];
+  const at = uses.value.indexOf("@");
+  const check = at === -1 ? undefined : NO_CACHE_ACTIONS.get(uses.value.slice(0, at).toLowerCase());
+  if (check === undefined) return [`${where}: ${uses.value} is not known to leave the Actions cache alone`];
+  const inputs = entry(step.entries, "with") ?? { kind: "map", entries: new Map(), spans: new Map() };
+  if (inputs.kind !== "map") return [`${where}: ${uses.value} has inputs that are not a block mapping`];
+  // Keys are matched without case elsewhere; here too, so `Cache: true` is not missed.
+  const folded = new Map([...inputs.entries].map(([name, value]) => [name.toLowerCase(), value]));
+  return check(folded).map((reason) => `${where}: ${reason}`);
+}
+
+/**
+ * Why `text`, any workflow at the base, breaks the cache rule: a job that holds a credential
+ * restores no Actions cache. An entry is written by whatever ran in the job that saved it, so an
+ * action bumped in a credential-free workflow on `main` could leave one for a job with secrets.
+ * `workflows` are the paths of every workflow at the base, each checked on its own, so a job may
+ * call one of them as a reusable workflow; any other reusable workflow is a reason.
+ */
+export function cacheReasons(text: string, workflows: ReadonlySet<string>): string[] {
+  const workflow = readWorkflow(text);
+  if (typeof workflow === "string") return [workflow];
+  const reasons: string[] = [];
+  for (const { id, job, text: jobText } of workflow.jobs) {
+    if (job.kind !== "map") {
+      reasons.push(`job ${id} is not a block mapping`);
+      continue;
+    }
+    if (!holdsCredential(workflow, id, job, jobText)) continue;
+    const called = entry(job.entries, "uses");
+    if (called !== undefined) {
+      const local = called.kind === "scalar" && called.value.startsWith("./") ? called.value.slice(2) : undefined;
+      if (local === undefined || !workflows.has(local)) {
+        reasons.push(`job ${id} holds a credential and calls a workflow this check does not read`);
+      }
+    }
+    // An action reads its inputs from INPUT_<NAME> variables, so one set in `env:` could stand in
+    // for an input the checks below read from `with:`.
+    if (INPUT_VARIABLE.test(jobText) || INPUT_VARIABLE.test(workflow.outside)) {
+      reasons.push(`job ${id} holds a credential and sets an INPUT_ variable`);
+    }
+    const steps = entry(job.entries, "steps");
+    if (steps === undefined) continue;
+    if (steps.kind !== "seq") {
+      reasons.push(`job ${id} holds a credential and its steps are not a block sequence`);
+      continue;
+    }
+    steps.items.forEach((step, i) => reasons.push(...stepCacheReasons(step, `job ${id} holds a credential, step ${i + 1}`)));
+  }
+  return reasons;
+}

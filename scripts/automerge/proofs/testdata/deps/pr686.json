@@ -1,0 +1,75 @@
+{
+  "pull_request": 686,
+  "base": "d454fb2597f9eeada83aff64a90687ab0fae841c",
+  "head": "c310b3484639239a80ae1a2a1dbd7e2bec5c3847",
+  "recorded": "2026-11-02T17:22:31.528Z",
+  "now": "2026-10-06T16:35:55-05:00",
+  "minimum_release_age_minutes": 1440,
+  "manifests": [
+    {
+      "path": "packages/mcp-shared/package.json",
+      "base": "{\n  \"name\": \"@gadgets/mcp-shared\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"exports\": {\n    \"./account\": \"./src/account.ts\",\n    \"./base-types\": \"./src/base-types.ts\",\n    \"./client\": \"./src/client.ts\",\n    \"./connect-nonce\": \"./src/connect-nonce.ts\",\n    \"./connection\": \"./src/connection.ts\",\n    \"./endpoint\": \"./src/endpoint.ts\",\n    \"./fetch\": \"./src/fetch.ts\",\n    \"./facet\": \"./src/facet.ts\",\n    \"./html\": \"./src/html.ts\",\n    \"./http\": \"./src/http.ts\",\n    \"./log\": \"./src/log.ts\",\n    \"./portal\": \"./src/portal.ts\",\n    \"./schema-to-ts\": \"./src/schema-to-ts.ts\",\n    \"./scope\": \"./src/scope.ts\",\n    \"./session\": \"./src/session.ts\",\n    \"./tools\": \"./src/tools.ts\",\n    \"./types\": \"./src/types.d.ts\",\n    \"./user\": \"./src/user.ts\",\n    \"./util\": \"./src/util.ts\"\n  },\n  \"scripts\": {\n    \"build\": \"tsc && tsc -p tsconfig.test.json\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/observability\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@modelcontextprotocol/client\": \"2.0.0\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@types/node\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"typescript6\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/mcp-shared\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"exports\": {\n    \"./account\": \"./src/account.ts\",\n    \"./base-types\": \"./src/base-types.ts\",\n    \"./client\": \"./src/client.ts\",\n    \"./connect-nonce\": \"./src/connect-nonce.ts\",\n    \"./connection\": \"./src/connection.ts\",\n    \"./endpoint\": \"./src/endpoint.ts\",\n    \"./fetch\": \"./src/fetch.ts\",\n    \"./facet\": \"./src/facet.ts\",\n    \"./html\": \"./src/html.ts\",\n    \"./http\": \"./src/http.ts\",\n    \"./log\": \"./src/log.ts\",\n    \"./portal\": \"./src/portal.ts\",\n    \"./schema-to-ts\": \"./src/schema-to-ts.ts\",\n    \"./scope\": \"./src/scope.ts\",\n    \"./session\": \"./src/session.ts\",\n    \"./tools\": \"./src/tools.ts\",\n    \"./types\": \"./src/types.d.ts\",\n    \"./user\": \"./src/user.ts\",\n    \"./util\": \"./src/util.ts\"\n  },\n  \"scripts\": {\n    \"build\": \"tsc && tsc -p tsconfig.test.json\",\n    \"clean\": \"rm -rf dist\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/observability\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"@modelcontextprotocol/client\": \"2.2.0\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"@types/node\": \"^26.1.0\",\n    \"typescript\": \"catalog:\",\n    \"typescript6\": \"catalog:\",\n    \"vitest\": \"catalog:\"\n  }\n}\n"
+    }
+  ],
+  "base_lock_names": [
+    "@modelcontextprotocol/client",
+    "@modelcontextprotocol/core"
+  ],
+  "published": {
+    "@modelcontextprotocol/client@2.2.0": "2026-09-28T19:09:46.801Z",
+    "@modelcontextprotocol/core@2.2.0": "2026-09-28T19:08:53.615Z"
+  },
+  "osv_queries": [
+    "@modelcontextprotocol/client@2.2.0",
+    "@modelcontextprotocol/core@2.2.0",
+    "@modelcontextprotocol/client@2.0.0",
+    "@modelcontextprotocol/core@2.0.0",
+    "cross-spawn@7.0.6",
+    "eventsource@3.0.7",
+    "eventsource-parser@3.1.0",
+    "jose@6.2.12",
+    "pkce-challenge@5.0.1",
+    "zod@4.6.5"
+  ],
+  "osv_response": {
+    "results": [
+      {
+        "vulns": [
+          {
+            "id": "GHSA-6prh-2h8m-c8cw",
+            "modified": "2026-10-20T18:45:09.465104Z"
+          }
+        ]
+      },
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-6prh-2h8m-c8cw",
+            "modified": "2026-10-20T18:45:09.465104Z"
+          },
+          {
+            "id": "GHSA-6qxp-vccf-f47h",
+            "modified": "2026-10-06T15:46:47.143033Z"
+          }
+        ]
+      },
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-mrhx-c7xc-m3w5",
+            "modified": "2026-10-23T18:30:09.376405Z"
+          }
+        ]
+      }
+    ]
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
+}

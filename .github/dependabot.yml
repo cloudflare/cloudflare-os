@@ -163,8 +163,9 @@ updates:
       default-days: 7 # github-actions supports default-days only
     rebase-strategy: "disabled"
     ignore:
-      # Pinned to known / tested release.
-      - dependency-name: "ask-bonk/ask-bonk"
+      # Pinned to known / tested release. Dependabot names an action in a subdirectory by its full
+      # `uses:` path, so `ask-bonk/ask-bonk` never matched and #405 bumped Bonk anyway.
+      - dependency-name: "Cloudflare-Studio/ask-bonk/github"
     groups:
       github-actions:
         patterns:

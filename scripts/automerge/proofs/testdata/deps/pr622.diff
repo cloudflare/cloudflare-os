@@ -1,0 +1,153 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 8da6a43c2..50773a8ed 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -13,2 +13,2 @@ catalogs:
+-      specifier: ^5.20260903.1
+-      version: 5.20260903.1
++      specifier: ^5.20260924.1
++      version: 5.20260924.1
+@@ -74 +74 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -84 +84 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -154 +154 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -169 +169 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -203 +203 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -240 +240 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -333 +333 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -367 +367 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -395 +395 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -407 +407 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -438 +438 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -456 +456 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -484 +484 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -500 +500 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -503 +503 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -543 +543 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -577 +577 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -611 +611 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -642 +642 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -670 +670 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -730 +730 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -758 +758 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -786 +786 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -817 +817 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -845 +845 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -867 +867 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -885 +885 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -926 +926 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -929 +929 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -941 +941 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -956 +956 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -962 +962 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -965 +965 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -1066 +1066 @@ importers:
+-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
++        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+@@ -1090 +1090 @@ importers:
+-        version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -1112 +1112 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -1266 +1266 @@ importers:
+-        version: 5.20260903.1
++        version: 5.20260924.1
+@@ -1608,2 +1608,2 @@ packages:
+-  '@cloudflare/workers-types@5.20260903.1':
+-    resolution: {integrity: sha512-Dgm28XJqMYj3VCNK14Xwo9UPtSPWL8Izo0emiyeQLZCRXWuhc3GnlKENF4Pf3ot+3NaWosq+yq8OIa531dCr6g==}
++  '@cloudflare/workers-types@5.20260924.1':
++    resolution: {integrity: sha512-puvr63PrfAFIkdh3FInGEgS0VTQ49WYNYDC2Eupd+qvwWwGpSRjxJD5Iz22oNHCmV1UEcsDz+OtGF++01vUloA==}
+@@ -6068 +6068 @@ snapshots:
+-  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
++  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+@@ -6076 +6076 @@ snapshots:
+-      wrangler: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++      wrangler: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -6084 +6084 @@ snapshots:
+-  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
++  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+@@ -6092 +6092 @@ snapshots:
+-      wrangler: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
++      wrangler: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+@@ -6115 +6115 @@ snapshots:
+-  '@cloudflare/workers-types@5.20260903.1': {}
++  '@cloudflare/workers-types@5.20260924.1': {}
+@@ -10175 +10175 @@ snapshots:
+-  wrangler@4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0):
++  wrangler@4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0):
+@@ -10186 +10186 @@ snapshots:
+-      '@cloudflare/workers-types': 5.20260903.1
++      '@cloudflare/workers-types': 5.20260924.1
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 0b59c964e..3b3fa432a 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -11 +11 @@ catalog:
+-  '@cloudflare/workers-types': ^5.20260903.1
++  '@cloudflare/workers-types': ^5.20260924.1
