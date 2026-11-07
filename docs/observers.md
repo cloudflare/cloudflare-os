@@ -1024,9 +1024,9 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   offline collaborator's expired or lapsed account cannot block reads. Either way the Workshop looks up each
   observer's verifier for their chosen account (`getVerifier()` refuses a disconnected or
   wrong-vendor account even when there is nothing to check) and asks `verifyObserverAccess()`:
-  one call per 10 observers for a read's audience, and batches of 10,000 IDs for admission,
-  stopping at the first batch that denies. A denial, missing method, failed call, or malformed
-  answer fails closed for every observer in the call, with no permission cached between operations.
+  one call at a time, each for at most 10 observers and 10,000 IDs, stopping at the first call
+  that denies. A denial, missing method, failed call, or malformed answer fails closed for every
+  observer in the call, with no permission cached between operations.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
   (at most three times) if a connection in its scope appeared or disappeared, or its requirements
   changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped
@@ -1036,9 +1036,9 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   have grown, but asks `verifyObserverAccess()` only about requirements no earlier pass checked;
   after a configuration prompt it checks them all again. Requirements that keep landing faster
   than a pass completes can still exhaust the budget. An observation recomputes who it reaches
-  after its checks and checks whoever it gained (at most three times). Both decisions are
-  confirmed in the same synchronous block that publishes them (the observer record; the audit
-  record), so neither can miss the other.
+  after its checks and, if it gained anyone, checks that whole audience again (at most three
+  times). Both decisions are confirmed in the same synchronous block that publishes them (the
+  observer record; the audit record), so neither can miss the other.
 - **Pending creations.** While a `createExternalResource` creation is pending, its simulated
   reads are audited and enforce workspace policy but record no requirements, even if they report
   subresources.

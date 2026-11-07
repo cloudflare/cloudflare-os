@@ -743,9 +743,9 @@ export function sanitizeMessageFormatRefs(
   return accepted.toSorted((a, b) => a.position - b.position);
 }
 
-// Who an open session belongs to, for OverseerImpl.joinSession(). The owner's session is a
-// "build" capability but never an observer's, so it is counted apart from the collaborator roles.
-type SessionHolder = {kind: "owner"} | {kind: CollaboratorRole, profileId: string};
+// Whose session OverseerImpl.joinSession() counts: a collaborator holding a role's access. The
+// owner's sessions are never counted, since the owner is never an observer.
+type SessionHolder = {kind: CollaboratorRole, profileId: string};
 
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
@@ -903,21 +903,16 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
-  // Live counts of everything a collaborator holds (or is about to hold) a role's access through,
-  // maintained by joinSession(): the client interfaces, the capabilities minted into their
-  // sessions -- which the client can retain past the interface's disposal -- and in-flight
-  // authorizations, which are sessions-to-be parked on collaborator-controlled awaits.
-  #liveSessions: Record<SessionHolder["kind"], number> = {owner: 0, build: 0, use: 0};
-
-  // The same sessions by collaborator profile: whom a read must be verified against now (see
-  // ObserverLedger). Someone absent here is verified against what was read on their next open.
-  #liveProfileSessions = new Map<string, number>();
-
-  // The subset of live "use" sessions that hold a gadget, by gadget: a "use" collaborator is
-  // verified one gadget at a time, so widening what one gadget reaches only strands sessions
-  // holding that gadget. (The workspace shell a "use" collaborator opens shows nothing a gadget
-  // read, and holds none.)
-  #liveGadgetSessions = new Map<WorkpieceId, number>();
+  // Everything a collaborator holds (or is about to hold) a role's access through, maintained by
+  // joinSession(): the client interfaces, the capabilities minted into their sessions -- which the
+  // client can retain past the interface's disposal -- and in-flight authorizations, which are
+  // sessions-to-be parked on collaborator-controlled awaits. Both the restart gate
+  // (#hasCollaboratorSession) and whom a read is verified against (liveCollaborators, see
+  // ObserverLedger) read this. A "use" session holding a gadget records which: a "use"
+  // collaborator is verified one gadget at a time, so widening what one gadget reaches only
+  // strands sessions holding that gadget. (The workspace shell a "use" collaborator opens shows
+  // nothing a gadget read, and holds none.)
+  #liveSessions = new Set<{holder: SessionHolder, gadgetId: WorkpieceId | undefined}>();
 
   // Count a session for its lifetime, as one holding `gadgetId` if it is a "use" session holding
   // a gadget. Returns a function that uncounts it, like joinPresence().
@@ -927,45 +922,27 @@ class OverseerImpl implements AgentHooks {
   // invisible there. That is fine for a roster and wrong for an access decision, which must never
   // conclude "nobody is here" about a session that already exists.
   joinSession(holder: SessionHolder, gadgetId?: WorkpieceId): () => void {
-    let {kind} = holder;
-    let profileId = holder.kind === "owner" ? undefined : holder.profileId;
-    this.#liveSessions[kind]++;
-    if (profileId !== undefined) {
-      this.#liveProfileSessions.set(profileId, (this.#liveProfileSessions.get(profileId) ?? 0) + 1);
-    }
-    let gadget = kind === "use" ? gadgetId : undefined;
-    if (gadget !== undefined) {
-      this.#liveGadgetSessions.set(gadget, (this.#liveGadgetSessions.get(gadget) ?? 0) + 1);
-    }
-    let left = false;
-    return () => {
-      if (left) return;
-      left = true;
-      this.#liveSessions[kind]--;
-      if (profileId !== undefined) {
-        let remaining = this.#liveProfileSessions.get(profileId)! - 1;
-        if (remaining > 0) this.#liveProfileSessions.set(profileId, remaining);
-        else this.#liveProfileSessions.delete(profileId);
-      }
-      if (gadget === undefined) return;
-      let remaining = this.#liveGadgetSessions.get(gadget)! - 1;
-      if (remaining > 0) this.#liveGadgetSessions.set(gadget, remaining);
-      else this.#liveGadgetSessions.delete(gadget);
-    };
+    let session = {holder, gadgetId: holder.kind === "use" ? gadgetId : undefined};
+    this.#liveSessions.add(session);
+    return () => { this.#liveSessions.delete(session); };
   }
 
-  /** The collaborators holding a live session (see joinSession), by profile id. */
+  /** The collaborators holding a live session (see joinSession), each profile id once. */
   liveCollaborators(): string[] {
-    return [...this.#liveProfileSessions.keys()];
+    return [...new Set(Array.from(this.#liveSessions, session => session.holder.profileId))];
   }
 
-  // Whether some non-owner session is live right now that holds "build", or one of `affected`'s
-  // gadgets, or anything at all when `affected` is omitted. The owner is never an observer, so
-  // their session never counts here.
+  // Whether some collaborator session is live right now that holds "build", or one of
+  // `affected`'s gadgets, or anything at all when `affected` is omitted.
   #hasCollaboratorSession(affected?: "build" | ReadonlySet<WorkpieceId>): boolean {
-    if (affected === "build") return this.#liveSessions.build > 0;
-    if (affected) return [...affected].some(id => this.#liveGadgetSessions.has(id));
-    return Object.entries(this.#liveSessions).some(([kind, n]) => kind !== "owner" && n > 0);
+    if (affected === undefined) return this.#liveSessions.size > 0;
+    for (let {holder, gadgetId} of this.#liveSessions) {
+      if (affected === "build" ? holder.kind === "build"
+          : gadgetId !== undefined && affected.has(gadgetId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Subscribe to roster changes. The current roster is delivered immediately via init().
@@ -11829,8 +11806,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               // this so ambient providers are attached when possible.
                private slashCommandsReady: Promise<void>) {
     super();
-    this.#leaveSession = this.impl.joinSession(
-        this.isOwner ? {kind: "owner"} : {kind: "build", profileId: this.clientProfileId});
+    this.#leaveSession = this.isOwner
+        ? () => {} : this.impl.joinSession({kind: "build", profileId: this.clientProfileId});
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "build", () => this.#getClientProfile());
     this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
