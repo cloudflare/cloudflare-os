@@ -4,7 +4,7 @@ import {
   type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
 import type {
-  BigQueryConfiguratorRpc, BigQueryConfiguratorValues, BigQueryCrumb, BigQueryNode, BigQueryNodeKind,
+  BigQueryConfiguratorRpc, BigQueryConfiguratorValues, BigQueryCrumb, BigQueryNode, BigQueryNodeKind, BigQueryNodePage,
 } from "./bigquery-configurator-types";
 
 // Must mirror `parseBigQueryUrl` in resources.ts, which is what actually mints the capability. This
@@ -33,6 +33,15 @@ function refOf(id: string): Ref | undefined {
 
 const idOf = ({ kind, projectId, datasetId, tableId }: Ref) =>
   `${kind}:${[projectId, datasetId, tableId].filter(Boolean).join("/")}`;
+
+/** The id of the location a node is listed in. */
+function parentOf(id: string): string | undefined {
+  const ref = refOf(id);
+  if (!ref) return undefined;
+  if (ref.kind === "table") return idOf({ kind: "dataset", projectId: ref.projectId, datasetId: ref.datasetId });
+  if (ref.kind === "dataset") return idOf({ kind: "project", projectId: ref.projectId });
+  return ROOT_ID;
+}
 
 /** Material Symbols Outlined, as the Cloud console draws BigQuery's resources, on its 960-unit grid. */
 const symbol = (d: string, fill = "currentColor") => <svg viewBox="0 -960 960 960" fill={fill}><path d={d} /></svg>;
@@ -67,6 +76,12 @@ const SHARED = "Shared";
  * keyed by project id. Module state, as the runtime keeps none for a module.
  */
 const listed = new Map<string, boolean>();
+
+/**
+ * Nodes looked up by id, for a location that then cannot be listed: a table shared on its own can be
+ * fetched while its dataset's tables cannot, and the picker still has to show it where it lives.
+ */
+const lookedUp = new Map<string, ConfiguratorUIHierarchyItem>();
 
 const toAncestor = ({ id, kind, title }: BigQueryCrumb): ConfiguratorUIHierarchyAncestor =>
   ({ id, title, icon: kind, selectable: true, choice: CHOICES[kind] });
@@ -159,15 +174,25 @@ export default {
           name="target"
           value={target}
           root={{ id: ROOT_ID, title: "BigQuery", subtitle: "The projects you have a role in", icon: "bigquery", selectable: false }}
-          loadItems={async ({ parentId, query }) => {
-            const page = await ui.listNodes(parentId, query);
-            return { items: page.nodes.map(toItem), notice: page.notice };
+          loadItems={async ({ parentId, query, cursor }) => {
+            let page: BigQueryNodePage;
+            try {
+              page = await ui.listNodes(parentId, query, cursor);
+            } catch (error) {
+              const shared = query === "" && cursor === null
+                ? [...lookedUp.values()].filter(item => parentOf(item.id) === parentId)
+                : [];
+              if (shared.length === 0) throw error;
+              return { items: shared, notice: "Only what was shared with you is shown; the rest of this location can't be listed." };
+            }
+            return { items: page.nodes.map(toItem), notice: page.notice, nextCursor: page.nextCursor };
           }}
           loadItem={async id => {
             const node = await ui.getNode(id);
             if (!node) return null;
             const known = listed.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
+            lookedUp.set(id, item);
             // Whether a pre-filled choice can be connected is known only now.
             if (!known) {
               setValues({});

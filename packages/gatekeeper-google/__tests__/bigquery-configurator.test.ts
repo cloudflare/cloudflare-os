@@ -80,7 +80,7 @@ describe("listing", () => {
       id: "table:mine/sales/daily", kind: "leaf", icon: "view", subtitle: "View", choice: undefined,
       path: [{ id: "project:mine", title: "mine", selectable: true }, { id: "dataset:mine/sales", title: "sales", selectable: true }],
     }]);
-    expect(frame.ui.listNodes).toHaveBeenCalledWith("bigquery", "");
+    expect(frame.ui.listNodes).toHaveBeenCalledWith("bigquery", "", null);
   });
 
   it("passes a search or pasted link through, and a notice back", async () => {
@@ -88,7 +88,26 @@ describe("listing", () => {
     frame.ui.listNodes.mockResolvedValueOnce({ nodes: [], notice: "Nothing there." });
     await expect(frame.list("bigquery", "https://console.cloud.google.com/bigquery?p=theirs&d=events"))
       .resolves.toEqual({ items: [], notice: "Nothing there." });
-    expect(frame.ui.listNodes).toHaveBeenLastCalledWith("bigquery", "https://console.cloud.google.com/bigquery?p=theirs&d=events");
+    expect(frame.ui.listNodes).toHaveBeenLastCalledWith("bigquery", "https://console.cloud.google.com/bigquery?p=theirs&d=events", null);
+    frame.ui.listNodes.mockResolvedValueOnce({ nodes: [MINE], nextCursor: "100" });
+    await expect(frame.list("bigquery")).resolves.toMatchObject({ nextCursor: "100" });
+  });
+
+  it("keeps a looked-up table in view when its dataset cannot be listed", async () => {
+    const frame = await open({ target: "table:theirs/events/clicks" });
+    const clicks: BigQueryNode = {
+      id: "table:theirs/events/clicks", kind: "table", title: "clicks", listed: false,
+      path: [{ id: "project:theirs", kind: "project", title: "theirs" }, { id: "dataset:theirs/events", kind: "dataset", title: "events" }],
+    };
+    frame.ui.getNode.mockResolvedValueOnce(clicks);
+    await frame.load(clicks.id);
+    frame.ui.listNodes.mockRejectedValue(new Error("BigQuery API error: 403"));
+    await expect(frame.list("dataset:theirs/events")).resolves.toMatchObject({
+      items: [{ id: clicks.id, kind: "leaf" }], notice: expect.stringContaining("shared with you"),
+    });
+    // Elsewhere, and in a search, the failure is the picker's to show.
+    await expect(frame.list("project:theirs")).rejects.toThrow("403");
+    await expect(frame.list("dataset:theirs/events", "cli")).rejects.toThrow("403");
   });
 });
 

@@ -44,6 +44,8 @@ const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOptio
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
+/** Nodes per picker page, within the hierarchy picker's limit of 200. */
+const BIGQUERY_PICKER_PAGE_SIZE = 100;
 /** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
 const BIGQUERY_ROOT_ID = "bigquery";
 
@@ -229,6 +231,9 @@ function parseBigQueryNodeId(id: string): BigQueryNodeRef | undefined {
 const BIGQUERY_REFERENCE_RE =
   /^((?:[a-z0-9][a-z0-9.-]*:)?[a-z0-9][a-z0-9-]*)(?:\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?)?$/;
 
+/** The shortest a Google Cloud project ID can be; a bare word shorter than this is only a search. */
+const BIGQUERY_PROJECT_ID_MIN_LENGTH = 6;
+
 const kindOf = (datasetId?: string, tableId?: string): BigQueryNodeKind =>
   tableId ? "table" : datasetId ? "dataset" : "project";
 
@@ -264,6 +269,7 @@ function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit:
   let match = BIGQUERY_REFERENCE_RE.exec(text);
   if (!match) return undefined;
   let [, projectId, datasetId, tableId] = match;
+  if (datasetId === undefined && projectId.length < BIGQUERY_PROJECT_ID_MIN_LENGTH) return undefined;
   return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: datasetId !== undefined };
 }
 
@@ -335,7 +341,7 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       .map(project => ({ value: project.projectId, title: project.projectId, subtitle: project.friendlyName }));
   }
 
-  async listNodes(parentId: string, query: string): Promise<BigQueryNodePage> {
+  async listNodes(parentId: string, query: string, cursor: string | null): Promise<BigQueryNodePage> {
     let linked = linkedBigQueryNodeRef(query);
     if (linked?.explicit) {
       let node = await this.#node(linked.ref);
@@ -350,7 +356,11 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       let node = await this.#node(linked.ref);
       if (node) return { nodes: [node] };
     }
-    return { nodes: matching };
+    // The whole listing is in hand, so the cursor is an offset into it.
+    let offset = cursor === null ? 0 : Number(cursor);
+    if (!Number.isInteger(offset) || offset < 0) throw new Error("Unknown page.");
+    let end = offset + BIGQUERY_PICKER_PAGE_SIZE;
+    return { nodes: matching.slice(offset, end), ...(end < matching.length ? { nextCursor: String(end) } : {}) };
   }
 
   async getNode(id: string): Promise<BigQueryNode | null> {

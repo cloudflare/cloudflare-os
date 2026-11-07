@@ -972,6 +972,9 @@ describe("BigQuery picker", () => {
           return Response.json({ datasets: [dataset("mine", "web"), dataset("mine", "sales", { friendlyName: "Sales" })] });
         case "/projects/mine/datasets/sales/tables":
           return Response.json({ tables: [table("mine", "sales", "orders"), table("mine", "sales", "daily", "VIEW")] });
+        case "/projects/mine/datasets/web/tables":
+          // Date-sharded, as a GA4 export is: one table a day.
+          return Response.json({ tables: Array.from({ length: 250 }, (_, i) => table("mine", "web", `events_${20240000 + i}`)) });
         case "/projects/theirs/datasets":
           return Response.json({ datasets: [dataset("theirs", "events")] });
         case "/projects/theirs/datasets/events":
@@ -988,51 +991,73 @@ describe("BigQuery picker", () => {
 
   it("lists the projects the account holds a role in, and inside one its datasets and tables, by name", async () => {
     const { ui } = bigQuery();
-    expect(await ui.listNodes("bigquery", "")).toEqual({ nodes: [
+    expect(await ui.listNodes("bigquery", "", null)).toEqual({ nodes: [
       { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
     ] });
-    expect(await ui.listNodes("project:mine", "")).toMatchObject({ nodes: [
+    expect(await ui.listNodes("project:mine", "", null)).toMatchObject({ nodes: [
       { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
       { id: "dataset:mine/web", title: "web" },
     ] });
-    expect(await ui.listNodes("dataset:mine/sales", "dai")).toMatchObject({ nodes: [
+    expect(await ui.listNodes("dataset:mine/sales", "dai", null)).toMatchObject({ nodes: [
       { id: "table:mine/sales/daily", kind: "table", subtitle: "View", view: true, path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
     ] });
     expect(await ui.listProjects("proj")).toEqual([{ value: "mine", title: "mine", subtitle: "My project" }]);
   });
 
+  it("pages a long listing within the picker's limit", async () => {
+    const { ui } = bigQuery();
+    const first = await ui.listNodes("dataset:mine/web", "", null);
+    expect(first.nodes).toHaveLength(100);
+    expect(first.nodes[0]).toMatchObject({ id: "table:mine/web/events_20240000" });
+    const second = await ui.listNodes("dataset:mine/web", "", first.nextCursor!);
+    expect(second.nodes[0]).toMatchObject({ id: "table:mine/web/events_20240100" });
+    const last = await ui.listNodes("dataset:mine/web", "", second.nextCursor!);
+    expect(last).toEqual({ nodes: expect.any(Array) });
+    expect(last.nodes).toHaveLength(50);
+    expect((await ui.listNodes("dataset:mine/web", "events_202400", null)).nextCursor).toBeUndefined();
+    await expect(ui.listNodes("dataset:mine/web", "", "later")).rejects.toThrow("Unknown page");
+  });
+
   it("reaches a project the account holds no role in by its ID, a Console link or a reference", async () => {
     const { ui, calls } = bigQuery();
-    expect(await ui.listNodes("bigquery", "theirs")).toEqual({ nodes: [
+    expect(await ui.listNodes("bigquery", "theirs", null)).toEqual({ nodes: [
       { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
     ] });
     expect(calls).toContain("/projects/theirs/datasets");
-    expect(await ui.listNodes("project:theirs", "")).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
+    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
     const console = "https://console.cloud.google.com/bigquery?project=mine&p=theirs&d=events&page=dataset";
-    expect(await ui.listNodes("bigquery", console)).toMatchObject({ nodes: [
+    expect(await ui.listNodes("bigquery", console, null)).toMatchObject({ nodes: [
       { id: "dataset:theirs/events", subtitle: "Shared events", listed: false, path: [{ id: "project:theirs" }] },
     ] });
-    expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`")).toMatchObject({ nodes: [
+    expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`", null)).toMatchObject({ nodes: [
       { id: "table:theirs/events/clicks", kind: "table", listed: false },
     ] });
     // A legacy domain-scoped project ID parses as a URL, but is a reference all the same.
-    expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks")).toMatchObject({ nodes: [
+    expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks", null)).toMatchObject({ nodes: [
       { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, listed: false },
     ] });
-    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs")).toMatchObject({ nodes: [
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs", null)).toMatchObject({ nodes: [
       { id: "project:theirs", listed: false },
     ] });
     expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
   });
 
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
-    const { ui } = bigQuery();
+    const { ui, calls } = bigQuery();
     expect(await ui.getNode("project:nowhere")).toBeNull();
     expect(await ui.getNode("not an id")).toBeNull();
-    expect(await ui.listNodes("bigquery", "nowhere")).toEqual({ nodes: [] });
-    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?p=nowhere"))
+    expect(await ui.listNodes("bigquery", "nowhere", null)).toEqual({ nodes: [] });
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?p=nowhere", null))
       .toEqual({ nodes: [], notice: expect.stringContaining("can't see") });
     // A listing's own words, not a project ID, never trigger a lookup.
-    expect(await ui.listNodes("project:mine", "nowhere")).toEqual({ nodes: [] });
+    expect(await ui.listNodes("project:mine", "nowhere", null)).toEqual({ nodes: [] });
+    expect(calls.filter(path => path.startsWith("/projects/nowhere"))).toHaveLength(1);
+  });
+
+  it("looks up a word typed at the root only once it is long enough to be a project ID", async () => {
+    const { ui, calls } = bigQuery();
+    for (const prefix of ["th", "thei", "their"]) expect(await ui.listNodes("bigquery", prefix, null)).toEqual({ nodes: [] });
+    expect(calls.filter(path => path !== "/projects")).toEqual([]);
+    expect(await ui.listNodes("bigquery", "theirs", null)).toMatchObject({ nodes: [{ id: "project:theirs" }] });
   });
 });

@@ -38,6 +38,8 @@ export type BigQueryCrumb = Pick<BigQueryNode, "id" | "kind" | "title">;
 
 export type BigQueryNodePage = {
   nodes: BigQueryNode[];
+  /** Present when more nodes follow; passed back as the next call's `cursor`. */
+  nextCursor?: string;
   /** Something to tell the user about the whole listing, such as why it is empty. */
   notice?: string;
 };
@@ -48,9 +50,10 @@ export interface BigQueryConfiguratorRpc {
    * project's its datasets and a dataset's its tables, narrowed to those whose names contain `query`
    * when one is given. A query that names a place rather than searching for one (a Cloud Console
    * link, a connection's URL, a `project.dataset.table` reference, or at the root a project ID
-   * that is not listed) answers with what it names, if this account can see it.
+   * that is not listed) answers with what it names, if this account can see it. `cursor` is null
+   * for the first page, else the `nextCursor` of the page before.
    */
-  listNodes(parentId: string, query: string): Promise<BigQueryNodePage>;
+  listNodes(parentId: string, query: string, cursor: string | null): Promise<BigQueryNodePage>;
   /** The node an id names, with where it lives, or null when this account cannot see it. */
   getNode(id: string): Promise<BigQueryNode | null>;
   /** The projects this account holds a role in whose names contain `query`: where its query jobs may run. */
