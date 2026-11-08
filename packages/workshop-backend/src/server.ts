@@ -81,6 +81,9 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
 
+// Re-export the loopback entrypoint that writes gadget console output from a request of its own.
+export { GadgetConsoleLogLoopback } from "./gadget-console-log";
+
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
 

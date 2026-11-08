@@ -1,12 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH, MAX_GADGET_CONSOLE_LOGS_PER_CALL,
   MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH, droppedGadgetConsoleLogsText,
   type ConsoleLogEvent, type ReportedGadgetConsoleLog,
 } from "@gadgets/workshop-shared/api";
 import {
-  GADGET_CONSOLE_LOGS_PER_MINUTE, GadgetConsoleLogLimiter, clientGadgetConsoleLogEntry,
-  gadgetConsoleLogText, redactGadgetConsoleLogText, serverGadgetConsoleLogEntry,
+  GADGET_CONSOLE_LOG_BYTES_PER_REQUEST, GADGET_CONSOLE_LOGS_PER_MINUTE, GadgetConsoleLogLimiter,
+  clientGadgetConsoleLogEntry, gadgetConsoleLogText, isGadgetConsoleLogRecordingEnabled,
+  redactGadgetConsoleLogText, serverGadgetConsoleLogEntry, writeServerGadgetConsoleLogs,
 } from "../src/gadget-console-log.js";
 
 // Filler of `n` characters in which no run of token characters is long.
@@ -931,5 +932,195 @@ describe("GadgetConsoleLogLimiter", () => {
     // Nor does it mark the drop that waits for the gadget's next minute.
     expect(limiter.admit(1, 0, t + 110_000)).toEqual({ admitted: 0, dropped: 0 });
     expect(limiter.admit(1, 1, t + 110_000)).toEqual({ admitted: 1, dropped: 1 });
+  });
+});
+
+// Silences one console method and reads what a logger wrote through it: the one object of each
+// call, in order.
+function spyOnConsole(level: "info" | "warn" | "error") {
+  let spy = vi.spyOn(console, level).mockImplementation(() => {});
+  return { spy, lines: () => spy.mock.calls.map(([line]) => line as Record<string, unknown>) };
+}
+
+// The deployment variable holding `value`, whatever a deployment's configuration put there.
+const variable = (value: unknown) => ({ RECORD_GADGET_CONSOLE_LOGS: value as string });
+
+describe("isGadgetConsoleLogRecordingEnabled", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('is on only for "true"', () => {
+    expect(isGadgetConsoleLogRecordingEnabled(variable("true"))).toBe(true);
+  });
+
+  it.each([
+    ["unset", {}],
+    ["empty", variable("")],
+    ["blank", variable("   ")],
+    ['"false"', variable("false")],
+  ])("is off while the variable is %s, and reports nothing", (_name, vars) => {
+    let { spy } = spyOnConsole("error");
+    expect(isGadgetConsoleLogRecordingEnabled(vars)).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  // One test for every invalid value: each is reported once per isolate, so a value tried in two
+  // tests would be reported in whichever ran first.
+  it("is off for any other value, and reports each once without repeating it", () => {
+    let { spy, lines } = spyOnConsole("error");
+    expect(isGadgetConsoleLogRecordingEnabled(variable("TRUE"))).toBe(false);
+    expect(isGadgetConsoleLogRecordingEnabled(variable("TRUE"))).toBe(false);
+    expect(lines()).toStrictEqual([{
+      component: "gadget.console", event: "gadget.console.config.invalid",
+      message: expect.stringContaining("RECORD_GADGET_CONSOLE_LOGS"),
+    }]);
+    expect(JSON.stringify(lines())).not.toContain("TRUE");
+
+    // A JSON `true` among them: only the string turns recording on.
+    for (let [index, value] of ["True", " true", "1", "yes", true].entries()) {
+      expect(isGadgetConsoleLogRecordingEnabled(variable(value))).toBe(false);
+      expect(spy).toHaveBeenCalledTimes(index + 2);
+    }
+  });
+});
+
+// The marker written for `droppedCount` calls of the server of gadget 7 in workspace "ws".
+const marker = (droppedCount: number) => ({
+  component: "gadget.console", event: "gadget.console.dropped",
+  message: "gadget console entries dropped", gadgetId: "ws", workpieceId: 7,
+  consoleSource: "server", droppedCount, time: expect.any(String),
+  text: droppedGadgetConsoleLogsText(droppedCount),
+});
+
+// The bytes of `lines` as JSON, which is how the runtime records a line.
+const jsonBytes = (lines: unknown[]) =>
+  new TextEncoder().encode(lines.map(each => JSON.stringify(each)).join("")).length;
+
+describe("writeServerGadgetConsoleLogs", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const at = new Date("2026-01-02T03:04:05.678Z");
+  const event = (message: unknown[], level: ConsoleLogEvent["level"] = "log"): ConsoleLogEvent =>
+    ({ timestamp: at, level, message });
+  // `count` console calls of one request: "flood 0", "flood 1", and so on.
+  const calls = (count: number) => Array.from({ length: count }, (_, i) => event(["flood", i]));
+  // The line written for a call that gadget 7 of workspace "ws" made at `at`.
+  const line = (consoleLevel: ConsoleLogEvent["level"], text: string) => ({
+    component: "gadget.console", event: "gadget.console.entry", message: "gadget console entry",
+    gadgetId: "ws", workpieceId: 7, consoleSource: "server", consoleLevel,
+    time: at.toISOString(), text,
+  });
+
+  it("writes one line for each console call, oldest first", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeServerGadgetConsoleLogs(
+        "ws", 7, null, [event(["saved", { rows: 2 }], "warn"), event(["done"])]);
+
+    expect(info.lines()).toStrictEqual([line("warn", 'saved {"rows":2}'), line("log", "done")]);
+    expect(warn.spy).not.toHaveBeenCalled();
+    // The mainline's lines name no chat and a server's no user, and the entry's level and source
+    // go by the names a line has for them.
+    for (let written of info.lines()) {
+      for (let key of ["chatId", "userId", "source", "level"]) expect(key in written).toBe(false);
+    }
+  });
+
+  it("names the chat on each line of a draft's output", () => {
+    let info = spyOnConsole("info");
+    writeServerGadgetConsoleLogs("ws", 7, 5, [event(["a"]), event(["b"])]);
+    // A workspace's first chat is chat 0.
+    writeServerGadgetConsoleLogs("ws", 7, 0, [event(["c"])]);
+
+    expect(info.lines()).toStrictEqual([
+      { ...line("log", "a"), chatId: 5 }, { ...line("log", "b"), chatId: 5 },
+      { ...line("log", "c"), chatId: 0 },
+    ]);
+  });
+
+  it("redacts and cuts the text it writes", () => {
+    let info = spyOnConsole("info");
+    writeServerGadgetConsoleLogs("ws", 7, null, [event(["calling", bearer]), event([words(2500)])]);
+
+    let [redacted, cut] = info.lines();
+    expect(redacted.text).toBe("calling Bearer [redacted]");
+    expect(cut.text).toBe(words(1999) + "…");
+    expect(cut.text).toHaveLength(MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH);
+  });
+
+  it("writes hostile events, and never throws", () => {
+    let info = spyOnConsole("info");
+    let cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    let before = Date.now();
+    writeServerGadgetConsoleLogs("ws", 7, null, [
+      event([cyclic]),
+      event([10n]),
+      { timestamp: at, level: "log", message: "not an array" as unknown as unknown[] },
+      { timestamp: new Date(NaN), level: "error", message: ["boom"] },
+    ]);
+
+    let lines = info.lines();
+    expect(lines.map(written => written.text))
+        .toStrictEqual(["[object Object]", "10", "not an array", "boom"]);
+    // A call whose timestamp is no date is written with the time it was shaped at.
+    let time = Date.parse(lines[3].time as string);
+    expect(time).toBeGreaterThanOrEqual(before);
+    expect(time).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("keeps the newest lines that fit a request's bytes, after a marker that counts the rest",
+      () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeServerGadgetConsoleLogs("ws", 7, null, calls(1500));
+
+    let kept = info.lines();
+    let dropped = 1500 - kept.length;
+    expect(dropped).toBeGreaterThan(0);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(warn.lines()).toStrictEqual([marker(dropped)]);
+    // The marker comes first.
+    expect(warn.spy.mock.invocationCallOrder[0])
+        .toBeLessThan(Math.min(...info.spy.mock.invocationCallOrder));
+
+    // The newest calls, in the order they were made: "flood 0" went, "flood 1499" is last.
+    expect(kept.map(written => written.text))
+        .toStrictEqual(Array.from({ length: kept.length }, (_, i) => `flood ${dropped + i}`));
+    expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+  });
+
+  it("keeps the error that ends a flood", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeServerGadgetConsoleLogs("ws", 7, null, [...calls(1500), event(["boom"], "error")]);
+
+    expect(warn.spy).toHaveBeenCalledTimes(1);
+    expect(info.lines().at(-1)).toStrictEqual(line("error", "boom"));
+  });
+
+  it("counts a line's bytes as it is written, not its characters", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeServerGadgetConsoleLogs(
+        "ws", 7, null, Array.from({ length: 50 }, () => event([words(2000)])));
+    expect(info.spy).toHaveBeenCalledTimes(50);
+    expect(warn.spy).not.toHaveBeenCalled();
+
+    // A control character is one character of text and six bytes of a line.
+    info.spy.mockClear();
+    writeServerGadgetConsoleLogs(
+        "ws", 7, null, Array.from({ length: 50 }, () => event(["\u0001".repeat(2000)])));
+    let kept = info.lines();
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(50);
+    expect(warn.lines()).toStrictEqual([marker(50 - kept.length)]);
+    expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+  });
+
+  it("writes nothing for a request that logged nothing", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeServerGadgetConsoleLogs("ws", 7, null, []);
+    expect(info.spy).not.toHaveBeenCalled();
+    expect(warn.spy).not.toHaveBeenCalled();
   });
 });

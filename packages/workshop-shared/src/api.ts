@@ -2227,6 +2227,13 @@ export type ServerConfig = {
   webPushPublicKey?: string;
 
   /**
+   * Whether this deployment records the console output of its gadgets in its backend Worker's
+   * logs: off unless its RECORD_GADGET_CONSOLE_LOGS variable is "true". The Workshop reports a
+   * gadget UI's console output (Overseer.reportGadgetConsoleLogs()) only while this is true.
+   */
+  gadgetConsoleLogsRecorded: boolean;
+
+  /**
    * The version id of the backend answering this connection, or undefined where it has none.
    * Compared with what VERSION_PATH answers to notice a connection that outlived a deploy.
    */
@@ -3950,8 +3957,9 @@ export interface Overseer extends RpcTarget {
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
    * being produced by the gadget.
    *
-   * At present, logs are not stored, so the only way to see them is to be subscribed when they
-   * happen.
+   * No method returns past logs, so the only way to see them through this API is to be subscribed
+   * when they happen. A deployment can also record them in its backend Worker's logs (see
+   * docs/gadget-console-logs.md).
    *
    * To unsubscribe, dispose the returned stub.
    */

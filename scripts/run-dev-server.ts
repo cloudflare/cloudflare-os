@@ -595,6 +595,8 @@ for (const gk of gatekeepers) {
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
     // The admin audit log's minimum retention (see docs/admin-access.md).
     "ADMIN_AUDIT_RETENTION_MIN_DAYS",
+    // Records gadget console output in the backend's logs (see docs/gadget-console-logs.md).
+    "RECORD_GADGET_CONSOLE_LOGS",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).

@@ -55,4 +55,12 @@ describe("getServerConfig", () => {
     expect((await config(EMPTY_ID)).backendVersion).toBeUndefined();
     expect((await config(UNBOUND)).backendVersion).toBeUndefined();
   });
+
+  it("says whether the deployment records gadget console output", async () => {
+    expect((await config({ RECORD_GADGET_CONSOLE_LOGS: "true" })).gadgetConsoleLogsRecorded)
+        .toBe(true);
+    expect((await config({})).gadgetConsoleLogsRecorded).toBe(false);
+    expect((await config({ RECORD_GADGET_CONSOLE_LOGS: "false" })).gadgetConsoleLogsRecorded)
+        .toBe(false);
+  });
 });

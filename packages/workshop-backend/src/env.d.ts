@@ -25,6 +25,13 @@ declare global {
       // docs/admin-access.md, which also says where each kind of deployment sets it). An
       // environment variable so that a compromised admin session cannot shorten it.
       ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+      // Set to "true" to record what gadgets print to their consoles (their servers' output, and
+      // what browsers showing their UIs report) as `gadget.console` lines in this Worker's logs.
+      // Off when unset, blank, "false" or anything else, a JSON `true` included, and a value that
+      // is none of those is logged as invalid. The text is whatever a gadget prints, in every
+      // workspace, so turn it on only where everyone who can read this Cloudflare account's
+      // Workers logs may read that (see gadget-console-log.ts and docs/gadget-console-logs.md).
+      RECORD_GADGET_CONSOLE_LOGS?: string;
 
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;

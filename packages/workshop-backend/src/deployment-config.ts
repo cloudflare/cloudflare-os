@@ -1,6 +1,6 @@
 // Builds the public ServerConfig the client fetches at boot. Aggregates sign-in (auth/, env-driven),
-// AI Gateway billing (ai-gateway-billing/), and the admin-configured branding (admin-config.ts).
-// Contains no secrets.
+// AI Gateway billing (ai-gateway-billing/), gadget console recording (gadget-console-log.ts), and
+// the admin-configured branding (admin-config.ts). Contains no secrets.
 
 import { AuthVendorInfo, ServerConfig } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
@@ -9,6 +9,7 @@ import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { readAdminConfig } from "./admin-config.js";
 import { siteLogoImage } from "./site-logo.js";
+import { isGadgetConsoleLogRecordingEnabled } from "./gadget-console-log.js";
 
 const logger = createWorkshopLogger("workshop.deployment.config");
 
@@ -65,6 +66,7 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     bannerColor: config.banner.color,
     accentColor: config.accentColor,
     webPushPublicKey: env.NOTIFICATION_WEB_PUSH_PUBLIC_KEY,
+    gadgetConsoleLogsRecorded: isGadgetConsoleLogRecordingEnabled(env),
     backendVersion: backendVersion(env),
   };
 }

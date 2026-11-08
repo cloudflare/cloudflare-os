@@ -1,13 +1,18 @@
 // How a gadget's console output is shaped and bounded before it is recorded: the text an entry
 // keeps (joined, redacted, then cut), the entry made of a call on the gadget's server and of one a
-// browser reported, and the limit on how much is recorded for one gadget.
+// browser reported, and the limit on how much is recorded for one gadget. And how a deployment
+// that asks for it records that output: the switch, and the writer that makes each entry one
+// `gadget.console` line of the backend Worker's logs.
 
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { createLogger } from "@gadgets/observability/logger";
 import {
   MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH,
+  droppedGadgetConsoleLogsText,
   type ConsoleLogEvent, type GadgetConsoleLogEntry, type ReportedGadgetConsoleLog,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import { cutAdminAuditText } from "./admin-access.js";
+import { cutAdminAuditText, isBlank } from "./admin-access.js";
 
 // --- Redaction ---
 
@@ -245,5 +250,134 @@ export class GadgetConsoleLogLimiter {
       window.marked = true;
     }
     return { admitted, dropped };
+  }
+}
+
+// --- Recording ---
+
+// What a line of this module holds. `gadgetId` is the workspace, as on the Workshop's other log
+// lines, and `workpieceId` the gadget. An entry's level and source are written as `consoleLevel`
+// and `consoleSource`: Workers Logs has a `level` of its own, and returns a line's own fields
+// inside an object named `source`.
+type GadgetConsoleLogFields = {
+  gadgetId: string;
+  workpieceId: number;
+  chatId: number;
+  consoleSource: GadgetConsoleLogEntry["source"];
+  userId: string;
+  consoleLevel: GadgetConsoleLogEntry["level"];
+  time: string;
+  text: string;
+  droppedCount: number;
+};
+
+// A logger of its own and not the Workshop's: a line's fields describe the gadget's call, not the
+// kernel operation that delivered it, and `text` is in no other logger's vocabulary.
+const logger = createLogger<GadgetConsoleLogFields>({ component: "gadget.console" });
+
+// The raw values already reported as invalid, so that each is logged once per isolate rather than
+// by every tail and report that reads the switch.
+const reportedInvalidSwitches = new Set<unknown>();
+
+/**
+ * Whether this deployment records gadget console output in its backend Worker's logs: only while
+ * its RECORD_GADGET_CONSOLE_LOGS variable is the string "true". Unset, blank, "false" or anything
+ * else is off, so that no deployment writes what its gadgets print without having asked to. A
+ * value that is none of those is logged as an error, once per isolate per value.
+ */
+export function isGadgetConsoleLogRecordingEnabled(
+    env: Pick<Cloudflare.Env, "RECORD_GADGET_CONSOLE_LOGS">): boolean {
+  let raw: unknown = env.RECORD_GADGET_CONSOLE_LOGS;
+  if (raw === "true") return true;
+  if (!isBlank(raw) && raw !== "false" && !reportedInvalidSwitches.has(raw)) {
+    reportedInvalidSwitches.add(raw);
+    logger.error(
+        'RECORD_GADGET_CONSOLE_LOGS is neither "true" nor "false", so gadget console output is ' +
+            "not recorded",
+        { event: "gadget.console.config.invalid" });
+  }
+  return false;
+}
+
+/**
+ * The most bytes of gadget console lines one request writes. The runtime stops recording a
+ * request's logs once they pass 256 KB: it adds a warning of its own, which does not say how
+ * much was lost, and drops whatever the request logs after that. So a request stops well short
+ * of the limit, where it can still write a marker that counts what it left out, leaving room
+ * for that marker and for anything else it logs.
+ */
+export const GADGET_CONSOLE_LOG_BYTES_PER_REQUEST = 192 * 1024;
+
+// What a line costs beyond the JSON of its own fields: the `component` and the `message` the
+// logger adds, some 70 bytes, and the 80 bytes or so the runtime counts for every console call
+// beyond the JSON of its arguments.
+const LINE_OVERHEAD_BYTES = 160;
+
+const encoder = new TextEncoder();
+
+// Writes `entries`, which were shaped with `labels` (the batch's gadget, chat, source and user),
+// one line each and oldest first, after a marker line when any were dropped: `dropped` of them
+// by the caller, and those that do not fit the request's bytes. The newest lines are the ones
+// kept: a request's exceptions follow its console calls, and the error that ends a chatty request
+// is the line most worth keeping.
+function write(workspaceId: string,
+               labels: Pick<GadgetConsoleLogEntry, "gadgetId" | "chatId" | "source" | "userId">,
+               entries: readonly GadgetConsoleLogEntry[], dropped: number): void {
+  // A chat and a user that are absent are left out, not written as undefined.
+  let shared = {
+    gadgetId: workspaceId, workpieceId: labels.gadgetId,
+    ...(labels.chatId !== null ? { chatId: labels.chatId } : {}),
+    consoleSource: labels.source,
+    ...(labels.userId !== undefined ? { userId: labels.userId } : {}),
+  };
+  let lines = entries.map(entry => ({
+    ...shared, event: "gadget.console.entry",
+    consoleLevel: entry.level, time: entry.time.toISOString(), text: entry.text,
+  }));
+
+  let first = lines.length;
+  for (let bytes = 0; first > 0; first--) {
+    bytes += encoder.encode(JSON.stringify(lines[first - 1])).byteLength + LINE_OVERHEAD_BYTES;
+    if (bytes > GADGET_CONSOLE_LOG_BYTES_PER_REQUEST) break;
+  }
+  dropped += first;
+
+  if (dropped > 0) {
+    logger.warn("gadget console entries dropped", {
+      ...shared, event: "gadget.console.dropped", droppedCount: dropped,
+      time: new Date().toISOString(), text: droppedGadgetConsoleLogsText(dropped),
+    });
+  }
+  for (let line of lines.slice(first)) logger.info("gadget console entry", line);
+}
+
+/**
+ * Writes what a gadget's server logged as log lines of component `gadget.console`: one per
+ * console call or uncaught exception, oldest first. To be called once in a request, whose lines
+ * it holds to GADGET_CONSOLE_LOG_BYTES_PER_REQUEST: when they would not fit, the oldest are
+ * dropped, so that the error ending a chatty request is kept, and a marker line written before
+ * the rest says how many. Never throws.
+ */
+export function writeServerGadgetConsoleLogs(
+    workspaceId: string, gadgetId: WorkpieceId, chatId: number | null,
+    logs: readonly ConsoleLogEvent[]): void {
+  write(workspaceId, { gadgetId, chatId, source: "server" },
+      logs.map(log => serverGadgetConsoleLogEntry(gadgetId, chatId, log)), 0);
+}
+
+/** The workspace a GadgetConsoleLogLoopback writes for. */
+export type GadgetConsoleLogLoopbackProps = { overseerId: string };
+
+/**
+ * Writes a workspace's gadget console output from a request of its own. The Overseer hands it
+ * what reaches it inside some other request, a browser's long session above all: written there,
+ * the lines would use up the log budget that request shares with the workspace's own log lines.
+ * The tail worker needs no such detour, since its request is the gadget's own and ends with it.
+ */
+export class GadgetConsoleLogLoopback
+    extends WorkerEntrypoint<Cloudflare.Env, GadgetConsoleLogLoopbackProps> {
+  /** See writeServerGadgetConsoleLogs(). */
+  server(gadgetId: WorkpieceId, chatId: number | null, logs: ConsoleLogEvent[]): void {
+    writeServerGadgetConsoleLogs(this.ctx.props.overseerId, gadgetId, chatId, logs);
   }
 }

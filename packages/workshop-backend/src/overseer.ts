@@ -95,6 +95,7 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
+import { isGadgetConsoleLogRecordingEnabled, writeServerGadgetConsoleLogs } from "./gadget-console-log";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -5117,6 +5118,7 @@ class OverseerImpl implements AgentHooks {
               message: [msg],
             };
             self.deliverGadgetLogs(chatId ?? null, [event]);
+            self.#recordGadgetException(gadgetId, chatId, event);
             throw err;
           });
         }
@@ -10176,6 +10178,32 @@ class OverseerImpl implements AgentHooks {
 
   #tailSubscribers: Set<RpcStub<ConsoleLogSubscriber>> = new Set();
 
+  // The entrypoint that writes this workspace's gadget console output in a request of its own.
+  get #gadgetConsoleLog() {
+    return this.ctx.exports.GadgetConsoleLogLoopback({props: {overseerId: this.ctx.id.toString()}});
+  }
+
+  // Has an exception the facet proxy caught recorded, where the deployment records gadget console
+  // output. Such an exception never reaches the tail worker, which records the rest, and it is
+  // handed to GadgetConsoleLogLoopback because the request that called the gadget may be a
+  // browser's long session. The proxy calls this inside its catch, ahead of its rethrow, so
+  // nothing here may throw, or the gadget's caller would get that in place of the gadget's own
+  // error: minting the loopback, resolving the chat and the call itself all run inside the one
+  // async function, whose failure is logged.
+  #recordGadgetException(gadgetId: WorkpieceId, chatId: number | undefined, event: ConsoleLogEvent)
+      : void {
+    if (!isGadgetConsoleLogRecordingEnabled(this.env)) return;
+    this.ctx.waitUntil((async () => {
+      try {
+        await this.#gadgetConsoleLog.server(
+            gadgetId, this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [event]);
+      } catch (error) {
+        this.logger.warn("failed to record a gadget exception",
+            { event: "gadget.console.record.failed", error });
+      }
+    })());
+  }
+
   async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[]) {
     for (let sub of this.#tailSubscribers) {
       sub.event(chatId, logs).catch(() => {
@@ -11670,7 +11698,10 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
 
   /**
    * New-style streaming tail worker. Delivers gadget console logs to the product UI in real time.
-   * Do not console.log the tail events here — they spam wrangler dev and are not ops logs.
+   * Do not console.log the tail events here — they spam wrangler dev and are not ops logs. What a
+   * deployment records of a gadget's console output is written by tail() (see
+   * writeServerGadgetConsoleLogs): this handler's request lasts as long as the gadget's, so its
+   * entries would need requests of their own, as GadgetConsoleLogLoopback gives the Overseer's.
    */
   tailStream(event: TailStream.TailEvent<TailStream.Onset>)
       : TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType> {
@@ -11732,6 +11763,13 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
         level: "error",
         message: [err.message],
       });
+    }
+
+    // A deployment that records gadget console output has it written here, in the request that
+    // is the gadget's own tail, so its lines never share a log budget with a browser's session.
+    if (isGadgetConsoleLogRecordingEnabled(this.env)) {
+      let {chatId = null, gadgetId, overseerId} = this.ctx.props;
+      writeServerGadgetConsoleLogs(overseerId, gadgetId, chatId, logs);
     }
 
     await this.#deliver(logs);

@@ -60,6 +60,11 @@ export { CodeModeTailLoopback } from "../src/server.js";
 /** What an enabled hook delivers its events through, likewise. */
 export { GatekeeperHookLoopback } from "../src/server.js";
 /**
+ * What the overseer hands gadget console output to, so that it is written from a request of its
+ * own, likewise.
+ */
+export { GadgetConsoleLogLoopback } from "../src/server.js";
+/**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
  * than covered by the `export *`.
