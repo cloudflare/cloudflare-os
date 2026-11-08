@@ -1051,12 +1051,17 @@ class OverseerImpl implements AgentHooks {
     return Object.entries(this.#liveSessions).some(([kind, n]) => kind !== "owner" && n > 0);
   }
 
+  // Who has the workspace open now: the roster a presence subscriber is sent first.
+  presenceSnapshot(): PresenceParticipant[] {
+    return [...this.#presence.keys()].map(id => this.#toParticipant(id));
+  }
+
   // Subscribe to roster changes. The current roster is delivered immediately via init().
   addPresenceSubscriber(subscriber: RpcStub<PresenceSubscriber>): RpcStub<{}> {
     subscriber = subscriber.dup();
     let token = {};
     this.#presenceSubscribers.set(token, subscriber);
-    let snapshot = [...this.#presence.keys()].map(id => this.#toParticipant(id));
+    let snapshot = this.presenceSnapshot();
     subscriber.init(snapshot).catch(() => this.#removePresenceSubscriber(token));
     subscriber.onRpcBroken(() => this.#removePresenceSubscriber(token));
     // @ts-expect-error Bugs in native RPC types make this not work currently.
@@ -9457,6 +9462,56 @@ class OverseerImpl implements AgentHooks {
     this.storage.blueprints.delete(record.id);
   }
 
+  // Every blueprint published from the workspace (see Overseer.listBlueprints()).
+  blueprintSummaries(): BlueprintGadgetSummary[] {
+    let result: BlueprintGadgetSummary[] = [];
+    for (let record of Array.from(this.storage.blueprints.list())) {
+      result.push({
+        id: record.id,
+        title: record.metadata.title,
+        description: record.metadata.description,
+        version: record.metadata.version,
+        codeVersionDate: this.#blueprintCodeDate(record),
+        screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
+        dirty: record.dirty,
+        ...(this.#hasUnpublishedChanges(record) ? {unpublishedChanges: true} : {}),
+      });
+    }
+    return result;
+  }
+
+  // Whether the gadget a blueprint exports has committed files other than the ones the
+  // blueprint last published, which are those of the record's `commitId`. A gadget that has
+  // since been removed has nothing left to publish, and a record from before git-backed code
+  // storage has no commit to compare with until it is migrated.
+  //
+  // The trees are what is compared, not the commits: publishing an unchanged tree mints nothing
+  // and leaves `commitId` where it was (see mintBlueprintRelease), so a head that has moved on
+  // to the same files would otherwise count as a change that no publish could clear.
+  #hasUnpublishedChanges(record: BlueprintGadgetRecord): boolean {
+    let gadgetId = record.gadgetId ?? this.defaultGadgetId;
+    let gadget = gadgetId === undefined ? undefined : this.storage.gadgets.get(gadgetId);
+    let head = gadget?.type === "gadget" ? gadget.commitId : undefined;
+    let published = record.commitId;
+    if (head === undefined || published === undefined || head === published) return false;
+    let store = this.gitCache;
+    return store.commitTree(head) !== store.commitTree(published);
+  }
+
+  // The timestamp of the code exported into a blueprint: the exported commit's author date, or
+  // for legacy (pre-git-storage) records the legacy log entry's, falling back to the metadata's
+  // own last-updated time.
+  #blueprintCodeDate(record: BlueprintGadgetRecord): Date {
+    if (record.commitId !== undefined) {
+      return this.gitCache.readCommitLog(record.commitId, {depth: 1})[0].timestamp;
+    }
+    if (record.codeVersion !== undefined) {
+      let codeUpdate = this.storage.code.get(record.codeVersion);
+      if (codeUpdate) return codeUpdate.timestamp;
+    }
+    return record.metadata.lastUpdated;
+  }
+
   postAgentChatMessage(chatId: number, author: AiChatAuthorInfo, message: string) {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
@@ -11066,6 +11121,50 @@ class OverseerImpl implements AgentHooks {
           gadgetId => this.isShareableGadget(gadgetId));
     }
     return this.#sharingManager;
+  }
+
+  // The workspace's active share links (see Overseer.listShareLinks()). `ownerProfile` reads the
+  // owner's profile from their account, and is called only when the owner created a link.
+  async shareLinkInfos(ownerProfile: () => Promise<AiChatAuthorInfo>): Promise<ShareLinkInfo[]> {
+    let sharing = await this.getSharingManager();
+
+    // Collect all records synchronously to release the kv.list() iterator before any await
+    // points below. Only one kv.list() iterator can be active at a time, and concurrent RPC
+    // calls (e.g. listCollaborators) may start their own.
+    let records = sharing.listShareLinkRecords();
+
+    let result: ShareLinkInfo[] = [];
+    // Cache profile lookups.
+    let profileCache = new Map<string, AiChatAuthorInfo>();
+
+    for (let record of records) {
+      let createdBy = profileCache.get(record.createdBy);
+      if (!createdBy) {
+        // Check if the creator is the owner (requires an RPC to the owner's DO).
+        let ownerProfileId = await this.getOwnerProfileId();
+        if (ownerProfileId === record.createdBy) {
+          createdBy = await ownerProfile();
+        }
+        // Check if the creator is a collaborator (resolved locally).
+        if (!createdBy) {
+          createdBy = sharing.getCreatorProfile(record.createdBy);
+        }
+        // Fallback.
+        if (!createdBy) {
+          createdBy = { type: "user", id: record.createdBy, name: record.createdBy };
+        }
+        profileCache.set(record.createdBy, createdBy);
+      }
+      result.push({
+        linkId: record.id,
+        note: record.note,
+        created: record.created,
+        createdBy,
+        role: record.role ?? "build",
+        ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
+      });
+    }
+    return result;
   }
 
   #codeIdMap = new Map<string, WorkerLoaderWorkerCode>;
@@ -13411,52 +13510,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // --- Blueprint management ---
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
-    let result: BlueprintGadgetSummary[] = [];
-    for (let record of Array.from(this.impl.storage.blueprints.list())) {
-      result.push({
-        id: record.id,
-        title: record.metadata.title,
-        description: record.metadata.description,
-        version: record.metadata.version,
-        codeVersionDate: this.#blueprintCodeDate(record),
-        screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
-        dirty: record.dirty,
-        ...(this.#hasUnpublishedChanges(record) ? {unpublishedChanges: true} : {}),
-      });
-    }
-    return result;
-  }
-
-  // Whether the gadget a blueprint exports has committed files other than the ones the
-  // blueprint last published, which are those of the record's `commitId`. A gadget that has
-  // since been removed has nothing left to publish, and a record from before git-backed code
-  // storage has no commit to compare with until it is migrated.
-  //
-  // The trees are what is compared, not the commits: publishing an unchanged tree mints nothing
-  // and leaves `commitId` where it was (see mintBlueprintRelease), so a head that has moved on
-  // to the same files would otherwise count as a change that no publish could clear.
-  #hasUnpublishedChanges(record: BlueprintGadgetRecord): boolean {
-    let gadgetId = record.gadgetId ?? this.impl.defaultGadgetId;
-    let gadget = gadgetId === undefined ? undefined : this.impl.storage.gadgets.get(gadgetId);
-    let head = gadget?.type === "gadget" ? gadget.commitId : undefined;
-    let published = record.commitId;
-    if (head === undefined || published === undefined || head === published) return false;
-    let store = this.impl.gitCache;
-    return store.commitTree(head) !== store.commitTree(published);
-  }
-
-  // The timestamp of the code exported into a blueprint: the exported commit's author date, or
-  // for legacy (pre-git-storage) records the legacy log entry's, falling back to the metadata's
-  // own last-updated time.
-  #blueprintCodeDate(record: BlueprintGadgetRecord): Date {
-    if (record.commitId !== undefined) {
-      return this.impl.gitCache.readCommitLog(record.commitId, {depth: 1})[0].timestamp;
-    }
-    if (record.codeVersion !== undefined) {
-      let codeUpdate = this.impl.storage.code.get(record.codeVersion);
-      if (codeUpdate) return codeUpdate.timestamp;
-    }
-    return record.metadata.lastUpdated;
+    return this.impl.blueprintSummaries();
   }
 
   async updateBlueprint(blueprintId: string, options: {
@@ -13632,45 +13686,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
-    let sharing = await this.impl.getSharingManager();
-
-    // Collect all records synchronously to release the kv.list() iterator before any await
-    // points below. Only one kv.list() iterator can be active at a time, and concurrent RPC
-    // calls (e.g. listCollaborators) may start their own.
-    let records = sharing.listShareLinkRecords();
-
-    let result: ShareLinkInfo[] = [];
-    // Cache profile lookups.
-    let profileCache = new Map<string, AiChatAuthorInfo>();
-
-    for (let record of records) {
-      let createdBy = profileCache.get(record.createdBy);
-      if (!createdBy) {
-        // Check if the creator is the owner (requires an RPC to the owner's DO).
-        let ownerProfileId = await this.impl.getOwnerProfileId();
-        if (ownerProfileId === record.createdBy) {
-          createdBy = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
-        }
-        // Check if the creator is a collaborator (resolved locally).
-        if (!createdBy) {
-          createdBy = sharing.getCreatorProfile(record.createdBy);
-        }
-        // Fallback.
-        if (!createdBy) {
-          createdBy = { type: "user", id: record.createdBy, name: record.createdBy };
-        }
-        profileCache.set(record.createdBy, createdBy);
-      }
-      result.push({
-        linkId: record.id,
-        note: record.note,
-        created: record.created,
-        createdBy,
-        role: record.role ?? "build",
-        ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
-      });
-    }
-    return result;
+    return this.impl.shareLinkInfos(
+        () => retryOnDoReset(() => this.#owner.whoami(), this.impl.logger));
   }
 
   async updateShareLink(linkId: string, note?: string): Promise<void> {
