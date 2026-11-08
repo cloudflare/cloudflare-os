@@ -11,6 +11,7 @@ import { makeMockStorage } from "./mock-storage";
 import {
   EAGER_BLOB_LIMIT,
   GitCacheImpl,
+  UnreadableContentError,
   WorkspaceGitCache,
 } from "../src/git-cache";
 import { BlobReader, CHUNK_MAX_SIZE } from "../src/git-chunked-blob";
@@ -1743,6 +1744,9 @@ describe("changedFilePathsBetween", () => {
     ]);
     expect(await t.cache.changedFilePathsBetween(before, after)).toStrictEqual(expected);
     expect(await t.cache.changedFilePathsBetween(after, before)).toStrictEqual(expected);
+    // The local-only form walks the same trees.
+    expect(await t.cache.changedLocalFilePathsBetween(before, after)).toStrictEqual(expected);
+    expect(await t.cache.changedLocalFilePathsBetween(after, before)).toStrictEqual(expected);
     expect(t.pulls).toHaveLength(0);
   });
 
@@ -2174,6 +2178,19 @@ describe("chunked blob storage", () => {
   });
 });
 
+// The message of what `read` throws, or rejects with.
+async function thrownBy(read: () => unknown): Promise<string> {
+  try {
+    await read();
+  } catch (err) {
+    return (err as Error).message;
+  }
+  throw new Error("expected a throw");
+}
+
+// What a local-only read throws for an object the store does not hold.
+const notStored = (oid: GitOid) => `git object ${oid} is not stored in this workspace`;
+
 describe("local-only reads", () => {
   // The fixture repo stored whole, every object attributed to G1, which could serve them again.
   async function fixtureStoredLocally(): Promise<TestCache> {
@@ -2273,5 +2290,197 @@ describe("local-only reads", () => {
         { type: "commit", payload: commitPayload(tree, [], "binary") });
     expect(t.cache.readLocalFileAtCommit(commit, "image.png"))
         .toStrictEqual({ kind: "unreadable", message: "image.png is not a text file" });
+  });
+
+  it("read a file's text and a path's entry as the pulling reads do, without pulling",
+      async () => {
+    let t = await fixtureStoredLocally();
+    let readable = ["README.md", "src/util.js", "nope.txt", "no/such/file.txt", "README.md/child",
+                    "src", "run.sh"];
+    for (let path of readable) {
+      expect(t.cache.readLocalFileAtCommitIfExists(COMMIT_1, path))
+          .toBe(await t.cache.readFileAtCommitIfExists(COMMIT_1, path));
+    }
+    // The rest name nothing, run through a file, or name a directory.
+    expect(readable.filter(
+        path => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, path) !== undefined))
+        .toStrictEqual(["README.md", "src/util.js", "run.sh"]);
+
+    let unreadable = ["link.md", "vendored"];
+    for (let path of unreadable) {
+      expect(await thrownBy(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, path)))
+          .toBe(await thrownBy(() => t.cache.readFileAtCommitIfExists(COMMIT_1, path)));
+    }
+    expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, "link.md"))
+        .toThrow("link.md is a symlink to README.md");
+    expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, "vendored"))
+        .toThrow(`vendored is a submodule (gitlink) pointing at commit ${GITLINK_TARGET}`);
+
+    let paths = [...readable, ...unreadable];
+    for (let path of paths) {
+      let pulled = await t.cache.pathEntryAtCommit(COMMIT_1, path);
+      expect(t.cache.localPathEntryAtCommit(COMMIT_1, path))
+          .toStrictEqual(pulled && { kind: pulled.kind, oid: pulled.oid });
+    }
+    expect(paths.map(path => t.cache.localPathEntryAtCommit(COMMIT_1, path)?.kind)).toStrictEqual(
+        ["file", "file", undefined, undefined, undefined, "dir", "executable", "symlink",
+         "submodule"]);
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("throw naming the object a text, entry or diff read lacks, rather than pulling it",
+      async () => {
+    // Only COMMIT_1 is stored, everything beneath it and COMMIT_2 pullable from G1.
+    let t = makeCache();
+    t.sources.set(G1, fixtureSource(t, G1));
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, "README.md"))
+        .toThrow(notStored(TREE_1));
+    expect(() => t.cache.localPathEntryAtCommit(COMMIT_1, "README.md"))
+        .toThrow(notStored(TREE_1));
+    // The diff names the commit it lacks, and with that stored, the first tree.
+    await expect(t.cache.changedLocalFilePathsBetween(COMMIT_1, COMMIT_2))
+        .rejects.toThrow(notStored(COMMIT_2));
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_2).payload);
+    await expect(t.cache.changedLocalFilePathsBetween(COMMIT_1, COMMIT_2))
+        .rejects.toThrow(notStored(TREE_1));
+
+    // The trees stored, every blob still pullable from G1.
+    for (let object of FIXTURE_OBJECTS.filter(o => o.type === "tree")) {
+      if (PACKED_OIDS.includes(object.oid)) {
+        await t.cache.putFromGatekeeper(G1, object.type, b64Bytes(object.payload));
+      }
+    }
+    let readmeBlob = "ca69e6d08b5b8bb4f11a74f9695e329c203cbfd8";
+    let linkBlob = "42061c01a1c70097d1e4579f29a5adf40abdec95";  // link.md -> "README.md"
+    expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, "README.md"))
+        .toThrow(notStored(readmeBlob));
+    expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, "link.md"))
+        .toThrow(notStored(linkBlob));
+    // An entry and a diff are read from trees alone, so neither needs a blob.
+    expect(t.cache.localPathEntryAtCommit(COMMIT_1, "README.md"))
+        .toStrictEqual({ kind: "file", oid: readmeBlob });
+    expect(t.cache.localPathEntryAtCommit(COMMIT_1, "link.md"))
+        .toStrictEqual({ kind: "symlink", oid: linkBlob });
+    expect(await t.cache.changedLocalFilePathsBetween(COMMIT_1, COMMIT_2))
+        .toStrictEqual(new Set(["README.md", "src/big.txt", "src/util.js", "vendored"]));
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("throw for a file whose content is not text, while its entry is still reported", async () => {
+    let t = makeCache();
+    let binary = await storeLocal(t.storage,
+        { type: "blob", payload: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]) });
+    let commit = await commitWithFile(t, "image.png", binary);
+    let read = () => t.cache.readLocalFileAtCommitIfExists(commit, "image.png");
+    expect(read).toThrow(UnreadableContentError);
+    expect(read).toThrow("image.png is not a text file");
+    expect(t.cache.localPathEntryAtCommit(commit, "image.png"))
+        .toStrictEqual({ kind: "file", oid: binary });
+  });
+
+  it("read a text file over MAX_BUFFERED_BLOB_SIZE whole, where readLocalFileAtCommit() streams",
+      async () => {
+    let t = makeCache();
+    let text = "c".repeat(MAX_BUFFERED_BLOB_SIZE + 1);
+    let blob = t.cache.writeBlob(new TextEncoder().encode(text));
+    expect(chunksOf(t, blob.oid).length).toBeGreaterThan(1);
+    let commit = await commitWithFile(t, "big.txt", blob.oid);
+
+    // Compared outside expect(), which would print both megabytes on a mismatch.
+    expect(t.cache.readLocalFileAtCommitIfExists(commit, "big.txt") === text).toBe(true);
+    let streamed = t.cache.readLocalFileAtCommit(commit, "big.txt");
+    if (streamed.kind !== "stream") throw new Error("expected a stream");
+    await streamed.content.cancel();
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("reject an invalid path from the text and entry reads, the empty path included",
+      async () => {
+    let t = await fixtureStoredLocally();
+    for (let path of ["../escape", "", "src//util.js"]) {
+      expect(() => t.cache.readLocalFileAtCommitIfExists(COMMIT_1, path))
+          .toThrow(/invalid file path/);
+      expect(() => t.cache.localPathEntryAtCommit(COMMIT_1, path)).toThrow(/invalid file path/);
+    }
+    // The one path on which localPathEntryAtCommit() and pathEntryAtCommit() differ: there the
+    // empty path names the root directory.
+    expect(await t.cache.pathEntryAtCommit(COMMIT_1, ""))
+        .toStrictEqual({ kind: "dir", oid: TREE_1, referencedBy: COMMIT_1 });
+  });
+
+  it("list the paths that differ between two commits as changedFilePathsBetween() does",
+      async () => {
+    let t = await fixtureStoredLocally();
+    for (let [a, b] of [[COMMIT_1, COMMIT_2], [COMMIT_2, COMMIT_3]]) {
+      let expected = await t.cache.changedFilePathsBetween(a, b);
+      expect(expected.size).toBeGreaterThan(0);
+      expect(await t.cache.changedLocalFilePathsBetween(a, b)).toStrictEqual(expected);
+      expect(await t.cache.changedLocalFilePathsBetween(b, a))
+          .toStrictEqual(await t.cache.changedFilePathsBetween(b, a));
+    }
+    expect(await t.cache.changedLocalFilePathsBetween(COMMIT_2, COMMIT_3))
+        .toStrictEqual(new Set(["src/big.txt"]));
+    expect(await t.cache.changedLocalFilePathsBetween(COMMIT_1, COMMIT_1)).toStrictEqual(new Set());
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("fail a diff on a tree the store lacks, which changedFilePathsBetween() pulls", async () => {
+    // Both commits are stored, every tree beneath them pullable from G1.
+    let t = makeCache();
+    t.sources.set(G1, fixtureSource(t, G1));
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_2).payload);
+    await expect(t.cache.changedLocalFilePathsBetween(COMMIT_1, COMMIT_2))
+        .rejects.toThrow(notStored(TREE_1));
+    expect(t.pulls).toStrictEqual([]);
+
+    // The pulling diff faults in each tree it reads, from a source that serves only the objects
+    // asked for: the two roots, then the two `src` directories. Each pull names the object that
+    // references the tree, and has the shape of a fault against a worktree's base, which asks
+    // for the whole tree and every blob under EAGER_BLOB_LIMIT.
+    expect(await t.cache.changedFilePathsBetween(COMMIT_1, COMMIT_2))
+        .toStrictEqual(new Set(["README.md", "src/big.txt", "src/util.js", "vendored"]));
+    let tree2 = (await t.cache.pathEntryAtCommit(COMMIT_2, ""))!.oid;
+    let src = (commit: GitOid) => t.cache.localPathEntryAtCommit(commit, "src")!.oid;
+    expect(t.pulls).toStrictEqual([
+      [TREE_1, COMMIT_1], [tree2, COMMIT_2], [src(COMMIT_1), TREE_1], [src(COMMIT_2), tree2],
+    ].map(([oid, referencedBy]) => ({
+      gatekeeperId: G1,
+      oids: [oid],
+      hints: { type: "tree", referencedBy, commitHistory: { kind: "depth", depth: 1 },
+               filterBlobSize: EAGER_BLOB_LIMIT },
+    })));
+  });
+
+  it("read no subtree that both commits share, and no commit compared with itself", async () => {
+    let t = makeCache();
+    // A commit whose tree holds a.js with `text`, and a `vendor` directory that is `vendor`.
+    let commitOf = async (text: string, vendor: GitOid) => {
+      let file = await storeLocal(
+          t.storage, { type: "blob", payload: new TextEncoder().encode(text) });
+      let tree = await storeLocal(t.storage, {
+        type: "tree",
+        payload: treePayload([
+          { mode: "100644", name: "a.js", oid: file },
+          { mode: "40000", name: "vendor", oid: vendor },
+        ]),
+      });
+      return await storeLocal(
+          t.storage, { type: "commit", payload: commitPayload(tree, [], text) });
+    };
+    // Held nowhere: reading it throws.
+    let unheld = "ab".repeat(20);
+    let before = await commitOf("a\n", unheld);
+    let after = await commitOf("A\n", unheld);
+    expect(await t.cache.changedLocalFilePathsBetween(before, after))
+        .toStrictEqual(new Set(["a.js"]));
+    expect(await t.cache.changedLocalFilePathsBetween(unheld, unheld)).toStrictEqual(new Set());
+
+    // A subtree that differs is read, so one that is not stored fails the diff.
+    let other = await commitOf("a\n", "cd".repeat(20));
+    await expect(t.cache.changedLocalFilePathsBetween(before, other))
+        .rejects.toThrow(notStored(unheld));
+    expect(t.pulls).toStrictEqual([]);
   });
 });

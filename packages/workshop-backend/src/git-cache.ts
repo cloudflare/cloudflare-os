@@ -619,9 +619,13 @@ export class WorkspaceGitCache {
   /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
    * to `depth` commits' metadata, each commit once. Traversal order for merge commits follows
-   * git log's default (reverse chronological).
+   * git log's default (reverse chronological). With `stopAtMissing`, a parent this store does not
+   * hold ends that line of the walk instead of throwing: a commit pulled without its history (a
+   * worktree's checkout) still lists as far as the store goes. `oid` itself must be held either
+   * way.
    */
-  readCommitLog(oid: string, options: { depth?: number } = {}): CommitInfo[] {
+  readCommitLog(oid: string, options: { depth?: number, stopAtMissing?: boolean } = {})
+      : CommitInfo[] {
     // A commit that two parents of a merge both lead to is listed once, however its date
     // compares with the commits between: commits written in the same second tie. A gadget that
     // has merged releases of blueprints has such commits: the releases that those were built on.
@@ -645,6 +649,7 @@ export class WorkspaceGitCache {
       for (let parent of next.commit.parents) {
         if (reached.has(parent)) continue;
         reached.add(parent);
+        if (options.stopAtMissing && !this.hasLocalObject(parent)) continue;
         tips.push({ oid: parent, commit: this.readCommitObject(parent) });
       }
     }
@@ -1283,17 +1288,7 @@ export class WorkspaceGitCache {
    * path, or the file's blob, is missing.
    */
   readLocalFileAtCommit(commitOid: GitOid, path: string): FileAtCommit {
-    let segments = splitTreePath(path);
-    let name = segments.pop()!;
-    let treeOid = parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree;
-    let entryIn = (oid: GitOid, segment: string) =>
-        parseGitTree(this.#localObject(oid, "tree").payload, oid).find(e => e.name === segment);
-    for (let segment of segments) {
-      let dir = entryIn(treeOid, segment);
-      if (dir === undefined || dir.mode !== "40000") return { kind: "absent" };
-      treeOid = dir.oid;
-    }
-    let entry = entryIn(treeOid, name);
+    let entry = this.#localEntryAt(commitOid, path);
     if (entry === undefined || entry.mode === "40000") return { kind: "absent" };
     switch (entry.mode) {
       case "160000":
@@ -1320,6 +1315,68 @@ export class WorkspaceGitCache {
     }
   }
 
+  /**
+   * One file of a commit as text, as readFileAtCommitIfExists() reads it (undefined for a path
+   * naming nothing or a directory; a symlink, a submodule or content that is not text throws its
+   * descriptive error; a file of any size is read whole), read only from objects this store holds:
+   * never pulls. The base resolver of a chat's worktree content when it is folded for a reader
+   * that must not reach a connection.
+   */
+  readLocalFileAtCommitIfExists(commitOid: GitOid, path: string): string | undefined {
+    let entry = this.#localEntryAt(commitOid, path);
+    if (entry === undefined || entry.mode === "40000") return undefined;
+    if (entry.mode === "160000") throw new Error(submoduleMessage(path, entry.oid));
+    let payload = this.#localObject(entry.oid, "blob").payload;
+    if (entry.mode === "120000") throw new Error(symlinkMessage(path, payload));
+    return decodeBlobText(payload, path);
+  }
+
+  /**
+   * The kind and oid of the entry at `path` in a commit's tree, undefined when the path names
+   * nothing, read only from objects this store holds: never pulls, and never reads a blob. What
+   * pathEntryAtCommit() gives for a path below the root; an empty path, which names the root
+   * there, is invalid here. Throws for an invalid path, and when the commit or a tree along the
+   * path is missing.
+   */
+  localPathEntryAtCommit(commitOid: GitOid, path: string)
+      : { kind: GitTreeEntryKind, oid: GitOid } | undefined {
+    let entry = this.#localEntryAt(commitOid, path);
+    return entry && { kind: MODE_KINDS[entry.mode], oid: entry.oid };
+  }
+
+  /**
+   * The paths that differ between two commits' trees, as changedFilePathsBetween() gives them,
+   * read only from objects this store holds: never pulls. Throws when a commit or a differing tree
+   * is missing.
+   */
+  async changedLocalFilePathsBetween(aCommit: GitOid, bCommit: GitOid): Promise<Set<string>> {
+    let out = new Set<string>();
+    if (aCommit === bCommit) return out;
+    let treeOf = (oid: GitOid) =>
+        parseGitCommitRefs(this.#localObject(oid, "commit").payload, oid).tree;
+    await this.#diffTrees(oid => this.#localObject(oid, "tree"),
+                          treeOf(aCommit), aCommit, treeOf(bCommit), bCommit, "", out);
+    return out;
+  }
+
+  // The entry at `path` in a commit's tree, read only from objects this store holds; undefined
+  // when the path names nothing, or runs through something that is not a directory. Throws for an
+  // invalid path and when the commit or a tree along the path is missing.
+  #localEntryAt(commitOid: GitOid, path: string): GitTreeEntry | undefined {
+    let segments = splitTreePath(path);
+    let name = segments.pop()!;
+    let treeOid =
+        parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree;
+    let entryIn = (oid: GitOid, segment: string) =>
+        parseGitTree(this.#localObject(oid, "tree").payload, oid).find(e => e.name === segment);
+    for (let segment of segments) {
+      let dir = entryIn(treeOid, segment);
+      if (dir === undefined || dir.mode !== "40000") return undefined;
+      treeOid = dir.oid;
+    }
+    return entryIn(treeOid, name);
+  }
+
   // A locally-stored object of the expected type, for the reads that must never pull.
   #localObject(oid: GitOid, type: GitObjectType): PackableObject {
     let local = this.readLocalObject(oid);
@@ -1344,19 +1401,24 @@ export class WorkspaceGitCache {
       let commit = await this.ensureObject(oid, { type: "commit", eagerTree: true });
       return parseGitCommitRefs(commit.payload, oid).tree;
     };
-    await this.#diffTreesLazy(
+    await this.#diffTrees(
+        (oid, referencedBy) =>
+            this.ensureObject(oid, { type: "tree", referencedBy, eagerTree: true }),
         await treeOf(aCommit), aCommit, await treeOf(bCommit), bCommit, "", out);
     return out;
   }
 
   // Accumulates the differing non-directory paths of two trees (either may be absent) into
-  // `out`. `aRef`/`bRef` are the referencing objects for pull hints.
-  async #diffTreesLazy(aOid: GitOid | undefined, aRef: GitOid, bOid: GitOid | undefined,
-                       bRef: GitOid, prefix: string, out: Set<string>): Promise<void> {
+  // `out`, reading each tree through `readTree` alone. `aRef`/`bRef` are the referencing objects,
+  // which a reader that pulls takes as its hints.
+  async #diffTrees(
+      readTree: (oid: GitOid, referencedBy: GitOid) => PackableObject | Promise<PackableObject>,
+      aOid: GitOid | undefined, aRef: GitOid, bOid: GitOid | undefined, bRef: GitOid,
+      prefix: string, out: Set<string>): Promise<void> {
     if (aOid === bOid) return;
     let entriesOf = async (oid: GitOid | undefined, referencedBy: GitOid) => {
       if (oid === undefined) return new Map<string, GitTreeEntry>();
-      let tree = await this.ensureObject(oid, { type: "tree", referencedBy, eagerTree: true });
+      let tree = await readTree(oid, referencedBy);
       return new Map(parseGitTree(tree.payload, oid).map(entry => [entry.name, entry]));
     };
     let aEntries = await entriesOf(aOid, aRef);
@@ -1370,8 +1432,8 @@ export class WorkspaceGitCache {
       let bDir = b?.mode === "40000";
       if (aDir || bDir) {
         // Descend the tree side(s); a non-tree entry opposite a tree is one more difference.
-        await this.#diffTreesLazy(aDir ? a!.oid : undefined, aOid ?? aRef,
-                                  bDir ? b!.oid : undefined, bOid ?? bRef, `${path}/`, out);
+        await this.#diffTrees(readTree, aDir ? a!.oid : undefined, aOid ?? aRef,
+                              bDir ? b!.oid : undefined, bOid ?? bRef, `${path}/`, out);
         if ((a !== undefined && !aDir) || (b !== undefined && !bDir)) out.add(path);
       } else {
         out.add(path);
