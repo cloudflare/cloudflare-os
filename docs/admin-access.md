@@ -15,7 +15,7 @@ document is the design record for that surface. The API itself is documented on 
 | The deployment-wide audit log (`AdminAuditDurableObject`) | `packages/workshop-backend/src/admin-audit.ts` |
 | The user and workspace directory (`UserDirectoryDurableObject`) | `packages/workshop-backend/src/user-directory.ts` |
 | Inspection (`openForAdmin`, `AdminWorkspaceViewImpl`) and the workspace's directory feed | `packages/workshop-backend/src/overseer.ts` |
-| Reads that never pull (`readLocalCommitTree`, `readLocalFileAtCommit`) | `packages/workshop-backend/src/git-cache.ts` |
+| Reads that never pull (`readLocalCommitTree`, `readLocalFileAtCommit`, `readLocalFileAtCommitIfExists`, `localPathEntryAtCommit`, `changedLocalFilePathsBetween`, `readCommitLog` with `stopAtMissing`) | `packages/workshop-backend/src/git-cache.ts` |
 | The admin panel's Audit tab | `packages/workshop-frontend/src/features/admin-audit/` |
 
 ## Entry points
@@ -144,16 +144,99 @@ asked for (`requested`) and the view's own `access`, the lower of that and the a
 
 The view (`AdminWorkspaceViewImpl`) is not an `Overseer`. It joins no presence, session count or
 outputs fan-out, and starts no agent, ambient capsule or gatekeeper facet; waking the Durable Object
-still resumes turns a previous instance left running, as any wake does. It offers `describe`,
-`listChats`, `getChat`, `listActions`, `listFiles`, `readFile`, `listGatekeepers` and
-`getDiagnostics`, shaped as the matching `Overseer` reads are.
+still resumes turns a previous instance left running, as any wake does. It offers these reads,
+shaped as the matching `Overseer` reads are where there is one:
 
-An admin read never reaches a connection. File reads are limited to a permanent gadget's committed
-head, and read only the objects the workspace stores (`readLocalCommitTree`,
-`readLocalFileAtCommit`, built on `readLocalObject`). The ordinary reads pull a missing object
-through the workspace's connections; these never do. A missing object is an error, not a fetch.
-Beyond the workspace's own storage, a view reads only its owner's profile, from their account
-(`describe()`).
+- **The workspace**: `describe()` and `getDiagnostics()`, whose counts come with the size of the
+  workspace's storage and who has it open.
+- **Chats**: `listChats()`, `getChat()`, `getChatState()`, `listChatAttachments()` and
+  `readChatAttachment()`. `getChatState()` is the state behind a chat that looks stuck: the agent
+  turn recorded for it, running or paused, when its newest entry was written, the calls queued for
+  its agent, and the actions it submitted that still wait for approval.
+- **Actions**: `listActions()`.
+- **Code**: `listFiles()` and `readFile()` read a gadget's committed head. `getCommitLog()`,
+  `listFilesAtCommit()`, `readFileAtCommit()` and `listChangedPaths()` read a gadget's history and
+  any version of its code. `listPendingChanges()` and `readPendingFile()` read what a chat changed
+  on top of each pin's base and has not had accepted.
+- **Connections and sharing**: `listGatekeepers()`, `listObservers()`,
+  `listObserverRequirements()`, `listShareLinks()`, `listAutoApprovals()` and `listBlueprints()`.
+  `listObservers()` lists which collaborators hold an observer record, and the account each chose
+  for each connection. `listObserverRequirements()` lists what a recipient of a share would have
+  to verify: the connections that sharing the workspace, or one gadget, asks them to pass.
+
+Three of these give less than their names promise:
+
+- **`listObservers()` lists who holds a record, not who was admitted.** An observer record is
+  reserved at a collaborator's first admission, before anything is verified, and outlives a failed
+  one. A record with no account choice has nothing verified yet.
+- **`listPendingChanges()` is not always all that accepting would change.** It compares a chat's
+  content with each pin's `baseCommit`, while accepting compares it with the pin's `mergedCommit`.
+  Where the two differ (a pin rooted at a merge commit, after an update from mainline or for a
+  proposed blueprint merge), `listChangedPaths(mergedCommit, baseCommit)` is the rest of what
+  accepting would change, and the listed paths can be empty while there is a change to accept. The
+  one entry it lists with no base is a gadget the chat created and has not had accepted (a
+  worktree is pinned at its first modification, so it always has one).
+- **`listAutoApprovals()` lists opt-ins, which apply nothing alone.** They are the rules members
+  turned on. An action is applied without a manual approval only when its author also marked it
+  `autoApprovable`, and never once the workspace has read restricted data: the rules stay stored
+  and listed, and every action waits. A view shows both conditions, which is how an admin answers
+  why an action still waited: `describe()` reports `containsRestrictedData`, and `listActions()`
+  keeps each action's `autoApprovable` verdict and kind at every level, with `autoApproved` on one
+  a rule applied.
+
+An admin read never reaches a connection, and reads only what the workspace stores:
+
+- **Commits.** `listFiles()` and `readFile()` read a permanent gadget's committed head.
+  `listFilesAtCommit()`, `readFileAtCommit()`, `getCommitLog()` and `listChangedPaths()` take any
+  commit the workspace stores (a gadget's history, a worktree's commits, a chat pin's base) and
+  refuse anything else. All of them read only stored objects, through the local readers of
+  `git-cache.ts`: `readLocalCommitTree`, `readLocalFileAtCommit` and
+  `changedLocalFilePathsBetween`, built on `readLocalObject`, and `readCommitLog`, which reads only
+  the commits the store holds. The ordinary reads pull a missing object through the workspace's
+  connections; these never do. A missing object is an error, not a fetch. `getCommitLog()` stops
+  at a parent that is not stored (`stopAtMissing`), which is how a worktree checked out without
+  its history lists.
+- **Commits a connection supplied.** A stored commit can be one a connection supplied. A worktree
+  checked out through a connection holds that repository's commits
+  (`WorktreeRecord.sourceGatekeeperId` names the connection; a worktree made from a commit that no
+  connection is recorded as a source of, such as one in a gadget's history that was never pushed,
+  names none), and the workspace stores what it pulled. The commit reads treat those commits as
+  any other: at `"metadata"` they show the repository's file names, commit ids, authors and times,
+  and the paths that differ between two of its commits; at `"full"`, its files and commit
+  messages. The connection is never asked, so the admin is not verified against the repository,
+  and reads no more of it than the workspace already holds. This is the part of the
+  [admin exception](observers.md#admin-access-a-deliberate-exception) that these reads widen.
+- **A chat's pending content.** `listPendingChanges()` and `readPendingFile()` use the fold the
+  members' sessions use (`getCurrentChatContent()`), given a base reader that reads stored objects
+  only (`readLocalFileAtCommitIfExists`), where the sessions' reader pulls. The fold's cache stays
+  valid whichever reader filled it, because a commit is immutable: a reader that succeeds returns
+  the same text, and one that cannot read a base throws. `listPendingChanges()` tells a worktree's
+  paths apart by what its base holds at each (`localPathEntryAtCommit`), reading no blob.
+- **Attachments.** An attachment is read from its record's own bytes or its stored blob, and a
+  legacy one from the file at its stored commit.
+- **What a connection could answer** is read from the workspace's records instead: observer
+  requirements from the connections' records and the action log's index, auto-approvals from the
+  stored rules (never `listPreApprovableActions()`, which asks each connection), and connections
+  from their records.
+
+Beyond the workspace's own storage, a view reads only its owner's profile, from their account: in
+`describe()`, and in `listShareLinks()`, which uses the same lookup and only when the owner created
+a link.
+
+### Who created a connection
+
+A connection records its creator (`GatekeeperRecord.createdBy`): the member whose session made it
+(`newGatekeeper()`, `newAiModelGatekeeper()`, `newAgentSpawnerGatekeeper()`), or the initiator of
+the agent turn whose `createExternalResource` call created its resource. `listGatekeepers()` shows
+the creator at every level.
+
+Two kinds of connection have none:
+
+- **An ambient capsule**, because no person created it. A workspace installs one on open for each
+  singleton account its owner holds (the Context Library's, for one), so it comes from the owner's
+  own account of that vendor, and a workspace whose owner has none has no such connection.
+- **A connection whose creator was not recorded**: one written before creators were recorded, or a
+  resource created in a turn that has no record.
 
 ### The level an inspection asks for
 
@@ -188,12 +271,20 @@ Every view method, the open included, runs through `#call()`:
    setting reaches live views within about a minute (the KV mirror's propagation); raising it never
    raises a view.
 5. A call that level refuses is recorded, exposing `"metadata"` and with `refused` set, and then
-   refused without reading anything: `accessOff` once the level is `"off"`, `contentWithheld` for
-   `getChat()` or `readFile()` below `"full"`. Its record is sent with nothing awaited after step
-   3's check.
-6. The read, on the server and never through a connection. A read that throws (a missing object, a
-   gadget whose code is pending, an invalid path) is recorded as an attempt exposing `"metadata"`,
-   once the checks pass again, and the call fails with the read's error.
+   refused without reading anything: `accessOff` once the level is `"off"`, `contentWithheld` below
+   `"full"` for a method that reads only content (`getChat()`, `readChatAttachment()`,
+   `readFile()`, `readFileAtCommit()`, `readPendingFile()`). Its record is sent with nothing
+   awaited after step 3's check.
+6. The read, on the server and never through a connection. A read that throws is recorded as an
+   attempt exposing `"metadata"`, once the checks pass again, and the call fails with the read's
+   error: a missing object, a gadget whose code is pending, an invalid path, a commit that is not
+   stored, a chat that does not exist. `listObserverRequirements()` throws, as the members' call
+   does, for a legacy connection (one made before connections could verify collaborators) in the
+   scope of the grant it was asked about: any such connection for `"workspace"`, and for a gadget
+   only one the gadget reaches. A malformed string argument (a commit id, a path, an attachment
+   id) is checked inside the read, so it is recorded this way. A number out of range is not:
+   `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH`, like `listActions()`'s
+   invalid `beforeId`, is rejected before the call starts, and is not recorded.
 7. The checks again, with nothing awaited before the record is sent, since the read may have
    awaited. A call that expiry, a demotion or the workspace's deletion overtakes while it reads
    writes nothing, appends nothing for the workspace and returns nothing.
@@ -210,6 +301,23 @@ anything. An answer that never left the server, because its record failed or the
 meanwhile, exposed nothing. No check follows the append: the answer was read while the view was
 live, and its record exists.
 
+An answer can be a `stream`: a file over `MAX_BUFFERED_BLOB_SIZE` (1 MiB) from `readFile()` or
+`readFileAtCommit()`, and from `readPendingFile()` a pending text that large or any file a chat
+holds as bytes. Step 10 returns the stream, not its bytes. They are read as the caller pulls them,
+after the record: from the stored blob, or, for a pending text, from a copy of its UTF-8 encoding
+that the answer holds until the stream ends. The record precedes the answer, and an answer in
+flight is not another use of the view, so:
+
+- **The stream is part of the recorded answer.** Its record, exposing `"content"`, exists before
+  the first byte leaves, and counts the file whole, whether or not the caller reads it to the end.
+- **Nothing checks the view again while the bytes flow.** A stream that has started runs to its
+  end after the view expires, its admin is demoted or the setting is lowered: those stop the next
+  call, not an answer already recorded. A workspace restart ends it, as it ends every session's
+  streams.
+
+This matters most for `readFileAtCommit()`, which reads any stored commit, a repository a worktree
+checked out included, where a file can be far larger than a gadget's.
+
 A view lasts `DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS` (15 minutes) unless the open asks for up to
 `MAX_ADMIN_VIEW_LIFETIME_SECONDS` (an hour). A workspace restart (a revocation, a deletion, a
 redeploy) ends every view along with every other session on it; inspect again.
@@ -222,12 +330,28 @@ redeploy) ends every view along with every other session on it; inspect again.
 gets (see [The level an inspection asks for](#the-level-an-inspection-asks-for)):
 
 - **off**: `inspectWorkspace()` is refused.
-- **metadata**: the workspace's structure. Withheld: chat messages and queued steers, file contents,
-  which blueprint a gadget follows (`upstream`, a share link to code the view would otherwise
-  withhold), and the descriptions and fields of actions, observations and hooks. Kept: titles (of
-  the workspace, chats, gadgets, actions and resources), collaborators with the notes on their
-  grants, connections with their resource URLs, file names, and diagnostics. Titles and notes are
-  written by members and agents and can echo content, restricted data included.
+- **metadata**: the workspace's structure. Withheld: chat messages and queued steers, chat
+  attachments, file contents (at any commit, and pending in a chat), commit messages, the argument
+  summaries of calls queued for an agent, which blueprint a gadget follows (`upstream`, a share
+  link to code the view would otherwise withhold), the ids of the blueprints the workspace
+  publishes (an id is a share link to the blueprint's code, as `upstream` is), and the
+  descriptions and fields of actions, observations and hooks. Kept: titles (of the workspace,
+  chats, gadgets, actions and resources), collaborators with the notes on their grants, observer
+  records and their account ids, connections with their resource URLs and who created each, file
+  names and changed paths, commit ids, authors and times, attachment names, types and sizes and
+  each attachment's `oid`, share links' notes, blueprint titles and descriptions, and diagnostics.
+  Titles, names, notes and a blueprint's description are written by members and agents and can
+  echo content, restricted data included. A blueprint's description is kept, where the description
+  of an action, an observation or a hook is withheld.
+  - An attachment's `oid` is a hash of its bytes, which `listChatAttachments()` returns at
+    `metadata`: it does not give the bytes, and it does tell whether two attachments are the same
+    file, or the file a reader already has.
+  - Commit messages are content: they show only at `full` (`getCommitLog()` empties them below
+    it), where commit ids, authors and times show at `metadata`.
+  - Both levels cover every commit the workspace stores, the ones a connection supplied included
+    (a worktree's checkout): at `metadata` that repository's file names, commit ids, authors,
+    times and changed paths, at `full` its files and commit messages, read from the workspace's
+    copy and never by asking the connection (see [Inspection](#inspection)).
 - **full**: everything, restricted data included.
 
 ### The environment's bounds
@@ -306,19 +430,34 @@ page.
 | `describe()` | a gadget that names the blueprint it follows |
 | `listChats()` | a queued steer |
 | `getChat()` | a message or a compaction summary |
+| `getChatState()` | a queued call with an argument summary |
+| `listChatAttachments()` | never |
+| `readChatAttachment()` | any attachment found |
 | `listActions()` | an action, observation or hook entry with a description, or an action or observation with a field |
 | `listFiles()` | never |
 | `readFile()` | any file at the path, an `unreadable` one included |
+| `getCommitLog()` | a commit with a message |
+| `listFilesAtCommit()` | never |
+| `readFileAtCommit()` | any file at the path, as `readFile()` |
+| `listChangedPaths()` | never |
+| `listPendingChanges()` | never |
+| `readPendingFile()` | any file at the path, as `readFile()` |
 | `listGatekeepers()` | a hook with a description |
+| `listObservers()` | never |
+| `listObserverRequirements()` | never |
+| `listShareLinks()` | never |
+| `listAutoApprovals()` | never |
+| `listBlueprints()` | a blueprint with an id |
 | `getDiagnostics()` | never: nothing it returns depends on the level |
 
 A refused call, or one whose read failed, records `"metadata"`. Present but empty is not content:
 no queued steers, an empty description or field list, an `upstream` naming no blueprint (a gadget
-built from scratch), and an empty chat page all record `"metadata"`. `readFile()` counts any file
-it finds, because an unreadable file's message can quote it (a symlink's quotes its target), and
-overstating is the safe direction. The predicates (`chatHoldsContent()` and its siblings in
-`admin-access.ts`) mirror the withholding helpers beside them, so each is false for anything a
-metadata view returns.
+built from scratch), an empty chat page, an empty argument summary, an empty commit message and an
+emptied blueprint id all record `"metadata"`. The file reads (`readFile()`, `readFileAtCommit()`,
+`readPendingFile()`) count any file they find, because an unreadable file's message can quote it
+(a symlink's quotes its target), and overstating is the safe direction. The predicates
+(`chatHoldsContent()` and its siblings in `admin-access.ts`) mirror the withholding helpers beside
+them, so each is false for anything a metadata view returns.
 
 `exposed` is set from the answer, never from the level, so the content-read counts (see
 [Statistics](#statistics)) count reads that returned content, not calls made at `"full"`.
@@ -338,10 +477,11 @@ record cannot be written is refused.
 | Refusal | Recorded | Why |
 | --- | --- | --- |
 | A live view's call refused by its level (`accessOff`, `contentWithheld`) | Yes, with `refused` | The admin reached the workspace and asked for something. |
-| A live view's call whose read throws (a missing object, a pending gadget, an invalid path) | Yes, exposing `"metadata"` | The admin reached the workspace and asked for something; the call returned only its error. |
+| A live view's call whose read throws (a missing object, a pending gadget, an invalid path, a malformed commit or attachment id, a commit that is not stored, a chat that does not exist, an attachment that is not the chat's, a legacy connection in a grant's scope) | Yes, exposing `"metadata"` | The admin reached the workspace and asked for something; the call returned only its error. A string argument (a commit id, a path, an attachment id) is checked inside the read, so a malformed one is a failed read. |
 | An open refused because the authoritative setting or the cap is `"off"` | Yes, titled from the directory (cut) or `""` | No workspace is reached, so its title comes from the directory. |
 | An open refused because only the workspace's KV mirror still says `"off"` | Yes | The workspace's own check refused it. |
-| A dead capability (no longer an admin), an expired view, a deleted workspace, a malformed or unknown id, including a call that expiry, a demotion or a deletion overtakes while it reads | No | Nothing was reachable, or nothing the call read left the server, and recording a gone workspace would write into storage that must stay empty. |
+| A dead capability (no longer an admin), an expired view, a deleted workspace, a malformed or unknown workspace id, including a call that expiry, a demotion or a deletion overtakes while it reads | No | Nothing was reachable, or nothing the call read left the server, and recording a gone workspace would write into storage that must stay empty. |
+| A call whose arguments are rejected before it starts: a mistyped argument, `listActions()`'s invalid `beforeId`, `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH` | No | Validation refuses the call before the view's own checks run, as it refuses a mistyped argument: nothing was read, and the call asked for nothing a record could name (a depth of 0, a `beforeId` of -1). Only an argument rejected before the call starts goes unrecorded; a malformed string is checked inside the read, and is the failed read above. |
 
 ### Setting records
 
@@ -423,16 +563,17 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_NOT_ADMIN` | The caller, or a view's admin, is no longer named in `ADMINS`. |
 | `ADMIN_WORKSPACE_NOT_FOUND` | A malformed id, or one naming no workspace (never initialised or since deleted). |
 | `ADMIN_WORKSPACE_ACCESS_OFF` | The level is `"off"`, by the setting or the cap. |
-| `ADMIN_CONTENT_WITHHELD` | `getChat()` or `readFile()` on a view below `"full"`, whether its inspection asked for `"metadata"` (the default) or the deployment held it there. |
+| `ADMIN_CONTENT_WITHHELD` | A method that reads only content (`getChat()`, `readChatAttachment()`, `readFile()`, `readFileAtCommit()`, `readPendingFile()`) on a view below `"full"`, whether its inspection asked for `"metadata"` (the default) or the deployment held it there. |
 | `ADMIN_VIEW_EXPIRED` | The view's lifetime has run out. |
 
 ## Tests
 
 Unit suites, in `packages/workshop-backend/__tests__/`:
 
-- `admin-access.test.ts`: admin status, the bounds' parsing (failing closed), the policy, validation,
-  the per-call level, the cuts, setting values and excerpts, withholding, and whether an answer
-  holds content (each predicate, empty values included).
+- `admin-access.test.ts`: admin status, the bounds' parsing (failing closed), the policy, validation
+  (the commit log's depth included), the per-call level and the content methods it refuses, the
+  cuts, setting values and excerpts, withholding, and whether an answer holds content (each
+  withholder with its predicate, empty values included).
 - `admin-config.test.ts` (`diffAdminConfig`) and `admin-settings-audit.test.ts`: what each setter
   records, before which write, and the setters' bounds.
 - `admin-audit.test.ts`: the deployment-wide log's listing, filters (`exposed` alone and with the
@@ -445,10 +586,22 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `cli-admins-only.test.ts`: the `via` a session's User-Agent gives its records.
 - `admin-workspace-view.test.ts`: the view, from an uninitialised id that stays uninitialised to the
   per-call checks; `requested` and `exposed` on each method's record; a view that asked for
-  `"full"` held at `"metadata"` and never raised; a failed read recorded; a failed record returning
-  nothing; the races with deletion and expiry, at the setting read and while a call reads its
-  answer, writing nothing; withholding; a 2,000,000-character title; and file reads that never
-  pull.
+  `"full"` held at `"metadata"` and never raised; the reads that fail recorded, and a depth out of
+  range refused unrecorded; a failed record returning nothing; the races with deletion and expiry,
+  at the setting read and while a call reads its answer, writing nothing; withholding; a
+  2,000,000-character title; the reads that never pull (a gadget's head, history, changed paths,
+  files at a commit, attachments, and a chat's pending content with a worktree); the sharing reads
+  never reaching a connection; an inspection calling every method leaving the workspace's storage,
+  presence and alarm as they were; and the view's surface being exactly what the audit names:
+  every method in `ADMIN_WORKSPACE_METHODS` is recorded, and the view class exposes no other member
+  over RPC (a helper must be `#private`: the class's public members, not its interface, are its
+  RPC surface).
+- `connection-creator.test.ts`: the creator stamped at each creation path, and absent on an ambient
+  capsule and on a resource whose turn has no record.
+- `git-cache.test.ts` and `git-cache-history.test.ts`: the local readers against the pulling ones,
+  and a history whose parent is not stored.
+- `worktrees.test.ts`: a chat's content folded from stored objects alone, failing rather than
+  pulling when a base is not stored.
 - `user-directory.test.ts`, `user-directory-feed.test.ts` and `workspace-directory-feed.test.ts`: the
   directory and both feeds. The last includes a deletion that parks a sync on a real call to another
   Durable Object and checks that the deletion still completes.
@@ -458,9 +611,11 @@ Integration suites, in `packages/integration-tests/__tests__/`:
 - `workshop-admin-inspection.test.ts`: every admin method this surface adds refused to a non-admin;
   the directory; an inspection recorded apart from the workspace and absent from the owner's
   `listActions()` and `subscribeToActions()`; metadata and off; the level asked for, and raising
-  the setting not raising a view; what each call returned and the `exposed` filter; a deleted id
-  refused without being written; an audit write failure, where a content read returns nothing;
-  expiry; and long text end to end.
+  the setting not raising a view; every read end to end with what it returned and exposed, and
+  the `exposed` filter; the content methods refused below `"full"`; the creator of a connection
+  made through `newGatekeeper()`, and none on an ambient one; who holds an observer record, with
+  what was verified for each; a deleted id refused without being written; an audit write failure,
+  where a content read returns nothing; expiry; and long text end to end.
 - `workshop-admin-audit.test.ts`: every setting change recorded before it takes effect, sessions,
   filters, stats and content reads across two admins, and a refused change when its record cannot
   be written.

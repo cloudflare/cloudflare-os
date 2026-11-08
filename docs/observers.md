@@ -115,11 +115,24 @@ seen by its members: `OverseerDurableObject.openForAdmin()` skips `authorizeColl
 observer verification by explicit policy, and the admin is never registered as an observer. So
 `excludeObservers` never names an admin, and no observation is blocked on an admin's account.
 
-The exception is bounded. Restricted data (chat messages, file contents, the descriptions and
-fields of observations) is visible only at the `"full"` access level, which only a deployment config
-change permits and which an inspection must ask for: `ADMIN_WORKSPACE_ACCESS_MAX` caps the level,
-`metadata` by default, and fails closed to `off` for any value that is not a level. Titles stay
-visible at `"metadata"`, and can echo content. The compensating controls are:
+The exception is bounded. Restricted data (chat messages and attachments, file contents, commit
+messages, the descriptions and fields of observations) is visible only at the `"full"` access
+level, which only a deployment config change permits and which an inspection must ask for:
+`ADMIN_WORKSPACE_ACCESS_MAX` caps the level, `metadata` by default, and fails closed to `off` for
+any value that is not a level. Titles, names, notes and blueprint descriptions stay visible at
+`"metadata"`, and can echo content.
+
+What a connection supplied is read only as the workspace stores it, and the connection is never
+asked. That includes a repository: a worktree can be a checkout through a connection, and the view
+reads any commit the workspace stores. So an admin never verified against that connection sees, at
+`"metadata"`, the repository's file names, commit ids, authors and times, and the paths that
+differ between two of its commits; and at `"full"` its files and commit messages, as far as the
+workspace pulled them, from the workspace's copy. `"metadata"` also shows each attachment's name,
+type, size and `oid` (a hash of its bytes, which `listChatAttachments()` returns), and which
+collaborators hold an observer record, with the id of the account each chose for each connection;
+the account itself is in the collaborator's own user account and is not read.
+
+The compensating controls are:
 
 - the admin list and the access cap are environment variables, out of reach of an admin session;
 - every inspection takes a reason, recorded with every call made through the view;
