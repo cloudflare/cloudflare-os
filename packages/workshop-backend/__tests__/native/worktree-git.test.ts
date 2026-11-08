@@ -12,13 +12,13 @@ import {once} from "node:events";
 const worker = buildSync({entryPoints: [resolve(import.meta.dirname, "git-fixture.ts")], bundle: true,
   write: false, format: "esm", target: "es2022", external: ["cloudflare:*", "node:*"]}).outputFiles[0].text;
 const run = (cwd: string, ...args: string[]) => execFileSync("git", args, {cwd, encoding: "utf8"}).trim();
-const spawnGit = async (cwd: string, args: string[]) => {
+const spawnGit = async (cwd: string, args: string[], succeeds = true) => {
   const process = spawn("git", ["-c", "protocol.version=2", ...args], {cwd, stdio: ["ignore", "pipe", "pipe"]});
   let stderr = "";
   process.stderr.on("data", chunk => { stderr += chunk; });
   process.stdout.resume();
   const [code] = await once(process, "close");
-  expect(code, stderr).toBe(0);
+  if (succeeds) expect(code, stderr).toBe(0); else expect(code, stderr).not.toBe(0);
 };
 
 test.each([false, true])("native Git clones a %s upstream/local worktree with correct shallow ancestry", async remote => {
@@ -49,6 +49,9 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
     run(dir, "mv", "unchanged.bin", "renamed.bin");
     run(dir, "commit", "-qam", "DO child");
     const head = run(dir, "rev-parse", "HEAD");
+    // A commit the upstream has on another branch, outside the worktree head's history.
+    const unrelated = run(dir, "commit-tree", `${ancestor}^{tree}`, "-p", ancestor, "-m", "unrelated");
+    run(dir, "update-ref", "refs/heads/unrelated", unrelated);
     const objects: Record<string, {type: string; bytes: number[]}> = {};
     const ids = run(dir, "rev-list", "--objects", "--all").split("\n").map(line => line.split(" ")[0]);
     for (const oid of ids) {
@@ -61,8 +64,9 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       env: {
         FIXTURE: {type: "json", value: {head, boundary: remote ? boundary : null,
           objects, upstreamPack: [...upstreamPack], forbiddenBlobs: remote ? [forbiddenBlob] : []}},
+        // Like GitHub and GitLab, allow the partial-clone filter the history check uses.
         UPSTREAM: {type: "fetcher", handler: async request => new Response(execFileSync("git",
-          ["upload-pack", "--stateless-rpc", dir], {input: Buffer.from(await request.arrayBuffer()),
+          ["-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", dir], {input: Buffer.from(await request.arrayBuffer()),
             env: {...process.env, GIT_PROTOCOL: "version=2"}}),
           {headers: {"content-type": "application/x-git-upload-pack-result"}})},
       },
@@ -85,6 +89,7 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       expect(run(clone, "show", "-s", "--format=%s", "FETCH_HEAD")).toBe("ancestor");
       expect(run(clone, "rev-parse", "HEAD")).toBe(head);
       run(clone, "fsck", "--no-reflogs");
+      await spawnGit(clone, ["fetch", "--depth=1", "origin", unrelated], false);
     }
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));

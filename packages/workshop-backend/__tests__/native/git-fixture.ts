@@ -17,7 +17,8 @@ export default {
       const object = fixture.objects[oid];
       if (!object) throw new Error(`Unknown fixture object ${oid}`);
       return {oid, type: object.type, payload: Uint8Array.from(object.bytes)};
-    }}, {head: fixture.head, shallowCommit: fixture.boundary, pending: [], check() {}, remotePull: request => env.UPSTREAM.fetch(request),
+    }}, {head: fixture.head, shallowCommit: fixture.boundary, pending: [], check() {},
+      remotes: fixture.boundary ? [{haves: [fixture.boundary], pull: request => env.UPSTREAM.fetch(request)}] : [],
       upstream: async () => new ReadableStream({start(controller) {
         // Fragment the original pack header, entries, and trailer across network chunks.
         const bytes = Uint8Array.from(fixture.upstreamPack);

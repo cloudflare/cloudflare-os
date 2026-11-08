@@ -51,14 +51,21 @@ const step = (impl: Impl, id: number, path: string, change: ReturnType<typeof di
   impl.commitAgentStep(1, author, [], {changes: [{change: {[id]: [[path, change]]}}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 
-function bindGit(impl: Impl) {
-  impl.storage.gatekeepers.put({id: 40, class: impl.ctx.exports.ReplicaGitSource({}),
+// A connection with provenance for the worktree's base commit. Deliberately not one of the
+// chat's bindings: mounting the worktree is what permits fetching its history.
+async function connectGitSource(impl: Impl, commit: string, ids = [40]) {
+  for (const id of ids) impl.storage.gatekeepers.put({id, class: impl.ctx.exports.ReplicaGitSource({}),
     creationSpec: {type: "gatekeeper", vendorId: "github", typeUrlPattern: "https://github.com/*/*",
       resourceUrl: "https://github.com/fixture/repo"}});
-  impl.storage.chatContext.put({chatId: 1, bindings: {GIT: 40}});
+  impl.storage.gitObjectMetadata.put({oid: commit, type: "commit", onRemote: ids, pullableFrom: [], pendingPush: []});
+  const facets = await Promise.all(ids.map(id => impl.getGatekeeperFacet(id)));
+  return facets as unknown as Fetcher<import("./test-worker").ReplicaGitSource>[];
 }
-const gitRequest = (stream = false) => new Request("https://git.invalid/info/refs?service=git-upload-pack", {
-  headers: {"git-protocol": "version=2", ...(stream ? {"x-test-open-stream": "1"} : {})},
+const ANCESTOR = "ab".repeat(20);
+const fetchRequest = (want: string, extra: string[] = []) => new Request("https://git.invalid/git-upload-pack", {
+  method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
+  body: new Blob([encodePktLine("command=fetch"), DELIM_PKT, encodePktLine(`want ${want}`),
+    ...extra.map(encodePktLine), encodePktLine("deepen 1"), encodePktLine("done"), FLUSH_PKT]),
 });
 
 async function until(predicate: () => Promise<boolean>) {
@@ -316,28 +323,48 @@ describe("mounted worktree canonical synchronization", () => {
     await subscription.unsubscribe();
   }));
 
-  it("routes an already-connected Git URL as raw bytes with an observation and no provider headers", () => within(async (impl) => {
-    bindGit(impl);
-    const response = await impl.pullConnectedRepository("https://github.com/fixture/repo", gitRequest(),
-      {from: "agent", chatId: 1}, () => {});
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(Uint8Array.of(0, 255, 128, 13));
-    expect(response.headers.get("set-cookie")).toBeNull();
-    expect(response.headers.get("authentication-info")).toBeNull();
-    expect([...impl.storage.actions.list()].some(action => action.type === "observation")).toBe(true);
-    await expect(impl.pullConnectedRepository("https://github.com/other/unconnected", gitRequest(),
-      {from: "agent", chatId: 1}, () => {})).rejects.toThrow("No authorized repository connection");
-  }));
-
-  it("cancels a stalled Git stream when its source is removed", () => within(async (impl) => {
-    bindGit(impl);
-    const response = await impl.pullConnectedRepository("https://github.com/fixture/repo.git", gitRequest(true),
-      {from: "agent", chatId: 1}, () => {});
+  it("forwards a fetch of an ancestor once its connection confirms it, until the connection is removed", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR));
     const reader = response.body!.getReader();
-    expect((await reader.read()).value).toEqual(Uint8Array.of(0, 255, 128, 13));
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("000dpackfile\n");
+    const [check, forwarded] = await source.requests();
+    expect(check).toContain(`want ${ANCESTOR}\n`);
+    expect(check).toContain(`have ${f.commit}\n`);
+    expect(forwarded).toContain("deepen 1\n");
     const next = reader.read().then(result => result.done, () => true);
     impl.removeGatekeeper(40);
     expect(await next).toBe(true);
     await reader.cancel().catch(() => {});
+  }));
+
+  it("refuses a commit outside the worktree's history without forwarding the fetch", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    await source.setUnrelated(ANCESTOR);
+    await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR)))
+      .rejects.toThrow("Only commits in the worktree's history can be fetched.");
+    expect(await source.requests()).toHaveLength(1);
+  }));
+
+  it("asks the next connection when one doesn't find the commit in the history it knows", () => within(async (impl, f) => {
+    const [first, second] = await connectGitSource(impl, f.commit, [40, 41]);
+    await first.setUnrelated(ANCESTOR);
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR));
+    await response.body!.cancel();
+    expect(await first.requests()).toHaveLength(1);
+    expect(await second.requests()).toHaveLength(2);
+  }));
+
+  it("refuses a fetch that also names a ref, which the history check can't cover", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR, ["want-ref refs/heads/main"])))
+      .rejects.toThrow("Git fetches by ref name are not supported.");
+    expect(await source.requests()).toHaveLength(0);
+  }));
+
+  it("refuses commits the workspace doesn't have when no connection serves the history", () => within(async (impl, f) => {
+    await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR)))
+      .rejects.toThrow("No connected repository could serve these commits.");
   }));
 
   it("rejects path aliases and unsupported revisions without partial effects", () => within(async (impl, f) => {

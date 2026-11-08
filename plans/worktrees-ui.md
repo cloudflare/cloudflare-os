@@ -60,7 +60,7 @@ Frontend:
 Backend:
 
 - `WorktreeRecord` (`overseer.ts:406-463`): `{type:"worktree", id, title, chatId,
-  sourceGatekeeperId?, baseCommit, headCommit, pinBase, pending?}`. `pinBase` advances
+  baseCommit, headCommit, pinBase, pending?}`. `pinBase` advances
   only at epoch resets (`:4600-4606`); `headCommit` only by explicit `commit()`
   (`:8433-8450`) and revert rollback (`:4773-4790`, to the earliest reverted
   advancement's `previousHead`).

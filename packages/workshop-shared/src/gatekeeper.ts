@@ -283,14 +283,6 @@ export type AccountDescription = {
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
   /**
-   * The repository's HTTPS clone URL (e.g. "https://github.com/owner/repo"), if this resource is
-   * a whole Git repository that the connection can read. Set it only if `gitPull()` with an
-   * observer can serve any of the repository's refs and objects. The workspace matches this URL
-   * against the one passed to `GitCache.gitPull()` to find which connection should serve a
-   * fetch, so it must name the same repository the connection reads.
-   */
-  gitRepositoryUrl?: string;
-  /**
    * The resource's canonical URL. This can differ from the one passed to `newGatekeeper()`, if the
    * resource has more than one possible URL. Visiting this URL in a browser should actually open
    * the resource's natural UI.
@@ -1145,29 +1137,23 @@ export interface Gatekeeper<Session> extends DurableObject {
    * in gatekeeper-kit) -- and ignore the rest of the URL: the repository is always the one this
    * connection is for, never one named by the request.
    *
-   * The workspace calls this in two situations, told apart by `observer`:
-   *
-   * Without `observer`, the workspace is fetching objects it already knows this connection can
-   * see, so no new observation needs to be authorized. This happens when it fills its Git
-   * cache, and when it gives a container a copy of a worktree that came from this repository.
-   * It requests only objects it learned of from this connection:
+   * The workspace only fetches history of objects it already knows this connection can see, so
+   * no new observation needs to be authorized:
    * * The object is a commit this gatekeeper advertised via `GitCache.advertiseCommit()`.
    * * The object was referenced by another object populated by this gatekeeper (e.g. it is the
    *   parent of another commit from this gatekeeper).
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * With `observer`, the fetch may read anything in the repository -- e.g. a build script
-   * running in a container fetched a commit by ID (see `GitCache.gitPull()`). Treat it as a new
-   * read of the repository: serve it only if the connection covers the whole repository (see
-   * `ResourceDescription.gitRepositoryUrl`), and call `observer.authorizeObservation()`, waiting
-   * for it to succeed, before returning any data. Only the workspace decides whether to pass an
-   * observer; code running in a container cannot skip it.
+   * This includes history the workspace has never stored. When a container fetches an older
+   * commit of a worktree that came from this repository (see `ReplicableWorktree.gitPull()`),
+   * the workspace first sends a commit-only fetch with `have` lines to confirm that the commit is
+   * an ancestor of ones listed above, then forwards the container's own request.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response>;
+  gitPull?(request: Request): Promise<Response>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
@@ -1891,24 +1877,6 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  * for simulation purposes.
  */
 export interface GitCache extends RpcTarget {
-  /**
-   * Fetch from a Git repository that the workspace is already connected to, using Git's
-   * smart-HTTP protocol (version 2, read-only). Intended for gatekeepers that run code, like a
-   * container gatekeeper: when a command runs `git fetch` against some repository URL, the
-   * gatekeeper forwards the requests here, and the workspace relays them to the connection for
-   * that repository (via its `Gatekeeper.gitPull()`), so the container never holds credentials.
-   *
-   * `repositoryUrl` must be a credential-free HTTPS URL, e.g. "https://github.com/owner/repo".
-   * It is matched against `ResourceDescription.gitRepositoryUrl` of the connections the caller
-   * can use: the chat's connections for an agent, or a gadget's own bindings. Each fetch is
-   * recorded as an observation, like any other read. If no such connection exists, this throws;
-   * the user must connect the repository first.
-   *
-   * The response is passed through; nothing is stored in the workspace's Git cache. The stream
-   * stops if the connection is removed while it is being read.
-   */
-  gitPull(repositoryUrl: string, request: Request): Promise<Response>;
-
   /**
    * Read the given git object from the cache. Returns null if the object is not in this
    * gatekeeper's view (see the interface doc for the view rules).

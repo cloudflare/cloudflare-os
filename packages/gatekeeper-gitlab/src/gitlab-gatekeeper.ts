@@ -18,7 +18,6 @@ import {
   type GatekeeperUserVerifier,
   type GitCache,
   type GitOid,
-  type ObservationAuthorizer,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -1815,7 +1814,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const project = await this.#getProjectMetadata();
         return {
           url: project.url,
-          gitRepositoryUrl: `${project.url.replace(/\/$/, "")}.git`,
           title: project.path,
           snippet: project.description ?? `GitLab project ${project.path}`,
           suggestedBindingName: "GITLAB_PROJECT",
@@ -3335,15 +3333,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   // -- git: pull, push, and the simulation of queued pushes -------------------------------
 
   /**
-   * Repository-bound smart HTTP; the kernel supplies observer for new command reads.
+   * Repository-bound smart HTTP for the workspace's fetches of previously observed history;
+   * credentials never leave the gatekeeper.
    */
-  async gitPull(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response> {
+  async gitPull(request: Request): Promise<Response> {
     gitPullPath(request);
-    if (observer) {
-      if (this.#props().resourceKind !== "project") throw new Error("Git fetch requires a project connection.");
-      await observer.authorizeObservation({title: "Fetch Git repository",
-        description: `Read Git refs and objects from ${this.#projectPath()}.`});
-    }
     return this.#withApi(api => api.fetchGitUploadPack(this.#projectPath(), request));
   }
 

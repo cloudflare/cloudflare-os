@@ -14,7 +14,6 @@ import {gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import type {
   AccountDescription, ActionDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
   HookDescription, GitPullHints, GitPullTransfer,
-  ObservationAuthorizer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
 import type { GitHubHookParams } from "../../src/github-hooks.js";
@@ -448,18 +447,10 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => startGitPull(body =>
       this.#gatekeeper(facetName, props).gitPull(gitObjectRequest(body)), oids, options));
   }
-  async gitRequest(facetName: string, props: GatekeeperProps, request: Request, refuse = false) {
-    const observations: string[] = [];
-    using observer = new RpcStub<ObservationAuthorizer>(new class extends RpcTarget implements ObservationAuthorizer {
-      async authorizeObservation(description: {title: string}) {
-        if (refuse) throw new Error("Observation refused");
-        observations.push(description.title);
-      }
-      async getGitCache(): Promise<GitCache> { throw new Error("Unexpected cache access"); }
-    }());
+  async gitRequest(facetName: string, props: GatekeeperProps, request: Request) {
     return outcome(async () => {
-      const response = await this.#gatekeeper(facetName, props).gitPull(request, observer);
-      return {body: new Uint8Array(await response.arrayBuffer()), observations};
+      const response = await this.#gatekeeper(facetName, props).gitPull(request);
+      return {body: new Uint8Array(await response.arrayBuffer())};
     });
   }
 

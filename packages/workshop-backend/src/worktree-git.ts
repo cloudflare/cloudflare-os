@@ -1,5 +1,5 @@
-import {encodePktLine, FLUSH_PKT, DELIM_PKT, gitPullPath, parsePktItems, pktText}
-  from "@gadgets/gatekeeper-kit/git-transport";
+import {encodePktLine, FLUSH_PKT, DELIM_PKT, demuxGitFetchResponse, gitObjectRequest, gitPullPath,
+  parsePktItems, pktText} from "@gadgets/gatekeeper-kit/git-transport";
 import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
 import type {GitObjectType} from "@gadgets/workshop-shared/gatekeeper";
 import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree} from "./git-codec";
@@ -34,17 +34,19 @@ export interface WorktreeGitSource {
    */
   pending: FileChangeByPath[];
 
-  /** Throws if access has ended (e.g. the chat or connection was removed). Called repeatedly. */
+  /** Throws if access has ended (e.g. the worktree or its chat was deleted). Called repeatedly. */
   check(): void;
 
   /** Streams the raw pack (no protocol framing) for `shallowCommit`, at depth 1. */
   upstream(): Promise<ReadableStream<Uint8Array>>;
 
   /**
-   * Forwards a fetch for objects the workspace doesn't have (e.g. another commit of the
-   * connected repository) to that repository's connection. Absent if there is none.
+   * Connections that can serve the part of `head`'s history beyond the workspace's own commits,
+   * for a fetch of commits the workspace doesn't have (e.g. a build script running
+   * `git fetch --depth=1 origin <sha>`). `haves` are the history's boundary commits this
+   * connection is known to have; `pull` forwards a smart-HTTP request to it.
    */
-  remotePull?(request: Request): Promise<Response>;
+  remotes: {haves: string[]; pull(request: Request): Promise<Response>}[];
 }
 
 /**
@@ -71,16 +73,18 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
     encodePktLine(`${source.head} refs/heads/worktree`), FLUSH_PKT,
   ]);
   if (!lines.includes("command=fetch")) throw new Error("Only Git ls-refs and fetch are supported.");
+  // Only `want <oid>` lines are checked against the worktree's history, and a forwarded request is
+  // passed on as is, so refuse the other way of selecting objects. Ref discovery only ever
+  // advertises the worktree's own head, so a client has no reason to name a ref.
+  if (lines.some(line => line.startsWith("want-ref "))) throw new Error("Git fetches by ref name are not supported.");
   const wants = lines.filter(line => line.startsWith("want ")).map(line => line.slice(5));
   const localHeads = new Set([source.head, ...source.localHeads ?? []]);
   const blobs = new Set(source.pending.flatMap(({change}) => "setBytes" in change ? [change.setBytes.oid] : []));
   if (!wants.length || wants.some(oid => !/^[0-9a-f]{40}$/.test(oid))) throw new Error("Invalid Git fetch wants.");
   if (wants.some(oid => !localHeads.has(oid) && !blobs.has(oid))) {
-    if (!source.remotePull || wants.some(oid => localHeads.has(oid) || blobs.has(oid)))
+    if (wants.some(oid => localHeads.has(oid) || blobs.has(oid)))
       throw new Error("Fetch local and upstream objects in separate requests.");
-    // The repository provider authorizes the same smart-HTTP request, including an exact
-    // revision discovered by a build script after the initial worktree was mounted.
-    return source.remotePull(new Request(request.url, {method: request.method, headers: request.headers, body}));
+    return remoteFetch(source, wants, new Request(request.url, {method: request.method, headers: request.headers, body}));
   }
   if (!lines.includes("done")) return response([encodePktLine("acknowledgments"), encodePktLine("NAK"), FLUSH_PKT]);
   let pack: ReadableStream<Uint8Array>;
@@ -198,4 +202,60 @@ async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallow
     requireLive();
   }
   return buildPackStream(objects.size, contents());
+}
+
+/**
+ * Forward a fetch of commits beyond the workspace's own history to a connection, once it has
+ * confirmed that every wanted commit is in `head`'s history. The confirmation trusts the
+ * connection: the data it protects is the connection's own repository.
+ */
+async function remoteFetch(source: WorktreeGitSource, wants: string[], request: Request): Promise<Response> {
+  let cause: unknown;
+  let refused = false;
+  for (const remote of source.remotes) {
+    try {
+      if (await reachableFromHaves(remote, wants)) {
+        source.check();
+        return remote.pull(request);
+      }
+      // A connection is only asked about the boundary commits it has provenance for, so another
+      // connection may still find the commits reachable from its own.
+      refused = true;
+    } catch (error) {
+      cause = error;
+    }
+  }
+  if (refused) throw new Error("Only commits in the worktree's history can be fetched.");
+  throw new Error("No connected repository could serve these commits.", {cause});
+}
+
+/**
+ * Ask a connection whether every commit in `wants` is reachable from its `haves`: a commit-only
+ * fetch of `wants` that claims to have `haves` returns an empty pack exactly when there is
+ * nothing in `wants`' history the client lacks.
+ */
+async function reachableFromHaves(remote: WorktreeGitSource["remotes"][number], wants: string[]): Promise<boolean> {
+  const args = [...wants.map(oid => `want ${oid}`), "no-progress", "filter tree:0",
+    ...remote.haves.map(oid => `have ${oid}`), "done"];
+  const body = new Blob([
+    ...["command=fetch", "object-format=sha1"].map(encodePktLine), DELIM_PKT,
+    ...args.map(encodePktLine), FLUSH_PKT,
+  ]);
+  const response = await remote.pull(gitObjectRequest(new Uint8Array(await body.arrayBuffer())));
+  if (!response.ok || !response.body) throw new Error(`Git history check failed (${response.status}).`);
+  const reader = demuxGitFetchResponse(response.body).getReader();
+  try {
+    const header = new Uint8Array(12);
+    let filled = 0;
+    while (filled < 12) {
+      const next = await reader.read();
+      if (next.done) throw new Error("Truncated Git pack header.");
+      const count = Math.min(12 - filled, next.value.length);
+      header.set(next.value.subarray(0, count), filled);
+      filled += count;
+    }
+    return new DataView(header.buffer).getUint32(8) === 0;
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
 }

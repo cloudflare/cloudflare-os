@@ -338,7 +338,7 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
 export interface AgentHooks {
   /** Register the current in-memory file view for generic replica synchronization. */
   registerWorktreeReplicaTurn?(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
-      bindings: () => ReadonlyMap<string, ChatBindingEntry>, revision?: string): boolean;
+      revision?: string): boolean;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -3176,7 +3176,7 @@ async function runAgentPass(
   };
 
   if (hooks.registerWorktreeReplicaTurn?.(
-      chatId, worktreeTurnAccess, author, () => chatBindings, historyRevision) === false) {
+      chatId, worktreeTurnAccess, author, historyRevision) === false) {
     return {type: "reloadForReplica"};
   }
 

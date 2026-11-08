@@ -52,9 +52,8 @@ import type { SpawnCallableOptions } from "../agent-spawner-binding";
 /**
  * A sync session: created each time a gatekeeper calls `getSyncSession()` on a Worktree stub, and
  * the authority behind the persistent session stub it receives. The session stays usable as long
- * as the worktree still belongs to `chatId`, the chat exists, and the connection the worktree came
- * from (if any) has not been removed; this is checked on every use. Not currently deleted, even
- * once it is no longer usable.
+ * as the worktree still belongs to `chatId` and the chat exists; this is checked on every use. Not
+ * currently deleted, even once it is no longer usable.
  */
 export type WorktreeSyncRecord = {
   /** Random UUID; the key of this session's stub and of the rows below that belong to it. */
@@ -395,13 +394,6 @@ export type WorktreeRecord = {
    * deleted with its chat.
    */
   chatId: number;
-
-  /**
-   * The gatekeeper (connection) the base commit was known from at creation time, when there was
-   * one -- purely informational (pull routing uses the per-oid `gitObjectMetadata` sources, not
-   * this). Absent for a worktree created from a purely local commit (e.g. gadget history).
-   */
-  sourceGatekeeperId?: WorkpieceId;
 
   /**
    * The commit the worktree was created at. Immutable.

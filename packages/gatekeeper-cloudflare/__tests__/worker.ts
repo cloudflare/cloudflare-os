@@ -30,8 +30,6 @@ export type TestExports = {
  * never touches it, so every method just throws.
  */
 class TestGitCache extends RpcTarget implements GitCache {
-  async gitPull(_url: string, _request: Request): Promise<Response> { throw new Error("not implemented"); }
-
   async get(_id: GitOid): Promise<{type: GitObjectType, content: Uint8Array} | null> {
     throw new Error("not implemented");
   }

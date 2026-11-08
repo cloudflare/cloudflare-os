@@ -53,7 +53,7 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt, replayChatBindings } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -1250,8 +1250,6 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
-    const invalidateBindings = () => { this.#chatBindingsCache = undefined; };
-    this.storage.chats.subscribe({add: invalidateBindings, update: invalidateBindings, remove: invalidateBindings});
     this.gitStore = new GitStore(this.storage.gitObjects);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
@@ -1535,18 +1533,12 @@ class OverseerImpl implements AgentHooks {
       throw new Error(`No such chat: ${chatId}`);
     }
 
-    // Informational only (pull routing reads the metadata rows directly): the first recorded
-    // source, when the commit came from a gatekeeper at all.
-    let meta = this.storage.gitObjectMetadata.get(baseCommit);
-    let sourceGatekeeperId = meta?.onRemote[0] ?? meta?.pullableFrom[0];
-
     let record: WorktreeRecord = {
       type: "worktree",
       id: this.allocateWorkpieceId(),
       title,
       created: new Date(),
       chatId,
-      ...(sourceGatekeeperId !== undefined ? {sourceGatekeeperId} : {}),
       baseCommit,
       headCommit: baseCommit,
       pinBase: baseCommit,
@@ -5023,13 +5015,8 @@ class OverseerImpl implements AgentHooks {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
       // binding that makes buildPack() serve exactly this action's pending-push closure.
-      let applying = true;
-      try {
-        await gatekeeper.applyAction(record.action, new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id,
-          (url, request) => this.pullConnectedRepository(url, request, record.caller, () => {
-            if (!applying || !this.storage.gatekeepers.get(record.gatekeeperId)) throw new Error("Action access ended.");
-          })));
-      } finally { applying = false; this.#revokeGitTransfers(); }
+      await gatekeeper.applyAction(record.action,
+          new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
     }
     record.state = "approved";
     record.appliedAt = new Date();
@@ -5343,13 +5330,12 @@ class OverseerImpl implements AgentHooks {
     return new WorktreeSessionImpl(this, worktreeId, active.worktree, async () => active.initiator);
   }
 
-  #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo,
-    bindings: () => ReadonlyMap<string, ChatBindingEntry> }>();
+  #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo }>();
 
   registerWorktreeReplicaTurn(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
-      bindings: () => ReadonlyMap<string, ChatBindingEntry>, revision?: string): boolean {
+      revision?: string): boolean {
     if (revision !== undefined && revision !== this.replicaHistoryRevision(chatId)) return false;
-    this.#worktreeReplicaTurns.set(chatId, {access, author, bindings});
+    this.#worktreeReplicaTurns.set(chatId, {access, author});
     return true;
   }
 
@@ -6419,8 +6405,6 @@ class OverseerImpl implements AgentHooks {
   // scheduled -- marking without one would brick the connection until some unrelated restart came
   // along.
   #gatekeepersPendingRestart = new Set<number>();
-  // Keep at most one paused chat's replay; advancing history or changing its inputs invalidates it.
-  #chatBindingsCache?: {key: string; bindings: Map<string, ChatBindingEntry>};
 
   // Whether `id` is NOT blocked pending a scheduled restart (see #gatekeepersPendingRestart).
   // For callers that enumerate connections (listSlashCommands, prepareChatBindings' ambient
@@ -6460,85 +6444,14 @@ class OverseerImpl implements AgentHooks {
     return facet.startSession(queue);
   }
 
-  // The chat's bindings, for finding the connection a GitCache.gitPull() URL names. While a turn
-  // runs, its live map (which includes worktrees created this step); otherwise, e.g. while an
-  // approval has suspended the turn, the map replayed from the stored chat log.
-  #currentChatBindings(chatId: number): Map<string, ChatBindingEntry> {
-    const context = this.getChatAgentContext(chatId);
-    const active = this.#worktreeReplicaTurns.get(chatId);
-    if (active) {
-      this.#chatBindingsCache = undefined;
-      return new Map(active.bindings());
-    }
-    const checkpoint = this.getActiveChatCompaction(chatId);
-    const key = JSON.stringify([chatId, this.nextChatSequencePeek(chatId), context.bindings,
-      checkpoint?.compactedTo, checkpoint?.chatBindings]);
-    if (this.#chatBindingsCache?.key === key)
-      return new Map(this.#chatBindingsCache.bindings);
-    const initial = new Map<string, ChatBindingEntry>(checkpoint?.chatBindings ?? []);
-    for (const [name, id] of Object.entries(context.bindings ?? {})) {
-      if (!initial.has(name)) initial.set(name, {type: "workpiece", id});
-    }
-    const messages = this.storage.chats.list({prefix: chatKeyPrefix(chatId),
-      start: checkpoint && chatKey(chatId, checkpoint.compactedTo)});
-    const bindings = replayChatBindings(messages, initial);
-    this.#chatBindingsCache = {key, bindings};
-    return new Map(bindings);
-  }
-
-  async pullConnectedRepository(url: string, request: Request, caller: GatekeeperCaller, check: () => void): Promise<Response> {
-    const normalize = (value: string) => {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash)
-        throw new Error("Git repository URLs must be credential-free HTTPS URLs.");
-      return parsed.origin + parsed.pathname.replace(/\/$/, "").replace(/\.git$/, "");
-    };
-    const target = normalize(url);
-    const gadget = caller.from === "gadget" && caller.gadgetId !== undefined
-      ? this.storage.gadgets.get(caller.gadgetId) : undefined;
-    const bindings = caller.from === "agent" ? this.#currentChatBindings(caller.chatId)
-      : new Map(Object.entries(gadget?.type === "gadget" ? gadget.bindings : {})
-        .map(([name, edge]) => [name, {type: "workpiece" as const, id: edge.target}]));
-    for (const entry of bindings.values()) {
-      if (entry.type !== "workpiece" || !this.storage.gatekeepers.get(entry.id)) continue;
-      check();
-      const source = entry.id;
-      const live = () => {
-        check();
-        if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
-        this.assertGatekeeperUsable(source);
-      };
-      live();
-      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
-      const description = await facet.describe();
-      live();
-      if (!description.gitRepositoryUrl || normalize(description.gitRepositoryUrl) !== target) continue;
-      using observer = new NativeRpcStub<ObservationAuthorizer>(new SlashCommandAuthorizerImpl(this, source, caller, live));
-      const response = await facet.gitPull(request, observer);
-      try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
-      return new Response(response.body && this.#checkedGitStream(response.body, live), {
-        status: response.status, statusText: response.statusText,
-        headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
-      });
-    }
-    throw new Error("No authorized repository connection for this Git URL. Connect it before running the command.");
-  }
-
   async worktreeGitPull(chatId: number, worktreeId: number, request: Request): Promise<Response> {
     const check = () => {
       if (this.getWorktreeRecord(worktreeId).chatId !== chatId || !this.storage.chatMeta.get(chatId))
         throw new Error("Worktree access ended.");
-      const source = this.getWorktreeRecord(worktreeId).sourceGatekeeperId;
-      if (source !== undefined) {
-        if (!this.storage.gatekeepers.get(source)) throw new Error("Worktree source removed.");
-        this.assertGatekeeperUsable(source);
-      }
     };
     check();
     const piece = this.getWorktreeRecord(worktreeId);
-    const metadata = this.storage.gitObjectMetadata.get(piece.baseCommit);
-    const sources = [...new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])]
-      .filter(id => this.storage.gatekeepers.get(id));
+    const sources = this.#liveGitSources(piece.baseCommit);
     const pending = (this.#replicaOverlay(chatId)[worktreeId] ?? []).map(([path, change]) => ({path, change}));
     const localHeads = [piece.pinBase];
     const subscriptions = Array.from(this.storage.worktreeSyncSubscriptions.list());
@@ -6552,27 +6465,32 @@ class OverseerImpl implements AgentHooks {
       if (record.revision) for (const row of this.#syncRows(session, record.revision) ?? [])
         pending.push(...(row.change[worktreeId] ?? []).map(([path, change]) => ({path, change})));
     }
+    const pullFrom = async (source: WorkpieceId, request: Request) => {
+      const live = () => {
+        check();
+        if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
+        this.assertGatekeeperUsable(source);
+      };
+      live();
+      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
+      live();
+      const response = await facet.gitPull(request);
+      try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
+      return new Response(response.body && this.#checkedGitStream(response.body, live), {
+        status: response.status, headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
+      });
+    };
+    // Mounting a worktree permits fetching any commit in its head's history. Each connection
+    // with provenance for the history's remote-backed boundary commits can serve the rest of it
+    // (commit IDs hash their history, so it doesn't matter which); worktreeGitPull() asks it to
+    // confirm that a requested commit is in that history before forwarding the fetch.
+    const remotes = new Map<WorkpieceId, string[]>();
+    for (const [commit, ids] of this.#remoteHistoryBoundaries(piece.headCommit))
+      for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
     return worktreeGitPull(this.gitCache, {head: piece.headCommit, localHeads, shallowCommit: sources.length ? piece.baseCommit : null,
       pending, check,
-      remotePull: async request => {
-        const source = piece.sourceGatekeeperId ?? sources[0];
-        if (source === undefined) throw new Error("This worktree has no upstream repository.");
-        const live = () => {
-          check();
-          if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
-          this.assertGatekeeperUsable(source);
-        };
-        live();
-        const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
-        live();
-        using observer = new NativeRpcStub<ObservationAuthorizer>(new SlashCommandAuthorizerImpl(
-          this, source, {from: "agent", chatId}, live));
-        const response = await facet.gitPull(request, observer);
-        try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
-        return new Response(response.body && this.#checkedGitStream(response.body, live), {
-          status: response.status, headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
-        });
-      }, upstream: async () => {
+      remotes: [...remotes].map(([id, haves]) => ({haves, pull: request => pullFrom(id, request)})),
+      upstream: async () => {
         let cause: unknown;
         for (const source of sources) {
           const requireLive = () => {
@@ -6598,6 +6516,33 @@ class OverseerImpl implements AgentHooks {
         }
         throw new Error("No authorized Git source could supply the worktree base.", {cause});
       }}, request);
+  }
+
+  // Connections with recorded provenance for `oid` that still exist.
+  #liveGitSources(oid: string): WorkpieceId[] {
+    const metadata = this.storage.gitObjectMetadata.get(oid);
+    return [...new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])]
+      .filter(id => this.storage.gatekeepers.get(id));
+  }
+
+  // The commits where `head`'s history leaves the workspace's own commits for a connected
+  // repository, each with the connections that can serve it: walking back from `head` through
+  // locally stored commits, the first ones with live provenance.
+  #remoteHistoryBoundaries(head: string): Map<string, WorkpieceId[]> {
+    const boundaries = new Map<string, WorkpieceId[]>();
+    const seen = new Set<string>();
+    const stack = [head];
+    while (stack.length) {
+      const oid = stack.pop()!;
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      if (seen.size > 100_000) throw new Error("Worktree history exceeds its object budget.");
+      const sources = this.#liveGitSources(oid);
+      if (sources.length) { boundaries.set(oid, sources); continue; }
+      const local = this.gitCache.readLocalObject(oid);
+      if (local?.type === "commit") stack.push(...parseGitCommitRefs(local.payload).parents);
+    }
+    return boundaries;
   }
 
   #gitTransfers = new Set<{check(): void; abort: AbortController}>();
@@ -6644,10 +6589,6 @@ class OverseerImpl implements AgentHooks {
     const piece = this.getWorktreeRecord(session.worktreeId);
     if (piece.chatId !== session.chatId || !this.storage.chatMeta.get(session.chatId))
       throw new Error("Worktree access ended.");
-    if (piece.sourceGatekeeperId !== undefined) {
-      if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId)) throw new Error("Worktree source removed.");
-      this.assertGatekeeperUsable(piece.sourceGatekeeperId);
-    }
     return session;
   }
 
@@ -6678,10 +6619,8 @@ class OverseerImpl implements AgentHooks {
 
   #syncBase(session: WorktreeSyncRecord) {
     const piece = this.getWorktreeRecord(session.worktreeId);
-    const source = this.storage.gitObjectMetadata.get(piece.baseCommit);
     return {revision: this.replicaHistoryRevision(session.chatId), head: piece.pinBase,
-      shallowCommit: source && [...source.onRemote, ...source.pullableFrom]
-        .some(id => this.storage.gatekeepers.get(id)) ? piece.baseCommit : null};
+      shallowCommit: this.#liveGitSources(piece.baseCommit).length ? piece.baseCommit : null};
   }
 
   #syncBoundary(session: WorktreeSyncRecord, generation: number) {
@@ -13957,23 +13896,16 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
 @validateRpc()
 class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationAuthorizer {
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
-              private caller: GatekeeperCaller, private check?: () => void) {
+              private caller: GatekeeperCaller) {
     super();
   }
 
-  async authorizeObservation(description: ObservationDescription): Promise<void> {
-    this.check?.();
-    await this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
-    this.check?.();
+  authorizeObservation(description: ObservationDescription): Promise<void> {
+    return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
   }
 
   async getGitCache(): Promise<GitCache> {
-    this.check?.();
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
-      (url, request) => this.impl.pullConnectedRepository(url, request, this.caller, () => {
-        this.check?.();
-        if (!this.impl.storage.gatekeepers.get(this.gatekeeperId)) throw new Error("Connection removed.");
-      }));
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
   }
 }
 
@@ -14132,36 +14064,25 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
     super();
   }
 
-  #checkAuthority() {
-    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-  }
-
   authorizeObservation(description: ObservationDescription): Promise<void> {
-    this.#checkAuthority();
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.authorizeObservation(
         this.gatekeeperId, description, this.caller, this.executionId, this.hookId);
   }
 
   async getGitCache(): Promise<GitCache> {
-    this.#checkAuthority();
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
-      (url, request) => this.impl.pullConnectedRepository(url, request, this.caller, () => {
-        this.#checkAuthority();
-        if (!this.impl.storage.gatekeepers.get(this.gatekeeperId)) throw new Error("Connection removed.");
-        if (this.caller.from === "agent" && this.executionId !== undefined &&
-            !this.impl.isLiveExecution(this.caller.chatId, this.executionId)) throw new Error("Execution ended.");
-      }));
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
   }
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
-    this.#checkAuthority();
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
   }
 
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
-    this.#checkAuthority();
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }

@@ -36,11 +36,10 @@ and `workshop-shared/src/worktree.d.ts` (the
 agent-facing `Worktree` binding API).
 
 The pull signature in this original plan is superseded by
-`Gatekeeper.gitPull(request, observer?): Promise<Response>`; see
+`Gatekeeper.gitPull(request): Promise<Response>`; see
 [`worktree-replicas.md`](../docs/worktree-replicas.md). Providers return authenticated
 smart-HTTP protocol bytes. The kernel still owns provenance checks, exact-OID composition,
-raw-PACK demultiplexing and bounded cache ingestion. New native Git observations require
-whole-repository scope and an observer; known-object cache/bootstrap pulls do not.
+raw-PACK demultiplexing and bounded cache ingestion.
 Historical OID/hints signatures below describe the earlier implementation, not a second API.
 
 ## Locked decisions
@@ -547,7 +546,7 @@ Historical OID/hints signatures below describe the earlier implementation, not a
 
 - **Unified workpiece table**: `GadgetRecord` generalizes to a `WorkpieceRecord`
   with a `type` discriminator (`"gadget"` | `"worktree"`); worktree rows add
-  `{chatId, sourceGatekeeperId?, baseCommit, headCommit, pinBase}` and omit
+  `{chatId, baseCommit, headCommit, pinBase}` and omit
   gadget-only fields (`output`, `bindings`).
   - `id` from the shared workpiece counter (`allocateWorkpieceId`) — facet names and
     `CodeChange` keys can never collide with gadgets/gatekeepers.

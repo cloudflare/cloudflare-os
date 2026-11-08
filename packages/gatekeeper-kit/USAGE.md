@@ -933,12 +933,12 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
 
-`Gatekeeper.gitPull(request, observer?)` is a kernel-facing, authenticated smart-HTTP transport,
-not a gadget session method. Providers use `gitPullPath` to allow only protocol-v2 ref discovery
-and upload-pack, choose their own bound repository/credentials, and return raw protocol bytes.
-With an observer they must require whole-repository access and authorize this new observation.
-The kernel omits the observer only for objects already covered by recorded provenance
-(advertised commits, their referents, or objects previously populated by that gatekeeper).
+`Gatekeeper.gitPull(request)` is a kernel-facing, authenticated smart-HTTP transport, not a
+gadget session method. Providers use `gitPullPath` to allow only protocol-v2 ref discovery and
+upload-pack, choose their own bound repository/credentials, and return raw protocol bytes. The
+kernel only fetches history of objects already covered by recorded provenance (advertised
+commits, their referents, or objects previously populated by that gatekeeper), so no new
+observation is needed.
 
 For lazy DO reads, the kernel composes exact-OID requests with `gitObjectRequest` and
 `git-pull-transfer.startGitPull()`, then feeds the backpressured raw PACK stream into its bounded
@@ -961,12 +961,6 @@ changes)` transforms against canonical history and durably deduplicates retries.
 owns command approvals and mount lifetime, and does not resolve its synchronous command result
 until outbound changes are acknowledged and inbound canonical application has caught up through
 those ACKs.
-
-Native Git fetches for a separately discovered, already-connected repository use
-`ApprovalQueue.getGitCache().gitPull(repositoryUrl, request)` during approved execution. They
-require an observer and whole-repository scope, stream directly without populating the DO cache,
-and retain the original caller's authority. Connecting a previously unknown repository and
-resuming the same blocked fetch is a separate flow, outside this API.
 
 ## Other module boundaries
 

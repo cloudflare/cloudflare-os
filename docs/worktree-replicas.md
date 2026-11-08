@@ -45,8 +45,8 @@ interface WorktreeSubscription {
 All capabilities, including receiver callbacks, must be persistable native RPC stubs. Mint them
 inside their owning Durable Object with `ctx.restore()`. The kernel's regular file methods retain
 the original agent-execution guard; mounted synchronization is an explicitly delegated,
-worktree-scoped capability that outlives the agent turn that passed it on. Removing the
-worktree/chat or its source connection ends access. The receiving gatekeeper controls its own mount lifetime and command approvals.
+worktree-scoped capability that outlives the agent turn that passed it on. Deleting the
+worktree or its chat ends access. The receiving gatekeeper controls its own mount lifetime and command approvals.
 
 ## Initial capture and continuous delivery
 
@@ -109,19 +109,28 @@ For a remote-backed mount, the source Git gatekeeper streams the shallow base pa
 The kernel appends the additional DO-local objects and recomputes the pack framing/checksum without
 repository-sized buffering. Base tree metadata excludes duplicate OIDs, including blobs reused by
 renames; base file blobs are not read into the DO. Scratch worktrees use their locally stored Git
-objects through the same protocol. A later exact-revision request can pass through to the recorded
-source without populating DO storage.
+objects through the same protocol.
 
-Separately discovered remote URLs use `ApprovalQueue.getGitCache().gitPull(repositoryUrl, request)`.
-The kernel resolves caller-visible, already-connected repository gatekeepers and applies normal
-observation/revocation checks. URLs must be credential-free HTTPS repository identifiers, not
-arbitrary network destinations. Source credentials stay in the Git gatekeeper. Responses retain
-only their content type, not cookies or redirect headers, and source removal cancels active streams.
+## History beyond the workspace
 
-Requesting approval for a previously unconnected repository while holding the same native fetch
-pending is deferred. Connect that repository before executing the command. This does not block the
-Cloudflare OS integration test: its upgrade-base fetch uses the same already-connected repository.
-Push and general network access are outside this interface.
+Mounting a worktree permits fetching any commit in its head's history, e.g. a build script's
+`git fetch --depth=1 origin <sha>`. A worktree is not tied to a particular remote: its head is often
+a workspace-created commit no remote has. Walking back from the head through locally stored
+commits, the first commits with recorded provenance are the history's boundary; any connection
+with provenance for them can serve the rest. Commit IDs hash their entire history, so it does not
+matter which.
+
+For a wanted commit the workspace lacks, the kernel sends that connection a commit-only fetch
+(`filter tree:0`) of the wanted commits, with a `have` line for each boundary commit. An empty
+pack means every wanted commit is in the history, and the kernel forwards the guest's own request
+to the same connection. Otherwise it refuses. This trusts the connection's answer, since the data
+it protects is the connection's own repository. Nothing is stored in the DO, no new observation
+is recorded, and removing the connection cancels its active streams.
+
+Other refs of a worktree's origin (e.g. its `main` branch) and other repositories are not
+reachable this way. A future design would have the agent pass them to the gatekeeper as objects,
+never look them up in the agent's environment. Push and general network access are outside this
+interface.
 
 ## Container responsibilities and completion
 

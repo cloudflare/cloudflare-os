@@ -32,8 +32,8 @@
 //
 // All of these objects are persistent RPC stubs (see `ctx.restore()`): either side can store
 // them and keep using them after its Durable Object restarts. Access is scoped to one worktree.
-// It does not depend on an agent turn being in progress, and lasts until the worktree's chat is
-// deleted or the connection the worktree came from is removed.
+// It does not depend on an agent turn being in progress, and lasts until the worktree or its chat
+// is deleted.
 //
 // See docs/worktree-replicas.md for more detail, including what a container
 // implementation must do to keep its replica correct.
@@ -100,12 +100,17 @@ export interface ReplicableWorktree extends RpcTarget {
    * The repository has a single branch, whose head (HEAD) is the worktree's latest commit,
    * including commits created in the workspace that haven't been pushed anywhere. If the
    * worktree came from a connected repository, it is served as a shallow clone, with history
-   * cut off at the commit the worktree was created at. That head can differ from the base commit given to `setBaseCommit()`, just
-   * as a Git checkout's working files can differ from HEAD. The base commit and the Git blobs
-   * referenced by delivered changes can be fetched by object ID too. When the worktree came from
-   * a connected repository, its files are streamed from that repository's provider rather than
-   * stored in the workspace, and a fetch of other commits by ID (e.g. a build script running
-   * `git fetch --depth=1 origin <sha>`) is forwarded to that provider.
+   * cut off at the commit the worktree was created at. That head can differ from the base
+   * commit given to `setBaseCommit()`, just as a Git checkout's working files can differ from
+   * HEAD. The base commit and the Git blobs referenced by delivered changes can be fetched by
+   * object ID too. When the worktree came from a connected repository, its files are streamed
+   * from that repository's provider rather than stored in the workspace.
+   *
+   * Passing a Worktree stub permits fetching any commit in its head's history, including
+   * history beyond the shallow cutoff (e.g. a build script running
+   * `git fetch --depth=1 origin <sha>`): such a fetch is forwarded to a connected repository
+   * that has the history, once it confirms the commit is in it. Other refs and commits are
+   * refused.
    */
   gitPull(request: Request): Promise<Response>;
 }

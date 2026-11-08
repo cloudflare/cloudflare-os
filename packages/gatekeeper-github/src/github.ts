@@ -17,7 +17,6 @@ import {
   type GatekeeperVendor as GatekeeperVendorIface,
   type GitCache,
   type GitOid,
-  type ObservationAuthorizer,
   type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
@@ -3749,7 +3748,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const repo = await this.#getRepoMetadata();
         return {
           url: repo.url,
-          gitRepositoryUrl: `https://github.com/${encodeURIComponent(this.ctx.props.owner)}/${encodeURIComponent(this.ctx.props.repo)}.git`,
           title: repo.fullName,
           snippet: repo.description ?? `GitHub repository ${repo.fullName}`,
           suggestedBindingName: "GITHUB_REPO",
@@ -4062,16 +4060,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * One repository-bound transport for cache hydration and command-originated Git reads.
-   * Only the kernel can omit observer, for previously observed object pulls.
+   * Repository-bound smart HTTP for the workspace's fetches of previously observed history;
+   * credentials never leave the gatekeeper.
    */
-  async gitPull(request: Request, observer?: RpcStub<ObservationAuthorizer>): Promise<Response> {
+  async gitPull(request: Request): Promise<Response> {
     gitPullPath(request);
-    if (observer) {
-      if (this.ctx.props.resourceKind !== "repo") throw new Error("Git fetch requires a repository connection.");
-      await observer.authorizeObservation({title: "Fetch Git repository",
-        description: `Read Git refs and objects from ${this.ctx.props.owner}/${this.ctx.props.repo}.`});
-    }
     return this.#withApi(api => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, request));
   }
 

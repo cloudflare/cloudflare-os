@@ -28,7 +28,7 @@ async function propsFor(resourceKind: GatekeeperProps["resourceKind"]): Promise<
 }
 
 describe("unified GitHub pack stream", () => {
-  it.each(["GET", "POST"])("authorizes command %s reads and uses only bound credentials", async method => {
+  it.each(["GET", "POST"])("forwards %s requests using only bound credentials", async method => {
     const props = await propsFor("repo");
     const path = method === "GET" ? "/info/refs?service=git-upload-pack" : "/git-upload-pack";
     let sent = false;
@@ -48,22 +48,8 @@ describe("unified GitHub pack stream", () => {
     input.headers.set("authorization", "Guest credentials must not pass through");
     input.headers.set("cookie", "guest=cookie");
     expect(await env.TEST_HOOKS.getByName("command").gitRequest(`command-${method}`, props, input))
-      .toEqual({ok: {body: PACK, observations: ["Fetch Git repository"]}});
+      .toEqual({ok: {body: PACK}});
     expect(sent).toBe(true);
-  });
-  it.each(["issue", "pull"] as const)("does not widen a %s connection for native Git", async kind => {
-    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    const props = await propsFor(kind);
-    expect(await env.TEST_HOOKS.getByName("command-narrow").gitRequest(kind, props, gitObjectRequest(request())))
-      .toHaveProperty("error", "Git fetch requires a repository connection.");
-    expect(fetch).not.toHaveBeenCalled();
-  });
-  it("does not contact upstream when observation authorization refuses", async () => {
-    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    const props = await propsFor("repo");
-    expect(await env.TEST_HOOKS.getByName("command-refused").gitRequest("refused", props, gitObjectRequest(request()), true))
-      .toHaveProperty("error", "Observation refused");
-    expect(fetch).not.toHaveBeenCalled();
   });
   it.each(["repo", "issue", "pull"] as const)("preserves streaming through a %s binding", async kind => {
     const props = await propsFor(kind);

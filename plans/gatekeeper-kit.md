@@ -2321,7 +2321,7 @@ order, so a simulated read and the next push's expected old sha agree; a push to
 deletes, reading as `null`. Consumed by github and gitlab.
 
 The Workers-only `./git-pull-transfer` leaf wraps `pullGitPack` for the kernel's known-object
-consumer of `Gatekeeper.gitPull(request, observer?)`:
+consumer of `Gatekeeper.gitPull(request)`:
 
 ```ts
 export function startGitPull(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
@@ -2335,9 +2335,8 @@ not parse packs, ingest cache objects, or impose the DO cache's size limit. The 
 the callback's bytes with `gitObjectRequest()` and routes them through the provider's
 repository-bound smart-HTTP transport. Cache reads use recorded provenance, decode with their
 pack/object limits, and check requested-object presence. Container bootstrap streams the shallow
-base without cache ingestion. Later native Git requests bypass this known-object helper: the
-kernel supplies an observation authorizer, and the provider requires a whole-repository binding.
-Only protocol-v2 discovery and upload-pack are allowed; credentials remain in the provider.
+base without cache ingestion. A container's later native Git requests for older history bypass
+this helper and are forwarded once the provider confirms the commits are ancestors. Only protocol-v2 discovery and upload-pack are allowed; credentials remain in the provider.
 
 ### 4.21 `./git-diff`
 

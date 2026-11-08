@@ -261,40 +261,33 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
   }
 }
 
-/** Git provider fixture recognizes only the immutable source commit, not DO-only heads. */
+/**
+ * Git provider fixture for worktree fetches beyond the workspace's own history: answers the
+ * workspace's commit-only history check, and streams a forwarded fetch that stays open until
+ * cancelled.
+ */
 export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
-  #pack?: ReadableStreamDefaultController<Uint8Array>;
   async getAgentCatalog() { return null; }
-  async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT",
-    tsType: "Git", gitRepositoryUrl: "https://github.com/fixture/repo.git"}; }
-  allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
-  holdGitPack(): void { this.ctx.storage.kv.put("holdPack", true); }
-  finishGitPack(): void {
-    this.#pack!.enqueue(new Uint8Array([...new TextEncoder().encode("0007"), 1, 2, 254, ...FLUSH_PKT]));
-    this.#pack!.close();
-  }
-  async gitPull(request: Request, observer?: RpcStub<import("@gadgets/workshop-shared/gatekeeper").ObservationAuthorizer>): Promise<Response> {
+  async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
+  /** A commit the history check reports as outside the worktree's history. */
+  setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
+  /** The bodies of the requests received, in order. */
+  requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
+  async gitPull(request: Request): Promise<Response> {
     gitPullPath(request);
-    if (observer) {
-      await observer.authorizeObservation({title: "Fetch Git repository", description: "Fixture command Git"});
-      if (request.headers.has("x-test-open-stream")) return new Response(new ReadableStream({
-        start(controller) {controller.enqueue(Uint8Array.of(0, 255, 128, 13));},
-      }));
-      return new Response(Uint8Array.of(0, 255, 128, 13), {headers: {
-        "content-type": "application/x-git-upload-pack-advertisement",
-        "set-cookie": "provider=private", "authentication-info": "provider-only",
-      }});
-    }
     const body = await request.text();
-    if (!body.includes(`want ${this.ctx.storage.kv.get("gitCommit")}\n`)) throw new Error("Unknown remote commit");
-    if (!body.includes("deepen 1\n") || body.includes("filter ")) throw new Error("Expected a complete depth-one checkout");
-    if (this.ctx.storage.kv.get("holdPack")) return new Response(new ReadableStream<Uint8Array>({
-      start: controller => {
-        this.#pack = controller;
-        controller.enqueue(new Uint8Array([...encodePktLine("packfile"), ...new TextEncoder().encode("0007"), 1, 1, 255]));
-      },
-    }));
-    return new Response(new Blob([encodePktLine("packfile"),
-      new TextEncoder().encode("0007"), Uint8Array.of(1, 1, 255), FLUSH_PKT]));
+    this.ctx.storage.kv.put("requests", [...this.requests(), body]);
+    if (body.includes("filter tree:0\n")) {
+      const unrelated = this.ctx.storage.kv.get<string>("unrelated");
+      // Only the pack header's object count matters to the check.
+      const header = new Uint8Array(12);
+      header.set(new TextEncoder().encode("PACK"));
+      new DataView(header.buffer).setUint32(4, 2);
+      new DataView(header.buffer).setUint32(8, unrelated && body.includes(`want ${unrelated}\n`) ? 1 : 0);
+      const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
+      const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
+      return new Response(new Blob([encodePktLine("packfile"), band, FLUSH_PKT]));
+    }
+    return new Response(new ReadableStream({start(controller) { controller.enqueue(encodePktLine("packfile")); }}));
   }
 }

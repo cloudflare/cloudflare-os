@@ -17,19 +17,15 @@ merge request), the same worktree integration (commit ids advertised, `gitPull()
 smart-HTTP, `push()` as a queued action), and the same review and merge flows expressed in GitLab's
 own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 
-`gitPull(request, observer?)` returns a streaming Git smart-HTTP `Response`. It permits protocol-v2
-ref discovery and upload-pack requests only; the provider selects the bound project URL and
-credentials, never a guest-supplied upstream. For lazy DO reads and initial hydration, the kernel
-selects immutable objects from recorded provenance and demultiplexes the response with
-`startGitPull()`. Lazy reads ingest those objects through the bounded DO cache; container bootstrap
-instead streams a complete shallow base pack without filling that cache.
-
-Native Git in a container (via `GitCache.gitPull(repositoryUrl, request)`) can also discover refs
-and fetch objects through an already-connected whole-project binding. The kernel supplies `observer` for those new reads;
-the provider checks project-level scope and authorizes the observation. An issue or merge-request
-connection does not grant whole-project native fetch. Access ends with the agent execution or
-approved action that obtained the `GitCache`. This does not add push or arbitrary URL forwarding. OAuth and optional Cloudflare
-Access credentials stay in the gatekeeper, including on self-hosted instances.
+`gitPull(request)` returns a streaming Git smart-HTTP `Response`. It permits protocol-v2 ref
+discovery and upload-pack requests only; the provider selects the bound project URL and
+credentials, never a guest-supplied upstream. The kernel only fetches history of objects it
+already knows the connection can see, selected from recorded provenance. Lazy DO reads ingest them
+through the bounded DO cache; container bootstrap instead streams a complete shallow base pack
+without filling that cache, and a container's later fetch of an older commit in the worktree's
+history is forwarded once the connection confirms the commit is an ancestor. This does not add
+push or arbitrary URL forwarding. OAuth and optional Cloudflare Access credentials stay in the
+gatekeeper, including on self-hosted instances.
 
 ## Auto-approval
 

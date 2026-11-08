@@ -372,7 +372,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `pendingAction:` where the code uses `action:`; the GitLab one will be written from the code).
 - **Git contract** (`workshop-shared/src/gatekeeper.ts`): `GitOid`, `GitObjectType`,
   `GitCache` (`get`/`has`/`stat`/`put`/`advertiseCommit`/`buildPack`/`consumePack`/`isAncestor`),
-  `GitPullHints`, `Gatekeeper.gitPull?(request, observer?)`, `Gatekeeper.applyAction(action,
+  `GitPullHints`, `Gatekeeper.gitPull?(request)`, `Gatekeeper.applyAction(action,
   cache)`, `ActionDescription.pushedCommits`, `ObservationAuthorizer.getGitCache()`. The
   overseer tries sources recorded in `meta.onRemote` and `meta.pullableFrom`, i.e.
   gatekeepers that advertised or proved the object, or populated an object that references it —
@@ -841,10 +841,9 @@ substitutes transport endpoints and REST lookups:
   `getCommit`, `listCommits`, MR `getDetails` (`sha`, `diff_refs.*`), `readDiff` (revision shas),
   `getMergeBase`, MR `listCommits`, `listMergeRequests`/`searchMergeRequests` (source/target
   shas) all advertise, with the cache-served / simulated carve-out via `isSimulatedCommitId`.
-- **`gitPull(request, observer?): Promise<Response>`**: repository-bound protocol-v2 smart HTTP
-  for discovery and upload-pack only. With an observer, the provider requires a whole-project
-  binding and authorizes the new native Git read. Without one, the kernel requests known objects
-  using recorded provenance. The kernel's `startGitPull()` strips protocol framing and retains
+- **`gitPull(request): Promise<Response>`**: repository-bound protocol-v2 smart HTTP for
+  discovery and upload-pack only. The kernel requests only history of known objects, using
+  recorded provenance. The kernel's `startGitPull()` strips protocol framing and retains
   terminal status; lazy cache reads apply pack/object limits and verify requested objects, while
   container bootstrap imports the complete shallow base without DO cache ingestion.
   `fetchGitUploadPack` chooses the bound project's upstream and supplies protocol headers,
