@@ -27,7 +27,7 @@ export type GrantIdentity = Tenant & { userId: string; accountId: string };
 export type Identity = GrantIdentity & {
   name: string;
   email: string;
-  /** The user's base role, e.g. `user` or `read_only_limited_user`. */
+  /** The user's base role, e.g. `user` or `read_only_limited_user`; empty if PagerDuty named none. */
   role: string;
   jobTitle: string | null;
   timeZone: string;
@@ -37,15 +37,19 @@ export type Identity = GrantIdentity & {
 };
 
 /**
- * Base roles that see no incidents or services whatever teams allow: a Limited Stakeholder sees
- * only status pages, and Restricted Access only what a team or object role grants, which no
- * account-level read relies on.
+ * Base roles that see the account's incidents and services. PagerDuty's other two see none,
+ * whatever teams allow: a Limited Stakeholder (`read_only_limited_user`) sees only status pages,
+ * and Restricted Access only what a team or object role grants, which no account-level read
+ * relies on.
  */
-const BLIND_ROLES = ["read_only_limited_user", "restricted_access"];
+const SIGHTED_ROLES = ["owner", "admin", "user", "limited_user", "observer", "read_only_user"];
 
-/** Whether a user with base role `role` can see the account's public objects. */
+/**
+ * Whether a user with base role `role` can see the account's public objects: not one whose role
+ * PagerDuty left out, or added since.
+ */
 export function seesPublicObjects(role: string): boolean {
-  return !BLIND_ROLES.includes(role);
+  return SIGHTED_ROLES.includes(role);
 }
 
 /** The connected user as `getMetadata().you` reports them. */

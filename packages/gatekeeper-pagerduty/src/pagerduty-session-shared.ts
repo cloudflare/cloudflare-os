@@ -451,12 +451,14 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: strin
 export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncidentFilter | undefined):
   Promise<Cursor<PagerDutyIncidentSummary>> {
   const { host } = ctx;
+  const pageSize = pageSizeOf(filter);
   const [me, scope] = await Promise.all([host.me(), servicesWithin(ctx)]);
   const { query, params } = incidentQuery(filter, scope, me, ctx.within.teamId);
   const you = youRef(me);
   const { resolve } = host;
-  // A filter naming none of the capability's services matches nothing, so PagerDuty isn't asked.
-  const nothing = query.serviceIds?.length === 0;
+  // A filter naming no status or urgency, or none of the capability's services, matches nothing,
+  // so PagerDuty, which would take an empty list for no filter at all, isn't asked.
+  const nothing = [query.statuses, query.urgencies, query.serviceIds].some(list => list?.length === 0);
   // PagerDuty filters before pending changes apply, so it leaves out an incident they move into the
   // filter: each incident they act on is read afresh, and listed if they leave it matching. One the
   // user can no longer open is left out, as one outside the binding is.
@@ -487,7 +489,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
       [...named, ...injected.map(row => service(row.service.id))]);
   }
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
-    pageSize: pageSizeOf(filter),
+    pageSize,
     sources: [nothing ? async () => ({ items: [], more: false }) : listing("/incidents", "incidents", params, toIncidentSummary)],
     refresh: async () => {
       live = await servicesWithin(ctx);

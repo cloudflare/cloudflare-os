@@ -16,7 +16,7 @@ import { VENDOR_ID, type Tenant } from "./pagerduty-env";
 import type { WireIncident, WireOverride } from "./pagerduty-normalize";
 import type { ScopedObject, Within } from "./pagerduty-session-shared";
 import { resourceUrl } from "./pagerduty-urls";
-import type { PagerDutyRef, PagerDutyUrgency } from "./types";
+import type { PagerDutyOverride, PagerDutyRef, PagerDutyUrgency } from "./types";
 
 /**
  * An incident an action acts on: PagerDuty's ID, or the `~N` of one a pending action creates; and
@@ -83,8 +83,13 @@ export type PagerDutyActions = {
   createOverride: NewOverride;
   /** As `createOverride`, for an override putting someone other than the connected user on call. */
   createOverrideForOthers: NewOverride;
-  /** `stagedAt` is when a simulated read says an override already under way ended. */
-  deleteOverride: { scheduleId: string; overrideId: string; stagedAt: string; within: Within };
+  /**
+   * `override` is who it puts on call and when, as staging read it; `stagedAt` is when a simulated
+   * read says an override already under way ended.
+   */
+  deleteOverride: {
+    scheduleId: string; overrideId: string; override: Omit<PagerDutyOverride, "id">; stagedAt: string; within: Within;
+  };
 };
 
 export type PagerDutyAction = TaggedAction<PagerDutyActions>;
@@ -463,10 +468,15 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     dependsOn: dependedRefs,
-    describe: (payload, host) => present("Remove a PagerDuty schedule override",
-      buildDescription(`Removes an override from [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: payload.scheduleId })}), ` +
+    describe: ({ scheduleId, overrideId, override: { user, start, end }, stagedAt }, host) => {
+      const description = buildDescription(`Removes an override from [this schedule](${resourceUrl({ ...host.tenant, kind: "schedule", id: scheduleId })}), ` +
         "or ends it now if it has already begun.")
-        .inline("Override", payload.overrideId)),
+        .inline("Override", overrideId)
+        .inline("User", `${user.name} (${user.id})`);
+      // PagerDuty may list one under way from when it was asked, so only one yet to begin says when it starts.
+      if (Date.parse(start) > Date.parse(stagedAt)) description.inline("From", start);
+      return present("Remove a PagerDuty schedule override", description.inline("Until", end));
+    },
     apply: async (payload, host) => {
       await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });

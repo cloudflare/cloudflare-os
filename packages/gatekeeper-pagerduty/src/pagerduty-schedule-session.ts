@@ -19,6 +19,8 @@ import type { PagerDutyOverride, PagerDutySchedule, PagerDutyScheduleDetails, Pa
 
 /** The longest schedule window PagerDuty renders shifts for. */
 const MAX_SHIFT_DAYS = 90;
+/** How far ahead an override to remove is looked for; PagerDuty documents no longest window for overrides. */
+const REMOVABLE_DAYS = 10 * 365;
 
 @validateRpc()
 export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedule {
@@ -38,9 +40,14 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     return schedule;
   }
 
-  /** @throws Error for a shift-based schedule, whose overrides this can't add or remove. */
-  async #requireLayerBased(): Promise<void> {
-    if ((await this.#read()).shiftBased) throw new Error("Adding or removing overrides is not supported for shift-based schedules yet.");
+  /**
+   * The schedule, which is layer-based.
+   * @throws Error for a shift-based schedule, whose overrides this can't add or remove.
+   */
+  async #requireLayerBased(): Promise<Schedule> {
+    const schedule = await this.#read();
+    if (schedule.shiftBased) throw new Error("Adding or removing overrides is not supported for shift-based schedules yet.");
+    return schedule;
   }
 
   async getDetails(): Promise<PagerDutyScheduleDetails> {
@@ -59,18 +66,22 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
   }
 
   async listOverrides(window?: PagerDutyTimeWindow): Promise<PagerDutyOverride[]> {
-    const span = windowOf(window, 30);
+    const overrides = await this.#overrides(windowOf(window, 30));
+    await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` });
+    return overrides;
+  }
+
+  /** The schedule's overrides in `span`, as pending actions leave them; `schedule` is the schedule, if already read. */
+  async #overrides(span: { since: string; until: string }, schedule?: Schedule): Promise<PagerDutyOverride[]> {
     const { host } = this.#ctx;
     // Which API keeps its overrides, and on a shift-based schedule, its users' names.
-    const schedule = await this.#read({ users: true });
+    schedule ??= await this.#read({ users: true });
     const path = `${schedulePath(this.#id, schedule.shiftBased)}/overrides`;
     const read = async <W>(query: Query) => (await host.read(api => api.get<{ overrides: W[] }>(path, query))).overrides;
     const [rows, editable] = await Promise.all([
       read<WireShift | WireShiftOverride>(span), schedule.shiftBased ? [] : read<WireOverride>({ ...span, editable: true }),
     ]);
-    const overrides = overlayOverrides(toOverrides(schedule, rows, editable), this.#id, span, host.pending(), host.resolve);
-    await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` });
-    return overrides;
+    return overlayOverrides(toOverrides(schedule, rows, editable), this.#id, span, host.pending(), host.resolve);
   }
 
   async createOverride(user: string, start: string, end: string): Promise<string> {
@@ -95,9 +106,19 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     if (isProvisional(id) && host.kindOf(id) !== overrideKind(this.#id)) {
       throw new Error("That override isn't one this gadget added to this schedule.");
     }
-    await this.#requireLayerBased();
-    await host.submit(this.#ctx.queue, "deleteOverride",
-      { scheduleId: this.#id, overrideId: id, stagedAt: new Date().toISOString(), within: this.#ctx.within });
+    const schedule = await this.#requireLayerBased();
+    // Only an override PagerDuty still lets anyone remove, as pending actions leave them, is
+    // staged: apply takes one PagerDuty no longer has for one already removed.
+    const override = (await this.#overrides(windowOf(undefined, REMOVABLE_DAYS), schedule))
+      .find(listed => listed.id === host.resolve(id));
+    if (!override) {
+      throw new Error("This schedule has no override with that id that can still be removed; listOverrides() lists them.");
+    }
+    const { user, start, end } = override;
+    await host.submit(this.#ctx.queue, "deleteOverride", {
+      scheduleId: this.#id, overrideId: id, override: { user, start, end }, stagedAt: new Date().toISOString(),
+      within: this.#ctx.within,
+    });
   }
 
   [Symbol.dispose](): void {

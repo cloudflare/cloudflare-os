@@ -47,6 +47,14 @@ describe("an account binding", () => {
     expect(await t.reported()).toEqual([ids(sub("service", OTHER_SERVICE.id))]);
   });
 
+  it.each([{ statuses: [] }, { urgencies: [] }])("asks PagerDuty nothing for a filter no incident can match, %o", async filter => {
+    const t = await setup();
+    t.pd.incident(SERVICE);
+    expect(await t.run([["listIncidents", filter]], 5)).toEqual([]);
+    expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(0);
+    expect(await t.reported()).toEqual([ids()]);
+  });
+
   it("reports each page's own services as a listing is walked", async () => {
     const t = await setup();
     t.pd.incident(SERVICE);

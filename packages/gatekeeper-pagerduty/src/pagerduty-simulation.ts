@@ -99,8 +99,8 @@ export function overlayAlert(alert: PagerDutyAlert, incidentId: string, pending:
   return actionsOn(incidentId, pending, resolve).some(({ kind }) => kind === "resolve") ? { ...alert, status: "resolved" } : alert;
 }
 
-/** An incident a pending action opens, as reads show it until PagerDuty has it. */
-export function pendingIncident(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentDetails {
+/** An incident a pending action opens, as listings show it until PagerDuty has it. */
+function pendingSummary(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentSummary {
   // PagerDuty opens an incident its creator assigns to themselves already acknowledged, by them.
   const own = payload.assignTo?.length === 1 && payload.assignTo[0].id === me.id;
   return {
@@ -117,9 +117,17 @@ export function pendingIncident(payload: NewIncident, me: PagerDutyUserRef): Pag
     createdAt: payload.stagedAt,
     updatedAt: payload.stagedAt,
     htmlUrl: "",
+  };
+}
+
+/** An incident a pending action opens, as reads show it until PagerDuty has it. */
+export function pendingIncident(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentDetails {
+  const summary = pendingSummary(payload, me);
+  return {
+    ...summary,
     details: payload.details ?? null,
     escalationPolicy: payload.escalationPolicy,
-    acknowledgers: own ? [{ user: me, at: payload.stagedAt }] : [],
+    acknowledgers: summary.status === "acknowledged" ? [{ user: me, at: payload.stagedAt }] : [],
     incidentKey: payload.incidentKey ?? null,
     resolvedAt: null,
     alertCount: 0,
@@ -163,9 +171,9 @@ function withinSupportHours(hours: WireSupportHours, at: Date): boolean | undefi
 }
 
 /** The incidents pending actions open that PagerDuty doesn't have yet, with later changes applied. */
-export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef): PagerDutyIncidentDetails[] {
+export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef): PagerDutyIncidentSummary[] {
   return pending.flatMap(({ action }) => action.kind === "createIncident" && resolve(action.payload.ref) === action.payload.ref
-    ? [overlayIncident(pendingIncident(action.payload, me), pending, resolve, me)] : []);
+    ? [overlayIncident(pendingSummary(action.payload, me), pending, resolve, me)] : []);
 }
 
 /** The filter a listing applies, with its defaults filled in. */

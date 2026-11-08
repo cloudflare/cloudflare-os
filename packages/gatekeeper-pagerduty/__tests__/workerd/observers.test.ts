@@ -91,6 +91,13 @@ describe("verifyObserverAccess", () => {
       .toEqual({ allowedObserverIds: ["bob"] });
   });
 
+  it.each([undefined, "billing_manager"])("denies an observer the account when PagerDuty gives their role as %s, not one known to see its objects", async role => {
+    const t = await setup();
+    const bob = await seedAccount(t.pd, BOB);
+    t.pd.users.get(BOB.id)!.role = role;
+    expect(unwrap(await t.verify([{ id: "bob", userObjectId: bob }], [sub()]))).toEqual({ allowedObserverIds: [] });
+  });
+
   it("reuses an observer connection's answers rather than probing again", async () => {
     const t = await setup();
     const bob = await seedAccount(t.pd, BOB);

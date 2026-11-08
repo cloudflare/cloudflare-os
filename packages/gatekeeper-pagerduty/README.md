@@ -167,10 +167,11 @@ no ID yet. Empty pages and cached reads report the same.
 
 A collaborator may observe a read only if their own PagerDuty connection can see every one of
 those, checked with their login: the account by being the same account in the same region, with a
-base role that sees the account's objects (not Limited Stakeholder or Restricted Access); each
-object by PagerDuty opening it for them. A refusal (403 or 404) is a no; any other failure fails the
-check. An answer is reused for 15 minutes if it allowed and 15 seconds if it denied, so a lost role
-or team membership goes unnoticed for up to 15 minutes. See `docs/observers.md`.
+base role known to see the account's objects (not Limited Stakeholder or Restricted Access, nor a
+role PagerDuty adds later); each object by PagerDuty opening it for them. A refusal (403 or 404) is
+a no; any other failure fails the check. An answer is reused for 15 minutes if it allowed and 15
+seconds if it denied, so a lost role or team membership goes unnoticed for up to 15 minutes. See
+`docs/observers.md`.
 
 ## Limitations
 

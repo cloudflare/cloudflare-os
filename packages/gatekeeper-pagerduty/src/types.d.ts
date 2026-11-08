@@ -288,9 +288,10 @@ export interface PagerDutySchedule {
   createOverride(user: string, start: string, end: string): Promise<string>;
 
   /**
-   * Removes an override by id. One already under way is cut short instead, ending now; one
-   * already over can't be removed. Throws for a shift-based schedule, which this doesn't support
-   * yet.
+   * Removes an override by the id `listOverrides()` or `createOverride()` gave it. One already
+   * under way is cut short instead, ending now; one already over can't be removed. Throws when
+   * the schedule has no such override left to remove, and for a shift-based schedule, which this
+   * doesn't support yet.
    */
   deleteOverride(id: string): Promise<void>;
 }

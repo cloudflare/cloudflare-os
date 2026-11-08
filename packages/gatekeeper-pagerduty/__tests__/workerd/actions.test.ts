@@ -200,9 +200,28 @@ describe("each change", () => {
     await t.run([["deleteOverride", "POVR001"]]);
     const [{ actionId, description }] = await t.submitted();
     expect(description).toMatchObject({ autoApprovable: false, actionKind: { tag: "delete-overrides" } });
+    expect(description.fields).toMatchObject([
+      { label: "Override", value: "POVR001" }, { label: "User", value: `Bob (${BOB.id})` },
+      { label: "From", value: START }, { label: "Until", value: END },
+    ]);
     await t.apply(actionId);
     expect(t.pd.writes().map(w => [w.method, w.url.pathname])).toEqual([["DELETE", `/schedules/${SCHEDULE.id}/overrides/POVR001`]]);
     expect(t.pd.overrides.get(SCHEDULE.id)).toEqual([]);
+  });
+
+  it("refuses, staging nothing, to remove an override that is another schedule's, already over, unknown, or already being removed", async () => {
+    const t = await setup(schedule);
+    const bob = { id: BOB.id, summary: "Bob" };
+    t.pd.overrides.set(OTHER_SCHEDULE.id, [{ id: "POVR001", start: START, end: END, user: bob }]);
+    t.pd.overrides.set(SCHEDULE.id, [
+      { id: "POVR002", start: new Date(Date.now() - 3 * HOUR).toISOString(), end: new Date(Date.now() - HOUR).toISOString(), user: bob },
+      { id: "POVR003", start: START, end: END, user: bob },
+    ]);
+    await t.run([["deleteOverride", "POVR003"]]);
+    for (const id of ["POVR001", "POVR002", "POVR003", "POVR009"]) {
+      expect(await t.attempt([["deleteOverride", id]]), id).toMatch(/no override with that id that can still be removed/);
+    }
+    expect(await t.submitted()).toHaveLength(1);
   });
 
   it("leaves a change pending, having sent nothing, when the connection can't produce credentials", async () => {
@@ -300,6 +319,7 @@ describe("narrow bindings", () => {
     ["deleteOverride", ["POVR001"]],
   ])("fails %s for good, sending nothing, once the team binding's schedule is gone", async (method, args) => {
     const t = await setup({ resourceKind: "team", id: TEAM.id });
+    t.pd.overrides.set(SCHEDULE.id, [{ id: "POVR001", start: START, end: END, user: { id: BOB.id, summary: "Bob" } }]);
     await t.run([["getSchedule", SCHEDULE.id], [method, ...args]]);
     const [{ actionId }] = await t.submitted();
     const deleted = t.pd.schedules.get(SCHEDULE.id)!;
@@ -374,6 +394,14 @@ describe("simulation", () => {
     expect(await t.run([["listIncidents", { statuses: ["acknowledged"] }]], 5)).toEqual([]);
   });
 
+  it("refuses a page size out of range before reading the incidents pending changes act on", async () => {
+    const t = await setup();
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    const before = [t.pd.requests.length, await t.reported()];
+    expect(await t.attempt([["listIncidents", { pageSize: 500 }]])).toMatch(/pageSize must be a whole number from 1 to 100/);
+    expect([t.pd.requests.length, await t.reported()]).toEqual(before);
+  });
+
   it.each([
     ["shows a change staged", ["setTitle", "Retitled"], { title: "Retitled" }],
     ["drops an incident resolved", ["resolve"], null],
@@ -408,6 +436,8 @@ describe("simulation", () => {
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect(opened).toMatchObject({ id: "~1", title: "Checkout failing", status: "triggered", service: { id: SERVICE.id } });
     expect(existing.id).toBe(t.incident.id);
+    // A summary, as PagerDuty's rows are, not the details staging holds.
+    expect(Object.keys(opened).toSorted()).toEqual(Object.keys(existing).toSorted());
     expect(await t.run([["getIncident", "~1"], ["listNotes"]])).toMatchObject([{ content: "Paging payments" }]);
 
     const [create, note] = await t.submitted();
@@ -584,6 +614,8 @@ describe("simulation", () => {
     expect(Date.parse(override.end)).toBeLessThan(Date.parse(end));
     const [{ description }] = await t.submitted();
     expect(description.description).toMatch(/or ends it now if it has already begun/);
+    // When it began isn't shown: PagerDuty may list it from when it was asked.
+    expect(description.fields?.map(({ label }) => label)).toEqual(["Override", "User", "Until"]);
   });
 
   it("names each override PagerDuty still lets it remove, and removes one by the id it listed", async () => {
