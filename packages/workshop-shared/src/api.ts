@@ -1756,13 +1756,15 @@ export type AdminWorkspacePage = {
  * How much of a workspace a deployment admin may inspect through AdminApi.inspectWorkspace(), in
  * increasing order:
  *   - "off":      nothing; inspectWorkspace() is refused.
- *   - "metadata": its structure: titles, workpieces, collaborators, connections, the chat and
- *                 action lists, file names, commit ids and authors, the names, types, sizes and
- *                 content hashes of attachments, and diagnostics. Chat messages, queued steers,
+ *   - "metadata": its structure: titles, workpieces, collaborators, observers, connections, the
+ *                 chat and action lists, file names, commit ids and authors, the names, types,
+ *                 sizes and content hashes of attachments, the titles and descriptions of
+ *                 blueprints, share links' notes, and diagnostics. Chat messages, queued steers,
  *                 attachments, file contents (at any commit, or pending in a chat), commit
  *                 messages, the arguments of calls queued for an agent, which blueprint a gadget
- *                 follows, and the descriptions and fields of actions, observations and hooks are
- *                 withheld. Titles and names stay, and can echo content.
+ *                 follows, the ids of the blueprints the workspace publishes, and the
+ *                 descriptions and fields of actions, observations and hooks are withheld.
+ *                 Titles, names, notes and blueprint descriptions stay, and can echo content.
  *   - "full":     everything, what "metadata" withholds included.
  */
 export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata", "full"] as const;
@@ -1830,7 +1832,8 @@ export const ADMIN_WORKSPACE_METHODS = [
   "inspectWorkspace", "describe", "listChats", "getChat", "getChatState", "listChatAttachments",
   "readChatAttachment", "listActions", "listFiles", "readFile", "getCommitLog",
   "listFilesAtCommit", "readFileAtCommit", "listChangedPaths", "listPendingChanges",
-  "readPendingFile", "listGatekeepers", "getDiagnostics",
+  "readPendingFile", "listGatekeepers", "listObservers", "listObserverRequirements",
+  "listShareLinks", "listAutoApprovals", "listBlueprints", "getDiagnostics",
 ] as const satisfies readonly ("inspectWorkspace" | keyof AdminWorkspaceView)[];
 
 /** One of ADMIN_WORKSPACE_METHODS. */
@@ -1918,8 +1921,9 @@ export type AdminAccessRecord = {
   /** "inspectWorkspace" for the open, else the view method called. */
   method: AdminWorkspaceMethod;
   /** The call's arguments by name: only those it declares, an absent optional one left out, each
-   * string cut to MAX_ADMIN_AUDIT_ARG_LENGTH. The open records `expiresAt` (ISO 8601). No view
-   * method takes content, so none is recorded. */
+   * string cut to MAX_ADMIN_AUDIT_ARG_LENGTH. The open records `expiresAt` (ISO 8601), and
+   * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`. No
+   * view method takes content, so none is recorded. */
   args: Record<string, string | number>;
   /** The reason the admin gave inspectWorkspace() for the view. */
   reason: string;
@@ -1943,11 +1947,13 @@ export type AdminAccessRecord = {
    *   - getChatState(): a queued call's argument summary;
    *   - getCommitLog(): a commit message;
    *   - describe(): the blueprint a gadget follows;
+   *   - listBlueprints(): a blueprint's id;
    *   - listActions(), listGatekeepers(): a non-empty description, or a field, of an action,
    *     observation or hook.
    * Otherwise "metadata": always for the open and for the calls whose answers hold nothing the
    * level withholds (listChatAttachments(), listFiles(), listFilesAtCommit(), listChangedPaths(),
-   * listPendingChanges() and getDiagnostics()), for a call that was refused or whose read failed,
+   * listPendingChanges(), listObservers(), listObserverRequirements(), listShareLinks(),
+   * listAutoApprovals() and getDiagnostics()), for a call that was refused or whose read failed,
    * and for a call at "full" whose answer held none of these. It is set from the answer itself,
    * never from the level. An answer leaves the server only once its record exists: a call whose
    * record could not be written returned nothing.
@@ -2548,6 +2554,11 @@ export type AdminGatekeeperInfo = {
   vendorId?: string;
   /** How it was created. Absent for one created before this was recorded. */
   creationSpec?: GatekeeperCreationSpec;
+  /** Who created it: the member who added it, or whoever started the agent turn that created its
+   * resource. Absent for an ambient connection (`creationSpec.type` "ambient"), which the
+   * workspace takes from a singleton account its owner holds and no person creates, and for a
+   * connection whose creator was not recorded, as one made before creators were recorded. */
+  createdBy?: AiChatAuthorInfo;
   /** The gadget bindings that point at it. `chatId` is present while one is pending in that chat. */
   bindings: { gadgetId: WorkpieceId; name: string; chatId?: number }[];
   /** The hooks it delivers, as Overseer.listHooks() lists them; below "full" each has an empty
@@ -2575,8 +2586,14 @@ export type AdminWorkspaceDiagnostics = {
   chats: number;
   /** The workspace's hooks, and how many are enabled. */
   hooks: { total: number; enabled: number };
-  /** Collaborators verified as observers (see docs/observers.md). */
+  /** How many collaborators hold an observer record (see AdminObserver, which says what one
+   * means); listObservers() lists them. */
   observers: number;
+  /** The size of the workspace's storage, in bytes. */
+  storageBytes: number;
+  /** Who has the workspace open now, as its presence roster lists them (see
+   * Overseer.subscribeToPresence()). An admin view is never among them. */
+  present: PresenceParticipant[];
   /** When the workspace's alarm next fires. Absent while none is set. */
   nextAlarm?: Date;
   /** Whether an external message created the workspace before its owner's account recorded it. */
@@ -2665,6 +2682,50 @@ export type AdminPendingChange = {
   modified: string[];
   /** The paths `baseCommit` holds that the chat's content lacks, sorted. */
   removed: string[];
+};
+
+/** The account an observer chose for one connection, as AdminObserver.accountChoices lists it. */
+export type AdminObserverAccountChoice = ObserverAccountChoice & {
+  /** The vendor whose gatekeeper serves the connection, in lower case as
+   * AdminGatekeeperInfo.vendorId gives it (ObserverBindingNeed.vendorId keeps the vendor's own
+   * spelling). Absent once the connection is removed. */
+  vendorId?: string;
+};
+
+/**
+ * One collaborator who holds an observer record, as AdminWorkspaceView.listObservers() lists
+ * them. A workspace reserves the record when a collaborator first opens what was shared with them
+ * while a connection it reaches needs an account, before anything is verified, and keeps it until
+ * they lose access, whether or not that open was admitted (see docs/observers.md). So a record
+ * does not say its holder was admitted: `accountChoices` says what was verified.
+ */
+export type AdminObserver = {
+  /** Who they are: their profile as the workspace's collaborator list keeps it, or one made of
+   * their id alone when it keeps none. */
+  profile: AiChatAuthorInfo;
+  /** The account they chose for each connection, by connection id, each recorded once an
+   * admission verified it. Empty means nothing is verified yet: no admission of theirs has
+   * passed. An entry is what an admission verified then, and every open checks it again. An
+   * `accountId` names a connected account in their own user account, so the workspace knows its
+   * id and nothing else of it. */
+  accountChoices: AdminObserverAccountChoice[];
+};
+
+/**
+ * One auto-approval rule of a workspace, as AdminWorkspaceView.listAutoApprovals() lists it: a
+ * member's opt-in for actions of `actionKind` on the connection. A rule alone applies nothing. An
+ * action of that kind is applied without a manual approval only when its author also marked it
+ * `autoApprovable` (ActionDescription.autoApprovable), and never once the workspace has read
+ * restricted data (`containsRestrictedData`, which describe() reports): the rule then stays
+ * stored, and listed here, while every action waits for a manual approval.
+ */
+export type AdminAutoApproval = {
+  /** The connection the rule is on. */
+  gatekeeperId: WorkpieceId;
+  /** The kind of action the rule covers. An action matches by its kind's `tag`. */
+  actionKind: ActionKind;
+  /** Who turned the rule on. The actions it applies are applied under their authority. */
+  enabledBy: AiChatAuthorInfo;
 };
 
 /**
@@ -2793,8 +2854,39 @@ export interface AdminWorkspaceView extends RpcTarget {
    */
   readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string): Promise<FileAtCommit>;
 
-  /** The workspace's connections, oldest first, with their bindings and hooks. */
+  /** The workspace's connections, oldest first, with their creators, bindings and hooks. */
   listGatekeepers(): Promise<AdminGatekeeperInfo[]>;
+
+  /** The collaborators holding an observer record, with the account each chose for each
+   * connection (see AdminObserver). A record with no choice is one whose admission has not
+   * passed: nothing is verified for that collaborator yet. */
+  listObservers(): Promise<AdminObserver[]>;
+
+  /** The connections a recipient of `grant` would have to pass before opening what it grants, as
+   * Overseer.listObserverRequirements() lists them. It is what sharing the workspace, or one
+   * gadget, asks of the recipient: an account that each of those connections verifies. Read from
+   * the workspace's own records: no connection is asked. Throws for a gadget that cannot be
+   * shared, and when a connection `grant` reaches was made before connections could verify
+   * collaborators: any such connection for "workspace", and for a gadget only one it reaches. */
+  listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
+
+  /** The active share links, as Overseer.listShareLinks() lists them. Each has its id, note,
+   * creator, role and gadget, and never a key that redeems it. */
+  listShareLinks(): Promise<ShareLinkInfo[]>;
+
+  /** The auto-approval rules, each with its connection, its kind of action and who turned it on.
+   * A rule is a member's opt-in and applies nothing alone (see AdminAutoApproval): an action is
+   * applied without a manual approval only when its author also marked it `autoApprovable`, and
+   * never once the workspace has read restricted data (`containsRestrictedData`, which
+   * describe() reports), when every action waits whatever the rules say. listActions() shows
+   * each action's `description.autoApprovable` and `description.actionKind`, and `autoApproved`
+   * on one a rule applied. */
+  listAutoApprovals(): Promise<AdminAutoApproval[]>;
+
+  /** The published blueprints, as Overseer.listBlueprints() lists them. Below "full" each `id`
+   * is "" and `screenshotUrl` is left out: a blueprint's id is a share link to its code. Titles
+   * and descriptions stay at every level, as a workspace's title does. */
+  listBlueprints(): Promise<BlueprintGadgetSummary[]>;
 
   /** The workspace's operational state. Admin access records are not part of it: they are kept
    * only in the deployment-wide log (AdminApi.listAdminAudit()). */

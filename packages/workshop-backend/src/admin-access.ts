@@ -17,8 +17,9 @@ import {
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminSettingChange,
   type AdminSettingRecord, type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
-  type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo,
-  type CommitInfo, type FileAtCommit, type WorkpieceSummary,
+  type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
+  type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -439,6 +440,20 @@ export function hookHoldsContent(hook: BoundHookInfo): boolean {
  * follows (`upstream: {}` marks a gadget built from scratch, which follows none). */
 export function workpieceHoldsContent(summary: WorkpieceSummary): boolean {
   return summary.type === "gadget" && summary.upstream?.blueprintId !== undefined;
+}
+
+/** A copy of `blueprint` as a view below "full" lists it: `id` emptied, and `screenshotUrl`,
+ * which holds the id, left out. A blueprint's id is a share link to its code, which is why
+ * describe() leaves a gadget's `upstream` out below "full" too. */
+export function withholdBlueprintContent(blueprint: BlueprintGadgetSummary)
+    : BlueprintGadgetSummary {
+  let { screenshotUrl: _screenshotUrl, ...rest } = blueprint;
+  return { ...rest, id: "" };
+}
+
+/** Whether `blueprint` holds what withholdBlueprintContent() empties: an id. */
+export function blueprintHoldsContent(blueprint: BlueprintGadgetSummary): boolean {
+  return blueprint.id !== "";
 }
 
 /** Whether `page` holds what getChat() refuses below "full": a message or a compaction summary. */

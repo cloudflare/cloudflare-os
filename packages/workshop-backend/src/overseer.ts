@@ -5,10 +5,11 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
-  type AdminAccessExposure, type AdminAccessRecord, type AdminChatAttachment, type AdminChatState,
-  type AdminGatekeeperInfo, type AdminPendingChange, type AdminViewAccess,
-  type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
-  type AdminWorkspaceMethod, type AdminWorkspaceView,
+  type AdminAccessExposure, type AdminAccessRecord, type AdminAutoApproval,
+  type AdminChatAttachment, type AdminChatState, type AdminGatekeeperInfo, type AdminObserver,
+  type AdminPendingChange, type AdminViewAccess, type AdminWorkspaceAccess,
+  type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
+  type AdminWorkspaceView,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -63,11 +64,11 @@ import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   actionHoldsContent, adminAccessPolicy, adminCommitLogDepth, adminViewCallAccess,
-  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
-  commitHoldsContent, cutAdminAuditText, fileHoldsContent, hookHoldsContent,
-  lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdChatContent, withholdChatStateContent, withholdCommitContent,
-  withholdHookContent, workpieceHoldsContent,
+  assertAdminViewLive, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
+  chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
+  hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
+  withholdCommitContent, withholdHookContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
 import type { AdminAuditDurableObject } from "./admin-audit";
@@ -14029,10 +14030,11 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 // A deployment admin's read-only view of the workspace (see AdminWorkspaceView in api.ts and
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
 // no presence or fan-out, and never reads through a connection: its reads of files, history,
-// attachments and a chat's pending content never pull, and beyond the workspace's own storage it
-// reads only the owner's profile, from their account (describe()). Every method runs through
-// #call, which reads the call's answer and records the call, with what that answer exposed, in
-// the deployment-wide log before returning anything.
+// attachments and a chat's pending content never pull, and what a connection could tell it, it
+// reads from the workspace's own records instead. Beyond the workspace's storage it reads only
+// the owner's profile, from their account (describe() and listShareLinks()). Every method runs
+// through #call, which reads the call's answer and records the call, with what that answer
+// exposed, in the deployment-wide log before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
@@ -14173,13 +14175,16 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         (commit, path) => impl.gitCache.readLocalFileAtCommitIfExists(commit, path));
   }
 
+  // The owner's profile, from their account: the one thing a view reads beyond the workspace's
+  // storage (describe() and listShareLinks()).
+  #ownerProfile(): Promise<AiChatAuthorInfo> {
+    return retryOnDoReset(() => this.#impl.ownerUserDo().whoami(), this.#impl.logger);
+  }
+
   async describe(): Promise<AdminWorkspaceDescription> {
     let impl = this.#impl;
     return this.#call("describe", {}, async access => {
-      let ownerId = impl.ownerId!;
-      let owner = await retryOnDoReset(
-          () => impl.wrapUserDo(impl.users.get(impl.users.idFromString(ownerId))).whoami(),
-          impl.logger);
+      let owner = await this.#ownerProfile();
       let collaborators = await (await impl.getSharingManager()).listCollaborators();
       return {
         id: impl.ctx.id.toString(),
@@ -14412,6 +14417,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         resourceUrl: record.resourceUrl,
         vendorId: gatekeeperVendorId(record),
         creationSpec: record.creationSpec,
+        createdBy: record.createdBy,
         bindings: gadgets.flatMap(gadget => Object.entries(gadget.bindings)
             .filter(([, edge]) => edge.target === record.id)
             .map(([name, edge]) => ({
@@ -14421,6 +14427,56 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
             .map(hook => access === "full" ? hook : withholdHookContent(hook)),
       }));
     }, gatekeepers => gatekeepers.some(gatekeeper => gatekeeper.hooks.some(hookHoldsContent)));
+  }
+
+  // Each entry names the fields its type declares, since a stored record also holds the observer
+  // id, the handle connections know the collaborator by. A profile the collaborator table lacks
+  // is made of the id alone, as a share link's creator's is. Choices come in connection id
+  // order, as an object lists integer keys, and one outlives its connection, which then gives it
+  // no vendor. The listing is read to its end before the connections are read.
+  async listObservers(): Promise<AdminObserver[]> {
+    return this.#call("listObservers", {}, async () => {
+      let storage = this.#impl.storage;
+      let sharing = await this.#impl.getSharingManager();
+      return [...storage.observers.list()].map((record): AdminObserver => ({
+        profile: sharing.getCreatorProfile(record.profileId) ??
+            {type: "user", id: record.profileId, name: record.profileId},
+        accountChoices: Object.entries(record.accountChoices).map(([id, accountId]) => ({
+          gatekeeperId: Number(id),
+          accountId,
+          vendorId: gatekeeperVendorId(storage.gatekeepers.get(Number(id))),
+        })),
+      }));
+    });
+  }
+
+  // Read from storage alone (see OverseerImpl.listObserverRequirements()). The record keeps the
+  // grant by name: "workspace", or the gadget's id.
+  async listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]> {
+    return this.#call("listObserverRequirements",
+        grant === "workspace" ? {grant} : {gadgetId: grant.gadgetId},
+        () => this.#impl.listObserverRequirements(grant));
+  }
+
+  // The owner's account is asked only when the owner created a link, as for a member's session.
+  async listShareLinks(): Promise<ShareLinkInfo[]> {
+    return this.#call("listShareLinks", {},
+        () => this.#impl.shareLinkInfos(() => this.#ownerProfile()));
+  }
+
+  // The stored rules as they are, whether or not any can apply now (see AdminAutoApproval). What
+  // each connection could auto-approve is not read: that would ask every bound connection.
+  async listAutoApprovals(): Promise<AdminAutoApproval[]> {
+    return this.#call("listAutoApprovals", {},
+        () => [...this.#impl.storage.autoApproveTags.list()].map(
+            ({gatekeeperId, actionKind, enabledBy}) => ({gatekeeperId, actionKind, enabledBy})));
+  }
+
+  async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
+    return this.#call("listBlueprints", {},
+        access => this.#impl.blueprintSummaries()
+            .map(blueprint => access === "full" ? blueprint : withholdBlueprintContent(blueprint)),
+        blueprints => blueprints.some(blueprintHoldsContent));
   }
 
   async getDiagnostics(): Promise<AdminWorkspaceDiagnostics> {
@@ -14439,6 +14495,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         chats: [...storage.chatMeta.list()].length,
         hooks: {total: hooks.length, enabled: hooks.filter(hook => hook.enabled).length},
         observers: [...storage.observers.list()].length,
+        storageBytes: impl.ctx.storage.sql.databaseSize,
+        present: impl.presenceSnapshot(),
         nextAlarm: nextAlarm === null ? undefined : new Date(nextAlarm),
         ownerRegistrationPending: storage.ownerRegistrationPending.get(),
       };

@@ -4,17 +4,19 @@ import {
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
   type ActionLogEntry, type AdminChatState, type AiChatHistoryPage, type AiChatMetadata,
-  type BoundHookInfo, type CommitInfo, type FileAtCommit, type WorkpieceSummary,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
+  type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
   adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewCallAccess,
-  adminViewLifetimeMs, assertAdminViewLive, chatHoldsContent, chatPageHoldsContent,
-  chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
-  hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
+  adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent, chatHoldsContent,
+  chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent, cutAdminAuditText,
+  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
   minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdChatContent, withholdChatStateContent, withholdCommitContent,
-  withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent,
+  withholdChatStateContent, withholdCommitContent, withholdHookContent, workpieceHoldsContent,
+  type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -295,7 +297,23 @@ describe("withholding content", () => {
     expect(withholdCommitContent(commit)).toStrictEqual({ ...before, message: "" });
     expect(commit).toStrictEqual(before);
   });
+
+  it("empties a blueprint's id and drops its screenshot URL on a copy", () => {
+    let blueprint = blueprintSummary("bp-1");
+    let before = structuredClone(blueprint);
+    let { screenshotUrl: _screenshotUrl, ...rest } = before;
+    expect(withholdBlueprintContent(blueprint)).toStrictEqual({ ...rest, id: "" });
+    expect(blueprint).toStrictEqual(before);
+  });
 });
+
+// A published blueprint with a screenshot, whose URL holds its id.
+function blueprintSummary(id: string): BlueprintGadgetSummary {
+  return {
+    id, title: "Kit", description: "A kit", version: 2, codeVersionDate: new Date(1700000000_000),
+    screenshotUrl: `/blueprint-screenshot/${id}?v=1`, dirty: true, unpublishedChanges: true,
+  };
+}
 
 // A commit with one parent.
 function commitInfo(message: string): CommitInfo {
@@ -382,6 +400,13 @@ describe("whether an answer holds content", () => {
     expect(actionHoldsContent(logEntry("bindHook", { title: "Hook", description: "" })))
         .toBe(false);
     expect(actionHoldsContent(withholdActionContent(bound))).toBe(false);
+  });
+
+  it("finds a blueprint's id", () => {
+    let full = blueprintSummary("bp-1");
+    expect(blueprintHoldsContent(full)).toBe(true);
+    expect(blueprintHoldsContent(blueprintSummary(""))).toBe(false);
+    expect(blueprintHoldsContent(withholdBlueprintContent(full))).toBe(false);
   });
 
   it("finds a hook's description", () => {

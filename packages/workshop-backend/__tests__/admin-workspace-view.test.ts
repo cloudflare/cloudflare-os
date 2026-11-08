@@ -16,8 +16,10 @@ import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
   MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminChatAttachment, type AdminChatState, type AdminPendingChange,
-  type AdminWorkspaceAccess, type AiChatAuthorInfo, type ChatGadgetPin, type FileAtCommit,
+  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess, type AiChatAuthorInfo,
+  type BlueprintGadgetSummary, type ChatGadgetPin, type FileAtCommit, type ObserverBindingNeed,
+  type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
@@ -45,6 +47,10 @@ const OWNER_USER_ID = "owner-user-do";
 // and awaits its record), then expires within the test.
 const SHORT_LIFETIME_MS = 1000;
 const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.test", name: "Owner" };
+// The seed's collaborator, added by the owner, who holds an observer record.
+const BOB: AiChatAuthorInfo = { type: "user", id: "bob@example.test", name: "Bob" };
+// An id the workspace keeps no profile for: neither its owner's nor a collaborator's.
+const STRANGER_ID = "stranger@example.test";
 const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
 // Who the seed's commits are by.
 const COMMITTER = { name: "Owner", email: "owner@example.test" };
@@ -53,6 +59,8 @@ const REASON = "Support ticket 42";
 const RETENTION = 90;
 
 const GATEKEEPER_ID = 0;
+// The seed's second connection, an ambient one: no person created it, and no gadget binds it.
+const AMBIENT_GATEKEEPER_ID = 1;
 const CHAT_ID = 1;
 // A chat with no message, turn, queued call or action, which the tests that need one add.
 const IDLE_CHAT_ID = 2;
@@ -73,6 +81,13 @@ const LEGACY_ATTACHMENT_ID = "33333333-3333-4333-8333-333333333333";
 const BLOB_ATTACHMENT_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x01]);
 const INLINE_ATTACHMENT_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xfe]);
 const LEGACY_ATTACHMENT_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xfd, 0x02, 0x03]);
+
+// The seed's share links, by who created each: the owner, the collaborator, and STRANGER_ID.
+const OWNER_LINK_ID = "a1".repeat(32);
+const BOB_LINK_ID = "b2".repeat(32);
+const STRANGER_LINK_ID = "c3".repeat(32);
+// The blueprint the seed publishes from its gadget.
+const BLUEPRINT_ID = "published-blueprint";
 
 // The call the seed queues for the chat's agent, and the turn seedTurn() records.
 const QUEUED_CALL_ID = 7;
@@ -165,7 +180,7 @@ async function seed(ws: Workspace): Promise<void> {
     argsSummary: ARGS_SUMMARY, initiatorUserId: INITIATOR_USER_ID, initiatorModelId: MODEL_ID,
   });
 
-  impl.storage.nextGatekeeperId.put(GATEKEEPER_ID + 1);
+  impl.storage.nextGatekeeperId.put(AMBIENT_GATEKEEPER_ID + 1);
   impl.storage.gatekeepers.put({
     id: GATEKEEPER_ID, resourceTitle: "Repo", resourceUrl: "https://example.com/repo",
     class: {} as any,
@@ -173,6 +188,11 @@ async function seed(ws: Workspace): Promise<void> {
       type: "gatekeeper", vendorId: "TestVendor", resourceUrl: "https://example.com/repo",
       typeUrlPattern: "https://*",
     },
+    createdBy: OWNER,
+  });
+  impl.storage.gatekeepers.put({
+    id: AMBIENT_GATEKEEPER_ID, resourceTitle: "Library", class: {} as any,
+    creationSpec: { type: "ambient", vendorId: "library", accountId: 3 },
   });
   putAction(impl.storage, 0, { type: "observation", gatekeeperId: GATEKEEPER_ID });
   putAction(impl.storage, 1, { type: "action", gatekeeperId: GATEKEEPER_ID });
@@ -215,7 +235,103 @@ async function seed(ws: Workspace): Promise<void> {
   await submit(ws, DRAFT_CHAT_ID, {
     [ws.gadgetId]: [["added.txt", { set: "added\n" }], ["todo.txt", { remove: true }]],
   });
+  seedSharing(ws);
 }
+
+// Shares the workspace: a collaborator who holds an observer record, three share links, an
+// auto-approval rule and a published blueprint.
+function seedSharing(ws: Workspace): void {
+  let storage = ws.impl.storage;
+  storage.collaborators.put({
+    profile: BOB,
+    addedBy: [{ type: "user", sharer: OWNER.id, created: new Date(0), role: "build" }],
+  });
+  // Every field an observer's record stores, the ones no answer may carry included.
+  storage.observers.put({
+    profileId: BOB.id, observerId: "observer-bob", accountChoices: { [GATEKEEPER_ID]: 7 },
+  });
+
+  storage.shareKeys.put({
+    id: OWNER_LINK_ID, note: "For the team", created: new Date(1000), createdBy: OWNER.id,
+    role: "build",
+  });
+  storage.shareKeys.put({
+    id: BOB_LINK_ID, note: "Demo", created: new Date(2000), createdBy: BOB.id, role: "use",
+    gadgetId: ws.gadgetId,
+  });
+  // A link from before links had roles, by someone the workspace keeps no profile for.
+  storage.shareKeys.put({ id: STRANGER_LINK_ID, created: new Date(3000), createdBy: STRANGER_ID });
+
+  // A rule for a kind no seeded action is of, so it applies to none of them.
+  storage.autoApproveTags.put({
+    gatekeeperId: GATEKEEPER_ID, actionKind: { tag: "publish", label: "Publishes" },
+    enabledBy: OWNER,
+  });
+
+  storage.blueprints.put({
+    id: BLUEPRINT_ID, gadgetId: ws.gadgetId, commitId: ws.commitId,
+    metadata: {
+      title: "Notes kit", description: "Keeps notes", author: OWNER, created: new Date(0),
+      version: 2, lastUpdated: new Date(5000), screenshot: true, bindings: {},
+    },
+  });
+}
+
+// The seed's observer as a view lists them at any level: an entry's two fields and a choice's
+// three, and nothing else of the stored record.
+function seededObservers(): AdminObserver[] {
+  return [{
+    profile: BOB,
+    accountChoices: [{ gatekeeperId: GATEKEEPER_ID, accountId: 7, vendorId: "testvendor" }],
+  }];
+}
+
+// The seed's share links as a view lists them at any level, each with its creator resolved.
+function seededShareLinks(ws: Workspace): ShareLinkInfo[] {
+  return [
+    {
+      linkId: OWNER_LINK_ID, note: "For the team", created: new Date(1000), createdBy: OWNER,
+      role: "build",
+    },
+    {
+      linkId: BOB_LINK_ID, note: "Demo", created: new Date(2000), createdBy: BOB, role: "use",
+      gadgetId: ws.gadgetId,
+    },
+    {
+      linkId: STRANGER_LINK_ID, note: undefined, created: new Date(3000),
+      createdBy: { type: "user", id: STRANGER_ID, name: STRANGER_ID }, role: "build",
+    },
+  ];
+}
+
+// The seed's auto-approval rule as a view lists it at any level.
+function seededAutoApprovals(): AdminAutoApproval[] {
+  return [{
+    gatekeeperId: GATEKEEPER_ID, actionKind: { tag: "publish", label: "Publishes" },
+    enabledBy: OWNER,
+  }];
+}
+
+// The seed's blueprint as a view lists it at "full". Below, its id is "" and it has no
+// `screenshotUrl`.
+function seededBlueprint(): BlueprintGadgetSummary {
+  return {
+    id: BLUEPRINT_ID, title: "Notes kit", description: "Keeps notes", version: 2,
+    codeVersionDate: new Date(1700000000_000),
+    screenshotUrl: `/blueprint-screenshot/${BLUEPRINT_ID}?v=5000`, dirty: undefined,
+  };
+}
+
+// What a collaborator must pass for each of the seed's connections, with the vendor as the
+// connection's creationSpec spells it.
+const REPO_REQUIREMENT: ObserverBindingNeed = {
+  gatekeeperId: GATEKEEPER_ID, vendorId: "TestVendor", resourceTitle: "Repo",
+  resourceUrl: "https://example.com/repo",
+};
+const LIBRARY_REQUIREMENT: ObserverBindingNeed = {
+  gatekeeperId: AMBIENT_GATEKEEPER_ID, vendorId: "library", resourceTitle: "Library",
+  resourceUrl: undefined,
+};
 
 // Writes `files` as a commit by COMMITTER.
 async function commitFiles(ws: Workspace, files: Record<string, string>, options: {
@@ -557,6 +673,12 @@ describe("a metadata view", () => {
     expect(await codeOf(view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt")))
         .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
     await view.listGatekeepers();
+    await view.listObservers();
+    await view.listObserverRequirements("workspace");
+    await view.listObserverRequirements({ gadgetId: ws.gadgetId });
+    await view.listShareLinks();
+    await view.listAutoApprovals();
+    await view.listBlueprints();
     await view.getDiagnostics();
 
     let records = await deploymentRecords(ws);
@@ -584,6 +706,12 @@ describe("a metadata view", () => {
       ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: ws.gadgetId, path: "notes.txt" },
        "metadata", ADMIN_ACCESS_ERROR_CODES.contentWithheld],
       ["listGatekeepers", {}, "metadata", undefined],
+      ["listObservers", {}, "metadata", undefined],
+      ["listObserverRequirements", { grant: "workspace" }, "metadata", undefined],
+      ["listObserverRequirements", { gadgetId: ws.gadgetId }, "metadata", undefined],
+      ["listShareLinks", {}, "metadata", undefined],
+      ["listAutoApprovals", {}, "metadata", undefined],
+      ["listBlueprints", {}, "metadata", undefined],
       ["getDiagnostics", {}, "metadata", undefined],
     ]);
     // The list above is kept by hand: a method the audit names fails here until it is called
@@ -625,19 +753,40 @@ describe("a metadata view", () => {
 
     let description = await view.describe();
     expect(description).toMatchObject({
-      id: ws.id, title: "Quarterly plan", owner: OWNER, access: "metadata", collaborators: [],
+      id: ws.id, title: "Quarterly plan", owner: OWNER, access: "metadata",
+      collaborators: [{
+        profile: BOB, access: { role: "build" },
+        addedBy: [{ type: "user", sharer: OWNER.id, created: new Date(0), role: "build" }],
+      }],
     });
     let gadget = description.workpieces.find(w => w.id === ws.gadgetId)!;
     expect(gadget).toMatchObject({ type: "gadget", title: "Notes", commitId: ws.commitId });
     expect(gadget).not.toHaveProperty("upstream");
 
-    let [gatekeeper] = await view.listGatekeepers();
+    let [gatekeeper, ambient, ...others] = await view.listGatekeepers();
     expect(gatekeeper).toMatchObject({
-      id: GATEKEEPER_ID, resourceTitle: "Repo", vendorId: "testvendor",
+      id: GATEKEEPER_ID, resourceTitle: "Repo", vendorId: "testvendor", createdBy: OWNER,
       bindings: [{ gadgetId: ws.gadgetId, name: "REPO" }],
     });
     expect(gatekeeper.hooks.map(hook => [hook.description.title, hook.description.description]))
         .toStrictEqual([["On push", ""]]);
+    // The ambient connection, whole: no person created it.
+    expect(ambient).toStrictEqual({
+      id: AMBIENT_GATEKEEPER_ID, resourceTitle: "Library", resourceUrl: undefined,
+      vendorId: "library", creationSpec: { type: "ambient", vendorId: "library", accountId: 3 },
+      createdBy: undefined, bindings: [], hooks: [],
+    });
+    expect(others).toStrictEqual([]);
+
+    // Whole answers again: an observer's stored record also holds the id connections know them
+    // by. These three hold nothing the level withholds.
+    expect(await view.listObservers()).toStrictEqual(seededObservers());
+    expect(await view.listShareLinks()).toStrictEqual(seededShareLinks(ws));
+    expect(await view.listAutoApprovals()).toStrictEqual(seededAutoApprovals());
+    // A blueprint keeps its title, description, version and date, without the id that is a link
+    // to its code, or the screenshot URL that holds it.
+    let { screenshotUrl: _screenshotUrl, ...blueprint } = seededBlueprint();
+    expect(await view.listBlueprints()).toStrictEqual([{ ...blueprint, id: "" }]);
 
     expect(await view.listFiles(ws.gadgetId)).toStrictEqual(
         [{ name: "notes.txt", kind: "file" }, { name: "todo.txt", kind: "file" }]);
@@ -701,6 +850,12 @@ describe("an inspection", () => {
     await view.listPendingChanges(DRAFT_CHAT_ID);
     await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt").catch(() => {});
     await view.listGatekeepers();
+    await view.listObservers();
+    await view.listObserverRequirements("workspace");
+    await view.listObserverRequirements({ gadgetId: ws.gadgetId });
+    await view.listShareLinks();
+    await view.listAutoApprovals();
+    await view.listBlueprints();
     await view.getDiagnostics();
 
     setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
@@ -727,6 +882,13 @@ describe("an inspection", () => {
     expect(await full.readPendingFile(WORKTREE_CHAT_ID, worktree.id, "a.txt"))
         .toStrictEqual({ kind: "text", text: "one!\n" });
     await full.listGatekeepers();
+    await full.listObservers();
+    await full.listObserverRequirements("workspace");
+    await full.listObserverRequirements({ gadgetId: ws.gadgetId });
+    // Asks the owner's account, since the owner created a link, and still writes nothing.
+    expect(await full.listShareLinks()).toHaveLength(3);
+    await full.listAutoApprovals();
+    await full.listBlueprints();
     await full.getDiagnostics();
 
     expect(await memberVisibleState(ws)).toStrictEqual(before);
@@ -832,6 +994,14 @@ describe("a full view", () => {
     expect(await view.readFileAtCommit(ws.commitId, "old.txt")).toStrictEqual({ kind: "absent" });
     expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "todo.txt"))
         .toStrictEqual({ kind: "absent" });
+    await view.listObservers();
+    await view.listObserverRequirements("workspace");
+    await view.listShareLinks();
+    await view.listAutoApprovals();
+    await view.listBlueprints();
+    // With no blueprint published, the listing holds no id.
+    ws.impl.storage.blueprints.delete(BLUEPRINT_ID);
+    expect(await view.listBlueprints()).toStrictEqual([]);
 
     let records = await deploymentRecords(ws);
     expect(records.map(r => [r.method, r.exposed])).toStrictEqual([
@@ -859,6 +1029,12 @@ describe("a full view", () => {
       ["listPendingChanges", "metadata"],
       ["readFileAtCommit", "metadata"],
       ["readPendingFile", "metadata"],
+      ["listObservers", "metadata"],
+      ["listObserverRequirements", "metadata"],
+      ["listShareLinks", "metadata"],
+      ["listAutoApprovals", "metadata"],
+      ["listBlueprints", "content"],
+      ["listBlueprints", "metadata"],
     ]);
     expect(records.every(r => r.requested === "full" && r.access === "full")).toBe(true);
   }));
@@ -1049,9 +1225,18 @@ describe("the records' bounds", () => {
     let view = await open(ws);
     let diagnostics = await view.getDiagnostics();
     expect(diagnostics).toMatchObject({
-      chats: 2, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 0,
+      chats: 2, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 1,
       ownerRegistrationPending: false, activeAgentChatIds: [], pendingAgentCalls: 1,
     });
+    expect(diagnostics.storageBytes).toBeGreaterThan(0);
+    // No member has the workspace open, and the admin's own view is not presence.
+    expect(diagnostics.present).toStrictEqual([]);
+
+    let leave = ws.impl.joinPresence(BOB.id, BOB, "build");
+    expect((await view.getDiagnostics()).present)
+        .toStrictEqual([{ key: expect.any(String), user: BOB, role: "build" }]);
+    leave();
+    expect((await view.getDiagnostics()).present).toStrictEqual([]);
   }));
 });
 
@@ -1609,5 +1794,174 @@ describe("a chat's pending changes", () => {
     expect(record)
         .toMatchObject({ method: "readPendingFile", access: "full", exposed: "metadata" });
     expect(record).not.toHaveProperty("refused");
+  }));
+});
+
+// What a workspace refuses a grant that reaches a connection with no creationSpec.
+const LEGACY_CONNECTION = "legacy connection that cannot verify collaborators' access";
+
+describe("sharing reads", () => {
+  it("list observers, requirements, share links, rules and blueprints whole, at every level",
+      () => withWorkspace(async ws => {
+    let storage = ws.impl.storage;
+    // Three more observers, each record with every field it stores. Carol's is reserved: her
+    // first admission has verified nothing. One of Dave's choices is for a connection since
+    // removed. The stranger has no collaborator record.
+    let carol: AiChatAuthorInfo = { type: "user", id: "carol@example.test", name: "Carol" };
+    let dave: AiChatAuthorInfo = { type: "user", id: "dave@example.test", name: "Dave" };
+    for (let profile of [carol, dave]) {
+      storage.collaborators.put({
+        profile,
+        addedBy: [{ type: "user", sharer: OWNER.id, created: new Date(0), role: "build" }],
+      });
+    }
+    storage.observers.put(
+        { profileId: carol.id, observerId: "observer-carol", accountChoices: {} });
+    storage.observers.put({
+      profileId: dave.id, observerId: "observer-dave",
+      accountChoices: { 99: 9, [GATEKEEPER_ID]: 8 },
+    });
+    storage.observers.put({
+      profileId: STRANGER_ID, observerId: "observer-stranger",
+      accountChoices: { [AMBIENT_GATEKEEPER_ID]: 4 },
+    });
+    // By profile id, each choice by connection id. An entry has its two fields and a choice its
+    // three: never the record's observer id, and a removed connection's choice has no vendor.
+    let observers = [
+      ...seededObservers(),
+      { profile: carol, accountChoices: [] },
+      {
+        profile: dave,
+        accountChoices: [
+          { gatekeeperId: GATEKEEPER_ID, accountId: 8, vendorId: "testvendor" },
+          { gatekeeperId: 99, accountId: 9, vendorId: undefined },
+        ],
+      },
+      {
+        profile: { type: "user", id: STRANGER_ID, name: STRANGER_ID },
+        accountChoices: [
+          { gatekeeperId: AMBIENT_GATEKEEPER_ID, accountId: 4, vendorId: "library" },
+        ],
+      },
+    ];
+
+    let metadata = await open(ws);
+    let full = await openFull(ws);
+    for (let view of [metadata, full]) {
+      expect(await view.listObservers()).toStrictEqual(observers);
+      // An ambient connection has a vendor, so a collaborator needs an account for it too. The
+      // gadget reaches only the connection it binds. The vendor is spelled as the connection's
+      // creationSpec spells it, where listObservers() and listGatekeepers() give it in lower case.
+      expect(await view.listObserverRequirements("workspace"))
+          .toStrictEqual([REPO_REQUIREMENT, LIBRARY_REQUIREMENT]);
+      expect(await view.listObserverRequirements({ gadgetId: ws.gadgetId }))
+          .toStrictEqual([REPO_REQUIREMENT]);
+      // Each link with its note, role and creator (the owner's profile, the collaborator's, and
+      // one made of an id), under its id: a link's record holds no key.
+      expect(await view.listShareLinks()).toStrictEqual(seededShareLinks(ws));
+      expect(await view.listAutoApprovals()).toStrictEqual(seededAutoApprovals());
+      // A creator is the same at both levels.
+      expect((await view.listGatekeepers()).map(({ id, createdBy }) => [id, createdBy]))
+          .toStrictEqual([[GATEKEEPER_ID, OWNER], [AMBIENT_GATEKEEPER_ID, undefined]]);
+    }
+    // Only a blueprint's id, and the screenshot URL that holds it, differ by level.
+    expect(await full.listBlueprints()).toStrictEqual([seededBlueprint()]);
+    let { screenshotUrl: _screenshotUrl, ...withheld } = seededBlueprint();
+    expect(await metadata.listBlueprints()).toStrictEqual([{ ...withheld, id: "" }]);
+  }));
+
+  it("list a rule that applies nothing, beside what says why", () => withWorkspace(async ws => {
+    ws.impl.storage.containsRestrictedData.put(true);
+    let view = await open(ws);
+    // The rule stays stored, and listed, once the workspace has read restricted data, and
+    // describe() reports that it has.
+    expect(await view.listAutoApprovals()).toStrictEqual(seededAutoApprovals());
+    expect((await view.describe()).containsRestrictedData).toBe(true);
+    // An action keeps its author's verdict and its kind at every level, beside its emptied
+    // description.
+    let { entries } = await view.listActions();
+    expect(entries.find(entry => entry.type === "action")!.description).toMatchObject({
+      description: "", autoApprovable: true, actionKind: { tag: "edit", label: "Edits" },
+    });
+  }));
+
+  it("ask the owner's account for a share link's creator only when the owner created one",
+      () => withWorkspace(async ws => {
+    let storage = ws.impl.storage;
+    let user = ws.impl.users.get();
+    let asked = 0;
+    ws.impl.users = {
+      idFromString: (id: string) => id,
+      get: () => ({ ...user, whoami: async () => { asked++; return OWNER; } }),
+    };
+    // A second link of the owner's: one lookup serves both.
+    storage.shareKeys.put(
+        { id: "d4".repeat(32), created: new Date(4000), createdBy: OWNER.id, role: "build" });
+    let view = await open(ws);
+    expect(asked).toBe(0);
+
+    let links = await view.listShareLinks();
+    expect(links.map(link => link.createdBy.id))
+        .toStrictEqual([OWNER.id, BOB.id, STRANGER_ID, OWNER.id]);
+    expect(asked).toBe(1);
+
+    // With none of the links the owner's, their account is not asked at all.
+    storage.shareKeys.delete(OWNER_LINK_ID);
+    storage.shareKeys.delete("d4".repeat(32));
+    asked = 0;
+    expect((await view.listShareLinks()).map(link => link.linkId))
+        .toStrictEqual([BOB_LINK_ID, STRANGER_LINK_ID]);
+    expect(asked).toBe(0);
+  }));
+
+  it("record a grant whose requirements cannot be listed as a read that failed",
+      () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    let view = await open(ws);
+    // A connection made before connections could verify collaborators, which no gadget binds.
+    let legacyId = impl.allocateWorkpieceId();
+    impl.storage.gatekeepers.put({ id: legacyId, resourceTitle: "Old", class: {} as any });
+
+    await expect(view.listObserverRequirements({ gadgetId: 999 }))
+        .rejects.toThrow("No such gadget: 999");
+    // "workspace" reaches every connection, so the legacy one fails it.
+    await expect(view.listObserverRequirements("workspace")).rejects.toThrow(LEGACY_CONNECTION);
+    // The gadget does not reach it, so its grant answers.
+    expect(await view.listObserverRequirements({ gadgetId: ws.gadgetId }))
+        .toStrictEqual([REPO_REQUIREMENT]);
+    // Once the gadget binds it, the gadget's grant fails as well.
+    let gadget = impl.storage.gadgets.get(ws.gadgetId);
+    impl.storage.gadgets.put(
+        { ...gadget, bindings: { ...gadget.bindings, OLD: { target: legacyId } } });
+    await expect(view.listObserverRequirements({ gadgetId: ws.gadgetId }))
+        .rejects.toThrow(LEGACY_CONNECTION);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.access, r.exposed])).toStrictEqual([
+      ["listObserverRequirements", { gadgetId: 999 }, "metadata", "metadata"],
+      ["listObserverRequirements", { grant: "workspace" }, "metadata", "metadata"],
+      ["listObserverRequirements", { gadgetId: ws.gadgetId }, "metadata", "metadata"],
+      ["listObserverRequirements", { gadgetId: ws.gadgetId }, "metadata", "metadata"],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("never reach a connection", () => withWorkspace(async ws => {
+    let reached = 0;
+    ws.impl.getGatekeeperFacet = () => {
+      reached++;
+      throw new Error("an admin read reached a connection");
+    };
+    for (let view of [await open(ws), await openFull(ws)]) {
+      await view.listGatekeepers();
+      await view.listObservers();
+      await view.listObserverRequirements("workspace");
+      await view.listObserverRequirements({ gadgetId: ws.gadgetId });
+      await view.listShareLinks();
+      await view.listAutoApprovals();
+      await view.listBlueprints();
+      await view.getDiagnostics();
+    }
+    expect(reached).toBe(0);
   }));
 });

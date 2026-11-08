@@ -454,7 +454,7 @@ test("search reads a command's option names and the callback methods it may be a
   assert.equal(rankOf(asking, "notice", / lock$/), 0);
   // As a doc's words: 2, under the 3 of a command named by the word.
   assert.equal(searchCommands(realTable, "configure observers")[0].command, "cf-os api open-workspace <id>");
-  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 2);
+  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 4);
 });
 
 test("search finds the commands for agents' everyday tasks in the API's own words", () => {
@@ -499,7 +499,7 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ...["redeem share link", "redeem a share link", "open workspace with share key", "join workspace from link",
       "join a shared workspace", "open a workspace shared with me", "configure observers"]
       .map((task): [string, RegExp, number] => [task, openWorkspace, 1]),
-    ["observer verification", openWorkspace, 3],
+    ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
     ["share key", openWorkspace, 3],
   ];
