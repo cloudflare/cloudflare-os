@@ -22,7 +22,8 @@ async function setup(binding: Binding = { resourceKind: "account" }, pd = new Fa
   const name = crypto.randomUUID();
   return {
     pd,
-    run: async (steps: Step[], pages?: number) => unwrap(await hooks().run(name, props, steps, pages ? { pages } : {})),
+    run: async (steps: Step[], pages?: number, between?: Step[][]) =>
+      unwrap(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
     attempt: async (steps: Step[], pages?: number) => failure(await hooks().run(name, props, steps, pages ? { pages } : {})),
     /** What each observation so far reported, order aside. */
     reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
@@ -167,21 +168,22 @@ describe("a team binding", () => {
     expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: movedIn.id }]]);
   });
 
-  it("stops listing a service's incidents once it leaves the team, though the walk still asks for them", async () => {
+  it("stops serving a service's buffered and pending incidents once it leaves the team mid-walk", async () => {
     const t = await setup(team);
-    const first = Array.from({ length: 25 }, () => t.pd.incident(SERVICE).id);
-    for (let i = 0; i < 5; i++) t.pd.incident(SERVICE);
-    // The service leaves the team as PagerDuty sends the walk's second page, and the team's
-    // cached services have expired by the time it arrives.
-    t.pd.on("GET", /^\/incidents\?.*offset=25/, () => {
+    const newest = t.pd.incident(SERVICE, { created_at: new Date(Date.now() + 60 * 60_000).toISOString() });
+    t.pd.incident(SERVICE);
+    await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
+    // After the first page, the service leaves the team and the team's cached services expire;
+    // one fetch already buffered both of PagerDuty's incidents, and the pending one sorts between.
+    t.pd.on("GET", /^\/users/, () => {
       t.pd.services.get(SERVICE.id)!.teams = [OTHER_TEAM];
       vi.setSystemTime(Date.now() + 10 * 60_000);
       return undefined;
     });
     try {
-      const pages = await t.run([["listIncidents"]], 10) as { id: string }[][];
-      expect(pages.flat().map(({ id }) => id)).toEqual(first);
-      expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(2);
+      expect(await t.run([["listIncidents", { allTime: true, pageSize: 1 }]], 5, [[["findUsers", "bob"]]]))
+        .toMatchObject([[{ id: newest.id }]]);
+      expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

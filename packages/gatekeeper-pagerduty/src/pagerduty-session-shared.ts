@@ -357,23 +357,18 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   overlay?(row: T): T | null;
   inject?: CursorInjection<T>;
-  /** Runs once each page PagerDuty sends has arrived, before any of its rows is served. */
-  fetched?(): Promise<void>;
+  beforePage?(): Promise<void>;
 }): Cursor<T> {
+  const { pageSize, sources, describe, filter, result, ...hooks } = options;
   const walk = ctx.dup();
   return new TokenCursor<T>({
-    pageSize: options.pageSize,
-    remotePageSize: Math.max(options.pageSize, DEFAULT_PAGE_SIZE),
+    ...hooks,
+    pageSize,
+    remotePageSize: Math.max(pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
-    ...(options.overlay ? { overlay: options.overlay } : {}),
-    ...(options.inject ? { inject: options.inject } : {}),
-    fetchPage: async (token, perPage) => {
-      const page = await walk.host.read(api => chainedPage(api, options.sources, token, perPage));
-      await options.fetched?.();
-      return page;
-    },
+    fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, sources, token, perPage)),
     authorizePage: async (rows, { terminal }) =>
-      walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: await options.result(rows) }),
+      walk.authorize(describe(rows, terminal), { filter, result: await result(rows) }),
   });
 }
 
@@ -463,7 +458,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const { query, params } = incidentQuery(filter, scope, me);
   const you = youRef(me);
   const { resolve } = host;
-  // The capability's services as of the page last fetched: an incident is listed only while its
+  // The capability's services as of the page being served: an incident is listed only while its
   // service is one, since a service can leave the team while the walk is open.
   let live = scope;
   const inScope = (row: PagerDutyIncidentSummary) => !live || live.includes(row.service.id);
@@ -497,7 +492,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     sources: [query.serviceIds?.length === 0
       ? async () => ({ items: [], more: false })
       : listing("/incidents", "incidents", params, toIncidentSummary)],
-    fetched: async () => {
+    beforePage: async () => {
       live = await servicesWithin(ctx);
     },
     describe: listed("Listed PagerDuty incidents", "incident"),
