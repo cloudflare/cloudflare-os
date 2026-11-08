@@ -81,7 +81,10 @@ export yet; do not apply the new-gatekeeper empty-history/no-op rule to existing
   dot-separated `component` (plus `vendorId` for gatekeepers). Caught values are passed as `error`.
 - Never log or report secrets, prompts, headers, tokens, or request/response bodies. Exception
   messages and stacks reach the external Reporter, so the same rule applies to anything thrown or
-  attached as report metadata.
+  attached as report metadata. The one exception is gadget console output, which the Workshop
+  logs, and never reports, under component `gadget.console` where a deployment sets
+  `RECORD_GADGET_CONSOLE_LOGS`, for every workspace, those that hold restricted data included
+  (`docs/gadget-console-logs.md`).
 - Gatekeeper UIs must not report errors directly from their own Worker origin; they `postMessage`
   to the Workshop host, which validates the known frame window with origin `null`. Frontend reports
   never convey authority.

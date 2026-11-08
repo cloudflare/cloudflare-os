@@ -25,7 +25,11 @@ Server-side logging uses `@gadgets/observability/logger`:
   Keep this normalization deliberately small; do not traverse causes or copy arbitrary properties.
 - Extend field vocabularies locally. Levels: `error` needs attention, `warn` continues best-effort,
   `info` is notable lifecycle, and `debug` is noisy breadcrumbs. Never log secrets, prompts, headers,
-  tokens, or request/response bodies.
+  tokens, or request/response bodies. Gadget console output is the one content exception: where a
+  deployment sets `RECORD_GADGET_CONSOLE_LOGS`, the Workshop logs it under component
+  `gadget.console` for every workspace, those that hold restricted data included, because Workers
+  Observability is treated as sensitive and admin-only, read only by whoever can read the
+  Cloudflare account's Workers logs (`docs/gadget-console-logs.md`).
 
 ## Issue reporting
 

@@ -47,6 +47,12 @@ flag on the workspace: from then on only direct grants from the owner count, so 
 nobody, people who joined through a link or another collaborator lose access, and only the owner
 can add collaborators; see `sharing.md`, "`ownerInvitesOnly`".)
 
+One thing a deployment can turn on reaches outside that coverage: with
+`RECORD_GADGET_CONSOLE_LOGS`, what a gadget prints to its console is written to the backend
+Worker's logs for every workspace, restricted ones included, where whoever can read the Cloudflare
+account's Workers logs reads it without being verified (see
+[gadget-console-logs.md](gadget-console-logs.md)).
+
 The check works as follows:
 
 - **Observers.** Every non-owner who can see data the Gadget read is an *observer*. When a user
