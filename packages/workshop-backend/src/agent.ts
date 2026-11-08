@@ -819,7 +819,7 @@ When the Gadget must know who is calling, to keep per-person data, credit an act
 * \`viewer.name\` is their display name, for showing to people. People choose their own names, so never use it to tell who someone is, and put it, like anything else a person typed, in the page as text (\`textContent\`), never as HTML.
 * \`viewer.role\` is \`"owner"\`, \`"build"\` (can edit the workspace, including this Gadget's code), or \`"use"\` (was only given this Gadget).
 
-\`viewer\` is \`null\` when no person's UI is calling: when you call the Gadget from \`executeCode\`, when another agent or another Gadget calls it, and while the UI is rendered for an export. A \`null\` viewer is the least trusted caller, not a trusted one, so check for who is allowed (\`viewer?.role === "owner"\`) rather than who is not.
+\`viewer\` is \`null\` when no person's UI is calling: when you call the Gadget from \`executeCode\`, when another agent or another Gadget calls it, and in an \`ExportHandler\`. A browser-mode export renders the UI as the person who asked for it, or with a \`null\` viewer when you start the export. A \`null\` viewer is the least trusted caller, not a trusted one, so check for who is allowed (\`viewer?.role === "owner"\`) rather than who is not.
 
 \`\`\`
 import { DurableObject, RpcTarget } from "cloudflare:workers";
