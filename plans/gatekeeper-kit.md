@@ -1702,8 +1702,8 @@ silently, and `page * perPage` arithmetic then skips the rows between with no er
 reflect the rows it consumed — a server-side-filtered search with its own next signal, confluence's
 v1 CQL — is a `TokenCursor` carrying that signal as its token.
 
-`overlay` and `map` stay in each gatekeeper's `fetchPage`: each came from one gatekeeper's shape.
-Injected-item merging did not stay out. GitHub and GitLab each grew a near-identical
+`map` stays in each gatekeeper's `fetchPage`: it came from one gatekeeper's shape. Injected-item
+merging did not stay out. GitHub and GitLab each grew a near-identical
 `StreamingCursor` for it (overlay, injected rows merged by comparator, re-validation at serve time),
 and the copies drifted into opposite bugs — GitHub's served duplicate rows under concurrent
 `next()` and lost a page whose fetch threw, GitLab's walked a fully filtered listing to the end in
@@ -1717,7 +1717,12 @@ is fetched, and identities count as served only once their page is authorized. A
 retry rebuilds from the entries that page consumed, re-reading the injected ones, and stops before
 a provider row the refusal did not cover, such as one a dropped injected row had hidden: that row
 leads the next page, so it is neither lost nor slipped past the refusal.
-`retain` is the one post-fetch step for provider rows, and the ordering rule below is what keeps it
+`overlay` followed it onto the base as `revalidate`'s counterpart for provider rows: a row can sit in
+the buffer long after its fetch, so the simulated changes are applied when it is served, and a
+refusal covers the entry behind the row, whatever `overlay` made of it. Both are synchronous, so
+`beforePage` runs at the start of every `next()` to read asynchronously whatever they derive rows
+from, such as whether the binding still reaches a row's container.
+`retain` is the one fetch-time step for provider rows, and the ordering rule below is what keeps it
 from costing a page.
 
 Filtering is the exception, because a numeric walk has no end-of-list signal but the row count.
