@@ -1099,6 +1099,10 @@ The cursor's own `overlay` does for provider rows what `revalidate` does for inj
 sit in the buffer as fetched until served, so apply the simulation's changes to them there rather
 than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
 It must keep a row's sort position and identity, and authorization sees the row it returns.
+Both run synchronously, so state they read that needs a provider call or storage, such as whether a
+row's container is still within the binding, is refreshed in `beforePage`, which every `next()`
+awaits before building its page; refreshing it in the fetch callback would leave buffered rows
+judged by whatever the last fetch saw.
 
 A refused page's retry re-reads its rows and offers no provider row the refusal did not cover; one
 a dropped injected row had hidden, or one `overlay` had dropped, leads the next page instead, with

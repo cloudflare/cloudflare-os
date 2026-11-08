@@ -859,6 +859,28 @@ describe("injected rows", () => {
     ]);
   });
 
+  it("reads what the overlay derives from before every page, a buffered one included", async () => {
+    // One fetch buffers all three rows; the state the overlay reads changes after the first page.
+    let visible = new Set([1, 2, 3]);
+    let latest = new Set([1, 2, 3]);
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2), issue(3)] }]);
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      beforePage: async () => {
+        visible = latest;
+      },
+      overlay: row => visible.has(row.id) ? row : null,
+      authorizePage: async () => {},
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    latest = new Set([1, 3]);
+    expect(await cursor.next()).toEqual([issue(3)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+  });
+
   it("re-derives a refused page's provider rows, deferring one the overlay no longer drops", async () => {
     // A pending change hides provider 2 when the page is refused, and is discarded before the
     // retry. The overlay returns fresh objects, so the retry must match rows by queue entry.
