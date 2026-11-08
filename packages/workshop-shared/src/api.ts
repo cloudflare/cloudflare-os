@@ -5685,6 +5685,112 @@ export type ConsoleLogEvent = {
 }
 
 /**
+ * The most characters of `text` a GadgetConsoleLogEntry keeps: a longer text is cut to this
+ * length, its last character replaced with "…".
+ */
+export const MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH = 2000;
+
+/**
+ * The most characters of a console call's arguments that are read to make its `text`: twice what
+ * is kept, so that redaction sees the whole of a token that straddles the cut. A browser sends
+ * no more than this per entry.
+ */
+export const MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH = 2 * MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH;
+
+/**
+ * The most entries one Overseer.reportGadgetConsoleLogs() call records: the entries after them
+ * are dropped.
+ */
+export const MAX_GADGET_CONSOLE_LOGS_PER_CALL = 50;
+
+/**
+ * What a marker says of `count` console calls that were dropped instead of recorded: "1 entry
+ * dropped", "37 entries dropped". Every such marker is worded by this, whoever writes it.
+ */
+export function droppedGadgetConsoleLogsText(count: number): string {
+  return count === 1 ? "1 entry dropped" : `${count} entries dropped`;
+}
+
+/**
+ * One console call made by a gadget's code, or one exception it did not catch, as the Workshop
+ * records it. A ConsoleLogEvent is the same call as live subscribers receive it, whole; an entry
+ * is bounded, and token-shaped strings in it are redacted.
+ *
+ * A deployment that records entries writes each as one structured log line, which names the
+ * workspace `gadgetId` and the entry's gadget `workpieceId`, as the Workshop's other log lines do,
+ * and its level and source `consoleLevel` and `consoleSource` (see docs/gadget-console-logs.md).
+ */
+export type GadgetConsoleLogEntry = {
+  /**
+   * When the call was made: by the Workshop's clock for a "server" entry, by the reporting
+   * browser's for a "client" one.
+   */
+  time: Date;
+
+  /** The gadget whose code made the call. */
+  gadgetId: WorkpieceId;
+
+  /**
+   * The chat whose draft of the gadget the code ran as, or null for the gadget's mainline. A chat
+   * that proposes no change to the gadget runs its mainline, so its calls are recorded with null.
+   * A gadget's export handler is the exception: it runs for the chat the export was asked under
+   * (GadgetClient.export()), and its calls carry that chat whether or not it proposes a change.
+   */
+  chatId: number | null;
+
+  /**
+   * Where the entry was produced: "server" in the gadget's worker, "client" in a browser showing
+   * its UI. It does not say who chose the `text`. A "server" entry can hold what a caller sent:
+   * the error of a failed call names the method that was called, which is the caller's choice,
+   * and a gadget's errors and console calls can repeat its arguments. A "client" entry is what
+   * that browser reported (see Overseer.reportGadgetConsoleLogs()), so nothing verifies its
+   * `time`, `level` or `text`.
+   */
+  source: "server" | "client";
+
+  /**
+   * On a "client" entry, the `AiChatAuthorInfo.id` of the user whose session reported it: the
+   * user whose browser ran the gadget's code, which says nothing of who wrote the text. Absent on
+   * a "server" entry.
+   */
+  userId?: string;
+
+  /** The console method called, or "error" for an exception the code did not catch. */
+  level: ConsoleLogEvent["level"];
+
+  /**
+   * The call's arguments as one string: strings as they are and other values as JSON, joined by
+   * spaces. It is kept with token-shaped strings (bearer and basic credentials, `sk-` keys, JSON
+   * Web Tokens, PEM private keys, the password in a URL, and the values of URL parameters and
+   * JSON members named like a secret) replaced by "[redacted]", then cut to
+   * MAX_GADGET_CONSOLE_LOG_TEXT_LENGTH characters, the last of them "…" when anything was cut.
+   * The redaction is a backstop against a credential printed by accident: the text may hold
+   * anything else the gadget handles.
+   */
+  text: string;
+};
+
+/**
+ * One console call captured in a browser showing a gadget's UI, as
+ * Overseer.reportGadgetConsoleLogs() takes it: what the browser knows of the call. The Workshop
+ * records it with source "client", adding the gadget, the chat and the session's user itself.
+ */
+export type ReportedGadgetConsoleLog = {
+  /** When the call was made, by the browser's clock. */
+  time: Date;
+
+  /** The console method called, or "error" for an error the page did not catch. */
+  level: ConsoleLogEvent["level"];
+
+  /**
+   * The call's arguments as the browser joined them: strings as they are and other values as
+   * JSON, separated by spaces. Neither redacted nor cut: the Workshop does both when it records
+   * the entry, reading the first MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH characters.
+   */
+  text: string;
+};
+
+/**
  * Summary of one workpiece, delivered via Overseer.subscribeToWorkpieces(), discriminated by
  * `type`. Gadgets and worktrees are published (gatekeeper workpieces -- chat capsules, ambient
  * singletons, connections -- are not listed). Worktrees are published only to subscriptions that
