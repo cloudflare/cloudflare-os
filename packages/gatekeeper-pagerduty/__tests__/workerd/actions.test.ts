@@ -346,6 +346,9 @@ describe("simulation", () => {
   it.each([
     ["acknowledgement", {}, ["acknowledge"], { statuses: ["acknowledged"] }],
     ["resolve", {}, ["resolve"], { statuses: ["resolved"] }],
+    // PagerDuty reassigns an incident to whoever acknowledges it.
+    ["acknowledgement of another's incident", { assignments: [{ assignee: { id: BOB.id, type: "user_reference", summary: "Bob" } }] },
+      ["acknowledge"], { assignedToMe: true }],
     ["reassignment to oneself", { assignments: [{ assignee: { id: BOB.id, type: "user_reference", summary: "Bob" } }] },
       ["reassign", { users: [ALICE.email] }], { assignedToMe: true }],
   ] as [string, Partial<WireIncident>, Step, object][])("lists an incident a pending %s moves into the filter PagerDuty applies before it", async (_name, wire, step, filter) => {
@@ -392,6 +395,18 @@ describe("simulation", () => {
     expect(pages[0]).toHaveLength(25);
     expect(pages.slice(1)).toMatchObject([[...change ? [{ id: changed.id, ...change }] : [], { id: last.id }]]);
     expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(2);
+  });
+
+  it("resolves an incident's alerts with a pending resolve, in its details and as its alerts are served", async () => {
+    const t = await setup();
+    const alert = (n: number) =>
+      ({ id: `PALR00${n}`, type: "alert", summary: `Alert ${n}`, status: "triggered" as const, created_at: t.incident.created_at });
+    t.pd.alerts.set(t.incident.id, [alert(1), alert(2)]);
+    const pages = await t.run([["getIncident", t.incident.id], ["listAlerts", { pageSize: 1 }]], 2, [onIncident("resolve")(t.incident.id)]);
+    expect(pages).toMatchObject([[{ id: "PALR001", status: "triggered" }], [{ id: "PALR002", status: "resolved" }]]);
+    // The second alert was served from the page the walk fetched before the resolve was staged.
+    expect(t.pd.matching("GET", /\/alerts\b/)).toHaveLength(1);
+    expect(await t.run(onIncident("getDetails")(t.incident.id))).toMatchObject({ status: "resolved", firstAlert: { status: "resolved" } });
   });
 
   it("lists an incident a pending action opens, and binds what builds on it to the incident PagerDuty made", async () => {

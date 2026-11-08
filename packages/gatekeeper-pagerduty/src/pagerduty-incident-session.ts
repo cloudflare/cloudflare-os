@@ -12,7 +12,7 @@ import {
   toAlert, toIncidentDetails, toIncidentSummary, toNote, toTimelineEntry,
   type WireAlert, type WireIncident, type WireNote,
 } from "./pagerduty-normalize";
-import { overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
+import { overlayAlert, overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
   MAX_NOTE_LENGTH, countOf, currentIncident, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed,
   service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext,
@@ -134,17 +134,18 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   async listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>> {
+    const { host } = this.#ctx;
     return await this.#listing<WireAlert, PagerDutyAlert>(options, listed("Listed a PagerDuty incident's alerts", "alert"),
-      "alerts", { sort_by: "created_at:desc" }, toAlert);
+      "alerts", { sort_by: "created_at:desc" }, toAlert, (alert, id) => overlayAlert(alert, id, host.pending(), host.resolve));
   }
 
   /**
    * One of the incident's listings, `GET /incidents/{id}/{key}`, walked by offset, each page
-   * authorized with the incident's dependencies.
+   * authorized with the incident's dependencies, and each row served as `overlay` leaves it.
    */
   async #listing<W, T>(options: PagerDutyPageOptions | undefined,
                        describe: (rows: readonly T[], terminal: boolean) => ObservationInput, key: string, query: Query,
-                       convert: (row: W) => T): Promise<Cursor<T>> {
+                       convert: (row: W) => T, overlay?: (row: T, incidentId: string) => T): Promise<Cursor<T>> {
     const pageSize = pageSizeOf(options);
     const loaded = await this.#load();
     // An incident still waiting to be opened has none.
@@ -161,6 +162,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       // The incident can move to another service while the walk is open, so each page reads it
       // again: refused once it has left the capability's scope, and reporting the service it is on.
       result: async () => this.#result(await this.#load()),
+      ...(overlay ? { overlay: (row: T) => overlay(row, id) } : {}),
     });
   }
 

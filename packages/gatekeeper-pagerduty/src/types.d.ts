@@ -202,14 +202,15 @@ export interface PagerDutyIncident {
   listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>>;
 
   /**
-   * Acknowledges the incident as the connected user, which stops escalation while it lasts. Throws
-   * if the incident is resolved; one resolved in the meantime is left resolved.
+   * Acknowledges the incident as the connected user, which stops escalation while it lasts and, if
+   * it isn't assigned to them, reassigns it to them. Throws if the incident is resolved; one
+   * resolved in the meantime is left resolved.
    */
   acknowledge(): Promise<void>;
 
   /**
-   * Resolves the incident. `resolution`, if given, is recorded on the resolve entry of
-   * `getTimeline()`; it isn't a note, so `listNotes()` doesn't return it.
+   * Resolves the incident and its alerts. `resolution`, if given, is recorded on the resolve entry
+   * of `getTimeline()`; it isn't a note, so `listNotes()` doesn't return it.
    */
   resolve(resolution?: string): Promise<void>;
 

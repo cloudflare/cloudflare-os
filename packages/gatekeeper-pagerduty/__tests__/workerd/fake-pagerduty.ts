@@ -12,7 +12,7 @@ import { vi } from "vitest";
 import { identityOf } from "../../src/pagerduty-credentials";
 import { ID_TOKEN_ISSUER, SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
 import type {
-  WireAssignment, WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule,
+  WireAlert, WireAssignment, WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule,
   WireService, WireShift, WireShiftOverride, WireTeam, WireUser,
 } from "../../src/pagerduty-normalize";
 import SIGNING_JWK from "./id-token-key.json";
@@ -100,6 +100,7 @@ export class FakePagerDuty {
   readonly notes = new Map<string, WireNote[]>();
   /** Each incident's log, oldest first, as PagerDuty lists it. */
   readonly logEntries = new Map<string, WireLogEntry[]>();
+  readonly alerts = new Map<string, WireAlert[]>();
   readonly shifts = new Map<string, WireShift[]>();
   readonly overrides = new Map<string, WireOverride[]>();
   readonly priorities: WirePriority[] = [PRIORITY, { id: "PPRI002", name: "P2" }];
@@ -361,7 +362,7 @@ export class FakePagerDuty {
       const incident = this.incidents.get(key) ?? [...this.incidents.values()].find(i => String(i.incident_number) === key);
       if (!incident) return error(404, "Not found");
       if (method === "GET" && !sub) return json({ incident });
-      if (method === "GET" && sub === "alerts") return page(url, "alerts", []);
+      if (method === "GET" && sub === "alerts") return page(url, "alerts", this.alerts.get(incident.id) ?? []);
       if (method === "GET" && sub === "log_entries") return page(url, "log_entries", this.logEntries.get(incident.id) ?? []);
       if (method === "GET" && sub === "notes") return json({ notes: this.notes.get(incident.id) ?? [] });
       if (method === "PUT" && !sub) {

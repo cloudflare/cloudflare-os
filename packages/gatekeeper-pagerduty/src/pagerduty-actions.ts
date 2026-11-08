@@ -276,7 +276,8 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     delivery: "continue-with-simulation",
     dependsOn: dependedRefs,
     describe: (payload, host) => present("Acknowledge a PagerDuty incident",
-      buildDescription(`Acknowledges ${incidentLabel(host, payload.incident)} as you, which stops its escalation.`)),
+      buildDescription(`Acknowledges ${incidentLabel(host, payload.incident)} as you, which stops its escalation and, ` +
+        "if it isn't assigned to you, reassigns it to you.")),
     apply: async (payload, host) => {
       const id = host.refs.requireResolved(payload.incident.id, { expectedKind: "incident" });
       // PagerDuty reopens a resolved incident it is asked to acknowledge.

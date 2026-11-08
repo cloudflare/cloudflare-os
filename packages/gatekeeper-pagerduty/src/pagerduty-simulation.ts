@@ -1,20 +1,22 @@
 // Reads as if pending actions had been applied, as far as PagerDuty's data allows: an incident
-// shows the status, title, priority, urgency and assignees its pending changes give it (raising an
-// acknowledged incident's urgency returns it to triggered, as PagerDuty does), incidents and
-// overrides a pending action creates are listed (a created override's user is in shifts and on
-// call), an override pending removal is gone from overrides (or, if under way, ends when the
-// removal was staged), and a note waiting to be added is among the incident's notes. An incident a
-// pending action opens starts as PagerDuty would open it: acknowledged if assigned to the connected
-// user alone, and with the urgency its service's rule gives if none was chosen. Not shown: a
-// reassignment to an escalation policy, whose assignees PagerDuty picks; the removal of an override
-// PagerDuty already has from shifts and on-call entries, which don't say whom it displaced; and any
-// pending change in an incident's log. Every function is pure over the journal's pending entries.
+// shows the status, title, priority, urgency and assignees its pending changes give it, with
+// PagerDuty's side effects (acknowledging reassigns it to whoever acknowledges it, resolving
+// resolves its alerts, and raising an acknowledged incident's urgency returns it to triggered),
+// incidents and overrides a pending action creates are listed (a created override's user is in
+// shifts and on call), an override pending removal is gone from overrides (or, if under way, ends
+// when the removal was staged), and a note waiting to be added is among the incident's notes. An
+// incident a pending action opens starts as PagerDuty would open it: acknowledged if assigned to
+// the connected user alone, and with the urgency its service's rule gives if none was chosen. Not
+// shown: a reassignment to an escalation policy, whose assignees PagerDuty picks; the removal of an
+// override PagerDuty already has from shifts and on-call entries, which don't say whom it
+// displaced; and any pending change in an incident's log. Every function is pure over the
+// journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
 import type { WireService, WireSupportHours } from "./pagerduty-normalize";
 import type {
-  PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote, PagerDutyOnCall,
+  PagerDutyAlert, PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote, PagerDutyOnCall,
   PagerDutyOverride, PagerDutyRef, PagerDutyShift, PagerDutyUrgency, PagerDutyUserRef,
 } from "./types";
 
@@ -50,6 +52,9 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
   for (const action of actionsOn(incident.id, pending, resolve)) {
     switch (action.kind) {
       case "acknowledge":
+        // PagerDuty leaves a resolved incident as it is, and reassigns one to whoever acknowledges it.
+        if (result.status === "resolved") break;
+        if (!result.assignees.some(({ id }) => id === me.id)) result = { ...result, assignees: [me] };
         if (result.status === "triggered") {
           result = { ...result, status: "acknowledged" };
           if ("acknowledgers" in result) {
@@ -58,9 +63,13 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
           }
         }
         break;
-      case "resolve":
+      case "resolve": {
+        // Resolving an incident resolves its alerts.
         result = { ...result, status: "resolved", assignees: [] };
+        const { firstAlert } = result as Partial<PagerDutyIncidentDetails>;
+        if (firstAlert) result = { ...result, firstAlert: { ...firstAlert, status: "resolved" } };
         break;
+      }
       case "setPriority":
         result = { ...result, priority: action.payload.priority?.name ?? null };
         break;
@@ -86,6 +95,11 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
     }
   }
   return result;
+}
+
+/** An alert of the incident `incidentId` as pending actions leave it: resolved with its incident. */
+export function overlayAlert(alert: PagerDutyAlert, incidentId: string, pending: Pending, resolve: Resolve): PagerDutyAlert {
+  return actionsOn(incidentId, pending, resolve).some(({ kind }) => kind === "resolve") ? { ...alert, status: "resolved" } : alert;
 }
 
 /** An incident a pending action opens, as reads show it until PagerDuty has it. */
