@@ -557,7 +557,7 @@ describe("restoreVersion", () => {
     await restore(client, p);
 
     let head = impl.storage.gadgets.get(1)!.commitId!;
-    expect((await commitObject(impl, head)).parent).toEqual([broken]);
+    expect((await commitObject(impl, head)).parents).toEqual([broken]);
     expect(await filesAt(impl, head)).toEqual({ "client.js": "good\n" });
     expect(await impl.getGadgetUiBundle(1)).toEqual({ jsCode: "good\n" });
 
@@ -583,7 +583,7 @@ describe("restoreVersion", () => {
       () => withClient(async (impl, client) => {
     let p = await commitFiles(impl, { "client.js": "mine\n" });
     let release = await commitFiles(impl, { "client.js": "blueprint\n" });
-    let merged = await impl.gitStore.writeFilesAsCommit(
+    let merged = await impl.gitCache.writeFilesAsCommit(
         new Map([["client.js", "blueprint\n"]]), {
           parents: [p, release], headers: [releaseMergeHeader(release)],
           author: { name: "Alice", email: "alice@example.com" }, message: "Merge blueprint",

@@ -4808,7 +4808,7 @@ class OverseerImpl implements AgentHooks {
           "versions to restore.");
     }
     let found = false;
-    for await (let {oid} of this.gitStore.firstParentChain(head)) {
+    for await (let {oid} of this.gitCache.firstParentChain(head)) {
       if (oid === commitId) {
         found = true;
         break;
@@ -4823,11 +4823,11 @@ class OverseerImpl implements AgentHooks {
           "restoring it would drop the update. Restore a version from after the update.");
     }
     // Never trade one head that can't be read for another.
-    await this.gitStore.readCommitFiles(commitId);
+    await this.gitCache.readCommitFiles(commitId);
     // A retried restore finds the head already holding these files: nothing to commit.
-    let tree = await this.gitStore.commitTree(commitId);
-    if (tree === await this.gitStore.commitTree(head)) return;
-    let restored = await this.gitStore.writeCommitForTree(tree, {
+    let tree = await this.gitCache.commitTree(commitId);
+    if (tree === await this.gitCache.commitTree(head)) return;
+    let restored = await this.gitCache.writeCommitForTree(tree, {
       parents: [head],
       author: commitIdentityForAuthor(author),
       message: `Restore version ${commitId.slice(0, 7)}`,
