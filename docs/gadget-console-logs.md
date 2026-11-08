@@ -36,7 +36,7 @@ it.
 
 | Variable | Values | Default | Effect |
 | --- | --- | --- | --- |
-| `RECORD_GADGET_CONSOLE_LOGS` | the string `true` | off (unset, blank, `false` or anything else, a JSON boolean included) | The Workshop writes what gadgets print to their consoles as `gadget.console` lines in the backend Worker's logs. |
+| `RECORD_GADGET_CONSOLE_LOGS` | the string `true` | off (unset, blank, `false` or anything else, a JSON boolean or object included) | The Workshop writes what gadgets print to their consoles as `gadget.console` lines in the backend Worker's logs. |
 
 A value that is none of `true`, `false` or blank is logged: an error line of component
 `gadget.console` with event `gadget.console.config.invalid`, once per isolate for each such value.
@@ -97,7 +97,10 @@ Observability resource, must take `text` as data and never as instructions.
 - **An exception a gadget method throws at its caller**, when that caller holds a stub the
   Workshop wraps to catch it: a session's `connectToGadget()` stub, another gadget's binding and an
   export. A hook, and a stub the gadget restored for itself, are not wrapped. Live delivery
-  carries exactly the same exceptions.
+  carries exactly the same exceptions. One failure can be both kinds: an exception thrown by a
+  gadget's constructor is reported by the runtime and thrown at the caller, so it is recorded
+  twice, once with the error's message and once with the method that was called, as live
+  delivery sends it twice.
 - **What each open gadget view's browser sends**, every few seconds
   (`GADGET_CONSOLE_LOG_FLUSH_MS`, 5 seconds): what the gadget's client code passed to `console.*`,
   and the errors it did not catch. These entries are unverified and labelled with the session's
@@ -209,14 +212,17 @@ Every count is an estimate, never a bound. It can be short: drops after a gadget
 a minute are counted only by its next marker, which is written only if the gadget is reported for
 again. And a browser's count can be over: a browser counts a batch as dropped when its send fails,
 or is given up after `GADGET_CONSOLE_LOG_SEND_TIMEOUT_MS` (30 seconds), though the server may have
-recorded it.
+recorded it. A gadget's marker can be over too, after a report that could not be written: it
+counts what that report's marker held, which can include entries of the report itself, and the
+browser has counted those as well.
 
 ### When recording fails
 
 A client batch or a caught exception that cannot be handed to the writer is logged by the
 workspace's own logger, component `workshop.overseer`, as a warn with event
 `gadget.console.record.failed` and the error. That line holds none of the output. The browser's
-report is rejected, and it counts that batch as dropped.
+report is rejected, and it counts that batch as dropped. A marker that report was to bring is not
+lost with it: the gadget's next marker counts what it held.
 
 ### What the capture loses without a marker
 

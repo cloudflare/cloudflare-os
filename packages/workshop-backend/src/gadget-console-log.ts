@@ -64,12 +64,12 @@ const SK_KEY = new RegExp(`${TOKEN_START}sk[-_][\\w-]{16,}`, "g");
 const PRIVATE_KEY =
     /(-----BEGIN [A-Z\d ]*PRIVATE KEY(?: BLOCK)?-----)[\s\S]*?(-----END [A-Z\d ]*PRIVATE KEY|$)/g;
 
-// The password in a URL's user information, scheme://user:password@host. It may hold "@" and ends
-// at the last one before the path, as a URL parser reads it. Neither the user name nor the
-// password holds a double quote, so that a URL in compact JSON is not read on into the members
-// after it. The pattern starts at the literal "://": one that began with the scheme's letters
-// would rescan every run of letters and dots.
-const URL_PASSWORD = /(:\/\/[^\s/?#@:"]*:)[^\s/?#"]+(?=@)/g;
+// The password in a URL's user information, scheme://user:password@host. The user name and the
+// password may each hold "@" (an address as a user name, say), and the password ends at the last
+// one before the path, as a URL parser reads it. Neither holds a double quote, so that a URL in
+// compact JSON is not read on into the members after it. The pattern starts at the literal "://":
+// one that began with the scheme's letters would rescan every run of letters and dots.
+const URL_PASSWORD = /(:\/\/[^\s/?#:"]*:)[^\s/?#"]+(?=@)/g;
 
 /**
  * `text` with token-shaped strings replaced by "[redacted]": bearer and basic credentials, `sk-`
@@ -147,7 +147,7 @@ export function gadgetConsoleLogText(parts: readonly unknown[]): string {
   if (bounded) {
     let end = MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH;
     while (end > 0 && TOKEN_CHARACTER.test(read[end - 1])) end--;
-    read = read.slice(0, end).replace(/(:\/\/[^\s/?#@:"]*:)[^\s/?#"]+$/, "$1");
+    read = read.slice(0, end).replace(/(:\/\/[^\s/?#:"]*:)[^\s/?#"]+$/, "$1");
   }
 
   // Bounded text is not all there was: the added "…" marks it where redaction leaves it short of
@@ -251,6 +251,17 @@ export class GadgetConsoleLogLimiter {
     }
     return { admitted, dropped };
   }
+
+  /**
+   * Counts `dropped` entries of `gadgetId` as not yet marked again, for a marker that admit()
+   * asked for and that could not be written: the gadget's next marker counts them. The gadget is
+   * still marked at most once a minute, and what was admitted with them stays counted against
+   * its minute.
+   */
+  unmark(gadgetId: WorkpieceId, dropped: number): void {
+    let window = this.#windows.get(gadgetId);
+    if (window !== undefined) window.unmarked += dropped;
+  }
 }
 
 // --- Recording ---
@@ -289,7 +300,10 @@ export function isGadgetConsoleLogRecordingEnabled(
     env: Pick<Cloudflare.Env, "RECORD_GADGET_CONSOLE_LOGS">): boolean {
   let raw: unknown = env.RECORD_GADGET_CONSOLE_LOGS;
   if (raw === "true") return true;
-  if (!isBlank(raw) && raw !== "false" && !reportedInvalidSwitches.has(raw)) {
+  // An object is invalid without being read as text: a JSON variable can hold one that has no
+  // string form, and reading the switch must not throw.
+  let invalid = (typeof raw === "object" && raw !== null) || (!isBlank(raw) && raw !== "false");
+  if (invalid && !reportedInvalidSwitches.has(raw)) {
     reportedInvalidSwitches.add(raw);
     logger.error(
         'RECORD_GADGET_CONSOLE_LOGS is neither "true" nor "false", so gadget console output is ' +

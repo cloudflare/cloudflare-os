@@ -1,8 +1,10 @@
 // What a deployment that records gadget console output keeps of an exception a gadget method
 // throws at its caller. The facet proxy of getGadgetFacet() catches it, delivers it to live
 // subscribers and hands it to GadgetConsoleLogLoopback, which writes its line. The rest of a
-// gadget's server output is recorded by its tail worker, which reads the Worker's own env: that
-// carries no switch in this pool, so the integration suite covers it.
+// gadget's server output is recorded by its tail worker, which reads the Worker's own env: the
+// tail the runtime runs gets this pool's, which carries no switch, so the integration suite
+// covers that one, and the last cases here call tail() on an entrypoint made with an env of their
+// own, for the values no harness is started with.
 //
 // Runs a real gadget, loaded from a real commit, inside a real OverseerDurableObject.
 //
@@ -19,7 +21,7 @@ import {
   type AiChatAuthorInfo, type ConsoleLogEvent, type Overseer, type ReportedGadgetConsoleLog,
 } from "@gadgets/workshop-shared/api";
 import { GADGET_CONSOLE_LOGS_PER_MINUTE } from "../src/gadget-console-log.js";
-import type { OverseerDurableObject } from "../src/overseer.js";
+import { GadgetTailLoopback, type OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -555,6 +557,47 @@ describe("recording what a session reports of a gadget's UI", () => {
     expect(lines()).toHaveLength(0);
   }));
 
+  // The limiter has counted a marker's drops by the time the marker's write fails, so the
+  // Overseer has them counted again: otherwise no marker would ever hold them.
+  it("counts what a marker that could not be written held with the gadget's next", () =>
+      withSession(async (impl, client) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(NOON);
+      for (let call = 0; call < 6; call++) {
+        await client.reportGadgetConsoleLogs(
+            GADGET_ID, null, batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL));
+      }
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(10));
+      expect(markers()).toStrictEqual([reportedMarker(impl, 10)]);
+      // Seven more wait for the gadget's next minute, whose first report cannot be written.
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(7));
+
+      vi.setSystemTime(NOON + 60_000);
+      let ctx = impl.ctx;
+      let handed: number[] = [];
+      replaceGadgetConsoleLogLoopback(impl, () => ({
+        client: async (...args: unknown[]) => {
+          handed.push(args[4] as number);
+          throw new Error("down");
+        },
+      }));
+      await expect(client.reportGadgetConsoleLogs(GADGET_ID, null, batch(3)))
+          .rejects.toThrow(/down/);
+      expect(handed).toStrictEqual([7]);
+      impl.ctx = ctx;
+
+      // A gadget is marked once a minute, written or not, so the seven wait for the one after.
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(1));
+      expect(markers()).toHaveLength(1);
+      vi.setSystemTime(NOON + 120_000);
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(1));
+      expect(markers()).toStrictEqual([reportedMarker(impl, 10), reportedMarker(impl, 7)]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+
   it("delivers nothing of a report to a live subscriber", () =>
       withSession(async (impl, client) => {
     // (onRpcBroken must exist on the recorder: a native stub over a plain object forwards it.)
@@ -641,4 +684,61 @@ describe("recording what a session reports of a gadget's UI", () => {
     await client.reportGadgetConsoleLogs(GADGET_ID, null, [reported("boom")]);
     expect(warn).not.toHaveBeenCalled();
   }, recording));
+});
+
+describe("recording what a gadget's tail is handed", () => {
+  // Calls tail() with the trace of one request of the gadget's that made one console call, on a
+  // GadgetTailLoopback whose env holds `value` as the switch, and gives what it delivered for
+  // live subscribers. The entrypoint's ctx is the props and the one export that tail() reads.
+  async function tail(value: unknown): Promise<ConsoleLogEvent[][]> {
+    let delivered: ConsoleLogEvent[][] = [];
+    let ctx = {
+      props: { gadgetId: GADGET_ID, overseerId: "ws" },
+      exports: {
+        OverseerDurableObject: {
+          idFromString: (id: string) => id,
+          get: () => ({
+            deliverGadgetLogs: async (_chatId: number | null, logs: ConsoleLogEvent[]) => {
+              delivered.push(logs);
+            },
+          }),
+        },
+      },
+    };
+    let loopback = new GadgetTailLoopback(ctx as any, { RECORD_GADGET_CONSOLE_LOGS: value } as any);
+    await loopback.tail(
+        [{ logs: [{ timestamp: AT.getTime(), level: "log", message: ["tail-zzq"] }],
+           exceptions: [] } as any]);
+    return delivered;
+  }
+
+  const DELIVERED = [[{ timestamp: AT, level: "log", message: ["tail-zzq"] }]];
+
+  it('writes a line for a console call while the variable is "true", and delivers the call',
+      async () => {
+    expect(await tail("true")).toStrictEqual(DELIVERED);
+    expect(lines()).toStrictEqual([{
+      component: "gadget.console", event: "gadget.console.entry", message: "gadget console entry",
+      gadgetId: "ws", workpieceId: GADGET_ID, consoleSource: "server", consoleLevel: "log",
+      time: AT.toISOString(), text: "tail-zzq",
+    }]);
+  });
+
+  // tail() has to ask isGadgetConsoleLogRecordingEnabled(), as the Overseer's two sites do: one
+  // that read the variable's truthiness would record under every value here but the first. The
+  // last has no string form, and reading it must not cost live subscribers the call.
+  it.each([
+    ["unset", undefined],
+    ['"false"', "false"],
+    ['"TRUE"', "TRUE"],
+    ['"1"', "1"],
+    ["a JSON true", true],
+    ["a JSON object", { toString: "true" }],
+  ])("writes nothing while the variable is %s, and still delivers the call",
+      async (_name, value) => {
+    // An invalid value is reported, as an error line.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await tail(value)).toStrictEqual(DELIVERED);
+    expect(lines()).toHaveLength(0);
+  });
 });

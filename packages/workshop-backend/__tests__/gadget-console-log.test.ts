@@ -119,6 +119,13 @@ const CAUGHT: Record<string, Case[]> = {
       "mongodb+srv://u:[redacted]@cluster0.x.mongodb.net/db"],
     ["https://token:x-oauth-basic@github.com/o/r.git",
       "https://token:[redacted]@github.com/o/r.git"],
+    // A user name that holds "@": an address, or the user@server form of some databases.
+    [assemble("smtp://ada@example.com", ":Hunter2Secret9", "@smtp.example.com:587"),
+      "smtp://ada@example.com:[redacted]@smtp.example.com:587"],
+    [assemble("imaps://ada@example.com", ":p@ss!", "@imap.example.com/INBOX"),
+      "imaps://ada@example.com:[redacted]@imap.example.com/INBOX"],
+    [assemble('{"url":"postgres://app@myserver', ":Hunter2Secret9", '@myserver.example:5432/db"}'),
+      '{"url":"postgres://app@myserver:[redacted]@myserver.example:5432/db"}'],
     // Inside compact JSON the password ends with its string.
     [assemble('{"dsn":"postgres://app', ":pw", '@db","other":"x@y"}'),
       '{"dsn":"postgres://app:[redacted]@db","other":"x@y"}'],
@@ -260,6 +267,8 @@ const LEFT_ALONE: string[] = [
   "https://example.com:8080/a@b",
   "http://localhost:3000 or mail me@x.y",
   "ssh://git@github.com/o/r.git",
+  "ssh://git@github.com:o/r.git",
+  "ssh://git@github.com:22/o/r.git",
   "http://[::1]:8080/@",
   "see https://host:8080/path and x@y.z",
   "time is 12:30 @home",
@@ -272,6 +281,7 @@ const LEFT_ALONE: string[] = [
   '{"url":"https://example.com","email":"ada@example.com"}',
   '{"url":"http://localhost:8787","email":"a@b.c"}',
   '{"apiBase":"https://api.example.com:8443","contact":"ops@example.com"}',
+  '{"apiBase":"https://ada@api.example.com:8443","contact":"ops@example.com"}',
   String.raw`{\"url\":\"https://example.com\",\"email\":\"ada@example.com\"}`,
   // Identifiers that merely contain "eyJ".
   "keyJoinColumns",
@@ -325,6 +335,7 @@ const ACCEPTED: Case[] = [
   // between.
   ["https://cdn.example.com:443;foo@bar", "https://cdn.example.com:[redacted]@bar"],
   ["http://h:80,x@y", "http://h:[redacted]@y"],
+  ["http://ada@h:80,x@y", "http://ada@h:[redacted]@y"],
   ["see https://example.com,then:mail@x.y", "see https://example.com,then:[redacted]@x.y"],
   // JSON members whose names end like a secret's.
   ['{"nextPageToken":"CAESBQ"}', '{"nextPageToken":"[redacted]"}'],
@@ -690,6 +701,13 @@ describe("gadgetConsoleLogText", () => {
       let kept = gadgetConsoleLogText([pre + fill + withAt + " tail"]);
       expect(kept).toBe("start [redacted] " + fill + "postgres://app:…");
       expect(kept).not.toContain("ssw0rd");
+
+      // A user name that holds "@", the bound again 11 characters into the password.
+      let longerFill = fillTo(34);
+      let withAddress =
+          assemble("smtp://ada@example.com", ":Pa!ss$w0rd%21xyzzy", "@smtp.example.com:587");
+      expect(gadgetConsoleLogText([pre + longerFill + withAddress + " tail"]))
+          .toBe("start [redacted] " + longerFill + "smtp://ada@example.com:…");
     });
 
     it("replaces a private key the bound cuts", () => {
@@ -934,6 +952,25 @@ describe("GadgetConsoleLogLimiter", () => {
     expect(limiter.admit(1, 0, t + 110_000)).toEqual({ admitted: 0, dropped: 0 });
     expect(limiter.admit(1, 1, t + 110_000)).toEqual({ admitted: 1, dropped: 1 });
   });
+
+  it("counts a marker that was not written with the gadget's next", () => {
+    let limiter = new GadgetConsoleLogLimiter(5);
+    expect(limiter.admit(1, 8, t)).toEqual({ admitted: 5, dropped: 3 });
+    limiter.unmark(1, 3);
+    // The gadget is not marked a second time in the minute, and gets none of its budget back.
+    expect(limiter.admit(1, 2, t + 1_000)).toEqual({ admitted: 0, dropped: 0 });
+    // Its next marker counts the three with the two dropped since.
+    expect(limiter.admit(1, 1, t + 60_000)).toEqual({ admitted: 1, dropped: 5 });
+
+    // A minute that began while the marker was being written holds the count too.
+    expect(limiter.admit(1, 9, t + 120_000)).toEqual({ admitted: 5, dropped: 4 });
+    expect(limiter.admit(1, 1, t + 180_000)).toEqual({ admitted: 1, dropped: 0 });
+    limiter.unmark(1, 4);
+    expect(limiter.admit(1, 1, t + 181_000)).toEqual({ admitted: 1, dropped: 4 });
+
+    // Another gadget's count is its own.
+    expect(limiter.admit(2, 6, t)).toEqual({ admitted: 5, dropped: 1 });
+  });
 });
 
 // Silences one console method and reads what a logger wrote through it: the one object of each
@@ -982,6 +1019,18 @@ describe("isGadgetConsoleLogRecordingEnabled", () => {
     for (let [index, value] of ["True", " true", "1", "yes", true].entries()) {
       expect(isGadgetConsoleLogRecordingEnabled(variable(value))).toBe(false);
       expect(spy).toHaveBeenCalledTimes(index + 2);
+    }
+  });
+
+  it("is off for a JSON object, whatever it holds, and reports it once", () => {
+    let { spy } = spyOnConsole("error");
+    // The last three have no string form: String() of each throws.
+    let objects = ["{}", "[]", '{"toString":"true"}', '{"toString":null}', '[{"toString":1}]']
+        .map(json => JSON.parse(json) as unknown);
+    for (let [index, value] of objects.entries()) {
+      expect(isGadgetConsoleLogRecordingEnabled(variable(value))).toBe(false);
+      expect(isGadgetConsoleLogRecordingEnabled(variable(value))).toBe(false);
+      expect(spy).toHaveBeenCalledTimes(index + 1);
     }
   });
 });

@@ -10190,12 +10190,13 @@ class OverseerImpl implements AgentHooks {
   #gadgetConsoleLogLimiter = new GadgetConsoleLogLimiter();
 
   // Has an exception the facet proxy caught recorded, where the deployment records gadget console
-  // output. Such an exception never reaches the tail worker, which records the rest, and it is
-  // handed to GadgetConsoleLogLoopback because the request that called the gadget may be a
-  // browser's long session. The proxy calls this inside its catch, ahead of its rethrow, so
-  // nothing here may throw, or the gadget's caller would get that in place of the gadget's own
-  // error: minting the loopback, resolving the chat and the call itself all run inside the one
-  // async function, whose failure is logged.
+  // output, by GadgetConsoleLogLoopback: the request that called the gadget may be a browser's
+  // long session. The tail worker records the rest, and most of these exceptions never reach it.
+  // One that does, because the runtime reports it for the gadget's request as well (a
+  // constructor's throw), is recorded by both, as live subscribers are sent both. The proxy calls
+  // this inside its catch, ahead of its rethrow, so nothing here may throw, or the gadget's caller
+  // would get that in place of the gadget's own error: minting the loopback, resolving the chat
+  // and the call itself all run inside the one async function, whose failure is logged.
   #recordGadgetException(gadgetId: WorkpieceId, chatId: number | undefined, event: ConsoleLogEvent)
       : void {
     if (!isGadgetConsoleLogRecordingEnabled(this.env)) return;
@@ -10259,6 +10260,8 @@ class OverseerImpl implements AgentHooks {
           gadgetId, this.#resolveGadgetChatId(gadgetId, chatId ?? undefined) ?? null, userId,
           reported, dropped);
     } catch (error) {
+      // Whatever marker this brought was not written, so its count waits for the gadget's next.
+      this.#gadgetConsoleLogLimiter.unmark(gadgetId, dropped);
       this.logger.warn("failed to record reported gadget console output",
           { event: "gadget.console.record.failed", error });
       throw error;

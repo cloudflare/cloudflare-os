@@ -20,13 +20,12 @@ import {
 const network = new NetworkInterceptor();
 
 // `harness` leaves RECORD_GADGET_CONSOLE_LOGS unset, which is how a local instance runs unless its
-// shell sets the variable, and `recording` sets it to "true". Those are the only two values
-// GadgetTailLoopback.tail()'s reading of the switch is tried with, here or anywhere: it reads the
-// Worker's own env, which only a harness sets. "false" and a malformed value are off by the same
-// isGadgetConsoleLogRecordingEnabled() call, whose values the backend's unit tests cover, so a
-// tail() that read the variable's truthiness instead of calling it would pass every suite.
-// Showing otherwise takes a third server for one assertion, and neither of these two can be
-// redeployed with "false": that restarts every Worker under the sessions the concurrent tests hold.
+// shell sets the variable, and `recording` sets it to "true". Those are the only two values the
+// tail the runtime runs is tried with: GadgetTailLoopback.tail() reads the Worker's own env, which
+// only a harness sets, and neither of these two can be redeployed with "false", which restarts
+// every Worker under the sessions the concurrent tests hold. "false" and malformed values are
+// tried on tail() itself by the backend's unit tests (gadget-console-record.test.ts), which make
+// the entrypoint with an env of their own.
 let harness: Harness;
 let recording: Harness;
 
@@ -401,6 +400,61 @@ it.concurrent("an exception a gadget does not catch is recorded once and still d
     expect(liveErrors()).toEqual([{ chatId: null, level: "error", message: ["mainline late"] }]);
     expect(recorded(recording, workspaceId).filter(line => line.consoleLevel === printed("error")))
         .toEqual([entryLine(owner, { source: "server", level: "error", text: "mainline late" })]);
+  }, recording);
+});
+
+// A gadget server that cannot be constructed.
+const UNCONSTRUCTIBLE = `import { DurableObject } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  constructor(ctx, env) { super(ctx, env); throw new Error("constructor boom"); }
+  fail() {}
+}
+`;
+
+it.concurrent("an exception a gadget's constructor throws is recorded twice, as it is delivered twice",
+    async () => {
+  await withLoggingGadget(async owner => {
+    const { ws, workspaceId, gadget, gadgetId, head } = owner;
+    const broken = await ws.newChat("Broken", null);
+    await ws.submitCodeChange(broken, {
+      generation: 0, revision: 0, clientId: "broken", seq: 1,
+      pins: [{ gadgetId, baseCommit: head }],
+      change: diffFiles(files(gadgetId, MAINLINE), files(gadgetId, UNCONSTRUCTIBLE)),
+    });
+    await ws.finalizeChatDraft(broken);
+    const recorder = new LogRecorder();
+    using recorderStub = stubFor(recorder);
+    using _logs = await ws.subscribeToConsoleLogs(recorderStub);
+
+    await fail(gadget, /constructor boom/, broken);
+
+    // The two are written from different requests, so both are waited for before the sentinel.
+    const liveErrors = () => recorder.logs.filter(log => log.level === "error");
+    await waitFor("two live errors", async () => liveErrors().length >= 2 || null);
+    const errorLines = () =>
+        recorded(recording, workspaceId).filter(line => line.consoleLevel === printed("error"));
+    await waitFor("two recorded errors", async () => errorLines().length >= 2 || null);
+    await greet(gadget, "Sentinel");
+    await recorder.logged("Sentinel");
+    await recordedText(workspaceId, "mainline Sentinel");
+
+    // One failure is both kinds of exception: the runtime reports it for the gadget's request,
+    // which the tail worker delivers and records under the error's message, and the call rejects
+    // with it, which the facet proxy delivers and records with the method that was called. The
+    // record keeps both because live delivery sends both, as the comment on
+    // #recordGadgetException and docs/gadget-console-logs.md state. A change that stops this case
+    // passing means those two statements need another look.
+    expect(liveErrors()).toHaveLength(2);
+    expect(liveErrors()).toEqual(expect.arrayContaining([
+      { chatId: broken, level: "error", message: ["constructor boom"] },
+      liveError(broken, "at fail()"),
+    ]));
+    const errorLine = (text: unknown) =>
+        entryLine(owner, { source: "server", chatId: broken, level: "error", text });
+    expect(errorLines()).toHaveLength(2);
+    expect(errorLines()).toEqual(expect.arrayContaining([
+      errorLine("constructor boom"), errorLine(expect.stringContaining("at fail()")),
+    ]));
   }, recording);
 });
 
