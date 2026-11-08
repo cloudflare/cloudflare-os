@@ -315,11 +315,15 @@ export function toShifts(wire: WireSchedule): PagerDutyShift[] {
 
 /**
  * A schedule's overrides as its generation's `GET …/overrides` lists them; a shift-based one's
- * leaving a shift empty is left out.
+ * leaving a shift empty is left out. PagerDuty names a layer-based schedule's overrides only in
+ * its `editable` view, so each is named as `editable` lists it, or not, being past changing.
  */
-export function toOverrides(wire: Schedule, rows: readonly (WireOverride | WireShiftOverride)[]): PagerDutyOverride[] {
+export function toOverrides(wire: Schedule, rows: readonly (WireShift | WireShiftOverride)[],
+                            editable: readonly WireOverride[] = []): PagerDutyOverride[] {
   if (!wire.shiftBased) {
-    return (rows as WireOverride[]).map(({ id, user, start, end }) => ({ id, user: toUserRef(user), start, end }));
+    const key = ({ user, start, end }: WireShift) => `${user.id} ${start} ${end}`;
+    const ids = new Map(editable.map(row => [key(row), row.id]));
+    return (rows as WireShift[]).map(row => ({ id: ids.get(key(row)) ?? null, user: toUserRef(row.user), start: row.start, end: row.end }));
   }
   const memberOf = memberNamer(wire);
   return (rows as WireShiftOverride[]).flatMap(({ id, overriding_member: member, start_time: start, end_time: end }) => {

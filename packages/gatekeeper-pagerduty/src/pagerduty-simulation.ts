@@ -3,14 +3,15 @@
 // PagerDuty's side effects (acknowledging reassigns it to whoever acknowledges it, resolving
 // resolves its alerts, and raising an acknowledged incident's urgency returns it to triggered),
 // incidents and overrides a pending action creates are listed (a created override's user is in
-// shifts and on call), an override pending removal is gone from overrides (or, if under way, ends
-// when the removal was staged), and a note waiting to be added is among the incident's notes. An
-// incident a pending action opens starts as PagerDuty would open it: acknowledged if assigned to
-// the connected user alone, and with the urgency its service's rule gives if none was chosen. Not
-// shown: a reassignment to an escalation policy, whose assignees PagerDuty picks; the removal of an
-// override PagerDuty already has from shifts and on-call entries, which don't say whom it
-// displaced; and any pending change in an incident's log. Every function is pure over the
-// journal's pending entries.
+// shifts, and on call where PagerDuty has someone on call it displaces), an override pending
+// removal is gone from overrides (or, if under way, ends when the removal was staged), and a note
+// waiting to be added is among the incident's notes. An incident a pending action opens starts as
+// PagerDuty would open it: acknowledged if assigned to the connected user alone, and with the
+// urgency its service's rule gives if none was chosen. Not shown: a reassignment to an escalation
+// policy, whose assignees PagerDuty picks; the removal of an override PagerDuty already has from
+// shifts and on-call entries, which don't say whom it displaced; an override for a time nobody is
+// on call, in on-call entries; and any pending change in an incident's log. Every function is pure
+// over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
@@ -223,7 +224,7 @@ function withPending(overrides: readonly PagerDutyOverride[], scheduleId: string
     action.kind === "deleteOverride" && action.payload.scheduleId === scheduleId
       ? [[resolve(action.payload.overrideId), action.payload.stagedAt] as const] : []));
   return [...overrides, ...created].flatMap(override => {
-    const at = removedAt.get(override.id);
+    const at = override.id === null ? undefined : removedAt.get(override.id);
     if (at === undefined || Date.parse(override.end) <= Date.parse(at)) return [override];
     return Date.parse(override.start) < Date.parse(at) ? [{ ...override, end: at }] : [];
   });

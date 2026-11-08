@@ -187,8 +187,9 @@ or team membership goes unnoticed for up to 15 minutes. See `docs/observers.md`.
 - **Some pending changes don't show in reads.** A reassignment to an escalation policy leaves the
   incident's policy and assignees as they were, since PagerDuty picks the new assignees; removing
   an override PagerDuty already has leaves its user on call in shifts and on-call listings (its
-  overrides show it removed), since PagerDuty doesn't say whom it displaced; and an incident's log
-  shows no pending change at all.
+  overrides show it removed), since PagerDuty doesn't say whom it displaced; an override for a
+  time nobody is on call shows in shifts but not in on-call listings, which take each entry's
+  escalation policy and level from PagerDuty; and an incident's log shows no pending change at all.
 
 ## Troubleshooting
 

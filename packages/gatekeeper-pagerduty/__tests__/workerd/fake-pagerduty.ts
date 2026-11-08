@@ -326,7 +326,11 @@ export class FakePagerDuty {
     if ((match = path.match(/^\/schedules\/(\w+)\/overrides(?:\/(\w+))?$/))) {
       const [, scheduleId, overrideId] = match;
       const list = this.overrides.get(scheduleId) ?? [];
-      if (method === "GET") return json({ overrides: list });
+      // As PagerDuty documents: ids only in the editable view, which leaves out overrides already over.
+      if (method === "GET") {
+        return json({ overrides: url.searchParams.has("editable")
+          ? list.filter(o => Date.parse(o.end) > Date.now()) : list.map(({ id: _, ...o }) => o) });
+      }
       if (method === "POST") {
         const results = (body().overrides as WireShift[]).map(o => {
           const made: WireOverride = { id: `POVR${this.#next++}`, start: o.start, end: o.end, user: o.user };

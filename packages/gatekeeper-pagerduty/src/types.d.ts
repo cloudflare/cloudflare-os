@@ -655,7 +655,8 @@ export type PagerDutyShift = {
 };
 
 export type PagerDutyOverride = {
-  id: string;
+  /** The id `deleteOverride()` takes; null for one PagerDuty no longer lets anyone change, as once it's over. */
+  id: string | null;
   user: PagerDutyUserRef;
   start: string;
   end: string;

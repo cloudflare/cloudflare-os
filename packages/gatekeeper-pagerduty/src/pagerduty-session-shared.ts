@@ -414,16 +414,23 @@ export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | 
   namedListing(ctx, "schedule", list, teamId,
     filters => scheduleListings(filters, (wire: WireSchedule, shiftBased) => toScheduleSummary({ ...wire, shiftBased })));
 
+/** The most services a team's incident listing names in its URL, about 2.6 KB of it. */
+const MAX_QUERY_SERVICES = 100;
+
 /**
  * The defaults and bounds of an incident filter, as PagerDuty's query and the simulation's, on
- * the services `scope` names, if any.
+ * the services `scope` names, if any, which are team `teamId`'s, if any.
  */
-function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: string[] | undefined, me: Identity):
-  { query: IncidentQuery; params: Query } {
+function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: string[] | undefined, me: Identity,
+                       teamId?: string): { query: IncidentQuery; params: Query } {
   const statuses = filter?.statuses ?? ["triggered", "acknowledged"];
   const urgencies = filter?.urgencies;
   const requested = ids(filter?.serviceIds, "serviceIds");
   const serviceIds = scope ? (requested ?? scope).filter(id => scope.includes(id)) : requested;
+  // PagerDuty relates an incident to every team involved in it, so a team's incidents are asked
+  // for by its services, as everything else in a team binding has them. A team with too many for
+  // a URL is asked for by team, and `listIncidents` drops rows on services outside `query`.
+  const byTeam = teamId !== undefined && (serviceIds?.length ?? 0) > MAX_QUERY_SERVICES;
   let since: string | undefined;
   let until: string | undefined;
   if (!filter?.allTime) {
@@ -440,10 +447,9 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: strin
     statuses, urgencies, serviceIds, since, until, assignedToMe: filter?.assignedToMe === true,
   };
   const params: Query = {
-    statuses, urgencies, service_ids: serviceIds, since, until,
+    statuses, urgencies, since, until,
+    ...byTeam ? { team_ids: [teamId] } : { service_ids: serviceIds },
     user_ids: query.assignedToMe ? [me.userId] : undefined,
-    // Not `team_ids`: PagerDuty relates an incident to every team involved in it, but a team's
-    // incidents here are those on its services, as everything else in a team binding has them.
     date_range: filter?.allTime ? "all" : undefined,
     sort_by: "created_at:desc",
   };
@@ -455,7 +461,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   Promise<Cursor<PagerDutyIncidentSummary>> {
   const { host } = ctx;
   const [me, scope] = await Promise.all([host.me(), servicesWithin(ctx)]);
-  const { query, params } = incidentQuery(filter, scope, me);
+  const { query, params } = incidentQuery(filter, scope, me, ctx.within.teamId);
   const you = youRef(me);
   const { resolve } = host;
   // The capability's services as of the page being served: an incident is listed only while its

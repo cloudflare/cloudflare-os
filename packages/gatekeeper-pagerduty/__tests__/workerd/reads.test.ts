@@ -168,6 +168,19 @@ describe("a team binding", () => {
     expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: movedIn.id }]]);
   });
 
+  it("asks for a team with too many services for one URL by team, listing only incidents on its services", async () => {
+    const t = await setup(team);
+    for (let i = 0; i < 100; i++) {
+      const id = `PBIG${String(i).padStart(3, "0")}`;
+      t.pd.services.set(id, { ...t.pd.services.get(SERVICE.id)!, id, name: id });
+    }
+    const ours = t.pd.incident(SERVICE);
+    t.pd.incident(OTHER_SERVICE, { teams: [TEAM] });
+    expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: ours.id }]]);
+    const asked = t.pd.matching("GET", /^\/incidents\?/)[0].url.searchParams;
+    expect([asked.getAll("service_ids[]"), asked.getAll("team_ids[]")]).toEqual([[], [TEAM.id]]);
+  });
+
   it("stops serving a service's buffered and pending incidents once it leaves the team mid-walk", async () => {
     const t = await setup(team);
     const newest = t.pd.incident(SERVICE, { created_at: new Date(Date.now() + 60 * 60_000).toISOString() });

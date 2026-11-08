@@ -593,6 +593,20 @@ describe("simulation", () => {
     expect(description.description).toMatch(/or ends it now if it has already begun/);
   });
 
+  it("names each override PagerDuty still lets it remove, and removes one by the id it listed", async () => {
+    const t = await setup(schedule);
+    const past = { start: new Date(Date.now() - 3 * HOUR).toISOString(), end: new Date(Date.now() - HOUR).toISOString() };
+    t.pd.overrides.set(SCHEDULE.id, [
+      { id: "POVR001", ...past, user: { id: ALICE.id, summary: "Alice" } },
+      { id: "POVR002", start: START, end: END, user: { id: BOB.id, summary: "Bob" } },
+    ]);
+    const window = { since: new Date(Date.now() - 4 * HOUR).toISOString() };
+    const listed = await t.run([["listOverrides", window]]) as PagerDutyOverride[];
+    expect(listed.map(({ id }) => id)).toEqual([null, "POVR002"]);
+    await t.run([["deleteOverride", listed[1].id]]);
+    expect(await t.run([["listOverrides", window]])).toMatchObject([{ id: null, ...past }]);
+  });
+
   it("removes an override another action is adding only through the schedule it is adding it to, from its overrides and shifts", async () => {
     const t = await setup();
     expect(await t.run([["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, START, END]])).toBe("~1");

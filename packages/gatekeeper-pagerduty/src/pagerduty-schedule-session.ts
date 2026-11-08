@@ -5,10 +5,10 @@
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import { schedulePath } from "./pagerduty-api";
+import { schedulePath, type Query } from "./pagerduty-api";
 import { isProvisional, overrideKind } from "./pagerduty-actions";
 import {
-  toOverrides, toScheduleDetails, toShifts, type Schedule, type WireOverride, type WireShiftOverride,
+  toOverrides, toScheduleDetails, toShifts, type Schedule, type WireOverride, type WireShift, type WireShiftOverride,
 } from "./pagerduty-normalize";
 import { overlayOverrides, overlayShifts } from "./pagerduty-simulation";
 import {
@@ -63,9 +63,12 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     const { host } = this.#ctx;
     // Which API keeps its overrides, and on a shift-based schedule, its users' names.
     const schedule = await this.#read({ users: true });
-    const rows = await host.read(api => api.get<{ overrides: WireOverride[] | WireShiftOverride[] }>(
-      `${schedulePath(this.#id, schedule.shiftBased)}/overrides`, span));
-    const overrides = overlayOverrides(toOverrides(schedule, rows.overrides), this.#id, span, host.pending(), host.resolve);
+    const path = `${schedulePath(this.#id, schedule.shiftBased)}/overrides`;
+    const read = async <W>(query: Query) => (await host.read(api => api.get<{ overrides: W[] }>(path, query))).overrides;
+    const [rows, editable] = await Promise.all([
+      read<WireShift | WireShiftOverride>(span), schedule.shiftBased ? [] : read<WireOverride>({ ...span, editable: true }),
+    ]);
+    const overrides = overlayOverrides(toOverrides(schedule, rows, editable), this.#id, span, host.pending(), host.resolve);
     await this.#ctx.authorize({ title: "Read a PagerDuty schedule's overrides", description: `Read ${countOf(overrides.length, "override")}.` });
     return overrides;
   }
