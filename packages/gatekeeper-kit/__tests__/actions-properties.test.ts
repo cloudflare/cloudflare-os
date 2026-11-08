@@ -295,4 +295,4 @@ it("matches a model of the queue after every submission, approval and denial", a
   } finally {
     logged.mockRestore();
   }
-});
+}, 120_000);

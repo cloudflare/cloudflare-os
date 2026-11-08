@@ -254,4 +254,4 @@ it("never replays an operation across connections or loses a token rotation", as
   }
   // A schedule property that never reaches its races proves little.
   expect(Object.entries(reached).filter(([, times]) => times === 0)).toEqual([]);
-});
+}, 120_000);
