@@ -132,6 +132,44 @@ reachable this way. A future design would have the agent pass them to the gateke
 never look them up in the agent's environment. Push and general network access are outside this
 interface.
 
+## Git in the container
+
+The container's checkout should match the workspace's view of the worktree:
+
+- **Working tree:** the subscription's file base (the worktree's accepted commit, `pinBase`) plus
+  its pending changes.
+- **HEAD:** the worktree's Git head (`headCommit`, its latest explicit commit). It may be older or
+  newer than the file base, and there is not necessarily any change history from it to the current
+  files.
+- **Index:** the head's tree, so `git status` and `git diff` show the difference between the files
+  and the head, as the workspace would.
+
+To get there, check out the file base, apply its pending changes, then `git reset --mixed <head>`
+(not `--soft`, which would leave the index at the file base and show that difference as staged
+changes). When only the head changes, fetch it and reset again; the files are untouched. When only
+the file base changes (e.g. the user accepted the chat's changes), the files already include it.
+Today the subscription reports only the file base; delivering the head too is planned in
+[`plans/git-proxy.md`](../plans/git-proxy.md).
+
+`.git` is not synced in either direction:
+
+- Nothing in the container's `.git` flows back to the workspace. Git state changes (commits,
+  branches, new working copies) are made from the workspace: the agent commits with `commit()`, and
+  a second working copy is another workspace worktree mounted into the container, so the agent can
+  use its own file tools on it. The agent should not run `git commit`, create branches, or use
+  `git worktree` in the container itself; the container gatekeeper's agent-facing description
+  should say so.
+- The gatekeeper owns HEAD and the index and resets them to the workspace's head, overwriting
+  anything a command did to them.
+- Commands may still write `.git` as scratch space, because fetching history writes objects and
+  build scripts may use it privately. For example, `build-upgrade-base.ts` fetches a commit and
+  checks it out into a temporary `git worktree` that it removes afterwards; that never becomes
+  workspace state. Blocking the agent's own Git state changes more precisely (e.g. with
+  finer-grained write restrictions) is up to the container implementation.
+
+As with files, overlapping changes from the container and the workspace at the same time are the
+agent's mistake, and some loss is expected; the design favours simplicity over preserving them.
+
 ## Container responsibilities and completion
 
 The kernel does not execute commands. The gatekeeper must catch up before starting a shell, stream
