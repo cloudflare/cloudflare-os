@@ -1219,15 +1219,21 @@ describe("writeServerGadgetConsoleLogs", () => {
     expect(info.spy).toHaveBeenCalledTimes(50);
     expect(warn.spy).not.toHaveBeenCalled();
 
-    // A control character is one character of text and six bytes of a line.
-    info.spy.mockClear();
-    writeServerGadgetConsoleLogs(
-        "ws", 7, null, Array.from({ length: 50 }, () => event(["\u0001".repeat(2000)])));
-    let kept = info.lines();
-    expect(kept.length).toBeGreaterThan(0);
-    expect(kept.length).toBeLessThan(50);
-    expect(warn.lines()).toStrictEqual([marker(50 - kept.length)]);
-    expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+    // Neither of these fits. A control character is one character of text and six of a line. A
+    // character outside ASCII is one character of a line and three bytes of it: the fifty lines
+    // are fewer characters than a request may write in bytes, so that counting characters would
+    // keep them all.
+    for (let character of ["\u0001", "漢"]) {
+      info.spy.mockClear();
+      warn.spy.mockClear();
+      writeServerGadgetConsoleLogs(
+          "ws", 7, null, Array.from({ length: 50 }, () => event([character.repeat(2000)])));
+      let kept = info.lines();
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThan(50);
+      expect(warn.lines()).toStrictEqual([marker(50 - kept.length)]);
+      expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+    }
   });
 
   it("writes nothing for a request that logged nothing", () => {
@@ -1324,15 +1330,20 @@ describe("writeClientGadgetConsoleLogs", () => {
 
   it("counts the entries that do not fit a request's bytes with its caller's drops", () => {
     let info = spyOnConsole("info"), warn = spyOnConsole("warn");
-    // A control character is one character of text and six bytes of a line.
-    writeClientGadgetConsoleLogs("ws", 7, null, "ada",
-        Array.from({ length: 50 }, () => reported("\u0001".repeat(2000))), 4);
+    // A control character is six characters of a line, and a character outside ASCII is three
+    // bytes of it, which a count of the line's characters would miss.
+    for (let character of ["\u0001", "漢"]) {
+      info.spy.mockClear();
+      warn.spy.mockClear();
+      writeClientGadgetConsoleLogs("ws", 7, null, "ada",
+          Array.from({ length: 50 }, () => reported(character.repeat(2000))), 4);
 
-    let kept = info.lines();
-    expect(kept.length).toBeGreaterThan(0);
-    expect(kept.length).toBeLessThan(50);
-    expect(warn.lines()).toStrictEqual([clientMarker(4 + 50 - kept.length)]);
-    expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+      let kept = info.lines();
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThan(50);
+      expect(warn.lines()).toStrictEqual([clientMarker(4 + 50 - kept.length)]);
+      expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+    }
   });
 
   it("writes a valid time for a reported time that is not one", () => {
