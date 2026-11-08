@@ -811,11 +811,78 @@ DO NOT import \`RpcTarget\` in client.js. It is already imported.
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
 
+## Knowing who is using the Gadget
+
+When the Gadget must know who is calling, to keep per-person data, credit an action to a person, or limit an action to certain people, define \`startSession(viewer)\` on the \`Gadget\` class and return an \`RpcTarget\` from it. The Workshop fills in \`viewer\` itself and discards anything the caller passed, so a caller cannot pretend to be someone else:
+
+* \`viewer.id\` is a unique, permanent ID for the person. Use it to key per-person data and to decide what they may do. It may be their email address, so store and show it only where the Gadget needs to.
+* \`viewer.name\` is their display name, for showing to people. People choose their own names, so never use it to tell who someone is, and put it, like anything else a person typed, in the page as text (\`textContent\`), never as HTML.
+* \`viewer.role\` is \`"owner"\`, \`"build"\` (can edit the workspace, including this Gadget's code), or \`"use"\` (was only given this Gadget).
+
+\`viewer\` is \`null\` when no person's UI is calling: when you call the Gadget from \`executeCode\`, when another agent or another Gadget calls it, and while the UI is rendered for an export. A \`null\` viewer is the least trusted caller, not a trusted one, so check for who is allowed (\`viewer?.role === "owner"\`) rather than who is not.
+
+\`\`\`
+import { DurableObject, RpcTarget } from "cloudflare:workers";
+
+export class Gadget extends DurableObject {
+  startSession(viewer) {
+    return new Session(this.ctx.storage, viewer);
+  }
+}
+
+class Session extends RpcTarget {
+  #storage;
+  #viewer;
+
+  constructor(storage, viewer) {
+    super();
+    this.#storage = storage;
+    this.#viewer = viewer;
+  }
+
+  whoami() {
+    return this.#viewer;
+  }
+
+  async vote(option) {
+    if (!this.#viewer) throw new Error("Only a person using the Gadget can vote.");
+    if (await this.#storage.get("closed")) throw new Error("Voting has closed.");
+    await this.#storage.put(\`vote:\${this.#viewer.id}\`, option);  // one vote per person
+  }
+
+  async closeVoting() {
+    if (this.#viewer?.role !== "owner") throw new Error("Only the owner can close voting.");
+    await this.#storage.put("closed", true);
+  }
+}
+\`\`\`
+
+In client.js, open a session for each request and dispose it afterwards:
+
+\`\`\`
+async function withSession(fn) {
+  let session = gadget.startSession();
+  try {
+    return await fn(session);
+  } finally {
+    session[Symbol.dispose]();
+  }
+}
+
+let me = await withSession(session => session.whoami());
+voteButton.onclick = () => withSession(session => session.vote("yes"));
+\`\`\`
+
+A session that is never disposed stays alive on the server until the page closes, and the server-side logs of its calls only arrive once it is disposed. An error thrown by a session method reaches the caller but is not logged on the server. A callback passed to a session method keeps working after the session is disposed, as long as the server called \`.dup()\` on it.
+
+* Put everything that depends on who is calling on the session class, and leave no method on \`Gadget\` that does the same thing, not even for your own use from \`executeCode\`: anyone who can open the Gadget can call \`Gadget\`'s methods directly, with any arguments.
+* Keep the viewer inside the session object. Never store "the current viewer" on the \`Gadget\`, which serves everyone at once, and never put a viewer in \`ctx.restore()\` params.
+
 ## Design Tips
 
 * ALWAYS store server state in Durable Object storage, not just in memory. Memory is OK to use for caching but users expect not to have their experience disrupted when the server restarts.
 * If the user asks for a game or any sort of app where multiple users might collaborate, make sure multiple clients can connect at once and broadcast real-time updates to each other.
-* Clients may frequently reload, and there is no client-side storage, so there is no way to track long-lived "sessions". So, for example, if the user asks for a multiplayer game, you should design it so that any connected client can choose to be any player. If it's turn-based, you can just let any client make any move. If it's concurrent but with distinct players, let each client choose which player they are controlling, including letting multiple clients choose the same player.
+* Clients may frequently reload, and there is no client-side storage, so a client cannot remember anything between visits. The server can tell people apart with \`startSession(viewer)\` (above), but use that only when the app needs it. If the user asks for a multiplayer game, for example, design it so that any connected client can choose to be any player, unless they ask for each person to have their own seat: one person may want to play both sides. If it's turn-based, you can just let any client make any move. If it's concurrent but with distinct players, let each client choose which player they are controlling, including letting multiple clients choose the same player.
 * If a Gadget contains a README.md file, use it to describe that Gadget at a high level and document anything that future agents (or humans) may need to know when editing the code. You don't need to document details that are obvious from looking at the code, or which most people and agents would know already.
 
 ## Exporting files from Gadgets
