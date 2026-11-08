@@ -10,14 +10,15 @@
 import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
-  ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
   DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError, isAdminWorkspaceAccess,
+  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminSettingChange,
   type AdminSettingRecord, type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
   type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo,
-  type FileAtCommit, type WorkpieceSummary,
+  type CommitInfo, type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -130,7 +131,8 @@ export type AdminViewTerms = {
 
 /** The view methods that read only content, refused below "full". */
 export const ADMIN_CONTENT_METHODS: ReadonlySet<AdminWorkspaceMethod> =
-    new Set<AdminWorkspaceMethod>(["getChat", "readChatAttachment", "readFile"]);
+    new Set<AdminWorkspaceMethod>(
+        ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile"]);
 
 // --- Validation ---
 
@@ -168,6 +170,17 @@ export function adminListLimit(limit: number | undefined): number {
     throw new TypeError(`The page size must be a whole number from 1 to ${ADMIN_LIST_MAX_LIMIT}.`);
   }
   return limit;
+}
+
+/** The depth `depth` asks AdminWorkspaceView.getCommitLog() for; throws unless absent
+ * (DEFAULT_ADMIN_COMMIT_LOG_DEPTH) or a whole number from 1 to MAX_ADMIN_COMMIT_LOG_DEPTH. */
+export function adminCommitLogDepth(depth: number | undefined): number {
+  if (depth === undefined) return DEFAULT_ADMIN_COMMIT_LOG_DEPTH;
+  if (!isWholeNumberIn(depth, 1, MAX_ADMIN_COMMIT_LOG_DEPTH)) {
+    throw new TypeError(
+        `The commit log's depth must be a whole number from 1 to ${MAX_ADMIN_COMMIT_LOG_DEPTH}.`);
+  }
+  return depth;
 }
 
 /** The statistics window `days` asks for; throws unless absent (7) or a whole number from 1 to
@@ -379,6 +392,16 @@ export function chatStateHoldsContent(state: AdminChatState): boolean {
   return state.queuedCalls.some(call => call.argsSummary !== "");
 }
 
+/** A copy of `commit` as a view below "full" lists it: `message` emptied. */
+export function withholdCommitContent(commit: CommitInfo): CommitInfo {
+  return { ...commit, message: "" };
+}
+
+/** Whether `commit` holds what withholdCommitContent() empties: a message. */
+export function commitHoldsContent(commit: CommitInfo): boolean {
+  return commit.message !== "";
+}
+
 /** A copy of `entry` as a view below "full" lists it: `description.description` emptied for an
  * action, observation or hook entry, and `description.fields` dropped; never mutates `entry`. */
 export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
@@ -423,8 +446,9 @@ export function chatPageHoldsContent(page: AiChatHistoryPage): boolean {
   return page.messages.length > 0 || page.compacted !== undefined;
 }
 
-/** Whether `file` holds what readFile() refuses below "full": any file found at the path, an
- * unreadable one too, since its message can quote the file (a symlink's quotes its target). */
+/** Whether `file` holds what a file read (readFile(), readFileAtCommit(), readPendingFile())
+ * refuses below "full": any file found at the path, an unreadable one too, since its message can
+ * quote the file (a symlink's quotes its target). */
 export function fileHoldsContent(file: FileAtCommit): boolean {
   return file.kind !== "absent";
 }

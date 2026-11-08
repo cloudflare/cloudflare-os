@@ -6,14 +6,14 @@ import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   type AdminAccessExposure, type AdminAccessRecord, type AdminChatAttachment, type AdminChatState,
-  type AdminGatekeeperInfo, type AdminViewAccess, type AdminWorkspaceAccess,
-  type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminGatekeeperInfo, type AdminPendingChange, type AdminViewAccess,
+  type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
+  type AdminWorkspaceMethod, type AdminWorkspaceView,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -35,7 +35,7 @@ import {
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
-import type { BlobReader } from "./git-chunked-blob";
+import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
@@ -62,11 +62,12 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  actionHoldsContent, adminAccessPolicy, adminViewCallAccess, assertAdminViewLive,
-  chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent, cutAdminAuditText,
-  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs,
-  validateAdminAccessReason, withholdActionContent, withholdChatContent,
-  withholdChatStateContent, withholdHookContent, workpieceHoldsContent,
+  actionHoldsContent, adminAccessPolicy, adminCommitLogDepth, adminViewCallAccess,
+  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
+  commitHoldsContent, cutAdminAuditText, fileHoldsContent, hookHoldsContent,
+  lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdChatContent, withholdChatStateContent, withholdCommitContent,
+  withholdHookContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
 import type { AdminAuditDurableObject } from "./admin-audit";
@@ -82,7 +83,7 @@ import {
   buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, releaseMergeHeader,
   releasesMergedBy, type Release,
 } from "./blueprint-release";
-import { EMPTY_TREE_OID, gitObjectOid, parseGitCommitRefs } from "./git-codec";
+import { EMPTY_TREE_OID, blobOid, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
@@ -14027,11 +14028,11 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
 // A deployment admin's read-only view of the workspace (see AdminWorkspaceView in api.ts and
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
-// no presence or fan-out, and never reads through a connection: its reads of files and
-// attachments never pull, and beyond the workspace's own storage it reads only the owner's
-// profile, from their account (describe()). Every method runs through #call, which reads the
-// call's answer and records the call, with what that answer exposed, in the deployment-wide log
-// before returning anything.
+// no presence or fan-out, and never reads through a connection: its reads of files, history,
+// attachments and a chat's pending content never pull, and beyond the workspace's own storage it
+// reads only the owner's profile, from their account (describe()). Every method runs through
+// #call, which reads the call's answer and records the call, with what that answer exposed, in
+// the deployment-wide log before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
@@ -14156,6 +14157,22 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     return record.commitId;
   }
 
+  // A commit the workspace stores, by id (a gadget's history, a worktree's commits, a chat pin's
+  // base); throws for a malformed id and for one naming no stored commit.
+  #storedCommit(commitId: string): string {
+    if (this.#impl.gitCache.localObjectType(validateOid(commitId)) !== "commit") {
+      throw new Error(`No commit ${commitId} is stored in this workspace.`);
+    }
+    return commitId;
+  }
+
+  // The chat's current content, its worktree bases read only from stored objects.
+  #pendingContent(chatId: number): Promise<CodeContent> {
+    let impl = this.#impl;
+    return impl.getCurrentChatContent(chatId, impl.getChatMetaOrThrow(chatId),
+        (commit, path) => impl.gitCache.readLocalFileAtCommitIfExists(commit, path));
+  }
+
   async describe(): Promise<AdminWorkspaceDescription> {
     let impl = this.#impl;
     return this.#call("describe", {}, async access => {
@@ -14272,6 +14289,116 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     return this.#call("readFile", {gadgetId, path},
         () => this.#impl.gitCache.readLocalFileAtCommit(this.#committedHead(gadgetId), path),
         fileHoldsContent);
+  }
+
+  // `limit`, the depth the validator answers with, bounds the walk: readCommitLog() stops only at
+  // a depth it is handed. The record keeps `depth` as the caller gave it.
+  async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
+    let limit = adminCommitLogDepth(depth);
+    return this.#call("getCommitLog", {fromCommit, depth},
+        access => this.#impl.gitCache
+            .readCommitLog(this.#storedCommit(fromCommit), {depth: limit, stopAtMissing: true})
+            .map(commit => access === "full" ? commit : withholdCommitContent(commit)),
+        log => log.some(commitHoldsContent));
+  }
+
+  async listFilesAtCommit(commitId: string): Promise<TreeNode[]> {
+    return this.#call("listFilesAtCommit", {commitId},
+        () => this.#impl.gitCache.readLocalCommitTree(this.#storedCommit(commitId)));
+  }
+
+  async readFileAtCommit(commitId: string, path: string): Promise<FileAtCommit> {
+    return this.#call("readFileAtCommit", {commitId, path},
+        () => this.#impl.gitCache.readLocalFileAtCommit(this.#storedCommit(commitId), path),
+        fileHoldsContent);
+  }
+
+  async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
+    return this.#call("listChangedPaths", {fromCommit, toCommit},
+        async () => [...await this.#impl.gitCache.changedLocalFilePathsBetween(
+            this.#storedCommit(fromCommit), this.#storedCommit(toCommit))].toSorted());
+  }
+
+  // One entry per workpiece the chat's content holds and the workspace still has: a pin outlives
+  // its workpiece's removal and proposes nothing (see proposedChangeWorkpieceIds()). Each is
+  // compared with its pin's base, read only from stored objects. A gadget's content is its whole
+  // file map. A worktree's holds only the paths the chat touched, a removed one being absent from
+  // it, so the change stream names its paths and the base's tree says what each was.
+  async listPendingChanges(chatId: number): Promise<AdminPendingChange[]> {
+    return this.#call("listPendingChanges", {chatId}, async () => {
+      let impl = this.#impl;
+      let content = await this.#pendingContent(chatId);
+      // Nothing is awaited from here on, so the pins and the change stream are the ones the
+      // content was folded from.
+      let codeBase = impl.chatCodeBase(impl.getChatMetaOrThrow(chatId));
+      let pins = new Map(codeBase.pins.map(pin => [pin.gadgetId, pin]));
+      let messages = [...impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+      let touched = impl.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
+          impl.listLiveChatChanges(chatId, codeBase.generation));
+      return [...content]
+          .filter(([gadgetId]) => impl.storage.gadgets.get(gadgetId) !== undefined)
+          .toSorted(([a], [b]) => a - b)
+          .map(([gadgetId, files]) => {
+            let pin = pins.get(gadgetId);
+            let added: string[] = [], modified: string[] = [], removed: string[] = [];
+            if (pin === undefined) {
+              // A gadget the chat created: it has no commit, so every file is added.
+              added = [...files.keys()];
+            } else if (impl.isWorktree(gadgetId)) {
+              for (let path of touched.get(gadgetId) ?? []) {
+                let file = files.get(path);
+                let entry = impl.gitCache.localPathEntryAtCommit(pin.baseCommit, path);
+                let base = entry?.kind === "dir" ? undefined : entry;
+                if (file === undefined) {
+                  if (base !== undefined) removed.push(path);
+                } else if (base === undefined) {
+                  added.push(path);
+                } else if (base.oid !== (typeof file === "string" ? blobOid(file) : file.oid)) {
+                  modified.push(path);
+                }
+              }
+            } else {
+              let base = impl.gitCache.readCommitFiles(pin.baseCommit);
+              for (let [path, file] of files) {
+                if (!base.has(path)) added.push(path);
+                else if (base.get(path) !== file) modified.push(path);
+              }
+              removed = [...base.keys()].filter(path => !files.has(path));
+            }
+            return {
+              gadgetId,
+              ...(pin && {baseCommit: pin.baseCommit, mergedCommit: pin.mergedCommit}),
+              added: added.toSorted(), modified: modified.toSorted(), removed: removed.toSorted(),
+            };
+          });
+    });
+  }
+
+  async readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string)
+      : Promise<FileAtCommit> {
+    return this.#call("readPendingFile", {chatId, gadgetId, path},
+        async (): Promise<FileAtCommit> => {
+          let impl = this.#impl;
+          let files = (await this.#pendingContent(chatId)).get(gadgetId);
+          if (files === undefined || impl.storage.gadgets.get(gadgetId) === undefined) {
+            throw new Error(`Chat ${chatId} holds no changes to workpiece ${gadgetId}.`);
+          }
+          let file = files.get(path);
+          if (file === undefined) return {kind: "absent"};
+          if (typeof file !== "string") {
+            // Bytes are streamed from the stored blob, never read whole.
+            return {
+              kind: "stream", byteLength: file.byteLength,
+              content: blobByteStream(impl.gitCache.openBlobRef(file.oid, file.byteLength)),
+            };
+          }
+          // The text's UTF-8 encoding, made once: its size decides how the file arrives, and a
+          // stream reads from it.
+          let encoded = new Blob([file]);
+          return encoded.size > MAX_BUFFERED_BLOB_SIZE
+              ? {kind: "stream", byteLength: encoded.size, content: encoded.stream()}
+              : {kind: "text", text: file};
+        }, fileHoldsContent);
   }
 
   async listGatekeepers(): Promise<AdminGatekeeperInfo[]> {

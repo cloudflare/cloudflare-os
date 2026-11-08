@@ -4,16 +4,17 @@ import {
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
   type ActionLogEntry, type AdminChatState, type AiChatHistoryPage, type AiChatMetadata,
-  type BoundHookInfo, type FileAtCommit, type WorkpieceSummary,
+  type BoundHookInfo, type CommitInfo, type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
-  adminAuditValue, adminListLimit, adminSettingChange, adminViewCallAccess, adminViewLifetimeMs,
-  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
-  cutAdminAuditText, fileHoldsContent, hookHoldsContent,
-  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays,
-  redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent, withholdChatContent,
-  withholdChatStateContent, withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
+  adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewCallAccess,
+  adminViewLifetimeMs, assertAdminViewLive, chatHoldsContent, chatPageHoldsContent,
+  chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
+  hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
+  minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdChatContent, withholdChatStateContent, withholdCommitContent,
+  withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -132,6 +133,17 @@ describe("validators", () => {
     }
   });
 
+  it("validates the commit log's depth", () => {
+    expect(adminCommitLogDepth(undefined)).toBe(20);
+    expect(adminCommitLogDepth(1)).toBe(1);
+    expect(adminCommitLogDepth(100)).toBe(100);
+    for (let bad of [0, 101, 1.5, NaN]) {
+      expect(() => adminCommitLogDepth(bad)).toThrow(TypeError);
+      expect(() => adminCommitLogDepth(bad))
+          .toThrow("The commit log's depth must be a whole number from 1 to 100.");
+    }
+  });
+
   it("validates the statistics window", () => {
     expect(adminAuditStatsDays(undefined)).toBe(7);
     expect(adminAuditStatsDays(366)).toBe(366);
@@ -167,6 +179,22 @@ describe("view calls", () => {
     // The chat reads that are not content run at either level.
     for (let method of ["getChatState", "listChatAttachments"] as const) {
       expect(adminViewCallAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
+    }
+    // A file read at a stored commit, or of a chat's pending content, is content as readFile() is.
+    for (let method of ["readFileAtCommit", "readPendingFile"] as const) {
+      expect(adminViewCallAccess(terms(), method, metadata))
+          .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+      expect(adminViewCallAccess(terms(), method, { access: "full", retentionDays: 90 }))
+          .toEqual({ access: "full" });
+    }
+    // The history and the listings of names run at either level: a commit log withholds its
+    // messages rather than being refused.
+    for (let method of [
+      "getCommitLog", "listFilesAtCommit", "listChangedPaths", "listPendingChanges",
+    ] as const) {
+      expect(adminViewCallAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
+      expect(adminViewCallAccess(terms(), method, { access: "full", retentionDays: 90 }))
+          .toEqual({ access: "full" });
     }
     expect(adminViewCallAccess(terms(), "describe", { access: "off", retentionDays: 90 }))
         .toEqual({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff });
@@ -260,7 +288,22 @@ describe("withholding content", () => {
     });
     expect(state).toStrictEqual(before);
   });
+
+  it("empties a commit's message on a copy", () => {
+    let commit = commitInfo("Fix the parser\n");
+    let before = structuredClone(commit);
+    expect(withholdCommitContent(commit)).toStrictEqual({ ...before, message: "" });
+    expect(commit).toStrictEqual(before);
+  });
 });
+
+// A commit with one parent.
+function commitInfo(message: string): CommitInfo {
+  return {
+    oid: "1".repeat(40), parents: ["2".repeat(40)], message,
+    author: { name: "Owner", email: "owner@example.test" }, timestamp: new Date(1700000000_000),
+  };
+}
 
 // A chat's state with a recorded turn, a pending action and one queued call per summary.
 function chatState(summaries: string[]): AdminChatState {
@@ -314,6 +357,13 @@ describe("whether an answer holds content", () => {
     expect(chatStateHoldsContent(chatState([]))).toBe(false);
     expect(chatStateHoldsContent(chatState(["", ""]))).toBe(false);
     expect(chatStateHoldsContent(withholdChatStateContent(full))).toBe(false);
+  });
+
+  it("finds a commit's message", () => {
+    let full = commitInfo("Fix the parser\n");
+    expect(commitHoldsContent(full)).toBe(true);
+    expect(commitHoldsContent(commitInfo(""))).toBe(false);
+    expect(commitHoldsContent(withholdCommitContent(full))).toBe(false);
   });
 
   it("finds a description or a field in an action log entry", () => {

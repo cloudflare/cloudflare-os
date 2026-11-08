@@ -13,11 +13,14 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcTarget } from "capnweb";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, MAX_ADMIN_ACCESS_REASON_LENGTH,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminChatAttachment, type AdminChatState,
-  type AdminWorkspaceAccess, type AiChatAuthorInfo,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
+  type AdminAccessRecord, type AdminChatAttachment, type AdminChatState, type AdminPendingChange,
+  type AdminWorkspaceAccess, type AiChatAuthorInfo, type ChatGadgetPin, type FileAtCommit,
 } from "@gadgets/workshop-shared/api";
+import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
+import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import type { AdminViewTerms } from "../src/admin-access.js";
@@ -42,6 +45,9 @@ const OWNER_USER_ID = "owner-user-do";
 // and awaits its record), then expires within the test.
 const SHORT_LIFETIME_MS = 1000;
 const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.test", name: "Owner" };
+const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
+// Who the seed's commits are by.
+const COMMITTER = { name: "Owner", email: "owner@example.test" };
 const REASON = "Support ticket 42";
 // The pool sets no ADMIN_AUDIT_RETENTION_MIN_DAYS, so retention is at least 90 days.
 const RETENTION = 90;
@@ -50,6 +56,14 @@ const GATEKEEPER_ID = 0;
 const CHAT_ID = 1;
 // A chat with no message, turn, queued call or action, which the tests that need one add.
 const IDLE_CHAT_ID = 2;
+// The seeded chat that holds changes to the seeded gadget which are not accepted: notes.txt
+// modified, in a "changes" message, and added.txt added and todo.txt removed, in a row no message
+// holds yet.
+const DRAFT_CHAT_ID = 3;
+// A chat with a worktree, which addWorktree() adds.
+const WORKTREE_CHAT_ID = 4;
+// The parent the seed's orphan commit names. The workspace stores no such object.
+const MISSING_PARENT = "ab".repeat(20);
 
 // The seeded chat's attachments: one stored as a blob, one image kept as bytes on its record, and
 // one whose record names only a file of a commit.
@@ -76,7 +90,11 @@ type Workspace = {
   // Replaces the KV read when set, so a test can hold a call at its config read.
   kvGet?: (key: string) => Promise<string | null>;
   gadgetId: number;
+  // The seeded gadget's head, and the head's parent, whose files differ.
   commitId: string;
+  parentCommitId: string;
+  // A commit whose parent, MISSING_PARENT, is not stored.
+  orphanCommitId: string;
   // The blob behind the seeded chat's blob-backed attachment.
   attachmentOid: string;
   // The commit that holds its legacy attachment's file.
@@ -107,8 +125,8 @@ async function withWorkspace(fn: (ws: Workspace) => Promise<void>,
     let ws: Workspace = {
       impl, instance, state, id: state.id.toString(),
       config: { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: RETENTION },
-      gadgetId: -1, commitId: "", attachmentOid: "", legacyCommitId: "", attachmentSequence: -1,
-      lastMessageAt: new Date(NaN),
+      gadgetId: -1, commitId: "", parentCommitId: "", orphanCommitId: "", attachmentOid: "",
+      legacyCommitId: "", attachmentSequence: -1, lastMessageAt: new Date(NaN),
     };
     setEnv(ws);
     if (opts.seed ?? true) await seed(ws);
@@ -123,7 +141,12 @@ async function seed(ws: Workspace): Promise<void> {
   };
   impl.users = {
     idFromString: (id: string) => id,
-    get: () => ({ whoami: async () => OWNER, getGadget: async () => null }),
+    get: () => ({
+      whoami: async () => OWNER, getGadget: async () => null,
+      // What the workspace tells its owner's account of members' activity, taken and dropped.
+      messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
+      getWorkspace: async () => null, syncWorkspaceOutputs: async () => {},
+    }),
   };
   impl.ownerId = OWNER_USER_ID;
   impl.ownerProfileId = OWNER.id;
@@ -167,13 +190,14 @@ async function seed(ws: Workspace): Promise<void> {
     description: { title: "On push", description: "secret hook description" }, enabled: true,
   });
 
-  let files = new Map([["notes.txt", "private notes\n"]]);
-  ws.commitId = await impl.gitCache.writeFilesAsCommit(files, {
-    parents: [],
-    author: { name: "Owner", email: "owner@example.test" },
-    message: "notes",
-    timestamp: new Date(1700000000_000),
-  });
+  // The gadget's history: its head, whose parent held another notes.txt and a file since removed.
+  ws.parentCommitId = await commitFiles(ws,
+      { "notes.txt": "first notes\n", "old.txt": "dropped\n", "todo.txt": "todo\n" },
+      { message: "first notes", timestamp: new Date(1699990000_000) });
+  ws.commitId = await commitFiles(ws, { "notes.txt": "private notes\n", "todo.txt": "todo\n" },
+      { parents: [ws.parentCommitId], message: "notes" });
+  ws.orphanCommitId = await commitFiles(ws, { "checkout.txt": "checked out\n" },
+      { parents: [MISSING_PARENT], message: "checked out" });
   let gadget = impl.createGadget("Notes", "NOTES", undefined, undefined, ws.commitId);
   ws.gadgetId = gadget.id;
   impl.storage.gadgets.put({
@@ -181,6 +205,104 @@ async function seed(ws: Workspace): Promise<void> {
     upstream: { blueprintId: "bp-1" },
     bindings: { REPO: { target: GATEKEEPER_ID } },
   });
+
+  // lastActive differs by chat: chatMeta.byLastActive is a unique index.
+  impl.storage.chatMeta.put(
+      { id: DRAFT_CHAT_ID, title: "Draft", started: new Date(0), lastActive: new Date(1000) });
+  await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["notes.txt", { set: "draft notes\n" }]] },
+      [{ gadgetId: ws.gadgetId, baseCommit: ws.commitId }]);
+  impl.materializeChatChanges(DRAFT_CHAT_ID);
+  await submit(ws, DRAFT_CHAT_ID, {
+    [ws.gadgetId]: [["added.txt", { set: "added\n" }], ["todo.txt", { remove: true }]],
+  });
+}
+
+// Writes `files` as a commit by COMMITTER.
+async function commitFiles(ws: Workspace, files: Record<string, string>, options: {
+  parents?: string[], message?: string, timestamp?: Date,
+} = {}): Promise<string> {
+  return await ws.impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
+    parents: options.parents ?? [],
+    author: COMMITTER,
+    message: options.message ?? "test commit",
+    timestamp: options.timestamp ?? new Date(1700000000_000),
+  });
+}
+
+// A member's submission of `change` at the chat's current stream position, declaring `pins`,
+// each from a client of its own.
+async function submit(ws: Workspace, chatId: number, change: CodeChange,
+                      pins?: ChatGadgetPin[]): Promise<void> {
+  let codeBase = ws.impl.storage.chatMeta.get(chatId).codeBase ?? { generation: 0, revision: 0 };
+  await ws.impl.submitCodeChange(chatId, {
+    generation: codeBase.generation, revision: codeBase.revision,
+    clientId: crypto.randomUUID(), seq: 1, change, ...(pins ? { pins } : {}),
+  }, OWNER, OWNER_USER_ID);
+}
+
+// Lets what a member's change starts in the background (telling the owner's account) finish.
+const settled = () => new Promise(resolve => setTimeout(resolve, 0));
+
+// An `edit` of one file, built the way clients build theirs.
+function editChange(id: number, path: string, before: string, after: string): CodeChange {
+  let content = (text: string): CodeContent => new Map([[id, new Map([[path, text]])]]);
+  return diffFiles(content(before), content(after));
+}
+
+// One agent step that changes code, as the end of a turn commits it.
+async function agentStep(ws: Workspace, chatId: number, change: CodeChange): Promise<void> {
+  await ws.impl.commitAgentStep(chatId, AGENT, [{ type: "message", message: "step" }], {
+    changes: [{ change }], createdGadgets: [], createdWorktrees: [], addedBindings: [],
+    worktreeCommits: [],
+  });
+}
+
+// Adds a chat with a worktree at a commit of `files`, none of which the chat has touched.
+async function addWorktree(ws: Workspace, files: Record<string, string>)
+    : Promise<{ id: number, baseCommit: string }> {
+  let impl = ws.impl;
+  impl.storage.chatMeta.put({
+    id: WORKTREE_CHAT_ID, title: "Repo work", started: new Date(0), lastActive: new Date(2000),
+  });
+  let baseCommit = await commitFiles(ws, files);
+  let { id, title } = await impl.createWorktree("Repo", WORKTREE_CHAT_ID, baseCommit);
+  await impl.commitAgentStep(WORKTREE_CHAT_ID, AGENT, [{ type: "message", message: "step" }], {
+    changes: [], createdGadgets: [],
+    createdWorktrees: [{ worktreeId: id, title, bindingName: "TREE" }],
+    addedBindings: [], worktreeCommits: [],
+  });
+  return { id, baseCommit };
+}
+
+// Adds a chat with a worktree at a commit of four files, changed every way a listing tells
+// apart: a.txt edited by a step's message, which pins the worktree, and then, in rows no message
+// holds yet, new.txt added, gone.txt removed, and same.txt edited and edited back to its base
+// text. src/untouched.txt is never touched.
+async function addWorktreeChat(ws: Workspace): Promise<{ id: number, baseCommit: string }> {
+  let worktree = await addWorktree(ws, {
+    "a.txt": "one\n", "gone.txt": "bye\n", "same.txt": "same\n", "src/untouched.txt": "kept\n",
+  });
+  let { id } = worktree;
+  await agentStep(ws, WORKTREE_CHAT_ID, editChange(id, "a.txt", "one\n", "one!\n"));
+  await submit(ws, WORKTREE_CHAT_ID,
+      { [id]: [["new.txt", { set: "fresh\n" }], ["gone.txt", { remove: true }]] });
+  await submit(ws, WORKTREE_CHAT_ID, editChange(id, "same.txt", "same\n", "changed\n"));
+  await submit(ws, WORKTREE_CHAT_ID, editChange(id, "same.txt", "changed\n", "same\n"));
+  return worktree;
+}
+
+// The seeded draft chat's pending change, as a view lists it at any level.
+function seededPendingChange(ws: Workspace): AdminPendingChange {
+  return {
+    gadgetId: ws.gadgetId, baseCommit: ws.commitId, mergedCommit: ws.commitId,
+    added: ["added.txt"], modified: ["notes.txt"], removed: ["todo.txt"],
+  };
+}
+
+// A `stream` answer's bytes, read to the end.
+async function streamBytes(file: FileAtCommit): Promise<Uint8Array> {
+  if (file.kind !== "stream") throw new Error(`Expected a stream, got ${file.kind}.`);
+  return new Uint8Array(await new Response(file.content).arrayBuffer());
 }
 
 // Adds a message with three attachments to the seeded chat. The stored references carry what a
@@ -425,6 +547,15 @@ describe("a metadata view", () => {
     await view.listFiles(ws.gadgetId);
     expect(await codeOf(view.readFile(ws.gadgetId, "notes.txt")))
         .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
+    await view.getCommitLog(ws.commitId);
+    await view.getCommitLog(ws.commitId, 1);
+    await view.listFilesAtCommit(ws.parentCommitId);
+    expect(await codeOf(view.readFileAtCommit(ws.parentCommitId, "notes.txt")))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
+    await view.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await view.listPendingChanges(DRAFT_CHAT_ID);
+    expect(await codeOf(view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt")))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
     await view.listGatekeepers();
     await view.getDiagnostics();
 
@@ -442,6 +573,16 @@ describe("a metadata view", () => {
       ["listFiles", { gadgetId: ws.gadgetId }, "metadata", undefined],
       ["readFile", { gadgetId: ws.gadgetId, path: "notes.txt" }, "metadata",
        ADMIN_ACCESS_ERROR_CODES.contentWithheld],
+      ["getCommitLog", { fromCommit: ws.commitId }, "metadata", undefined],
+      ["getCommitLog", { fromCommit: ws.commitId, depth: 1 }, "metadata", undefined],
+      ["listFilesAtCommit", { commitId: ws.parentCommitId }, "metadata", undefined],
+      ["readFileAtCommit", { commitId: ws.parentCommitId, path: "notes.txt" }, "metadata",
+       ADMIN_ACCESS_ERROR_CODES.contentWithheld],
+      ["listChangedPaths", { fromCommit: ws.parentCommitId, toCommit: ws.commitId }, "metadata",
+       undefined],
+      ["listPendingChanges", { chatId: DRAFT_CHAT_ID }, "metadata", undefined],
+      ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: ws.gadgetId, path: "notes.txt" },
+       "metadata", ADMIN_ACCESS_ERROR_CODES.contentWithheld],
       ["listGatekeepers", {}, "metadata", undefined],
       ["getDiagnostics", {}, "metadata", undefined],
     ]);
@@ -465,8 +606,8 @@ describe("a metadata view", () => {
     let view = await open(ws);
 
     let chats = await view.listChats();
-    expect(chats.map(chat => chat.title)).toStrictEqual(["Plans"]);
-    expect(chats[0]).not.toHaveProperty("queuedSteers");
+    expect(chats.map(chat => chat.title)).toStrictEqual(["Draft", "Plans"]);
+    expect(chats.find(chat => chat.id === CHAT_ID)).not.toHaveProperty("queuedSteers");
 
     // Whole answers: a stored record's other fields (a queued call's arguments, an attachment's
     // path and bytes) would pass a looser check.
@@ -498,7 +639,28 @@ describe("a metadata view", () => {
     expect(gatekeeper.hooks.map(hook => [hook.description.title, hook.description.description]))
         .toStrictEqual([["On push", ""]]);
 
-    expect(await view.listFiles(ws.gadgetId)).toStrictEqual([{ name: "notes.txt", kind: "file" }]);
+    expect(await view.listFiles(ws.gadgetId)).toStrictEqual(
+        [{ name: "notes.txt", kind: "file" }, { name: "todo.txt", kind: "file" }]);
+
+    // A commit keeps its id, parents, author and time, without its message.
+    expect(await view.getCommitLog(ws.commitId)).toStrictEqual([
+      {
+        oid: ws.commitId, parents: [ws.parentCommitId], message: "", author: COMMITTER,
+        timestamp: new Date(1700000000_000),
+      },
+      {
+        oid: ws.parentCommitId, parents: [], message: "", author: COMMITTER,
+        timestamp: new Date(1699990000_000),
+      },
+    ]);
+    // Paths are names, so these answer in full.
+    expect(await view.listFilesAtCommit(ws.parentCommitId)).toStrictEqual([
+      { name: "notes.txt", kind: "file" }, { name: "old.txt", kind: "file" },
+      { name: "todo.txt", kind: "file" },
+    ]);
+    expect(await view.listChangedPaths(ws.parentCommitId, ws.commitId))
+        .toStrictEqual(["notes.txt", "old.txt"]);
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([seededPendingChange(ws)]);
   }));
 });
 
@@ -512,6 +674,12 @@ describe("an inspection", () => {
       update: () => notified.push("update"),
       remove: () => notified.push("remove"),
     });
+    // A chat with a worktree, whose content the view is the one to fold: the fold that reads its
+    // bases from stored objects alone.
+    let worktree = await addWorktreeChat(ws);
+    await settled();
+    impl.invalidateChatContent(WORKTREE_CHAT_ID);
+    impl.invalidateChatContent(DRAFT_CHAT_ID);
     let before = await memberVisibleState(ws);
 
     // Every view method, at "metadata", where the content reads are refused, and then at "full",
@@ -526,6 +694,12 @@ describe("an inspection", () => {
     await view.listActions();
     await view.listFiles(ws.gadgetId);
     await view.readFile(ws.gadgetId, "notes.txt").catch(() => {});
+    await view.getCommitLog(ws.commitId);
+    await view.listFilesAtCommit(ws.parentCommitId);
+    await view.readFileAtCommit(ws.parentCommitId, "notes.txt").catch(() => {});
+    await view.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await view.listPendingChanges(DRAFT_CHAT_ID);
+    await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt").catch(() => {});
     await view.listGatekeepers();
     await view.getDiagnostics();
 
@@ -543,6 +717,15 @@ describe("an inspection", () => {
     await full.listActions();
     await full.listFiles(ws.gadgetId);
     await full.readFile(ws.gadgetId, "notes.txt");
+    await full.getCommitLog(ws.commitId);
+    await full.listFilesAtCommit(ws.parentCommitId);
+    await full.readFileAtCommit(ws.parentCommitId, "notes.txt");
+    await full.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await full.listPendingChanges(DRAFT_CHAT_ID);
+    await full.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt");
+    expect(await full.listPendingChanges(WORKTREE_CHAT_ID)).toHaveLength(1);
+    expect(await full.readPendingFile(WORKTREE_CHAT_ID, worktree.id, "a.txt"))
+        .toStrictEqual({ kind: "text", text: "one!\n" });
     await full.listGatekeepers();
     await full.getDiagnostics();
 
@@ -567,8 +750,8 @@ describe("a full view", () => {
         .toStrictEqual(["secret message", "see attached"]);
     expect(await view.readFile(ws.gadgetId, "notes.txt"))
         .toStrictEqual({ kind: "text", text: "private notes\n" });
-    expect((await view.listChats())[0].queuedSteers).toStrictEqual(
-        [{ text: "steer text", author: OWNER }]);
+    expect((await view.listChats()).find(chat => chat.id === CHAT_ID)!.queuedSteers)
+        .toStrictEqual([{ text: "steer text", author: OWNER }]);
     let { workpieces } = await view.describe();
     expect(workpieces.find(w => w.id === ws.gadgetId)!.upstream)
         .toStrictEqual({ blueprintId: "bp-1" });
@@ -640,6 +823,15 @@ describe("a full view", () => {
     await view.getChatState(IDLE_CHAT_ID);
     await view.listChatAttachments(CHAT_ID);
     await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID);
+    await view.getCommitLog(ws.commitId);
+    await view.readFileAtCommit(ws.parentCommitId, "old.txt");
+    await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt");
+    await view.listFilesAtCommit(ws.commitId);
+    await view.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await view.listPendingChanges(DRAFT_CHAT_ID);
+    expect(await view.readFileAtCommit(ws.commitId, "old.txt")).toStrictEqual({ kind: "absent" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "todo.txt"))
+        .toStrictEqual({ kind: "absent" });
 
     let records = await deploymentRecords(ws);
     expect(records.map(r => [r.method, r.exposed])).toStrictEqual([
@@ -659,6 +851,14 @@ describe("a full view", () => {
       ["getChatState", "metadata"],
       ["listChatAttachments", "metadata"],
       ["readChatAttachment", "content"],
+      ["getCommitLog", "content"],
+      ["readFileAtCommit", "content"],
+      ["readPendingFile", "content"],
+      ["listFilesAtCommit", "metadata"],
+      ["listChangedPaths", "metadata"],
+      ["listPendingChanges", "metadata"],
+      ["readFileAtCommit", "metadata"],
+      ["readPendingFile", "metadata"],
     ]);
     expect(records.every(r => r.requested === "full" && r.access === "full")).toBe(true);
   }));
@@ -704,10 +904,11 @@ describe("a full view", () => {
     setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
     ws.config.adminWorkspaceAccess = "full";
     let view = await open(ws, { access: "full" });
-    expect((await view.listChats())[0].queuedSteers).toBeDefined();
+    let seededChat = async () => (await view.listChats()).find(chat => chat.id === CHAT_ID)!;
+    expect((await seededChat()).queuedSteers).toBeDefined();
 
     ws.config.adminWorkspaceAccess = "metadata";
-    expect((await view.listChats())[0]).not.toHaveProperty("queuedSteers");
+    expect(await seededChat()).not.toHaveProperty("queuedSteers");
     expect(await codeOf(view.readFile(ws.gadgetId, "notes.txt")))
         .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
   }));
@@ -848,7 +1049,7 @@ describe("the records' bounds", () => {
     let view = await open(ws);
     let diagnostics = await view.getDiagnostics();
     expect(diagnostics).toMatchObject({
-      chats: 1, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 0,
+      chats: 2, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 0,
       ownerRegistrationPending: false, activeAgentChatIds: [], pendingAgentCalls: 1,
     });
   }));
@@ -856,7 +1057,8 @@ describe("the records' bounds", () => {
 
 // Deletes a stored object that a connection could serve again, and makes reaching any connection's
 // facet visible to the test.
-function forbidPulls(ws: Workspace, oid: string, type: "blob" | "tree"): { pulled: boolean } {
+function forbidPulls(ws: Workspace, oid: string, type: "blob" | "tree" | "commit")
+    : { pulled: boolean } {
   let state = { pulled: false };
   ws.impl.storage.gitObjectMetadata.put(
       { oid, type, onRemote: [GATEKEEPER_ID], pullableFrom: [], pendingPush: [] });
@@ -1010,5 +1212,402 @@ describe("chat reads", () => {
     await expect(view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID))
         .rejects.toThrow(`git object ${root.oid} is not stored in this workspace`);
     expect(pulls.pulled).toBe(false);
+  }));
+});
+
+// A view at "full", which the environment's cap and the setting both allow.
+async function openFull(ws: Workspace) {
+  setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+  ws.config.adminWorkspaceAccess = "full";
+  return await open(ws, { access: "full" });
+}
+
+// What a read throws for an id that names no stored commit, and for an object that is missing.
+const noStoredCommit = (oid: string) => `No commit ${oid} is stored in this workspace.`;
+const missingObject = (oid: string) => `git object ${oid} is not stored in this workspace`;
+
+describe("history and stored commits", () => {
+  it("read a commit's history, its files and what changed since its parent",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let head = {
+      oid: ws.commitId, parents: [ws.parentCommitId], message: "notes\n", author: COMMITTER,
+      timestamp: new Date(1700000000_000),
+    };
+    let parent = {
+      oid: ws.parentCommitId, parents: [], message: "first notes\n", author: COMMITTER,
+      timestamp: new Date(1699990000_000),
+    };
+    expect(await view.getCommitLog(ws.commitId)).toStrictEqual([head, parent]);
+    expect(await view.getCommitLog(ws.commitId, 1)).toStrictEqual([head]);
+    // A commit whose parent is not stored lists alone: the walk stops there.
+    expect((await view.getCommitLog(ws.orphanCommitId)).map(commit => [commit.oid, commit.parents]))
+        .toStrictEqual([[ws.orphanCommitId, [MISSING_PARENT]]]);
+
+    // The parent is no gadget's head, and reads as one does.
+    expect(await view.listFilesAtCommit(ws.parentCommitId)).toStrictEqual([
+      { name: "notes.txt", kind: "file" }, { name: "old.txt", kind: "file" },
+      { name: "todo.txt", kind: "file" },
+    ]);
+    expect(await view.readFileAtCommit(ws.parentCommitId, "notes.txt"))
+        .toStrictEqual({ kind: "text", text: "first notes\n" });
+    expect(await view.readFileAtCommit(ws.parentCommitId, "old.txt"))
+        .toStrictEqual({ kind: "text", text: "dropped\n" });
+    expect(await view.readFileAtCommit(ws.commitId, "old.txt")).toStrictEqual({ kind: "absent" });
+
+    expect(await view.listChangedPaths(ws.parentCommitId, ws.commitId))
+        .toStrictEqual(["notes.txt", "old.txt"]);
+    expect(await view.listChangedPaths(ws.commitId, ws.parentCommitId))
+        .toStrictEqual(["notes.txt", "old.txt"]);
+    expect(await view.listChangedPaths(ws.commitId, ws.commitId)).toStrictEqual([]);
+  }));
+
+  it("list 20 commits of a longer history when no depth is given", () => withWorkspace(async ws => {
+    // A line of 22 commits, a second apart. Any stored commit can start a log, so it needs no
+    // gadget.
+    let oids: string[] = [];
+    for (let step = 1; step <= 22; step++) {
+      oids.push(await commitFiles(ws, { "step.txt": `${step}\n` }, {
+        parents: oids.slice(-1), message: `step ${step}`,
+        timestamp: new Date(1700000000_000 + step * 1000),
+      }));
+    }
+    let tip = oids.at(-1)!;
+    let newestFirst = oids.toReversed();
+
+    let view = await openFull(ws);
+    let log = await view.getCommitLog(tip);
+    expect(log).toHaveLength(DEFAULT_ADMIN_COMMIT_LOG_DEPTH);
+    expect(log.map(commit => commit.oid)).toStrictEqual(newestFirst.slice(0, 20));
+    expect(log.at(-1)!.message).toBe("step 3\n");
+    expect((await view.getCommitLog(tip, 21)).map(commit => commit.oid))
+        .toStrictEqual(newestFirst.slice(0, 21));
+    let whole = await view.getCommitLog(tip, MAX_ADMIN_COMMIT_LOG_DEPTH);
+    expect(whole.map(commit => commit.oid)).toStrictEqual(newestFirst);
+    expect(whole.at(-1)!.message).toBe("step 1\n");
+
+    let withheld = await (await open(ws)).getCommitLog(tip);
+    expect(withheld.map(commit => [commit.oid, commit.message]))
+        .toStrictEqual(newestFirst.slice(0, 20).map(oid => [oid, ""]));
+
+    // A record keeps the depth as its caller gave it, not the one the read applied.
+    let records = (await deploymentRecords(ws)).filter(r => r.method === "getCommitLog");
+    expect(records.map(r => [r.args, r.access, r.exposed])).toStrictEqual([
+      [{ fromCommit: tip }, "full", "content"],
+      [{ fromCommit: tip, depth: 21 }, "full", "content"],
+      [{ fromCommit: tip, depth: MAX_ADMIN_COMMIT_LOG_DEPTH }, "full", "content"],
+      [{ fromCommit: tip }, "metadata", "metadata"],
+    ]);
+  }));
+
+  it("refuse, unrecorded, a depth outside the log's bounds", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    for (let depth of [0, MAX_ADMIN_COMMIT_LOG_DEPTH + 1, 1.5]) {
+      await expect(view.getCommitLog(ws.commitId, depth)).rejects.toThrow(TypeError);
+      await expect(view.getCommitLog(ws.commitId, depth)).rejects.toThrow(
+          `The commit log's depth must be a whole number from 1 to ${MAX_ADMIN_COMMIT_LOG_DEPTH}.`);
+    }
+    expect((await deploymentRecords(ws)).map(r => r.method)).toStrictEqual(["inspectWorkspace"]);
+  }));
+
+  it("record an id that names no stored commit as a read that failed",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let tree = ws.impl.gitCache.commitTree(ws.commitId);
+    let blob = ws.impl.gitCache.localPathEntryAtCommit(ws.commitId, "notes.txt").oid;
+
+    await expect(view.getCommitLog("not-an-oid")).rejects.toThrow("Invalid commit id.");
+    await expect(view.listFilesAtCommit(MISSING_PARENT))
+        .rejects.toThrow(noStoredCommit(MISSING_PARENT));
+    await expect(view.readFileAtCommit(tree, "notes.txt")).rejects.toThrow(noStoredCommit(tree));
+    await expect(view.listChangedPaths(ws.commitId, blob)).rejects.toThrow(noStoredCommit(blob));
+    await expect(view.listChangedPaths(MISSING_PARENT, ws.commitId))
+        .rejects.toThrow(noStoredCommit(MISSING_PARENT));
+    await expect(view.getCommitLog(tree)).rejects.toThrow(noStoredCommit(tree));
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.access, r.exposed])).toStrictEqual([
+      ["getCommitLog", { fromCommit: "not-an-oid" }, "full", "metadata"],
+      ["listFilesAtCommit", { commitId: MISSING_PARENT }, "full", "metadata"],
+      ["readFileAtCommit", { commitId: tree, path: "notes.txt" }, "full", "metadata"],
+      ["listChangedPaths", { fromCommit: ws.commitId, toCommit: blob }, "full", "metadata"],
+      ["listChangedPaths", { fromCommit: MISSING_PARENT, toCommit: ws.commitId }, "full",
+        "metadata"],
+      ["getCommitLog", { fromCommit: tree }, "full", "metadata"],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("never pull a missing object through a connection", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let gitCache = ws.impl.gitCache;
+
+    // A parent a connection could serve ends the walk, unasked.
+    let pulls = forbidPulls(ws, MISSING_PARENT, "commit");
+    expect((await view.getCommitLog(ws.orphanCommitId)).map(commit => commit.oid))
+        .toStrictEqual([ws.orphanCommitId]);
+    expect(pulls.pulled).toBe(false);
+
+    let blob = gitCache.localPathEntryAtCommit(ws.parentCommitId, "old.txt").oid;
+    pulls = forbidPulls(ws, blob, "blob");
+    await expect(view.readFileAtCommit(ws.parentCommitId, "old.txt"))
+        .rejects.toThrow(missingObject(blob));
+    expect(pulls.pulled).toBe(false);
+
+    let root = gitCache.commitTree(ws.parentCommitId);
+    pulls = forbidPulls(ws, root, "tree");
+    await expect(view.listFilesAtCommit(ws.parentCommitId)).rejects.toThrow(missingObject(root));
+    await expect(view.listChangedPaths(ws.parentCommitId, ws.commitId))
+        .rejects.toThrow(missingObject(root));
+    expect(pulls.pulled).toBe(false);
+
+    // The head's own parent, once it is gone: the head lists alone.
+    pulls = forbidPulls(ws, ws.parentCommitId, "commit");
+    expect((await view.getCommitLog(ws.commitId)).map(commit => commit.oid))
+        .toStrictEqual([ws.commitId]);
+    expect(pulls.pulled).toBe(false);
+  }));
+});
+
+describe("a chat's pending changes", () => {
+  it("list what the chat changed against its pin's base, and read its files",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([seededPendingChange(ws)]);
+    // A modified and an added path hold the chat's text, and a removed one nothing.
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt"))
+        .toStrictEqual({ kind: "text", text: "draft notes\n" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt"))
+        .toStrictEqual({ kind: "text", text: "added\n" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "todo.txt"))
+        .toStrictEqual({ kind: "absent" });
+    // A chat that changed nothing holds no changes.
+    expect(await view.listPendingChanges(CHAT_ID)).toStrictEqual([]);
+
+    // A gadget the chat created, not accepted yet: no pin, so no base, and every file is added.
+    let created = ws.impl.createGadget("Sketch", "SKETCH", DRAFT_CHAT_ID);
+    await agentStep(ws, DRAFT_CHAT_ID,
+        { [created.id]: [["main.js", { set: "code\n" }], ["lib/util.js", { set: "util\n" }]] });
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([
+      seededPendingChange(ws),
+      { gadgetId: created.id, added: ["lib/util.js", "main.js"], modified: [], removed: [] },
+    ]);
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, created.id, "main.js"))
+        .toStrictEqual({ kind: "text", text: "code\n" });
+  }));
+
+  it("record a chat or a workpiece that holds none as a read that failed",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    await expect(view.readPendingFile(DRAFT_CHAT_ID, 999, "x"))
+        .rejects.toThrow(`Chat ${DRAFT_CHAT_ID} holds no changes to workpiece 999.`);
+    await expect(view.listPendingChanges(999)).rejects.toThrow("No such chatId: 999");
+    await expect(view.readPendingFile(999, ws.gadgetId, "x"))
+        .rejects.toThrow("No such chatId: 999");
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.access, r.exposed])).toStrictEqual([
+      ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: 999, path: "x" }, "full", "metadata"],
+      ["listPendingChanges", { chatId: 999 }, "full", "metadata"],
+      ["readPendingFile", { chatId: 999, gadgetId: ws.gadgetId, path: "x" }, "full", "metadata"],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("fold a worktree's changes from stored objects alone", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let { id, baseCommit } = await addWorktreeChat(ws);
+
+    // same.txt, edited back to its base text, is in no list.
+    expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toStrictEqual([{
+      gadgetId: id, baseCommit, mergedCommit: baseCommit,
+      added: ["new.txt"], modified: ["a.txt"], removed: ["gone.txt"],
+    }]);
+    expect(await view.readPendingFile(WORKTREE_CHAT_ID, id, "a.txt"))
+        .toStrictEqual({ kind: "text", text: "one!\n" });
+    expect(await view.readPendingFile(WORKTREE_CHAT_ID, id, "gone.txt"))
+        .toStrictEqual({ kind: "absent" });
+    // A file the chat never touched is not in its content: it reads at the base.
+    expect(await view.readPendingFile(WORKTREE_CHAT_ID, id, "src/untouched.txt"))
+        .toStrictEqual({ kind: "absent" });
+    expect(await view.readFileAtCommit(baseCommit, "src/untouched.txt"))
+        .toStrictEqual({ kind: "text", text: "kept\n" });
+
+    // Without the edited file's base text the fold fails, and asks no connection for it.
+    let base = ws.impl.gitCache.localPathEntryAtCommit(baseCommit, "a.txt").oid;
+    let pulls = forbidPulls(ws, base, "blob");
+    ws.impl.invalidateChatContent(WORKTREE_CHAT_ID);
+    await expect(view.listPendingChanges(WORKTREE_CHAT_ID))
+        .rejects.toThrow(missingObject(base));
+    await expect(view.readPendingFile(WORKTREE_CHAT_ID, id, "a.txt"))
+        .rejects.toThrow(missingObject(base));
+    expect(pulls.pulled).toBe(false);
+    let records = (await deploymentRecords(ws)).slice(-2);
+    expect(records.map(r => [r.method, r.access, r.exposed])).toStrictEqual([
+      ["listPendingChanges", "full", "metadata"], ["readPendingFile", "full", "metadata"],
+    ]);
+  }));
+
+  it("never pull a worktree's base to tell its paths apart", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let { baseCommit } = await addWorktreeChat(ws);
+    // With the chat's content folded, a listing still reads the base's tree, which says what
+    // each path the chat touched was there.
+    await view.listPendingChanges(WORKTREE_CHAT_ID);
+    let root = ws.impl.gitCache.commitTree(baseCommit);
+    let pulls = forbidPulls(ws, root, "tree");
+    await expect(view.listPendingChanges(WORKTREE_CHAT_ID)).rejects.toThrow(missingObject(root));
+    expect(pulls.pulled).toBe(false);
+  }));
+
+  it("stream a file the chat holds as bytes", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    let { id, baseCommit } = await addWorktreeChat(ws);
+    let bytes = new Uint8Array([0x00, 0xff, 0x10, 0x80, 0x7f]);
+    // Bytes also replace two of the base's files: same.txt with other bytes, and
+    // src/untouched.txt with the very bytes it holds there, which changes nothing.
+    let set = (content: Uint8Array) => ({ setBytes: ws.impl.gitCache.writeBlob(content) });
+    await agentStep(ws, WORKTREE_CHAT_ID, { [id]: [
+      ["data.bin", set(bytes)], ["same.txt", set(bytes)],
+      ["src/untouched.txt", set(new TextEncoder().encode("kept\n"))],
+    ] });
+
+    let file = await view.readPendingFile(WORKTREE_CHAT_ID, id, "data.bin");
+    expect(file).toMatchObject({ kind: "stream", byteLength: bytes.byteLength });
+    expect(await streamBytes(file)).toStrictEqual(bytes);
+    expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toStrictEqual([{
+      gadgetId: id, baseCommit, mergedCommit: baseCommit,
+      added: ["data.bin", "new.txt"], modified: ["a.txt", "same.txt"], removed: ["gone.txt"],
+    }]);
+    expect((await deploymentRecords(ws)).at(-2))
+        .toMatchObject({ method: "readPendingFile", exposed: "content" });
+  }));
+
+  it("list workpieces by id and paths by name, in whatever order the chat changed them",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    // The chat changes its worktree before the seeded gadget, whose id is the lower one, and the
+    // worktree's paths in descending order: two modified, two removed and two added. A scratch
+    // file the base lacks, written and then removed, is in no list.
+    let { id, baseCommit } = await addWorktree(ws,
+        { "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n", "d.txt": "d\n" });
+    await agentStep(ws, WORKTREE_CHAT_ID, editChange(id, "d.txt", "d\n", "d!\n"));
+    await submit(ws, WORKTREE_CHAT_ID, { [id]: [
+      ["c.txt", { set: "c!\n" }], ["b.txt", { remove: true }], ["a.txt", { remove: true }],
+      ["z.txt", { set: "z\n" }], ["y.txt", { set: "y\n" }], ["tmp.txt", { set: "t\n" }],
+    ] });
+    await submit(ws, WORKTREE_CHAT_ID, { [id]: [["tmp.txt", { remove: true }]] });
+    await submit(ws, WORKTREE_CHAT_ID, { [ws.gadgetId]: [["notes.txt", { set: "notes!\n" }]] },
+        [{ gadgetId: ws.gadgetId, baseCommit: ws.commitId }]);
+
+    expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toStrictEqual([
+      {
+        gadgetId: ws.gadgetId, baseCommit: ws.commitId, mergedCommit: ws.commitId,
+        added: [], modified: ["notes.txt"], removed: [],
+      },
+      {
+        gadgetId: id, baseCommit, mergedCommit: baseCommit,
+        added: ["y.txt", "z.txt"], modified: ["c.txt", "d.txt"], removed: ["a.txt", "b.txt"],
+      },
+    ]);
+  }));
+
+  it("leave out what a revert took back, and list what the chat changed after it",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    // The second of two steps is reverted, so what it touched is no longer the chat's: b.txt,
+    // which it removed, is in no list. A revert also starts the chat's stream of changes over,
+    // and the removal of c.txt is a row of the stream that follows it.
+    let { id, baseCommit } = await addWorktree(ws,
+        { "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n" });
+    await agentStep(ws, WORKTREE_CHAT_ID, editChange(id, "a.txt", "a\n", "a!\n"));
+    await agentStep(ws, WORKTREE_CHAT_ID,
+        { [id]: [["b.txt", { remove: true }], ["n.txt", { set: "n\n" }]] });
+    let reverted = [...ws.impl.storage.chats.list()]
+        .findLast(msg => msg.chatId === WORKTREE_CHAT_ID && msg.type === "changes")!.sequence;
+    await ws.impl.revertChanges(WORKTREE_CHAT_ID, reverted, OWNER);
+    await submit(ws, WORKTREE_CHAT_ID, { [id]: [["c.txt", { remove: true }]] });
+
+    expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toStrictEqual([{
+      gadgetId: id, baseCommit, mergedCommit: baseCommit,
+      added: [], modified: ["a.txt"], removed: ["c.txt"],
+    }]);
+  }));
+
+  it("send a pending text by the size of its UTF-8 encoding", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    // "é" is two bytes: the first text is exactly MAX_BUFFERED_BLOB_SIZE bytes in one character
+    // fewer, and the second one byte over it in exactly that many characters.
+    let atLimit = "é" + "a".repeat(MAX_BUFFERED_BLOB_SIZE - 2);
+    let overLimit = `${atLimit}a`;
+    expect(overLimit.length).toBe(MAX_BUFFERED_BLOB_SIZE);
+    await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["at-limit.txt", { set: atLimit }]] });
+    await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["over-limit.txt", { set: overLimit }]] });
+
+    let whole = await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "at-limit.txt");
+    expect(whole.kind).toBe("text");
+    expect(whole.kind === "text" && whole.text === atLimit).toBe(true);
+
+    let streamed = await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "over-limit.txt");
+    expect(streamed).toMatchObject({ kind: "stream", byteLength: MAX_BUFFERED_BLOB_SIZE + 1 });
+    let bytes = await streamBytes(streamed);
+    expect(bytes.byteLength).toBe(MAX_BUFFERED_BLOB_SIZE + 1);
+    expect(new TextDecoder().decode(bytes) === overLimit).toBe(true);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args.path, r.exposed])).toStrictEqual([
+      ["readPendingFile", "at-limit.txt", "content"],
+      ["readPendingFile", "over-limit.txt", "content"],
+    ]);
+  }));
+
+  it("list a pin rooted at a merge commit against that commit", () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    let view = await openFull(ws);
+    // The gadget's head moves on to a child that adds a file. A pin does not follow the head.
+    let moved = await commitFiles(ws,
+        { "notes.txt": "private notes\n", "todo.txt": "todo\n", "other.txt": "other\n" },
+        { parents: [ws.commitId], message: "other" });
+    impl.storage.gadgets.put({ ...impl.storage.gadgets.get(ws.gadgetId), commitId: moved });
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([seededPendingChange(ws)]);
+
+    // An update from mainline roots the pin at a merge of the head and the chat's files. The chat
+    // has changed nothing on top of it, while accepting would still change the gadget: by what
+    // differs between the head it merged and the merge.
+    expect(await impl.updateChatFromMainline(DRAFT_CHAT_ID, OWNER))
+        .toStrictEqual({ conflictPaths: [] });
+    let [rooted] = await view.listPendingChanges(DRAFT_CHAT_ID);
+    let merge = rooted.baseCommit!;
+    expect([ws.commitId, moved]).not.toContain(merge);
+    expect(rooted).toStrictEqual({
+      gadgetId: ws.gadgetId, baseCommit: merge, mergedCommit: moved,
+      added: [], modified: [], removed: [],
+    });
+    expect((await view.getCommitLog(merge, 1))[0].parents[0]).toBe(moved);
+    expect(await view.listChangedPaths(moved, merge))
+        .toStrictEqual(["added.txt", "notes.txt", "todo.txt"]);
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "other.txt"))
+        .toStrictEqual({ kind: "text", text: "other\n" });
+
+    // What the chat changes next is listed against the merge.
+    await submit(ws, DRAFT_CHAT_ID, {
+      [ws.gadgetId]: [["other.txt", { set: "other!\n" }], ["more.txt", { set: "more\n" }]],
+    });
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([{
+      gadgetId: ws.gadgetId, baseCommit: merge, mergedCommit: moved,
+      added: ["more.txt"], modified: ["other.txt"], removed: [],
+    }]);
+  }));
+
+  it("leave out a pin that outlived its workpiece", () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    await ws.impl.removeWorkpiece(ws.gadgetId);
+    expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([]);
+    await expect(view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt"))
+        .rejects.toThrow(`Chat ${DRAFT_CHAT_ID} holds no changes to workpiece ${ws.gadgetId}.`);
+    let record = (await deploymentRecords(ws)).at(-1)!;
+    expect(record)
+        .toMatchObject({ method: "readPendingFile", access: "full", exposed: "metadata" });
+    expect(record).not.toHaveProperty("refused");
   }));
 });

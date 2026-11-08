@@ -1757,9 +1757,10 @@ export type AdminWorkspacePage = {
  * increasing order:
  *   - "off":      nothing; inspectWorkspace() is refused.
  *   - "metadata": its structure: titles, workpieces, collaborators, connections, the chat and
- *                 action lists, file names, the names, types, sizes and content hashes of
- *                 attachments, and diagnostics. Chat messages, queued steers, attachments, file
- *                 contents, the arguments of calls queued for an agent, which blueprint a gadget
+ *                 action lists, file names, commit ids and authors, the names, types, sizes and
+ *                 content hashes of attachments, and diagnostics. Chat messages, queued steers,
+ *                 attachments, file contents (at any commit, or pending in a chat), commit
+ *                 messages, the arguments of calls queued for an agent, which blueprint a gadget
  *                 follows, and the descriptions and fields of actions, observations and hooks are
  *                 withheld. Titles and names stay, and can echo content.
  *   - "full":     everything, what "metadata" withholds included.
@@ -1799,6 +1800,12 @@ export const MAX_ADMIN_VIEW_LIFETIME_SECONDS = 3600;
 /** The longest reason AdminApi.inspectWorkspace() takes, in characters, once trimmed. */
 export const MAX_ADMIN_ACCESS_REASON_LENGTH = 500;
 
+/** How many commits AdminWorkspaceView.getCommitLog() returns when the caller gives no `depth`. */
+export const DEFAULT_ADMIN_COMMIT_LOG_DEPTH = 20;
+
+/** The most commits one AdminWorkspaceView.getCommitLog() call returns. */
+export const MAX_ADMIN_COMMIT_LOG_DEPTH = 100;
+
 /** Options for AdminApi.inspectWorkspace(). */
 export type AdminInspectOptions = {
   /** How long the view lasts: a whole number of seconds from 1 to
@@ -1821,8 +1828,9 @@ export type AdminInspectOptions = {
  * AdminWorkspaceView method. */
 export const ADMIN_WORKSPACE_METHODS = [
   "inspectWorkspace", "describe", "listChats", "getChat", "getChatState", "listChatAttachments",
-  "readChatAttachment", "listActions", "listFiles", "readFile", "listGatekeepers",
-  "getDiagnostics",
+  "readChatAttachment", "listActions", "listFiles", "readFile", "getCommitLog",
+  "listFilesAtCommit", "readFileAtCommit", "listChangedPaths", "listPendingChanges",
+  "readPendingFile", "listGatekeepers", "getDiagnostics",
 ] as const satisfies readonly ("inspectWorkspace" | keyof AdminWorkspaceView)[];
 
 /** One of ADMIN_WORKSPACE_METHODS. */
@@ -1928,18 +1936,21 @@ export type AdminAccessRecord = {
    * answer held something the "metadata" level withholds:
    *   - getChat(): chat messages or a compaction summary;
    *   - readChatAttachment(): any attachment found;
-   *   - readFile(): any file found at the path, `unreadable` ones included, because that message
-   *     can quote the file (a symlink's quotes its target);
+   *   - readFile(), readFileAtCommit(), readPendingFile(): any file found at the path,
+   *     `unreadable` ones included, because that message can quote the file (a symlink's quotes
+   *     its target);
    *   - listChats(): a queued steer;
    *   - getChatState(): a queued call's argument summary;
+   *   - getCommitLog(): a commit message;
    *   - describe(): the blueprint a gadget follows;
    *   - listActions(), listGatekeepers(): a non-empty description, or a field, of an action,
    *     observation or hook.
    * Otherwise "metadata": always for the open and for the calls whose answers hold nothing the
-   * level withholds (listChatAttachments(), listFiles() and getDiagnostics()), for a call that was
-   * refused or whose read failed, and for a call at "full" whose answer held none of these. It is
-   * set from the answer itself, never from the level. An answer leaves the server only once its
-   * record exists: a call whose record could not be written returned nothing.
+   * level withholds (listChatAttachments(), listFiles(), listFilesAtCommit(), listChangedPaths(),
+   * listPendingChanges() and getDiagnostics()), for a call that was refused or whose read failed,
+   * and for a call at "full" whose answer held none of these. It is set from the answer itself,
+   * never from the level. An answer leaves the server only once its record exists: a call whose
+   * record could not be written returned nothing.
    */
   exposed: AdminAccessExposure;
   /** Present when the access level refused the call, which then read nothing: the code it was
@@ -2629,6 +2640,34 @@ export type AdminChatAttachment =
 };
 
 /**
+ * One gadget or worktree a chat holds changes to that are not accepted yet, as
+ * AdminWorkspaceView.listPendingChanges() lists it, with the paths the chat's current content
+ * changes against the commit those changes apply on top of. Paths are names: readPendingFile()
+ * reads a changed file, and readFileAtCommit() its base.
+ */
+export type AdminPendingChange = {
+  /** The gadget or worktree. */
+  gadgetId: WorkpieceId;
+  /** The commit the chat's changes to it apply on top of (ChatGadgetPin.baseCommit). Absent for a
+   * gadget the chat created that is not accepted yet: it has no commit, and each of its files is
+   * in `added`. */
+  baseCommit?: string;
+  /** The accepted code the chat's content includes (ChatGadgetPinState.mergedCommit). Absent
+   * with `baseCommit`. Accepting changes the workpiece from this commit to the chat's content,
+   * while the paths here compare that content with `baseCommit`. So where the two commits
+   * differ, as when the pin is rooted at a merge commit (after an update from mainline, or for a
+   * proposed blueprint merge), listChangedPaths(mergedCommit, baseCommit) is the rest of the
+   * comparison, and the three lists can be empty while there is a change to accept. */
+  mergedCommit?: string;
+  /** The paths the chat's content holds that `baseCommit` lacks, sorted. */
+  added: string[];
+  /** The paths whose content differs from `baseCommit`'s, sorted. */
+  modified: string[];
+  /** The paths `baseCommit` holds that the chat's content lacks, sorted. */
+  removed: string[];
+};
+
+/**
  * A deployment admin's read-only view of one workspace, minted by AdminApi.inspectWorkspace().
  * Nothing it does changes the workspace or is seen by its members: it joins no presence and no
  * session count, and starts no agent or connection.
@@ -2641,8 +2680,11 @@ export type AdminChatAttachment =
  * deployment's current setting. So lowering the setting reaches live views (within about a minute)
  * and raising it does not. A call that level refuses is recorded and refused, having read nothing:
  * `accessOff` once the setting is "off", `contentWithheld` below "full" for a method that reads
- * only content (getChat(), readChatAttachment(), readFile()). Any other call reads its answer,
- * never through a connection. It is then recorded as an
+ * only content (getChat(), readChatAttachment(), readFile(), readFileAtCommit(),
+ * readPendingFile()). Any other call reads its answer, never through a connection: what a
+ * connection supplied is read only as the workspace stores it (the commits of a worktree checked
+ * out through one are that repository's), on the level's terms, and the connection is not asked.
+ * It is then recorded as an
  * AdminAccessRecord, with what that answer exposed, in the deployment-wide log. Only then is the
  * call answered: nothing it read leaves the server before its record exists, and a call whose
  * record cannot be written fails and returns nothing. The
@@ -2702,6 +2744,54 @@ export interface AdminWorkspaceView extends RpcTarget {
   /** One file of a gadget's committed head, as Overseer.readFilesAtCommit() reports it, read as
    * listFiles() reads and refused as it is. Content: refused below "full". */
   readFile(gadgetId: WorkpieceId, path: string): Promise<FileAtCommit>;
+
+  /**
+   * The history of a stored commit, as Overseer.getCommitLog() walks it: `fromCommit` first, then
+   * its ancestry, at most `depth` commits (a whole number from 1 to MAX_ADMIN_COMMIT_LOG_DEPTH,
+   * DEFAULT_ADMIN_COMMIT_LOG_DEPTH when absent). Any commit the workspace stores can start it: a
+   * gadget's head (WorkpieceSummary.commitId), a worktree's commits, a chat pin's base. Read only
+   * from the objects the workspace stores: a parent that is not stored, as below the commit a
+   * worktree was checked out at, ends that line of the walk and is never pulled. Below "full"
+   * each `message` is "": a commit message describes its change.
+   */
+  getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]>;
+
+  /** The tree at any stored commit, read as listFiles() reads a committed head. Any commit the
+   * workspace stores can be read: a version in a gadget's history, a worktree's commit, a chat
+   * pin's base. Throws for an id that names no stored commit, and when an object is missing. */
+  listFilesAtCommit(commitId: string): Promise<TreeNode[]>;
+
+  /** One file at any stored commit, read as readFile() reads a committed head and refused as
+   * listFilesAtCommit() is. Content: refused below "full". */
+  readFileAtCommit(commitId: string, path: string): Promise<FileAtCommit>;
+
+  /** The paths that differ between two stored commits, as Overseer.listChangedPaths() lists
+   * them, read only from stored objects. Paths are names: the difference itself is two
+   * readFileAtCommit() calls. */
+  listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>;
+
+  /**
+   * The paths a chat's current content adds, modifies and removes against each pin's base, per
+   * workpiece it holds changes to (see AdminPendingChange), in workpiece id order. A workpiece
+   * here is a gadget or a worktree; a gadget the chat created that is not accepted yet has no
+   * pin, and lists every file as added. It is what the chat changed on top of each base, which is
+   * not always all that accepting would change (see AdminPendingChange.mergedCommit). Folded from
+   * the chat's content, edits not yet recorded in a message included, and the objects the
+   * workspace stores. Throws for an id that names no chat.
+   */
+  listPendingChanges(chatId: number): Promise<AdminPendingChange[]>;
+
+  /**
+   * One file of a chat's current content for a workpiece it holds changes to (one that
+   * listPendingChanges() lists), shaped as readFile()'s answer. Text arrives as `text`, or, over
+   * MAX_BUFFERED_BLOB_SIZE, as a `stream` of its UTF-8 bytes, as readFile() sends a large file;
+   * a file the chat holds as bytes arrives as a `stream` whatever its size. `absent` when the
+   * chat's content has no file at the path: one the chat removed, or in a worktree one it has
+   * not touched, which readFileAtCommit() reads at the change's `baseCommit`. Content: refused
+   * below "full". Throws for an id that names no chat, and when the chat holds no changes to the
+   * workpiece.
+   */
+  readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string): Promise<FileAtCommit>;
 
   /** The workspace's connections, oldest first, with their bindings and hooks. */
   listGatekeepers(): Promise<AdminGatekeeperInfo[]>;
