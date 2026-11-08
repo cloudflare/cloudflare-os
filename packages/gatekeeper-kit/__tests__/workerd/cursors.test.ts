@@ -866,7 +866,7 @@ describe("injected rows", () => {
     const fetchPage = tokenApi([{ items: [issue(1), issue(2), issue(3)] }]);
     const cursor = new TokenCursor<Issue>({
       fetchPage,
-      beforePage: async () => {
+      refresh: async () => {
         visible = latest;
       },
       overlay: row => visible.has(row.id) ? row : null,
@@ -879,6 +879,60 @@ describe("injected rows", () => {
     expect(await cursor.next()).toEqual([issue(3)]);
     expect(await cursor.next()).toBeNull();
     expect(fetchPage).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes before a refused page's retry, which fetches nothing", async () => {
+    // The state the overlay reads changes between the refusal and the retry.
+    let visible = new Set([1, 2]);
+    let latest = visible;
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2)] }]);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      refresh: async () => {
+        visible = latest;
+      },
+      overlay: row => visible.has(row.id) ? row : null,
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    latest = new Set([1]);
+    expect(await cursor.next()).toEqual([issue(1)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(2)], { terminal: false }],
+      [[issue(1)], { terminal: false }],
+    ]);
+  });
+
+  it("fails a next() whose refresh throws before deriving any row, losing none", async () => {
+    // One fetch buffers both rows; the refresh fails for the second page, then recovers.
+    let failing = false;
+    const overlay = vi.fn((row: Issue) => row);
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      refresh: async () => {
+        if (failing) throw new Error("scope unavailable");
+      },
+      overlay,
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    failing = true;
+    await expect(cursor.next()).rejects.toThrow("scope unavailable");
+    expect(overlay).toHaveBeenCalledOnce();
+    expect(authorized).toHaveBeenCalledOnce();
+    failing = false;
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(await cursor.next()).toBeNull();
   });
 
   it("re-derives a refused page's provider rows, deferring one the overlay no longer drops", async () => {

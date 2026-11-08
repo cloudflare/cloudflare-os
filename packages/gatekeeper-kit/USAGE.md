@@ -1100,7 +1100,7 @@ sit in the buffer as fetched until served, so apply the simulation's changes to 
 than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
 It must keep a row's sort position and identity, and authorization sees the row it returns.
 Both run synchronously, so state they read that needs a provider call or storage, such as whether a
-row's container is still within the binding, is refreshed in `beforePage`, which every `next()`
+row's container is still within the binding, is re-read in `refresh`, which every `next()`
 awaits before building its page; refreshing it in the fetch callback would leave buffered rows
 judged by whatever the last fetch saw.
 

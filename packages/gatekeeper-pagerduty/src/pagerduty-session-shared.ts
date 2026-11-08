@@ -350,7 +350,7 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   overlay?(row: T): T | null;
   inject?: CursorInjection<T>;
-  beforePage?(): Promise<void>;
+  refresh?(): Promise<void>;
 }): Cursor<T> {
   const { pageSize, sources, describe, filter = [], result, ...hooks } = options;
   const walk = ctx.dup();
@@ -489,7 +489,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize: pageSizeOf(filter),
     sources: [nothing ? async () => ({ items: [], more: false }) : listing("/incidents", "incidents", params, toIncidentSummary)],
-    beforePage: async () => {
+    refresh: async () => {
       live = await servicesWithin(ctx);
       pending = host.pending();
     },

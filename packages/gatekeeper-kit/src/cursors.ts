@@ -107,7 +107,7 @@ type CursorShape<T> = {
    * container, is read here; reading it only at fetch time would serve buffered rows against
    * whatever the last fetch saw. A throw fails that `next()` before any row is derived.
    */
-  beforePage?(): Promise<void>;
+  refresh?(): Promise<void>;
   /**
    * Authorizes what `next()` is about to return, before it leaves the cursor. Runs on every page
    * carrying provider rows, including one served entirely from the buffer with no provider fetch,
@@ -172,7 +172,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   readonly #authorizePage: CursorShape<T>["authorizePage"];
   readonly #inject: CursorInjection<T>;
   readonly #overlay?: (item: T) => T | null;
-  readonly #beforePage?: () => Promise<void>;
+  readonly #refresh?: () => Promise<void>;
   readonly #buffer: Entry<T>[] = [];
   readonly #servedIds = new Set<string>();
   readonly #servedInjected: T[] = [];
@@ -196,7 +196,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
     this.#authorizePage = options.authorizePage;
     this.#inject = options.inject ?? { items: [], compare: () => 0 };
     this.#overlay = options.overlay;
-    this.#beforePage = options.beforePage;
+    this.#refresh = options.refresh;
     // Assigned first, so a rejected size releases what the caller already acquired for this
     // cursor -- the documented pattern leases a gate before constructing one.
     try {
@@ -253,7 +253,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
 
   /** @returns One local page, `[]` when the fetch window is spent, or `null` at exhaustion. */
   async #fill(): Promise<T[] | null> {
-    await this.#beforePage?.();
+    await this.#refresh?.();
     // A refused page is held, and its retry offers no provider row beyond it: growing a page the
     // provider had capped would change what the approver already refused.
     const page = this.#held = await this.#take(this.#held);
