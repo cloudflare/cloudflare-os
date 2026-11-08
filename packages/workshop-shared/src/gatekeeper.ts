@@ -974,7 +974,22 @@ export interface GitPullTransfer extends RpcTarget {
   stream(): Promise<ReadableStream<Uint8Array>>;
   /** Snapshot; a consumer that fails before end-of-stream may still see `streaming`. */
   status(): Promise<GitPullStatus>;
+  /**
+   * How the pack changes the requester's shallow boundary, as reported by the provider before
+   * the pack itself. Both lists are empty unless the pull limited `commitHistory` or passed
+   * `shallow` commits. A native Git consumer needs this alongside the pack, which doesn't carry
+   * it.
+   */
+  shallowInfo(): Promise<GitShallowInfo>;
 }
+
+/** How a pull changes the requester's shallow boundary: Git's `shallow-info` section. */
+export type GitShallowInfo = {
+  /** Commits the pack includes without their parents. */
+  shallow: GitOid[];
+  /** Commits from the pull's `shallow` hint whose history the pack now includes. */
+  unshallow: GitOid[];
+};
 
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
@@ -1129,31 +1144,40 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Fetch from this resource's Git repository, using Git's smart-HTTP protocol (version 2,
-   * read-only). The request is what native `git fetch` would send to the repository; forward it
-   * to the provider (adding this connection's credentials, which never leave the gatekeeper)
-   * and return the provider's streamed response. Accept only the two fetch requests --
-   * GET `/info/refs?service=git-upload-pack` and POST `/git-upload-pack` (see `gitPullPath()`
-   * in gatekeeper-kit) -- and ignore the rest of the URL: the repository is always the one this
-   * connection is for, never one named by the request.
+   * Stream a self-contained Git pack containing the requested objects and related objects
+   * selected by `options`. The stream contains raw PACK bytes, not Git protocol framing, and
+   * must not require delta bases from an earlier fetch.
    *
-   * The workspace only fetches history of objects it already knows this connection can see, so
-   * no new observation needs to be authorized:
+   * The overseer will only ever pull objects that it knows the gatekeeper has, for one of the
+   * following reasons:
    * * The object is a commit this gatekeeper advertised via `GitCache.advertiseCommit()`.
    * * The object was referenced by another object populated by this gatekeeper (e.g. it is the
    *   parent of another commit from this gatekeeper).
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * This includes history the workspace has never stored. When a container fetches an older
-   * commit of a worktree that came from this repository (see `ReplicableWorktree.gitPull()`),
-   * the workspace first sends a commit-only fetch with `have` lines to confirm that the commit is
-   * an ancestor of ones listed above, then forwards the container's own request.
+   * Each requested object must be included (unless it is reachable from `options.haves`) or the
+   * stream must fail. The returned RPC capability also reports the terminal status: Workers RPC
+   * can replace a stream's original exception with a generic disconnect, so consumers must check
+   * `status()` after ingestion fails to recover the producer's error. After draining the stream, require `complete` before accepting the
+   * transfer. Dispose the capability when finished. A requested blob suppressed by
+   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
+   *
+   * With no filters, the pack must contain the complete trees and blobs for the requested
+   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
+   * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
+   *
+   * The workspace also pulls history it has never stored, to serve native Git in a container
+   * that has mounted a worktree (see `ReplicableWorktree.gitPull()`). Such pulls pass the
+   * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
+   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of one of
+   * them, with a commit-only pull (`filterTreeDepth: 0`) of the commit whose `haves` are the
+   * known commits: an empty pack means it is an ancestor.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(request: Request): Promise<Response>;
+  gitPull?(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
@@ -1977,13 +2001,10 @@ export interface GitCache extends RpcTarget {
 }
 
 /**
- * Hints describing how much to fetch along with the objects the workspace's Git cache needs. The
- * cache turns them into the fetch request it sends to `Gatekeeper.gitPull()` (e.g. a depth or an
- * object filter).
+ * Hints provided to `Gatekeeper.gitPull()` which may help the gatekeeper decide how much to pull.
  *
- * Filters may over-fetch, but must not omit objects when no filter is requested. The cache's
- * fetches ask for a self-contained pack (they claim to have no objects already, so the response
- * never depends on earlier fetches); native Git clients, by contrast, negotiate what they have.
+ * Filters may over-fetch, but must not omit objects when no filter is requested. See
+ * `Gatekeeper.gitPull()` for the complete-tree and self-contained-pack requirements.
  *
  * The options are designed with the details of the standard git protocol in mind.
  */
@@ -2008,7 +2029,25 @@ export type GitPullHints = {
   commitHistory:
     | { kind: "full" }
     | { kind: "depth", depth: number }
-    | { kind: "since", since: Date };
+    | { kind: "since", since: Date }
+    /** `depth` more commits beyond the requester's `shallow` commits (Git's `--deepen`). */
+    | { kind: "relative", depth: number };
+
+  /**
+   * Commits the requester already has, along with their history down to its `shallow` commits.
+   * The pack leaves out objects reachable from them, but stays self-contained: no object in it
+   * is a delta against one left out. The workspace's Git cache never sets this, because it may
+   * hold a commit without its trees (from a filtered pull). It is set when the workspace serves
+   * native Git, which negotiates what it has (see `Gatekeeper.gitPull()`).
+   */
+  haves?: GitOid[];
+
+  /**
+   * The requester's shallow boundary: commits it has without their parents, as in Git's
+   * `shallow` lines. The provider needs it to deepen the history (see `commitHistory`) and to
+   * interpret `haves`.
+   */
+  shallow?: GitOid[];
 
   /**
    * Omit blobs of at least this size. 0 = do not fetch blobs at all.

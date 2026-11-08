@@ -1,6 +1,5 @@
 import { CredentialsExpiredError, isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
-import { gitPullPath, validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
-import { readTextPrefix } from "@gadgets/gatekeeper-kit/response-body";
+import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
@@ -1769,24 +1768,20 @@ export class GitHubApi {
   }
 
   /**
-   * Read git smart-HTTP protocol v2 discovery or `upload-pack` (the git fetch endpoint, on
+   * POST a git smart-HTTP protocol v2 `upload-pack` request (the git fetch endpoint, on
    * github.com rather than api.github.com) and return the raw `Response`, whose body the caller
    * streams -- see `@gadgets/gatekeeper-kit/git-transport`. Auth is Basic with the `x-access-token` username GitHub
    * specifies for token-authenticated git operations. Throws `GitHubApiError` on a non-OK
    * status (401 marks it an auth error, like every other method here), so callers get the same
    * credential-expiry handling as REST calls.
    */
-  async fetchGitUploadPack(owner: string, repo: string, request: Request): Promise<Response> {
-    const path = gitPullPath(request);
-    // A negotiation can name many thousands of objects. Forward it without buffering it or
-    // applying the unrelated JSON response-size cap.
-    const requestBody = request.method === "POST" ? request.body : undefined;
-    const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/${path}`;
+  async fetchGitUploadPack(owner: string, repo: string, requestBody: Uint8Array): Promise<Response> {
+    const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-upload-pack`;
     const response = await fetch(url, {
-      method: request.method,
+      method: "POST",
       headers: {
         "Content-Type": "application/x-git-upload-pack-request",
-        Accept: request.method === "GET" ? "application/x-git-upload-pack-advertisement" : "application/x-git-upload-pack-result",
+        Accept: "application/x-git-upload-pack-result",
         "Git-Protocol": "version=2",
         "User-Agent": USER_AGENT,
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
@@ -1797,12 +1792,12 @@ export class GitHubApi {
       redirect: "manual",
       // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the response body,
       // which may be a pack of tens of megabytes.
-      signal: AbortSignal.any([request.signal, AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS)]),
+      signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
     });
     if (!response.ok) {
       // The error body is short prose (e.g. "Repository not found"); a truncated copy makes the
       // failure actionable without trusting its size.
-      const detail = (await readTextPrefix(response, 200).catch(() => "")).trim();
+      const detail = (await response.text().catch(() => "")).trim().slice(0, 200);
       throw new GitHubApiError(
         response.status,
         `git fetch failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,

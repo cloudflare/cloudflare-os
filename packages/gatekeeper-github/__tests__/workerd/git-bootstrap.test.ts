@@ -1,4 +1,4 @@
-import { buildGitFetchRequest, FLUSH_PKT, encodePktLine, gitObjectRequest } from "@gadgets/gatekeeper-kit/git-transport";
+import { buildGitFetchRequest, FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type { RpcStub } from "cloudflare:workers";
 import type { GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -28,29 +28,6 @@ async function propsFor(resourceKind: GatekeeperProps["resourceKind"]): Promise<
 }
 
 describe("unified GitHub pack stream", () => {
-  it.each(["GET", "POST"])("forwards %s requests using only bound credentials", async method => {
-    const props = await propsFor("repo");
-    const path = method === "GET" ? "/info/refs?service=git-upload-pack" : "/git-upload-pack";
-    let sent = false;
-    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-      const upstream = new Request(input, init);
-      if (upstream.url === "https://api.github.com/repos/acme/widgets") return Response.json({id: 1});
-      sent = true;
-      expect(upstream.url).toBe(`https://github.com/acme/widgets.git${path}`);
-      expect(upstream.method).toBe(method);
-      expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("x-access-token:test-token")}`);
-      expect(upstream.headers.has("cookie")).toBe(false);
-      if (method === "POST") expect(new Uint8Array(await upstream.arrayBuffer())).toEqual(request());
-      return new Response(PACK);
-    });
-    const input = method === "POST" ? gitObjectRequest(request()) :
-      new Request(`https://attacker.invalid${path}`, {headers: {"git-protocol": "version=2"}});
-    input.headers.set("authorization", "Guest credentials must not pass through");
-    input.headers.set("cookie", "guest=cookie");
-    expect(await env.TEST_HOOKS.getByName("command").gitRequest(`command-${method}`, props, input))
-      .toEqual({ok: {body: PACK}});
-    expect(sent).toBe(true);
-  });
   it.each(["repo", "issue", "pull"] as const)("preserves streaming through a %s binding", async kind => {
     const props = await propsFor(kind);
     const body = request();

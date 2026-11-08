@@ -1,18 +1,21 @@
 import { RpcTarget } from "cloudflare:workers";
 import type {
-  GitOid, GitPullHints, GitPullStatus, GitPullTransfer,
+  GitOid, GitPullHints, GitPullStatus, GitPullTransfer, GitShallowInfo,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { pullGitPack } from "./git-transport";
+import { openGitPull } from "./git-transport";
 
 /** Keep the producer's terminal result reachable even if RPC replaces a stream exception. */
 class GitPullTransferImpl extends RpcTarget implements GitPullTransfer {
   #pack: ReadableStream<Uint8Array> | undefined;
   #status: () => GitPullStatus;
+  #shallowInfo: () => Promise<GitShallowInfo>;
 
-  constructor(pack: ReadableStream<Uint8Array>, status: () => GitPullStatus) {
+  constructor(pack: ReadableStream<Uint8Array>, status: () => GitPullStatus,
+      shallowInfo: () => Promise<GitShallowInfo>) {
     super();
     this.#pack = pack;
     this.#status = status;
+    this.#shallowInfo = shallowInfo;
   }
 
   async stream(): Promise<ReadableStream<Uint8Array>> {
@@ -24,6 +27,10 @@ class GitPullTransferImpl extends RpcTarget implements GitPullTransfer {
 
   async status(): Promise<GitPullStatus> {
     return this.#status();
+  }
+
+  async shallowInfo(): Promise<GitShallowInfo> {
+    return this.#shallowInfo();
   }
 
   [Symbol.dispose](): void {
@@ -41,8 +48,8 @@ export async function startGitPull(
   hints: GitPullHints,
 ): Promise<GitPullTransfer & Disposable> {
   let status: GitPullStatus = {state: "streaming"};
-  const pack = await pullGitPack(fetchUploadPack, oids, hints, terminal => {
+  const {pack, shallowInfo} = await openGitPull(fetchUploadPack, oids, hints, terminal => {
     if (status.state === "streaming") status = terminal;
   });
-  return new GitPullTransferImpl(pack, () => status);
+  return new GitPullTransferImpl(pack, () => status, shallowInfo);
 }

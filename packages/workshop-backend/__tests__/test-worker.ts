@@ -13,7 +13,9 @@ import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
 import { FakeChatResponseTarget } from "./response-target";
-import {encodePktLine, FLUSH_PKT, gitPullPath} from "@gadgets/gatekeeper-kit/git-transport";
+import {DELIM_PKT, encodePktLine, FLUSH_PKT} from "@gadgets/gatekeeper-kit/git-transport";
+import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -48,7 +50,6 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
     return super[restore](params);
   }
-
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -237,7 +238,6 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
     }
   }
 
-
   /**
    * Open `viewerId`'s app UI for `accountId` the way getGatekeeperApp does, with `ticket` stashed
    * for the fake account to redeem through the exchange it is handed; the outcome lands in the
@@ -263,31 +263,40 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
 /**
  * Git provider fixture for worktree fetches beyond the workspace's own history: answers the
- * workspace's commit-only history check, and streams a forwarded fetch that stays open until
- * cancelled.
+ * workspace's commit-only history check, and streams any other pull's shallow-info followed by
+ * a pack that stays open until cancelled.
  */
 export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
   async getAgentCatalog() { return null; }
   async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
   /** A commit the history check reports as outside the worktree's history. */
   setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
-  /** The bodies of the requests received, in order. */
+  /** Make later pulls stall before their pack starts. */
+  setStalled(): void { this.ctx.storage.kv.put("stalled", true); }
+  /** The protocol-v2 fetch requests the pulls received, in order. */
   requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
-  async gitPull(request: Request): Promise<Response> {
-    gitPullPath(request);
-    const body = await request.text();
-    this.ctx.storage.kv.put("requests", [...this.requests(), body]);
-    if (body.includes("filter tree:0\n")) {
-      const unrelated = this.ctx.storage.kv.get<string>("unrelated");
-      // Only the pack header's object count matters to the check.
-      const header = new Uint8Array(12);
-      header.set(new TextEncoder().encode("PACK"));
-      new DataView(header.buffer).setUint32(4, 2);
-      new DataView(header.buffer).setUint32(8, unrelated && body.includes(`want ${unrelated}\n`) ? 1 : 0);
-      const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
-      const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
-      return new Response(new Blob([encodePktLine("packfile"), band, FLUSH_PKT]));
-    }
-    return new Response(new ReadableStream({start(controller) { controller.enqueue(encodePktLine("packfile")); }}));
+  async gitPull(oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer> {
+    return startGitPull(async request => {
+      const body = new TextDecoder().decode(request);
+      this.ctx.storage.kv.put("requests", [...this.requests(), body]);
+      if (hints.filterTreeDepth === 0) {
+        const unrelated = this.ctx.storage.kv.get<string>("unrelated");
+        // Only the pack header's object count matters to the check.
+        const header = new Uint8Array(12);
+        header.set(new TextEncoder().encode("PACK"));
+        new DataView(header.buffer).setUint32(4, 2);
+        new DataView(header.buffer).setUint32(8, unrelated && oids.includes(unrelated) ? 1 : 0);
+        const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
+        const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
+        return new Response(new Blob([encodePktLine("packfile"), band, FLUSH_PKT]));
+      }
+      if (this.ctx.storage.kv.get("stalled")) return new Response(new ReadableStream());
+      return new Response(new ReadableStream({start(controller) {
+        controller.enqueue(encodePktLine("shallow-info"));
+        for (const oid of oids) controller.enqueue(encodePktLine(`shallow ${oid}`));
+        controller.enqueue(DELIM_PKT);
+        controller.enqueue(encodePktLine("packfile"));
+      }}));
+    }, oids, hints);
   }
 }

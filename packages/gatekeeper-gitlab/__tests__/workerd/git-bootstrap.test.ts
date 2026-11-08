@@ -1,4 +1,4 @@
-import { buildGitFetchRequest, FLUSH_PKT, encodePktLine, gitObjectRequest } from "@gadgets/gatekeeper-kit/git-transport";
+import { buildGitFetchRequest, FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type { RpcStub } from "cloudflare:workers";
 import type { GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -32,23 +32,6 @@ async function setup(name: string, resourceKind: GatekeeperProps["resourceKind"]
 }
 
 describe("unified GitLab pack stream", () => {
-  it.each(["GET", "POST"])("forwards %s requests with provider-owned OAuth and Access headers", async method => {
-    const {gitlab, props, name} = await setup(`command-${method}`);
-    const path = method === "GET" ? /^\/group\/sub\/project\.git\/info\/refs\?service=git-upload-pack$/ : ENDPOINT;
-    gitlab.on(method, path, () => new Response(PACK, {headers: {
-      "content-type": method === "GET" ? "application/x-git-upload-pack-advertisement" : HEADERS["Content-Type"],
-    }}));
-    const input = method === "POST" ? gitObjectRequest(request()) :
-      new Request("https://attacker.invalid/info/refs?service=git-upload-pack", {headers: {"git-protocol": "version=2"}});
-    input.headers.set("authorization", "Guest credentials must not pass through");
-    input.headers.set("cf-access-client-secret", "guest-secret");
-    expect(await hooks().gitRequest(name, props, input)).toEqual({ok: {body: PACK}});
-    const upstream = gitlab.requests.at(-1)!;
-    expect(upstream.url.origin).toBe(API);
-    expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("oauth2:test-token")}`);
-    expect(upstream.headers.get("cf-access-client-secret")).toBe(ACCESS.secret);
-    if (method === "POST") expect(upstream.bytes).toEqual(request());
-  });
   it.each(["project", "issue", "mergeRequest"] as const)("streams through the %s binding's own project", async kind => {
     const { gitlab, props, name } = await setup(`bootstrap-${kind}`, kind);
     const body = request();

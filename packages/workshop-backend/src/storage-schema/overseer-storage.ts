@@ -132,18 +132,25 @@ export type WorktreeSyncSubscriptionRecord = {
    */
   revision?: string;
 
-  /** The base commit last acknowledged via `setBaseCommit()`; a change triggers another call. */
+  /**
+   * The base commit and Git head last acknowledged via `setBaseCommit()`; a change to either
+   * triggers another call.
+   */
+  base?: string | null;
   head?: string | null;
 
   /**
    * Present until a fresh subscriber has received its initial state: the base commit and the
    * chat's pending edits to the worktree, captured when it subscribed. Delivered as one
-   * `setBaseCommit()` followed by one `change()`, and then replaced by `revision`/`head`.
+   * `setBaseCommit()` followed by one `change()`, and then replaced by `revision`, `base` and
+   * `head`.
    */
   bootstrap?: {
     /** Stream position the captured state corresponds to. */
     revision: string;
     /** The base commit (the worktree's `pinBase`). */
+    base: string | null;
+    /** The worktree's Git head (its `headCommit`). */
     head: string | null;
     /** As in WorktreeSubscriber.setBaseCommit(). */
     shallowCommit: string | null;

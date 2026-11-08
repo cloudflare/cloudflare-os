@@ -933,24 +933,31 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
 
-`Gatekeeper.gitPull(request)` is a kernel-facing, authenticated smart-HTTP transport, not a
-gadget session method. Providers use `gitPullPath` to allow only protocol-v2 ref discovery and
-upload-pack, choose their own bound repository/credentials, and return raw protocol bytes. The
-kernel only fetches history of objects already covered by recorded provenance (advertised
-commits, their referents, or objects previously populated by that gatekeeper), so no new
-observation is needed.
+Lazy DO reads use `Gatekeeper.gitPull(oids, options)`. This is a kernel-facing method, not part
+of a gadget's session API. The kernel routes pulls through recorded object provenance
+(advertised commits, their referents, or objects previously populated by that gatekeeper).
+The shared composer checks oid syntax and composes typed options; it does not check
+advertisement history.
+The provider composes a typed fetch with `git-pull-transfer.startGitPull()` and returns a transfer
+capability. Claim its backpressured raw PACK stream once with `stream()`, without buffering or
+base64 encoding. The DO feeds it to its bounded cache decoder. Workers RPC can replace a stream
+exception with a generic disconnect. If consuming the stream fails, query `status()` to recover
+the producer's error; if the status has not failed, preserve the consumer's own error. After
+draining the stream, require `complete` before accepting the transfer. Cancel an unfinished stream
+and dispose the capability when done.
 
-For lazy DO reads, the kernel composes exact-OID requests with `gitObjectRequest` and
-`git-pull-transfer.startGitPull()`, then feeds the backpressured raw PACK stream into its bounded
-cache decoder. The shared composer checks oid syntax and typed options, not advertisement
-history. Claim `stream()` once, without whole-pack buffering or base64. Require `complete` after
-draining; query `status()` on failure for the adapter's demultiplexing error, preserving the
-consumer's own error otherwise. RPC may still replace an upstream transport failure with a
-generic disconnect. Cancel unfinished streams and dispose the transfer when done.
+The same capability serves native Git in a container that has mounted a worktree (see
+[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md)). The kernel parses the
+container's fetch and asks the provider for what the workspace doesn't store, passing the
+container's `haves`, its `shallow` boundary and any deepen (`commitHistory`, including
+`relative`) as hints. Packs stay self-contained (no thin-pack dependencies); the transfer's
+`shallowInfo()` reports the provider's `shallow-info` lines, which the raw pack doesn't carry.
+Cache fills never send `have`s.
 
 Container gatekeepers receive the Worktree capability directly. Open its persistable
-`getSyncSession()` and subscribe with a native persistent callback; hydrate the subscription's
-file-base commit through `worktree.gitPull(request)`, then apply its canonical OTs before running.
+`getSyncSession()` and subscribe with a native persistent callback; fetch the
+subscription's file base and Git head through `worktree.gitPull(request)`, check out the base,
+apply its canonical OTs, and reset to the head before running.
 The gatekeeper invents its own guest-local Git URL. The workspace serves upstream and locally
 created commits through the same smart-HTTP endpoint, including ordinary Git ref discovery.
 Never buffer a whole pack or use base64. See the [mount contract](../../docs/worktree-replicas.md) for initialization,

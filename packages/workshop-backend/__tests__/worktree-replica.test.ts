@@ -62,11 +62,28 @@ async function connectGitSource(impl: Impl, commit: string, ids = [40]) {
   return facets as unknown as Fetcher<import("./test-worker").ReplicaGitSource>[];
 }
 const ANCESTOR = "ab".repeat(20);
-const fetchRequest = (want: string, extra: string[] = []) => new Request("https://git.invalid/git-upload-pack", {
+const fetchRequest = (want: string, extra = ["deepen 1"]) => new Request("https://git.invalid/git-upload-pack", {
   method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
   body: new Blob([encodePktLine("command=fetch"), DELIM_PKT, encodePktLine(`want ${want}`),
-    ...extra.map(encodePktLine), encodePktLine("deepen 1"), encodePktLine("done"), FLUSH_PKT]),
+    ...extra.map(encodePktLine), encodePktLine("done"), FLUSH_PKT]),
 });
+// Read a response up to the start of its pack.
+async function preamble(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  let text = "";
+  while (!text.includes("packfile\n")) text += new TextDecoder().decode((await reader.read()).value);
+  return text;
+}
+// Commit `files` on top of the worktree's head, as the agent's commit() does.
+async function commitOnHead(impl: Impl, id: number, files: [string, string][]) {
+  const previousHead = impl.getWorktreeRecord(id).headCommit;
+  const commit = await impl.gitStore.writeChangedFilesAsCommit(new Map(files), {
+    treeBase: previousHead, parents: [previousHead], author: {name: "Test", email: "test@example.com"},
+    message: "Explicit worktree commit", timestamp: new Date(),
+  });
+  await impl.commitAgentStep(1, author, [], {changes: [], createdGadgets: [], createdWorktrees: [],
+    addedBindings: [], worktreeCommits: [{worktreeId: id, commit, previousHead}], blueprintMerges: []});
+  return commit;
+}
 
 async function until(predicate: () => Promise<boolean>) {
   for (let n = 0; n < 1000; ++n) {
@@ -176,7 +193,7 @@ describe("mounted worktree canonical synchronization", () => {
       const sessions = Array.from(impl.storage.worktreeSyncSessions.list());
       for (const session of sessions) await impl.drainWorktreeSubscription(session.id);
       const events = await receiver.events();
-      expect(events[0]).toMatchObject({kind: "base", head: f.commit});
+      expect(events[0]).toMatchObject({kind: "base", base: f.commit, head: f.commit});
       expect(events[1]).toMatchObject({kind: "change", revision, changes: []});
       expect(events[2]).toMatchObject({kind: "change", revision: ack.revision, batchId: "echo"});
       await subscription.unsubscribe();
@@ -283,16 +300,11 @@ describe("mounted worktree canonical synchronization", () => {
 
   it("serves explicit Git HEAD and the canonical file base through one endpoint before acceptance", () => within(async (impl, f) => {
     await step(impl, f.tree.id, "a.txt", diffFiles("abc", "committed"));
-    const head = await impl.gitStore.writeChangedFilesAsCommit(new Map([["a.txt", "committed"]]), {
-      treeBase: f.commit, parents: [f.commit], author: {name: "Test", email: "test@example.com"},
-      message: "Explicit worktree commit", timestamp: new Date(),
-    });
-    await impl.commitAgentStep(1, author, [], {changes: [], createdGadgets: [], createdWorktrees: [],
-      addedBindings: [], worktreeCommits: [{worktreeId: f.tree.id, commit: head, previousHead: f.commit}], blueprintMerges: []});
+    const head = await commitOnHead(impl, f.tree.id, [["a.txt", "committed"]]);
     await step(impl, f.tree.id, "a.txt", diffFiles("committed", "committed + pending"));
     const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
     const subscription = await f.session.subscribe(await receiver.subscriber());
-    expect((await receiver.events())[0]).toMatchObject({kind: "base", head: f.commit});
+    expect((await receiver.events())[0]).toMatchObject({kind: "base", base: f.commit, head});
     const refs = await impl.worktreeGitPull(1, f.tree.id, new Request("https://git.invalid/git-upload-pack", {
       method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"}, body: new Blob([
         encodePktLine("command=ls-refs"), DELIM_PKT, encodePktLine("symrefs"), FLUSH_PKT,
@@ -307,6 +319,36 @@ describe("mounted worktree canonical synchronization", () => {
     await subscription.unsubscribe();
   }));
 
+  it("tells the subscriber when the head moves, and sends only what a fetch of it lacks", () => within(async (impl, f) => {
+    const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
+    const subscription = await f.session.subscribe(await receiver.subscriber());
+    const head = await commitOnHead(impl, f.tree.id, [["a.txt", "moved"]]);
+    await impl.drainWorktreeSubscription([...impl.storage.worktreeSyncSessions.list()][0].id);
+    expect((await receiver.events()).at(-1)).toMatchObject({kind: "base", base: f.commit, head});
+    using facade = await impl.ctx.restore({type: "worktree", chatId: 1, worktreeId: f.tree.id,
+      executionId: "unused", author});
+    const objects = await receiver.transfer(facade, head, [f.commit]);
+    expect(objects.map(object => object.type).sort()).toEqual(["blob", "commit", "tree"]);
+    expect(objects).toContainEqual({oid: head, type: "commit", binary: false});
+    await subscription.unsubscribe();
+  }));
+
+  it("delivers a head that moves while the previous head is being applied", () => within(async (impl, f) => {
+    const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
+    const subscription = await f.session.subscribe(await receiver.subscriber());
+    await receiver.hold("base");
+    await commitOnHead(impl, f.tree.id, [["a.txt", "first"]]);
+    const id = [...impl.storage.worktreeSyncSessions.list()][0].id;
+    const draining = impl.drainWorktreeSubscription(id);
+    await until(() => receiver.blocked());
+    const second = await commitOnHead(impl, f.tree.id, [["a.txt", "second"]]);
+    await receiver.hold(null);
+    // The second commit's wake joined the running drain, which must not go idle on the first.
+    await draining;
+    expect((await receiver.events()).at(-1)).toMatchObject({kind: "base", head: second});
+    await subscription.unsubscribe();
+  }));
+
   it("checkpoints an accepted commit after delivering its edits, without replaying file changes", () => within(async (impl, f) => {
     const receiver = (impl.env as typeof testEnv).TEST_REPLICA_TRANSFER.getByName(crypto.randomUUID());
     const subscription = await f.session.subscribe(await receiver.subscriber());
@@ -318,19 +360,20 @@ describe("mounted worktree canonical synchronization", () => {
     const events = await receiver.events();
     expect(events).toHaveLength(4);
     expect(events.at(-1)).toMatchObject({kind: "base", revision: impl.replicaHistoryRevision(1),
-      head: impl.getWorktreeRecord(f.tree.id).pinBase});
+      base: impl.getWorktreeRecord(f.tree.id).pinBase});
     expect(await impl.readFileAtCommit(impl.getWorktreeRecord(f.tree.id).pinBase, "a.txt")).toBe("abcd");
     await subscription.unsubscribe();
   }));
 
-  it("forwards a fetch of an ancestor once its connection confirms it, until the connection is removed", () => within(async (impl, f) => {
+  it("proxies a fetch of an ancestor once its connection confirms it, until the connection is removed", () => within(async (impl, f) => {
     const [source] = await connectGitSource(impl, f.commit);
     const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR));
     const reader = response.body!.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toBe("000dpackfile\n");
+    expect(await preamble(reader)).toContain(`shallow ${ANCESTOR}\n`);
     const [check, forwarded] = await source.requests();
     expect(check).toContain(`want ${ANCESTOR}\n`);
     expect(check).toContain(`have ${f.commit}\n`);
+    expect(forwarded).toContain(`want ${ANCESTOR}\n`);
     expect(forwarded).toContain("deepen 1\n");
     const next = reader.read().then(result => result.done, () => true);
     impl.removeGatekeeper(40);
@@ -355,10 +398,74 @@ describe("mounted worktree canonical synchronization", () => {
     expect(await second.requests()).toHaveLength(2);
   }));
 
-  it("refuses a fetch that also names a ref, which the history check can't cover", () => within(async (impl, f) => {
+  it("refuses fetch arguments it doesn't understand, such as fetching by ref name", () => within(async (impl, f) => {
     const [source] = await connectGitSource(impl, f.commit);
     await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR, ["want-ref refs/heads/main"])))
-      .rejects.toThrow("Git fetches by ref name are not supported.");
+      .rejects.toThrow("Unsupported Git fetch argument: want-ref");
+    await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR, ["deepen-not main"])))
+      .rejects.toThrow("Unsupported Git fetch argument: deepen-not");
+    expect(await source.requests()).toHaveLength(0);
+  }));
+
+  it("proxies a deepen of the head the client already has, without a history check", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(f.commit,
+      [`have ${f.commit}`, `shallow ${f.commit}`, "deepen 3", "deepen-relative"]));
+    const reader = response.body!.getReader();
+    await preamble(reader);
+    await reader.cancel();
+    const [forwarded, ...rest] = await source.requests();
+    expect(rest).toEqual([]);
+    for (const line of [`want ${f.commit}`, `shallow ${f.commit}`, "deepen 3", "deepen-relative", `have ${f.commit}`])
+      expect(forwarded).toContain(`${line}\n`);
+  }));
+
+  it("proxies a deeper clone of a worktree still at its remote base", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(f.commit, ["deepen 2"]));
+    await preamble(response.body!.getReader());
+    const [forwarded, ...rest] = await source.requests();
+    expect(rest).toEqual([]);
+    expect(forwarded).toContain(`want ${f.commit}\n`);
+    expect(forwarded).toContain("deepen 2\n");
+  }));
+
+  it("proxies a fresh fetch of the base together with an ancestor", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(f.commit, [`want ${ANCESTOR}`, "deepen 1"]));
+    await preamble(response.body!.getReader());
+    const forwarded = (await source.requests()).at(-1)!;
+    expect(forwarded).toContain(`want ${f.commit}\n`);
+    expect(forwarded).toContain(`want ${ANCESTOR}\n`);
+  }));
+
+  it("deepens past the base after a descendant was pushed", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const head = await commitOnHead(impl, f.tree.id, [["a.txt", "pushed"]]);
+    impl.storage.gitObjectMetadata.put({oid: head, type: "commit", onRemote: [40], pullableFrom: [], pendingPush: []});
+    const response = await impl.worktreeGitPull(1, f.tree.id, fetchRequest(head,
+      [`have ${head}`, `shallow ${f.commit}`, "deepen 1", "deepen-relative"]));
+    await preamble(response.body!.getReader());
+    expect((await source.requests()).at(-1)).toContain(`want ${f.commit}\n`);
+  }));
+
+  it("cancels a pull stalled before its pack when the worktree is deleted", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    await source.setStalled();
+    const fetching = impl.worktreeGitPull(1, f.tree.id, fetchRequest(ANCESTOR));
+    fetching.catch(() => {});
+    await until(async () => (await source.requests()).length === 2);
+    await scheduler.wait(20);
+    impl.storage.gadgets.delete(f.tree.id);
+    const error = await fetching.then(() => undefined, (error: Error) => error);
+    expect((error?.cause as Error | undefined)?.message).toMatch(/No such worktree/);
+  }));
+
+  it("refuses a fetch needing both new workspace commits and remote history", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    const head = await commitOnHead(impl, f.tree.id, [["a.txt", "moved"]]);
+    await expect(impl.worktreeGitPull(1, f.tree.id, fetchRequest(head, [`have ${f.commit}`, `shallow ${f.commit}`, "deepen 5"])))
+      .rejects.toThrow("Fetch the worktree's head first, then fetch again.");
     expect(await source.requests()).toHaveLength(0);
   }));
 

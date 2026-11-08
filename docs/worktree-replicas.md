@@ -33,7 +33,7 @@ interface WorktreeSyncSession {
     changes: FileChangeByPath[]): Promise<{revision: string}>;
 }
 interface WorktreeSubscriber {
-  setBaseCommit(state: {revision: string; head: string | null;
+  setBaseCommit(state: {revision: string; base: string | null; head: string | null;
     shallowCommit: string | null}): Promise<void>;
   change(revision: string, batchId: string, changes: FileChangeByPath[]): Promise<void>;
 }
@@ -51,7 +51,8 @@ worktree or its chat ends access. The receiving gatekeeper controls its own moun
 ## Initial capture and continuous delivery
 
 The kernel flushes buffered agent edits, then atomically records the subscriber and captures the
-accepted commit plus pending transforms at a canonical revision. It sends `setBaseCommit` followed
+accepted commit, the Git head and pending transforms at a canonical revision. It sends
+`setBaseCommit` followed
 by the pending transforms, then any changes accepted while hydration was running. `subscribe`
 resolves only after this registration has caught up and its callbacks have acknowledged applying
 the updates. Capturing first and registering later would lose edits during hydration.
@@ -59,7 +60,9 @@ the updates. Capturing first and registering later would lose edits during hydra
 The receiver materializes the base completely and applies pending OTs to its mutable overlay. No
 copy-on-read guest filesystem is required. Pending transforms are not synthesized into Git commits.
 A subsequent accepted-commit checkpoint changes Git metadata after preceding edits have been
-applied; it must not reset the guest filesystem or apply those edits again.
+applied; it must not reset the guest filesystem or apply those edits again. `setBaseCommit` is
+also called when only the head moves (the agent committed); it is ordered with the changes
+around it, because the head advances in the same step that records them.
 
 Delivery reads one existing canonical row after the last durable acknowledgment. A slow receiver
 applies backpressure without creating an in-memory event queue. Callback failures retain the cursor
@@ -96,6 +99,8 @@ travels separately as raw Git objects and retains the existing object-size limit
 ## Unified Git transport
 
 `gitPull` accepts read-only Git protocol v2 smart-HTTP requests and streams raw binary responses.
+The kernel parses every request and accepts only the fetch arguments it understands; nothing the
+guest sends is forwarded as is.
 The gatekeeper invents a guest-local origin URL and maps it to the passed Worktree; the kernel does
 not register URLs or expose a guest filesystem layout. Normal ref discovery reports the worktree's
 Git HEAD and ancestry, including explicit commits that have not yet been accepted in the UI. The
@@ -103,7 +108,9 @@ subscription's commit is the base for its canonical file transforms; it may diff
 just as a checkout can have working changes. The guest materializes that file base and its OTs
 without replacing HEAD with the base.
 Workspace-created commits are real Git objects, not approximated by text changes. The original
-remote base remains the shallow boundary.
+remote base remains the shallow boundary. A fetch is classified by what the guest lacks, judged
+from its `have` and `shallow` lines, not by what it names: a fetch of a new head sends only the
+commits and objects the guest's `have`s don't cover.
 
 For a remote-backed mount, the source Git gatekeeper streams the shallow base pack directly.
 The kernel appends the additional DO-local objects and recomputes the pack framing/checksum without
@@ -120,12 +127,22 @@ commits, the first commits with recorded provenance are the history's boundary; 
 with provenance for them can serve the rest. Commit IDs hash their entire history, so it does not
 matter which.
 
-For a wanted commit the workspace lacks, the kernel sends that connection a commit-only fetch
-(`filter tree:0`) of the wanted commits, with a `have` line for each boundary commit. An empty
-pack means every wanted commit is in the history, and the kernel forwards the guest's own request
-to the same connection. Otherwise it refuses. This trusts the connection's answer, since the data
-it protects is the connection's own repository. Nothing is stored in the DO, no new observation
-is recorded, and removing the connection cancels its active streams.
+For a wanted commit the workspace lacks, the kernel sends that connection a commit-only pull
+(`filterTreeDepth: 0`) of the wanted commits, with each boundary commit as a `have`. An empty
+pack means every wanted commit is in the history, and the kernel pulls them from the same
+connection with the guest's `have`s, `shallow` commits, depth and filter, re-encoded as
+`GitPullHints`, and frames the provider's pack and shallow-info for the guest. Otherwise it
+refuses. This trusts the connection's answer, since the data it protects is the connection's
+own repository. A deepen of commits the guest already has (`git fetch --deepen=N` or
+`--unshallow`) is pulled the same way, starting from the boundary, with no check needed. Nothing
+is stored in the DO, no new observation is recorded, and removing the connection cancels its
+active streams.
+
+A single fetch that needs both workspace-only objects and remote history is refused, because
+merging a proxied pack with a local one risks duplicate objects, which Git rejects (see
+[`plans/git-proxy.md`](../plans/git-proxy.md)). A guest that fetches each head as `setBaseCommit`
+reports it already has every workspace-only object, so this only happens if the head moves while
+a command is running Git.
 
 Other refs of a worktree's origin (e.g. its `main` branch) and other repositories are not
 reachable this way. A future design would have the agent pass them to the gatekeeper as objects,
@@ -148,8 +165,7 @@ To get there, check out the file base, apply its pending changes, then `git rese
 (not `--soft`, which would leave the index at the file base and show that difference as staged
 changes). When only the head changes, fetch it and reset again; the files are untouched. When only
 the file base changes (e.g. the user accepted the chat's changes), the files already include it.
-Today the subscription reports only the file base; delivering the head too is planned in
-[`plans/git-proxy.md`](../plans/git-proxy.md).
+The subscription reports both (`setBaseCommit`'s `base` and `head`).
 
 `.git` is not synced in either direction:
 

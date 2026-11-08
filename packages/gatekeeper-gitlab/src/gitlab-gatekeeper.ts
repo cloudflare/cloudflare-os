@@ -18,6 +18,8 @@ import {
   type GatekeeperUserVerifier,
   type GitCache,
   type GitOid,
+  type GitPullHints,
+  type GitPullTransfer,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -26,7 +28,7 @@ import {
   validateCiLogOptions, withinCiStartWindow,
 } from "@gadgets/gatekeeper-kit/ci";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
-import { gitPullPath } from "@gadgets/gatekeeper-kit/git-transport";
+import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import {
   MAX_DIFF_BLOB_BYTES,
@@ -3333,12 +3335,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   // -- git: pull, push, and the simulation of queued pushes -------------------------------
 
   /**
-   * Repository-bound smart HTTP for the workspace's fetches of previously observed history;
-   * credentials never leave the gatekeeper.
+   * Stream a self-contained raw pack through this resource's authenticated transport.
+   * No new observation: the kernel only requests objects from previously observed commits.
+   * Cache ingestion and native checkout share this path; credentials never enter the guest.
    */
-  async gitPull(request: Request): Promise<Response> {
-    gitPullPath(request);
-    return this.#withApi(api => api.fetchGitUploadPack(this.#projectPath(), request));
+  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
+    return this.#withApi(api => startGitPull(
+      body => api.fetchGitUploadPack(this.#projectPath(), body), oids, options));
   }
 
   /**

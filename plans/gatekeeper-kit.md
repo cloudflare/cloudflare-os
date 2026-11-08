@@ -2320,8 +2320,8 @@ queued ref updates on its real head by the same compare-and-swap rule, chain-fol
 order, so a simulated read and the next push's expected old sha agree; a push to `ZERO_OID`
 deletes, reading as `null`. Consumed by github and gitlab.
 
-The Workers-only `./git-pull-transfer` leaf wraps `pullGitPack` for the kernel's known-object
-consumer of `Gatekeeper.gitPull(request)`:
+The Workers-only `./git-pull-transfer` leaf wraps `pullGitPack` for the kernel-facing
+`Gatekeeper.gitPull(oids, options)` API:
 
 ```ts
 export function startGitPull(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
@@ -2331,12 +2331,11 @@ export function startGitPull(fetchUploadPack: (requestBody: Uint8Array) => Promi
 `GitPullTransfer` exposes one-shot `stream()` and independent terminal `status()` so provider
 errors remain available if Workers RPC replaces a stream exception. Consumers must require
 `complete` after EOF, cancel unfinished streams, and dispose the capability. The provider does
-not parse packs, ingest cache objects, or impose the DO cache's size limit. The overseer wraps
-the callback's bytes with `gitObjectRequest()` and routes them through the provider's
-repository-bound smart-HTTP transport. Cache reads use recorded provenance, decode with their
-pack/object limits, and check requested-object presence. Container bootstrap streams the shallow
-base without cache ingestion. A container's later native Git requests for older history bypass
-this helper and are forwarded once the provider confirms the commits are ancestors. Only protocol-v2 discovery and upload-pack are allowed; credentials remain in the provider.
+not parse packs, ingest cache objects, or impose the DO cache's size limit. The overseer routes
+pulls using recorded provenance, decodes the stream with its pack/object limits, and checks
+requested-object presence. The transport checks oid syntax, not advertisement history; the
+gatekeeper method is not gadget-facing. A separate kernel container-bootstrap consumer can use
+the stream directly with native Git and its own limits, but is not enabled by this helper alone.
 
 ### 4.21 `./git-diff`
 

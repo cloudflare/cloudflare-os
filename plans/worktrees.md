@@ -35,12 +35,12 @@ The starting point is the sketch in commit 34ebecd, encompassing changes in
 and `workshop-shared/src/worktree.d.ts` (the
 agent-facing `Worktree` binding API).
 
-The pull signature in this original plan is superseded by
-`Gatekeeper.gitPull(request): Promise<Response>`; see
-[`worktree-replicas.md`](../docs/worktree-replicas.md). Providers return authenticated
-smart-HTTP protocol bytes. The kernel still owns provenance checks, exact-OID composition,
-raw-PACK demultiplexing and bounded cache ingestion.
-Historical OID/hints signatures below describe the earlier implementation, not a second API.
+The current pull contract is `Gatekeeper.gitPull(oids, options): Promise<GitPullTransfer>`
+in `packages/workshop-shared/src/gatekeeper.ts`. Providers return a one-shot raw PACK stream
+plus terminal status; the overseer owns bounded cache ingestion and requested-object checks.
+This kernel-facing method is not exposed to gadgets: the kernel routes pulls using recorded
+provenance, while the transport checks oid syntax, not advertisement history. A native
+container consumer requires separate kernel bootstrap support and enforces its own limits.
 
 ## Locked decisions
 

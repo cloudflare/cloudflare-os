@@ -17,6 +17,8 @@ import {
   type GatekeeperVendor as GatekeeperVendorIface,
   type GitCache,
   type GitOid,
+  type GitPullHints,
+  type GitPullTransfer,
   type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
@@ -114,7 +116,7 @@ import {
   isCommitOid,
   parseGitCommitPayload,
 } from "@gadgets/gatekeeper-kit/git-objects";
-import { gitPullPath } from "@gadgets/gatekeeper-kit/git-transport";
+import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -4060,12 +4062,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * Repository-bound smart HTTP for the workspace's fetches of previously observed history;
-   * credentials never leave the gatekeeper.
+   * Stream a self-contained raw pack through this resource's authenticated transport.
+   * No new observation: the kernel only requests objects from previously observed commits.
+   * Cache ingestion and native checkout share this path; credentials never enter the guest.
    */
-  async gitPull(request: Request): Promise<Response> {
-    gitPullPath(request);
-    return this.#withApi(api => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, request));
+  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
+    return this.#withApi(api => startGitPull(
+      body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body), oids, options));
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {

@@ -24,6 +24,8 @@ const spawnGit = async (cwd: string, args: string[], succeeds = true) => {
 test.each([false, true])("native Git clones a %s upstream/local worktree with correct shallow ancestry", async remote => {
   const dir = mkdtempSync(join(tmpdir(), "worktree-git-"));
   let runtime: Miniflare | undefined;
+  // The number of objects in the last pack served.
+  let served: number | undefined;
   const server = createServer(async (req, res) => {
     try {
       const response = await runtime!.dispatchFetch(`http://git.invalid${req.url}`, {
@@ -31,7 +33,10 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
         ...(req.method === "POST" ? {body: Readable.toWeb(req) as ReadableStream<Uint8Array>, duplex: "half"} : {}),
       });
       res.writeHead(response.status, Object.fromEntries(response.headers));
-      if (response.body) Readable.fromWeb(response.body).pipe(res); else res.end();
+      const body = Buffer.from(await response.arrayBuffer());
+      const pack = body.indexOf("PACK");
+      if (pack >= 0) served = body.readUInt32BE(pack + 8);
+      res.end(body);
     } catch (error) { res.writeHead(500); res.end(String(error)); }
   });
   try {
@@ -49,6 +54,12 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
     run(dir, "mv", "unchanged.bin", "renamed.bin");
     run(dir, "commit", "-qam", "DO child");
     const head = run(dir, "rev-parse", "HEAD");
+    // The worktree's next head, once the agent commits again.
+    run(dir, "checkout", "-qb", "next");
+    writeFileSync(join(dir, "changed.txt"), "DO grandchild\n");
+    run(dir, "commit", "-qam", "DO grandchild");
+    const next = run(dir, "rev-parse", "HEAD");
+    run(dir, "checkout", "-q", "-");
     // A commit the upstream has on another branch, outside the worktree head's history.
     const unrelated = run(dir, "commit-tree", `${ancestor}^{tree}`, "-p", ancestor, "-m", "unrelated");
     run(dir, "update-ref", "refs/heads/unrelated", unrelated);
@@ -62,7 +73,7 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       name: "worktree-git", compatibilityDate: "2026-10-01", compatibilityFlags: ["nodejs_compat"],
       manifest: {mainModule: "worker.js", modules: {"worker.js": {type: "esm", contents: worker}}},
       env: {
-        FIXTURE: {type: "json", value: {head, boundary: remote ? boundary : null,
+        FIXTURE: {type: "json", value: {heads: [head, next], boundary: remote ? boundary : null,
           objects, upstreamPack: [...upstreamPack], forbiddenBlobs: remote ? [forbiddenBlob] : []}},
         // Like GitHub and GitLab, allow the partial-clone filter the history check uses.
         UPSTREAM: {type: "fetcher", handler: async request => new Response(execFileSync("git",
@@ -74,7 +85,8 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No test HTTP port");
-    await spawnGit(dir, ["clone", `http://127.0.0.1:${address.port}/repo`, "clone"]);
+    const url = `http://127.0.0.1:${address.port}/repo`;
+    await spawnGit(dir, ["clone", url, "clone"]);
     const clone = join(dir, "clone");
     expect(run(clone, "rev-parse", "HEAD")).toBe(head);
     expect(run(clone, "log", "--format=%s")).toBe(remote ? "DO child\nbase" : "DO child\nbase\nancestor");
@@ -90,7 +102,35 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       expect(run(clone, "rev-parse", "HEAD")).toBe(head);
       run(clone, "fsck", "--no-reflogs");
       await spawnGit(clone, ["fetch", "--depth=1", "origin", unrelated], false);
+
+      // More history beyond the boundary, for the head the clone already has.
+      for (const args of [["--deepen=1"], ["--unshallow"]]) {
+        const deepened = join(dir, `deepen${args[0]}`);
+        await spawnGit(dir, ["clone", url, deepened]);
+        await spawnGit(deepened, ["fetch", ...args]);
+        expect(run(deepened, "log", "--format=%s")).toBe("DO child\nbase\nancestor");
+        if (args[0] === "--unshallow") expect(run(deepened, "rev-parse", "--is-shallow-repository")).toBe("false");
+        run(deepened, "fsck", "--no-reflogs");
+      }
+
+      // The fresh-start sequence: check out the file base, apply the pending changes, and reset
+      // to the head, so that Git shows the changes relative to the head.
+      const fresh = join(dir, "fresh");
+      run(dir, "init", "-q", fresh);
+      await spawnGit(fresh, ["fetch", "-q", url, boundary, head]);
+      run(fresh, "checkout", "-q", boundary);
+      writeFileSync(join(fresh, "changed.txt"), "pending\n");
+      run(fresh, "reset", "-q", "--mixed", head);
+      expect(run(fresh, "status", "--porcelain")).toBe("M changed.txt\n D renamed.bin\n?? unchanged.bin");
     }
+
+    // The head moves: fetching it sends only the new commit's objects.
+    run(clone, "remote", "set-url", "origin", `${url}1`);
+    if (remote) await spawnGit(clone, ["fetch", "--deepen=1"], false);
+    await spawnGit(clone, ["fetch", "origin"]);
+    expect(run(clone, "rev-parse", "origin/HEAD")).toBe(next);
+    expect(served).toBe(3);
+    run(clone, "fsck", "--no-reflogs");
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     await runtime?.dispose(); rmSync(dir, {recursive: true, force: true});

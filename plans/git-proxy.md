@@ -1,7 +1,9 @@
 # Plan: Serving native Git fetches from a mounted worktree
 
-Status: planned, not implemented. Builds on the worktree replica API
-([`docs/worktree-replicas.md`](../docs/worktree-replicas.md)).
+Status: implemented on the `ddr/split-worktree-replicas` branch, except for the items under
+[Later](#later). Builds on the worktree replica API
+([`docs/worktree-replicas.md`](../docs/worktree-replicas.md)). The code is `worktreeGitPull` in
+`packages/workshop-backend/src/worktree-git.ts` and the overseer's `worktreeGitPull`.
 
 ## Goal
 
@@ -31,37 +33,21 @@ it doesn't matter which one serves it.
   repositories are out of scope. If they are needed later, the agent should pass them to the
   gatekeeper as objects.
 
-## Current state
+## Before this change
 
-Implemented on the `ddr/split-worktree-replicas` branch (see `worktreeGitPull` in
-`packages/workshop-backend/src/worktree-git.ts` and the overseer's `worktreeGitPull`):
+The branch first had these gaps:
 
-- Ref discovery (GET `info/refs`, `ls-refs`) is answered by the kernel and advertises only the
-  worktree's head.
-- A `fetch` whose wants are all local (worktree heads, blobs referenced by pending edits) is served
-  by the kernel. For a remote-backed worktree this already merges two packs: the upstream base pack
-  (a kernel-composed depth-1 fetch of the base commit) and a pack of the workspace's own objects,
-  with base-tree objects excluded from the local half so there are no duplicates.
-- A `fetch` whose wants are all non-local runs the ancestry probe, then forwards the container's
-  request body verbatim to the confirming connection. `want-ref` lines are refused, because only
-  `want <oid>` lines are checked.
-- A `fetch` mixing local and non-local wants is refused.
-- `Gatekeeper.gitPull(request: Request): Promise<Response>` is a smart-HTTP passthrough. Every call
-  the kernel makes is a POST `fetch`; GET forwarding, URL checks and header handling in providers
-  are unused.
-
-Gaps this plan addresses:
-
-1. Mixed requests are refused, but the container cannot know which commits are local. The same
-   problem appears with a single local want: `git fetch --deepen=N` or `--unshallow` wants only
-   `HEAD`, the local path ignores `deepen`, and the clone silently stays shallow.
-2. The passthrough forwards the container's own bytes, so safety depends on denylisting lines the
-   kernel doesn't check (as with `want-ref`).
-3. The local path ignores the container's `have` and `shallow` lines, so every fetch after the
-   initial mount resends the head's history back to the boundary.
-4. The subscriber is never told the worktree's Git head. `setBaseCommit()` passes the file base
-   (`pinBase`) in a field called `head`, and ref discovery advertises `headCommit` as `HEAD`, but
-   nothing tells the container to move its HEAD there, or that it moved later.
+1. Mixed requests were refused, but the container cannot know which commits are local. The same
+   problem appeared with a single local want: `git fetch --deepen=N` or `--unshallow` wants only
+   `HEAD`, the local path ignored `deepen`, and the clone silently stayed shallow.
+2. `Gatekeeper.gitPull(request: Request): Promise<Response>` was a smart-HTTP passthrough that
+   forwarded the container's own bytes, so safety depended on denylisting lines the kernel didn't
+   check (as with `want-ref`).
+3. The local path ignored the container's `have` and `shallow` lines, so every fetch after the
+   initial mount resent the head's history back to the boundary.
+4. The subscriber was never told the worktree's Git head. `setBaseCommit()` passed the file base
+   (`pinBase`) in a field called `head`, and nothing told the container to move its HEAD to
+   `headCommit`, or that it moved later.
 
 ## Subscriber: deliver the file base and the Git head
 
@@ -79,10 +65,10 @@ setBaseCommit(state: {revision: WorktreeRevision; base: GitOid | null; head: Git
 - On a fresh start the container fetches both (one fetch, two local wants), checks out `base`,
   applies the pending changes, and resets to `head`.
 
-The kernel side is small: the drain loop already compares the last delivered base with the current
-one, and tracks the head the same way (the subscription record stores both). `headCommit` advances
-in the step barrier (`worktreeCommits`), which already wakes subscribers, so the notification is
-ordered with the changes around it. Both commits are already in `localHeads`.
+The kernel side is small: the drain loop compares the last delivered base and head with the
+current ones (the subscription record stores both). `headCommit` advances in the step barrier
+(`worktreeCommits`), which already wakes subscribers, so the notification is ordered with the
+changes around it. Both commits are in `localHeads`.
 
 Applying each head notification as it arrives keeps the container's object store holding every
 workspace-only object of the head's history. That is what makes the request handling below work:
@@ -92,64 +78,75 @@ gatekeeper owns HEAD and the index; Git state changes come from the workspace) a
 
 ## RPC shape: extend `GitPullHints`
 
-Return to main's structured shape, `Gatekeeper.gitPull(oids, hints): Promise<GitPullTransfer>`,
+`Gatekeeper.gitPull(oids, hints): Promise<GitPullTransfer>` is main's structured shape again,
 implemented by providers with `startGitPull` from `gatekeeper-kit/git-pull-transfer`. `GitPullHints`
 was designed as a semantic description of a Git fetch, meant to be extended. The kit converts it
 to the protocol-v2 request, so a provider stays "add my credentials and POST to my repository's
-`git-upload-pack`". Most of the branch's GitHub/GitLab `gitPull` changes revert.
+`git-upload-pack`". The GitHub and GitLab gatekeepers are unchanged from main.
 
-Additions:
+The additions:
 
 - `haves?: GitOid[]`: commits the requester already has, so the remote leaves out their history.
   Packs stay self-contained: a server only sends deltas against objects the client has when the
-  client asks for thin packs, and the kit never does. The kit's module doc records "no `have`s
-  ever" as a locked decision; it was made for cache fills, which keep sending none, so the
-  decision needs updating.
+  client asks for thin packs, and the kit never does. The kit's module doc recorded "no `have`s
+  ever" as a locked decision; it was made for cache fills, which keep sending none, and now says
+  so.
 - `shallow?: GitOid[]`: the requester's current shallow boundary, which the remote needs to answer
   a deepen correctly.
 - `commitHistory: {kind: "relative", depth: number}`, for `--deepen=N`. `full`, `depth` and `since`
   already exist.
-- Shallow information in the result. For a passthrough, the container needs the server's
-  `shallow`/`unshallow` lines along with the pack, but `demuxGitFetchResponse` drops those
-  sections and the raw pack doesn't carry them. `GitPullTransfer` gains an accessor for them,
-  captured while the response's leading sections are parsed, next to `status()`. Keeping them
-  beside the stream preserves the `status()` design, which exists because Workers RPC can replace
-  a stream's error with a generic disconnect.
+- Shallow information in the result. For a proxied fetch, the container needs the server's
+  `shallow`/`unshallow` lines along with the pack, but the raw pack doesn't carry them.
+  `GitPullTransfer.shallowInfo()` returns them, next to `status()`: it reads the response up to
+  the start of the pack (`openGitFetchResponse` in the kit) without consuming any pack data.
+  Keeping them beside the stream preserves the `status()` design, which exists because Workers
+  RPC can replace a stream's error with a generic disconnect.
 
-`type` and `referencedBy` remain cache hints; the passthrough uses `type: "commit"`.
+`type` and `referencedBy` remain cache hints; a proxied fetch uses `type: "commit"`.
 
-The ancestry probe becomes an ordinary `gitPull(wants, {type: "commit", commitHistory: {kind:
+The ancestry probe is an ordinary `gitPull(wants, {type: "commit", commitHistory: {kind:
 "full"}, filterTreeDepth: 0, haves: boundaries})` whose pack header the kernel inspects.
 
 ## Request handling
 
 The kernel parses every request from the container. Ref discovery stays local. For `fetch`, it
 extracts the fields it understands (`want`, `have`, `shallow`, `deepen`, `deepen-since`,
-`deepen-relative`, `filter`, `done`, and harmless capabilities such as `ofs-delta`, `no-progress`
-and `include-tag`) and refuses anything else. Nothing the container sends is forwarded verbatim:
-an upstream request is always re-encoded from these checked fields, which replaces the `want-ref`
-denylist with an allowlist.
+`deepen-relative`, `filter` as `blob:none`, `blob:limit=<n>` or `tree:0`, `done`, and harmless
+arguments such as `ofs-delta`, `thin-pack`, `no-progress` and `include-tag`) and refuses anything
+else. Nothing the container sends is forwarded verbatim: an upstream request is always
+re-encoded from these checked fields, which replaces the earlier `want-ref` denylist with an
+allowlist.
 
 The kernel classifies a fetch by what the container is missing, not by its `want` lines. The
 container's `have` and `shallow` lines say what it already has. For example, `git fetch --deepen=N`
 sends `want <head>`, `have <head>`, `shallow <boundary>` and `deepen N`. The head is local, but the
 container already has it; what it lacks is history beyond the boundary, which is purely remote.
 
+The workspace-stored history is everything reachable from the worktree's local heads back to the
+boundary. A `have` of one of those commits covers its history, and implies the container has the
+base's files unless one of its `shallow` commits is in the local history. A deepen reaches past
+the boundary if it is relative, if its depth exceeds the boundary's depth from the wanted
+commits, or if its date is no later than the boundary's commit time.
+
+Negotiation takes one round: a request without `done` is answered at once with `ready` and the
+pack, as if it had said `done`. The local path already knows what to leave out from the `have`s
+sent so far, and a proxied fetch passes them on.
+
 Then, in order:
 
 1. **All local.** Everything the container lacks is stored in the workspace, possibly together with
-   the upstream base pack as today. Serve it locally, honouring the container's `have` and
+   the upstream base pack. Serve it locally, honouring the container's `have` and
    `shallow` lines so that only what's new is sent. With head notifications this is the common
    case for fetching a new head, so local negotiation is required, not an optimization.
 2. **All remote.** Everything the container lacks is remote history that passes the ancestry probe.
    Proxy it: send the confirming connection a structured request built from the checked fields.
    For a deepen of a local head, that is `want <boundary>` with the container's `shallow`, the
-   relative depth, and the `have` lines the remote knows. Frame the remote's pack and shallow
-   information for the container.
+   depth (an absolute depth is rebased onto the boundary), and the container's `have`s plus the
+   boundary. Frame the remote's pack and shallow information for the container.
 3. **Spans both.** The container lacks workspace-only objects *and* remote history. With head
    notifications this only happens if the head moves while a command is running Git. Refuse it with
-   a clear error ("the worktree's head moved; fetch again"), rather than building the slow path
-   first. If real usage hits this, add the cache fill described below.
+   a clear error ("fetch the worktree's head first, then fetch again"), rather than building the
+   slow path first. If real usage hits this, add the cache fill described below.
 
 ### Why spanning requests need storage
 
@@ -186,14 +183,13 @@ so this doesn't help.
 
 - Native Git against workerd (`__tests__/native/worktree-git.test.ts`) with a real `git
   upload-pack` upstream (with `uploadpack.allowFilter` on, as GitHub and GitLab have), covering:
-  - an ancestor fetch (proxied);
-  - a non-ancestor fetch (refused);
-  - `--deepen` and `--unshallow` of a local head (proxied);
-  - a fetch after the head moved, sending only the new commits;
-  - a request spanning both (refused with the "head moved" error);
-  - the fresh-start sequence (check out `base`, apply changes, `git reset --mixed <head>`), with
-    `git status` showing exactly the pending changes.
-- Backend tests for request parsing (unknown lines refused), classification by `have`/`shallow`,
-  the probe moving on after a negative answer, head notifications (ordering with changes, delivery
-  when only the head or only the base changes), and stream revocation when a connection is removed.
+  an ancestor fetch (proxied); a non-ancestor fetch (refused); `--deepen` and `--unshallow` of the
+  local head (proxied); a fetch after the head moved, which sends only the new commit's three
+  objects and exercises the one-round negotiation; a request spanning both (refused); and the
+  fresh-start sequence (check out `base`, apply changes, `git reset --mixed <head>`), with `git
+  status` showing exactly the pending changes.
+- Backend tests (`__tests__/worktree-replica.test.ts`) for refused arguments, the deepen request
+  sent upstream, the spanning refusal, the probe moving on after a negative answer, head
+  notifications and the fetch of a moved head, and stream revocation when a connection is
+  removed.
 - Kit tests for the new hint encodings and for capturing shallow information.

@@ -434,10 +434,10 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     using session = await worktree.getSyncSession();
     using subscriber = await this.ctx.restore<RpcStub<WorktreeSubscriber>>({worktree: key});
     using subscription = await session.subscribe(subscriber);
-    const state = this.ctx.storage.kv.get<{revision: string; head: string}>(`worktree:${key}`)!;
+    const state = this.ctx.storage.kv.get<{revision: string; base: string}>(`worktree:${key}`)!;
     const response = await worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
       method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
-      body: buildGitFetchRequest([state.head], {type: "commit", commitHistory: {kind: "full"}}),
+      body: buildGitFetchRequest([state.base], {type: "commit", commitHistory: {kind: "full"}}),
     }));
     const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
     if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
@@ -446,7 +446,8 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return "worktree pack received";
   }
 
-  worktreeBase(key: string, state: {revision: string; head: string | null; shallowCommit: string | null}): void {
+  worktreeBase(key: string, state: {revision: string; base: string | null; head: string | null;
+      shallowCommit: string | null}): void {
     this.ctx.storage.kv.put(`worktree:${key}`, state);
   }
 
@@ -460,7 +461,8 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 @validateRpc()
 class TestWorktreeSubscriber extends RpcTarget implements WorktreeSubscriber {
   constructor(private readonly owner: TestControl, private readonly key: string) { super(); }
-  async setBaseCommit(state: {revision: string; head: string | null; shallowCommit: string | null}): Promise<void> {
+  async setBaseCommit(state: {revision: string; base: string | null; head: string | null;
+      shallowCommit: string | null}): Promise<void> {
     this.owner.worktreeBase(this.key, state);
   }
   async change(_revision: string, _batchId: string, _changes: FileChangeByPath[]): Promise<void> {}

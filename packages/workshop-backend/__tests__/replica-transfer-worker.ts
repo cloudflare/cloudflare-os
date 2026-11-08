@@ -52,10 +52,10 @@ export class TestReplicaTransfer extends DurableObject {
     await subscription.unsubscribe();
     return this.events();
   }
-  async transfer(worktree: RpcStub<ReplicableWorktree>, head: string) {
+  async transfer(worktree: RpcStub<ReplicableWorktree>, head: string, haves?: string[]) {
     const response = await worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
       method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
-      body: buildGitFetchRequest([head], {type: "commit", commitHistory: {kind: "full"}}),
+      body: buildGitFetchRequest([head], {type: "commit", commitHistory: {kind: "full"}, haves}),
     }));
     const objects = [];
     const bases = new Map<string, PackableObject>();
@@ -71,7 +71,7 @@ export class TestReplicaTransfer extends DurableObject {
 /** The real persistable callback capability, minted inside its owning worker. */
 class ReplicaSubscriberEndpoint extends RpcTarget implements WorktreeSubscriber {
   constructor(private target: TestReplicaTransfer) { super(); }
-  async setBaseCommit(state: {revision: string; head: string | null; shallowCommit: string | null}) {
+  async setBaseCommit(state: {revision: string; base: string | null; head: string | null; shallowCommit: string | null}) {
     await this.target.receive({kind: "base", ...state});
   }
   async change(revision: string, batchId: string, changes: FileChangeByPath[]) {

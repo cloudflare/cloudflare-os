@@ -9,8 +9,6 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
-import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
-import {gitObjectRequest} from "@gadgets/gatekeeper-kit/git-transport";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser, GitCache, GitPullHints,
   GitPullTransfer,
@@ -377,14 +375,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async gitPull(facetName: string, props: GatekeeperProps, oids: string[], options: GitPullHints):
       Promise<Outcome<GitPullTransfer>> {
-    return await outcome(() => startGitPull(body =>
-      this.#gatekeeper(facetName, props).gitPull(gitObjectRequest(body)), oids, options));
-  }
-  async gitRequest(facetName: string, props: GatekeeperProps, request: Request) {
-    return outcome(async () => {
-      const response = await this.#gatekeeper(facetName, props).gitPull(request);
-      return {body: new Uint8Array(await response.arrayBuffer())};
-    });
+    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, options));
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */

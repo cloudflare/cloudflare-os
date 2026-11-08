@@ -21,11 +21,12 @@
 // 1. The gatekeeper receives a Worktree stub (e.g. through a call like
 //    `mountWorktree(env.REPO, "repo")`) and calls `getSyncSession()` on it.
 // 2. It calls `subscribe()`, passing its own `WorktreeSubscriber`. The workspace first tells the
-//    subscriber the base commit (`setBaseCommit()`). The subscriber fetches that commit by
-//    running native Git against `gitPull()`, which speaks Git's smart-HTTP protocol, and writes
-//    its files to disk. The workspace then sends every pending uncommitted change (`change()`),
-//    which the subscriber applies on top, and from then on sends each new change as it happens.
-//    `subscribe()` returns once the subscriber has caught up.
+//    subscriber the base commit and the worktree's Git head (`setBaseCommit()`). The subscriber
+//    fetches them by running native Git against `gitPull()`, which speaks Git's smart-HTTP
+//    protocol, and writes the base's files to disk. The workspace then sends every pending
+//    uncommitted change (`change()`), which the subscriber applies on top, and from then on
+//    sends each new change as it happens. `subscribe()` returns once the subscriber has caught
+//    up.
 // 3. When a command changes local files, it sends the edits with `submitChanges()`. The workspace
 //    merges them into the stream and then delivers them back to the subscriber, like any other
 //    change, so that every party sees the same order of edits.
@@ -108,9 +109,11 @@ export interface ReplicableWorktree extends RpcTarget {
    *
    * Passing a Worktree stub permits fetching any commit in its head's history, including
    * history beyond the shallow cutoff (e.g. a build script running
-   * `git fetch --depth=1 origin <sha>`): such a fetch is forwarded to a connected repository
-   * that has the history, once it confirms the commit is in it. Other refs and commits are
-   * refused.
+   * `git fetch --depth=1 origin <sha>`, or `git fetch --deepen=10`): such a fetch is served by
+   * a connected repository that has the history, once it confirms the commit is in it. Other
+   * refs and commits are refused. So is a single fetch that needs both commits only the
+   * workspace has and history only a connected repository has; fetching each new head as
+   * `setBaseCommit()` reports it avoids that.
    */
   gitPull(request: Request): Promise<Response>;
 }
@@ -180,22 +183,27 @@ export interface WorktreeSyncSession extends RpcTarget {
  */
 export interface WorktreeSubscriber extends RpcTarget {
   /**
-   * Sets the commit that the chat's uncommitted changes apply on top of.
+   * Sets the commit that the chat's uncommitted changes apply on top of, and the worktree's Git
+   * head. Called whenever either changes.
    *
-   * On a fresh start, this is the first call, before any changes: fetch `head` with
-   * `ReplicableWorktree.gitPull()` and use its files as the starting point. Later calls
-   * happen when the base moves without the files changing -- typically when the user accepts
-   * the chat's changes, which turns the pending edits into a new commit. By then the replica's
-   * files already include those edits, so update your record of the base, but do not reset any
-   * files.
+   * On a fresh start, this is the first call, before any changes: fetch `base` and `head` with
+   * `ReplicableWorktree.gitPull()` (one fetch), check out `base` as the starting point, apply
+   * the changes that follow, and then `git reset --mixed <head>`. Later calls happen when the
+   * base or head moves without the files changing. The base moves typically when the user
+   * accepts the chat's changes, which turns the pending edits into a new commit; by then the
+   * replica's files already include those edits, so update your record of the base, but do not
+   * reset any files. The head moves when the agent commits; fetch it and reset to it again, which
+   * leaves the files alone.
    *
    * - `revision`: the revision the base applies at. Later changes are relative to it.
-   * - `head`: the base commit, or null if there is none.
+   * - `base`: the base commit (the worktree's accepted commit), or null if there is none.
+   * - `head`: the worktree's Git head (its latest explicit commit), or null if there is none. It
+   *   may be older or newer than `base`.
    * - `shallowCommit`: when the worktree came from a connected repository, the commit it was
-   *   created at, beyond which history is not available (as in a shallow clone); null when the
-   *   worktree's whole history is stored in the workspace.
+   *   created at, beyond which the workspace doesn't store history (as in a shallow clone); null
+   *   when the worktree's whole history is stored in the workspace.
    */
-  setBaseCommit(state: {revision: WorktreeRevision; head: GitOid | null;
+  setBaseCommit(state: {revision: WorktreeRevision; base: GitOid | null; head: GitOid | null;
     shallowCommit: GitOid | null}): Promise<void>;
 
   /**

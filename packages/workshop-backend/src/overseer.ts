@@ -73,8 +73,6 @@ import type { WorktreeSyncSession, WorktreeSubscription, WorktreeSubscriber, Rep
 import type { Worktree } from "./worktree-binding";
 import { ReplicaChangedError, worktreeBatch } from "./worktree-replica";
 import { worktreeGitPull } from "./worktree-git";
-import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
-import { gitObjectRequest } from "@gadgets/gatekeeper-kit/git-transport";
 
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
@@ -1282,7 +1280,10 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.subscribe({
       add: () => this.markOutputsDirty(),
       update: () => { this.markOutputsDirty(); this.#wakeWorktreeSubscribers(); },
-      remove: () => { this.markOutputsDirty(); this.#revokeGitTransfers(); this.#wakeWorktreeSubscribers(); },
+      // Subscribers run before the row is deleted, so revoke once it is gone.
+      remove: () => {
+        this.markOutputsDirty(); queueMicrotask(() => this.#revokeGitTransfers()); this.#wakeWorktreeSubscribers();
+      },
     });
 
     this.ctx.blockConcurrencyWhile(async () => {
@@ -4959,7 +4960,7 @@ class OverseerImpl implements AgentHooks {
     // call, which the pull driver treats as this source failing.
     let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
         Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
-    using transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)), oids, hints);
+    using transfer = await facet.gitPull(oids, hints);
     const pack = await transfer.stream();
     let stored: Set<string>;
     try {
@@ -6458,61 +6459,69 @@ class OverseerImpl implements AgentHooks {
     for (const record of subscriptions) {
       const session = this.storage.worktreeSyncSessions.get(record.sessionId);
       if (session?.worktreeId !== worktreeId) continue;
-      for (const head of [record.head, record.bootstrap?.head]) if (head) localHeads.push(head);
+      for (const head of [record.base, record.head, record.bootstrap?.base, record.bootstrap?.head])
+        if (head) localHeads.push(head);
       // A slow receiver may still be fetching an older binary event after a newer edit has
       // replaced it in the current overlay. Keep unacknowledged object references pullable.
       pending.push(...record.bootstrap?.changes ?? []);
       if (record.revision) for (const row of this.#syncRows(session, record.revision) ?? [])
         pending.push(...(row.change[worktreeId] ?? []).map(([path, change]) => ({path, change})));
     }
-    const pullFrom = async (source: WorkpieceId, request: Request) => {
+    // Pull from a connection, ending the stream if worktree access ends or the connection is
+    // removed.
+    const pullFrom = async (source: WorkpieceId, oids: string[], hints: GitPullHints) => {
       const live = () => {
         check();
         if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
         this.assertGatekeeperUsable(source);
       };
       live();
-      const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
+      const facet = await this.getGatekeeperFacet(source) as unknown as
+          Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
       live();
-      const response = await facet.gitPull(request);
-      try { live(); } catch (error) { await response.body?.cancel(error); throw error; }
-      return new Response(response.body && this.#checkedGitStream(response.body, live), {
-        status: response.status, headers: {"content-type": response.headers.get("content-type") ?? "application/octet-stream"},
-      });
+      const transfer = await facet.gitPull(oids, hints);
+      // Revocation must also end a response that stalls before its pack starts.
+      const preamble = {check: live, abort: new AbortController()};
+      this.#gitTransfers.add(preamble);
+      try {
+        // Access may have ended while gitPull() was pending, before revocation could see this.
+        live();
+        const aborted = new Promise<never>((_, reject) => preamble.abort.signal.addEventListener("abort",
+          () => reject(preamble.abort.signal.reason), {once: true}));
+        const shallow = await Promise.race([transfer.shallowInfo(), aborted]);
+        const pack = await transfer.stream();
+        live();
+        return {shallow, pack: this.#checkedGitStream(pack, live, async () => {
+          const status = await transfer.status();
+          if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
+        }, () => transfer[Symbol.dispose]())};
+      } catch (error) {
+        transfer[Symbol.dispose]();
+        throw error;
+      } finally {
+        this.#gitTransfers.delete(preamble);
+      }
     };
     // Mounting a worktree permits fetching any commit in its head's history. Each connection
     // with provenance for the history's remote-backed boundary commits can serve the rest of it
     // (commit IDs hash their history, so it doesn't matter which); worktreeGitPull() asks it to
-    // confirm that a requested commit is in that history before forwarding the fetch.
+    // confirm that a requested commit is in that history before fetching it.
     const remotes = new Map<WorkpieceId, string[]>();
     for (const [commit, ids] of this.#remoteHistoryBoundaries(piece.headCommit))
       for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
+    // The base commit's own connections can deepen history beyond it, even once a pushed
+    // descendant has become the walk's boundary.
+    for (const id of sources)
+      if (!remotes.get(id)?.includes(piece.baseCommit)) remotes.set(id, [...remotes.get(id) ?? [], piece.baseCommit]);
     return worktreeGitPull(this.gitCache, {head: piece.headCommit, localHeads, shallowCommit: sources.length ? piece.baseCommit : null,
       pending, check,
-      remotes: [...remotes].map(([id, haves]) => ({haves, pull: request => pullFrom(id, request)})),
+      remotes: [...remotes].map(([id, haves]) => ({haves, pull: (oids, hints) => pullFrom(id, oids, hints)})),
       upstream: async () => {
         let cause: unknown;
         for (const source of sources) {
-          const requireLive = () => {
-            check();
-            if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
-            this.assertGatekeeperUsable(source);
-          };
-          let transfer: Awaited<ReturnType<typeof startGitPull>> | undefined;
           try {
-            requireLive();
-            const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
-            requireLive();
-            transfer = await startGitPull(body => facet.gitPull(gitObjectRequest(body)), [piece.baseCommit],
-              {type: "commit", commitHistory: {kind: "depth", depth: 1}});
-            const pack = await transfer.stream();
-            requireLive();
-            const active = transfer;
-            return this.#checkedGitStream(pack, requireLive, async () => {
-              const status = await active.status();
-              if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
-            }, () => active[Symbol.dispose]());
-          } catch (error) { transfer?.[Symbol.dispose](); cause = error; }
+            return (await pullFrom(source, [piece.baseCommit], {type: "commit", commitHistory: {kind: "depth", depth: 1}})).pack;
+          } catch (error) { cause = error; }
         }
         throw new Error("No authorized Git source could supply the worktree base.", {cause});
       }}, request);
@@ -6619,7 +6628,7 @@ class OverseerImpl implements AgentHooks {
 
   #syncBase(session: WorktreeSyncRecord) {
     const piece = this.getWorktreeRecord(session.worktreeId);
-    return {revision: this.replicaHistoryRevision(session.chatId), head: piece.pinBase,
+    return {revision: this.replicaHistoryRevision(session.chatId), base: piece.pinBase, head: piece.headCommit,
       shallowCommit: this.#liveGitSources(piece.baseCommit).length ? piece.baseCommit : null};
   }
 
@@ -6724,6 +6733,7 @@ class OverseerImpl implements AgentHooks {
           this.requireWorktreeSync(sessionId);
           if (!current()) return;
           record.revision = state.revision;
+          record.base = state.base;
           record.head = state.head;
           delete record.bootstrap;
           this.storage.worktreeSyncSubscriptions.put(record);
@@ -6745,6 +6755,7 @@ class OverseerImpl implements AgentHooks {
           this.requireWorktreeSync(sessionId);
           if (!current()) return;
           record.revision = checkpoint.revision;
+          record.base = checkpoint.base;
           record.head = checkpoint.head;
           this.storage.worktreeSyncSubscriptions.put(record);
           continue;
@@ -6759,11 +6770,15 @@ class OverseerImpl implements AgentHooks {
           this.storage.worktreeSyncSubscriptions.put(record);
           continue;
         }
-        if (record.head !== state.head) {
+        if (record.base !== state.base || record.head !== state.head) {
           await record.subscriber.setBaseCommit(state);
           this.requireWorktreeSync(sessionId);
           if (!current()) return;
+          record.base = state.base;
           record.head = state.head;
+          // Either may have moved again while the subscriber was applying this; look again.
+          this.storage.worktreeSyncSubscriptions.put(record);
+          continue;
         }
         record.retryAt = 0;
         this.storage.worktreeSyncSubscriptions.put(record);
