@@ -262,6 +262,12 @@ are. A JSON member is too when its whole name is `authorization`, `proxy-authori
 `cookie` or `set-cookie`, and a URL parameter when it has one of the short names listed under
 [What it replaces though it is no credential](#what-it-replaces-though-it-is-no-credential).
 
+A member is found in JSON a gadget prints and in JSON held in a string of it, once or twice over,
+such as a request body the gadget serialized itself. Its value is replaced to its closing quote,
+whatever escaped characters it holds. A URL parameter's value is replaced up to the next `&`, `#`,
+space, double quote or angle bracket, and a JSON Web Token with its empty segments, which a
+directly encrypted one has.
+
 Redaction happens before the cut, and a browser sends up to twice the kept length
 (`MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH`, 4,000 characters) for that reason: a token that
 straddles the cut is replaced whole.
@@ -308,11 +314,13 @@ updates both.
 - A token broken across lines, of which only the part before the break is replaced, so that a
   wrapped JSON Web Token keeps the rest of its payload and its whole signature.
 - A URL password that holds a raw `/`, `?`, `#` or double quote.
+- The rest of a URL parameter's value after a raw double quote or angle bracket in it: only the
+  part before is replaced. A URL that was encoded holds neither.
 - A secret in a URL's path (a webhook address, a reset link).
 - A token used as a URL's user name with no password.
 - Provider-prefixed tokens on their own (`ghp_`, `AKIA`, `xoxb-` and the like).
 - A secret under a name the patterns do not know (a JSON member called `key`, say), or in a JSON
-  member whose value is not a string.
+  member whose value is not a string, or in JSON held in a string three times over or more.
 - Text in which another format has escaped a URL: JSON from a serializer that escapes more than
   JavaScript's does, where the `&` before a parameter is written `\u0026` or each slash of a URL
   with a password `\/`, and HTML where that `&` is the numeric entity `&#38;` (the named `&amp;`
@@ -325,6 +333,10 @@ updates both.
 - The value of any URL parameter named, or ending after a separator in, `key`, `code`, `sig`,
   `auth`, `jwt`, `pwd` or `session` (or `sessionid`), or ending in one of the secret names:
   `?error_code=404`, `&zip_code=90210`, `&sort_key=name`, `?session=abc`, any `?code=`.
+- The apostrophe that closes a URL ending in such a parameter, with what is glued to it:
+  `fetch('/cb?code=abc').catch(report)` loses its `').catch(report)`. An apostrophe does not end a
+  value, because `encodeURIComponent()` leaves one in a value as it is.
+- The full stop directly after a JSON Web Token, read as an empty segment of it.
 - A word of 16 or more characters holding a capital or a digit that follows "basic" or "bearer"
   (a class name after the word Basic, say), also where the "basic" itself follows an underscore or
   an escape, or that is glued to `sk-`: a path such as `C:\tools\nsk-toolkit-V2-installer-x64`

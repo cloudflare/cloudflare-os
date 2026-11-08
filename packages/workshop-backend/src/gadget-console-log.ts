@@ -30,17 +30,23 @@ const SECRET_NAME_END =
 const SECRET_MEMBER_NAME =
     `(?:[\\w.-]*${SECRET_NAME_END}|(?:proxy-)?authorization|(?:set-)?cookie)`;
 // A URL query or fragment parameter named like a secret, or by one of the short names that carry
-// one ("code", "sig", "key"), alone or after a separator.
+// one ("code", "sig", "key"), alone or after a separator. Its value ends before an "&", a "#", a
+// space, a double quote or an angle bracket, so that what follows a URL in JSON or in markup is
+// kept. It does not end at an apostrophe, which encodeURIComponent() leaves in a value as it is.
 const SECRET_PARAMETER = new RegExp(
     `((?:[?&#]|&amp;)(?:[\\w.~%-]*${SECRET_NAME_END}|` +
-        `(?:[\\w.~%-]*[._-])?(?:key|sig|code|auth|jwt|pwd|session(?:id)?))=)[^&#\\s"'<>]+`,
+        `(?:[\\w.~%-]*[._-])?(?:key|sig|code|auth|jwt|pwd|session(?:id)?))=)[^&#\\s"<>]+`,
     "gi");
 // A member of plain JSON: its value runs to the closing quote, escaped characters included.
 const SECRET_MEMBER = new RegExp(`("${SECRET_MEMBER_NAME}"\\s*:\\s*")(?:[^"\\\\]|\\\\.)+`, "gi");
-// A member of JSON held in a JSON string, where every quote is escaped: its value runs to the
-// next backslash or quote.
-const ESCAPED_SECRET_MEMBER =
-    new RegExp(`("${SECRET_MEMBER_NAME}\\\\{1,3}"\\s*:\\s*\\\\{1,3}")[^"\\\\]+`, "gi");
+// A member of JSON held in a JSON string, once or twice over, where a run of backslashes precedes
+// every quote: its value runs to the closing quote, which follows the same run as the opening one,
+// escaped characters included. An escape in the value is that run and one more backslash, then the
+// character: a quote or a backslash after the run again, any other as it is.
+const ESCAPED_SECRET_MEMBER = new RegExp(
+    `("${SECRET_MEMBER_NAME}\\\\{1,3}"\\s*:\\s*(\\\\{1,3})")` +
+        `(?:[^"\\\\]|\\2\\\\(?:\\2["\\\\]|[^"\\\\]))+`,
+    "gi");
 
 // Where a token that is known by its shape may start: not directly after a letter or digit,
 // because "task-force" is a word and "keyJoinColumns" an identifier, unless that letter or digit
@@ -52,8 +58,9 @@ const TOKEN_START =
     /(?:(?<![A-Za-z\d])|(?<=%[\dA-Fa-f]{2})|(?<=\\(?:[bfnrt]|u[\dA-Fa-f]{4})))/.source;
 // "Bearer <token>", "Basic <credentials>"
 const BEARER_OR_BASIC = new RegExp(`${TOKEN_START}(Bearer|Basic)(\\s+)([\\w.~+/=-]{16,})`, "gi");
-// JSON Web Tokens, whole or cut short, and any other base64 of a JSON object
-const JSON_WEB_TOKEN = new RegExp(`${TOKEN_START}eyJ[\\w-]{8,}(?:\\.[\\w-]+){0,4}`, "g");
+// JSON Web Tokens, whole or cut short, and any other base64 of a JSON object. A segment after the
+// first may be empty, as the key of a directly encrypted token is.
+const JSON_WEB_TOKEN = new RegExp(`${TOKEN_START}eyJ[\\w-]{8,}(?:\\.[\\w-]*){0,4}`, "g");
 // sk-..., sk_live_...
 const SK_KEY = new RegExp(`${TOKEN_START}sk[-_][\\w-]{16,}`, "g");
 

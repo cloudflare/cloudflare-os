@@ -27,6 +27,11 @@ const jwtHeader = "eyJhbGciOiJIUzI1NiJ9";
 const jwt = assemble(
   jwtHeader, ".", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", ".",
   "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U");
+// A directly encrypted token: its header, an empty key segment, then the IV, the ciphertext and
+// the tag.
+const directJwe = assemble(
+  "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0", "..", "IvIvIvIvIvIvIvIv", ".", "Ct0_".repeat(12), ".",
+  "TagTagTagTagTagTagTagA");
 const pemBody = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
 
 // A PEM block: its BEGIN line, a body and its END line, separated by `newline`.
@@ -73,6 +78,13 @@ const CAUGHT: Record<string, Case[]> = {
     [jwtHeader.slice(0, 11), "[redacted]"],
     // Five segments at most are one token, as an encrypted one has: a sixth is left.
     [jwtHeader + ".a.b.c.d.e", "[redacted].e"],
+    // A segment may be empty: the key of a directly encrypted token, the payload of a signature
+    // that is detached from it.
+    ["session cookie " + directJwe, "session cookie [redacted]"],
+    ["Set-Cookie: session-token=" + directJwe + "; Path=/",
+      "Set-Cookie: session-token=[redacted]; Path=/"],
+    ['{"session":"' + directJwe + '"}', '{"session":"[redacted]"}'],
+    [jwtHeader + ".." + jwt.slice(-43), "[redacted]"],
   ],
 
   "keys under an sk prefix": [
@@ -181,16 +193,20 @@ const CAUGHT: Record<string, Case[]> = {
     // The other short names that carry a secret, and a password's short spelling.
     ["/cb?auth=abc&jwt=def&pwd=ghi&passwd=jkl&x=1",
       "/cb?auth=[redacted]&jwt=[redacted]&pwd=[redacted]&passwd=[redacted]&x=1"],
+    // A value that holds an apostrophe, which encodeURIComponent() leaves as it is.
+    ["https://api.example.com/login?user=ada&password=" + encodeURIComponent("it's-My-Pa55word") +
+        "&remember=1",
+      "https://api.example.com/login?user=ada&password=[redacted]&remember=1"],
+    ["/cb?access_token=AbC'dEf0123456789", "/cb?access_token=[redacted]"],
   ],
 
-  // The value ends before an "&", a "#", a quote, an angle bracket or a space, so that what
-  // follows the URL is kept. Were it to run through a double quote, a URL in a JSON string would
-  // take the members after it.
+  // The value ends before an "&", a "#", a double quote, an angle bracket or a space, so that
+  // what follows the URL is kept. Were it to run through a double quote, a URL in a JSON string
+  // would take the members after it.
   "no more than a URL parameter's value": [
     ["/cb?code=abc#frag", "/cb?code=[redacted]#frag"],
     ['{"url":"https://x.example/cb?code=abc","n":1}',
       '{"url":"https://x.example/cb?code=[redacted]","n":1}'],
-    ["<a href='/cb?code=abc'>x</a>", "<a href='/cb?code=[redacted]'>x</a>"],
     ["<td>/cb?code=abc</td>", "<td>/cb?code=[redacted]</td>"],
     ["see <https://x.example/cb?code=abc> and <b>x</b>",
       "see <https://x.example/cb?code=[redacted]> and <b>x</b>"],
@@ -233,6 +249,17 @@ const CAUGHT: Record<string, Case[]> = {
     // One level deeper: three backslashes before each inner quote.
     [String.raw`{"a":"{\"b\":\"{\\\"api_key\\\":\\\"k-123\\\",\\\"n\\\":1}\"}"}`,
       String.raw`{"a":"{\"b\":\"{\\\"api_key\\\":\\\"[redacted]\\\",\\\"n\\\":1}\"}"}`],
+    // A value that holds a quote, starts with one, or starts or ends with a backslash, is taken
+    // through its escapes to its closing quote, which follows one backslash as its opening one
+    // does.
+    [String.raw`{"body":"{\"password\":\"first\\\"second-secret-tail\",\"n\":1}"}`,
+      String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
+    [String.raw`{"body":"{\"password\":\"\\\"whole-secret\",\"n\":1}"}`,
+      String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
+    [String.raw`{"body":"{\"password\":\"\\\\whole-secret\",\"n\":1}"}`,
+      String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
+    [String.raw`{"body":"{\"password\":\"secret-tail\\\\\",\"n\":1}"}`,
+      String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
   ],
 
   "several shapes in one text": [
@@ -337,6 +364,11 @@ const ACCEPTED: Case[] = [
   ["http://h:80,x@y", "http://h:[redacted]@y"],
   ["http://ada@h:80,x@y", "http://ada@h:[redacted]@y"],
   ["see https://example.com,then:mail@x.y", "see https://example.com,then:[redacted]@x.y"],
+  // The apostrophe that closes a URL ending in such a parameter, and what is glued to it.
+  ["<a href='/cb?code=abc'>x</a>", "<a href='/cb?code=[redacted]>x</a>"],
+  ["fetch('/cb?code=abc').catch(report) failed", "fetch('/cb?code=[redacted] failed"],
+  // The full stop after a JSON Web Token, read as an empty segment of it.
+  ["got " + jwt + ". Retrying", "got [redacted] Retrying"],
   // JSON members whose names end like a secret's.
   ['{"nextPageToken":"CAESBQ"}', '{"nextPageToken":"[redacted]"}'],
   ['{"accessKey":"example-access-key"}', '{"accessKey":"[redacted]"}'],
@@ -387,6 +419,10 @@ const NOT_CAUGHT: (string | Case)[] = [
   assemble("amqp://guest", ":gu#est", "@mq:5672"),
   assemble("redis://default", ":Sup3r?Secret", "@cache:6379"),
   assemble("postgres://app", ':pa"ss', "@db/x"),
+  // A URL parameter's value that holds a raw double quote or angle bracket, of which only the
+  // part before it is replaced. A URL that was encoded holds neither.
+  ['/login?password=ab"cd-secret-tail&x=1', '/login?password=[redacted]"cd-secret-tail&x=1'],
+  ["/login?password=ab<cd>secret-tail&x=1", "/login?password=[redacted]<cd>secret-tail&x=1"],
   // A token as a URL's user name with no password.
   "https://ghp0AbCdEf0123456789@github.com/o/r.git",
   // Tokens under a provider's prefix, on their own.
@@ -405,9 +441,11 @@ const NOT_CAUGHT: (string | Case)[] = [
   // A URL in HTML whose "&" is a numeric entity. The named entity is caught (see the URL
   // parameters above).
   "https://x.example/cb?a=1&#38;access_token=Zq9Xw8Vu7Ts6Rp5On4Ml&#38;x=1",
-  // A JSON member under a name the patterns do not know, or whose value is not a string.
+  // A JSON member under a name the patterns do not know, or whose value is not a string, or
+  // inside JSON held in a string three times over: seven backslashes before each inner quote.
   '{"key":"' + credential + '"}',
   '{"token":12345678901234567890}',
+  JSON.stringify(JSON.stringify(JSON.stringify(JSON.stringify({ password: "hunter2-tail" })))),
   // A private key's body without its BEGIN line.
   pemBody,
 ];
@@ -427,6 +465,11 @@ const ADVERSARIAL: string[] = [
   flood("://a:", "b"), flood("://", ":"), flood("", "a."), flood("", "://u:p@"),
   flood('"token":"', "\\"), flood('"token":"', '\\"'), flood('"token":"', "a\\"),
   flood("", '"set-cookie'), flood("", '"proxy-'), flood("", '"token\\":\\"'),
+  // The escapes of a member's value in JSON held in a string, and empty segments of a token.
+  flood('"token\\":\\"', "\\"), flood('"token\\":\\"', "a\\\\"),
+  flood('"token\\":\\"', '\\\\\\"'), flood("", '"token\\":\\"\\\\'),
+  flood('"token\\\\\\":\\\\\\"', "\\"), flood("", "eyJaaaaaaaa...."),
+  flood("eyJaaaaaaaa", "..a"), flood("?token=", "'"), flood("", "?key='"),
   // The private-key, password, token and name patterns.
   flood("-----BEGIN ", "A"), flood("-----BEGIN ", "PRIVATE KEY"), flood("", pemEdge("BEGIN")),
   flood(pemEdge("BEGIN"), "-----END "), flood(pemEdge("BEGIN"), "-----END PRIVATE KE"),
@@ -578,6 +621,26 @@ describe("gadgetConsoleLogText", () => {
     // The same strings as parts of their own keep their real line breaks.
     expect(gadgetConsoleLogText(["# keys\n" + sk, "Your token is:\n" + jwt]))
         .toBe("# keys\n[redacted] Your token is:\n[redacted]");
+  });
+
+  it("redacts a secret member of a body a gadget serialized, whatever its value holds", () => {
+    // A quote, a backslash and a line break, each inside the value and at either end of it, and
+    // a value that is JSON itself.
+    let values = [
+      'first"second-secret-tail', '"whole-secret', 'whole-secret"', "\\whole-secret",
+      "whole-secret\\", 'a\\"b\\\\c-secret-tail', "line\nsecret-tail", "\twhole-secret\r\n",
+      '{"inner":"secret-tail"}', '""',
+    ];
+    let kept = JSON.stringify({ password: "[redacted]", n: 1 });
+
+    for (let value of values) {
+      // The member is in a string of the printed object, and then in a string of a string.
+      let body = JSON.stringify({ password: value, n: 1 });
+      expect(gadgetConsoleLogText(["POST", { body }]), value)
+          .toBe("POST " + JSON.stringify({ body: kept }));
+      expect(gadgetConsoleLogText(["POST", { request: JSON.stringify({ body }) }]), value)
+          .toBe("POST " + JSON.stringify({ request: JSON.stringify({ body: kept }) }));
+    }
   });
 
   // The start the token patterns share reads an escape as the character it stands for. So
