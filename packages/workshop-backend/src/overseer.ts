@@ -5603,11 +5603,13 @@ class OverseerImpl implements AgentHooks {
   // `joinAs` counts the returned client toward #hasCollaboratorSession for its lifetime; passed by
   // the collaborator-facing mints, omitted for the owner's and for internal callers (see
   // GadgetClientImpl). `actorUserId` is who the returned client acts for, for analytics only.
-  // `bindings` are an agent spawner's (see GatekeeperRecord.bindings).
+  // `bindings` are an agent spawner's (see GatekeeperRecord.bindings). `createdBy` is the person
+  // creating the connection, recorded on it (GatekeeperRecord.createdBy); an ambient capsule has
+  // none.
   async addGatekeeper(
       cls: GatekeeperClass, creationSpec: GatekeeperCreationSpec, actorUserId: string,
-      joinAs?: SessionKind, bindings?: Record<string, BindingRecord>)
-      : Promise<GatekeeperClient<any>> {
+      joinAs?: SessionKind, bindings?: Record<string, BindingRecord>,
+      createdBy?: AiChatAuthorInfo): Promise<GatekeeperClient<any>> {
     let id = this.allocateWorkpieceId();
     let gatekeeperRecord: GatekeeperRecord = {
       id,
@@ -5615,6 +5617,7 @@ class OverseerImpl implements AgentHooks {
       creationSpec,
     };
     if (bindings) gatekeeperRecord.bindings = bindings;
+    if (createdBy) gatekeeperRecord.createdBy = createdBy;
 
     // The record is published only once, below, after describe() resolves -- the facet takes the
     // class directly so it needs no record to exist yet. Publishing it before the await instead
@@ -10205,12 +10208,15 @@ class OverseerImpl implements AgentHooks {
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
         input.vendorId, input.resourceUrlPattern, input.title);
     let id = this.allocateWorkpieceId();
+    // The resource is created by whoever started the turn this tool call belongs to.
+    let createdBy = this.storage.activeAgents.get(chatId)?.initiator;
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
       resourceTitle: input.title,
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
                      typeUrlPattern: minted.typeUrlPattern},
+      ...(createdBy !== undefined ? {createdBy} : {}),
     });
     await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
         .catch(error => { this.removeGatekeeper(id); throw error; });
@@ -12553,7 +12559,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       typeUrlPattern,
     };
     let result = await this.impl.addGatekeeper(
-        cls, creationSpec, this.clientUserId, this.#mintedCapabilityKind());
+        cls, creationSpec, this.clientUserId, this.#mintedCapabilityKind(), undefined,
+        await this.#getClientProfile());
     await this.recordConnectionCreated(result, "gatekeeper", vendorId);
     return result;
   }
@@ -12579,7 +12586,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         modelKind(props.config.provider, props.config.model) === "decision"
             ? this.impl.ctx.exports.DecisionModelGatekeeper({props})
             : this.impl.ctx.exports.LanguageModelGatekeeper({props}),
-        creationSpec, this.clientUserId, this.#mintedCapabilityKind());
+        creationSpec, this.clientUserId, this.#mintedCapabilityKind(), undefined,
+        await this.#getClientProfile());
     await this.recordConnectionCreated(result, "ai_model");
     return result;
   }
@@ -12613,7 +12621,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let result = await this.impl.addGatekeeper(
         this.impl.ctx.exports.AgentSpawnerGatekeeper({props}), creationSpec,
-        this.clientUserId, this.#mintedCapabilityKind(), bindings);
+        this.clientUserId, this.#mintedCapabilityKind(), bindings,
+        await this.#getClientProfile());
     await this.recordConnectionCreated(result, "agent_spawner");
     return result;
   }
