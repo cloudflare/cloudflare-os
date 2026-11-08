@@ -3965,6 +3965,34 @@ export interface Overseer extends RpcTarget {
    */
   subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>>;
 
+  /**
+   * Report console output captured from a gadget's UI in this session's browser: what the
+   * gadget's client code passed to `console.*`, and the errors it did not catch. `gadgetId` is
+   * the gadget, and `chatId` the chat whose draft of it the UI was showing, or null for its
+   * mainline. Each entry is recorded with source "client", under this session's user. The
+   * entries are whatever the browser sent, so they prove nothing about the gadget.
+   *
+   * A call records at most MAX_GADGET_CONSOLE_LOGS_PER_CALL entries, and what is recorded for one
+   * gadget is rate-limited across everyone reporting for it. Entries over either limit are
+   * dropped. A marker worded by droppedGadgetConsoleLogsText() says how many, at most once a
+   * minute per gadget: later drops are counted by the gadget's next marker, which is recorded
+   * only if the gadget is reported for again. A marker is recorded under the user and the chat
+   * of the call that brought it, while its count covers every call's drops for the gadget since
+   * the gadget's last marker. A client that drops entries before sending them says so itself,
+   * with an entry of level "warn" and that same text. Reported entries are not delivered to
+   * subscribeToConsoleLogs() subscribers.
+   *
+   * The lines one call writes are bounded in bytes too (docs/gadget-console-logs.md): the oldest
+   * entries of a call that would not fit are dropped, and a marker written with that call counts
+   * them. Where the deployment does not record gadget console output
+   * (ServerConfig.gadgetConsoleLogsRecorded), the call checks its arguments and records nothing.
+   *
+   * Throws if there is no such gadget or chat. A collaborator who may only use gadgets may report
+   * for a gadget their access includes, with `chatId` null.
+   */
+  reportGadgetConsoleLogs(gadgetId: WorkpieceId, chatId: number | null,
+                          entries: ReportedGadgetConsoleLog[]): Promise<void>;
+
   // --- Blueprint management ---
   //
   // Blueprint listing and maintenance are workspace-level (each blueprint record remembers which
@@ -6607,8 +6635,9 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
- *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
- *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
+ *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()) and report the console
+ *   output of those UIs (Overseer.reportGadgetConsoleLogs()), plus read basic metadata. Which
+ *   gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
 

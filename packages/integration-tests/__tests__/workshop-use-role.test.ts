@@ -75,11 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert action/console reads. Everything else must be
-// classified below, so a new Overseer or GadgetClient method fails to compile until it is.
+// What renders the gadget UI, plus the inert action/console reads and the report of that UI's
+// console output. Everything else must be classified below, so a new Overseer or GadgetClient
+// method fails to compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
     "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs";
+    "subscribeToConsoleLogs" | "reportGadgetConsoleLogs";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {

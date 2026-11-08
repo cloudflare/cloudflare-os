@@ -529,7 +529,12 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
     ["create a gadget", /^cf-os api open-workspace <id> create-gadget <title>$/, 1],
     ["built-in gadgets", /^cf-os api list-output-formats$/, 1],
     ["what gadgets ship with this instance", /^cf-os api list-output-formats$/, 2],
-    ["gadget console logs", / subscribe-to-console-logs$/, 1],
+    // Reporting a gadget's console logs holds every word of the bare query in its own name, so
+    // the subscription comes second there: each is first for the task worded as it is.
+    ["gadget console logs", / report-gadget-console-logs </, 1],
+    ["gadget console logs", / subscribe-to-console-logs$/, 2],
+    ["subscribe to console logs", / subscribe-to-console-logs$/, 1],
+    ["report gadget console logs", / report-gadget-console-logs </, 1],
     ["call a method on a gadget", / get-gadget <id> connect-to-gadget$/, 1],
     ["import gadget data", / connect-to-gadget$/, 2],
     ["export gadget data", / get-gadget <id> export <id>$/, 5],

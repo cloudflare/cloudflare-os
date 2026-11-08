@@ -7,7 +7,8 @@ import {
 import {
   GADGET_CONSOLE_LOG_BYTES_PER_REQUEST, GADGET_CONSOLE_LOGS_PER_MINUTE, GadgetConsoleLogLimiter,
   clientGadgetConsoleLogEntry, gadgetConsoleLogText, isGadgetConsoleLogRecordingEnabled,
-  redactGadgetConsoleLogText, serverGadgetConsoleLogEntry, writeServerGadgetConsoleLogs,
+  redactGadgetConsoleLogText, serverGadgetConsoleLogEntry, writeClientGadgetConsoleLogs,
+  writeServerGadgetConsoleLogs,
 } from "../src/gadget-console-log.js";
 
 // Filler of `n` characters in which no run of token characters is long.
@@ -1122,5 +1123,115 @@ describe("writeServerGadgetConsoleLogs", () => {
     writeServerGadgetConsoleLogs("ws", 7, null, []);
     expect(info.spy).not.toHaveBeenCalled();
     expect(warn.spy).not.toHaveBeenCalled();
+  });
+});
+
+// The marker written with a report of ada's browser for `droppedCount` dropped calls of gadget 7
+// in workspace "ws".
+const clientMarker = (droppedCount: number) =>
+  ({ ...marker(droppedCount), consoleSource: "client", userId: "ada" });
+
+describe("writeClientGadgetConsoleLogs", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const at = new Date("2026-01-02T03:04:05.678Z");
+  const reported =
+      (text: string, level: ConsoleLogEvent["level"] = "log"): ReportedGadgetConsoleLog =>
+        ({ time: at, level, text });
+  // The line written for a call at `at` that ada's browser reported for gadget 7 of workspace
+  // "ws".
+  const line = (consoleLevel: ConsoleLogEvent["level"], text: string) => ({
+    component: "gadget.console", event: "gadget.console.entry", message: "gadget console entry",
+    gadgetId: "ws", workpieceId: 7, consoleSource: "client", userId: "ada", consoleLevel,
+    time: at.toISOString(), text,
+  });
+  it("writes one line for a reported call, under the user whose browser reported it", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada", [reported("boom", "error")], 0);
+
+    expect(info.lines()).toStrictEqual([line("error", "boom")]);
+    // The mainline's line names no chat, and the entry's level and source go by the names a line
+    // has for them.
+    for (let key of ["chatId", "source", "level"]) expect(key in info.lines()[0]).toBe(false);
+    expect(warn.spy).not.toHaveBeenCalled();
+  });
+
+  it("names the chat on a line reported under a draft", () => {
+    let info = spyOnConsole("info");
+    writeClientGadgetConsoleLogs("ws", 7, 5, "ada", [reported("a")], 0);
+    // A workspace's first chat is chat 0.
+    writeClientGadgetConsoleLogs("ws", 7, 0, "ada", [reported("b")], 0);
+
+    expect(info.lines()).toStrictEqual(
+        [{ ...line("log", "a"), chatId: 5 }, { ...line("log", "b"), chatId: 0 }]);
+  });
+
+  it("redacts the text it writes", () => {
+    let info = spyOnConsole("info");
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada", [reported("loaded " + sk)], 0);
+
+    expect(info.lines()).toStrictEqual([line("log", "loaded [redacted]")]);
+  });
+
+  it("writes a marker for what its caller dropped, ahead of the entries", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada", [reported("a"), reported("b")], 5);
+
+    expect(warn.lines()).toStrictEqual([clientMarker(5)]);
+    expect(warn.lines()[0].text).toBe("5 entries dropped");
+    expect(info.lines()).toStrictEqual([line("log", "a"), line("log", "b")]);
+    expect(warn.spy.mock.invocationCallOrder[0])
+        .toBeLessThan(Math.min(...info.spy.mock.invocationCallOrder));
+  });
+
+  it("names the chat on a marker as on the entries it comes with", () => {
+    let warn = spyOnConsole("warn");
+    spyOnConsole("info");
+    writeClientGadgetConsoleLogs("ws", 7, 0, "ada", [reported("a")], 2);
+
+    expect(warn.lines()).toStrictEqual([{ ...clientMarker(2), chatId: 0 }]);
+  });
+
+  it("writes the marker alone when it is handed no entry", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada", [], 3);
+
+    expect(warn.lines()).toStrictEqual([clientMarker(3)]);
+    expect(info.spy).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when it is handed no entry and nothing was dropped", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada", [], 0);
+
+    expect(info.spy).not.toHaveBeenCalled();
+    expect(warn.spy).not.toHaveBeenCalled();
+  });
+
+  it("counts the entries that do not fit a request's bytes with its caller's drops", () => {
+    let info = spyOnConsole("info"), warn = spyOnConsole("warn");
+    // A control character is one character of text and six bytes of a line.
+    writeClientGadgetConsoleLogs("ws", 7, null, "ada",
+        Array.from({ length: 50 }, () => reported("\u0001".repeat(2000))), 4);
+
+    let kept = info.lines();
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(50);
+    expect(warn.lines()).toStrictEqual([clientMarker(4 + 50 - kept.length)]);
+    expect(jsonBytes(kept)).toBeLessThanOrEqual(GADGET_CONSOLE_LOG_BYTES_PER_REQUEST);
+  });
+
+  it("writes a valid time for a reported time that is not one", () => {
+    let info = spyOnConsole("info");
+    let before = Date.now();
+    writeClientGadgetConsoleLogs(
+        "ws", 7, null, "ada", [{ time: new Date(NaN), level: "log", text: "a" }], 0);
+
+    let [written] = info.lines();
+    expect(written.time).toBe(new Date(Date.parse(written.time as string)).toISOString());
+    expect(Date.parse(written.time as string)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(written.time as string)).toBeLessThanOrEqual(Date.now());
   });
 });

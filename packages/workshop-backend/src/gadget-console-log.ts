@@ -365,6 +365,20 @@ export function writeServerGadgetConsoleLogs(
       logs.map(log => serverGadgetConsoleLogEntry(gadgetId, chatId, log)), 0);
 }
 
+/**
+ * Writes what `userId`'s browser reported for a gadget's UI, as writeServerGadgetConsoleLogs()
+ * does. `dropped` is how many more entries the caller dropped and has not marked: the marker
+ * counts them too, and is written even when `reported` is empty.
+ */
+export function writeClientGadgetConsoleLogs(
+    workspaceId: string, gadgetId: WorkpieceId, chatId: number | null, userId: string,
+    reported: readonly ReportedGadgetConsoleLog[], dropped: number): void {
+  let receivedAt = new Date();
+  let entries = reported.map(
+      entry => clientGadgetConsoleLogEntry(gadgetId, chatId, userId, entry, receivedAt));
+  write(workspaceId, { gadgetId, chatId, source: "client", userId }, entries, dropped);
+}
+
 /** The workspace a GadgetConsoleLogLoopback writes for. */
 export type GadgetConsoleLogLoopbackProps = { overseerId: string };
 
@@ -379,5 +393,12 @@ export class GadgetConsoleLogLoopback
   /** See writeServerGadgetConsoleLogs(). */
   server(gadgetId: WorkpieceId, chatId: number | null, logs: ConsoleLogEvent[]): void {
     writeServerGadgetConsoleLogs(this.ctx.props.overseerId, gadgetId, chatId, logs);
+  }
+
+  /** See writeClientGadgetConsoleLogs(). */
+  client(gadgetId: WorkpieceId, chatId: number | null, userId: string,
+         reported: ReportedGadgetConsoleLog[], dropped: number): void {
+    writeClientGadgetConsoleLogs(
+        this.ctx.props.overseerId, gadgetId, chatId, userId, reported, dropped);
   }
 }

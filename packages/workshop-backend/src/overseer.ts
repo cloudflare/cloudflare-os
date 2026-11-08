@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, ReportedGadgetConsoleLog, MAX_GADGET_CONSOLE_LOGS_PER_CALL, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -95,7 +95,9 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
-import { isGadgetConsoleLogRecordingEnabled, writeServerGadgetConsoleLogs } from "./gadget-console-log";
+import {
+  GadgetConsoleLogLimiter, isGadgetConsoleLogRecordingEnabled, writeServerGadgetConsoleLogs,
+} from "./gadget-console-log";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -10183,6 +10185,10 @@ class OverseerImpl implements AgentHooks {
     return this.ctx.exports.GadgetConsoleLogLoopback({props: {overseerId: this.ctx.id.toString()}});
   }
 
+  // What browsers may still record of each gadget's console output this minute. In memory, so a
+  // restart forgets at most one window.
+  #gadgetConsoleLogLimiter = new GadgetConsoleLogLimiter();
+
   // Has an exception the facet proxy caught recorded, where the deployment records gadget console
   // output. Such an exception never reaches the tail worker, which records the rest, and it is
   // handed to GadgetConsoleLogLoopback because the request that called the gadget may be a
@@ -10230,6 +10236,33 @@ class OverseerImpl implements AgentHooks {
         unsubscribe();
       }
     });
+  }
+
+  // Records what `userId`'s browser reported for a gadget's UI, where the deployment records
+  // gadget console output. The session has checked that it may report for the gadget and the
+  // chat. A chat that proposes no change to the gadget is recorded as its mainline, as
+  // #resolveGadgetChatId decides for the server's entries. The write is awaited, so that a client
+  // learns of a failure and can keep one report in flight at a time, and a failure is logged
+  // here because the client that learns of it is a browser.
+  async reportGadgetConsoleLogs(gadgetId: WorkpieceId, chatId: number | null, userId: string,
+                                entries: ReportedGadgetConsoleLog[]): Promise<void> {
+    if (!isGadgetConsoleLogRecordingEnabled(this.env)) return;
+    let {admitted, dropped} = this.#gadgetConsoleLogLimiter.admit(
+        gadgetId, entries.length, Date.now(), MAX_GADGET_CONSOLE_LOGS_PER_CALL);
+    if (admitted === 0 && dropped === 0) return;
+    // Built field by field: validation lets members it does not know through, and no more of a
+    // text is handed on than is read.
+    let reported = entries.slice(0, admitted).map(({time, level, text}): ReportedGadgetConsoleLog =>
+        ({time, level, text: text.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH)}));
+    try {
+      await this.#gadgetConsoleLog.client(
+          gadgetId, this.#resolveGadgetChatId(gadgetId, chatId ?? undefined) ?? null, userId,
+          reported, dropped);
+    } catch (error) {
+      this.logger.warn("failed to record reported gadget console output",
+          { event: "gadget.console.record.failed", error });
+      throw error;
+    }
   }
 
   async deliverCodeModeTrace(executionId: string, trace: TraceItem) {
@@ -10526,9 +10559,17 @@ class OverseerImpl implements AgentHooks {
     return access;
   }
 
+  // Whether `profileId`'s effective access includes gadget `gadgetId` and the gadget can be
+  // opened: the half of authorizeGadget that verifies nobody. The access is re-read live, since
+  // the workspace shell a "use" collaborator holds was admitted with whatever access they had
+  // then.
+  async holdsGadget(profileId: string, gadgetId: WorkpieceId): Promise<boolean> {
+    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
+    return !!access && accessIncludesGadget(access, gadgetId) && this.isShareableGadget(gadgetId);
+  }
+
   // The gate a "use" collaborator passes to get gadget `gadgetId` (UseOverseerInterface.getGadget):
-  // confirm their effective access includes it -- re-read live, since the workspace shell they hold
-  // was admitted with whatever access they had then -- and that it can be opened, then verify them
+  // confirm they hold it, by their access as it is at this moment (holdsGadget), then verify them
   // as an observer of what that one gadget reaches. Returns false for no access, so the caller can
   // deny without revealing whether the gadget exists; verification failures throw. A failure
   // denies only this gadget: the others they hold keep the access their own gets verified.
@@ -10540,10 +10581,7 @@ class OverseerImpl implements AgentHooks {
       clientUser: DurableObjectStub<UserDurableObject>,
       gadgetId: WorkpieceId,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<boolean> {
-    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
-    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
-      return false;
-    }
+    if (!await this.holdsGadget(profileId, gadgetId)) return false;
     let leaveSession = this.joinSession("use", gadgetId);
     try {
       await this.ensureObserver(profileId, clientUser, {gadgetId}, configureCb);
@@ -13155,6 +13193,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.#subscriptionLease(await this.impl.subscribeToConsoleLogs(subscriber));
   }
 
+  async reportGadgetConsoleLogs(gadgetId: WorkpieceId, chatId: number | null,
+                                entries: ReportedGadgetConsoleLog[]): Promise<void> {
+    this.impl.getGadgetRecord(gadgetId);  // validate it exists
+    if (chatId !== null) this.impl.getChatMetaOrThrow(chatId);
+    await this.impl.reportGadgetConsoleLogs(gadgetId, chatId, this.clientProfileId, entries);
+  }
+
   // --- Blueprint management ---
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
@@ -13430,8 +13475,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // interface but permits only the handful of methods needed to render and interact with the
 // deployed UIs of the gadgets their access includes: getMetadata() (restricted to
 // id/title/owner), a restricted subscribeToMetadata(), subscribeToPresence(),
-// subscribeToWorkpieces() (listing only those gadgets), and getGadget() (verifying them for that
-// gadget, then returning a restricted, mainline-only UseGadgetClientInterface). Presence includes
+// subscribeToWorkpieces() (listing only those gadgets), getGadget() (verifying them for that
+// gadget, then returning a restricted, mainline-only UseGadgetClientInterface), and
+// reportGadgetConsoleLogs() (mainline only, for a gadget their access includes). Presence includes
 // active viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
@@ -13441,8 +13487,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // as spurious client-side errors, while still revealing nothing to the "use" collaborator.
 //
 // Opening this verifies nothing: none of what it exposes is anything a gadget has read. `access`
-// is the collaborator's effective access as of then, which only decides what is listed (getGadget
-// re-reads it); narrowing anyone's access restarts the workspace, ending this session.
+// is the collaborator's effective access as of then, which only decides what is listed
+// (getGadget() and reportGadgetConsoleLogs() re-read it); narrowing anyone's access restarts the
+// workspace, ending this session.
 //
 // Default-deny is enforced at compile time: because this class `implements Overseer`, adding any
 // new method to the interface will fail to compile here until a developer consciously decides
@@ -13587,6 +13634,19 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new UseGadgetClientInterface(this.impl, id, this.clientUserId);
+  }
+
+  // What a held gadget's deployed UI logged in the collaborator's browser. Access is re-read, as
+  // getGadget() does, so a gadget granted since the session opened is accepted. Observers are not
+  // verified, since reporting reads nothing. A gadget they do not hold is refused exactly like
+  // one that doesn't exist.
+  async reportGadgetConsoleLogs(gadgetId: WorkpieceId, chatId: number | null,
+                                entries: ReportedGadgetConsoleLog[]): Promise<void> {
+    if (chatId !== null) this.#deny();
+    if (!await this.impl.holdsGadget(this.clientProfileId, gadgetId)) {
+      throw new Error(`No such gadget: ${gadgetId}`);
+    }
+    await this.impl.reportGadgetConsoleLogs(gadgetId, null, this.clientProfileId, entries);
   }
 
   // --- Denied methods (build-only) ---

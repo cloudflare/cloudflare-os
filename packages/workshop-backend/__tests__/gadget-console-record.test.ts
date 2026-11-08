@@ -5,11 +5,20 @@
 // carries no switch in this pool, so the integration suite covers it.
 //
 // Runs a real gadget, loaded from a real commit, inside a real OverseerDurableObject.
+//
+// And what it keeps of the console output a session reports for a gadget's UI. The session checks
+// the gadget and the chat, the Overseer applies the per-call cap and the gadget's limit, and
+// GadgetConsoleLogLoopback writes the batch. Those cases open the real OverseerClientInterface as
+// the workspace's owner. A use session's reports are in use-gadget-access.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { ConsoleLogEvent } from "@gadgets/workshop-shared/api";
+import {
+  MAX_GADGET_CONSOLE_LOGS_PER_CALL, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH,
+  type AiChatAuthorInfo, type ConsoleLogEvent, type Overseer, type ReportedGadgetConsoleLog,
+} from "@gadgets/workshop-shared/api";
+import { GADGET_CONSOLE_LOGS_PER_MINUTE } from "../src/gadget-console-log.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -116,6 +125,10 @@ afterEach(() => {
 // The `gadget.console` lines written so far, in order.
 const lines = (): Record<string, unknown>[] =>
   info.mock.calls.map(([line]) => line).filter(line => line?.component === "gadget.console");
+
+// The `gadget.console` markers written so far, in order.
+const markers = (): Record<string, unknown>[] =>
+  warn.mock.calls.map(([line]) => line).filter(line => line?.component === "gadget.console");
 
 // The line an exception of the gadget's server is written as, with no chat and no user.
 const errorLine = (impl: any, text: unknown) => ({
@@ -239,4 +252,393 @@ describe("recording an exception a gadget method throws at its caller", () => {
     })));
     expect(lines()).toHaveLength(0);
   }));
+});
+
+const OWNER_USER_ID = "owner-user-do";
+const OWNER: AiChatAuthorInfo = { type: "user", id: "olive@example.com", name: "Olive" };
+
+// A second gadget of the workspace, and a worktree.
+const OTHER_GADGET_ID = 2;
+const WORKTREE_ID = 3;
+
+// Opens the real OverseerClientInterface as the owner over an Overseer of its own, with the
+// owner's user DO faked. The workspace holds two gadgets and a worktree, and records gadget
+// console output unless `recording` says otherwise: null leaves the variable unset, as the pool
+// gives it.
+async function withSession(
+    fn: (impl: any, client: Overseer) => Promise<void>,
+    recording: string | null = "true"): Promise<void> {
+  let stub = env.TEST_OVERSEER.getByName(`gadget-console-record-${++doCounter}`);
+  await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+    let impl = (instance as unknown as { impl: any }).impl;
+    impl.ownerId = OWNER_USER_ID;
+    impl.ensureAmbientCapsules = async () => {};
+    impl.markOutputsDirty = () => {};
+    impl.startAgent = () => {};
+    let owner = {
+      id: OWNER_USER_ID,
+      whoami: async () => OWNER,
+      getChatContext: async () => ({ profile: OWNER }),
+      setWorkspaceLastActive: async () => {},
+    };
+    impl.users = { idFromString: (id: string) => id, get: () => owner };
+    for (let id of [GADGET_ID, OTHER_GADGET_ID]) {
+      impl.storage.gadgets.put({
+        type: "gadget", id, title: `Gadget ${id}`, created: new Date(0), bindingName: `G${id}`,
+        bindings: {},
+      });
+    }
+    impl.storage.gadgets.put({
+      type: "worktree", id: WORKTREE_ID, title: "Repo", created: new Date(0), chatId: 0,
+      baseCommit: "c0", headCommit: "c0", pinBase: "c0",
+    });
+    if (recording !== null) setRecording(impl, recording);
+
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
+    await fn(impl, client);
+  });
+}
+
+// When the reported calls of the cases that fake no clock were made.
+const AT = new Date("2026-01-02T03:04:05.678Z");
+
+// One reported call, made at `AT`.
+const reported = (text: string, level: ConsoleLogEvent["level"] = "log")
+    : ReportedGadgetConsoleLog => ({ time: AT, level, text });
+
+// `count` reported calls made at this moment, their texts `prefix` and a number from 0. The time
+// is read when this is called, so that under a faked clock each is a Date of the fake's: the
+// session's validation takes no other while the fake is in force.
+const batch = (count: number, prefix = "n"): ReportedGadgetConsoleLog[] =>
+  Array.from({ length: count }, (_, i) => ({ time: new Date(), level: "log", text: prefix + i }));
+
+// The line written for a call the owner's browser reported for `workpieceId`, under no chat.
+const reportedLine = (impl: any, entry: ReportedGadgetConsoleLog, workpieceId = GADGET_ID) => ({
+  component: "gadget.console", event: "gadget.console.entry", message: "gadget console entry",
+  gadgetId: impl.ctx.id.toString(), workpieceId, consoleSource: "client", userId: OWNER.id,
+  consoleLevel: entry.level, time: entry.time.toISOString(), text: entry.text,
+});
+
+// The marker written with a report of the owner's for the gadget, under no chat.
+const reportedMarker = (impl: any, droppedCount: number) => ({
+  component: "gadget.console", event: "gadget.console.dropped",
+  message: "gadget console entries dropped", gadgetId: impl.ctx.id.toString(),
+  workpieceId: GADGET_ID, consoleSource: "client", userId: OWNER.id, droppedCount,
+  time: expect.any(String), text: `${droppedCount} entries dropped`,
+});
+
+// Filler of `n` characters in which no run of token characters is long.
+const words = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
+
+// A moment for the cases that fake the clock.
+const NOON = Date.parse("2026-01-02T12:00:00Z");
+
+describe("recording what a session reports of a gadget's UI", () => {
+  // The flag changes nothing, and that is deliberate: the backend's logs are treated as
+  // sensitive, read only by whoever can read the Cloudflare account's Workers logs, so the flag
+  // does not withhold console output from them (docs/gadget-console-logs.md).
+  it.each([
+    ["a workspace", (_impl: any) => {}],
+    ["a workspace that holds restricted data",
+      (impl: any) => impl.storage.containsRestrictedData.put(true)],
+  ])("writes one line for a call reported in %s, under the session's user", (_name, prepare) =>
+      withSession(async (impl, client) => {
+    prepare(impl);
+    let entry = reported("boom", "error");
+
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [entry]);
+
+    // Key for key: the workspace, the gadget, the session's user, and no chat.
+    expect(lines()).toStrictEqual([{
+      component: "gadget.console", event: "gadget.console.entry",
+      message: "gadget console entry", gadgetId: impl.ctx.id.toString(), workpieceId: GADGET_ID,
+      consoleSource: "client", userId: OWNER.id, consoleLevel: "error",
+      time: "2026-01-02T03:04:05.678Z", text: "boom",
+    }]);
+    expect(lines()).toStrictEqual([reportedLine(impl, entry)]);
+    expect(markers()).toHaveLength(0);
+  }));
+
+  // What decides is #resolveGadgetChatId, as for the server's entries: a chat is named only
+  // while it proposes a change to the gadget.
+  it("names the chat only while it proposes a change to the gadget", () =>
+      withSession(async (impl, client) => {
+    let chatId = await client.newChat("Hello", null);
+    let entry = reported("boom", "error");
+
+    // The chat proposes nothing, so the UI it showed was the mainline's.
+    await client.reportGadgetConsoleLogs(GADGET_ID, chatId, [entry]);
+    expect(lines()).toStrictEqual([reportedLine(impl, entry)]);
+
+    impl.proposedChangeWorkpieceIds = () => [GADGET_ID];
+    await client.reportGadgetConsoleLogs(GADGET_ID, chatId, [entry]);
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toStrictEqual({ ...reportedLine(impl, entry), chatId });
+  }));
+
+  it.each([
+    ["an unknown gadget", 999, null, "log", /No such gadget: 999/],
+    ["a worktree", WORKTREE_ID, null, "log", /is a worktree, not a gadget/],
+    ["an unknown chat", GADGET_ID, 424242, "log", /No such chatId: 424242/],
+    // A workspace's first chat is chat 0, and this workspace has none.
+    ["chat 0 where there is none", GADGET_ID, 0, "log", /No such chatId: 0/],
+    // Refused by the session's validation, before the method runs.
+    ["a level no console has", GADGET_ID, null, "fatal", /\[2\]\[0\]\.level: expected union/],
+  ] as const)("refuses %s, and writes nothing", (_name, gadgetId, chatId, level, error) =>
+      withSession(async (impl, client) => {
+    let refused = { time: AT, level, text: "refused" } as ReportedGadgetConsoleLog;
+    // Called inside an async function: validation throws where the method is called, which on
+    // the session itself is here and not in the promise it returns.
+    await expect(async () => client.reportGadgetConsoleLogs(gadgetId, chatId, [refused]))
+        .rejects.toThrow(error);
+
+    // A report resolves once its lines are written, so the one that follows a refusal is the
+    // only one written.
+    let entry = reported("accepted");
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [entry]);
+    expect(lines()).toStrictEqual([reportedLine(impl, entry)]);
+    expect(markers()).toHaveLength(0);
+  }));
+
+  it("leaves nothing of a token that straddles the cut", () =>
+      withSession(async (_impl, client) => {
+    let token = "A1b2C3d4E5".repeat(4);
+    // The token starts five characters before the kept length.
+    let text = (words(1987) + " Bearer " + token + " " + words(4000)).slice(0, 4000);
+
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [reported(text)]);
+
+    let kept = (words(1987) + " Bearer [redacted] " + words(4000)).slice(0, 1999) + "…";
+    expect(kept).toHaveLength(2000);
+    expect(lines().map(line => line.text)).toStrictEqual([kept]);
+    expect(kept).not.toContain("A1b2");
+  }));
+
+  it("records the first entries of a call up to the cap, and marks the rest", () =>
+      withSession(async (impl, client) => {
+    let entries = batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL + 5);
+
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, entries);
+
+    expect(lines()).toStrictEqual(
+        entries.slice(0, MAX_GADGET_CONSOLE_LOGS_PER_CALL).map(entry => reportedLine(impl, entry)));
+    expect(markers()).toStrictEqual([reportedMarker(impl, 5)]);
+    // The marker comes first.
+    expect(warn.mock.invocationCallOrder.at(-1))
+        .toBeLessThan(Math.min(...info.mock.invocationCallOrder));
+  }));
+
+  it("holds a gadget to its entries a minute, and marks what it drops once a minute", () =>
+      withSession(async (impl, client) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(NOON);
+      let sent: ReportedGadgetConsoleLog[] = [];
+      for (let call = 0; call < 6; call++) {
+        let entries = batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL, `call${call}-`);
+        await client.reportGadgetConsoleLogs(GADGET_ID, null, entries);
+        sent.push(...entries);
+      }
+      expect(sent).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE);
+      expect(lines()).toStrictEqual(sent.map(entry => reportedLine(impl, entry)));
+      expect(markers()).toHaveLength(0);
+
+      // The minute is used up: the next call's entries are dropped, and marked at once.
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(10, "over-"));
+      expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE);
+      expect(markers()).toStrictEqual([reportedMarker(impl, 10)]);
+
+      // A gadget is marked once a minute, so these five wait for its next.
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(5, "later-"));
+      expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE);
+      expect(markers()).toHaveLength(1);
+
+      // Another gadget's minute is its own.
+      let [other] = batch(1, "other-");
+      await client.reportGadgetConsoleLogs(OTHER_GADGET_ID, null, [other]);
+      expect(lines().at(-1)).toStrictEqual(reportedLine(impl, other, OTHER_GADGET_ID));
+      expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE + 1);
+      expect(markers()).toHaveLength(1);
+
+      vi.setSystemTime(NOON + 60_000);
+      let [next] = batch(1, "next-");
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, [next]);
+      expect(lines().at(-1)).toStrictEqual(reportedLine(impl, next));
+      expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE + 2);
+      expect(markers()).toStrictEqual([reportedMarker(impl, 10), reportedMarker(impl, 5)]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+
+  // What this varies is the chat the calls came under: a marker's count is the gadget's,
+  // whatever chat its calls named (the method's doc), while its labels are those of the call
+  // that brings it. This file has one session, so it says nothing of users: two reporters that
+  // share a gadget's minute and its count are in use-gadget-access.test.ts.
+  it("labels a marker with the call that brings it, whichever calls dropped what it counts", () =>
+      withSession(async (impl, client) => {
+    let chatId = await client.newChat("Hello", null);
+    impl.proposedChangeWorkpieceIds = () => [GADGET_ID];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(NOON);
+      for (let call = 0; call < 6; call++) {
+        await client.reportGadgetConsoleLogs(
+            GADGET_ID, null, batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL));
+      }
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(10));
+      expect(markers()).toStrictEqual([reportedMarker(impl, 10)]);
+      await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(5));
+      expect(markers()).toHaveLength(1);
+
+      // The five were reported under no chat, and are marked under the chat of this call.
+      vi.setSystemTime(NOON + 60_000);
+      let [next] = batch(1, "next-");
+      await client.reportGadgetConsoleLogs(GADGET_ID, chatId, [next]);
+      expect(markers()).toHaveLength(2);
+      expect(markers()[1]).toStrictEqual({ ...reportedMarker(impl, 5), chatId });
+      expect(lines().at(-1)).toStrictEqual({ ...reportedLine(impl, next), chatId });
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+
+  // A report that brings neither an entry to record nor a marker to write ends in the Overseer,
+  // which makes no request for it. Two kinds do: one for a gadget whose minute is used up and
+  // marked, and an empty one, whose gadget and chat the session checks all the same. No clock is
+  // faked: the gadget's minute runs from its first report, and the case takes far less.
+  it("mints no writer for a report that leaves nothing to record or mark", () =>
+      withSession(async (impl, client) => {
+    for (let call = 0; call < 6; call++) {
+      await client.reportGadgetConsoleLogs(
+          GADGET_ID, null, batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL));
+    }
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(5));
+    expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE);
+    expect(markers()).toStrictEqual([reportedMarker(impl, 5)]);
+
+    // A writer minted from here on fails its report, which would log that and reject.
+    replaceGadgetConsoleLogLoopback(impl, () => { throw new Error("minted"); });
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, batch(5));
+    await client.reportGadgetConsoleLogs(OTHER_GADGET_ID, null, []);
+    await expect(client.reportGadgetConsoleLogs(999, null, []))
+        .rejects.toThrow(/No such gadget: 999/);
+    await expect(client.reportGadgetConsoleLogs(GADGET_ID, 424242, []))
+        .rejects.toThrow(/No such chatId: 424242/);
+
+    expect(warn.mock.calls.map(([line]) => line)
+        .filter(line => line?.event === "gadget.console.record.failed")).toHaveLength(0);
+    expect(lines()).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE);
+    expect(markers()).toHaveLength(1);
+  }));
+
+  it.each([
+    ["rejects", () => ({ client: async () => { throw new Error("down"); } }), /down/],
+    ["cannot be minted", () => { throw new Error("no entrypoint"); }, /no entrypoint/],
+  ])("logs a batch whose writer %s, and fails the report", (_name, loopback, failure) =>
+      withSession(async (impl, client) => {
+    replaceGadgetConsoleLogLoopback(impl, loopback);
+
+    await expect(client.reportGadgetConsoleLogs(GADGET_ID, null, [reported("unwritten-zzq")]))
+        .rejects.toThrow(failure);
+
+    let failed = warn.mock.calls.map(([line]) => line)
+        .filter(line => line?.event === "gadget.console.record.failed");
+    expect(failed).toStrictEqual([expect.objectContaining({
+      component: "workshop.overseer", event: "gadget.console.record.failed",
+      message: "failed to record reported gadget console output",
+      gadgetId: impl.ctx.id.toString(), error: expect.stringMatching(failure),
+    })]);
+    // The line holds nothing of what was reported.
+    expect(JSON.stringify(failed)).not.toContain("unwritten-zzq");
+    expect(lines()).toHaveLength(0);
+  }));
+
+  it("delivers nothing of a report to a live subscriber", () =>
+      withSession(async (impl, client) => {
+    // (onRpcBroken must exist on the recorder: a native stub over a plain object forwards it.)
+    let received: Received[] = [];
+    using recorder = new NativeRpcStub({
+      event: async (chatId: number | null, logs: ConsoleLogEvent[]) => {
+        for (let { level, message } of logs) received.push({ chatId, level, message });
+      },
+      onRpcBroken: () => {},
+    });
+    using _subscription = await impl.subscribeToConsoleLogs(recorder);
+
+    let entry = reported("reported");
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [entry]);
+    expect(lines()).toStrictEqual([reportedLine(impl, entry)]);
+
+    // A subscriber is sent its events in order, so once this one has arrived anything the report
+    // had delivered would have arrived before it. Without it the assertion below would pass
+    // before any delivery could have landed.
+    await impl.deliverGadgetLogs(
+        null, [{ timestamp: new Date(), level: "info", message: ["sentinel"] }]);
+    await vi.waitFor(() => expect(received).not.toHaveLength(0));
+    expect(received).toStrictEqual([{ chatId: null, level: "info", message: ["sentinel"] }]);
+  }));
+
+  // (The written line would show nothing here: the writer cuts whatever it is handed.)
+  it("hands its writer no more of a text than is read", () =>
+      withSession(async (impl, client) => {
+    let handed: unknown[][] = [];
+    replaceGadgetConsoleLogLoopback(
+        impl, () => ({ client: async (...args: unknown[]) => { handed.push(args); } }));
+
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [reported("x".repeat(1_000_000))]);
+
+    expect(handed).toHaveLength(1);
+    let entries = handed[0][3] as ReportedGadgetConsoleLog[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toHaveLength(MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH);
+  }));
+
+  // Validation lets members it does not know through, so an entry can carry any label a line
+  // has. None is recorded: a line's user and labels are the session's and the kernel's.
+  it("records nothing a client adds to an entry", () => withSession(async (impl, client) => {
+    let forged = {
+      time: AT, level: "error", text: "boom", userId: "mallory", source: "server", gadgetId: 999,
+      chatId: 77, workpieceId: 5, consoleSource: "server", consoleLevel: "debug", droppedCount: 9,
+      event: "forged", component: "forged", message: "forged",
+    } as ReportedGadgetConsoleLog;
+
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [forged]);
+    expect(lines()).toStrictEqual([reportedLine(impl, reported("boom", "error"))]);
+    expect(markers()).toHaveLength(0);
+
+    let handed: unknown[][] = [];
+    replaceGadgetConsoleLogLoopback(
+        impl, () => ({ client: async (...args: unknown[]) => { handed.push(args); } }));
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [forged]);
+    expect(handed).toStrictEqual(
+        [[GADGET_ID, null, OWNER.id, [{ time: AT, level: "error", text: "boom" }], 0]]);
+  }));
+
+  // "false" stands beside the unset variable because OverseerImpl.reportGadgetConsoleLogs has to
+  // ask isGadgetConsoleLogRecordingEnabled(): a site that read the variable's truthiness instead
+  // would record under "false", and pass with the unset variable alone.
+  it.each([
+    ["unset", null],
+    ['"false"', "false"],
+  ])("checks a report and records nothing while the variable is %s", (_name, recording) =>
+      withSession(async (impl, client) => {
+    // A report awaits its write, so nothing written by the time it resolves is nothing written
+    // at all.
+    await client.reportGadgetConsoleLogs(
+        GADGET_ID, null, batch(MAX_GADGET_CONSOLE_LOGS_PER_CALL + 5));
+    expect(lines()).toHaveLength(0);
+    expect(markers()).toHaveLength(0);
+
+    await expect(client.reportGadgetConsoleLogs(999, null, [reported("boom")]))
+        .rejects.toThrow(/No such gadget: 999/);
+    await expect(client.reportGadgetConsoleLogs(GADGET_ID, 424242, [reported("boom")]))
+        .rejects.toThrow(/No such chatId: 424242/);
+
+    // No writer is so much as minted.
+    replaceGadgetConsoleLogLoopback(impl, () => { throw new Error("minted"); });
+    await client.reportGadgetConsoleLogs(GADGET_ID, null, [reported("boom")]);
+    expect(warn).not.toHaveBeenCalled();
+  }, recording));
 });
