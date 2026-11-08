@@ -98,8 +98,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
   // never as vp tasks.
   // Every cached watchdogged task declares the timeout policy via TESTS_WITH_TIMEOUT_ENV;
   // vitest-task.test.ts pins the shared declaration.
-  // `property-runs.ts` reads FAST_CHECK_SEED inside the `test` tasks of integration-tests and
-  // workshop-backend, each of which declares it.
+  // `property-runs.ts` reads FAST_CHECK_SEED inside the `test` tasks of integration-tests,
+  // workshop-backend and gatekeeper-kit, each of which declares it.
   scripts: {
     forwarded: [
       "FAST_CHECK_SEED",

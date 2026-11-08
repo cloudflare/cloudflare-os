@@ -57,7 +57,9 @@ small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside 
 (`@gadgets/scripts/property-runs`). workshop-backend's in-isolate properties (sharing, blueprint
 releases, streamed tool input, decisions on a turn's staged writes, two chats' changes to one
 gadget, scope-widening restarts, unread counts) share those options, and its `vitest.config.ts`
-forwards `FAST_CHECK_SEED` into workerd.
+forwards `FAST_CHECK_SEED` into workerd. gatekeeper-kit's two share the options as well and run
+under Node: the action set against a model of its journal, and credentials under interleaved
+refresh and reconnect.
 
 `FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
 a pull request's result depends only on its code. Without it, each run draws a fresh seed, but a
