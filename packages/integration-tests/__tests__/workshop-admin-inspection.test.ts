@@ -9,6 +9,7 @@ import {
   type PresenceSubscriber, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles } from "@gadgets/workshop-shared/code-change";
+import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
   ADMIN_USERNAME, settleRestart, startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR,
@@ -16,16 +17,25 @@ import {
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, listConnectedAccounts, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
-  WorkpieceRecorder,
+  connect, listConnectedAccounts, nextUsernames, ObserverConfigRecorder, RpcTarget, signUp,
+  stubFor, waitFor, WorkpieceRecorder, type ConnectedAccount,
 } from "../src/rpc-client.js";
 
 // A second deployment admin, so that records can be told apart by admin.
 const AUDITOR_USERNAME = "auditor";
 const REASON = "Support ticket 123";
 const NOTES = "Meeting notes: ship the admin audit log.\n";
+const DRAFT_NOTES = `${NOTES}Draft: review the audit filters.\n`;
+const ATTACHMENT = "Agenda for the audit review.\n";
+// A text file over MAX_BUFFERED_BLOB_SIZE, which a view answers as a stream. Its first character
+// takes two bytes, so that its length in bytes is not its length in characters.
+const LARGE_PATH = "large.txt";
+const LARGE_TEXT = `é${"a".repeat(MAX_BUFFERED_BLOB_SIZE)}`;
 const OBSERVATION_DESCRIPTION =
     "Read the deterministic value exposed by the integration-test gatekeeper.";
+const LINK_NOTE = "For the audit reviewers";
+// The kind of the test connection's write, which an auto-approval rule names.
+const SET_VALUE = { tag: "set-value", label: "Set value" };
 
 // Admin settings and the audit log are deployment-wide, so this file owns its harness and runs
 // serially.
@@ -130,26 +140,45 @@ async function newWorkspace(stack: DisposableStack, prefix: string): Promise<See
   return { owner, ownerName: ownerName!, ws, id: (await ws.getMetadata()).id, title };
 }
 
+/** The test account of `api`'s user, which the fake vendor mints with no sign-in. */
+async function testAccount(api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount> {
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = (await listConnectedAccounts(api))
+      .find(candidate => candidate.vendorId === TEST_VENDOR_ID);
+  if (account === undefined) throw new Error("The test account was not provisioned");
+  return account;
+}
+
 type Populated = Seeded & {
   chatId: number;
   gadgetId: WorkpieceId;
+  /** The test connection's id. */
+  connectionId: WorkpieceId;
+  /** The gadget's head before anything was committed to it. */
+  empty: string;
+  /** The gadget's head once the seed chat was accepted: the commit that holds notes.txt. */
+  head: string;
+  /** A chat whose first message carries one attachment, a.txt, holding ATTACHMENT. */
+  attachmentChatId: number;
+  /** That attachment's id. */
+  attachmentId: string;
+  /** A chat whose changes are not accepted: DRAFT_NOTES in notes.txt, and LARGE_PATH added. */
+  draftChatId: number;
   /** The test connection's open session: each readValue() records one more observation. */
   session: RpcStub<TestSession>;
 };
 
 /**
  * A workspace holding something of each kind a view reads: an observation through a test
- * connection, a chat whose first message is "hello", and a gadget whose head holds notes.txt. The
- * gadget is seeded without a model: a human-only chat submits the file at the empty head, and
- * accepting it commits it.
+ * connection, a chat whose first message is "hello", a chat with an attachment, a gadget whose
+ * head holds notes.txt, and a chat whose changes to that gadget are not accepted. The gadget is
+ * seeded without a model: a human-only chat submits the file at the empty head, and accepting it
+ * commits it.
  */
 async function populatedWorkspace(stack: DisposableStack, prefix: string): Promise<Populated> {
   const seeded = await newWorkspace(stack, prefix);
   const { owner, ws } = seeded;
-  await owner.provisionAmbientAccount(TEST_VENDOR_ID);
-  const account = (await listConnectedAccounts(owner))
-      .find(candidate => candidate.vendorId === TEST_VENDOR_ID);
-  if (account === undefined) throw new Error("The test account was not provisioned");
+  const account = await testAccount(owner);
   const connection = await ws.newGatekeeper(
       account.id, "https://gadgets-test.example/things/inspected");
   if (connection === null) throw new Error("The test connection was not created");
@@ -173,8 +202,32 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
         new Map([[gadgetId, new Map([["notes.txt", NOTES]])]])),
   });
   expect(await ws.mergeChanges(seedChatId)).toEqual({ outcome: "merged" });
-  await headOf(workpieces, gadgetId, empty);
-  return { ...seeded, chatId, gadgetId, session };
+  const head = await headOf(workpieces, gadgetId, empty);
+
+  const oid = await ws.uploadBlob(new TextEncoder().encode(ATTACHMENT));
+  const attachmentChatId = await ws.newChat(
+      "With attachment", null, undefined, [{ oid, mimeType: "text/plain", name: "a.txt" }]);
+  const sent = (await ws.getChatHistory(attachmentChatId)).messages
+      .find(message => message.type === "message");
+  if (sent?.type !== "message" || !sent.attachments?.length) {
+    throw new Error("The attachment was not sent");
+  }
+  // The message's reference holds more than a view lists of an attachment: its path in the
+  // chat's scratch worktree.
+  expect(sent.attachments[0]).toHaveProperty("workspacePath");
+  const attachmentId = sent.attachments[0]!.id;
+
+  const draftChatId = await ws.newChat("Draft", null);
+  await ws.submitCodeChange(draftChatId, {
+    generation: 0, revision: 0, clientId: "draft", seq: 1,
+    pins: [{ gadgetId, baseCommit: head }],
+    change: diffFiles(new Map([[gadgetId, new Map([["notes.txt", NOTES]])]]),
+        new Map([[gadgetId, new Map([["notes.txt", DRAFT_NOTES], [LARGE_PATH, LARGE_TEXT]])]])),
+  });
+  return {
+    ...seeded, chatId, gadgetId, connectionId: await connection.getId(), empty, head,
+    attachmentChatId, attachmentId, draftChatId, session,
+  };
 }
 
 class ActionsRecorder extends RpcTarget implements ActionsSubscriber {
@@ -302,7 +355,10 @@ it("records an inspection apart from the workspace, where its members never see 
     expect(description).toMatchObject({ id, title, access: "metadata" });
     await view.listChats();
     await view.listActions();
-    await view.getDiagnostics();
+    // The roster the members see: the owner's session is on it, and the view never is.
+    const present = (await view.getDiagnostics()).present.map(participant => participant.user.id);
+    expect(present).toContain(ownerName);
+    expect(present).not.toContain(ADMIN_USERNAME);
 
     const logged = await workspaceRecords(id);
     expect(logged.map(record => record.method))
@@ -440,6 +496,60 @@ it("withholds content below full access, and turns inspection off", async () => 
   }
 });
 
+it("withholds attachments, a commit's or a draft's files and commit messages below full access",
+    async () => {
+  using stack = new DisposableStack();
+  const { id, gadgetId, head, attachmentChatId, attachmentId, draftChatId } =
+      await populatedWorkspace(stack, "withheld");
+
+  try {
+    using metadataView = await admin.inspectWorkspace(id, REASON);
+    // Each reads only content, so the level refuses it once it is recorded.
+    const refusals: [string, Record<string, string | number>, () => PromiseLike<unknown>][] = [
+      ["readChatAttachment", { chatId: attachmentChatId, id: attachmentId },
+        () => metadataView.readChatAttachment(attachmentChatId, attachmentId)],
+      ["readFileAtCommit", { commitId: head, path: "notes.txt" },
+        () => metadataView.readFileAtCommit(head, "notes.txt")],
+      ["readPendingFile", { chatId: draftChatId, gadgetId, path: "notes.txt" },
+        () => metadataView.readPendingFile(draftChatId, gadgetId, "notes.txt")],
+    ];
+    for (const [method, args, call] of refusals) {
+      expect(await refusalOf(call()), method).toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
+      expect(await newestRecord({ workspace: id }), method).toMatchObject({
+        method, args, requested: "metadata", access: "metadata", exposed: "metadata",
+        refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld,
+      });
+    }
+
+    // A commit's message describes its change, so the history arrives without it. The record
+    // holds no depth, since the call gave none.
+    const withheld = await metadataView.getCommitLog(head);
+    expect(withheld[0]).toMatchObject({ oid: head, message: "" });
+    const withheldRecord = accessRecord(await newestRecord({ workspace: id }));
+    expect(withheldRecord).toMatchObject({
+      method: "getCommitLog", access: "metadata", exposed: "metadata",
+    });
+    expect(withheldRecord.args).toEqual({ fromCommit: head });
+    expect(withheldRecord.refused).toBeUndefined();
+
+    // A depth outside the range is refused before anything is recorded.
+    await expect(metadataView.getCommitLog(head, 0)).rejects.toThrow(TypeError);
+    expect(await newestRecord({ workspace: id })).toEqual(withheldRecord);
+
+    await admin.setAdminWorkspaceAccess("full");
+    using fullView = await admin.inspectWorkspace(id, REASON, { access: "full" });
+    const full = await fullView.getCommitLog(head);
+    expect(full[0]!.message).not.toBe("");
+    expect(await newestRecord({ workspace: id })).toMatchObject({
+      method: "getCommitLog", args: { fromCommit: head }, access: "full", exposed: "content",
+    });
+    // The message is all that the lower level withheld.
+    expect(withheld).toEqual(full.map(commit => ({ ...commit, message: "" })));
+  } finally {
+    await admin.setAdminWorkspaceAccess("metadata");
+  }
+});
+
 it("opens a view at the lower of the level asked for and the deployment's", async () => {
   using stack = new DisposableStack();
   const { id, chatId } = await populatedWorkspace(stack, "requested");
@@ -502,11 +612,19 @@ it("opens a view at the lower of the level asked for and the deployment's", asyn
 
 it("records what each call returned, and lists content reads apart", async () => {
   using stack = new DisposableStack();
-  const { id, chatId, gadgetId } = await populatedWorkspace(stack, "exposed");
+  const {
+    ws, ownerName, id, chatId, gadgetId, connectionId, empty, head, attachmentChatId, attachmentId,
+    draftChatId,
+  } = await populatedWorkspace(stack, "exposed");
+  // A share link and an auto-approval rule for the two listings below to show. No write is
+  // pending, so the rule applies nothing.
+  const link = await ws.createShareLink("workspace", LINK_NOTE);
+  await ws.setAutoApprovedActionKind(connectionId, SET_VALUE);
 
   try {
     await admin.setAdminWorkspaceAccess("full");
     using view = await admin.inspectWorkspace(id, REASON, { access: "full" });
+    // Each call that checks its answer does so before its record is read.
     const calls: [string, () => PromiseLike<unknown>][] = [
       ["getChat", () => view.getChat(chatId)],
       // The answer is absent, so it holds no content.
@@ -522,6 +640,80 @@ it("records what each call returned, and lists content reads apart", async () =>
       // The gadget was built from scratch, so its upstream {} names no blueprint.
       ["describe", () => view.describe()],
       ["getDiagnostics", () => view.getDiagnostics()],
+      // No call is queued for the chat's agent, so no summary of a call's arguments is kept.
+      ["getChatState", () => view.getChatState(chatId)],
+      // An attachment's name, type, size and hash show at every level, as a title does. The
+      // message's own reference also holds the attachment's path in the chat's scratch worktree,
+      // which the listing leaves out.
+      ["listChatAttachments", async () => {
+        const attachments = await view.listChatAttachments(attachmentChatId);
+        expect(attachments).toEqual([{
+          id: attachmentId, oid: expect.any(String), mimeType: "text/plain", name: "a.txt",
+          size: new TextEncoder().encode(ATTACHMENT).byteLength, sequence: expect.any(Number),
+        }]);
+        expect(Object.keys(attachments[0]!).toSorted())
+            .toEqual(["id", "mimeType", "name", "oid", "sequence", "size"]);
+      }],
+      // The attachment's bytes.
+      ["readChatAttachment", async () => expect(new TextDecoder().decode(
+          await view.readChatAttachment(attachmentChatId, attachmentId))).toBe(ATTACHMENT)],
+      // The message of the commit that accepted the seed chat.
+      ["getCommitLog", () => view.getCommitLog(head)],
+      // Paths are names. The commit's tree, which the draft's added file is not in.
+      ["listFilesAtCommit", async () =>
+        expect(await view.listFilesAtCommit(head)).toEqual([{ name: "notes.txt", kind: "file" }])],
+      // The committed text, not the draft's.
+      ["readFileAtCommit", async () =>
+        expect(await view.readFileAtCommit(head, "notes.txt"))
+            .toEqual({ kind: "text", text: NOTES })],
+      // The answer is absent, so it holds no content.
+      ["readFileAtCommit", () => view.readFileAtCommit(head, "missing.txt")],
+      // The paths that differ, not the difference: that takes two file reads.
+      ["listChangedPaths", async () =>
+        expect(await view.listChangedPaths(empty, head)).toEqual(["notes.txt"])],
+      // The paths the draft adds, modifies and removes, not what it holds at them.
+      ["listPendingChanges", async () =>
+        expect(await view.listPendingChanges(draftChatId)).toEqual([{
+          gadgetId, baseCommit: head, mergedCommit: head,
+          added: [LARGE_PATH], modified: ["notes.txt"], removed: [],
+        }])],
+      // The draft's text.
+      ["readPendingFile", async () =>
+        expect(await view.readPendingFile(draftChatId, gadgetId, "notes.txt"))
+            .toEqual({ kind: "text", text: DRAFT_NOTES })],
+      // A text over MAX_BUFFERED_BLOB_SIZE arrives as a stream of its UTF-8 bytes, recorded as any
+      // found file is. The stream is read to its end: a caller consumes every stream it receives.
+      ["readPendingFile", async () => {
+        const file = await view.readPendingFile(draftChatId, gadgetId, LARGE_PATH);
+        if (file.kind !== "stream") throw new Error(`Expected a stream, not ${file.kind}`);
+        const text = await new Response(file.content).text();
+        expect(file.byteLength).toBe(new TextEncoder().encode(LARGE_TEXT).byteLength);
+        expect(file.byteLength).toBeGreaterThan(LARGE_TEXT.length);
+        // Compared outside the matcher, whose failure would print both texts whole.
+        expect(text === LARGE_TEXT).toBe(true);
+      }],
+      // A holder's profile and the connection, vendor and account ids of their choices are names,
+      // shown at every level. The list is empty: no collaborator has opened the workspace.
+      ["listObservers", async () => expect(await view.listObservers()).toEqual([])],
+      // The test connection's vendor, title and URL, which listGatekeepers() shows too.
+      ["listObserverRequirements", () => view.listObserverRequirements("workspace")],
+      // A link's id, note, creator and role are names, as a title is. Its key is in no answer.
+      ["listShareLinks", async () => {
+        const links = await view.listShareLinks();
+        expect(links).toEqual([{
+          linkId: link.linkId, note: LINK_NOTE, created: expect.any(Date),
+          createdBy: expect.objectContaining({ type: "user", id: ownerName }), role: "build",
+        }]);
+        expect(JSON.stringify(links)).not.toContain(link.key);
+      }],
+      // A rule's connection, kind of action and enabler are names too.
+      ["listAutoApprovals", async () =>
+        expect(await view.listAutoApprovals()).toEqual([{
+          gatekeeperId: connectionId, actionKind: SET_VALUE,
+          enabledBy: expect.objectContaining({ type: "user", id: ownerName }),
+        }])],
+      // The workspace publishes none.
+      ["listBlueprints", () => view.listBlueprints()],
     ];
     const recorded: { method: string; exposed: string }[] = [];
     for (const [method, call] of calls) {
@@ -541,24 +733,153 @@ it("records what each call returned, and lists content reads apart", async () =>
       { method: "listGatekeepers", exposed: "metadata" },
       { method: "describe", exposed: "metadata" },
       { method: "getDiagnostics", exposed: "metadata" },
+      { method: "getChatState", exposed: "metadata" },
+      { method: "listChatAttachments", exposed: "metadata" },
+      { method: "readChatAttachment", exposed: "content" },
+      { method: "getCommitLog", exposed: "content" },
+      { method: "listFilesAtCommit", exposed: "metadata" },
+      { method: "readFileAtCommit", exposed: "content" },
+      { method: "readFileAtCommit", exposed: "metadata" },
+      { method: "listChangedPaths", exposed: "metadata" },
+      { method: "listPendingChanges", exposed: "metadata" },
+      { method: "readPendingFile", exposed: "content" },
+      { method: "readPendingFile", exposed: "content" },
+      { method: "listObservers", exposed: "metadata" },
+      { method: "listObserverRequirements", exposed: "metadata" },
+      { method: "listShareLinks", exposed: "metadata" },
+      { method: "listAutoApprovals", exposed: "metadata" },
+      { method: "listBlueprints", exposed: "metadata" },
     ]);
 
     const logged = (await workspaceRecords(id)).map(accessRecord);
     expect(logged.at(-1)).toMatchObject({ method: "inspectWorkspace", exposed: "metadata" });
     const contentReads = (await admin.listAdminAudit({ workspace: id, exposed: "content" }))
         .records;
-    expect(contentReads.map(record => accessRecord(record).method))
-        .toEqual(["listActions", "readFile", "getChat"]);
+    expect(contentReads.map(record => accessRecord(record).method)).toEqual([
+      "readPendingFile", "readPendingFile", "readFileAtCommit", "getCommitLog",
+      "readChatAttachment", "listActions", "readFile", "getChat",
+    ]);
     expect(contentReads).toEqual(logged.filter(record => record.exposed === "content"));
     const metadataReads = (await admin.listAdminAudit({ workspace: id, exposed: "metadata" }))
         .records;
-    expect(metadataReads).toHaveLength(7);
+    // The open, and every call above that answered with no content.
+    expect(metadataReads).toHaveLength(18);
     expect(metadataReads).toEqual(logged.filter(record => record.exposed === "metadata"));
     expect((await admin.listAdminAudit({ kind: "setting", exposed: "content" })).records)
         .toEqual([]);
   } finally {
     await admin.setAdminWorkspaceAccess("metadata");
   }
+});
+
+it("names who made each connection, and no one for an ambient one", async () => {
+  using stack = new DisposableStack();
+  const [ownerName] = nextUsernames("creator");
+  const owner = stack.use(await signUp(stack.use(connect(harness.url)), ownerName!));
+  // The test account is a singleton, which the owner's workspace takes as an ambient connection
+  // when it is opened, so the account comes first.
+  const account = await testAccount(owner);
+  const ws = stack.use(await owner.newWorkspace());
+  const id = (await ws.getMetadata()).id;
+  const connection = await ws.newGatekeeper(
+      account.id, "https://gadgets-test.example/things/created");
+  if (connection === null) throw new Error("The test connection was not created");
+  stack.use(connection);
+
+  using view = await admin.inspectWorkspace(id, REASON);
+  const gatekeepers = await waitFor("the ambient connection to be listed", async () => {
+    const listed = await view.listGatekeepers();
+    if (listed.some(gatekeeper => gatekeeper.creationSpec?.type === "ambient")) return listed;
+    // Each open provides what is missing.
+    (await owner.openWorkspace(id))[Symbol.dispose]();
+    return null;
+  });
+  expect(await newestRecord({ workspace: id })).toMatchObject({
+    method: "listGatekeepers", access: "metadata", exposed: "metadata",
+  });
+
+  const made = gatekeepers.find(gatekeeper => gatekeeper.creationSpec?.type === "gatekeeper");
+  expect(made).toMatchObject({
+    id: await connection.getId(), createdBy: { type: "user", id: ownerName },
+  });
+  // No person creates an ambient connection.
+  const ambient = gatekeepers.find(gatekeeper => gatekeeper.creationSpec?.type === "ambient");
+  expect(ambient).toMatchObject({ creationSpec: { type: "ambient", vendorId: TEST_VENDOR_ID } });
+  expect(ambient?.createdBy).toBeUndefined();
+});
+
+it("lists who holds an observer record, with what was verified for each", async () => {
+  using stack = new DisposableStack();
+  const [ownerName, admittedName, refusedName] = nextUsernames("observed", "admitted", "refused");
+  const signedUp = async (username: string) =>
+    stack.use(await signUp(stack.use(connect(harness.url)), username));
+  const owner = await signedUp(ownerName!);
+  const admitted = await signedUp(admittedName!);
+  const refused = await signedUp(refusedName!);
+  // Before the workspace exists, so that its ambient connection is there from its first open: one
+  // that appeared during a collaborator's open would restart the workspace under them.
+  const account = await testAccount(owner);
+  const admittedAccount = await testAccount(admitted);
+
+  const ws = stack.use(await owner.newWorkspace());
+  const id = (await ws.getMetadata()).id;
+  const resourceUrl = "https://gadgets-test.example/things/observed";
+  const connection = await ws.newGatekeeper(account.id, resourceUrl);
+  if (connection === null) throw new Error("The test connection was not created");
+  stack.use(connection);
+  const gatekeeperId = await connection.getId();
+  const profileOf = async (username: string) => {
+    const added = await ws.addCollaborator(username, "workspace");
+    if (added === null) throw new Error(`Failed to share the workspace with ${username}`);
+    return added.profile;
+  };
+  const admittedProfile = await profileOf(admittedName!);
+  const refusedProfile = await profileOf(refusedName!);
+
+  // The first member answers the one question, about the connection, with an account of their
+  // own, and is admitted.
+  const answers = new ObserverConfigRecorder().alwaysChoose(admittedAccount.id, 1);
+  stack.use(await admitted.openWorkspace(id, undefined, stack.use(stubFor(answers))));
+  expect(answers.calls).toEqual([[expect.objectContaining({ gatekeeperId })]]);
+  // The second has no test account and no way to be asked for one, so their open is refused.
+  await expect(refused.openWorkspace(id)).rejects.toThrow("no configuration channel was provided");
+
+  using view = await admin.inspectWorkspace(id, REASON);
+  const metadataRead = async (method: string) =>
+    expect(await newestRecord({ workspace: id }), method).toMatchObject({
+      method, requested: "metadata", access: "metadata", exposed: "metadata",
+    });
+
+  // A record is reserved before anything is verified and outlives a refused open, so the listing
+  // holds both members: who holds a record, not who was admitted.
+  const observers = await view.listObservers();
+  await metadataRead("listObservers");
+  expect(observers).toHaveLength(2);
+  // The keys as they arrived, where a stored record's other fields would have travelled.
+  for (const observer of observers) {
+    expect(Object.keys(observer).toSorted()).toEqual(["accountChoices", "profile"]);
+    for (const choice of observer.accountChoices) {
+      expect(Object.keys(choice).toSorted()).toEqual(["accountId", "gatekeeperId", "vendorId"]);
+    }
+  }
+  expect(JSON.stringify(observers)).not.toContain("observerId");
+
+  const verified = observers.find(observer => observer.profile.id === admittedProfile.id);
+  expect(verified?.profile).toEqual(admittedProfile);
+  expect(verified?.accountChoices).toContainEqual({
+    gatekeeperId, accountId: admittedAccount.id, vendorId: TEST_VENDOR_ID.toLowerCase(),
+  });
+  // Their account is also taken, unasked, for the workspace's ambient connection.
+  expect(new Set(verified?.accountChoices.map(choice => choice.accountId)))
+      .toEqual(new Set([admittedAccount.id]));
+  expect(observers.find(observer => observer.profile.id === refusedProfile.id))
+      .toEqual({ profile: refusedProfile, accountChoices: [] });
+
+  expect(await view.listObserverRequirements("workspace")).toContainEqual(
+      expect.objectContaining({ gatekeeperId, vendorId: TEST_VENDOR_ID, resourceUrl }));
+  await metadataRead("listObserverRequirements");
+  expect((await view.getDiagnostics()).observers).toBe(2);
+  await metadataRead("getDiagnostics");
 });
 
 it("refuses a workspace that does not exist without creating it", async () => {
