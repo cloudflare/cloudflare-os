@@ -165,14 +165,9 @@ function withinSupportHours(hours: WireSupportHours, at: Date): boolean | undefi
     && hours.start_time <= time && time < hours.end_time;
 }
 
-/**
- * The incidents pending actions open that PagerDuty doesn't have yet and `include` keeps, with later
- * changes applied.
- */
-export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef,
-                                 include: (payload: NewIncident) => boolean): PagerDutyIncidentDetails[] {
-  return pending.flatMap(({ action }) => action.kind === "createIncident"
-    && resolve(action.payload.ref) === action.payload.ref && include(action.payload)
+/** The incidents pending actions open that PagerDuty doesn't have yet, with later changes applied. */
+export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef): PagerDutyIncidentDetails[] {
+  return pending.flatMap(({ action }) => action.kind === "createIncident" && resolve(action.payload.ref) === action.payload.ref
     ? [overlayIncident(pendingIncident(action.payload, me), pending, resolve, me)] : []);
 }
 

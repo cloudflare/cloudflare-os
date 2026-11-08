@@ -154,7 +154,37 @@ describe("a team binding", () => {
       ids(sub("team", TEAM.id), sub("schedule", SCHEDULE.id), sub("schedule", SHIFT_SCHEDULE.id)),
       ids(sub("team", TEAM.id), sub("service", SERVICE.id)),
     ]);
-    expect(t.pd.matching("GET", /^\/incidents\?/)[0].url.searchParams.getAll("team_ids[]")).toEqual([TEAM.id]);
+    const asked = t.pd.matching("GET", /^\/incidents\?/)[0].url.searchParams;
+    expect([asked.getAll("service_ids[]"), asked.getAll("team_ids[]")]).toEqual([[SERVICE.id], []]);
+  });
+
+  it("lists the incidents on its services, not those PagerDuty relates to the team", async () => {
+    const t = await setup(team);
+    const movedOut = t.pd.incident(SERVICE);
+    movedOut.service = OTHER_SERVICE;
+    const movedIn = t.pd.incident(OTHER_SERVICE);
+    movedIn.service = SERVICE;
+    expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: movedIn.id }]]);
+  });
+
+  it("stops listing a service's incidents once it leaves the team, though the walk still asks for them", async () => {
+    const t = await setup(team);
+    const first = Array.from({ length: 25 }, () => t.pd.incident(SERVICE).id);
+    for (let i = 0; i < 5; i++) t.pd.incident(SERVICE);
+    // The service leaves the team as PagerDuty sends the walk's second page, and the team's
+    // cached services have expired by the time it arrives.
+    t.pd.on("GET", /^\/incidents\?.*offset=25/, () => {
+      t.pd.services.get(SERVICE.id)!.teams = [OTHER_TEAM];
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      return undefined;
+    });
+    try {
+      const pages = await t.run([["listIncidents"]], 10) as { id: string }[][];
+      expect(pages.flat().map(({ id }) => id)).toEqual(first);
+      expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports the team's escalation policies for who is on call, though nobody is, a cached answer included", async () => {

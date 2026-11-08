@@ -14,7 +14,7 @@ import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import {
   MAX_LIMIT, chainedPage, isDenial, listing, scheduleListings, schedulePath, type OffsetSource, type PagerDutyApi, type Query,
 } from "./pagerduty-api";
-import { isProvisional, type NewIncident, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
+import { isProvisional, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
 import {
@@ -235,6 +235,16 @@ export function cachedService(ctx: { host: SessionHost }, id: string): Promise<W
   return ctx.host.cached(`service:${id}`, SERVICE_TTL_MS, () => readService(ctx, id));
 }
 
+/**
+ * The services a capability's incidents are on, or undefined for an account's: its team's, as
+ * PagerDuty lists them now (cached briefly, as `cachedService()` is), and its own.
+ */
+async function servicesWithin({ host, within: { teamId, serviceId } }: SessionContext): Promise<string[] | undefined> {
+  const teamServices = teamId === undefined ? undefined : await host.cached(`team-services:${teamId}`, SERVICE_TTL_MS, async () =>
+    (await host.read(api => api.all<WireRef>("/services", "services", { team_ids: [teamId] }))).map(({ id }) => id));
+  return serviceId === undefined ? teamServices : (teamServices ?? [serviceId]).filter(id => id === serviceId);
+}
+
 /** Whether `owned` belongs to team `teamId`, as one of its teams; anything does when there's none. */
 export const inTeam = (owned: { teams?: readonly { id: string }[] }, teamId: string | undefined): boolean =>
   teamId === undefined || (owned.teams ?? []).some(({ id }) => id === teamId);
@@ -347,6 +357,8 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   overlay?(row: T): T | null;
   inject?: CursorInjection<T>;
+  /** Runs once each page PagerDuty sends has arrived, before any of its rows is served. */
+  fetched?(): Promise<void>;
 }): Cursor<T> {
   const walk = ctx.dup();
   return new TokenCursor<T>({
@@ -355,7 +367,11 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
     dispose: () => walk[Symbol.dispose](),
     ...(options.overlay ? { overlay: options.overlay } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
-    fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, options.sources, token, perPage)),
+    fetchPage: async (token, perPage) => {
+      const page = await walk.host.read(api => chainedPage(api, options.sources, token, perPage));
+      await options.fetched?.();
+      return page;
+    },
     authorizePage: async (rows, { terminal }) =>
       walk.authorize(options.describe(rows, terminal), { filter: options.filter, result: await options.result(rows) }),
   });
@@ -403,12 +419,16 @@ export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | 
   namedListing(ctx, "schedule", list, teamId,
     filters => scheduleListings(filters, (wire: WireSchedule, shiftBased) => toScheduleSummary({ ...wire, shiftBased })));
 
-/** The defaults and bounds of an incident filter, as PagerDuty's query and the simulation's. */
-function incidentQuery(filter: PagerDutyIncidentFilter | undefined, within: Within, me: Identity): { query: IncidentQuery; params: Query } {
+/**
+ * The defaults and bounds of an incident filter, as PagerDuty's query and the simulation's, on
+ * the services `scope` names, if any.
+ */
+function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: string[] | undefined, me: Identity):
+  { query: IncidentQuery; params: Query } {
   const statuses = filter?.statuses ?? ["triggered", "acknowledged"];
   const urgencies = filter?.urgencies;
-  let serviceIds = ids(filter?.serviceIds, "serviceIds");
-  if (within.serviceId) serviceIds = (serviceIds ?? [within.serviceId]).filter(id => id === within.serviceId);
+  const requested = ids(filter?.serviceIds, "serviceIds");
+  const serviceIds = scope ? (requested ?? scope).filter(id => scope.includes(id)) : requested;
   let since: string | undefined;
   let until: string | undefined;
   if (!filter?.allTime) {
@@ -427,7 +447,8 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, within: With
   const params: Query = {
     statuses, urgencies, service_ids: serviceIds, since, until,
     user_ids: query.assignedToMe ? [me.userId] : undefined,
-    team_ids: within.teamId ? [within.teamId] : undefined,
+    // Not `team_ids`: PagerDuty relates an incident to every team involved in it, but a team's
+    // incidents here are those on its services, as everything else in a team binding has them.
     date_range: filter?.allTime ? "all" : undefined,
     sort_by: "created_at:desc",
   };
@@ -437,31 +458,33 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, within: With
 /** Incidents, newest first, as pending actions leave them. */
 export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncidentFilter | undefined):
   Promise<Cursor<PagerDutyIncidentSummary>> {
-  const { host, within } = ctx;
-  const me = await host.me();
-  const { query, params } = incidentQuery(filter, within, me);
+  const { host } = ctx;
+  const [me, scope] = await Promise.all([host.me(), servicesWithin(ctx)]);
+  const { query, params } = incidentQuery(filter, scope, me);
   const you = youRef(me);
   const { resolve } = host;
+  // The capability's services as of the page last fetched: an incident is listed only while its
+  // service is one, since a service can leave the team while the walk is open.
+  let live = scope;
+  const inScope = (row: PagerDutyIncidentSummary) => !live || live.includes(row.service.id);
   // A row as pending actions leave it, or null once they move it out of the listing. A row is
   // simulated as it is served, since pending actions can change while the walk is open.
   const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary | null => {
     const simulated = overlayIncident(row, host.pending(), resolve, you);
-    return matchesQuery(simulated, query, you) ? simulated : null;
+    return inScope(simulated) && matchesQuery(simulated, query, you) ? simulated : null;
   };
-  const inScope = (payload: NewIncident) => (!within.serviceId || payload.service.id === within.serviceId)
-    && inTeam(payload, within.teamId);
-  const opened = () => pendingIncidents(host.pending(), resolve, you, inScope).filter(row => matchesQuery(row, query, you));
+  const opened = () => pendingIncidents(host.pending(), resolve, you).filter(row => inScope(row) && matchesQuery(row, query, you));
   // PagerDuty filters before pending changes apply, so it leaves out an incident they move into the
   // filter: each incident they act on is read afresh, and listed if they leave it matching. One the
   // user can no longer open is left out, as one outside the binding is.
-  const current = (id: string) => currentIncident(ctx, id, within).catch((error: unknown) => {
+  const current = (id: string) => currentIncident(ctx, id, ctx.within).catch((error: unknown) => {
     if (!isDenial(error)) throw error;
     return undefined;
   });
   const reads = query.serviceIds?.length === 0 ? [] : await Promise.all(changedIncidents(host.pending(), resolve).map(current));
   const changed = new Map(reads.flatMap(found => !found || found.outside ? [] : [[found.wire.id, toIncidentSummary(found.wire)] as const]));
   const injected = [...opened(), ...[...changed.values()].flatMap(row => simulate(row) ?? [])].toSorted(newestFirst);
-  const named = (query.serviceIds ?? []).map(service);
+  const named = (filter?.serviceIds ? query.serviceIds ?? [] : []).map(service);
   // Injected incidents show what staging or this call read of their services, and the cursor
   // authorizes no page made only of them, so their services are reported before the walk serves any.
   if (injected.length > 0) {
@@ -470,10 +493,13 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   }
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize: pageSizeOf(filter),
-    // A filter naming none of a service binding's services matches nothing, so PagerDuty isn't asked.
+    // A filter naming none of the capability's services matches nothing, so PagerDuty isn't asked.
     sources: [query.serviceIds?.length === 0
       ? async () => ({ items: [], more: false })
       : listing("/incidents", "incidents", params, toIncidentSummary)],
+    fetched: async () => {
+      live = await servicesWithin(ctx);
+    },
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,
     // One check per service rather than per incident: an incident is as visible as its service.
