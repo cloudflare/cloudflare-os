@@ -10,9 +10,11 @@
 // replaced with a recorder: a real ctx.abort() would kill the test DO.
 
 import { describe, expect, it } from "vitest";
+import * as fc from "fast-check";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
+import type { AiChatAuthorInfo, Overseer, WorkpieceId } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { SeedBindingInfo } from "../src/agent.js";
 import { openFakeOverseer } from "./fixtures.js";
@@ -1413,4 +1415,372 @@ describe("ambient resources a chat gains", () => {
     expect(seeds.find(seed => seed.target === 3)).toMatchObject({ name: "RES_3", catalog: null });
     expect(impl.getChatAgentContext(2).bindings).toEqual({});
   }));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property: what an owner does to a workspace while collaborators have it open. fast-check
+// generates a sequence of steps -- create a connection (one that needs an account, an AI model, or
+// an agent spawner over existing workpieces), remove one, bind one into a gadget from the
+// Connections tab (for good, or as the open chat's proposal), rename or remove a binding the tab
+// lists, accept a chat's changes, a gadget binding a hook and the owner enabling, disabling or
+// deleting it, a collaborator opening or closing the workspace ("build") or one gadget ("use") --
+// and replays it through the owner's real client interface. After every step:
+// - each gadget lists the model's bindings, with no chat open and with each, and opening the
+//   workspace or a gadget demands the model's scope;
+// - a restart was scheduled exactly if a session open across the step gained scope;
+// - if one was, nothing a session gained is reachable through connections still usable; if none
+//   was, every connection is usable.
+//
+// The model keeps only what the steps did, and takes scope from docs/observers.md ("Restarting
+// when verification scope widens") rather than from #gadgetReach. A "build" session answers for
+// every connection that needs an account. A "use" session answers for what its gadget reaches:
+// what the gadget binds, the connection of each enabled hook that wakes it, and whatever an agent
+// spawner so reached binds in turn, other gadgets included. A chat's proposal reaches nothing
+// until accepted. A widening that goes unnoticed leaves a collaborator holding access nobody
+// verified them for; a restart for nothing disconnects everyone.
+//
+// A restart destroys the workspace object, and with it the sessions and the blocks on what they
+// gained. The recorder cannot, so the replay carries on in a fresh workspace that the same steps
+// rebuild with nobody connected. Scenarios a seed might miss are pinned as `examples`.
+
+const GADGETS: WorkpieceId[] = [100, 101];
+const CHATS = [1, 2];
+const MODEL_SPEC = { type: "aiModel", modelId: "m", provider: "anthropic", modelName: "claude" };
+
+// `gadget` indexes GADGETS; `chat` is 0 with no chat open, else an index into CHATS plus one;
+// `holds` is a gadget's index, or GADGETS.length for the workspace. Every other number picks,
+// modulo the count, from what exists when the step runs, in creation order: `connection` among
+// the connections (a hook's, among those that need an account), `env` among the gadgets and then
+// the connections, `edge` among the bindings the tab lists, `hook` and `session` among those.
+type Step =
+  | { kind: "connect"; as: "account" | "model" }
+  | { kind: "connect"; as: "spawner"; env: number[] }
+  | { kind: "remove"; connection: number }
+  | { kind: "bind"; gadget: number; connection: number; chat: number }
+  | { kind: "unbind" | "rename"; gadget: number; edge: number; chat: number }
+  | { kind: "accept"; chat: number }
+  | { kind: "hook"; connection: number; gadget: number }
+  | { kind: "enableHook" | "disableHook" | "deleteHook"; hook: number }
+  | { kind: "join"; holds: number }
+  | { kind: "leave"; session: number };
+
+// One binding in the model; `chat` while it is still that chat's proposal.
+type Edge = { name: string; target: WorkpieceId; chat?: number };
+
+class ScopeModel {
+  connections = new Map<WorkpieceId, "account" | "model" | "spawner">();
+  /** What each gadget and each agent spawner binds. */
+  edges = new Map<WorkpieceId, Edge[]>(GADGETS.map(id => [id, []]));
+  hooks = new Map<number, { connection: WorkpieceId; gadget: WorkpieceId; enabled: boolean }>();
+  /** Open collaborator sessions, by what each holds: the workspace, or one gadget. */
+  sessions: { holds: "build" | WorkpieceId; leave: () => void }[] = [];
+
+  accounts(): WorkpieceId[] {
+    return [...this.connections].filter(([, kind]) => kind === "account").map(([id]) => id);
+  }
+
+  /** The gadget's bindings as the Connections tab lists them with `chat` open. */
+  listed(gadget: WorkpieceId, chat?: number): Edge[] {
+    return this.edges.get(gadget)!.filter(edge => edge.chat === undefined || edge.chat === chat);
+  }
+
+  /**
+   * What a session holding `holds` answers for: connections that need an account and, for a
+   * gadget, the gadgets it reaches. `usable` leaves out connections that refuse every caller.
+   */
+  scope(holds: "build" | WorkpieceId, usable = (_id: WorkpieceId) => true): Set<WorkpieceId> {
+    if (holds === "build") return new Set(this.accounts().filter(usable));
+    let reached = new Set<WorkpieceId>();
+    let reach = (id: WorkpieceId) => {
+      if (reached.has(id) || (this.connections.has(id) && !usable(id))) return;
+      reached.add(id);
+      for (let edge of this.edges.get(id) ?? []) if (edge.chat === undefined) reach(edge.target);
+      for (let hook of this.hooks.values()) {
+        if (hook.enabled && hook.gadget === id) reach(hook.connection);
+      }
+    };
+    reach(holds);
+    return new Set([...reached].filter(id => GADGETS.includes(id) || this.accounts().includes(id)));
+  }
+}
+
+function pick<T>(list: T[], index: number): T | undefined {
+  return list.length === 0 ? undefined : list[index % list.length];
+}
+
+// Replays `steps`. Those before `from` rebuild what a restart left behind, with nobody connected.
+async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
+  let restartedAt: number | undefined;
+  await withImpl(async (impl, restarts, instance) => {
+    // The owner's user DO, and the gatekeepers behind connections and hooks, faked.
+    let user = {
+      id: "owner-user",
+      whoami: async () => USER_META.profile,
+      getChatContext: async () => USER_META,
+      getGatekeeperClassFor: async () =>
+          ({ class: {}, vendorId: "testvendor", typeUrlPattern: "https://*" }),
+      setWorkspaceLastActive: async () => {},
+      messageArrived: async () => {},
+    };
+    impl.ownerId = user.id;
+    impl.users = { idFromString: (id: string) => id, get: () => user };
+    impl.ensureAmbientCapsules = async () => {};
+    impl.markOutputsDirty = () => {};
+    impl.getGatekeeperFacet = () => ({
+      describe: async () =>
+          ({ title: "Test", url: "https://example.com/new", suggestedBindingName: "RES" }),
+    });
+    // A live hook controller can't be persisted through the real storage, as above.
+    let controller = { enable: async () => {}, disable: async () => {} };
+    let hookRecords = new Map<number, { id: number }>();
+    impl.storage.boundHooks = {
+      get: (id: number) => hookRecords.get(id),
+      put: (record: { id: number }) => hookRecords.set(record.id, record),
+      delete: (id: number) => hookRecords.delete(id),
+      list: () => [...hookRecords.values()],
+    };
+    for (let id of GADGETS) seedGadget(impl, id);
+    for (let id of CHATS) {
+      impl.storage.chatMeta.put(
+          { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+    }
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    // (The interface open() returns is disposable, which the Overseer type does not say.)
+    using owner = await instance.open(user.id, OWNER, notifyClosed) as Overseer & Disposable;
+    let gadgets = new Map<WorkpieceId, Awaited<ReturnType<typeof owner.getGadget>>>();
+    for (let id of GADGETS) gadgets.set(id, await owner.getGadget(id));
+    // Each connection's capability, as its creation returned it.
+    let created = new Map<WorkpieceId, { remove(): PromiseLike<void> }>();
+
+    let model = new ScopeModel();
+    let usable = (id: WorkpieceId): boolean => impl.gatekeeperUsable(id);
+    let needs = (grant: "workspace" | { gadgetId: WorkpieceId }): WorkpieceId[] =>
+        impl.listObserverRequirements(grant)
+            .map((need: { gatekeeperId: WorkpieceId }) => need.gatekeeperId)
+            .toSorted((a: WorkpieceId, b: WorkpieceId) => a - b);
+    let byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+
+    for (let [index, step] of steps.entries()) {
+      let label = `step ${index} (${step.kind})`;
+      let before = new Map(model.sessions.map(session => [session, model.scope(session.holds)]));
+      let chat = "chat" in step ? CHATS[step.chat - 1] : undefined;
+      switch (step.kind) {
+        case "connect": {
+          let env = Object.fromEntries((step.as === "spawner" ? step.env : []).map((choice, i) =>
+              [`E${i}`, pick([...GADGETS, ...model.connections.keys()], choice)!]));
+          let client = step.as === "account"
+              ? await owner.newGatekeeper(1, "https://example.com/doc")
+              : step.as === "spawner"
+              ? await owner.newAgentSpawnerGatekeeper({ displayName: "Spawner", modelId: null, env })
+              // (The model gatekeeper's entrypoint is not among the test Worker's exports.)
+              : await impl.addGatekeeper({}, MODEL_SPEC, user.id);
+          let id = await client.getId();
+          created.set(id, client);
+          model.connections.set(id, step.as);
+          model.edges.set(id, Object.entries(env).map(([name, target]) => ({ name, target })));
+          break;
+        }
+        case "remove": {
+          let id = pick([...model.connections.keys()], step.connection);
+          if (id === undefined) break;
+          await created.get(id)!.remove();
+          model.connections.delete(id);
+          model.edges.delete(id);
+          for (let [holder, edges] of model.edges) {
+            model.edges.set(holder, edges.filter(edge => edge.target !== id));
+          }
+          for (let [hookId, hook] of model.hooks) {
+            if (hook.connection === id) model.hooks.delete(hookId);
+          }
+          break;
+        }
+        case "bind": {
+          let gadget = GADGETS[step.gadget], edges = model.edges.get(gadget)!;
+          let target = pick([...model.connections.keys()], step.connection);
+          if (target === undefined) break;
+          let name = await gadgets.get(gadget)!.bindWithSuggestedName(target, chat);
+          let bound = model.listed(gadget, chat).filter(edge => edge.target === target);
+          if (bound.length > 0) {
+            expect(bound.map(edge => edge.name), `${label}: its names here already`).toContain(name);
+          } else {
+            expect(edges.map(edge => edge.name), `${label}: names in use`).not.toContain(name);
+            edges.push({ name, target, ...chat === undefined ? {} : { chat } });
+          }
+          break;
+        }
+        case "unbind": case "rename": {
+          let gadget = GADGETS[step.gadget], edges = model.edges.get(gadget)!;
+          let edge = pick(model.listed(gadget, chat), step.edge);
+          if (!edge) break;
+          if (step.kind === "unbind") {
+            await gadgets.get(gadget)!.unbind(edge.name);
+            edges.splice(edges.indexOf(edge), 1);
+          } else {
+            await gadgets.get(gadget)!.renameBinding(edge.name, edge.name = `B${index}`);
+          }
+          break;
+        }
+        case "accept": {
+          expect(await owner.mergeChanges(chat!), label).toEqual({ outcome: "merged" });
+          for (let edges of model.edges.values()) {
+            for (let edge of edges) if (edge.chat === chat) delete edge.chat;
+          }
+          break;
+        }
+        case "hook": {
+          let gadget = GADGETS[step.gadget], connection = pick(model.accounts(), step.connection);
+          if (connection === undefined) break;
+          let id: number = impl.storage.nextHookId.get();
+          await impl.bindHook(connection, controller, {},
+              { title: "Hook", description: "Delivers events" }, { from: "gadget", gadgetId: gadget });
+          model.hooks.set(id, { connection, gadget, enabled: false });
+          break;
+        }
+        case "enableHook": case "disableHook": case "deleteHook": {
+          let id = pick([...model.hooks.keys()], step.hook);
+          if (id === undefined) break;
+          // (enableHook's loopback entrypoint is not among the test Worker's exports either; this
+          // is the record flip its gatekeeper round trip ends on.)
+          if (step.kind === "enableHook") impl.enableHookRecord(hookRecords.get(id));
+          else await owner[step.kind](id);
+          if (step.kind === "deleteHook") model.hooks.delete(id);
+          else model.hooks.get(id)!.enabled = step.kind === "enableHook";
+          break;
+        }
+        case "join": {
+          if (index < from) break;
+          let holds = step.holds < GADGETS.length ? GADGETS[step.holds] : "build" as const;
+          // A "use" collaborator also holds the workspace shell, which answers for nothing.
+          let leaves: (() => void)[] = holds === "build"
+              ? [joinSession(impl)] : [impl.joinSession("use"), joinSession(impl, holds)];
+          model.sessions.push({ holds, leave: () => leaves.forEach(leave => leave()) });
+          break;
+        }
+        case "leave": {
+          let session = pick(model.sessions, step.session);
+          if (!session) break;
+          session.leave();
+          model.sessions.splice(model.sessions.indexOf(session), 1);
+          break;
+        }
+      }
+
+      expect(needs("workspace"), `${label}: what opening the workspace demands`)
+          .toEqual(model.accounts());
+      for (let [id, client] of gadgets) {
+        expect(needs({ gadgetId: id }), `${label}: what opening gadget ${id} demands`)
+            .toEqual(model.accounts().filter(account => model.scope(id).has(account)));
+        for (let open of [undefined, ...CHATS]) {
+          let listed = await client.listBindings(open);
+          expect(listed.map(({ name, target, chatId }) => ({ name, target, chat: chatId }))
+              .toSorted(byName), `${label}: gadget ${id}'s bindings with chat ${open} open`)
+              .toEqual(model.listed(id, open).toSorted(byName));
+        }
+      }
+
+      // What the sessions open across the step gained, among what `reachable` connections reach.
+      let gained = (reachable?: (id: WorkpieceId) => boolean) => [...before]
+          .filter(([session]) => model.sessions.includes(session))
+          .flatMap(([session, scope]) =>
+              [...model.scope(session.holds, reachable)].filter(id => !scope.has(id)));
+      let widened = gained().length > 0;
+      expect(restarts.length, `${label}: restarts scheduled`).toBe(widened ? 1 : 0);
+      expect(gained(usable), `${label}: gained and still reachable`).toEqual([]);
+      if (widened) {
+        restartedAt = index;
+        return;
+      }
+      expect([...model.connections.keys()].filter(id => !usable(id)), `${label}: unusable`)
+          .toEqual([]);
+    }
+  });
+  if (restartedAt !== undefined) await replayOwnerSteps(steps, restartedAt + 1);
+}
+
+describe("scope widening property", () => {
+  const BUILD = GADGETS.length;
+  const of = <T extends string>(...values: T[]) => fc.constantFrom(...values);
+  const choice = fc.nat({ max: 15 });
+  const gadget = fc.nat({ max: GADGETS.length - 1 });
+  // Most bindings are made with no chat open, and most collaborators hold a gadget.
+  const chat = fc.constantFrom(0, 0, 1, 2);
+  const holds = fc.constantFrom(0, 0, 1, 1, BUILD);
+  const step: fc.Arbitrary<Step> = fc.oneof(
+    { weight: 3, arbitrary: fc.record({
+      kind: of("connect"), as: of("account", "account", "model") }) },
+    { weight: 2, arbitrary: fc.record({
+      kind: of("connect"), as: of("spawner"), env: fc.array(choice, { maxLength: 2 }) }) },
+    { weight: 1, arbitrary: fc.record({ kind: of("remove"), connection: choice }) },
+    { weight: 6, arbitrary: fc.record({ kind: of("bind"), gadget, connection: choice, chat }) },
+    { weight: 2, arbitrary: fc.record({ kind: of("unbind", "rename"), gadget, edge: choice, chat }) },
+    { weight: 3, arbitrary: fc.record({ kind: of("accept"), chat: fc.constantFrom(1, 2) }) },
+    { weight: 2, arbitrary: fc.record({ kind: of("hook"), connection: choice, gadget }) },
+    { weight: 3, arbitrary: fc.record({
+      kind: of("enableHook", "enableHook", "disableHook", "deleteHook"), hook: choice }) },
+    { weight: 4, arbitrary: fc.record({ kind: of("join"), holds }) },
+    { weight: 1, arbitrary: fc.record({ kind: of("leave"), session: choice }) },
+  );
+
+  // Each comment marks a step that severs whoever is connected.
+  const examples: [Step[]][] = [
+    // A connection that needs an account severs a "build" collaborator when it is created, and a
+    // gadget's holder when it is bound there. An AI model severs nobody.
+    [[
+      { kind: "join", holds: 0 }, { kind: "connect", as: "account" }, { kind: "join", holds: BUILD },
+      { kind: "connect", as: "model" }, { kind: "bind", gadget: 0, connection: 1, chat: 0 },
+      { kind: "connect", as: "account" },  // severs
+      { kind: "join", holds: BUILD }, { kind: "join", holds: 1 },
+      { kind: "bind", gadget: 0, connection: 0, chat: 0 },
+      { kind: "bind", gadget: 1, connection: 0, chat: 0 },  // severs
+    ]],
+    // A chat's proposal severs nobody until that chat is accepted. A second name for a connection
+    // the gadget reaches widens nothing; binding it again once both are gone does.
+    [[
+      { kind: "connect", as: "account" }, { kind: "join", holds: 0 },
+      { kind: "bind", gadget: 0, connection: 0, chat: 1 },
+      { kind: "bind", gadget: 0, connection: 0, chat: 2 },
+      { kind: "rename", gadget: 0, edge: 0, chat: 1 },
+      { kind: "accept", chat: 1 },  // severs
+      { kind: "join", holds: 0 }, { kind: "accept", chat: 2 },
+      { kind: "unbind", gadget: 0, edge: 0, chat: 0 }, { kind: "unbind", gadget: 0, edge: 0, chat: 0 },
+      { kind: "bind", gadget: 0, connection: 0, chat: 0 },  // severs
+    ]],
+    // A hook widens the gadget it wakes whenever it is enabled, unless the gadget binds its
+    // connection already.
+    [[
+      { kind: "connect", as: "account" }, { kind: "connect", as: "account" },
+      { kind: "bind", gadget: 0, connection: 0, chat: 0 },
+      { kind: "hook", connection: 0, gadget: 0 }, { kind: "hook", connection: 1, gadget: 0 },
+      { kind: "join", holds: 0 }, { kind: "join", holds: 1 }, { kind: "enableHook", hook: 0 },
+      { kind: "enableHook", hook: 1 },  // severs
+      { kind: "join", holds: 0 }, { kind: "disableHook", hook: 1 },
+      { kind: "enableHook", hook: 1 },  // severs
+    ]],
+    // A spawner bound into gadget 0 hands its holders gadget 1. That alone severs them, though no
+    // connection is new, and from then on so does what gadget 1 gains: a binding, a hook and,
+    // once a second spawner hands gadget 1's holders gadget 0 in turn, what gadget 0 gains.
+    [[
+      { kind: "connect", as: "spawner", env: [1] }, { kind: "connect", as: "account" },
+      { kind: "connect", as: "account" }, { kind: "hook", connection: 1, gadget: 1 },
+      { kind: "join", holds: 0 }, { kind: "join", holds: 1 },
+      { kind: "bind", gadget: 0, connection: 0, chat: 0 },  // severs
+      { kind: "join", holds: 0 },
+      { kind: "bind", gadget: 1, connection: 1, chat: 0 },  // severs
+      { kind: "join", holds: 0 },
+      { kind: "enableHook", hook: 0 },  // severs
+      { kind: "connect", as: "spawner", env: [0] },
+      { kind: "bind", gadget: 1, connection: 3, chat: 0 }, { kind: "connect", as: "account" },
+      { kind: "join", holds: 1 },
+      { kind: "bind", gadget: 0, connection: 4, chat: 0 },  // severs
+    ]],
+  ];
+
+  it("restarts exactly when an open session's scope widens, and blocks what it gained", async () => {
+    await fc.assert(
+        fc.asyncProperty(
+            fc.array(step, { minLength: 1, maxLength: 30, size: "medium" }),
+            steps => replayOwnerSteps(steps)),
+        { ...PROPERTY_RUN_OPTIONS, numRuns: 200, examples });
+  // Longer than the options' time limit, so a failure reports its shrunk case, not a timeout.
+  }, 120_000);
 });

@@ -55,8 +55,9 @@ and shrink attempts are independent. Scenarios a fixed seed might miss are pinne
 Every run is real RPC, so a property costs hundreds of milliseconds per run and `numRuns` is kept
 small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside the test timeout
 (`@gadgets/scripts/property-runs`). workshop-backend's in-isolate properties (sharing, blueprint
-releases, streamed tool input) share those options, and its `vitest.config.ts` forwards
-`FAST_CHECK_SEED` into workerd.
+releases, streamed tool input, decisions on a turn's staged writes, two chats' changes to one
+gadget, scope-widening restarts, unread counts) share those options, and its `vitest.config.ts`
+forwards `FAST_CHECK_SEED` into workerd.
 
 `FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
 a pull request's result depends only on its code. Without it, each run draws a fresh seed, but a
