@@ -1757,9 +1757,11 @@ export type AdminWorkspacePage = {
  * increasing order:
  *   - "off":      nothing; inspectWorkspace() is refused.
  *   - "metadata": its structure: titles, workpieces, collaborators, connections, the chat and
- *                 action lists, file names and diagnostics. Chat messages, queued steers, file
- *                 contents, which blueprint a gadget follows, and the descriptions and fields of
- *                 actions, observations and hooks are withheld. Titles stay, and can echo content.
+ *                 action lists, file names, the names, types, sizes and content hashes of
+ *                 attachments, and diagnostics. Chat messages, queued steers, attachments, file
+ *                 contents, the arguments of calls queued for an agent, which blueprint a gadget
+ *                 follows, and the descriptions and fields of actions, observations and hooks are
+ *                 withheld. Titles and names stay, and can echo content.
  *   - "full":     everything, what "metadata" withholds included.
  */
 export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata", "full"] as const;
@@ -1818,8 +1820,9 @@ export type AdminInspectOptions = {
 /** The workspace calls the audit log records: the open (AdminApi.inspectWorkspace()) and each
  * AdminWorkspaceView method. */
 export const ADMIN_WORKSPACE_METHODS = [
-  "inspectWorkspace", "describe", "listChats", "getChat", "listActions", "listFiles", "readFile",
-  "listGatekeepers", "getDiagnostics",
+  "inspectWorkspace", "describe", "listChats", "getChat", "getChatState", "listChatAttachments",
+  "readChatAttachment", "listActions", "listFiles", "readFile", "listGatekeepers",
+  "getDiagnostics",
 ] as const satisfies readonly ("inspectWorkspace" | keyof AdminWorkspaceView)[];
 
 /** One of ADMIN_WORKSPACE_METHODS. */
@@ -1924,13 +1927,16 @@ export type AdminAccessRecord = {
    * What the call's answer exposed. Only a call at "full" can record "content", and only when its
    * answer held something the "metadata" level withholds:
    *   - getChat(): chat messages or a compaction summary;
+   *   - readChatAttachment(): any attachment found;
    *   - readFile(): any file found at the path, `unreadable` ones included, because that message
    *     can quote the file (a symlink's quotes its target);
    *   - listChats(): a queued steer;
+   *   - getChatState(): a queued call's argument summary;
    *   - describe(): the blueprint a gadget follows;
    *   - listActions(), listGatekeepers(): a non-empty description, or a field, of an action,
    *     observation or hook.
-   * Otherwise "metadata": always for the open, listFiles() and getDiagnostics(), for a call that was
+   * Otherwise "metadata": always for the open and for the calls whose answers hold nothing the
+   * level withholds (listChatAttachments(), listFiles() and getDiagnostics()), for a call that was
    * refused or whose read failed, and for a call at "full" whose answer held none of these. It is
    * set from the answer itself, never from the level. An answer leaves the server only once its
    * record exists: a call whose record could not be written returned nothing.
@@ -2548,7 +2554,7 @@ export type AdminWorkspaceDiagnostics = {
   /** The members' sessions open now, by kind ("owner", or a collaborator's role). Admin views are
    * never counted. */
   sessions: { owner: number; build: number; use: number };
-  /** The chats with an agent turn recorded as running. */
+  /** The chats with an agent turn recorded, running or paused; getChatState() says which. */
   activeAgentChatIds: number[];
   /** Calls to callable agents recorded but not yet in their chat. */
   pendingAgentCalls: number;
@@ -2566,6 +2572,62 @@ export type AdminWorkspaceDiagnostics = {
   ownerRegistrationPending: boolean;
 };
 
+/** One call made on a chat's callable agent that is not in the chat yet, as
+ * AdminChatState.queuedCalls lists it. */
+export type AdminQueuedAgentCall = {
+  /** Its id, unique in the workspace. A chat's calls reach it in id order. */
+  callId: number;
+  /** The method called on the agent. */
+  methodName: string;
+  /** The model the call's turn is to run on. Null when the agent's spawner names none. */
+  initiatorModelId: string | null;
+  /** A short summary of the call's arguments. Its caller wrote them, so below "full" it is "". */
+  argsSummary: string;
+};
+
+/**
+ * What a workspace records of one chat's agent turn and of what waits on the chat, as
+ * AdminWorkspaceView.getChatState() reports it: the state behind a chat that looks stuck. The
+ * chat's title, token counts, cost and code pins are in listChats().
+ */
+export type AdminChatState = {
+  /** The agent turn recorded for the chat: one running, or one paused. Absent when no turn is
+   * recorded. */
+  turn?: {
+    /** The model the turn runs on. */
+    modelId: string;
+    /** Who started the turn: a user, or a gadget whose spawner or call started it. */
+    initiator: AiChatAuthorInfo;
+    /** Whether a call to the agent started the turn, rather than a chat message. */
+    callbackInitiated: boolean;
+    /** How many times the workspace has looked up the turn's model since it last prepared the
+     * turn to run. It grows while restarts keep finding the turn unfinished. */
+    resumeAttempts: number;
+    /** Whether the turn is paused: recorded, while the chat names no agent as responding
+     * (AiChatMetadata.activeAgent), as when it waits for a decision on an action. */
+    paused: boolean;
+  };
+  /** When the newest entry of the chat's log was written (a message, an agent step, a change, an
+   * action): the only time the workspace keeps of a turn's progress. Absent for a chat with no
+   * entry. */
+  lastMessageAt?: Date;
+  /** The calls made on the chat's agent that are not in the chat yet, oldest first. */
+  queuedCalls: AdminQueuedAgentCall[];
+  /** The ids of the actions waiting for approval that were submitted from the chat, oldest first;
+   * listActions() holds each. */
+  pendingActionIds: number[];
+};
+
+/** One attachment of a chat message, as AdminWorkspaceView.listChatAttachments() lists it: the
+ * message's ChatAttachmentRef without its bytes. Its `oid` is a hash of those bytes, so it tells
+ * whether two attachments are the same file; like the name, the type and the size, it shows at
+ * every level. */
+export type AdminChatAttachment =
+    Pick<ChatAttachmentRef, "id" | "oid" | "mimeType" | "name" | "size"> & {
+  /** The sequence of the message it is attached to (AiChatMessage.sequence). */
+  sequence: number;
+};
+
 /**
  * A deployment admin's read-only view of one workspace, minted by AdminApi.inspectWorkspace().
  * Nothing it does changes the workspace or is seen by its members: it joins no presence and no
@@ -2578,8 +2640,9 @@ export type AdminWorkspaceDiagnostics = {
  * open asked for (AdminInspectOptions.access) and the deployment's, then lowered to the
  * deployment's current setting. So lowering the setting reaches live views (within about a minute)
  * and raising it does not. A call that level refuses is recorded and refused, having read nothing:
- * `accessOff` once the setting is "off", `contentWithheld` for getChat() or readFile() below
- * "full". Any other call reads its answer, never through a connection. It is then recorded as an
+ * `accessOff` once the setting is "off", `contentWithheld` below "full" for a method that reads
+ * only content (getChat(), readChatAttachment(), readFile()). Any other call reads its answer,
+ * never through a connection. It is then recorded as an
  * AdminAccessRecord, with what that answer exposed, in the deployment-wide log. Only then is the
  * call answered: nothing it read leaves the server before its record exists, and a call whose
  * record cannot be written fails and returns nothing. The
@@ -2603,6 +2666,21 @@ export interface AdminWorkspaceView extends RpcTarget {
   /** One page of a chat's messages, as Overseer.getChatHistory() pages them. Content: refused below
    * "full". */
   getChat(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage>;
+
+  /** What is recorded of a chat's agent turn, its newest entry, the calls queued for its agent
+   * and its pending actions (see AdminChatState). Below "full" each queued call's `argsSummary`
+   * is "". Throws for an id that names no chat. */
+  getChatState(chatId: number): Promise<AdminChatState>;
+
+  /** The attachments of a chat's messages, oldest message first, without their bytes. Their
+   * names, types, sizes and content hashes (`oid`) stay at every level, as titles do. Empty for
+   * an id that names no chat. */
+  listChatAttachments(chatId: number): Promise<AdminChatAttachment[]>;
+
+  /** One attachment's bytes, as Overseer.getChatAttachmentContent() returns them, read only from
+   * what is stored. Content: refused below "full". Throws for an id that names no attachment of
+   * the chat. */
+  readChatAttachment(chatId: number, id: string): Promise<Uint8Array>;
 
   /**
    * One page of the workspace's action log, as Overseer.listActions() pages it. Admin access is
@@ -5478,8 +5556,11 @@ export type ChatAttachmentRef = {
   id: string;
   /** Original immutable upload blob. Absent on legacy attachments. */
   oid?: GitOid;
+  /** MIME type the sender declared for the attachment, normalized when sending. */
   mimeType: string;
+  /** Display filename, sanitized when sending. Absent when the sender gave none. */
   name?: string;
+  /** Size of the attachment in bytes. */
   size: number;
 
   /**

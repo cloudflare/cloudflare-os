@@ -11,14 +11,17 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
+import { RpcTarget } from "capnweb";
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminWorkspaceAccess, type AiChatAuthorInfo,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, MAX_ADMIN_ACCESS_REASON_LENGTH,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
+  type AdminAccessRecord, type AdminChatAttachment, type AdminChatState,
+  type AdminWorkspaceAccess, type AiChatAuthorInfo,
 } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import type { AdminViewTerms } from "../src/admin-access.js";
+import { encodeGitTree, gitObjectOid } from "../src/git-codec.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import { putAction } from "./fixtures.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
@@ -45,6 +48,23 @@ const RETENTION = 90;
 
 const GATEKEEPER_ID = 0;
 const CHAT_ID = 1;
+// A chat with no message, turn, queued call or action, which the tests that need one add.
+const IDLE_CHAT_ID = 2;
+
+// The seeded chat's attachments: one stored as a blob, one image kept as bytes on its record, and
+// one whose record names only a file of a commit.
+const BLOB_ATTACHMENT_ID = "11111111-1111-4111-8111-111111111111";
+const INLINE_ATTACHMENT_ID = "22222222-2222-4222-8222-222222222222";
+const LEGACY_ATTACHMENT_ID = "33333333-3333-4333-8333-333333333333";
+const BLOB_ATTACHMENT_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x01]);
+const INLINE_ATTACHMENT_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xfe]);
+const LEGACY_ATTACHMENT_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xfd, 0x02, 0x03]);
+
+// The call the seed queues for the chat's agent, and the turn seedTurn() records.
+const QUEUED_CALL_ID = 7;
+const ARGS_SUMMARY = '[0]: "secret argument"';
+const MODEL_ID = "test-model";
+const INITIATOR_USER_ID = "0123456789abcdef";
 
 type Workspace = {
   impl: any;
@@ -57,6 +77,13 @@ type Workspace = {
   kvGet?: (key: string) => Promise<string | null>;
   gadgetId: number;
   commitId: string;
+  // The blob behind the seeded chat's blob-backed attachment.
+  attachmentOid: string;
+  // The commit that holds its legacy attachment's file.
+  legacyCommitId: string;
+  // The message the attachments are on, and when it was written: the chat's newest row.
+  attachmentSequence: number;
+  lastMessageAt: Date;
 };
 
 function serveConfig(ws: Workspace, key: string): string | null {
@@ -80,7 +107,8 @@ async function withWorkspace(fn: (ws: Workspace) => Promise<void>,
     let ws: Workspace = {
       impl, instance, state, id: state.id.toString(),
       config: { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: RETENTION },
-      gadgetId: -1, commitId: "",
+      gadgetId: -1, commitId: "", attachmentOid: "", legacyCommitId: "", attachmentSequence: -1,
+      lastMessageAt: new Date(NaN),
     };
     setEnv(ws);
     if (opts.seed ?? true) await seed(ws);
@@ -107,6 +135,12 @@ async function seed(ws: Workspace): Promise<void> {
     queuedSteers: [{ text: "steer text", author: OWNER }],
   });
   impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: "secret message" }]);
+  await seedAttachments(ws);
+  // Every field a queued call's row stores, the ones no answer may carry included.
+  impl.storage.pendingAgentCalls.put({
+    chatId: CHAT_ID, callId: QUEUED_CALL_ID, methodName: "summarize", args: ["secret argument"],
+    argsSummary: ARGS_SUMMARY, initiatorUserId: INITIATOR_USER_ID, initiatorModelId: MODEL_ID,
+  });
 
   impl.storage.nextGatekeeperId.put(GATEKEEPER_ID + 1);
   impl.storage.gatekeepers.put({
@@ -149,6 +183,107 @@ async function seed(ws: Workspace): Promise<void> {
   });
 }
 
+// Adds a message with three attachments to the seeded chat. The stored references carry what a
+// listing must drop: the blob-backed one its path in the scratch worktree, the image its bytes.
+// The image has no name, and neither it nor the legacy one has an oid.
+async function seedAttachments(ws: Workspace): Promise<void> {
+  let impl = ws.impl;
+  ws.attachmentOid = impl.gitCache.writeBlob(BLOB_ATTACHMENT_BYTES).oid;
+  ws.legacyCommitId = await impl.gitCache.writeFilesAsCommit(
+      new Map([["legacy.pdf", impl.gitCache.writeBlob(LEGACY_ATTACHMENT_BYTES)]]), {
+        parents: [],
+        author: { name: "Owner", email: "owner@example.test" },
+        message: "attachments",
+        timestamp: new Date(1700000000_000),
+      });
+  impl.storage.chatAttachmentContent.put({
+    fileId: BLOB_ATTACHMENT_ID,
+    state: {
+      type: "committed", chatId: CHAT_ID, oid: ws.attachmentOid, workspacePath: "report.pdf",
+    },
+  });
+  impl.storage.chatAttachmentContent.put({
+    fileId: INLINE_ATTACHMENT_ID, data: INLINE_ATTACHMENT_BYTES,
+    state: { type: "committed", chatId: CHAT_ID },
+  });
+  impl.storage.chatAttachmentContent.put({
+    fileId: LEGACY_ATTACHMENT_ID,
+    state: {
+      type: "committed", chatId: CHAT_ID, workspaceCommitId: ws.legacyCommitId,
+      workspacePath: "legacy.pdf",
+    },
+  });
+  impl.addChatMessages(CHAT_ID, OWNER, [{
+    type: "message", message: "see attached",
+    attachments: [
+      {
+        id: BLOB_ATTACHMENT_ID, oid: ws.attachmentOid, mimeType: "application/pdf",
+        name: "report.pdf", size: BLOB_ATTACHMENT_BYTES.byteLength, workspacePath: "report.pdf",
+      },
+      {
+        id: INLINE_ATTACHMENT_ID, mimeType: "image/png",
+        size: INLINE_ATTACHMENT_BYTES.byteLength, content: INLINE_ATTACHMENT_BYTES,
+      },
+      {
+        id: LEGACY_ATTACHMENT_ID, mimeType: "application/pdf", name: "legacy.pdf",
+        size: LEGACY_ATTACHMENT_BYTES.byteLength,
+      },
+    ],
+  }]);
+  let newest = [...impl.storage.chats.list()].at(-1);
+  ws.attachmentSequence = newest.sequence;
+  ws.lastMessageAt = newest.timestamp;
+}
+
+// Records an agent turn for the seeded chat, with every field a turn's record stores. The chat
+// names no agent as responding, so the turn is a paused one.
+function seedTurn(ws: Workspace): void {
+  ws.impl.storage.activeAgents.put({
+    chatId: CHAT_ID, initiatorUserId: INITIATOR_USER_ID, modelId: MODEL_ID, initiator: OWNER,
+    callbackInitiated: false,
+  });
+}
+
+function addIdleChat(ws: Workspace): void {
+  ws.impl.storage.chatMeta.put(
+      { id: IDLE_CHAT_ID, title: "Idle", started: new Date(0), lastActive: new Date(0) });
+}
+
+// The seeded chat's state once seedTurn() has run, as a view reports it: `argsSummary` is the
+// queued call's summary at "full" and "" below.
+function seededChatState(ws: Workspace, argsSummary: string): AdminChatState {
+  return {
+    turn: {
+      modelId: MODEL_ID, initiator: OWNER, callbackInitiated: false, resumeAttempts: 0,
+      paused: true,
+    },
+    lastMessageAt: ws.lastMessageAt,
+    queuedCalls: [{
+      callId: QUEUED_CALL_ID, methodName: "summarize", initiatorModelId: MODEL_ID, argsSummary,
+    }],
+    pendingActionIds: [0, 1, 2],
+  };
+}
+
+// The seeded chat's attachments as a view lists them at any level.
+function seededAttachments(ws: Workspace): AdminChatAttachment[] {
+  let sequence = ws.attachmentSequence;
+  return [
+    {
+      id: BLOB_ATTACHMENT_ID, oid: ws.attachmentOid, mimeType: "application/pdf",
+      name: "report.pdf", size: BLOB_ATTACHMENT_BYTES.byteLength, sequence,
+    },
+    {
+      id: INLINE_ATTACHMENT_ID, oid: undefined, mimeType: "image/png", name: undefined,
+      size: INLINE_ATTACHMENT_BYTES.byteLength, sequence,
+    },
+    {
+      id: LEGACY_ATTACHMENT_ID, oid: undefined, mimeType: "application/pdf", name: "legacy.pdf",
+      size: LEGACY_ATTACHMENT_BYTES.byteLength, sequence,
+    },
+  ];
+}
+
 // A view asks for the level it is minted at unless `overrides` says otherwise.
 function terms(overrides: Partial<AdminViewTerms> = {}): AdminViewTerms {
   return {
@@ -181,6 +316,29 @@ async function deploymentRecords(ws: Workspace): Promise<AdminAccessRecord[]> {
 
 function storageKeys(ws: Workspace): string[] {
   return [...ws.state.storage.kv.list()].map(([key]) => key);
+}
+
+// What a member could notice of the workspace: everything it stores (keys and values, git
+// objects included), who is present, the sessions open and the alarm.
+async function memberVisibleState(ws: Workspace) {
+  return {
+    storage: [...ws.state.storage.kv.list()],
+    present: ws.impl.presenceSnapshot(),
+    sessions: ws.impl.liveSessionCounts(),
+    alarm: await ws.state.storage.getAlarm(),
+  };
+}
+
+// What a holder of `view` can reach over RPC: every string-named member of its class, and of
+// any class between it and RpcTarget. Cap'n Web exposes prototype members, never own ones.
+function rpcSurface(view: object): Set<string> {
+  let names = new Set<string>();
+  for (let proto = Object.getPrototypeOf(view); proto !== RpcTarget.prototype;
+       proto = Object.getPrototypeOf(proto)) {
+    for (let name of Object.getOwnPropertyNames(proto)) names.add(name);
+  }
+  names.delete("constructor");
+  return names;
 }
 
 describe("opening an admin view", () => {
@@ -259,6 +417,10 @@ describe("a metadata view", () => {
     await view.describe();
     await view.listChats();
     expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
+    await view.getChatState(CHAT_ID);
+    await view.listChatAttachments(CHAT_ID);
+    expect(await codeOf(view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID)))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
     await view.listActions({ filter: "all" });
     await view.listFiles(ws.gadgetId);
     expect(await codeOf(view.readFile(ws.gadgetId, "notes.txt")))
@@ -272,6 +434,10 @@ describe("a metadata view", () => {
       ["describe", {}, "metadata", undefined],
       ["listChats", {}, "metadata", undefined],
       ["getChat", { chatId: CHAT_ID }, "metadata", ADMIN_ACCESS_ERROR_CODES.contentWithheld],
+      ["getChatState", { chatId: CHAT_ID }, "metadata", undefined],
+      ["listChatAttachments", { chatId: CHAT_ID }, "metadata", undefined],
+      ["readChatAttachment", { chatId: CHAT_ID, id: BLOB_ATTACHMENT_ID }, "metadata",
+       ADMIN_ACCESS_ERROR_CODES.contentWithheld],
       ["listActions", { filter: "all" }, "metadata", undefined],
       ["listFiles", { gadgetId: ws.gadgetId }, "metadata", undefined],
       ["readFile", { gadgetId: ws.gadgetId, path: "notes.txt" }, "metadata",
@@ -279,17 +445,33 @@ describe("a metadata view", () => {
       ["listGatekeepers", {}, "metadata", undefined],
       ["getDiagnostics", {}, "metadata", undefined],
     ]);
+    // The list above is kept by hand: a method the audit names fails here until it is called
+    // above, and its record asserted.
+    expect(new Set(records.map(r => r.method))).toStrictEqual(new Set(ADMIN_WORKSPACE_METHODS));
     expect(new Set(records.map(r => r.reason))).toStrictEqual(new Set([REASON]));
     expect(new Set(records.map(r => r.requested))).toStrictEqual(new Set(["metadata"]));
     expect(new Set(records.map(r => r.exposed))).toStrictEqual(new Set(["metadata"]));
   }));
 
+  it("exposes no method but the ones the audit names", () => withWorkspace(async ws => {
+    let view = await open(ws);
+    expect(view).toBeInstanceOf(RpcTarget);
+    expect(rpcSurface(view)).toStrictEqual(
+        new Set(ADMIN_WORKSPACE_METHODS.filter(method => method !== "inspectWorkspace")));
+  }));
+
   it("withholds content but keeps structure", () => withWorkspace(async ws => {
+    seedTurn(ws);
     let view = await open(ws);
 
     let chats = await view.listChats();
     expect(chats.map(chat => chat.title)).toStrictEqual(["Plans"]);
     expect(chats[0]).not.toHaveProperty("queuedSteers");
+
+    // Whole answers: a stored record's other fields (a queued call's arguments, an attachment's
+    // path and bytes) would pass a looser check.
+    expect(await view.getChatState(CHAT_ID)).toStrictEqual(seededChatState(ws, ""));
+    expect(await view.listChatAttachments(CHAT_ID)).toStrictEqual(seededAttachments(ws));
 
     let { entries } = await view.listActions();
     expect(entries.map(entry => [entry.type, entry.description.title])).toStrictEqual([
@@ -318,7 +500,9 @@ describe("a metadata view", () => {
 
     expect(await view.listFiles(ws.gadgetId)).toStrictEqual([{ name: "notes.txt", kind: "file" }]);
   }));
+});
 
+describe("an inspection", () => {
   it("changes nothing a member sees and joins no session", () => withWorkspace(async ws => {
     let impl = ws.impl;
     let actionsBefore = [...impl.storage.actions.list()];
@@ -328,13 +512,41 @@ describe("a metadata view", () => {
       update: () => notified.push("update"),
       remove: () => notified.push("remove"),
     });
+    let before = await memberVisibleState(ws);
 
+    // Every view method, at "metadata", where the content reads are refused, and then at "full",
+    // where each runs.
     let view = await open(ws);
     await view.describe();
     await view.listChats();
-    await view.listActions();
     await view.getChat(CHAT_ID).catch(() => {});
+    await view.getChatState(CHAT_ID);
+    await view.listChatAttachments(CHAT_ID);
+    await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID).catch(() => {});
+    await view.listActions();
+    await view.listFiles(ws.gadgetId);
+    await view.readFile(ws.gadgetId, "notes.txt").catch(() => {});
+    await view.listGatekeepers();
+    await view.getDiagnostics();
 
+    setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+    ws.config.adminWorkspaceAccess = "full";
+    let full = await open(ws, { access: "full" });
+    await full.describe();
+    await full.listChats();
+    await full.getChat(CHAT_ID);
+    await full.getChatState(CHAT_ID);
+    await full.listChatAttachments(CHAT_ID);
+    for (let id of [BLOB_ATTACHMENT_ID, INLINE_ATTACHMENT_ID, LEGACY_ATTACHMENT_ID]) {
+      await full.readChatAttachment(CHAT_ID, id);
+    }
+    await full.listActions();
+    await full.listFiles(ws.gadgetId);
+    await full.readFile(ws.gadgetId, "notes.txt");
+    await full.listGatekeepers();
+    await full.getDiagnostics();
+
+    expect(await memberVisibleState(ws)).toStrictEqual(before);
     expect(notified).toStrictEqual([]);
     expect([...impl.storage.actions.list()]).toStrictEqual(actionsBefore);
     expect(impl.liveSessionCounts()).toStrictEqual({ owner: 0, build: 0, use: 0 });
@@ -352,7 +564,7 @@ describe("a full view", () => {
 
     let history = await view.getChat(CHAT_ID);
     expect(history.messages.map(message => message.type === "message" && message.message))
-        .toStrictEqual(["secret message"]);
+        .toStrictEqual(["secret message", "see attached"]);
     expect(await view.readFile(ws.gadgetId, "notes.txt"))
         .toStrictEqual({ kind: "text", text: "private notes\n" });
     expect((await view.listChats())[0].queuedSteers).toStrictEqual(
@@ -368,7 +580,47 @@ describe("a full view", () => {
     expect((await deploymentRecords(ws)).every(r => r.access === "full")).toBe(true);
   }));
 
+  it("reads a chat's turn, queued calls and attachments", () => withWorkspace(async ws => {
+    setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+    ws.config.adminWorkspaceAccess = "full";
+    let view = await open(ws, { access: "full" });
+
+    // No turn is recorded yet.
+    let idle = await view.getChatState(CHAT_ID);
+    expect(idle.turn).toBeUndefined();
+    expect((await view.getDiagnostics()).activeAgentChatIds).toStrictEqual([]);
+
+    // Whole answers, as at "metadata": only the queued call's summary differs. An action of the
+    // chat that was decided is not pending, so the answer leaves it out.
+    seedTurn(ws);
+    putAction(ws.impl.storage, 3, { state: "approved", gatekeeperId: GATEKEEPER_ID });
+    expect(await view.getChatState(CHAT_ID)).toStrictEqual(seededChatState(ws, ARGS_SUMMARY));
+    expect(await view.listChatAttachments(CHAT_ID)).toStrictEqual(seededAttachments(ws));
+    expect((await view.getDiagnostics()).activeAgentChatIds).toStrictEqual([CHAT_ID]);
+
+    // The turn runs once the chat names its agent, and its attempts are the record's.
+    let impl = ws.impl;
+    impl.storage.chatMeta.put({
+      ...impl.storage.chatMeta.get(CHAT_ID),
+      activeAgent: { type: "agent", id: MODEL_ID, name: "Test model" },
+    });
+    impl.storage.activeAgents.put({ ...impl.storage.activeAgents.get(CHAT_ID), resumeAttempts: 2 });
+    expect((await view.getChatState(CHAT_ID)).turn).toStrictEqual({
+      modelId: MODEL_ID, initiator: OWNER, callbackInitiated: false, resumeAttempts: 2,
+      paused: false,
+    });
+    expect((await view.getDiagnostics()).activeAgentChatIds).toStrictEqual([CHAT_ID]);
+
+    expect(await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID))
+        .toStrictEqual(BLOB_ATTACHMENT_BYTES);
+    expect(await view.readChatAttachment(CHAT_ID, INLINE_ATTACHMENT_ID))
+        .toStrictEqual(INLINE_ATTACHMENT_BYTES);
+    expect(await view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID))
+        .toStrictEqual(LEGACY_ATTACHMENT_BYTES);
+  }));
+
   it("records what each call's answer exposed", () => withWorkspace(async ws => {
+    addIdleChat(ws);
     setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
     ws.config.adminWorkspaceAccess = "full";
     let view = await open(ws, { access: "full" });
@@ -384,6 +636,10 @@ describe("a full view", () => {
     expect(await view.readFile(ws.gadgetId, "missing.txt")).toStrictEqual({ kind: "absent" });
     expect((await view.getChat(999)).messages).toStrictEqual([]);
     expect((await view.listActions({ beforeId: 0 })).entries).toStrictEqual([]);
+    await view.getChatState(CHAT_ID);
+    await view.getChatState(IDLE_CHAT_ID);
+    await view.listChatAttachments(CHAT_ID);
+    await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID);
 
     let records = await deploymentRecords(ws);
     expect(records.map(r => [r.method, r.exposed])).toStrictEqual([
@@ -399,6 +655,10 @@ describe("a full view", () => {
       ["readFile", "metadata"],
       ["getChat", "metadata"],
       ["listActions", "metadata"],
+      ["getChatState", "content"],
+      ["getChatState", "metadata"],
+      ["listChatAttachments", "metadata"],
+      ["readChatAttachment", "content"],
     ]);
     expect(records.every(r => r.requested === "full" && r.access === "full")).toBe(true);
   }));
@@ -589,7 +849,7 @@ describe("the records' bounds", () => {
     let diagnostics = await view.getDiagnostics();
     expect(diagnostics).toMatchObject({
       chats: 1, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 0,
-      ownerRegistrationPending: false, activeAgentChatIds: [], pendingAgentCalls: 0,
+      ownerRegistrationPending: false, activeAgentChatIds: [], pendingAgentCalls: 1,
     });
   }));
 });
@@ -641,5 +901,114 @@ describe("file reads", () => {
     await expect(view.listFiles(GATEKEEPER_ID))
         .rejects.toThrow(`No gadget with committed code has id ${GATEKEEPER_ID}.`);
     await expect(view.listFiles(999)).rejects.toThrow("No gadget with committed code has id 999.");
+  }));
+});
+
+describe("chat reads", () => {
+  it("report a chat with nothing recorded or waiting as such", () => withWorkspace(async ws => {
+    addIdleChat(ws);
+    let view = await open(ws);
+    let state = await view.getChatState(IDLE_CHAT_ID);
+    expect(state.turn).toBeUndefined();
+    expect(state.lastMessageAt).toBeUndefined();
+    expect(state.queuedCalls).toStrictEqual([]);
+    expect(state.pendingActionIds).toStrictEqual([]);
+    expect(await view.listChatAttachments(IDLE_CHAT_ID)).toStrictEqual([]);
+    // As for an id that names no chat, which only the listing answers.
+    expect(await view.listChatAttachments(999)).toStrictEqual([]);
+  }));
+
+  it("record a read that fails as an attempt that exposed nothing", () => withWorkspace(async ws => {
+    setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+    ws.config.adminWorkspaceAccess = "full";
+    let view = await open(ws, { access: "full" });
+    let elsewhere = "44444444-4444-4444-8444-444444444444";
+    ws.impl.storage.chatAttachmentContent.put({
+      fileId: elsewhere, data: new Uint8Array([1]),
+      state: { type: "committed", chatId: IDLE_CHAT_ID },
+    });
+
+    await expect(view.getChatState(999)).rejects.toThrow("No such chatId: 999");
+    await expect(view.readChatAttachment(CHAT_ID, "nope"))
+        .rejects.toThrow("Invalid chat attachment ID.");
+    await expect(view.readChatAttachment(CHAT_ID, elsewhere))
+        .rejects.toThrow("Chat attachment not found.");
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.access, r.exposed])).toStrictEqual([
+      ["getChatState", { chatId: 999 }, "full", "metadata"],
+      ["readChatAttachment", { chatId: CHAT_ID, id: "nope" }, "full", "metadata"],
+      ["readChatAttachment", { chatId: CHAT_ID, id: elsewhere }, "full", "metadata"],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("report a legacy attachment whose path names no file as missing from Git",
+      () => withWorkspace(async ws => {
+    setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+    ws.config.adminWorkspaceAccess = "full";
+    let view = await open(ws, { access: "full" });
+    let gitCache = ws.impl.gitCache;
+    let commit = {
+      parents: [],
+      author: { name: "Owner", email: "owner@example.test" },
+      message: "attachments",
+      timestamp: new Date(1700000000_000),
+    };
+    // A commit whose tree holds a directory and a submodule. Writing files produces no submodule
+    // entry, so the tree is encoded here.
+    let withDir = await gitCache.writeFilesAsCommit(
+        new Map([["dir/inner.bin", gitCache.writeBlob(new Uint8Array([0x00, 0x01]))]]), commit);
+    let tree = encodeGitTree([
+      { mode: "40000", name: "dir", oid: gitCache.localPathEntryAtCommit(withDir, "dir").oid },
+      { mode: "160000", name: "vendored", oid: "1".repeat(40) },
+    ]);
+    gitCache.importObjects([{ type: "tree", payload: tree }]);
+    let commitId = gitCache.writeCommitForTree(gitObjectOid("tree", tree), commit);
+    // Legacy records whose paths name nothing, the directory and the submodule.
+    let paths = new Map([
+      ["55555555-5555-4555-8555-555555555555", "absent.bin"],
+      ["66666666-6666-4666-8666-666666666666", "dir"],
+      ["77777777-7777-4777-8777-777777777777", "vendored"],
+    ]);
+    for (let [fileId, workspacePath] of paths) {
+      ws.impl.storage.chatAttachmentContent.put({
+        fileId,
+        state: { type: "committed", chatId: CHAT_ID, workspaceCommitId: commitId, workspacePath },
+      });
+      await expect(view.readChatAttachment(CHAT_ID, fileId))
+          .rejects.toThrow("Chat attachment content is missing from Git.");
+    }
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.access, r.exposed])).toStrictEqual(
+        [...paths.keys()].map(
+            id => ["readChatAttachment", { chatId: CHAT_ID, id }, "full", "metadata"]));
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("never pull an attachment through a connection", () => withWorkspace(async ws => {
+    setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "full" });
+    ws.config.adminWorkspaceAccess = "full";
+    let view = await open(ws, { access: "full" });
+    let gitCache = ws.impl.gitCache;
+
+    let pulls = forbidPulls(ws, ws.attachmentOid, "blob");
+    await expect(view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID))
+        .rejects.toThrow("Unknown Git blob.");
+    expect(pulls.pulled).toBe(false);
+
+    // The legacy attachment's file, then the tree that names it.
+    let file = await gitCache.pathEntryAtCommit(ws.legacyCommitId, "legacy.pdf");
+    let root = await gitCache.pathEntryAtCommit(ws.legacyCommitId, "");
+    pulls = forbidPulls(ws, file.oid, "blob");
+    await expect(view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID))
+        .rejects.toThrow("Unknown Git blob.");
+    expect(pulls.pulled).toBe(false);
+
+    pulls = forbidPulls(ws, root.oid, "tree");
+    await expect(view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID))
+        .rejects.toThrow(`git object ${root.oid} is not stored in this workspace`);
+    expect(pulls.pulled).toBe(false);
   }));
 });

@@ -14,10 +14,10 @@ import {
   DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError, isAdminWorkspaceAccess,
-  type ActionLogEntry, type AdminAccessRecord, type AdminSettingChange, type AdminSettingRecord,
-  type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess, type AdminWorkspaceMethod,
-  type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo, type FileAtCommit,
-  type WorkpieceSummary,
+  type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminSettingChange,
+  type AdminSettingRecord, type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
+  type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo,
+  type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -128,9 +128,9 @@ export type AdminViewTerms = {
   expiresAt: Date;
 };
 
-/** The view methods that read content, refused below "full": getChat and readFile. */
+/** The view methods that read only content, refused below "full". */
 export const ADMIN_CONTENT_METHODS: ReadonlySet<AdminWorkspaceMethod> =
-    new Set<AdminWorkspaceMethod>(["getChat", "readFile"]);
+    new Set<AdminWorkspaceMethod>(["getChat", "readChatAttachment", "readFile"]);
 
 // --- Validation ---
 
@@ -365,6 +365,18 @@ export function withholdChatContent(meta: AiChatMetadata): AiChatMetadata {
 /** Whether `meta` holds what withholdChatContent() drops: a queued steer. */
 export function chatHoldsContent(meta: AiChatMetadata): boolean {
   return (meta.queuedSteers?.length ?? 0) > 0;
+}
+
+/** A copy of `state` as a view below "full" reports it: each queued call's `argsSummary`
+ * emptied. */
+export function withholdChatStateContent(state: AdminChatState): AdminChatState {
+  return { ...state, queuedCalls: state.queuedCalls.map(call => ({ ...call, argsSummary: "" })) };
+}
+
+/** Whether `state` holds what withholdChatStateContent() empties: a queued call's argument
+ * summary. */
+export function chatStateHoldsContent(state: AdminChatState): boolean {
+  return state.queuedCalls.some(call => call.argsSummary !== "");
 }
 
 /** A copy of `entry` as a view below "full" lists it: `description.description` emptied for an

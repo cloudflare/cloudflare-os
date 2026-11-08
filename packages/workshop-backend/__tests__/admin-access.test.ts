@@ -3,17 +3,17 @@ import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
-  type ActionLogEntry, type AiChatHistoryPage, type AiChatMetadata, type BoundHookInfo,
-  type FileAtCommit, type WorkpieceSummary,
+  type ActionLogEntry, type AdminChatState, type AiChatHistoryPage, type AiChatMetadata,
+  type BoundHookInfo, type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
   adminAuditValue, adminListLimit, adminSettingChange, adminViewCallAccess, adminViewLifetimeMs,
-  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, cutAdminAuditText,
-  fileHoldsContent, hookHoldsContent,
+  assertAdminViewLive, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
+  cutAdminAuditText, fileHoldsContent, hookHoldsContent,
   lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays,
   redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent, withholdChatContent,
-  withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
+  withholdChatStateContent, withholdHookContent, workpieceHoldsContent, type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -159,6 +159,15 @@ describe("view calls", () => {
         .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
     expect(adminViewCallAccess(terms(), "getChat", { access: "full", retentionDays: 90 }))
         .toEqual({ access: "full" });
+    expect(adminViewCallAccess(terms(), "readChatAttachment", metadata))
+        .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+    expect(adminViewCallAccess(terms(), "readChatAttachment",
+        { access: "full", retentionDays: 90 }))
+        .toEqual({ access: "full" });
+    // The chat reads that are not content run at either level.
+    for (let method of ["getChatState", "listChatAttachments"] as const) {
+      expect(adminViewCallAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
+    }
     expect(adminViewCallAccess(terms(), "describe", { access: "off", retentionDays: 90 }))
         .toEqual({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff });
   });
@@ -241,7 +250,31 @@ describe("withholding content", () => {
     expect(withholdHookContent(hook).description).toEqual({ title: "Hook", description: "" });
     expect(hook.description.description).toBe("what it does");
   });
+
+  it("empties each queued call's argument summary on a copy", () => {
+    let state = chatState(["first summary", "second summary"]);
+    let before = structuredClone(state);
+    expect(withholdChatStateContent(state)).toStrictEqual({
+      ...before,
+      queuedCalls: before.queuedCalls.map(call => ({ ...call, argsSummary: "" })),
+    });
+    expect(state).toStrictEqual(before);
+  });
 });
+
+// A chat's state with a recorded turn, a pending action and one queued call per summary.
+function chatState(summaries: string[]): AdminChatState {
+  return {
+    turn: {
+      modelId: "m", initiator: { type: "user", id: "u", name: "U" }, callbackInitiated: false,
+      resumeAttempts: 1, paused: true,
+    },
+    lastMessageAt: new Date(0),
+    queuedCalls: summaries.map((argsSummary, callId) =>
+        ({ callId, methodName: "run", initiatorModelId: null, argsSummary })),
+    pendingActionIds: [4],
+  };
+}
 
 // Answers as a view returns them, for the *HoldsContent() predicates.
 function chatMeta(extra: Partial<AiChatMetadata> = {}): AiChatMetadata {
@@ -273,6 +306,14 @@ describe("whether an answer holds content", () => {
     expect(chatHoldsContent(chatMeta({ queuedSteers: [] }))).toBe(false);
     expect(chatHoldsContent(chatMeta())).toBe(false);
     expect(chatHoldsContent(withholdChatContent(full))).toBe(false);
+  });
+
+  it("finds a queued call's argument summary in a chat's state", () => {
+    let full = chatState(["", "summary"]);
+    expect(chatStateHoldsContent(full)).toBe(true);
+    expect(chatStateHoldsContent(chatState([]))).toBe(false);
+    expect(chatStateHoldsContent(chatState(["", ""]))).toBe(false);
+    expect(chatStateHoldsContent(withholdChatStateContent(full))).toBe(false);
   });
 
   it("finds a description or a field in an action log entry", () => {

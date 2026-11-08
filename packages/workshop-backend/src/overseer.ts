@@ -5,9 +5,10 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
-  type AdminAccessExposure, type AdminAccessRecord, type AdminGatekeeperInfo, type AdminViewAccess,
-  type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
-  type AdminWorkspaceMethod, type AdminWorkspaceView,
+  type AdminAccessExposure, type AdminAccessRecord, type AdminChatAttachment, type AdminChatState,
+  type AdminGatekeeperInfo, type AdminViewAccess, type AdminWorkspaceAccess,
+  type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
+  type AdminWorkspaceView,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -62,9 +63,10 @@ import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   actionHoldsContent, adminAccessPolicy, adminViewCallAccess, assertAdminViewLive,
-  chatHoldsContent, chatPageHoldsContent, cutAdminAuditText, fileHoldsContent, hookHoldsContent,
-  lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdChatContent, withholdHookContent, workpieceHoldsContent,
+  chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent, cutAdminAuditText,
+  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs,
+  validateAdminAccessReason, withholdActionContent, withholdChatContent,
+  withholdChatStateContent, withholdHookContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
 import type { AdminAuditDurableObject } from "./admin-audit";
@@ -5935,7 +5937,12 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  async getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array> {
+  // The bytes of an attachment committed to `chatId` (see AgentHooks.getChatAttachmentData()):
+  // the record's own bytes, else its stored blob, else, for a record that holds only a commit and
+  // a path, the file there. That last read can pull a missing object through a connection,
+  // unless `local` is set: then it reads only the objects the workspace stores, and a missing
+  // one throws (see AdminWorkspaceView.readChatAttachment()).
+  async getChatAttachmentData(chatId: number, id: string, local = false): Promise<Uint8Array> {
     let content = this.storage.chatAttachmentContent.get(validateChatAttachmentId(id));
     if (!content || content.state.type !== "committed" || content.state.chatId !== chatId) {
       throw new Error("Chat attachment not found.");
@@ -5945,6 +5952,14 @@ class OverseerImpl implements AgentHooks {
     if (content.state.workspaceCommitId === undefined ||
         content.state.workspacePath === undefined) {
       throw new Error("Chat attachment has no stored content.");
+    }
+    if (local) {
+      let entry = this.gitCache.localPathEntryAtCommit(
+          content.state.workspaceCommitId, content.state.workspacePath);
+      if (!entry || entry.kind === "dir" || entry.kind === "submodule") {
+        throw new Error("Chat attachment content is missing from Git.");
+      }
+      return this.gitCache.readBlob(entry.oid);
     }
     const entry = await this.gitCache.pathEntryAtCommit(
         content.state.workspaceCommitId, content.state.workspacePath);
@@ -14012,10 +14027,11 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
 // A deployment admin's read-only view of the workspace (see AdminWorkspaceView in api.ts and
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
-// no presence or fan-out, and never reads through a connection: its file reads never pull, and
-// beyond the workspace's own storage it reads only the owner's profile, from their account
-// (describe()). Every method runs through #call, which reads the call's answer and records the
-// call, with what that answer exposed, in the deployment-wide log before returning anything.
+// no presence or fan-out, and never reads through a connection: its reads of files and
+// attachments never pull, and beyond the workspace's own storage it reads only the owner's
+// profile, from their account (describe()). Every method runs through #call, which reads the
+// call's answer and records the call, with what that answer exposed, in the deployment-wide log
+// before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
@@ -14177,6 +14193,62 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   async getChat(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
     return this.#call("getChat", {chatId, beforeSequence},
         () => chatHistoryPage(this.#impl, chatId, beforeSequence), chatPageHoldsContent);
+  }
+
+  // Each part of the answer names the fields its type declares, since the stored records hold
+  // more: a turn's and a queued call's hold their initiator's user id, and a queued call's its
+  // raw arguments. Each storage listing is read to its end before the next starts.
+  async getChatState(chatId: number): Promise<AdminChatState> {
+    return this.#call("getChatState", {chatId}, access => {
+      let storage = this.#impl.storage;
+      let meta = this.#impl.getChatMetaOrThrow(chatId);
+      let turn = storage.activeAgents.get(chatId);
+      let prefix = chatKeyPrefix(chatId);
+      let [newest] = [...storage.chats.list({prefix, reverse: true, limit: 1})];
+      let queuedCalls = [...storage.pendingAgentCalls.list({prefix})].map(call => ({
+        callId: call.callId,
+        methodName: call.methodName,
+        initiatorModelId: call.initiatorModelId,
+        argsSummary: call.argsSummary,
+      }));
+      let pendingActionIds = [...storage.actions.byHistoryFilter.get("pending")]
+          .filter(({caller}) => "chatId" in caller && caller.chatId === chatId)
+          .map(action => action.id);
+      let state: AdminChatState = {
+        turn: turn && {
+          modelId: turn.modelId,
+          initiator: turn.initiator,
+          callbackInitiated: turn.callbackInitiated,
+          resumeAttempts: turn.resumeAttempts ?? 0,
+          paused: meta.activeAgent === undefined,
+        },
+        lastMessageAt: newest?.timestamp,
+        queuedCalls,
+        pendingActionIds,
+      };
+      return access === "full" ? state : withholdChatStateContent(state);
+    }, chatStateHoldsContent);
+  }
+
+  // The scan deleteChat() makes: a message's ChatAttachmentRef is the one record of an
+  // attachment's metadata. Each entry names the fields its type declares, since a stored
+  // reference also holds its path in the chat's scratch worktree, and can hold bytes.
+  async listChatAttachments(chatId: number): Promise<AdminChatAttachment[]> {
+    return this.#call("listChatAttachments", {chatId}, () => {
+      let attachments: AdminChatAttachment[] = [];
+      for (let msg of this.#impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
+        if (msg.type !== "message") continue;
+        for (let {id, oid, mimeType, name, size} of msg.attachments ?? []) {
+          attachments.push({id, oid, mimeType, name, size, sequence: msg.sequence});
+        }
+      }
+      return attachments;
+    });
+  }
+
+  async readChatAttachment(chatId: number, id: string): Promise<Uint8Array> {
+    return this.#call("readChatAttachment", {chatId, id},
+        () => this.#impl.getChatAttachmentData(chatId, id, true), () => true);
   }
 
   async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
