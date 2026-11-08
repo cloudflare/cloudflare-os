@@ -26,8 +26,8 @@ import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { isDenial } from "./pagerduty-api";
-import { VENDOR_ID, webOrigin, type Env, type Tenant } from "./pagerduty-env";
-import { toIncidentSummary, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
+import { VENDOR_ID, webHost, type Env, type Tenant } from "./pagerduty-env";
+import { toIncidentSummary, toUserRef, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import {
   SessionContext, outsideOf, readIncident, withinOf, youRef, type HookScope, type SessionHost,
@@ -97,7 +97,7 @@ export function watchedKinds(options: PagerDutySubscribeOptions | undefined): Pa
 export function hookDescription(tenant: Tenant, { scope, incidentId }: HookScope, kinds: PagerDutyEventKind[]): HookDescription {
   const { teamId, serviceId } = withinOf(scope);
   const on = incidentId ? `incident ${incidentId}` : serviceId ? `service ${serviceId}`
-    : teamId ? `team ${teamId}` : new URL(webOrigin(tenant)).host;
+    : teamId ? `team ${teamId}` : webHost(tenant);
   const which = kinds.length === KINDS.length ? "every incident event" : `each ${kinds.join(", ")} event`;
   return {
     title: `Watch PagerDuty incidents on ${on}`,
@@ -160,7 +160,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
       const extra = note !== undefined ? " and the note" : statusUpdate !== undefined ? " and the status update" : "";
       await ctx.authorize(
         { title: "Received a PagerDuty incident event", description: `Received an incident's ${event.kind} event with its summary${extra}.` },
-        { filter: [], result: [{ kind: "incident", id: wire.id }, { kind: "service", id: wire.service.id }] });
+        [{ kind: "incident", id: wire.id }, { kind: "service", id: wire.service.id }]);
     } catch (error) {
       incident[Symbol.dispose]();
       throw error;
@@ -209,7 +209,8 @@ export class PagerDutyHookController extends WorkerEntrypoint<Env, PagerDutyHook
 
 // ── Driver ──────────────────────────────────────────────────────────
 
-const registrationKey = (key: string) => `reg:${key}`;
+const REG_PREFIX = "reg:";
+const registrationKey = (key: string) => `${REG_PREFIX}${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 
 /**
@@ -242,9 +243,9 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
     const now = Date.now();
     let queued = false;
     // Listed in full first, as the queue lists storage too.
-    for (const [regKey, registration] of Array.from(this.ctx.storage.kv.list<Registration>({ prefix: "reg:" }))) {
+    for (const [regKey, registration] of Array.from(this.ctx.storage.kv.list<Registration>({ prefix: REG_PREFIX }))) {
       if (!watches(registration, event)) continue;
-      this.#queue.enqueue(regKey.slice("reg:".length), event.id, event, now);
+      this.#queue.enqueue(regKey.slice(REG_PREFIX.length), event.id, event, now);
       queued = true;
     }
     // Due now, so no later than anything else queued.
@@ -375,8 +376,7 @@ function parseDelivery(payload: unknown): StoredEvent | undefined {
   return {
     id, kind, occurredAt: occurred_at, tenant: { subdomain: link.subdomain, region: link.region }, incidentId: incident!.id,
     ...(serviceId && OBJECT_ID.test(serviceId) ? { serviceId } : {}),
-    agent: agent?.type === "user_reference" && OBJECT_ID.test(agent.id)
-      ? { id: agent.id, name: agent.summary ?? agent.name ?? agent.id } : null,
+    agent: agent?.type === "user_reference" && OBJECT_ID.test(agent.id) ? toUserRef(agent) : null,
     ...(note !== undefined ? { note } : {}),
     ...(trimmedNoteId !== undefined ? { trimmedNoteId } : {}),
     ...(statusUpdate !== undefined ? { statusUpdate } : {}),

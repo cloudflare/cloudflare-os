@@ -11,9 +11,9 @@ import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper
 import {
   PagerDutyApi, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type Query,
 } from "./pagerduty-api";
-import { RECONNECT_MESSAGE, accountSource, type Identity, type PublicGrant } from "./pagerduty-credentials";
-import { webOrigin } from "./pagerduty-env";
-import type { WireIncident, WireSchedule, WireService, WireTeam } from "./pagerduty-normalize";
+import { RECONNECT_MESSAGE, accountSource, accountStub, type Identity, type PublicGrant } from "./pagerduty-credentials";
+import { webHost } from "./pagerduty-env";
+import { nameOf, type WireIncident, type WireSchedule, type WireService, type WireTeam } from "./pagerduty-normalize";
 import { INCIDENT_NUMBER, OBJECT_ID, parseResourceUrl, resourceUrl, sameTenant } from "./pagerduty-urls";
 import type {
   PagerDutyBrowsePage, PagerDutyBrowseRequest, PagerDutyConfiguratorRpc, PagerDutyConfiguratorStatus,
@@ -44,19 +44,19 @@ const OPEN_STATUSES = ["triggered", "acknowledged"];
 const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 function teamNode(wire: WireTeam): PagerDutyNode {
-  return { ref: `team:${wire.id}`, kind: "team", title: wire.name ?? wire.summary ?? wire.id, subtitle: wire.description || undefined };
+  return { ref: `team:${wire.id}`, kind: "team", title: nameOf(wire), subtitle: wire.description || undefined };
 }
 
 function serviceNode(wire: WireService): PagerDutyNode {
   return {
-    ref: `service:${wire.id}`, kind: "service", title: wire.name ?? wire.summary ?? wire.id,
+    ref: `service:${wire.id}`, kind: "service", title: nameOf(wire),
     subtitle: wire.description || undefined, badge: wire.status && wire.status !== "active" ? wire.status : undefined,
   };
 }
 
 function scheduleNode(wire: WireSchedule): PagerDutyNode {
   return {
-    ref: `schedule:${wire.id}`, kind: "schedule", title: wire.name ?? wire.summary ?? wire.id,
+    ref: `schedule:${wire.id}`, kind: "schedule", title: nameOf(wire),
     subtitle: wire.description || wire.time_zone || undefined,
   };
 }
@@ -94,7 +94,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
 
   async getStatus(): Promise<PagerDutyConfiguratorStatus> {
     try {
-      return { state: "ready", account: { ref: "account", host: new URL(webOrigin(await this.#me())).host } };
+      return { state: "ready", account: { ref: "account", host: webHost(await this.#me()) } };
     } catch (error) {
       if (isCredentialsExpired(error)) return { state: "unavailable", message: RECONNECT_MESSAGE };
       throw error;
@@ -152,8 +152,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
 
   /** The connected user, read once per frame; a failure is forgotten so the next call asks again. */
   #me(): Promise<Identity> {
-    const { UserAccount } = this.#exports;
-    return this.#identity ??= UserAccount.get(UserAccount.idFromString(this.#userObjectId)).getIdentity()
+    return this.#identity ??= accountStub(this.#exports, this.#userObjectId).getIdentity()
       .catch(error => {
         this.#identity = undefined;
         throw error;
@@ -173,7 +172,7 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
 
   /** The object a ref names, or null when this connection can't open it. */
   async #node(ref: Ref): Promise<PagerDutyNode | null> {
-    if (ref.kind === "account") return { ref: "account", kind: "account", title: new URL(webOrigin(await this.#me())).host };
+    if (ref.kind === "account") return { ref: "account", kind: "account", title: webHost(await this.#me()) };
     try {
       const body = await this.#read(api => api.object(ref.kind, ref.id));
       const wire = body[ref.kind];

@@ -9,7 +9,7 @@ import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutySubscribeOptions } from "../../src/types";
 import {
   ALICE, BOB, DAVE, FakePagerDuty, OTHER_SERVICE, OTHER_TEAM, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
-  type FakeUser,
+  type Binding, type FakeUser,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -23,8 +23,6 @@ afterEach(async () => {
   for (const hook of enabled.splice(0)) await hooks().disableHook(hook);
   vi.unstubAllGlobals();
 });
-
-type Binding = { resourceKind: "account" } | { resourceKind: "team" | "service" | "incident"; id: string };
 
 /** Subscribes a hook through `steps` from a binding of `who`'s, and enables it. */
 async function subscribe(pd: FakePagerDuty, binding: Binding, { steps = [], options, who = ALICE }:

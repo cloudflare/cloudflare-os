@@ -16,6 +16,7 @@ import type {
   WireService, WireShift, WireShiftOverride, WireTeam, WireUser,
 } from "../../src/pagerduty-normalize";
 import SIGNING_JWK from "./id-token-key.json";
+import type { GatekeeperProps, Outcome, Step } from "./worker";
 
 export const IDENTITY = "https://identity.pagerduty.com";
 
@@ -415,15 +416,31 @@ export function hooks() {
 }
 
 /** A forwarded call's result, rethrown here when it failed. */
-export function unwrap<T>(outcome: { ok: T } | { error: string }): T {
+export function unwrap<T>(outcome: Outcome<T>): T {
   if ("error" in outcome) throw new Error(outcome.error);
   return outcome.ok;
 }
 
 /** A forwarded call's failure message, failing the test when it succeeded. */
-export function failure(outcome: { ok: unknown } | { error: string }): string {
+export function failure(outcome: Outcome<unknown>): string {
   if (!("error" in outcome)) throw new Error(`expected a failure, got ${JSON.stringify(outcome.ok)}`);
   return outcome.error;
+}
+
+export type Binding = { resourceKind: "account" } | { resourceKind: "team" | "service" | "incident" | "schedule"; id: string };
+
+/** A binding of Alice's connection to drive, and what its reads report. */
+export async function bound(binding: Binding = { resourceKind: "account" }, pd = new FakePagerDuty().install()) {
+  const props = { userObjectId: await seedAccount(pd), region: "us", subdomain: "acme", ...binding } as GatekeeperProps;
+  const name = crypto.randomUUID();
+  return {
+    pd, name, props,
+    run: async (steps: Step[], pages?: number, between?: Step[][]) =>
+      unwrap(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
+    attempt: async (steps: Step[], pages?: number) => failure(await hooks().run(name, props, steps, pages ? { pages } : {})),
+    /** What each observation so far reported, order aside. */
+    reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
+  };
 }
 
 /** The subresource ID of Acme's account, or of one object in it. */

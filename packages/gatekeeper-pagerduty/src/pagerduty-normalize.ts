@@ -120,7 +120,7 @@ export type WireShift = { user: WireRef; start: string; end: string };
 export type WireOverride = WireShift & { id: string };
 
 /** Who a shift-based schedule puts in a slot: a user, or nobody. */
-export type WireSlotMember = { type: "user_member" | "empty_member"; user_id?: string };
+type WireSlotMember = { type: "user_member" | "empty_member"; user_id?: string };
 
 /** A span of a shift-based schedule's final schedule. */
 export type WireAssignment = { start_time: string; end_time: string; member: WireSlotMember };
@@ -132,13 +132,16 @@ export type WirePriority = { id: string; name: string; description?: string | nu
 
 export type WireMember = { user: WireUser; role: string };
 
+/** An object's name: a full object's `name`, a reference's `summary`, else its ID. */
+export const nameOf = (wire: WireRef): string => wire.name ?? wire.summary ?? wire.id;
+
 /** What another object names this one by. */
 export function toRef(wire: WireRef): PagerDutyRef {
-  return { id: wire.id, name: wire.name ?? wire.summary ?? wire.id, htmlUrl: wire.html_url ?? "" };
+  return { id: wire.id, name: nameOf(wire), htmlUrl: wire.html_url ?? "" };
 }
 
 export function toUserRef(wire: WireRef): PagerDutyUserRef {
-  return { id: wire.id, name: wire.name ?? wire.summary ?? wire.id };
+  return { id: wire.id, name: nameOf(wire) };
 }
 
 export function toUser(wire: WireUser): PagerDutyUser {
@@ -191,7 +194,7 @@ export function toIncidentSummary(wire: WireIncident): PagerDutyIncidentSummary 
     title: wire.title,
     status: wire.status,
     urgency: wire.urgency,
-    priority: wire.priority ? wire.priority.name ?? wire.priority.summary ?? null : null,
+    priority: wire.priority?.name ?? wire.priority?.summary ?? null,
     service: toRef(wire.service),
     team: team ? toRef(team) : null,
     assignees: (wire.assignments ?? []).map(({ assignee }) => toUserRef(assignee)),
@@ -319,7 +322,7 @@ export function toShifts(wire: WireSchedule): PagerDutyShift[] {
  * its `editable` view, so each is named as `editable` lists it, or not, being past changing.
  */
 export function toOverrides(wire: Schedule, rows: readonly (WireShift | WireShiftOverride)[],
-                            editable: readonly WireOverride[] = []): PagerDutyOverride[] {
+                            editable: readonly WireOverride[]): PagerDutyOverride[] {
   if (!wire.shiftBased) {
     const key = ({ user, start, end }: WireShift) => `${user.id} ${start} ${end}`;
     const ids = new Map(editable.map(row => [key(row), row.id]));

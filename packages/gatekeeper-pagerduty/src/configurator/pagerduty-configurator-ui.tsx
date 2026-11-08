@@ -18,13 +18,20 @@ import type {
 /** The gatekeeper as the frame holds it: a Cap'n Web stub. */
 type Rpc = RpcStub<PagerDutyConfiguratorRpc>;
 
-// Must equal the urlPatterns of RESOURCES in pagerduty-env.ts; __tests__/configurator.test.ts keeps
-// the copies in step.
-const ACCOUNT_PATTERN = "https://:subdomain{.eu}?.pagerduty.com/";
-const TEAM_PATTERN = "https://:subdomain{.eu}?.pagerduty.com/teams/:teamId([A-Z0-9]+){/*}?";
-const SERVICE_PATTERN = "https://:subdomain{.eu}?.pagerduty.com/service-directory/:serviceId([A-Z0-9]+){/*}?";
-const INCIDENT_PATTERN = "https://:subdomain{.eu}?.pagerduty.com/incidents/:incidentId([A-Z0-9]+){/*}?";
-const SCHEDULE_PATTERN = "https://:subdomain{.eu}?.pagerduty.com/schedules/:scheduleId([A-Z0-9]+){/*}?";
+const HOST = "https://:subdomain{.eu}?.pagerduty.com";
+const object = (path: string, group: string) => `${HOST}/${path}/:${group}([A-Z0-9]+){/*}?`;
+
+/**
+ * What each kind binds and how a refusal names it. Each pattern must equal its kind's urlPattern in
+ * RESOURCES (pagerduty-env.ts); __tests__/configurator.test.ts keeps the copies in step.
+ */
+const KINDS: Record<Kind, { pattern: string; noun: string }> = {
+  account: { pattern: `${HOST}/`, noun: "the whole account" },
+  team: { pattern: object("teams", "teamId"), noun: "a team" },
+  service: { pattern: object("service-directory", "serviceId"), noun: "a service" },
+  incident: { pattern: object("incidents", "incidentId"), noun: "an incident" },
+  schedule: { pattern: object("schedules", "scheduleId"), noun: "a schedule" },
+};
 
 const FIELD_LABEL = "What to connect";
 const SEARCH_PLACEHOLDER = "Search names, or paste a PagerDuty link or ID";
@@ -60,21 +67,13 @@ function loadStatus({ ui }: Context): void {
 
 // -- what a choice is ---------------------------------------------------------------------------
 
-const PATTERN_OF: Record<Kind, string> = {
-  account: ACCOUNT_PATTERN, team: TEAM_PATTERN, service: SERVICE_PATTERN, incident: INCIDENT_PATTERN, schedule: SCHEDULE_PATTERN,
-};
-const NOUN_OF_PATTERN: Record<string, string> = {
-  [ACCOUNT_PATTERN]: "the whole account", [TEAM_PATTERN]: "a team", [SERVICE_PATTERN]: "a service",
-  [INCIDENT_PATTERN]: "an incident", [SCHEDULE_PATTERN]: "a schedule",
-};
-
 /** Whether the Workshop takes what `kind` binds. An older Workshop does not say, and takes any. */
-const accepts = (accepted: readonly string[] | undefined, kind: Kind) => accepted === undefined || accepted.includes(PATTERN_OF[kind]);
+const accepts = (accepted: readonly string[] | undefined, kind: Kind) => accepted === undefined || accepted.includes(KINDS[kind].pattern);
 
 /** Why a node of `kind` can't be chosen here, or undefined when it can. */
 function refusal(accepted: readonly string[] | undefined, kind: Kind): string | undefined {
   if (accepts(accepted, kind)) return undefined;
-  const nouns = (accepted ?? []).map(pattern => NOUN_OF_PATTERN[pattern]).filter(Boolean);
+  const nouns = (accepted ?? []).flatMap(pattern => Object.values(KINDS).find(kind => kind.pattern === pattern)?.noun ?? []);
   return nouns.length > 0 ? `This connection needs ${nouns.join(" or ")}.` : "This can't be connected here.";
 }
 
@@ -325,7 +324,8 @@ export default {
   render(context) {
     rerender = () => context.setValues({});
     loadStatus(context);
-    if (connection.state === "unavailable" || connection.state === "failed") return <Section>{notices(context)}</Section>;
+    const failure = notices(context);
+    if (failure) return <Section>{failure}</Section>;
     return <Section>
       <style>{STYLE}</style>
       {missing !== null && !context.values.ref ? prefillNotice(context, missing) : null}

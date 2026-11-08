@@ -13,7 +13,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** PagerDuty's largest page. */
 export const MAX_LIMIT = 100;
 /** PagerDuty refuses a listing whose `offset + limit` exceeds this. */
-export const MAX_OFFSET = 10_000;
+const MAX_OFFSET = 10_000;
 
 /**
  * Where the REST API keeps one object of each kind; it answers with the object under a key named for
@@ -33,12 +33,12 @@ const OBJECT_PATHS = {
 export const schedulePath = (id: string, shiftBased: boolean): string => `${shiftBased ? "/v3" : ""}/schedules/${id}`;
 
 /** A query value; arrays are sent as PagerDuty's `name[]=a&name[]=b`. */
-export type QueryValue = string | number | boolean | readonly string[] | undefined;
+type QueryValue = string | number | boolean | readonly string[] | undefined;
 export type Query = Record<string, QueryValue>;
 
-/** PagerDuty's refusal of a request, with its numeric error code when it gave one. */
+/** PagerDuty's refusal of a request. */
 export class PagerDutyApiError extends HttpError {
-  constructor(status: number, message: string, readonly code?: number) {
+  constructor(status: number, message: string) {
     super(status, message);
     this.name = "PagerDutyApiError";
   }
@@ -102,14 +102,14 @@ export async function chainedPage<T>(api: PagerDutyApi, sources: readonly Offset
   return { items, ...(index < sources.length ? { nextToken: `${index}:${offset}` } : {}) };
 }
 
-type ErrorBody = { error?: { code?: unknown; message?: unknown; errors?: unknown } };
+type ErrorBody = { error?: { message?: unknown; errors?: unknown } };
 
 /** A display-safe error for a non-2xx answer. */
 function errorFor(response: Response, text: string): PagerDutyApiError {
   if (response.status === 429) {
     const reset = Number(response.headers.get("ratelimit-reset"));
     const wait = Number.isFinite(reset) && reset > 0 ? `in ${Math.ceil(reset)} seconds` : "shortly";
-    return new PagerDutyApiError(429, `PagerDuty is rate limiting this connection; try again ${wait}.`, 2020);
+    return new PagerDutyApiError(429, `PagerDuty is rate limiting this connection; try again ${wait}.`);
   }
   let body: ErrorBody = {};
   try {
@@ -117,14 +117,12 @@ function errorFor(response: Response, text: string): PagerDutyApiError {
   } catch {
     // Not JSON: the status alone describes it.
   }
-  const { code, message, errors } = body.error ?? {};
+  const { message, errors } = body.error ?? {};
   const details = [
     typeof message === "string" ? message : undefined,
     ...(Array.isArray(errors) ? errors.filter(error => typeof error === "string") : []),
   ].filter(Boolean).join("; ").slice(0, 500);
-  return new PagerDutyApiError(response.status,
-    `PagerDuty answered HTTP ${response.status}${details ? `: ${details}` : "."}`,
-    typeof code === "number" ? code : undefined);
+  return new PagerDutyApiError(response.status, `PagerDuty answered HTTP ${response.status}${details ? `: ${details}` : "."}`);
 }
 
 /** A REST client for one account, acting as one user. */
@@ -185,15 +183,7 @@ export class PagerDutyApi {
 
   /** Every row of a listing, up to `max` and PagerDuty's offset cap. */
   async all<T>(path: string, key: string, query: Query = {}, max = MAX_OFFSET): Promise<T[]> {
-    const rows: T[] = [];
-    for (let offset = 0; offset < Math.min(max, MAX_OFFSET);) {
-      const limit = Math.min(MAX_LIMIT, max - offset, MAX_OFFSET - offset);
-      const { items, more } = await this.page<T>(path, key, query, offset, limit);
-      rows.push(...items);
-      if (!more || items.length === 0) break;
-      offset += items.length;
-    }
-    return rows;
+    return (await chainedPage<T>(this, [(api, offset, limit) => api.page<T>(path, key, query, offset, limit)], undefined, max)).items;
   }
 
   async #send<T>(method: string, path: string, query: Query, body?: unknown): Promise<T> {

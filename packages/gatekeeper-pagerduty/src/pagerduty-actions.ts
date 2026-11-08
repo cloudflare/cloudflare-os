@@ -52,7 +52,7 @@ export type NewIncident = {
   | { urgency?: never; serviceUrgency: PagerDutyUrgency }
 );
 
-export type NewOverride = {
+type NewOverride = {
   /** The `~N` the pending override goes by until PagerDuty assigns its ID. */
   ref: string;
   scheduleId: string;
@@ -220,8 +220,8 @@ const REASSIGN = { tag: "reassign-incidents", label: "Reassign and escalate inci
 const RESPONDERS = { tag: "request-responders", label: "Ask more people to respond to incidents" };
 const STATUS_UPDATES = { tag: "post-status-updates", label: "Post incident status updates" };
 const CREATE = { tag: "create-incidents", label: "Open incidents" };
-const OVERRIDES = { tag: "manage-overrides", label: "Add schedule overrides" };
-const DELETE_OVERRIDES = { tag: "delete-overrides", label: "Remove schedule overrides" };
+export const OVERRIDES = { tag: "manage-overrides", label: "Add schedule overrides" };
+export const DELETE_OVERRIDES = { tag: "delete-overrides", label: "Remove schedule overrides" };
 
 /** An override's approval text and its REST call, shared by the kinds for oneself and for others. */
 function overrideDefinition(autoApprovable: boolean) {
@@ -268,7 +268,6 @@ function urgencyDefinition(urgency: PagerDutyUrgency, autoApprovable: boolean) {
   };
 }
 
-/** The declared action set. */
 export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
   acknowledge: {
     kind: ACKNOWLEDGE,

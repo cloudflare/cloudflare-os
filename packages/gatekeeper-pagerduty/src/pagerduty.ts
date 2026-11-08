@@ -49,6 +49,7 @@ import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeepe
 import { PagerDutyApi, isAuthError, isDenial } from "./pagerduty-api";
 import {
   RECONNECT_MESSAGE,
+  accountStub,
   identityOf,
   parseSubresource,
   seesPublicObjects,
@@ -71,10 +72,9 @@ import {
   getBaseUrl,
   getRedirectUri,
   missingScopes,
-  webOrigin,
+  webHost,
   type Env,
   type PagerDutyGatekeeperImplProps,
-  type Tenant,
 } from "./pagerduty-env";
 import { PagerDutyConfiguratorUI } from "./pagerduty-configurator";
 import { handleWebhook } from "./pagerduty-hooks";
@@ -191,7 +191,7 @@ function previewOAuthFor(env: Env): PreviewOAuth | Response {
 /** The account a connect link or callback state names; null when the id is not one of ours. */
 function accountFor(ctx: ExecutionContext, doId: string): DurableObjectStub<UserAccount> | null {
   try {
-    return ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
+    return accountStub(ctx.exports, doId);
   } catch {
     return null;
   }
@@ -199,11 +199,8 @@ function accountFor(ctx: ExecutionContext, doId: string): DurableObjectStub<User
 
 /** The `UserAccount` an entrypoint's props name. */
 function accountOf(ctx: ExecutionContext<{ userObjectId: string }>): DurableObjectStub<UserAccount> {
-  return ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(ctx.props.userObjectId));
+  return accountStub(ctx.exports, ctx.props.userObjectId);
 }
-
-/** Where an account's web app lives, for messages. */
-const hostOf = (tenant: Tenant): string => new URL(webOrigin(tenant)).host;
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -418,8 +415,8 @@ export class UserAccount extends DurableObject<Env> {
         return {
           refused: {
             title: "That's a different PagerDuty user",
-            detail: `This connection is for ${pinned.email} on ${hostOf(pinned)}, but PagerDuty authorized ` +
-              `${identity.email} on ${hostOf(identity)}. Sign in as ${pinned.email} and reconnect, or ` +
+            detail: `This connection is for ${pinned.email} on ${webHost(pinned)}, but PagerDuty authorized ` +
+              `${identity.email} on ${webHost(identity)}. Sign in as ${pinned.email} and reconnect, or ` +
               "connect the other user as a separate account.",
           },
         };
@@ -575,7 +572,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const identity = await accountOf(this.ctx).getIdentity();
     return {
       displayName: identity.name,
-      uniqueName: `${identity.email} · ${hostOf(identity)}`,
+      uniqueName: `${identity.email} · ${webHost(identity)}`,
       avatar: { url: identity.avatarUrl ?? "" },
     };
   }
@@ -599,8 +596,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
     const identity = await accountOf(this.ctx).getIdentity();
     if (!sameTenant(parsed, identity)) {
-      throw new Error(`That link is for ${hostOf(parsed)}, but this ` +
-        `connection is to ${hostOf(identity)}.`);
+      throw new Error(`That link is for ${webHost(parsed)}, but this ` +
+        `connection is to ${webHost(identity)}.`);
     }
     const base = { userObjectId: this.ctx.props.userObjectId, region: parsed.region, subdomain: parsed.subdomain };
     const props: PagerDutyGatekeeperImplProps = parsed.kind === "account"
@@ -659,5 +656,3 @@ export class PagerDutyVerifier extends WorkerEntrypoint<Env, GatekeeperUserImplP
     return await accountOf(this.ctx).checkSubresourceAccess(subresources);
   }
 }
-
-export type { Identity, PagerDutyVerifierApi, PublicGrant };

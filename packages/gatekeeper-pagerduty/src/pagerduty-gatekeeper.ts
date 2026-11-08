@@ -11,19 +11,19 @@ import { validateRpc } from "capnweb-validate";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { ActionApplyError, ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import {
-  actions, dependedRefs, isProvisional, providedRefs, refusalsFail, type PagerDutyAction, type PagerDutyActionHost,
-  type PagerDutyActions,
+  DELETE_OVERRIDES, OVERRIDES, actions, dependedRefs, isProvisional, providedRefs, refusalsFail, type PagerDutyAction,
+  type PagerDutyActionHost,
 } from "./pagerduty-actions";
 import { PagerDutyApi } from "./pagerduty-api";
 import {
-  accountSource, parseSubresource, type AccountKey, type Identity, type PagerDutyVerifierApi,
+  accountSource, accountStub, parseSubresource, type AccountKey, type Identity, type PagerDutyVerifierApi,
 } from "./pagerduty-credentials";
-import { webOrigin, type Env, type PagerDutyGatekeeperImplProps, type ResourceKind } from "./pagerduty-env";
+import { webHost, type Env, type PagerDutyGatekeeperImplProps, type ResourceKind } from "./pagerduty-env";
 import {
   HOOKS_NOT_CONFIGURED, PagerDutyHookDeliveryImpl, hookDescription, hooksConfigured, watchedKinds,
   type PagerDutyHookDelivery,
@@ -57,7 +57,7 @@ const BINDINGS: Record<ResourceKind, { bindingName: string; tsType: string; hook
   schedule: { bindingName: "PAGERDUTY_SCHEDULE", tsType: "PagerDutySchedule" },
 };
 
-const SCHEDULE_TAGS = ["manage-overrides", "delete-overrides"];
+const SCHEDULE_TAGS = [OVERRIDES.tag, DELETE_OVERRIDES.tag];
 const notSchedule = (tag: string) => !SCHEDULE_TAGS.includes(tag);
 
 /**
@@ -130,7 +130,8 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     resolve: id => this.#refs.resolve(id),
     allocate: kind => this.#refs.allocate(sequence => `~${sequence}`, { kind }),
     kindOf: id => this.#refs.kindOf(id),
-    submit: (queue, kind, payload) => this.#submit(queue, kind, payload),
+    submit: async (queue, kind, payload) =>
+      this.#actions.submit(queue, kind, payload, { fence: { generation: (await this.#me()).userId } }),
     subscribe: async (queue, hook, options, scope) => {
       if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
       const events = watchedKinds(options);
@@ -152,7 +153,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
   async describe(): Promise<ResourceDescription> {
     const props = this.ctx.props;
     const { bindingName, tsType, hookTsType } = BINDINGS[props.resourceKind];
-    const host = new URL(webOrigin(props)).host;
+    const host = webHost(props);
     const types = { suggestedBindingName: bindingName, tsType, ...(hookTsType ? { hookTsType } : {}) };
     // Descriptions are visible outside observation authorization, so they name objects by ID only.
     return props.resourceKind === "account"
@@ -190,7 +191,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    // Actions are fenced on the user the binding is pinned to; see `#submit`.
+    // Fenced on the user the binding is pinned to, as each action was submitted (see `actions`).
     const { userId } = await this.#me();
     await this.#actions.apply(actionId, { generation: userId });
   }
@@ -247,8 +248,7 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
   async #me(): Promise<Identity> {
     const now = Date.now();
     if (this.#identity && now - this.#identity.at < IDENTITY_MEMO_MS) return this.#identity.value;
-    const { UserAccount } = this.ctx.exports;
-    const identity = await UserAccount.get(UserAccount.idFromString(this.ctx.props.userObjectId)).getIdentity();
+    const identity = await accountStub(this.ctx.exports, this.ctx.props.userObjectId).getIdentity();
     const kv = this.ctx.storage.kv;
     const pinned = kv.get<Pinned>(PINNED_KEY);
     if (pinned === undefined) {
@@ -262,15 +262,5 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
     }
     this.#identity = { value: identity, at: now };
     return identity;
-  }
-
-  /**
-   * Stages an action, fenced on the pinned user rather than the connection generation: a
-   * reconnect, always as the same user, must not strand what is waiting.
-   */
-  async #submit<K extends keyof PagerDutyActions>(
-      queue: ActionSubmitter, kind: K, payload: PagerDutyActions[K]): Promise<number> {
-    const { userId } = await this.#me();
-    return await this.#actions.submit(queue, kind, payload, { fence: { generation: userId } });
   }
 }

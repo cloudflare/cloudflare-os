@@ -8,31 +8,24 @@ import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
-  failure, hooks, accountStub, seedAccount, sub, unwrap,
+  ALICE, BOB, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
+  accountStub, bound, failure, hooks, sub, unwrap, type Binding,
 } from "./fake-pagerduty";
-import type { GatekeeperProps, Step } from "./worker";
+import type { Step } from "./worker";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-type Binding = { resourceKind: "account" } | { resourceKind: "team" | "service" | "incident" | "schedule"; id: string };
-
-async function setup(binding: Binding = { resourceKind: "account" }) {
-  const pd = new FakePagerDuty().install();
-  const props = { userObjectId: await seedAccount(pd), region: "us", subdomain: "acme", ...binding } as GatekeeperProps;
-  const name = crypto.randomUUID();
+async function setup(binding?: Binding) {
+  const base = await bound(binding);
+  const { pd, name, props } = base;
   return {
-    pd,
+    ...base,
     userObjectId: props.userObjectId,
     incident: pd.incident(SERVICE),
-    run: async (steps: Step[], pages?: number, between?: Step[][]) =>
-      unwrap(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
-    attempt: async (steps: Step[]) => failure(await hooks().run(name, props, steps)),
     submitted: async (): Promise<Array<{ actionId: number; description: ActionDescription }>> =>
       (await hooks().queueLog(name)).submitted,
-    reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
     apply: async (actionId: number) => unwrap(await hooks().applyAction(name, props, actionId)),
     tryApply: async (actionId: number) => failure(await hooks().applyAction(name, props, actionId)),
     reject: async (actionId: number) => unwrap(await hooks().rejectAction(name, props, actionId)),

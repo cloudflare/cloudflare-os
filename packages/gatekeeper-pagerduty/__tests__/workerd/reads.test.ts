@@ -6,29 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WireIncident, WireRef } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyScheduleSummary } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM, failure,
-  hooks, json, seedAccount, sub, unwrap,
+  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
+  bound as setup, json, sub,
 } from "./fake-pagerduty";
-import type { GatekeeperProps, Step } from "./worker";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
-
-type Binding = { resourceKind: "account" } | { resourceKind: "team" | "service" | "incident" | "schedule"; id: string };
-
-async function setup(binding: Binding = { resourceKind: "account" }, pd = new FakePagerDuty().install()) {
-  const props = { userObjectId: await seedAccount(pd), region: "us", subdomain: "acme", ...binding } as GatekeeperProps;
-  const name = crypto.randomUUID();
-  return {
-    pd,
-    run: async (steps: Step[], pages?: number, between?: Step[][]) =>
-      unwrap(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
-    attempt: async (steps: Step[], pages?: number) => failure(await hooks().run(name, props, steps, pages ? { pages } : {})),
-    /** What each observation so far reported, order aside. */
-    reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
-  };
-}
 
 const ids = (...list: string[]) => new Set([sub(), ...list]);
 

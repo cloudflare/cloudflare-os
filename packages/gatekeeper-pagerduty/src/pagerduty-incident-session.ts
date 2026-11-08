@@ -107,9 +107,10 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     } else {
       details = pendingIncident(loaded.pending, you);
     }
-    await this.#ctx.authorize({ title: "Read a PagerDuty incident", description: "Read the incident's details." },
-      { filter: [], result: this.#result(loaded) });
-    return overlayIncident(details, host.pending(), host.resolve, you);
+    await this.#ctx.authorize({ title: "Read a PagerDuty incident", description: "Read the incident's details." }, this.#result(loaded));
+    const pending = host.pending();
+    const shown = overlayIncident(details, pending, host.resolve, you);
+    return { ...shown, firstAlert: shown.firstAlert && overlayAlert(shown.firstAlert, shown.id, pending, host.resolve) };
   }
 
   async getTimeline(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyTimelineEntry>> {
@@ -129,7 +130,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     const notes = [...rows, ...pendingNotes(id, host.pending(), host.resolve, await this.#you())]
       .toSorted((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     await this.#ctx.authorize({ title: "Read a PagerDuty incident's notes", description: `Read ${countOf(notes.length, "note")}.` },
-      { filter: [], result: this.#result(loaded) });
+      this.#result(loaded));
     return notes;
   }
 
@@ -150,7 +151,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     const loaded = await this.#load();
     // An incident still waiting to be opened has none.
     if (!loaded.wire) {
-      await this.#ctx.authorize(describe([], true), { filter: [], result: this.#result(loaded) });
+      await this.#ctx.authorize(describe([], true), this.#result(loaded));
       return new ArrayCursor<T>([], pageSize);
     }
     const { id } = loaded.wire;
@@ -158,11 +159,10 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       pageSize,
       sources: [listing(`/incidents/${id}/${key}`, key, query, convert)],
       describe,
-      filter: [],
       // The incident can move to another service while the walk is open, so each page reads it
       // again: refused once it has left the capability's scope, and reporting the service it is on.
       result: async () => this.#result(await this.#load()),
-      ...(overlay ? { overlay: (row: T) => overlay(row, id) } : {}),
+      overlay: overlay && (row => overlay(row, id)),
     });
   }
 

@@ -45,7 +45,7 @@ export function changedIncidents(pending: Pending, resolve: Resolve): string[] {
   return [...new Set(ids)].filter(id => !isProvisional(id));
 }
 
-/** `incident` with its pending changes applied. */
+/** `incident` with its pending changes applied; `overlayAlert` applies them to its alerts. */
 export function overlayIncident<T extends PagerDutyIncidentSummary>(
   incident: T, pending: Pending, resolve: Resolve, me: PagerDutyUserRef,
 ): T {
@@ -64,13 +64,9 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
           }
         }
         break;
-      case "resolve": {
-        // Resolving an incident resolves its alerts.
+      case "resolve":
         result = { ...result, status: "resolved", assignees: [] };
-        const { firstAlert } = result as Partial<PagerDutyIncidentDetails>;
-        if (firstAlert) result = { ...result, firstAlert: { ...firstAlert, status: "resolved" } };
         break;
-      }
       case "setPriority":
         result = { ...result, priority: action.payload.priority?.name ?? null };
         break;
@@ -233,7 +229,6 @@ function withPending(overrides: readonly PagerDutyOverride[], scheduleId: string
 /** A span between ISO 8601 times. */
 type Span = { start: string; end: string };
 
-/** Whether two spans overlap. */
 const overlaps = (a: Span, b: Span): boolean =>
   Date.parse(a.start) < Date.parse(b.end) && Date.parse(b.start) < Date.parse(a.end);
 

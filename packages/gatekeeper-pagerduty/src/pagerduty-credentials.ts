@@ -91,11 +91,15 @@ export async function verifyIdToken(idToken: string, clientId: string): Promise<
   return { userId, accountId, subdomain: subdomain.toLowerCase(), region };
 }
 
+/** The `UserAccount` holding the connection `userObjectId` names. */
+export const accountStub = (exports: Cloudflare.Exports, userObjectId: string) =>
+  exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId));
+
 /** Credentials for the account behind `userObjectId`, as a facet or entrypoint reads them. */
 export function accountSource(exports: Cloudflare.Exports, userObjectId: string): CredentialSource<PublicGrant> {
   return new CredentialSource<PublicGrant>({
     // A fresh stub per read: a source can outlive the request that made it.
-    account: () => exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId)),
+    account: () => accountStub(exports, userObjectId),
     isAuthError,
     expiredMessage: RECONNECT_MESSAGE,
     vendorId: VENDOR_ID,
@@ -105,16 +109,16 @@ export function accountSource(exports: Cloudflare.Exports, userObjectId: string)
 // ---------------------------------------------------------------------------
 // Subresources
 
+const OBJECT_KINDS = ["team", "service", "incident", "schedule", "escalation_policy"] as const;
+
 /** The objects a read can depend on beyond the account itself. */
-export type ObjectKind = "team" | "service" | "incident" | "schedule" | "escalation_policy";
+export type ObjectKind = typeof OBJECT_KINDS[number];
 
 /** One account, by the region it lives in and PagerDuty's ID for it. */
 export type AccountKey = { region: Region; accountId: string };
 
 /** A parsed subresource: the account, or one object in it. */
 export type Subresource = AccountKey & { object?: { kind: ObjectKind; id: string } };
-
-const OBJECT_KINDS: readonly ObjectKind[] = ["team", "service", "incident", "schedule", "escalation_policy"];
 
 /**
  * The subresource ID of an account, `region/<region>/account/<id>`, or of one object in it,

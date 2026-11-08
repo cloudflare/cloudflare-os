@@ -109,7 +109,6 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
       params: { schedule_ids: scheduleIds, escalation_policy_ids: policyIds },
       users: users?.map(({ id }) => id),
       filter: [...(scheduleIds ?? []).map(schedule), ...(policyIds ?? []).map(escalationPolicy)],
-      fixed: [],
     });
   }
 }
@@ -159,13 +158,12 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {
-    const policies = await this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, () => this.ctx.host.read(api =>
-      api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })));
-    const policyIds = policies.map(({ id }) => id);
+    const policyIds = await this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
+      (await this.ctx.host.read(api => api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })))
+        .map(({ id }) => id));
     // With no policy to filter by, PagerDuty would answer for the whole account.
     return await listOnCalls(this.ctx, window, {
-      params: { escalation_policy_ids: policyIds }, filter: [], fixed: policyIds.map(escalationPolicy),
-      none: policyIds.length === 0,
+      params: { escalation_policy_ids: policyIds }, filter: policyIds.map(escalationPolicy), none: policyIds.length === 0,
     });
   }
 }
@@ -187,7 +185,8 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
   async #service(fresh = false) {
     const wire = fresh ? await readService(this.ctx, this.#id) : await cachedService(this.ctx, this.#id);
     requireTeam(wire, this.ctx.within.teamId, "service");
-    return wire;
+    if (!wire.escalation_policy) throw new Error("PagerDuty described the service without its escalation policy.");
+    return { ...wire, escalation_policy: wire.escalation_policy };
   }
 
   async getDetails(): Promise<PagerDutyServiceDetails> {
@@ -207,7 +206,6 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
       options.assignTo === undefined ? undefined : usersNamed(ctx, options.assignTo, "assignTo"),
       this.#service(),
     ]);
-    if (!wire.escalation_policy) throw new Error("PagerDuty described the service without its escalation policy.");
     const ref = ctx.host.allocate("incident");
     const stagedAt = new Date();
     const payload: NewIncident = {
@@ -225,9 +223,7 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {
-    const policyId = (await this.#service()).escalation_policy?.id;
-    if (!policyId) throw new Error("PagerDuty described the service without its escalation policy.");
-    return await listOnCalls(this.ctx, window,
-      { params: { escalation_policy_ids: [policyId] }, filter: [], fixed: [escalationPolicy(policyId)] });
+    const { id } = (await this.#service()).escalation_policy;
+    return await listOnCalls(this.ctx, window, { params: { escalation_policy_ids: [id] }, filter: [escalationPolicy(id)] });
   }
 }

@@ -48,6 +48,9 @@ export function webOrigin({ region, subdomain }: Tenant): string {
   return `https://${subdomain}${region === "eu" ? ".eu" : ""}.pagerduty.com`;
 }
 
+/** The account's web host, which is how it is named to users. */
+export const webHost = (tenant: Tenant): string => new URL(webOrigin(tenant)).host;
+
 /** This Worker's public base URL, without a trailing slash. */
 export function getBaseUrl(env: Env): string {
   return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/pagerduty");
