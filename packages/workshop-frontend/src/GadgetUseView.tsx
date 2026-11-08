@@ -24,8 +24,8 @@ import GadgetExportMenu from './GadgetExportMenu'
 // Gadget/Code/Connections controls, workspace activity, and every editor-only control. The
 // overseer and gadget passed in here are the restricted capabilities returned by openWorkspace() for
 // "use" sessions; calling anything outside getMetadata()/subscribeToMetadata()/subscribeToPresence()/
-// subscribeToWorkpieces()/getGadget() (and, on the gadget, UI connection and export methods)
-// would throw.
+// subscribeToWorkpieces()/getGadget()/reportGadgetConsoleLogs() (and, on the gadget, UI connection
+// and export methods) would throw.
 //
 // When the workspace has more than one gadget, a simple picker in the top bar switches between
 // them (selection is owned by the parent, in the URL's `?w=` search param). Pending gadgets are
@@ -162,10 +162,12 @@ export default function GadgetUseView({
               Try again
             </WorkshopButton>
           </div>
-        ) : gadget ? (
+        ) : gadget && selectedGadgetId !== null ? (
           <GadgetUI
             key={selectedGadgetId}
             gadget={gadget}
+            overseer={overseer}
+            gadgetId={selectedGadgetId}
             height="100%"
             isVisible={true}
           />

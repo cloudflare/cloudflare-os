@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { GadgetClient, ConsoleLogEvent, Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
+import { consoleLogFromFrame } from './features/gadget-console/gadgetConsoleLogReporter'
+import { useGadgetConsoleLogReporter } from './features/gadget-console/useGadgetConsoleLogReporter'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -108,6 +110,11 @@ const createSandboxedHtml = (jsCode: string): string => {
 
 interface GadgetUIProps {
   gadget: RpcStub<GadgetClient>
+  // Where the UI's console output is sent: the gadget's workspace, and its id there. `overseer` is
+  // null only where the workspace has no connection at all (it has not opened, or failed to),
+  // which holds the output back.
+  overseer: RpcStub<Overseer> | null
+  gadgetId: WorkpieceId
   height: string
   reloadTrigger?: number
   isVisible?: boolean
@@ -130,7 +137,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, overseer, gadgetId, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -162,6 +169,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const reportConsoleLog = useGadgetConsoleLogReporter(overseer, gadgetId, chatId)
+  const reportConsoleLogRef = useRef(reportConsoleLog)
+  reportConsoleLogRef.current = reportConsoleLog
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -382,12 +392,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
-      } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
-        onConsoleLogRef.current({
-          timestamp: new Date(),
-          level: event.data.level,
-          message: event.data.message,
-        })
+      } else if (event.data?.type === 'console') {
+        // The one place a frame's console message is read: what it posted is the gadget's choice.
+        const log = consoleLogFromFrame(event.data)
+        reportConsoleLogRef.current(log)
+        onConsoleLogRef.current?.(log)
       } else if (event.data?.type === 'escape') {
         onIframeEscapeRef.current?.()
       }
