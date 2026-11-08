@@ -386,12 +386,12 @@ describe("observer re-verification", () => {
 
 // ---------------------------------------------------------------------------------------------
 // A collaborator's opens over time, while each connection's credential lapses or is repaired
-// between opens and during the one re-prompt. Checked against ensureObserver()'s documented rules:
-// a first open prompts for every binding; every pass verifies every binding; only failed bindings
-// are re-prompted, once, with their failure; a terminal error names exactly the bindings still
-// failing; a failed first-ever open removes everything it registered, under its own discarded
-// observer id; a returning observer's failed open removes nothing (0d7793c); and a successful open
-// persists the observer id every later open reuses.
+// between opens and during the one re-prompt. Checked against ensureObserver()'s documented rules
+// (docs/observers.md): until an open succeeds, each one prompts for every binding; every pass
+// verifies every binding; only failed bindings are re-prompted, once, with their failure; a
+// terminal error names exactly the bindings still failing; no failed open de-registers anything,
+// a first-ever one included; and every open registers under the one observer id the first
+// reserved.
 
 /** One open: per binding, whether its credential verifies on the first pass, then after a repair. */
 type ObserverOpen = { firstPass: boolean[]; afterReprompt: boolean[] };
@@ -404,11 +404,8 @@ const observerOpens: fc.Arbitrary<ObserverOpen[]> = fc.integer({ min: 1, max: 3 
     afterReprompt: fc.array(verifies, { minLength: bindings, maxLength: bindings }),
   }), { minLength: 1, maxLength: 3 }));
 
-/** An event as the model predicts it; `observer` is the open that minted the observer id. */
-type ExpectedEvent = { type: "add" | "remove"; observer: number };
-
 describe("observer re-verification over a collaborator's opens", () => {
-  it.concurrent("registers, re-prompts, rolls back and reports exactly as the bindings verify",
+  it.concurrent("registers, re-prompts and reports exactly as the bindings verify, removing nothing",
       async () => {
     await fc.assert(fc.asyncProperty(observerOpens, async opens => withSession(async publicApi => {
       const [prefix] = nextUsernames("obsprop");
@@ -420,13 +417,12 @@ describe("observer re-verification over a collaborator's opens", () => {
         setVerifyOutcome(shared.bobLabel,
           allow ? { allow: true } : { allow: false, reason: EXPIRED_REASON }, urls[i])));
 
-      // The open whose observer id is persisted; undefined until one succeeds.
-      let persisted: number | undefined;
-      const expected: ExpectedEvent[][] = urls.map(() => []);
+      // Whether an earlier open succeeded, which is what publishes Bob's account choices.
+      let returning = false;
+      // How many passes verified each binding; each registers Bob there.
+      const registrations = urls.map(() => 0);
 
       for (const [k, { firstPass, afterReprompt }] of opens.entries()) {
-        const returning = persisted !== undefined;
-        const observer = persisted ?? k;
         await setOutcomes(firstPass);
         const recorder = new ObserverConfigRecorder();
         if (!returning) recorder.alwaysChoose(bob, 1);
@@ -439,9 +435,7 @@ describe("observer re-verification over a collaborator's opens", () => {
           (error: unknown) => error as Error);
 
         const passes = firstPass.every(Boolean) ? [firstPass] : [firstPass, afterReprompt];
-        for (const pass of passes) {
-          pass.forEach((ok, i) => { if (ok) expected[i]!.push({ type: "add", observer }); });
-        }
+        for (const pass of passes) pass.forEach((ok, i) => { if (ok) registrations[i]!++; });
         const failing = names.filter((_, i) => !passes.at(-1)![i]);
 
         const prompts = recorder.calls.map(needs => needs
@@ -458,36 +452,26 @@ describe("observer re-verification over a collaborator's opens", () => {
 
         if (failing.length === 0) {
           expect(opened, `open ${k}`).toBeNull();
-          persisted = observer;
+          returning = true;
         } else {
           expect(opened?.message, `open ${k}`).toMatch(/could not confirm/i);
           const named = opened!.message.split("\n")
             .filter(line => line.includes(shared.bobLabel))
             .map(line => /^Test Thing (\S+) \(/.exec(line)?.[1]);
           expect(named.toSorted(), `bindings named by open ${k}`).toEqual(failing.toSorted());
-          if (!returning) {
-            for (const events of expected) events.push({ type: "remove", observer });
-          }
         }
       }
 
-      // Every event names an observer id: the same id for the same open's observer, and a
-      // different one for each other. A binding that registered on one pass and failed on the next
-      // is removed once for each (`newlyAdded` and `invalidated` both hold it); removal is
-      // idempotent, so a repeat is collapsed rather than pinned.
-      const idOf = new Map<number, string>();
+      // Each verified pass registered Bob at its binding, nothing removed him, and every
+      // registration names the one observer id.
+      const ids = new Set<string>();
       for (const [i, url] of urls.entries()) {
-        const events = (await observerEvents(url)).filter((event, j, all) =>
-          event.type !== "remove" || all[j - 1]?.type !== "remove" || all[j - 1]?.id !== event.id);
+        const events = await observerEvents(url);
         expect(events.map(({ type }) => type), `events at ${names[i]}`)
-          .toEqual(expected[i]!.map(({ type }) => type));
-        for (const [j, { id }] of events.entries()) {
-          const { observer } = expected[i]![j]!;
-          expect(idOf.get(observer) ?? id, `observer id of open ${observer}`).toBe(id);
-          idOf.set(observer, id);
-        }
+          .toEqual(Array.from({ length: registrations[i]! }, () => "add"));
+        for (const { id } of events) ids.add(id);
       }
-      expect(new Set(idOf.values()).size, "distinct observer ids").toBe(idOf.size);
+      expect(ids.size, "distinct observer ids").toBeLessThanOrEqual(1);
     })), {
       ...PROPERTY_RUN_OPTIONS,
       numRuns: 8,
@@ -495,7 +479,8 @@ describe("observer re-verification over a collaborator's opens", () => {
         // The 0d7793c reproduction: a lapses and is repaired as b lapses for good.
         [[{ firstPass: [true, true], afterReprompt: [true, true] },
           { firstPass: [false, true], afterReprompt: [true, false] }]],
-        // A first-ever open fails terminally and rolls back; a later one starts afresh.
+        // A first-ever open fails terminally and keeps what it registered; the next succeeds under
+        // the same observer id.
         [[{ firstPass: [false, true], afterReprompt: [false, true] },
           { firstPass: [true, true], afterReprompt: [true, true] }]],
       ],
