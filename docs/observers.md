@@ -116,8 +116,8 @@ observer verification by explicit policy, and the admin is never registered as a
 `excludeObservers` never names an admin, and no observation is blocked on an admin's account.
 
 The exception is bounded. Restricted data (chat messages and attachments, file contents, commit
-messages, the argument summaries of queued agent calls, the descriptions and fields of actions,
-observations and hooks, and blueprint ids; see
+messages, kept gadget console logs, the argument summaries of queued agent calls, the descriptions
+and fields of actions, observations and hooks, and blueprint ids; see
 [What a call exposed](admin-access.md#what-a-call-exposed) for each call) is visible only at the
 `"full"` access level, which only a deployment config change permits and which an inspection must
 ask for: `ADMIN_WORKSPACE_ACCESS_MAX` caps the level, `metadata` by default, and fails closed to
@@ -781,19 +781,20 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    reach (one it doesn't bind, no enabled hook feeds, and none of its agent spawners
    bind — see `#gadgetReach`). Unbinding shrinks a gadget's scope silently, so a formerly-bound
    producer's later restricted reads that omit `subresources` are not covered for `use`
-   collaborators added after the unbind. Accepted because `use` sessions cannot read chat history
-   or the action log, and a rebind restores coverage at the next open. (A producer stays in the
-   gadget's scope through the subresource requirements the gadget recorded through it.)
+   collaborators added after the unbind. Accepted because `use` sessions cannot read chat history,
+   the action log or the kept gadget console logs, and a rebind restores coverage at the next
+   open. (A producer stays in the gadget's scope through the subresource requirements the gadget
+   recorded through it.)
    The *never*-bound flavor of the same skip is broader: a producer reachable only through
    chat bindings (an ambient singleton the agent reads in chat) was never in any gadget's scope
    — the agent can persist its restricted data into gadget code or storage without any `use`
    collaborator ever having been verified against it, and there is no prior binding for
    "re-bind" to restore.
    Accepted on the same grounds: coverage there is unverifiable by construction (the
-   liveness argument above), `use` sessions still cannot read chat history or the action
-   log, so the exposure is limited to what the agent chose to persist, and the forward
-   remedy is binding the producer to a gadget — that puts it in the gadget's scope, so every
-   collaborator holding it is verified against it at their next open.
+   liveness argument above), `use` sessions still cannot read chat history, the action
+   log or the kept gadget console logs, so the exposure is limited to what the agent chose to
+   persist, and the forward remedy is binding the producer to a gadget — that puts it in the
+   gadget's scope, so every collaborator holding it is verified against it at their next open.
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
    resource (inherent to the security model). Because that next open is what verifies them, the
@@ -819,9 +820,11 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    instead of blocking.
 8. **Removing a connection that read restricted data** — removal is not guarded by
    `containsRestrictedData`. The record is what observer verification runs against, so removing a
-   producer drops the check for data that outlives it in chat history and storage. The intended
-   remedy is that a future connection-removal UI asks the owner to certify that no sensitive data
-   from that connection has been retained in the workspace, for any connection.
+   producer drops the check for data that outlives it in chat history and storage, and for up to
+   72 hours in the kept gadget console logs (see
+   [gadget-console-logs.md](gadget-console-logs.md#why-these-readers)). The intended remedy is
+   that a future connection-removal UI asks the owner to certify that no sensitive data from that
+   connection has been retained in the workspace, for any connection.
 
 ---
 

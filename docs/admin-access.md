@@ -154,6 +154,9 @@ shaped as the matching `Overseer` reads are where there is one:
   turn recorded for it, running or paused, when its newest entry was written, the calls queued for
   its agent, and the actions it submitted that still wait for approval.
 - **Actions**: `listActions()`.
+- **Console logs**: `listConsoleLogs()`, the gadget console logs the workspace keeps, paged and
+  filtered as `Overseer.listConsoleLogs()` pages them (see
+  [gadget-console-logs.md](gadget-console-logs.md)).
 - **Code**: `listFiles()` and `readFile()` read a gadget's committed head. `getCommitLog()`,
   `listFilesAtCommit()`, `readFileAtCommit()` and `listChangedPaths()` read a gadget's history and
   any version of its code. `listPendingChanges()` and `readPendingFile()` read what a chat changed
@@ -221,7 +224,8 @@ An admin read never reaches a connection, and reads only what the workspace stor
 
 Beyond the workspace's own storage, a view reads only its owner's profile, from their account: in
 `describe()`, and in `listShareLinks()`, which uses the same lookup and only when the owner created
-a link.
+a link; and the workspace's console log object, in `listConsoleLogs()`, which leaves that object's
+entries and alarm as they were and asks no object while the workspace has kept no entry.
 
 ### Who created a connection
 
@@ -273,8 +277,8 @@ Every view method, the open included, runs through `#call()`:
 5. A call that level refuses is recorded, exposing `"metadata"` and with `refused` set, and then
    refused without reading anything: `accessOff` once the level is `"off"`, `contentWithheld` below
    `"full"` for a method that reads only content (`getChat()`, `readChatAttachment()`,
-   `readFile()`, `readFileAtCommit()`, `readPendingFile()`). Its record is sent with nothing
-   awaited after step 3's check.
+   `readFile()`, `readFileAtCommit()`, `readPendingFile()`, `listConsoleLogs()`). Its record is
+   sent with nothing awaited after step 3's check.
 6. The read, on the server and never through a connection. A read that throws is recorded as an
    attempt exposing `"metadata"`, once the checks pass again, and the call fails with the read's
    error: a missing object, a gadget whose code is pending, an invalid path, a commit that is not
@@ -284,7 +288,9 @@ Every view method, the open included, runs through `#call()`:
    only one the gadget reaches. A malformed string argument (a commit id, a path, an attachment
    id) is checked inside the read, so it is recorded this way. A number out of range is not:
    `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH`, like `listActions()`'s
-   invalid `beforeId`, is rejected before the call starts, and is not recorded.
+   invalid `beforeId`, is rejected before the call starts, and is not recorded. Neither is a
+   `listConsoleLogs()` query whose `since` or `until` is not a valid time or whose `cursor` is
+   malformed.
 7. The checks again, with nothing awaited before the record is sent, since the read may have
    awaited. A call that expiry, a demotion or the workspace's deletion overtakes while it reads
    writes nothing, appends nothing for the workspace and returns nothing.
@@ -331,7 +337,8 @@ gets (see [The level an inspection asks for](#the-level-an-inspection-asks-for))
 
 - **off**: `inspectWorkspace()` is refused.
 - **metadata**: the workspace's structure. Withheld: chat messages and queued steers, chat
-  attachments, file contents (at any commit, and pending in a chat), commit messages, the argument
+  attachments, file contents (at any commit, and pending in a chat), commit messages, gadget
+  console logs, the argument
   summaries of calls queued for an agent, which blueprint a gadget follows (`upstream`, a share
   link to code the view would otherwise withhold), the ids of the blueprints the workspace
   publishes (an id is a share link to the blueprint's code, as `upstream` is), and the
@@ -408,7 +415,8 @@ typed, so type the number of days you want kept, even the minimum.
   start and a digest of the whole id, which keeps long ids apart), the workspace's title at the time, `method`, the call's arguments by name, the `reason` given at
   the open, the level the open asked for (`requested`), the `access` level the call ran at (never
   above `requested`), what its answer exposed (`exposed`), and `refused` when the level refused
-  it.
+  it. An argument is recorded as a string or a number, so `listConsoleLogs()` records the fields
+  of its query one by one, `since` and `until` as ISO 8601 and a `chatId` of null as `"mainline"`.
 - **`AdminSettingRecord`** (`kind: "setting"`): one `AdminApi` setter's change. It holds `at`,
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.
@@ -434,6 +442,7 @@ page.
 | `listChatAttachments()` | never |
 | `readChatAttachment()` | any attachment found |
 | `listActions()` | an action, observation or hook entry with a description, or an action or observation with a field |
+| `listConsoleLogs()` | a console log entry |
 | `listFiles()` | never |
 | `readFile()` | any file at the path, an `unreadable` one included |
 | `getCommitLog()` | a commit with a message |
@@ -452,12 +461,12 @@ page.
 
 A refused call, or one whose read failed, records `"metadata"`. Present but empty is not content:
 no queued steers, an empty description or field list, an `upstream` naming no blueprint (a gadget
-built from scratch), an empty chat page, an empty argument summary, an empty commit message and an
-emptied blueprint id all record `"metadata"`. The file reads (`readFile()`, `readFileAtCommit()`,
-`readPendingFile()`) count any file they find, because an unreadable file's message can quote it
-(a symlink's quotes its target), and overstating is the safe direction. The predicates
-(`chatHoldsContent()` and its siblings in `admin-access.ts`) mirror the withholding helpers beside
-them, so each is false for anything a metadata view returns.
+built from scratch), an empty chat page, an empty console log page, an empty argument summary, an
+empty commit message and an emptied blueprint id all record `"metadata"`. The file reads
+(`readFile()`, `readFileAtCommit()`, `readPendingFile()`) count any file they find, because an
+unreadable file's message can quote it (a symlink's quotes its target), and overstating is the
+safe direction. The predicates (`chatHoldsContent()` and its siblings in `admin-access.ts`) mirror
+the withholding helpers beside them, so each is false for anything a metadata view returns.
 
 `exposed` is set from the answer, never from the level, so the content-read counts (see
 [Statistics](#statistics)) count reads that returned content, not calls made at `"full"`.
@@ -481,7 +490,7 @@ record cannot be written is refused.
 | An open refused because the authoritative setting or the cap is `"off"` | Yes, titled from the directory (cut) or `""` | No workspace is reached, so its title comes from the directory. |
 | An open refused because only the workspace's KV mirror still says `"off"` | Yes | The workspace's own check refused it. |
 | A dead capability (no longer an admin), an expired view, a deleted workspace, a malformed or unknown workspace id, including a call that expiry, a demotion or a deletion overtakes while it reads | No | Nothing was reachable, or nothing the call read left the server, and recording a gone workspace would write into storage that must stay empty. |
-| A call whose arguments are rejected before it starts: a mistyped argument, `listActions()`'s invalid `beforeId`, `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH` | No | Validation refuses the call before the view's own checks run, as it refuses a mistyped argument: nothing was read, and the call asked for nothing a record could name (a depth of 0, a `beforeId` of -1). Only an argument rejected before the call starts goes unrecorded; a malformed string is checked inside the read, and is the failed read above. |
+| A call whose arguments are rejected before it starts: a mistyped argument, `listActions()`'s invalid `beforeId`, `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH`, `listConsoleLogs()`'s `since` or `until` that is not a valid time, or malformed `cursor` | No | Validation refuses the call before the view's own checks run, as it refuses a mistyped argument: nothing was read, and the call asked for nothing a record could name (a depth of 0, a `beforeId` of -1, a time that is no time). Only an argument rejected before the call starts goes unrecorded; a malformed commit id, path or attachment id is checked inside the read, and is the failed read above. |
 
 ### Setting records
 
@@ -563,7 +572,7 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_NOT_ADMIN` | The caller, or a view's admin, is no longer named in `ADMINS`. |
 | `ADMIN_WORKSPACE_NOT_FOUND` | A malformed id, or one naming no workspace (never initialised or since deleted). |
 | `ADMIN_WORKSPACE_ACCESS_OFF` | The level is `"off"`, by the setting or the cap. |
-| `ADMIN_CONTENT_WITHHELD` | A method that reads only content (`getChat()`, `readChatAttachment()`, `readFile()`, `readFileAtCommit()`, `readPendingFile()`) on a view below `"full"`, whether its inspection asked for `"metadata"` (the default) or the deployment held it there. |
+| `ADMIN_CONTENT_WITHHELD` | A method that reads only content (`getChat()`, `readChatAttachment()`, `readFile()`, `readFileAtCommit()`, `readPendingFile()`, `listConsoleLogs()`) on a view below `"full"`, whether its inspection asked for `"metadata"` (the default) or the deployment held it there. |
 | `ADMIN_VIEW_EXPIRED` | The view's lifetime has run out. |
 
 ## Tests
@@ -573,7 +582,7 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `admin-access.test.ts`: admin status, the bounds' parsing (failing closed), the policy, validation
   (the commit log's depth included), the per-call level and the content methods it refuses, the
   cuts, setting values and excerpts, withholding, and whether an answer holds content (each
-  withholder with its predicate, empty values included).
+  withholder with its predicate, empty values included, and a console log page).
 - `admin-config.test.ts` (`diffAdminConfig`) and `admin-settings-audit.test.ts`: what each setter
   records, before which write, and the setters' bounds.
 - `admin-audit.test.ts`: the deployment-wide log's listing, filters (`exposed` alone and with the
@@ -592,7 +601,10 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   2,000,000-character title; the reads that never pull (a gadget's head, history, changed paths,
   files at a commit, attachments, and a chat's pending content with a worktree); the sharing reads
   never reaching a connection; an inspection calling every method leaving the workspace's storage,
-  presence and alarm as they were; and the view's surface being exactly what the audit names:
+  presence and alarm as they were; the console log read (refused below `"full"` without asking the
+  log object, every field of its query recorded with a null chat as `"mainline"`, a malformed
+  query rejected unrecorded, a failing log object recorded as an attempt, and the log object's
+  entries and alarm left as they were); and the view's surface being exactly what the audit names:
   every method in `ADMIN_WORKSPACE_METHODS` is recorded, and the view class exposes no other member
   over RPC (a helper must be `#private`: the class's public members, not its interface, are its
   RPC surface).
@@ -619,6 +631,8 @@ Integration suites, in `packages/integration-tests/__tests__/`:
 - `workshop-admin-audit.test.ts`: every setting change recorded before it takes effect, sessions,
   filters, stats and content reads across two admins, and a refused change when its record cannot
   be written.
+- `workshop-console-log-history.test.ts`: the console log read refused at `"metadata"` and
+  recorded as a content read at `"full"`, beside what members read of the same log.
 - `workshop-admin-bounds.test.ts`: the bounds' defaults, and a redeploy that tightens them (an
   invalid cap failing closed) and demotes an admin. The redeploy ends every session, the demoted
   admin's view among them, so the per-call re-check that stops a live view once its admin is demoted

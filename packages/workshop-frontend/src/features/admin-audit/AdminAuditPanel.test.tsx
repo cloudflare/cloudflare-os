@@ -870,10 +870,10 @@ describe('AdminAuditPanel', () => {
       await render()
 
       expect(card('Workspace access').textContent).toContain(
-        'Metadata only withholds chat messages, attachments, file contents, commit messages, and the ' +
-          'descriptions of actions, observations and hooks; titles, repository file names, commit ' +
-          'authors, and the names and hashes of attachments stay, and titles and names can echo ' +
-          'content.')
+        'Metadata only withholds chat messages, attachments, file contents, commit messages, gadget ' +
+          'console logs, and the descriptions of actions, observations and hooks; titles, ' +
+          'repository file names, commit authors, and the names and hashes of attachments stay, ' +
+          'and titles and names can echo content.')
     })
 
     it('disables the levels above the deployment’s maximum, naming it', async () => {

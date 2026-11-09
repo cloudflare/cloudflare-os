@@ -128,11 +128,11 @@ const accessHelp = ({ chosen, effective, max }: AuditSettings['adminWorkspaceAcc
   const help = [
     'The most of a workspace an admin may see when inspecting it: each inspection asks for ' +
       'Metadata only (the default) or Full, and gets the lower of that and this level. Metadata ' +
-      'only withholds chat messages, attachments, file contents, commit messages, and the ' +
-      'descriptions of actions, observations and hooks; titles, repository file names, commit ' +
-      'authors, and the names and hashes of attachments stay, and titles and names can echo ' +
-      'content. Off refuses inspection. Lowering it reaches views already open within about a ' +
-      'minute.',
+      'only withholds chat messages, attachments, file contents, commit messages, gadget console ' +
+      'logs, and the descriptions of actions, observations and hooks; titles, repository file ' +
+      'names, commit authors, and the names and hashes of attachments stay, and titles and names ' +
+      'can echo content. Off refuses inspection. Lowering it reaches views already open within ' +
+      'about a minute.',
   ]
   if (max === 'off') {
     help.push('This deployment’s ADMIN_WORKSPACE_ACCESS_MAX allows no inspection (a value that is ' +

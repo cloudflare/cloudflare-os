@@ -58,6 +58,11 @@ through logs and errors, then everything else.
 - Text a user or workspace member controls (display names, titles) enters the directory or the
   audit log only bounded: clamped to `MAX_DIRECTORY_TEXT_LENGTH`, or cut by `cutAdminAuditText()`.
   Flag a new copy of such text into either store without a bound.
+- Kept gadget console logs are workspace content (`docs/gadget-console-logs.md`). They are written
+  only by the Overseer (`#appendConsoleLogs()`), with every text a gadget or a browser chose shaped
+  by `gadget-console-log.ts`; nothing of an entry is passed to the server logger; and they are read
+  by `build` sessions (`Overseer.listConsoleLogs()`) and by admins only at `"full"`, through
+  `AdminWorkspaceViewImpl`'s `#call()`. Flag a new reader or writer that bypasses any of these.
 - `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
   (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
   harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump
