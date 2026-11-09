@@ -143,6 +143,23 @@ export const useComposerAttachments = ({
         uploadState: "uploading",
       };
       updateAttachments((current) => [...current, attachment]);
+      // A PDF's card shows its first page once it is drawn, as an image's shows the image.
+      if (mimeType === "application/pdf") {
+        void blob.arrayBuffer()
+          .then((buffer) => import("../../../library/PdfPages").then(({ pdfThumbnail }) => pdfThumbnail(new Uint8Array(buffer), 160)))
+          .then((thumbnail) => {
+            if (!thumbnail) return;
+            const url = URL.createObjectURL(thumbnail);
+            let kept = false;
+            updateAttachments((current) => current.map((entry) => {
+              if (entry.id !== id || entry.previewUrl) return entry;
+              kept = true;
+              return { ...entry, previewUrl: url };
+            }));
+            if (!kept) URL.revokeObjectURL(url);
+          })
+          .catch(() => {});
+      }
       void uploadAttachment(id, blob, mimeType, file.name || undefined);
     }
   };

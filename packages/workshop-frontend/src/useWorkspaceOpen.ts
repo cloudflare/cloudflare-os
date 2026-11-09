@@ -28,7 +28,7 @@ type ObserverConfigState = {
   reject: (error: unknown) => void
 }
 
-class ObserverConfigTarget extends RpcTarget implements ObserverConfigCallback {
+export class ObserverConfigTarget extends RpcTarget implements ObserverConfigCallback {
   #request: (needs: ObserverBindingNeed[]) => Promise<ObserverAccountChoice[]>
 
   constructor(request: (needs: ObserverBindingNeed[]) => Promise<ObserverAccountChoice[]>) {
@@ -64,6 +64,9 @@ type Options = {
   onMetadata: (metadata: WorkspaceMetadata) => void
   onShareKeyConsumed: () => void
   onInvalidShareKey: () => void
+  /** Names the browser tab after the workspace, as its own page does; false for a page that opens
+   *  one only to show an app beside its own content. Defaults to true. */
+  namesTab?: boolean
 }
 
 export function useWorkspaceOpen({
@@ -72,6 +75,7 @@ export function useWorkspaceOpen({
   onMetadata,
   onShareKeyConsumed,
   onInvalidShareKey,
+  namesTab = true,
 }: Options) {
   const [overseer, setOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
   const [metadata, setMetadata] = useState<WorkspaceMetadata | null>(null)
@@ -84,7 +88,7 @@ export function useWorkspaceOpen({
   const callbacksRef = useRef({ onMetadata, onShareKeyConsumed, onInvalidShareKey })
   callbacksRef.current = { onMetadata, onShareKeyConsumed, onInvalidShareKey }
 
-  useDocumentTitle(error ? '' : metadata?.title)
+  useDocumentTitle(namesTab ? (error ? '' : metadata?.title) : undefined)
 
   // A callback routing the overseer's account prompts to the picker until `signal` aborts. Gadget
   // opens need one each, since a collaborator given individual gadgets is verified per gadget. One

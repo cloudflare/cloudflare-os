@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
@@ -119,6 +119,9 @@ interface GadgetUIProps {
   // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
   // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
   onNoUiChange?: (showsNoUi: boolean) => void
+  // What to show in place of the "No gadget UI yet" placeholder once the gadget is known to have
+  // no UI, such as an overview of an app that works in the background.
+  noUi?: ReactNode
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -130,7 +133,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, noUi }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -456,6 +459,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         />
       </div>
     )
+  }
+
+  if (!sandboxedHtml && noUi !== undefined) {
+    return <div style={{ height }}>{noUi}</div>
   }
 
   if (!sandboxedHtml) {

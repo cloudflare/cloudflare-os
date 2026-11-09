@@ -94,12 +94,11 @@ it("runs a hook from enabling, through a delivery and its approved write, to its
   stack.use(ws);
   stack.use(connection);
 
-  // Bound disabled: nothing changes on GitHub until the user enables it.
-  const [hook] = await ws.listHooks();
-  expect(hook).toMatchObject({ enabled: false, description: { title: `Watch acme/${repo.name} on GitHub` } });
+  // Bound in a turn the user started, the hook turns on by itself, creating its webhook.
+  const hook = await waitFor("the hook to turn on", async () =>
+    (await ws.listHooks()).find(h => h.enabled) ?? null);
+  expect(hook).toMatchObject({ description: { title: `Watch acme/${repo.name} on GitHub` } });
   const ownWebhooks = () => [...github.webhooks.values()].filter(webhook => webhook.repo === repo.name);
-  expect(ownWebhooks()).toEqual([]);
-  await ws.enableHook(hook!.id);
   const [webhook] = ownWebhooks();
   expect(webhook).toMatchObject({ events: ["issues"], active: true });
   expect(webhook!.url).toMatch(/^https:\/\/workshop\.test\/gatekeeper\/github\/webhook\/[0-9a-f]{64}$/);

@@ -8,3 +8,14 @@ export const OPEN_COMMAND_PALETTE_EVENT = 'gadgets:open-command-palette'
 export function openCommandPalette(): void {
   window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))
 }
+
+/** Event the app shell listens for to open the sidebar as a full-screen drawer on phones. */
+export const OPEN_SIDEBAR_DRAWER_EVENT = 'gadgets:open-sidebar-drawer'
+
+/**
+ * Open the sidebar drawer. On phones the sidebar is hidden and each page's header shows a button
+ * that calls this, the way the design's phone frames go back to the chat list.
+ */
+export function openSidebarDrawer(): void {
+  window.dispatchEvent(new CustomEvent(OPEN_SIDEBAR_DRAWER_EVENT))
+}

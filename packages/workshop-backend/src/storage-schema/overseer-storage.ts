@@ -24,8 +24,8 @@ import {
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
-  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
-  type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
+  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetAccessMode, type GadgetUpstream,
+  type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId, type WorkspaceKind,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
@@ -118,6 +118,13 @@ export type AgentSpawnerBindingProps = {
    * created before collaborator support was added.
    */
   creatorUserId?: string,
+
+  /**
+   * The name of the model its agents run (see AgentSpawnerConfig.modelId), as resolved when the
+   * spawner was created or last changed, so describe() can tell the chat's agent. Absent for no
+   * model, and on stubs minted before it was recorded.
+   */
+  modelName?: string,
 };
 
 /**
@@ -224,6 +231,13 @@ export type GadgetRecord = {
    * blueprints derived from them.
    */
   upstream?: GadgetUpstream;
+
+  /**
+   * The chat whose agent created this gadget, kept after its creation is accepted (unlike
+   * `pending`), so the chat can go on showing the app it built and what that app runs. Absent for
+   * a gadget created outside a chat, or before this was recorded. The chat may since be deleted.
+   */
+  madeInChatId?: number;
 
   /**
    * This gadget's bindings: binding name (as it appears in the gadget worker's `env`) -> binding
@@ -550,6 +564,18 @@ export type ActionRecord = {
 
   /** Denormalized for display purposes. */
   enabled: boolean;
+} | {
+  /**
+   * The owner's view of a gadget was published (see ViewRecord). Clients are shown it as an
+   * observation with no gatekeeper. `requirementKeys` audit what restricted data the view may
+   * hold; unlike an observation's `subresources`, they add no requirement of their own.
+   */
+  type: "viewPublished";
+  gadgetId: WorkpieceId;
+  /** The gadget's head commit the view was rendered from. */
+  commitId: string;
+  /** The observer requirements in the gadget's scope when it was rendered (see ViewRecord). */
+  requirementKeys: string[];
 });
 
 /**
@@ -574,6 +600,9 @@ export type BoundHookRecord = {
    * If omitted, use `defaultGadgetId`.
    */
   gadgetId?: WorkpieceId;
+
+  /** The chat whose agent bound the hook to the chat itself; see BoundHookInfo.chatId. */
+  chatId?: number;
 
   vendorId?: string;
   controller: Fetcher<HookController<RpcTarget>>;
@@ -977,6 +1006,11 @@ type ChatAttachmentContentRecord = {
     workspacePath?: string;
     /** Legacy immutable Git source commit for replay and download. */
     workspaceCommitId?: string;
+    /**
+     * What `Overseer.listChatFiles()` shows of the file, copied from its `ChatAttachmentRef` when
+     * the message carrying it was committed. Absent on attachments committed before this field.
+     */
+    file?: {name?: string; mimeType: string; size: number; attached: number};
   };
 };
 
@@ -1186,6 +1220,38 @@ export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
  * sharing graph AND passing verification for what is opened, which this record only remembers
  * choices for. See observers-implementation-plan.md §3.
  */
+/**
+ * The owner's view of one gadget (GadgetView in the API): a copy of the gadget's facet, under the
+ * name `OverseerImpl.viewFacetName()`, cloned from it by the owner's last open. One per gadget,
+ * cloned over in place, never by a failed clone. See docs/sharing.md, "Shared views".
+ */
+export type ViewRecord = {
+  gadgetId: WorkpieceId;
+  takenAt: Date;
+  /** The publisher: the profile id of the owner whose open took the view. */
+  byProfileId: string;
+  /** The gadget's head commit when the view was taken; the code the view's copy runs. */
+  commitId: string;
+  /**
+   * Every observer requirement in the gadget's scope when it was taken, as
+   * `<connection id>:<subresource>`: what restricted data the view may hold. Also kept on the
+   * viewPublished action record, which outlives this one.
+   */
+  requirementKeys: string[];
+  /** When a later clone failed. Cleared by the next success. */
+  failedAt?: Date;
+};
+
+/**
+ * How a "use" collaborator last opened each gadget, for the share dialog (CollaboratorInfo
+ * .lastOpened in the API). Written on every admission to a gadget; it decides nothing.
+ */
+export type CollaboratorOpensRecord = {
+  /** The collaborator's profile id. Primary key of the collection. */
+  profileId: string;
+  gadgets: Record<WorkpieceId, {at: Date; mode: GadgetAccessMode}>;
+};
+
 export type ObserverRecord = {
   /** The sharing-table key for this user (their profile.id). Primary key of the collection. */
   profileId: string;
@@ -1380,6 +1446,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
       title: "Untitled Workspace",
+
+      // "workspace" if the owner created this as a named workspace (WorkspaceMetadata.kind), set
+      // once at creation. Absent for a workspace made to hold a chat started outside any workspace.
+      workspaceKind: <WorkspaceKind | undefined>undefined,
 
       // If present, this gadget was migrated from version zero, when a workspace had only one
       // gadget. Many stored records that normally contain a `gadgetId` might be missing it; they
@@ -1593,7 +1663,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // matchesActionHistoryFilter (api.ts), so every listActions() filter is one ranged
           // read. The "all" filter has no key: it reads the collection itself.
           byHistoryFilter(record: ActionRecord) {
-            return record.state === "pending" ? ["pending", record.type] : record.type;
+            // A viewPublished record reaches clients as an observation (see actionRecordToLog).
+            let type = record.type === "viewPublished" ? "observation" : record.type;
+            return record.state === "pending" ? ["pending", type] : type;
           },
 
           // Sparse index over the observer requirements: one key per subresource of each
@@ -1792,6 +1864,16 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // with the account choices admissions verified, until they lose access. See
       // `ObserverRecord`. The secondary index lets the forward-exclusion path
       // (`authorizeObservation`) map an opaque observerId back to a profileId.
+      // The owner's view of each gadget that has one, keyed by gadget. See `ViewRecord`.
+      views: collection<ViewRecord>()({
+        primaryKey: "gadgetId",
+      }),
+
+      // How each collaborator last opened each gadget. See `CollaboratorOpensRecord`.
+      collaboratorOpens: collection<CollaboratorOpensRecord>()({
+        primaryKey: "profileId",
+      }),
+
       observers: collection<ObserverRecord>()({
         primaryKey: "profileId",
         uniqueIndexes: {

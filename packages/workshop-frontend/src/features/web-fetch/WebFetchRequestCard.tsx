@@ -1,9 +1,9 @@
 import { useId, useState } from 'react'
-import { Button, useKumoToastManager } from '@cloudflare/kumo'
+import { useKumoToastManager } from '@cloudflare/kumo'
 import { GlobeIcon } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { AiChatMessage, Overseer } from '@gadgets/workshop-shared/api'
-import { ResolveButton } from '../../components/ResolveButton'
+import { ChatReceipt, RequestButton, RequestCard } from '../chat/transcript/RequestCard'
 import { RestrictedApprovalNotice } from '../../components/RestrictedApprovalNotice'
 import { rpcFailureDescription } from '../../rpcErrors'
 
@@ -40,59 +40,52 @@ export const WebFetchRequestCard = ({ overseer, request, pendingRequestIds }: {
     }
   }
 
+  let host = request.url
+  try {
+    host = new URL(request.url).host
+  } catch {
+    // Shown as given.
+  }
+
+  if (!pending) {
+    return (
+      <ChatReceipt icon={<GlobeIcon size={15} />} title={request.url}>
+        {request.state === 'approved' ? `Opened ${host}` : `Didn't open ${host}`}
+      </ChatReceipt>
+    )
+  }
+
   return (
-    <div className="max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-      <div className="rounded-2xl border border-kumo-line bg-kumo-base px-4 py-3">
-        <div className="flex items-start gap-3">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-kumo-tint text-kumo-subtle">
-            <GlobeIcon size={18} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <span className="font-medium text-kumo-default">Fetch a web page</span>
-              {request.state === 'approved' && (
-                <span className="text-[12px] font-medium text-kumo-success">Approved</span>
-              )}
-              {request.state === 'denied' && (
-                <span className="text-[12px] font-medium text-kumo-danger">Denied</span>
-              )}
-            </div>
-            <p id={urlId} className="m-0 mt-1 break-all font-mono text-[12px] leading-[18px] text-kumo-default">
-              {request.url}
-            </p>
-          </div>
-          {pending && (
-            <div className="ml-3 flex shrink-0 items-center gap-1 self-center">
-              <ResolveButton
-                tone="deny"
-                onClick={() => void decide(false, [request.requestId])}
-                disabled={deciding}
-                describedBy={`${noticeId} ${urlId}`}
-              />
-              <ResolveButton
-                tone="approve"
-                variant="filled"
-                onClick={() => void decide(true, [request.requestId])}
-                disabled={deciding}
-                describedBy={`${noticeId} ${urlId}`}
-              />
+    <RequestCard
+      icon={<GlobeIcon size={17} />}
+      title="Open a web page"
+      meta={host}
+      actions={
+        <>
+          <RequestButton tone="secondary" onClick={() => void decide(false, [request.requestId])}
+            disabled={deciding} aria-describedby={`${noticeId} ${urlId}`}>
+            Deny
+          </RequestButton>
+          <RequestButton tone="primary" onClick={() => void decide(true, [request.requestId])}
+            disabled={deciding} aria-describedby={`${noticeId} ${urlId}`}>
+            Approve
+          </RequestButton>
+        </>
+      }
+      footer={
+        <>
+          <RestrictedApprovalNotice id={noticeId} />
+          {offerApproveAll && (
+            <div className="mt-2 flex justify-end">
+              <RequestButton tone="quiet" onClick={() => void decide(true, pendingRequestIds)} disabled={deciding}>
+                Approve all {pendingRequestIds.length}
+              </RequestButton>
             </div>
           )}
-        </div>
-        {pending && <RestrictedApprovalNotice id={noticeId} className="mt-3" />}
-        {offerApproveAll && (
-          <div className="mt-2 flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void decide(true, pendingRequestIds)}
-              disabled={deciding}
-            >
-              Approve all {pendingRequestIds.length}
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
+        </>
+      }
+    >
+      <span id={urlId} className="break-all">{request.url}</span>
+    </RequestCard>
   )
 }

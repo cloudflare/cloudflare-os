@@ -422,7 +422,8 @@ describe("local counts and explicit read boundaries", () => {
     await vi.waitFor(() => expect(deltas).toHaveLength(2));
     expect(await fixture.user.getUnreadThreads()).toEqual([
       {workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 1,
-        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000)},
+        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000),
+        unjoined: true},
     ]);
     // A repeated ACK-lost packet doesn't rewrite the row or emit another invalidation.
     const head = (await cursor(fixture))!.head!;
@@ -436,6 +437,42 @@ describe("local counts and explicit read boundaries", () => {
     await fixture.user.messageArrived(fixture.workspaceId, 1, {...progress(1), firstMessageSequence: 0, head});
     expect((await fixture.user.getUnreadThreads())[0]).toMatchObject({latestSequence: 4,
       latestActivityAt: new Date(1_004), latestMessagePreview: "x".repeat(240), unreadMessageCount: 2});
+  });
+
+  it("lists a chat as the user's own once they write in it, open it or unarchive it", async () => {
+    const fixture = await setup();
+    const {reader, profile} = await addReader(fixture);
+    const threads = async () => (await reader.getChatThreads()).map(t => [t.chatId, t.unjoined ?? false]);
+    // Chats that were there when they joined, and ones others start since, aren't theirs.
+    expect(await threads()).toEqual([[1, true]]);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({id: 2, title: "Theirs", started: new Date(), lastActive: impl.getChatTimestamp()});
+      impl.storage.chatMeta.put({id: 3, title: "Mine", started: new Date(), lastActive: impl.getChatTimestamp()});
+      write(impl, 0, "Hi", 2);
+      write(impl, 5, "Mine", 3, profile);
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(async () => expect((await threads()).toSorted()).toEqual([[1, true], [2, true], [3, false]]));
+    // Opening one joins it; unarchiving does too.
+    await reader.joinChat(fixture.workspaceId, 1);
+    await reader.setChatArchived(fixture.workspaceId, 2, true);
+    await reader.setChatArchived(fixture.workspaceId, 2, false);
+    expect((await threads()).toSorted()).toEqual([[1, false], [2, false], [3, false]]);
+  });
+
+  it("lists a workspace as invited until the user first opens it", async () => {
+    const fixture = await setup();
+    const owner = {type: "user" as const, id: "owner", name: "Owner"};
+    const reader = env.TEST_USER.getByName(`reader-${crypto.randomUUID()}`);
+    await reader.recordSharedWorkspaceInvite(fixture.workspaceId, "Workspace", owner, "build", "workspace");
+    expect(await reader.listWorkspaces()).toEqual([expect.objectContaining({
+      id: fixture.workspaceId, title: "Workspace", owner, role: "build", kind: "workspace", invited: true})]);
+    // A second invite leaves the listing alone; opening it clears the mark.
+    await reader.recordSharedWorkspaceInvite(fixture.workspaceId, "Other", owner, "use");
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", [], "workspace");
+    const [listed] = await reader.listWorkspaces();
+    expect(listed).toMatchObject({title: "Workspace", role: "build"});
+    expect(listed.invited).toBeUndefined();
   });
 
   it("does not overwrite a delivered rename with metadata captured by an earlier reopen", async () => {

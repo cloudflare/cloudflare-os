@@ -67,6 +67,12 @@ export type AdminConfig = {
    * allow. Off by default: approving moves the leak check onto the approver.
    */
   restrictedWebFetchApprovals: boolean;
+  /**
+   * Whether gadget shares serve the owner's view to collaborators who cannot be verified against
+   * the gadget's data (see docs/sharing.md, "Shared views"). On by default: owners may already
+   * export and forward what they see, and the view is the audited, revocable way to.
+   */
+  sharedViews: boolean;
 
   /**
    * The blueprints offered as this deployment's standard output formats. What a user gets from
@@ -187,6 +193,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   ambientGatekeeperModes: {},
   restrictedWebFetchHosts: [],
   restrictedWebFetchApprovals: false,
+  sharedViews: true,
   formats: [],
   modelModes: {},
   addedProviders: [],

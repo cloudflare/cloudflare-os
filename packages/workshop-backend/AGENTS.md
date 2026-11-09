@@ -67,8 +67,9 @@ them:
 - `src/storage-schema/admin-settings-storage.ts` defines `AdminConfig` (its helpers live in
   `src/admin-config.ts`) — the deployment's "soft" customizations: agent instructions,
   banners/theme, and which gatekeeper connectors/resources are offered (plus the three-state mode for
-  auto-provisioning gatekeepers above). Connectors/resources default to enabled and the admin UI
-  opts them *out*; auto-provisioning gatekeepers default to *optional*.
+  auto-provisioning gatekeepers above), and whether gadget shares serve the owner's view
+  (`sharedViews`, default on; see `docs/sharing.md`, "Shared views"). Connectors/resources default
+  to enabled and the admin UI opts them *out*; auto-provisioning gatekeepers default to *optional*.
 - **Authentication/authorization config (sign-in providers via `AUTH_GATEKEEPERS`, password login
   via `DISABLE_PASSWORD_AUTH`) is deliberately NOT in `AdminConfig`** — it stays env-var driven
   (`auth/config.ts`) so it can't be changed by a compromised admin session.

@@ -157,7 +157,8 @@ delete globalThis.__workshopExportRuntime;
  *
  * Takes ownership of `gadget` and disposes it once the export settles. The
  * returned stream must be consumed or cancelled: the browser session stays open
- * until it settles or times out.
+ * until it settles or times out. `viewport` fixes the page size the Gadget lays
+ * out in; the browser's default is used without it.
  */
 export async function renderGadgetInBrowser(
   browserBinding: BrowserRun,
@@ -165,6 +166,7 @@ export async function renderGadgetInBrowser(
   documentTitle: string,
   gadget: RpcStub<any>,
   format: GadgetExportFormat,
+  viewport?: { width: number; height: number },
 ): Promise<ReadableStream<Uint8Array>> {
   const deadline = createExportDeadline("Browser export timed out.");
 
@@ -205,6 +207,7 @@ export async function renderGadgetInBrowser(
   try {
     let source = await deadline.race((async () => {
       let page = await browser.newPage();
+      if (viewport) await page.setViewport(viewport);
       await page.emulateMediaType(
         format.contentType === "application/pdf" ? "print" : "screen",
       );

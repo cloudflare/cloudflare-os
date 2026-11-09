@@ -300,8 +300,8 @@ describe('accepting a proposal that the chat’s metadata does not announce', ()
   it('offers accept and discard while the proposal is still to be decided', async () => {
     const chat = await renderProposalChat({ history: [follow] })
 
-    expect(text()).toContain('Pending changes')
-    await click('Accept changes')
+    expect(text()).toContain('Keep these changes?')
+    await click('Keep')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
 
@@ -313,7 +313,7 @@ describe('accepting a proposal that the chat’s metadata does not announce', ()
       type: 'merge', mergeThrough: 0, commits: [],
     })
 
-    expect(button('Accept changes')).toBeUndefined()
+    expect(button('Keep')).toBeUndefined()
     expect(text()).toContain('Trip planner, version 3')
     expect(text()).toContain('Accepted')
   })
@@ -342,7 +342,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       content: () => content,
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).not.toHaveBeenCalled()
     expect(text()).toContain('This draft still has merge conflicts')
     expect(text()).toContain('line 1')
@@ -352,7 +352,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
     expect(chat.mergeChanges).not.toHaveBeenCalled()
 
     content = contentOf('const days = 7\n')
-    await click('Accept changes')
+    await click('Keep')
     expect(text()).not.toContain('This draft still has merge conflicts')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
@@ -367,7 +367,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       commits: { 'merge-untouched': { 'client.js': CONFLICTED } },
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).not.toHaveBeenCalled()
     expect(text()).toContain('This draft still has merge conflicts')
     expect(text()).toContain('line 1')
@@ -381,7 +381,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       commits: { 'merge-resolved': { 'client.js': 'const days = 7\n' } },
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(text()).not.toContain('This draft still has merge conflicts')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
@@ -393,7 +393,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       content: () => contentOf(CONFLICTED),
     })
 
-    await click('Accept changes')
+    await click('Keep')
     await click('Accept anyway')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
     expect(text()).not.toContain('This draft still has merge conflicts')
@@ -418,7 +418,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       commits: { 'mainline-merge': { 'client.js': CONFLICTED } },
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).not.toHaveBeenCalled()
     expect(text()).toContain('This draft still has merge conflicts')
   })
@@ -436,7 +436,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       content: () => contentOf(CONFLICTED),
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).not.toHaveBeenCalled()
     expect(text()).toContain('This draft still has merge conflicts')
   })
@@ -452,11 +452,11 @@ describe('accepting changes with unresolved merge conflicts', () => {
       hasLocalEdits: () => unsent,
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).not.toHaveBeenCalled()
 
     unsent = false
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
 
@@ -473,7 +473,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       hasLocalEdits: () => true,
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
 
@@ -485,7 +485,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
       content: () => undefined,
     })
 
-    await click('Accept changes')
+    await click('Keep')
     expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID)
   })
 })
@@ -549,7 +549,7 @@ describe('an update from mainline', () => {
     const { useKumoToastManager } = await import('@cloudflare/kumo')
     const toasts = useKumoToastManager()
 
-    await click('Accept changes')
+    await click('Keep')
     await click('Bring in latest changes')
     expect(toasts.add).toHaveBeenCalledWith({ title: refusal, variant: 'error' })
   })

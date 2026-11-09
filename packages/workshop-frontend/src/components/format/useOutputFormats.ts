@@ -77,7 +77,8 @@ export async function createFromFormat(
   }
 }
 
-export function useOutputFormats(): OutputFormats {
+/** `enabled` defers the fetch until a surface is about to show the list, such as a menu opening. */
+export function useOutputFormats(enabled = true): OutputFormats {
   const { authenticatedApi } = useAuthenticatedApi()
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
@@ -85,6 +86,7 @@ export function useOutputFormats(): OutputFormats {
   const [creating, setCreating] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
     let cancelled = false
     loadOutputFormats(authenticatedApi)
       .then((list) => {
@@ -97,7 +99,7 @@ export function useOutputFormats(): OutputFormats {
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi])
+  }, [authenticatedApi, enabled])
 
   const create = useCallback(async (format: OutputFormatOffer) => {
     setCreating(format.blueprintId)

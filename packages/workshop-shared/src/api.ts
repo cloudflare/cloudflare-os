@@ -276,13 +276,55 @@ export type ChatTimelineHead = {
    * the server is older than this field.
    */
   latestActivityAt?: Date;
+  /**
+   * If an agent spawner (such as a scheduled task) started the chat, the spawner's display name,
+   * as in `AiChatMetadata.spawnerName`. Lets a chat list mark chats an agent started without
+   * opening their workspace. Absent for a chat a person started, and when the server is older than
+   * this field.
+   */
+  spawnerName?: string;
 };
 
 /**
  * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
  * Returned by `AuthenticatedApi.getUnreadThreads()`.
  */
-export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
+export interface UnreadThread extends ChatReadState, ChatTimelineHead {
+  /**
+   * Set when the user archived the chat (`AuthenticatedApi.setChatArchived()`): a list of recent
+   * chats leaves it out, while search and the chat's workspace still find it.
+   */
+  archived?: true;
+
+  /**
+   * Set while the user hasn't taken part in the chat: someone else in a shared workspace started
+   * it, and the user hasn't opened it or written in it. A list of the user's recent chats leaves
+   * it out; the chat's workspace still lists it.
+   */
+  unjoined?: true;
+}
+
+/** Identifies something the user can star: an app (a gadget), a chat, or a file attached in a chat. */
+export type FavoriteItemRef =
+  | { kind: "app"; workspaceId: string; workpieceId: WorkpieceId }
+  | { kind: "chat"; workspaceId: string; chatId: number }
+  | { kind: "file"; workspaceId: string; chatId: number; fileId: string };
+
+/** What starring an item records about it, so a list of favorites can show it. */
+export type FavoriteItemSpec = FavoriteItemRef & {
+  /** The app's, chat's or file's name. */
+  title: string;
+  /** A file's MIME type, for its icon. Absent for an app or chat. */
+  mimeType?: string;
+  /** An app's format, for its icon. Absent for a chat or file, or an app built from scratch. */
+  output?: BlueprintOutput;
+};
+
+/** One of the user's starred items, as returned by `AuthenticatedApi.listFavorites()`. */
+export type FavoriteItem = FavoriteItemSpec & {
+  /** When the user starred it. */
+  starred: Date;
+};
 
 /** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
 export type WorkspaceUnreadSummary = {
@@ -330,10 +372,11 @@ export type UnreadSummaryUpdate = {
  * which chat rows are sent:
  * - `"summary"`: no chats, only totals (e.g. for badges).
  * - `"unread"`: every chat that has unread messages (e.g. for the unread inbox).
+ * - `"all"`: every chat in the user's workspaces, read or unread (e.g. for a list of recent chats).
  * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
  *   list).
  */
-export type UnreadStateScope = "summary" | "unread" | {
+export type UnreadStateScope = "summary" | "unread" | "all" | {
   /** The workspace whose chats to send. */
   workspaceId: string;
 };
@@ -342,8 +385,8 @@ export type UnreadStateScope = "summary" | "unread" | {
 export interface UserUnreadState extends UserUnreadSummary {
   /**
    * The chats in the subscription's scope (see `UnreadStateScope`): none for `"summary"`, chats
-   * with unread messages for `"unread"`, or one workspace's chats for a workspace scope. Chats in
-   * that workspace that aren't listed have nothing unread.
+   * with unread messages for `"unread"`, every chat for `"all"`, or one workspace's chats for a
+   * workspace scope. Chats in that workspace that aren't listed have nothing unread.
    */
   chats: ChatReadState[];
 }
@@ -733,6 +776,34 @@ export interface AuthenticatedApi extends RpcTarget {
   getUnreadThreads(): Promise<UnreadThread[]>;
 
   /**
+   * List every chat across all of the user's workspaces, read or unread, most recently active
+   * first, in the same rows as `getUnreadThreads()`: each has the chat's title, a preview of its
+   * latest message and its unread count, so a list of recent chats can be shown without opening
+   * any workspace. Like the unread inbox it covers only workspaces the user owns or can build in.
+   * Subscribe with the `"all"` scope to hear when a row changes.
+   */
+  getChatThreads(): Promise<UnreadThread[]>;
+
+  /**
+   * Archive or unarchive one of the user's chats. Archiving is private to the user and only marks
+   * the chat's row (`UnreadThread.archived`); the chat itself, its unread count and its
+   * notifications are unchanged. Subscribers to the `"all"` scope hear about the change.
+   */
+  setChatArchived(workspaceId: string, chatId: number, archived: boolean): Promise<void>;
+
+  /**
+   * The apps and files the user has starred, most recently starred first, each with what's needed
+   * to show it without opening its workspace.
+   */
+  listFavorites(): Promise<FavoriteItem[]>;
+
+  /**
+   * Star or unstar an app or file. Starring records the item's current title and kind for
+   * `listFavorites()`; starring an item already starred refreshes them.
+   */
+  setFavorite(item: FavoriteItemSpec, favorite: boolean): Promise<void>;
+
+  /**
    * Get the user's read state for the chats in one workspace, to combine with that workspace's own
    * chat list (e.g. to highlight unread chats). Chats that aren't returned have nothing unread.
    */
@@ -912,7 +983,8 @@ export interface AuthenticatedApi extends RpcTarget {
       configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
 
   /**
-   * Create a new workspace. It will start out titled "Untitled Workspace".
+   * Create a new workspace. It will start out titled "Untitled Workspace", unless
+   * `options.title` says otherwise.
    *
    * Note: A workspace is considered "provisional" until it has some sort of activity, such as a
    *   chat message or code edit. Provisional workspaces do not appear on the home page
@@ -920,7 +992,8 @@ export interface AuthenticatedApi extends RpcTarget {
    *   though nothing deletes them yet. Note in particular that calling new*Gatekeeper() will
    *   not clear the provisional bit (as long as the gatekeeper isn't bound into a gadget), so
    *   provisional workspaces are useful to allow the user to write an initial chat message without
-   *   explicitly creating a new workspace.
+   *   explicitly creating a new workspace. A named workspace (`options.kind`) is never
+   *   provisional.
    *
    * A client that does not keep the returned Overseer, such as a one-shot command, reads the
    * workspace's id with Overseer.getMetadata() before letting it go, and later opens the workspace
@@ -928,7 +1001,7 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * @reportsId workspace getMetadata().id
    */
-  newWorkspace(): Promise<RpcStub<Overseer>>;
+  newWorkspace(options?: NewWorkspaceOptions): Promise<RpcStub<Overseer>>;
 
   /**
    * List metadata about all the user's workspaces, which hold their gadgets. Used to display the
@@ -1458,6 +1531,11 @@ export type AdminSettingsView = {
    * allow, in a workspace that has observed restricted data.
    */
   restrictedWebFetchApprovals: boolean;
+  /**
+   * Whether gadget shares serve the owner's view (see GadgetView) to collaborators who cannot be
+   * verified against the gadget's data. On by default; off restores admission's plain refusal.
+   */
+  sharedViews: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1638,6 +1716,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminAuditRetentionDays", "setGatewayProviderOrder", "setGatewayModelOrder",
+  "setSharedViews",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -1829,6 +1908,9 @@ export interface AdminApi {
 
   /** Set `AdminSettingsView.restrictedWebFetchApprovals`. */
   setRestrictedWebFetchApprovals(enabled: boolean): Promise<void>;
+
+  /** Set `AdminSettingsView.sharedViews`. */
+  setSharedViews(enabled: boolean): Promise<void>;
 
   /**
    * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
@@ -2834,6 +2916,14 @@ export type WorkspaceMetadata = {
   /** Whether the user has pinned this workspace to the top of their list. */
   pinned?: boolean;
 
+  /**
+   * `"workspace"` for a named, shared space the user created as such (see `NewWorkspaceOptions`),
+   * which holds any number of chats, apps and files and is listed among the user's workspaces.
+   * Absent for a workspace made to hold a chat started outside any workspace, which a client lists
+   * as that chat rather than as a workspace. Workspaces made before this field are absent too.
+   */
+  kind?: WorkspaceKind;
+
   /** Set while the user has muted this workspace's notifications. */
   notificationMute?: NotificationMute;
 
@@ -2876,10 +2966,31 @@ export type WorkspaceMetadata = {
    */
   defaultGadgetId?: WorkpieceId;
 
+  /**
+   * True when this deployment serves the owner's view of a shared gadget (see GadgetView) to
+   * collaborators who cannot be verified against its data: the admin policy
+   * (AdminSettingsView.sharedViews) is on. Reported to the "build" role only.
+   */
+  sharedViewsAvailable?: boolean;
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
 }
+
+/** What a workspace is: see `WorkspaceMetadata.kind`. */
+export type WorkspaceKind = "workspace";
+
+/** How `AuthenticatedApi.newWorkspace()` should set up a new workspace. */
+export type NewWorkspaceOptions = {
+  /**
+   * Make a named workspace (`WorkspaceMetadata.kind`). It is listed by `listWorkspaces()` at once,
+   * rather than staying provisional until it has activity, since the user created it on purpose.
+   */
+  kind?: WorkspaceKind;
+  /** The new workspace's title, instead of "Untitled Workspace". */
+  title?: string;
+};
 
 /**
  * WorkspaceMetadata extended with timestamps. These are available when listing workspaces from the
@@ -2888,6 +2999,12 @@ export type WorkspaceMetadata = {
 export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
+
+  /**
+   * Set on a workspace someone added the user to that the user hasn't opened yet. Opening it
+   * clears this. `lastActive` is when they were added.
+   */
+  invited?: true;
 }
 
 /**
@@ -3203,7 +3320,7 @@ export type CreationApproval = {
   configuration?: string;
 };
 
-/** A hook bound in a workspace: a gatekeeper event that wakes a gadget's code. */
+/** A hook bound in a workspace: a gatekeeper event that wakes a gadget's code, or a chat's agent. */
 export type BoundHookInfo = {
   id: number;
 
@@ -3217,6 +3334,13 @@ export type BoundHookInfo = {
   resourceUrl?: string;
   description: HookDescription;
   enabled: boolean;
+
+  /**
+   * The chat a firing wakes, when a chat's agent bound the hook to the chat itself (its `self`)
+   * rather than to a gadget's code: each firing is then a call to that chat's agent, which runs a
+   * turn there. Such a hook still names a `gadgetId` for bookkeeping.
+   */
+  chatId?: number;
 };
 
 /**
@@ -3261,6 +3385,56 @@ export type AgentSpawnerConfig = {
    * agent reads these bindings with the spawner creator's authority.
    */
   env: Record<string, WorkpieceId>,
+
+  /**
+   * The chat each agent's result is posted in, when the user chose that while setting the
+   * spawner up from a chat: when a spawned agent's turn ends, its final reply appears there as
+   * an `agentReport` message, so whoever asked that chat for the agent hears back where they
+   * asked. Absent to leave each run's result in its own conversation only.
+   */
+  reportsToChatId?: number,
+};
+
+/** A connection a chat's agent can use, as `Overseer.listChatConnections()` lists it. */
+export type ChatConnectionInfo = {
+  /** The connection. */
+  gatekeeperId: WorkpieceId;
+
+  /** Its title, as the Workshop shows it. */
+  title: string;
+
+  /** Its vendor, for the vendor's logo. Absent for one with none, such as an agent spawner. */
+  vendorId?: string;
+
+  /** The name the chat's agent knows it by (`env.NAME`), when it has one yet. */
+  name?: string;
+
+  /**
+   * Where it comes from: accepted in this chat, held by one of the workspace's apps, or
+   * available to every chat.
+   */
+  scope: "chat" | "workspace" | "always";
+};
+
+/** An agent spawner in a workspace, as `Overseer.listAgentSpawners()` lists it. */
+export type AgentSpawnerInfo = {
+  /** The spawner's connection. */
+  gatekeeperId: WorkpieceId;
+
+  /** What the spawner's agents are called (see AgentSpawnerConfig.displayName). */
+  displayName: string;
+
+  /** The model its agents run (see AgentSpawnerConfig.modelId). */
+  modelId: string | null;
+
+  /** The model's name, as recorded when the spawner was created or last changed. */
+  modelName?: string;
+
+  /** The gadgets bound to the spawner, which start its agents. */
+  gadgetIds: WorkpieceId[];
+
+  /** What each agent it starts can use: its bindings, less any still pending in a chat. */
+  access: {name: string; target: WorkpieceId; resourceTitle?: string}[];
 };
 
 /**
@@ -3504,6 +3678,18 @@ export interface Overseer extends RpcTarget {
    * programmatically spawn AI agents to complete tasks.
    */
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
+
+  /** The workspace's agent spawners: what each is called, the model its agents run, and their access. */
+  listAgentSpawners(): Promise<AgentSpawnerInfo[]>;
+
+  /**
+   * Rename an agent spawner, or change the model its agents run. Agents it starts from now on
+   * use the new settings; ones already running keep theirs. The caller becomes the spawner's
+   * creator, whose authority its agents act with, since `modelId` names one of the caller's own
+   * models (any `AuthenticatedApi.listModels()` returns), or null for none.
+   */
+  updateAgentSpawner(gatekeeperId: WorkpieceId,
+      update: Pick<AgentSpawnerConfig, "displayName" | "modelId">): Promise<void>;
 
   /**
    * Fetch one page of action history, newest first by id (creation order). "all" (the default)
@@ -3776,6 +3962,19 @@ export interface Overseer extends RpcTarget {
    * present in the message's ChatAttachmentRef. Images are inlined there, so this is normally used
    * only to download non-image attachments on demand.
    */
+  /**
+   * The files attached in this workspace's chats, newest first, or only those of chat `chatId`.
+   * Files attached before attachments recorded their names are left out.
+   */
+  listChatFiles(chatId?: number): Promise<ChatFileSummary[]>;
+
+  /**
+   * What chat `chatId`'s agent can use: the connections accepted in the chat, the workspace's
+   * connections its apps hold, and the resources always available to every chat. Each connection
+   * is listed once, under the first of those it falls in.
+   */
+  listChatConnections(chatId: number): Promise<ChatConnectionInfo[]>;
+
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
 
   /**
@@ -3876,6 +4075,21 @@ export interface Overseer extends RpcTarget {
    * corrupting the chat.
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
+
+  /**
+   * Brings back the gadgets the "merge" or "restore" message at `sequence` committed: as that
+   * message left them (`to` "after", returning to that point in the chat) or as they were just
+   * before it (`to` "before", undoing it). Each gets a new head, on top of its current one, with
+   * those files, so history is never rewritten and any restore can itself be restored past. A
+   * gadget the message created is removed when restoring "before" it, with everything it
+   * stored; one since deleted, or that a restore removed, is not brought back. Gadgets already
+   * as asked are left alone, and if every one is, nothing is recorded. Otherwise records a
+   * "restore" message, which tells the agent what happened. Binding edges stay as they are.
+   *
+   * Throws if the message is neither kind, is a merge from before merges recorded
+   * `previousCommit`, or if the chat proposes changes to a gadget it would restore.
+   */
+  restoreChanges(chatId: number, sequence: number, to: "before" | "after"): Promise<void>;
 
   /**
    * Materialize the chat's changes not yet covered by a durable `changes` message into one, without
@@ -4134,6 +4348,16 @@ export type AiChatMetadata = {
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
+
+  /**
+   * If this was started from an agent spawner, the spawner's connection, which the chat belongs
+   * to: the Workshop lists it with that agent's conversations, not among the person's own chats.
+   * Absent on chats spawned before this was recorded.
+   */
+  spawnerId?: WorkpieceId;
+
+  /** The chat whose agent started this one through its spawner, when a chat's agent did. */
+  parentChatId?: number;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
@@ -4742,7 +4966,22 @@ export type AiChatMessageBody = {
    * message, including pre-migration ones: the git-storage migration synthesized a commit for
    * each historical merge and backfilled this field.
    */
-  commits: {gadgetId: WorkpieceId, commitId: string}[];
+  commits: {
+    gadgetId: WorkpieceId,
+    commitId: string,
+    /**
+     * The gadget's head before this merge, or null if the merge created the gadget: what
+     * Overseer.restoreChanges() brings back to undo it. Absent from merges that predate it.
+     */
+    previousCommit?: string | null,
+  }[];
+
+  /**
+   * The Workshop accepted these changes itself, as the agent's turn ended, rather than the user
+   * choosing to. Turns a user starts are accepted this way unless they add bindings, which widen
+   * what a gadget can reach and so wait for the user, or leave conflicts to resolve.
+   */
+  automatic?: true;
 
   /**
    * This merge closed the chat's epoch: the chat's code base reset to empty and its change stream
@@ -4777,6 +5016,21 @@ export type AiChatMessageBody = {
   type: "revert";
   revertFrom: number;
 } | {
+  /**
+   * The user brought gadgets back to an earlier point with Overseer.restoreChanges(): as the
+   * "merge" or "restore" message at `from` left them (`to` "after"), or as they were just before
+   * it (`to` "before").
+   */
+  type: "restore";
+  from: number;
+  to: "before" | "after";
+
+  /** Each restored gadget's new head, and the head it replaced. */
+  commits: {gadgetId: WorkpieceId, commitId: string, previousCommit: string}[];
+
+  /** Gadgets the restore removed, because they did not exist yet, with their titles then. */
+  removedGadgets?: {gadgetId: WorkpieceId, title: string}[];
+} | {
   /** Indicates that the agent in this chat performed an action. */
   type: "action",
   actionId: number;
@@ -4795,6 +5049,22 @@ export type AiChatMessageBody = {
    * to track whether information known to the gadget may have tainted the agent session.
    */
   type: "useGadget";
+} | {
+  /**
+   * The result of one run of an agent this chat set up (see AgentSpawnerConfig.reportsToChatId):
+   * the final reply of the agent's own conversation, posted here when that turn ends. It starts
+   * no turn in this chat; this chat's agent reads it with the next message the user sends.
+   */
+  type: "agentReport";
+
+  /** The run's own conversation, in this workspace. */
+  runChatId: number;
+
+  /** The agent's name, as AgentSpawnerConfig.displayName had it when the run ended. */
+  agentName: string;
+
+  /** The run's final reply, as written. */
+  message: string;
 } | {
   /**
    * The always-available resources changed after the agent's system prompt listed them: a
@@ -4992,6 +5262,21 @@ export type ChatAttachmentRef = {
 
   /** Inlined bytes for small image attachments. Present only for images. */
   content?: Uint8Array;
+};
+
+/** A file attached in a chat, as `Overseer.listChatFiles()` lists it. */
+export type ChatFileSummary = {
+  /** The chat the file was attached in. */
+  chatId: number;
+  /** The attachment's ID within the chat, as `ChatAttachmentRef.id`; downloads take it. */
+  id: string;
+  /** The file's name, when it was uploaded with one. */
+  name?: string;
+  mimeType: string;
+  /** Size in bytes. */
+  size: number;
+  /** When the message carrying it was sent. */
+  attached: Date;
 };
 
 /** Whether attachment bytes can be decoded and inlined into the agent's prompt as text. */
@@ -5231,6 +5516,13 @@ export type AiToolCall = {
   toolName: "executeCode";
   input: {
     code: string;
+
+    /**
+     * What the code does, in a few plain words for the people in the chat, such as "Counting
+     * this week's open issues". The Workshop shows it in place of the code. Absent from calls
+     * that predate it, or when the agent gave none.
+     */
+    summary?: string;
   };
 
   /** Output, if the code actually ran. (Otherwise, `error` should be present.) */
@@ -5586,6 +5878,15 @@ export type AiChatStreamEvent = {
   toolCallId: string;
   output: BlueprintOutput;
 } | {
+  /**
+   * Streaming executeCode summary (see the executeCode tool call's `summary`), sent once it has
+   * arrived and before the code itself, so the UI can say what the agent is doing while it is
+   * still writing and running the code.
+   */
+  type: "toolCallSummary";
+  toolCallId: string;
+  summary: string;
+} | {
   type: "toolOutputDelta";
   toolCallId: string;
   delta: string;
@@ -5734,6 +6035,28 @@ export type GadgetSummary = {
    * reverted (or the chat is deleted).
    */
   chatId?: number;
+
+  /**
+   * The chat whose agent built this gadget, which stays its home after the creation is accepted:
+   * that chat lists the gadget, and what it runs, as its own. Absent for a gadget made outside a
+   * chat or before this was recorded; the chat may since have been deleted. Delivered only to
+   * subscribers with the "build" role, like `upstream`.
+   */
+  madeInChatId?: number;
+
+  /**
+   * When the owner's view of this gadget (see GadgetView) was last taken, for the share dialog's
+   * "What people see" panel. Absent if no view has been taken. Delivered only to subscribers with
+   * the "build" role.
+   */
+  viewTakenAt?: Date;
+
+  /**
+   * When the latest attempt to update the owner's view failed, if it failed after the view at
+   * `viewTakenAt` was taken. A failed attempt never replaces that view; the panel says it could
+   * not be updated. Delivered only to subscribers with the "build" role.
+   */
+  viewUpdateFailedAt?: Date;
 };
 
 /**
@@ -6321,6 +6644,25 @@ export type GadgetExportFormat = {
   fileName?: string;
 };
 
+/** How a collaborator's GadgetClient was admitted: the running gadget, or the owner's view. */
+export type GadgetAccessMode = "live" | "view";
+
+/**
+ * The owner's view of a gadget, served to "use" collaborators who could not be verified against
+ * its data sources (see docs/sharing.md, "Shared views"): a copy of the gadget holding its storage
+ * as the owner's last open left it and none of its bindings, so it shows what the owner saw and
+ * reaches nothing. There is at most one per gadget, replaced in place each time the owner opens
+ * the gadget. This is its record; a GadgetClient admitted to it (getAccessMode() "view") serves
+ * the copy's UI bundle and facet.
+ */
+export type GadgetView = {
+  /** When the owner's open took this view. */
+  takenAt: Date;
+
+  /** Whose view it is: the workspace owner. */
+  owner: AiChatAuthorInfo;
+};
+
 /**
  * Capability representing one gadget workpiece within a workspace. Obtained from
  * Overseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (code sync, chats,
@@ -6332,6 +6674,9 @@ export interface GadgetClient extends WorkpieceClient {
    *
    * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
    * agent with no code).
+   *
+   * On a client admitted to the owner's view (see getAccessMode()), the code the view was taken
+   * at; `chatId` is refused.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
@@ -6347,6 +6692,10 @@ export interface GadgetClient extends WorkpieceClient {
    *
    * If `chatId` is specified, then the gadget will include changes currently proposed in the given
    * chat.
+   *
+   * On a client admitted to the owner's view (see getAccessMode()), the connection is to the
+   * view's copy of the gadget, which has no bindings: calls that reach for one fail, and what the
+   * copy stores is replaced by the owner's next open. `chatId` is refused.
    */
   // @ts-ignore - TODO: Fix type instantiation issue
   connectToGadget(chatId?: number): Promise<RpcStub<any>>;
@@ -6362,6 +6711,30 @@ export interface GadgetClient extends WorkpieceClient {
    * uses changes currently proposed in that chat.
    */
   export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * How this client was admitted. "view" when it serves the owner's view (see GadgetView): a
+   * "use" collaborator could not be verified against the gadget's data sources, or a live client
+   * asked for the view through openView(). Such a client's getUiBundle() and connectToGadget()
+   * serve the view's copy of the gadget, and it refuses getExportFormats() and export(); "live"
+   * otherwise.
+   */
+  getAccessMode(): Promise<GadgetAccessMode>;
+
+  /**
+   * The owner's view of this gadget. Throws when no view has been taken, and on a "live" client
+   * held by a "use" collaborator, who sees the gadget itself.
+   */
+  getView(): Promise<GadgetView>;
+
+  /**
+   * A client admitted to the owner's view of this gadget, as a collaborator who cannot be verified
+   * gets it: getAccessMode() is "view" and its UI bundle and connection are the view's copy. For
+   * showing the owner what people see, so it takes the view first if it is stale or missing, even
+   * before the gadget is shared. Throws when no view can be taken (the gadget has no screen, or
+   * the deployment serves no views), and on a "view" client.
+   */
+  openView(): Promise<RpcStub<GadgetClient>>;
 
   // --- Binding management ---
   //
@@ -6573,6 +6946,12 @@ export type CollaboratorInfo = {
 
   /** The collaborator's effective access. */
   access: CollaboratorAccess;
+
+  /**
+   * How the collaborator last opened each gadget they opened, by gadget id, for the share
+   * dialog. Absent for a gadget they have not opened since this was recorded.
+   */
+  lastOpened?: Record<WorkpieceId, {at: Date; mode: GadgetAccessMode}>;
 };
 
 /**

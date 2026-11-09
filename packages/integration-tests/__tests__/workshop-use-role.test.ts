@@ -98,6 +98,11 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   newAiModelGatekeeper: ws => ws.newAiModelGatekeeper("model"),
   newAgentSpawnerGatekeeper: ws =>
     ws.newAgentSpawnerGatekeeper({ displayName: "Spawner", modelId: null, env: {} }),
+  listAgentSpawners: ws => ws.listAgentSpawners(),
+  updateAgentSpawner: ws => ws.updateAgentSpawner(1, { displayName: "Spawner", modelId: null }),
+  listChatFiles: ws => ws.listChatFiles(),
+  listChatConnections: ws => ws.listChatConnections(1),
+  restoreChanges: ws => ws.restoreChanges(1, 0, "before"),
   approveAction: ws => ws.approveAction(0),
   rejectAction: ws => ws.rejectAction(0),
   listHooks: ws => ws.listHooks(),

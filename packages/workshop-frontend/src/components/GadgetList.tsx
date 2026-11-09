@@ -9,7 +9,7 @@ import { useAuthenticatedApi } from '../AuthContext'
 import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../features/notifications/notificationMute'
-import ShareModal from '../ShareModal'
+import { WorkspaceInviteModal } from '../features/sharing/WorkspaceInviteModal'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
 import { BlueprintPreviewImage } from './BlueprintPreviewImage'
@@ -491,12 +491,11 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
 
       {/* Share modal */}
       {shareOverseer && shareTarget && (
-        <ShareModal
+        <WorkspaceInviteModal
           open={true}
           onClose={handleShareClose}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
-          target={{ kind: 'workspace' }}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
         />

@@ -40,7 +40,7 @@ import type {
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
   estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
+  foldProposedChanges, getModelTokenLimits, isCompactionTurn, isTurnPrompt, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import {
@@ -415,6 +415,12 @@ export interface AgentHooks {
   listGadgetInfo(forChatId: number): AgentGadgetInfo[];
 
   /**
+   * The hooks (scheduled tasks among them) bound by the given action records, as they stand now:
+   * the user may have paused or deleted one since. Records that bound no hook are left out.
+   */
+  describeHookActions(actionIds: number[]): {title: string, state: "on" | "paused" | "deleted"}[];
+
+  /**
    * Resolve an agent tool's optional workpiece reference. Absent means the workspace's default
    * gadget; throws an agent-readable error if there is none. When `mustExist` is set,
    * additionally throws if the gadget isn't currently registered -- or is provisional to a chat
@@ -702,6 +708,16 @@ Note that users rarely ask for "a Gadget" in those words. They ask for a thing: 
 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
+# Scheduled tasks and hooks
+
+Users ask for work that repeats or waits for something: "summarize my inbox every morning", "remind me Friday at 4", "tell me when this repo gets a new issue". Set these up as scheduled tasks (with the Scheduled Tasks binding, usually \`SCHEDULER\`, when the workspace has one) or as hooks a connected resource offers (its \`describeBinding\` shows them). Pass \`self\` from \`executeCode\` as the callback when you can do the work yourself with this chat's bindings: each run then wakes you in this chat with a callback such as \`self.onSchedule(firing)\`, and you do the work and reply here, as if the user had just asked. Build a Gadget for it only when the work needs saved state or code of its own, or the user wants an app; a Gadget made just to run in the background needs no user interface, so write only its server.js unless the user wants something to look at.
+
+* Before registering, settle what to do, how often, and, for wall-clock times, the user's timezone. Ask for the timezone rather than guessing it, unless the conversation already shows it.
+* Give it a short title the user will recognise later, like "Morning inbox summary", and a description that starts with when it runs and then says what each run does, in plain language, like "Weekdays at 8:00 London time. Summarize unread email and flag anything urgent." The description is your instructions for each run: a scheduled run's callback carries its title and description back to you. The user sees both on the task's card in the chat and in its Automations tab, so do not repeat them, or any IDs, in your reply.
+* A task set up during the user's own turn is on at once. One set up during a scheduled run waits for the user to turn it on.
+* Confirm a new task in one or two short sentences: what will happen and when it first runs, in the user's terms. If you built a Gadget to carry it out, say so in a few words (say, "I made a small background app, Inbox summarizer, that runs it") without describing its code, models, bindings or what it can't do. If its runs start new agents, say where their results appear: \`describeBinding\` on the agent spawner says whether they are posted in this chat or stay under the agent in the Automations tab. Offer at most one follow-up, and only one that matters, such as the cost of running very often. Do not tell the user to turn it on or visit Connections.
+* On a run, follow its description and reply with the result, briefly, without announcing that this is a scheduled run. If there is nothing worth reporting, say so in a line. When a run needs to know what an earlier run saw (say, the newest message already reported), read it from your earlier replies in this chat.
+
 # Live views in your answers
 
 You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
@@ -767,6 +783,8 @@ Make Gadget UIs responsive and usable on both desktop and phones by default.
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
+
+When the owner shares a Gadget with someone who cannot open its data themselves, that person is shown a copy of the Gadget: its storage as the owner last left it, running the same code with an empty \`env\`, so no binding exists there. For the copy to show anything, the Gadget must keep what its UI displays in its own storage and render from storage, reading its bindings only to refresh what is stored. Where a method reaches for a binding, treat its absence as "nothing new", not a crash, so the UI still shows what is stored.
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
@@ -1310,9 +1328,9 @@ Wire a resource from your \`env\` into a Gadget's own \`env\`, so the Gadget's c
 
 The bindings in your \`env\` belong to this chat; a Gadget's code sees only the Gadget's own bindings, which are listed in the system prompt. Use this tool to add one of your bindings to a Gadget: \`gadget\` names the target Gadget (by its name in your env), \`source\` names the resource binding to wire in, and \`name\` is the name the Gadget's code will see it as (\`env.<name>\` in server.js), defaulting to the same name as \`source\`.
 
-The addition is part of your proposed changes: like code edits, it takes permanent effect when the user accepts your changes.
+The addition is part of your proposed changes: like code edits, it takes permanent effect when your changes are kept. A turn the user started keeps its changes as it ends, unless one gives a Gadget access to something the user didn't connect in this chat, which waits for them to keep it; so don't ask the user to accept changes, or say anything waits on that, unless it does.
 
-\`gadget\` may also name an agent spawner. The binding then goes to each agent the spawner starts, and \`source\` may also be a Gadget. Spawned agents get it only once the user accepts your changes.
+\`gadget\` may also name an agent spawner. The binding then goes to each agent the spawner starts, and \`source\` may also be a Gadget. Spawned agents get it only once your changes are kept.
 
 NOTE: You do NOT need this tool to use a resource yourself with \`executeCode\` — your own bindings are already available there. ONLY use it when a Gadget's code, or a spawner's agents, need the resource.
 `.trim();
@@ -1359,7 +1377,7 @@ List a gatekeeper vendor's separate Existing resources and New resources. Use an
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
 Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
 
-For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
+For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Its \`bindingName\` also names the agent for the user, so say what it does (e.g. EMAIL_RESPONDER, not AGENT_SPAWNER), and its \`reason\` should say in a sentence what each of its agents will do. The user picks the model its agents run, and can give it any of this chat's connections, as they accept it; if they asked for a particular model (say, a cheap one), mention it in the \`reason\` so they pick it. Once accepted, \`describeBinding\` says which model it runs, and whether each agent's final reply is posted in this chat (the user chooses, and usually does when they asked here to hear back). Each agent it starts also gets a conversation of its own, which the user finds under that agent in the Automations tab, not among their chats. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
@@ -1932,6 +1950,12 @@ async function runAgentPass(
 
   // The model context reconstructed from the chat log.
   let modelMessages: Message[] = [];
+  // The chat's action cards, which the model never sees; those that bound a hook are summarized
+  // as they stand now at the end of the history (see below).
+  let hookActionIds: number[] = [];
+  // Results posted by the agents this chat set up since the last user message, which reach the
+  // model with the next one (see the "agentReport" message).
+  let agentReports: string[] = [];
   // Records which chat message produced each model message, so compaction can convert a cut in the
   // prompt back to a durable chat sequence.
   let modelMessageSources: Omit<CompactionProjectionMessage, "message">[] = [];
@@ -2193,6 +2217,10 @@ async function runAgentPass(
     switch (msg.type) {
       case "message": {
         let content = msg.message;
+        if (agentReports.length > 0 && isTurnPrompt(msg)) {
+          content = `${agentReports.join("\n\n")}\n\n${content}`;
+          agentReports = [];
+        }
 
         if (msg.capsules) {
           // This message contains pasted resources.
@@ -2770,6 +2798,27 @@ async function runAgentPass(
         }
         break;
 
+      case "restore": {
+        // Heads moved under the session, which holds no pins over them (a restore refuses a chat
+        // proposing changes to what it restores), so the model only needs telling to re-read.
+        let removed = (msg.removedGadgets ?? []).map(gadget => `"${gadget.title}"`);
+        modelMessages.push(...makeReplayObservation(
+            msg.sequence,
+            (msg.to === "before"
+                ? "The user went back to before some accepted changes: those files are back as " +
+                  "they were before them."
+                : "The user went back to an earlier point in this chat: those files are back as " +
+                  "they were then.") +
+            (removed.length > 0
+                ? ` The ${removed.length === 1 ? "gadget" : "gadgets"} ${removed.join(", ")} ` +
+                  `didn't exist then, so ${removed.length === 1 ? "it was" : "they were"} deleted.`
+                : "") +
+            " Read files again before changing them. Mention this only if it bears on what " +
+            "the user asks next.",
+            handle.model, msgTimestamp));
+        break;
+      }
+
       case "slashCommand":
         // This records what the user invoked for display; only a generated message is model input.
         break;
@@ -2810,6 +2859,10 @@ async function runAgentPass(
           chatBindings.set(name, { type: "value", messageSequence: msg.sequence });
           let call = agentContext.spawnerTypes
               ? `The Gadget called \`${msg.methodName}()\` on your interface.`
+              : msg.methodName === "onSchedule"
+              ? `A scheduled task you set up in this chat is due: \`self.onSchedule()\`. Its ` +
+                `title and description (what to do) are in the arguments below. Do it now and ` +
+                `reply with the result.`
               : `A callback was received: \`self.${msg.methodName}()\`.`;
           content =
               `${call} Arguments (\`env.${name}\`):\n${msg.argsSummary}\n\n` +
@@ -2897,6 +2950,16 @@ async function runAgentPass(
         break;
 
       case "action":
+        hookActionIds.push(msg.actionId);
+        break;
+
+      case "agentReport":
+        // Not a turn of its own: it may land in the middle of one. It reaches the model with the
+        // user's next message instead.
+        agentReports.push(`(${msg.agentName}, an agent set up in this chat, finished a run and ` +
+            `posted here, where the user saw it:\n${msg.message})`);
+        break;
+
       case "useGadget":
       case "error":
         // No need to tell the agent about this.
@@ -2913,6 +2976,19 @@ async function runAgentPass(
         canCut: modelMessageSources.length === modelMessageStart,
       });
     }
+  }
+
+  // What the user has since done with the hooks this chat set up: on the newest message, so a
+  // pause or delete reaches the agent without rewriting (and uncaching) older history.
+  let hookStates = hooks.describeHookActions(hookActionIds);
+  let lastUser = modelMessages.findLast(message => message.role === "user");
+  if (hookStates.length > 0 && lastUser?.role === "user") {
+    let note = `(The scheduled tasks and hooks set up in this chat, as they stand now: ` +
+        hookStates.map(h => `${JSON.stringify(h.title)} is ${h.state === "on" ? "on"
+            : h.state === "paused" ? "paused by the user, so it does not run" : "deleted"}`)
+          .join("; ") + `.)`;
+    lastUser.content = typeof lastUser.content === "string"
+        ? `${lastUser.content}\n\n${note}` : [...lastUser.content, {type: "text", text: note}];
   }
 
   // The step buffer: the current step's tool edits, applied to the session content as they
@@ -3867,6 +3943,16 @@ async function runAgentPass(
       description: agentContext.spawnerConfig
           ? SPAWNED_EXECUTE_CODE_TOOL_DESCRIPTION : EXECUTE_CODE_TOOL_DESCRIPTION,
       parameters: Type.Object({
+        // Before `code`, so it streams first and the chat can say what is happening while the
+        // code is still being written.
+        summary: Type.Optional(Type.String({
+          description:
+              "Always give this, before the code. A few plain words saying what the code does, " +
+              "for the people in the chat, who may not be technical: what it means for them, " +
+              "not how it works. Start with a verb ending in -ing, e.g. \"Counting this week's " +
+              "open issues\" or \"Checking your calendar for Friday\". Never name code, APIs, " +
+              "bindings or variables.",
+        })),
         code: Type.String({
           description:
               "Code to execute. This must be a complete self-contained JavaScript module " +

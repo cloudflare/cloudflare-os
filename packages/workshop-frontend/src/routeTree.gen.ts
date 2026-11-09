@@ -15,17 +15,19 @@ import { Route as BlueprintsRouteImport } from './routes/blueprints'
 import { Route as ContextRouteImport } from './routes/context'
 import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as GatekeepersRouteImport } from './routes/gatekeepers'
+import { Route as LibraryRouteImport } from './routes/library'
 import { Route as OutputsRouteImport } from './routes/outputs'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as SignupRouteImport } from './routes/signup'
-import { Route as UnreadRouteImport } from './routes/unread'
 import { Route as WorkspacesRouteImport } from './routes/workspaces'
 import { Route as BlueprintIdRouteImport } from './routes/blueprint.$id'
 import { Route as ConnectHandoffRouteImport } from './routes/connect.handoff'
 import { Route as GadgetIdRouteImport } from './routes/gadget.$id'
 import { Route as GatekeepersAppIdRouteImport } from './routes/gatekeepers_.$appId'
 import { Route as WorkspaceIdRouteImport } from './routes/workspace.$id'
+import { Route as WorkspaceIdAppAppIdRouteImport } from './routes/workspace.$id_.app.$appId'
+import { Route as WorkspaceIdAppAppIdSettingsRouteImport } from './routes/workspace.$id_.app.$appId_.settings'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -57,6 +59,11 @@ const GatekeepersRoute = GatekeepersRouteImport.update({
   path: '/gatekeepers',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LibraryRoute = LibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OutputsRoute = OutputsRouteImport.update({
   id: '/outputs',
   path: '/outputs',
@@ -75,11 +82,6 @@ const ProvidersRoute = ProvidersRouteImport.update({
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const UnreadRoute = UnreadRouteImport.update({
-  id: '/unread',
-  path: '/unread',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WorkspacesRoute = WorkspacesRouteImport.update({
@@ -112,6 +114,17 @@ const WorkspaceIdRoute = WorkspaceIdRouteImport.update({
   path: '/workspace/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorkspaceIdAppAppIdRoute = WorkspaceIdAppAppIdRouteImport.update({
+  id: '/workspace/$id_/app/$appId',
+  path: '/workspace/$id/app/$appId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkspaceIdAppAppIdSettingsRoute =
+  WorkspaceIdAppAppIdSettingsRouteImport.update({
+    id: '/workspace/$id_/app/$appId_/settings',
+    path: '/workspace/$id/app/$appId/settings',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -120,17 +133,19 @@ export interface FileRoutesByFullPath {
   '/context': typeof ContextRoute
   '/explore': typeof ExploreRoute
   '/gatekeepers': typeof GatekeepersRoute
+  '/library': typeof LibraryRoute
   '/outputs': typeof OutputsRoute
   '/profile': typeof ProfileRoute
   '/providers': typeof ProvidersRoute
   '/signup': typeof SignupRoute
-  '/unread': typeof UnreadRoute
   '/workspaces': typeof WorkspacesRoute
   '/blueprint/$id': typeof BlueprintIdRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/gadget/$id': typeof GadgetIdRoute
   '/gatekeepers/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
+  '/workspace/$id/app/$appId': typeof WorkspaceIdAppAppIdRoute
+  '/workspace/$id/app/$appId/settings': typeof WorkspaceIdAppAppIdSettingsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -139,17 +154,19 @@ export interface FileRoutesByTo {
   '/context': typeof ContextRoute
   '/explore': typeof ExploreRoute
   '/gatekeepers': typeof GatekeepersRoute
+  '/library': typeof LibraryRoute
   '/outputs': typeof OutputsRoute
   '/profile': typeof ProfileRoute
   '/providers': typeof ProvidersRoute
   '/signup': typeof SignupRoute
-  '/unread': typeof UnreadRoute
   '/workspaces': typeof WorkspacesRoute
   '/blueprint/$id': typeof BlueprintIdRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/gadget/$id': typeof GadgetIdRoute
   '/gatekeepers/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
+  '/workspace/$id/app/$appId': typeof WorkspaceIdAppAppIdRoute
+  '/workspace/$id/app/$appId/settings': typeof WorkspaceIdAppAppIdSettingsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -159,17 +176,19 @@ export interface FileRoutesById {
   '/context': typeof ContextRoute
   '/explore': typeof ExploreRoute
   '/gatekeepers': typeof GatekeepersRoute
+  '/library': typeof LibraryRoute
   '/outputs': typeof OutputsRoute
   '/profile': typeof ProfileRoute
   '/providers': typeof ProvidersRoute
   '/signup': typeof SignupRoute
-  '/unread': typeof UnreadRoute
   '/workspaces': typeof WorkspacesRoute
   '/blueprint/$id': typeof BlueprintIdRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/gadget/$id': typeof GadgetIdRoute
   '/gatekeepers_/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
+  '/workspace/$id_/app/$appId': typeof WorkspaceIdAppAppIdRoute
+  '/workspace/$id_/app/$appId_/settings': typeof WorkspaceIdAppAppIdSettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -180,17 +199,19 @@ export interface FileRouteTypes {
     | '/context'
     | '/explore'
     | '/gatekeepers'
+    | '/library'
     | '/outputs'
     | '/profile'
     | '/providers'
     | '/signup'
-    | '/unread'
     | '/workspaces'
     | '/blueprint/$id'
     | '/connect/handoff'
     | '/gadget/$id'
     | '/gatekeepers/$appId'
     | '/workspace/$id'
+    | '/workspace/$id/app/$appId'
+    | '/workspace/$id/app/$appId/settings'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -199,17 +220,19 @@ export interface FileRouteTypes {
     | '/context'
     | '/explore'
     | '/gatekeepers'
+    | '/library'
     | '/outputs'
     | '/profile'
     | '/providers'
     | '/signup'
-    | '/unread'
     | '/workspaces'
     | '/blueprint/$id'
     | '/connect/handoff'
     | '/gadget/$id'
     | '/gatekeepers/$appId'
     | '/workspace/$id'
+    | '/workspace/$id/app/$appId'
+    | '/workspace/$id/app/$appId/settings'
   id:
     | '__root__'
     | '/'
@@ -218,17 +241,19 @@ export interface FileRouteTypes {
     | '/context'
     | '/explore'
     | '/gatekeepers'
+    | '/library'
     | '/outputs'
     | '/profile'
     | '/providers'
     | '/signup'
-    | '/unread'
     | '/workspaces'
     | '/blueprint/$id'
     | '/connect/handoff'
     | '/gadget/$id'
     | '/gatekeepers_/$appId'
     | '/workspace/$id'
+    | '/workspace/$id_/app/$appId'
+    | '/workspace/$id_/app/$appId_/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -238,17 +263,19 @@ export interface RootRouteChildren {
   ContextRoute: typeof ContextRoute
   ExploreRoute: typeof ExploreRoute
   GatekeepersRoute: typeof GatekeepersRoute
+  LibraryRoute: typeof LibraryRoute
   OutputsRoute: typeof OutputsRoute
   ProfileRoute: typeof ProfileRoute
   ProvidersRoute: typeof ProvidersRoute
   SignupRoute: typeof SignupRoute
-  UnreadRoute: typeof UnreadRoute
   WorkspacesRoute: typeof WorkspacesRoute
   BlueprintIdRoute: typeof BlueprintIdRoute
   ConnectHandoffRoute: typeof ConnectHandoffRoute
   GadgetIdRoute: typeof GadgetIdRoute
   GatekeepersAppIdRoute: typeof GatekeepersAppIdRoute
   WorkspaceIdRoute: typeof WorkspaceIdRoute
+  WorkspaceIdAppAppIdRoute: typeof WorkspaceIdAppAppIdRoute
+  WorkspaceIdAppAppIdSettingsRoute: typeof WorkspaceIdAppAppIdSettingsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -295,6 +322,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GatekeepersRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/outputs': {
       id: '/outputs'
       path: '/outputs'
@@ -321,13 +355,6 @@ declare module '@tanstack/react-router' {
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/unread': {
-      id: '/unread'
-      path: '/unread'
-      fullPath: '/unread'
-      preLoaderRoute: typeof UnreadRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/workspaces': {
@@ -372,6 +399,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/workspace/$id_/app/$appId': {
+      id: '/workspace/$id_/app/$appId'
+      path: '/workspace/$id/app/$appId'
+      fullPath: '/workspace/$id/app/$appId'
+      preLoaderRoute: typeof WorkspaceIdAppAppIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspace/$id_/app/$appId_/settings': {
+      id: '/workspace/$id_/app/$appId_/settings'
+      path: '/workspace/$id/app/$appId/settings'
+      fullPath: '/workspace/$id/app/$appId/settings'
+      preLoaderRoute: typeof WorkspaceIdAppAppIdSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -382,17 +423,19 @@ const rootRouteChildren: RootRouteChildren = {
   ContextRoute: ContextRoute,
   ExploreRoute: ExploreRoute,
   GatekeepersRoute: GatekeepersRoute,
+  LibraryRoute: LibraryRoute,
   OutputsRoute: OutputsRoute,
   ProfileRoute: ProfileRoute,
   ProvidersRoute: ProvidersRoute,
   SignupRoute: SignupRoute,
-  UnreadRoute: UnreadRoute,
   WorkspacesRoute: WorkspacesRoute,
   BlueprintIdRoute: BlueprintIdRoute,
   ConnectHandoffRoute: ConnectHandoffRoute,
   GadgetIdRoute: GadgetIdRoute,
   GatekeepersAppIdRoute: GatekeepersAppIdRoute,
   WorkspaceIdRoute: WorkspaceIdRoute,
+  WorkspaceIdAppAppIdRoute: WorkspaceIdAppAppIdRoute,
+  WorkspaceIdAppAppIdSettingsRoute: WorkspaceIdAppAppIdSettingsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -50,6 +50,17 @@ function joinSession(impl: any, holds: "build" | number = "build"): () => void {
   return holds === "build" ? impl.joinSession("build") : impl.joinSession("use", holds);
 }
 
+// The unit pool exports no GatekeeperHookLoopback, which enableHook hands the gatekeeper; these
+// tests' controllers ignore it.
+function stubHookLoopback(impl: any): void {
+  let ctx = impl.ctx;
+  impl.ctx = Object.create(ctx, {
+    exports: { value: { ...ctx.exports, GatekeeperHookLoopback: ({ props }: { props: object }) => props } },
+    id: { value: ctx.id },
+    waitUntil: { value: (p: Promise<unknown>) => ctx.waitUntil(p) },
+  });
+}
+
 function seedGatekeeper(impl: any, id: number): void {
   impl.storage.gatekeepers.put({
     id,
@@ -755,16 +766,9 @@ describe("hooks widen the scope of the gadget they wake", () => {
       delete: (id: number) => hooks.delete(id),
       list: () => [...hooks.values()],
     };
-    // A client interface over the real impl's hook flip, so enableHook's post-await call is the
-    // real revalidation.
-    let client = await openFakeOverseer(
-        { boundHooks: impl.storage.boundHooks, actions: { get: () => undefined, put: () => {} } },
-        {
-          exports: { GatekeeperHookLoopback: ({ props }: { props: object }) => props },
-          impl: { enableHookRecord: (r: object) => impl.enableHookRecord(r) },
-        });
-
-    let pending = client.enableHook(5);
+    // The real impl's enable, so its post-await call is the real revalidation.
+    stubHookLoopback(impl);
+    let pending = impl.enableHook(5);
     await new Promise(resolve => setTimeout(resolve, 0));
     // The gatekeeper-side enable is parked with the input gate open; the connection is removed
     // in that window. The teardown's snapshot sees enabled=false, so it sends no disable of its
@@ -780,6 +784,39 @@ describe("hooks widen the scope of the gadget they wake", () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(disabled).toBe(1);
   }));
+
+  // What enable() tells the gatekeeper the hook wakes.
+  for (let [kind, gadgetId, target] of [
+    ["a gadget's", 17, { gadgetId: 17 }],
+    ["an unpinned", undefined, {}],
+  ] as const) {
+    it(`passes ${kind} hook's workspace and gadget to enable(), then turns it on`, () => withImpl(async (impl) => {
+      seedGatekeeper(impl, 1);
+      let targets: object[] = [];
+      let record = {
+        id: 4, actionId: 12, gatekeeperId: 1, vendorId: "testvendor", gadgetId,
+        controller: { enable: async (_initiator: object, t: object) => { targets.push(t); } },
+        callback: {},
+        description: { title: "Incoming email", description: "Receives email" },
+        enabled: false,
+      };
+      let hooks = new Map<number, typeof record>([[4, record]]);
+      impl.storage.boundHooks = {
+        get: (id: number) => hooks.get(id),
+        put: (r: typeof record) => hooks.set(r.id, r),
+        list: () => [...hooks.values()],
+      };
+
+      stubHookLoopback(impl);
+      await impl.enableHook(4);
+      expect(targets).toEqual([{ workspaceId: impl.ctx.id.toString(), ...target }]);
+      expect(hooks.get(4)?.enabled).toBe(true);
+      // A second enable of one already on is a no-op.
+      stubHookLoopback(impl);
+      await impl.enableHook(4);
+      expect(targets).toHaveLength(1);
+    }));
+  }
 
   it("a hook deleted while its disable was in flight is not resurrected as a zombie", async () => {
     let releaseDisable!: () => void;

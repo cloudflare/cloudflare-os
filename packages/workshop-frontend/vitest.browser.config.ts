@@ -11,6 +11,9 @@ import tsconfigPaths from 'vite-tsconfig-paths'
  */
 export default defineConfig({
   plugins: [react(), tailwindcss(), tsconfigPaths()],
+  // Kumo's primitives share contexts with its components; bundled apart they get one copy each,
+  // and a primitive inside a Kumo component can't find its parent.
+  optimizeDeps: { include: ['@cloudflare/kumo', '@cloudflare/kumo/primitives/autocomplete'] },
   test: {
     include: ['src/**/*.browser.test.tsx'],
     // Kept with vitest's other scratch, under node_modules/.vite, out of the source tree and the

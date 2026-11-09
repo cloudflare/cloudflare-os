@@ -9,6 +9,10 @@ import type { Overseer, SlashCommandChoice } from "@gadgets/workshop-shared/api"
 import { invalidateSlashCommandCatalog } from "../../../components/chat/slash-command-catalog";
 import ComposerAddMenu from "./ComposerAddMenu";
 
+vi.mock("../../../components/format/useOutputFormats", () => ({
+  useOutputFormats: () => ({ formats: [], creating: null, create: async () => {} }),
+}));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView ??= () => {};
 
@@ -35,6 +39,7 @@ const Harness = ({
   onSelectSkill,
   onUpload = () => {},
   skillSelected = false,
+  onModelChange,
 }: {
   anchorTop?: number;
   catalogVersion?: number;
@@ -44,6 +49,7 @@ const Harness = ({
   onSelectSkill: (choice: SlashCommandChoice) => void;
   onUpload?: () => void;
   skillSelected?: boolean;
+  onModelChange?: (modelId: string | null) => void;
 }) => {
   const anchorRef = useRef<HTMLDivElement>(null);
   return (
@@ -73,6 +79,11 @@ const Harness = ({
         onAddConnection={onAddConnection}
         onSelectSkill={onSelectSkill}
         onUpload={onUpload}
+        model={onModelChange ? {
+          models: [{ type: "agent", id: "claude-opus-5-5", name: "Claude Opus 5.5" }],
+          selected: null,
+          onChange: onModelChange,
+        } : undefined}
       />
     </>
   );
@@ -113,7 +124,8 @@ describe("ComposerAddMenu", () => {
     expect(document.body.textContent).not.toContain("Compact this chat");
     const skillOption = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
       .find((option) => option.textContent?.includes("Review   writing"))!;
-    expect(skillOption.textContent).toContain("Writing tools · Editorial account");
+    // Where a skill comes from is detail for its tooltip, not its row.
+    expect(skillOption.textContent).not.toContain("Writing tools · Editorial account");
     expect(skillOption.title).toContain("Writing tools · Editorial account");
 
     const search = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
@@ -222,7 +234,7 @@ describe("ComposerAddMenu", () => {
 
     await act(async () => trigger.click());
     const connection = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes("Add a new connection"))!;
+      .find((option) => option.textContent?.includes("Add a connection"))!;
     await act(async () => connection.click());
     expect(onAddConnection).toHaveBeenCalledOnce();
     expect(document.activeElement).toBe(trigger);
@@ -314,5 +326,22 @@ describe("ComposerAddMenu", () => {
     await act(async () => trigger.click());
     await waitFor(() => document.body.textContent?.includes("New connection skill") === true);
     expect(listSlashCommands).toHaveBeenCalledTimes(2);
+  });
+  // The design's composer row has no model control, so the model is picked from this menu.
+  it("picks a model from a list that opens in place", async () => {
+    const onModelChange = vi.fn<(modelId: string | null) => void>();
+    const getOverseer = () => ({ listSlashCommands: async () => [] } as unknown as RpcStub<Overseer>);
+    const host = await mount(
+      <Harness getOverseer={getOverseer} onSelectSkill={() => {}} onModelChange={onModelChange} />,
+    );
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
+    const options = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'));
+    const modelRow = options().find((option) => option.textContent?.startsWith("Model"))!;
+    expect(modelRow.textContent).toContain("No agent");
+    await act(async () => modelRow.click());
+    expect(document.querySelector('[aria-label="Search skills"]')).toBeNull();
+    await act(async () => options().find((option) => option.textContent === "Claude Opus 5.5")!.click());
+    expect(onModelChange).toHaveBeenCalledWith("claude-opus-5-5");
+    expect(document.querySelector('[aria-label="Add to conversation"][role="dialog"]')).toBeNull();
   });
 });

@@ -37,8 +37,10 @@ const mocks = vi.hoisted(() => {
     }) => void>(),
     search: {} as Record<string, unknown>,
     // The props the use-only view was last rendered with.
+    toast: vi.fn<(toast: { title: string }) => void>(),
     useView: null as null | {
       gadget: unknown
+      gadgetMode: string | null
       gadgetOpenFailure: string | null
       onRetryGadget: () => void
     },
@@ -92,7 +94,8 @@ vi.mock('@cloudflare/kumo', () => {
       Separator: () => <hr />,
     },
   )
-  return { DropdownMenu, useKumoToastManager: () => ({ add: () => {} }) }
+  const Tooltip = ({ render }: { render: ReactElement }) => render
+  return { DropdownMenu, Tooltip, useKumoToastManager: () => ({ add: mocks.toast }) }
 })
 
 vi.mock('./AuthContext', () => ({
@@ -139,15 +142,13 @@ vi.mock('./components/WorkshopControls', () => ({
   WorkshopInput: (props: ComponentProps<'input'>) => <input {...props} />,
 }))
 
-vi.mock('./WorkpiecePicker', () => ({
-  default: () => null,
-  WORKPIECE_RAIL_COLLAPSED_WIDTH: 48,
-  WORKPIECE_RAIL_EXPANDED_WIDTH: 220,
-}))
 vi.mock('./components/format/FormatVisuals', () => ({ FormatGlyph: () => null }))
 vi.mock('./components/GadgetPresence', () => ({ GadgetPresence: () => null }))
 vi.mock('./Activity', () => ({ default: () => null }))
 vi.mock('./ActivityNotifications', () => ({ default: () => null }))
+// The pages shown in place of the chat read the user's account, which these tests don't model.
+vi.mock('./pages/workspace/WorkspacePage', () => ({ WorkspacePage: () => <div>workspace page</div> }))
+vi.mock('./pages/chat-details/ChatDetailsPage', () => ({ ChatDetailsPage: () => null }))
 vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
@@ -159,7 +160,8 @@ vi.mock('./GadgetUseView', () => ({
   },
 }))
 vi.mock('./ObserverConfigModal', () => ({ default: () => null }))
-vi.mock('./ShareModal', () => ({ default: () => null }))
+vi.mock('./features/sharing/WorkspaceInviteModal', () => ({ WorkspaceInviteModal: () => null }))
+vi.mock('./features/sharing/GadgetShareModal', () => ({ GadgetShareModal: () => null }))
 vi.mock('./TopBarNotice', () => ({ default: () => null }))
 vi.mock('./components/DeleteConfirmationDialog', () => ({ default: () => null }))
 vi.mock('./components/ReconnectingChip', () => ({ default: () => null }))
@@ -195,18 +197,31 @@ async function click(name: string) {
   await act(async () => { button(name).click() })
 }
 
-/** Which of the phone layout's views is showing: the chat, or what the pane holds. */
-const currentView = () =>
-  ['Chat', 'Preview', 'Activity'].filter(name => button(name).getAttribute('aria-current') === 'page')
+async function clickLabelled(label: string) {
+  const found = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+  if (!found) throw new Error(`No "${label}" button`)
+  await act(async () => { found.click() })
+}
+
+/**
+ * Which view a phone shows: the chat, or what the pane holds. The pane card is drawn at full
+ * strength only while open; a phone then shows it in place of the chat.
+ */
+const currentView = () => {
+  const pane = container.querySelector<HTMLElement>('[data-card="pane"]')!
+  if (pane.style.opacity !== '1') return ['Chat']
+  return [pane.textContent?.startsWith('Activity') ? 'Activity' : 'Preview']
+}
 
 async function proposeUpdate() {
-  await click('Update from blueprint…')
+  await click('Update from template…')
   await click('propose update')
 }
 
 beforeEach(() => {
   mocks.navigate.mockReset()
-  mocks.search = {}
+  // With no chat open the workspace shows its own page, so these start in a chat.
+  mocks.search = { chat: 1 }
   localStorage.clear()
   container = document.createElement('div')
   document.body.append(container)
@@ -223,18 +238,18 @@ afterEach(() => {
 
 describe('GadgetEditor, offering an update from a blueprint', () => {
   const offers = () => [...container.querySelectorAll('button')]
-    .filter(candidate => candidate.textContent === 'Update from blueprint…').length
+    .filter(candidate => candidate.textContent === 'Update from template…').length
 
-  // Once in the toolbar's Blueprints menu and once in the phone layout's menu.
+  // In the app pane's More menu.
   it('offers it for a gadget that follows a blueprint, and for one of unknown origin', async () => {
     await openEditor('desktop')
-    expect(offers()).toBe(2)
+    expect(offers()).toBe(1)
 
     act(() => root.unmount())
     root = createRoot(container)
     GADGET.upstream = { blueprintId: 'trip' }
     await openEditor('desktop')
-    expect(offers()).toBe(2)
+    expect(offers()).toBe(1)
   })
 
   it('does not offer it for a gadget recorded as built from scratch', async () => {
@@ -243,7 +258,7 @@ describe('GadgetEditor, offering an update from a blueprint', () => {
     await openEditor('desktop')
 
     expect(offers()).toBe(0)
-    expect(button('Publish as blueprint…')).toBeTruthy()
+    expect(button('Publish as template…')).toBeTruthy()
   })
 })
 
@@ -253,7 +268,7 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
     await proposeUpdate()
 
     expect(mocks.navigate).toHaveBeenCalledTimes(1)
-    expect(mocks.navigate.mock.calls[0][0].search({ w: 1 }))
+    expect(mocks.navigate.mock.calls[0][0].search({ w: 1, chat: 1 }))
       .toEqual({ w: 1, chat: PROPOSAL_CHAT_ID })
     expect(container.textContent).not.toContain('propose update')
   })
@@ -262,16 +277,6 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
   it('shows that chat on a phone, in place of the gadget it was applied from', async () => {
     await openEditor('phone')
     expect(currentView()).toEqual(['Preview'])
-
-    await proposeUpdate()
-
-    expect(currentView()).toEqual(['Chat'])
-  })
-
-  it('shows that chat on a phone, in place of the Activity pane', async () => {
-    await openEditor('phone')
-    await click('Activity')
-    expect(currentView()).toEqual(['Activity'])
 
     await proposeUpdate()
 
@@ -324,7 +329,7 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     mocks.search = { chat: 3 }
     await openEditor('phone')
     expect(isChatVisible('workspace', 3)).toBe(false)
-    await click('Chat')
+    await clickLabelled('Close gadget pane')
     expect(isChatVisible('workspace', 3)).toBe(true)
 
     act(() => root.unmount())
@@ -363,7 +368,11 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
   type Client = { gadgetId: WorkpieceId; disposed: boolean }
   const workspace = mocks.workspace
   const original = { overseer: workspace.overseer, metadata: workspace.metadata }
-  let admissions: { resolve: () => void; reject: (error: Error) => void }[]
+  let admissions: {
+    resolve: (mode?: 'live' | 'view') => void
+    reject: (error: Error) => void
+    asks: boolean
+  }[]
   const shownClient = () => mocks.useView?.gadget as Client | null | undefined
 
   // A fresh overseer stub, as a reconnect hands the editor.
@@ -378,14 +387,20 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
           await subscriber.ready()
           return disposable
         },
-        getGadget: (gadgetId?: WorkpieceId) => {
+        getGadget: (gadgetId?: WorkpieceId, configureObservers?: unknown) => {
           const { promise, resolve, reject } = Promise.withResolvers<unknown>()
           const client = {
             gadgetId: gadgetId!,
             disposed: false,
             [Symbol.dispose]() { client.disposed = true },
           }
-          admissions.push({ resolve: () => resolve({ dup: () => client, [Symbol.dispose]() {} }), reject })
+          admissions.push({
+            resolve: (mode = 'live') => resolve({
+              dup: () => client, getAccessMode: async () => mode, [Symbol.dispose]() {},
+            }),
+            reject,
+            asks: configureObservers !== undefined,
+          })
           return Object.assign(promise, disposable)
         },
       },
@@ -394,6 +409,8 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
 
   beforeEach(() => {
     admissions = []
+    localStorage.clear()
+    mocks.toast.mockClear()
     mocks.useView = null
     workspace.metadata = { ...original.metadata, role: 'use' } as WorkspaceMetadata
     workspace.overseer = useOnlyOverseer()
@@ -433,11 +450,45 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await openEditor('desktop')
     expect(shownClient()).toBe(first)
 
+    // Refused silently, then when asked for accounts.
+    await act(async () => admissions.at(-1)!.reject(new Error('refused')))
+    expect(mocks.useView?.gadgetOpenFailure).toBeNull()
     await act(async () => admissions.at(-1)!.reject(new Error('refused')))
     expect(mocks.useView?.gadgetOpenFailure).not.toBeNull()
 
     await act(async () => mocks.useView!.onRetryGadget())
     expect(mocks.useView?.gadgetOpenFailure).toBeNull()
     expect(shownClient()).toBeNull()
+  })
+
+  it('opens silently first, as the owner\'s view when that is all it may see', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(admissions.map(a => a.asks)).toEqual([false])
+    await act(async () => admissions.at(-1)!.resolve('view'))
+    expect(mocks.useView?.gadgetMode).toBe('view')
+    expect(admissions).toHaveLength(1)
+  })
+
+  it('asks for accounts only when the silent open is refused', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.reject(new Error('no view')))
+    expect(admissions.map(a => a.asks)).toEqual([false, true])
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(mocks.useView?.gadgetMode).toBe('live')
+  })
+
+  it('says once that a view has turned live', async () => {
+    localStorage.setItem(`shared-view:workspace:${GADGET.id}`, JSON.stringify({ mode: 'view' }))
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve('live'))
+    expect(mocks.toast).toHaveBeenCalledWith({ title: 'You have access now, so you can use it yourself' })
+
+    mocks.toast.mockClear()
+    await act(async () => mocks.useView!.onRetryGadget())
+    await act(async () => admissions.at(-1)!.resolve('live'))
+    expect(mocks.toast).not.toHaveBeenCalled()
   })
 })

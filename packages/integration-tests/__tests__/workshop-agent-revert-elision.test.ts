@@ -47,7 +47,7 @@ const network = new NetworkInterceptor({ handlers: [model.handler] });
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness();
+  harness = await startTestGatekeeperHarness({ reviewChanges: true });
 });
 
 afterAll(async () => {

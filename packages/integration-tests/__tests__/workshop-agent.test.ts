@@ -71,7 +71,7 @@ const network = new NetworkInterceptor({ handlers: [model.handler] });
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true });
+  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true, reviewChanges: true });
 });
 
 afterAll(async () => {
@@ -126,6 +126,7 @@ it("keeps multi-turn history and returns provider errors", async () => {
             type: "string",
             description: expect.stringContaining("self-contained JavaScript module"),
           },
+          summary: { type: "string", description: expect.stringContaining("what the code does") },
         },
         required: ["code"],
       },

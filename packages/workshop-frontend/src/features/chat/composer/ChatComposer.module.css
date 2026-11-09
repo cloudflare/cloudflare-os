@@ -3,3 +3,59 @@
   position: relative;
   flex: 1;
 }
+
+/* The prompt card lifts a touch while files are dragged over the window, saying it takes them. */
+.promptCard {
+  transition: box-shadow 220ms cubic-bezier(0.2, 0, 0, 1), transform 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+.promptCard[data-dragging] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-color-kumo-default) 30%, transparent),
+    0 6px 18px rgb(0 0 0 / 0.06);
+  transform: translateY(-1px);
+}
+
+/* What a drag will do, over the card's row: its own surface, so the words never sit over the
+   placeholder, fading up into place. Over the card, it settles onto the tint. */
+.dropCue {
+  background: var(--color-kumo-elevated);
+  color: var(--text-color-kumo-subtle);
+  animation: drop-cue-in 200ms cubic-bezier(0.2, 0, 0, 1) both;
+  transition: background-color 160ms ease-out, color 160ms ease-out;
+}
+.dropCue[data-over] {
+  background: linear-gradient(var(--color-kumo-tint), var(--color-kumo-tint)) var(--color-kumo-elevated);
+  color: var(--text-color-kumo-default);
+}
+.dropCue > * {
+  animation: drop-cue-words 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes drop-cue-in {
+  from { opacity: 0; }
+}
+@keyframes drop-cue-words {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .promptCard { transition: none; }
+  .promptCard[data-dragging] { transform: none; }
+  .dropCue, .dropCue > * { animation: none; }
+}
+
+/* The add menu opens out of the +: a short fade and settle, from the corner nearest it. */
+.menu {
+  animation: menu-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
+  transform-origin: bottom left;
+}
+.menu[data-side="below"] { transform-origin: top left; }
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+.menu[data-side="below"] { animation-name: menu-in-below; }
+@keyframes menu-in-below {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu { animation: none; }
+}

@@ -9,14 +9,18 @@ management app at `/gatekeepers/scheduler`.
 1. Ask the agent to create a scheduled task, or open **Scheduled** and choose a starter prompt.
 2. Confirm what the task should do, the workspace and resources it may use, its cadence, and its
    IANA timezone when it uses wall-clock time.
-3. The agent registers a persistent callback. Registration creates a disabled hook and returns its
-   schedule ID; it does not start the schedule.
-4. Enable the hook in the Workshop's Connections UI.
+3. The agent registers a persistent callback: the chat itself (`self`) when it can do the work, or a
+   Gadget when the work needs code of its own. Registration returns the schedule ID. A schedule set
+   up during the user's own turn is on at once; one set up by a scheduled run or a spawned agent waits
+   for the user to turn it on.
+4. The chat shows the schedule as a line the user can pause or delete; the workspace's and app's
+   **Automations** tabs list them too. A schedule bound to `self` replies in its chat.
 5. Use **Scheduled** to search and inspect schedules across the account. Select a schedule row to
    open its workspace.
 
-The Scheduler app is intentionally read-only. Enabling and disabling remain in Connections; the app
-does not provide editing, pausing, deletion, run history, or a second hook toggle.
+The Scheduler app is intentionally read-only. Turning a schedule on and off, and deleting it, happen
+in the Workshop; the app does not provide editing, pausing, deletion, run history, or a second hook
+toggle.
 
 ## Agent API
 
@@ -109,14 +113,15 @@ choose UTC.
 
 ## Lifecycle
 
-Registration only binds a disabled Workshop hook; it writes no schedule row. Enabling records the
+Registration only binds a Workshop hook; it writes no schedule row. The Workshop enables the hook at
+once when the user's own turn bound it, and otherwise leaves it for the user. Enabling records the
 target workspace ID and optional gadget ID, then creates the account-driver row and arms its alarm.
 Disabling removes the row and its stored capabilities. Re-enabling creates fresh active state,
 preserves the original recurrence phase, and does not replay missed work. A repeated enable while
 the row still exists instead preserves its current schedule state and refreshes its activation details.
 
 Successful one-shots become **Finished**. Past or rejected one-shots become expired. Terminal rows
-remain visible and consume enabled-schedule quota until their hook is disabled in Connections.
+remain visible and consume enabled-schedule quota until their hook is turned off or deleted.
 Creating a workspace from a blueprint does not copy schedules or capabilities: the new workspace must
 register its callback and receive fresh enablement.
 
@@ -216,8 +221,8 @@ exist and must not be removed from an existing deployment.
 
 - **Scheduled is missing from navigation:** confirm the Scheduler binding exists, the vendor is enabled
   or optional with a connected account, and account discovery returns `providesUi`.
-- **A new schedule is not listed or running:** registration starts disabled. Enable its hook in the
-  workspace Connections UI.
+- **A new schedule is not listed or running:** a registration outside the user's own turn starts off.
+  Turn it on from its chat line or the Automations tab.
 - **A schedule says Needs attention:** callback authorization or execution exhausted its retry budget.
   Fix the callback or resource access, then disable and re-enable the hook.
 - **A one-shot says Expired:** its firing time passed without admission or it was already past when
@@ -231,4 +236,4 @@ exist and must not be removed from an existing deployment.
 
 V1 does not provide schedule editing, local pause/toggle/delete controls, recurring run history,
 `lastRunAt`, account default timezones, actor attribution, blueprint schedule cloning, catch-up delivery,
-or collaborator-owned schedule routing. Hook lifecycle remains in the Workshop Connections UI.
+or collaborator-owned schedule routing. Hook lifecycle remains in the Workshop.

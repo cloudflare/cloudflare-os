@@ -470,7 +470,7 @@ describe("mergeChanges", () => {
     let merges = chatMessages(impl, 1).filter(msg => msg.type === "merge");
     expect(merges).toHaveLength(1);
     expect(merges[0].epochBoundary).toBe(true);
-    expect(merges[0].commits).toEqual([{ gadgetId: 1, commitId: head }]);
+    expect(merges[0].commits).toEqual([{ gadgetId: 1, commitId: head, previousCommit: c1 }]);
 
     // Epoch reset: pins evaporate, the stream restarts under a new generation, and `prior`
     // names the closed stream for clients (and the straggler bridge).
@@ -533,6 +533,97 @@ describe("mergeChanges", () => {
     let head = impl.storage.gadgets.get(1)!.commitId!;
     expect(impl.gitCache.readCommitFiles(head))
         .toEqual(new Map([["a.txt", "late\none\nfirst\n"]]));
+  }));
+});
+
+describe("restoreChanges", () => {
+  // Gadget 1 at c1, edited in chat 1 and accepted; returns the merge's sequence.
+  async function acceptEdit(impl: any): Promise<{c1: string, merged: string, sequence: number}> {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "two\n" }),
+    });
+    await impl.mergeChanges(1, USER_META, "user-do-id");
+    let merge = chatMessages(impl, 1).find(msg => msg.type === "merge")!;
+    return { c1, merged: impl.storage.gadgets.get(1)!.commitId!, sequence: merge.sequence };
+  }
+  const files = (impl: any) => impl.gitCache.readCommitFiles(impl.storage.gadgets.get(1)!.commitId!);
+
+  it("undoes a merge on a new head, and restoring before the undo redoes it",
+      () => withImpl(async impl => {
+    let { merged, sequence } = await acceptEdit(impl);
+
+    await impl.restoreChanges(1, sequence, "before", USER);
+    let undone = impl.storage.gadgets.get(1)!.commitId!;
+    expect(files(impl)).toEqual(new Map([["a.txt", "one\n"]]));
+    // History is kept: the restore commits on the head it replaces.
+    expect(impl.gitCache.readCommitLog(undone, { depth: 1 })[0].parents).toEqual([merged]);
+    let restore = chatMessages(impl, 1).find(msg => msg.type === "restore")!;
+    expect(restore).toMatchObject({ from: sequence, to: "before", author: USER,
+      commits: [{ gadgetId: 1, commitId: undone, previousCommit: merged }] });
+
+    await impl.restoreChanges(1, restore.sequence, "before", USER);
+    expect(files(impl)).toEqual(new Map([["a.txt", "two\n"]]));
+  }));
+
+  it("goes back to a merge after the gadget moved on, and records nothing when already there",
+      () => withImpl(async impl => {
+    let { merged, sequence } = await acceptEdit(impl);
+    let later = await commitFiles(impl, { "a.txt": "three\n" }, [merged]);
+    setHead(impl, 1, later);
+
+    await impl.restoreChanges(1, sequence, "after", USER);
+    expect(files(impl)).toEqual(new Map([["a.txt", "two\n"]]));
+    expect(impl.gitCache.readCommitLog(impl.storage.gadgets.get(1)!.commitId!, { depth: 1 })[0].parents)
+        .toEqual([later]);
+
+    await impl.restoreChanges(1, sequence, "after", USER);
+    expect(chatMessages(impl, 1).filter(msg => msg.type === "restore")).toHaveLength(1);
+  }));
+
+  it("refuses while the chat proposes changes to the gadget", () => withImpl(async impl => {
+    let { merged, sequence } = await acceptEdit(impl);
+    await submit(impl, 1, {
+      generation: 1, revision: 0, clientId: "cli", seq: 2,
+      pins: [{ gadgetId: 1, baseCommit: merged }],
+      change: editChange(1, { "a.txt": "two\n" }, { "a.txt": "four\n" }),
+    });
+    await expect(impl.restoreChanges(1, sequence, "before", USER)).rejects.toThrow(/not yet kept/);
+  }));
+
+  it("removes a gadget the merge created when restoring before it", () => withImpl(async impl => {
+    addChat(impl, 1);
+    let created = impl.createGadget("My Gadget", "MY_GADGET", 1);
+    impl.addChatMessages(1, USER, [{ type: "changes",
+      change: { [created.id]: [["main.js", { set: "code\n" }]] },
+      createdGadgets: [{ gadgetId: created.id, title: created.title, bindingName: "MY_GADGET" }] }]);
+    let stamp = chatMessages(impl, 1).find(msg => msg.type === "changes")!.sequence;
+    impl.storage.gadgets.put({ ...impl.storage.gadgets.get(created.id)!, pending: { chatId: 1, sequence: stamp } });
+    await impl.mergeChanges(1, USER_META, "user-do-id");
+    let merge = chatMessages(impl, 1).find(msg => msg.type === "merge")!;
+    expect(merge.commits).toEqual([expect.objectContaining({ gadgetId: created.id, previousCommit: null })]);
+
+    await impl.restoreChanges(1, merge.sequence, "before", USER);
+    expect(impl.storage.gadgets.get(created.id)).toBeUndefined();
+    expect(chatMessages(impl, 1).find(msg => msg.type === "restore")).toMatchObject({ commits: [],
+      removedGadgets: [{ gadgetId: created.id, title: "My Gadget" }] });
+    // Gone, so restoring after the merge brings nothing back.
+    await impl.restoreChanges(1, merge.sequence, "after", USER);
+    expect(chatMessages(impl, 1).filter(msg => msg.type === "restore")).toHaveLength(1);
+  }));
+
+  it("refuses a merge from before merges recorded what they replaced", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    impl.addChatMessages(1, USER, [{ type: "merge", mergeThrough: 0,
+      commits: [{ gadgetId: 1, commitId: c1 }], epochBoundary: true }]);
+    let merge = chatMessages(impl, 1).find(msg => msg.type === "merge")!;
+    await expect(impl.restoreChanges(1, merge.sequence, "before", USER)).rejects.toThrow(/too old/);
   }));
 });
 

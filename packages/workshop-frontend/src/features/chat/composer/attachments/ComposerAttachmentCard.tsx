@@ -68,7 +68,8 @@ export const ComposerAttachmentCard = ({
             <span className="sr-only">Uploading {name}</span>
           </>
         ) : attachment.previewUrl && !failed ? (
-          <img src={attachment.previewUrl} alt={name} className="h-full w-full object-contain" />
+          <img src={attachment.previewUrl} alt={name}
+            className={`h-full w-full ${attachment.mimeType === "application/pdf" ? "bg-white object-cover object-top" : "object-contain"}`} />
         ) : (
           <div className="flex h-full flex-col justify-between p-2.5 sm:p-3">
             {failed ? (

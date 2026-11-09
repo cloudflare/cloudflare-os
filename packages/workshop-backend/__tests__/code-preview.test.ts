@@ -213,4 +213,25 @@ describe('ExecuteCodeStreamManager', () => {
     }
     expect(deltas.map(ev => ev.delta).join("")).toBe("run('😀')");
   });
+
+  it('sends a summary given before the code once, ahead of the code', () => {
+    let events: AiChatStreamEvent[] = [];
+    let manager = new ExecuteCodeStreamManager(ev => events.push(ev));
+    manager.startToolCall(CALL, "executeCode");
+    for (let chunk of ['{"summary": " Counting issues ", "co', 'de": "a', 'b"}']) {
+      manager.appendInput(CALL, chunk);
+    }
+    manager.finishToolCall(CALL);
+
+    expect(events.map(ev => ev.type)).toEqual(["toolCallSummary", "toolCodeDelta", "toolCodeDelta"]);
+    expect(events[0]).toEqual({type: "toolCallSummary", toolCallId: CALL, summary: "Counting issues"});
+  });
+
+  it('sends no summary when the model gave none before the code', () => {
+    let events: AiChatStreamEvent[] = [];
+    let manager = new ExecuteCodeStreamManager(ev => events.push(ev));
+    manager.startToolCall(CALL, "executeCode");
+    manager.appendInput(CALL, '{"code": "x", "summary": "Late"}');
+    expect(ofType(events, "toolCallSummary")).toEqual([]);
+  });
 });

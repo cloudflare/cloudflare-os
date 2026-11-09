@@ -30,7 +30,7 @@ import { AuthPopupCancelledError } from './features/native-app/authPopup'
 // what fulfills that call. Resolving with one ObserverAccountChoice per need lets the open proceed;
 // cancelling rejects it (the open is denied and the caller shows an access-denied page).
 
-interface AccountInfo {
+export interface AccountInfo {
   id: number
   description: AccountDescription
   vendor: VendorDescription
@@ -45,11 +45,13 @@ function accountLabel(account: AccountInfo | undefined, accountId: number): stri
   return account?.description.uniqueName || account?.description.displayName || `Account ${accountId}`
 }
 
-// Return the grantable resource type needed to verify one observer binding. Account metadata is
-// preferred because it reflects the resources currently available to that account; vendor metadata
-// is the fallback used before an account has been connected. Non-grantable resources require no
-// OAuth scope expansion.
-function requiredResourceUrlPatterns(
+/**
+ * Return the grantable resource type needed to verify one observer binding. Account metadata is
+ * preferred because it reflects the resources currently available to that account; vendor metadata
+ * is the fallback used before an account has been connected. Non-grantable resources require no
+ * OAuth scope expansion.
+ */
+export function requiredResourceUrlPatterns(
   need: ObserverBindingNeed,
   vendor: GatekeeperVendorInfo | undefined,
   account?: AccountInfo,
@@ -62,9 +64,11 @@ function requiredResourceUrlPatterns(
   return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
 }
 
-// Older account records may not list which resources were granted. Ask the gatekeeper to check
-// instead of assuming the account has access.
-function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
+/**
+ * Older account records may not list which resources were granted. Ask the gatekeeper to check
+ * instead of assuming the account has access.
+ */
+export function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
   const granted = account.description.grantedResourceUrlPatterns
   return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
 }

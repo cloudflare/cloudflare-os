@@ -323,10 +323,10 @@ describe("ChatComposer", () => {
     await act(async () => add.click());
     await act(async () => vi.waitFor(() => expect(
       Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-        .some((option) => option.textContent?.includes("review")),
+        .some((option) => option.textContent?.includes("Review")),
     ).toBe(true)));
     const skillOption = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes("review"))!;
+      .find((option) => option.textContent?.includes("Review"))!;
     await act(async () => {
       skillOption.click();
       await new Promise(requestAnimationFrame);
@@ -339,12 +339,17 @@ describe("ChatComposer", () => {
 
     await act(async () => add.click());
     const actions = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'));
-    expect(actions).toHaveLength(2);
+    // Upload, connection and the model row, which opens the model list in place.
+    expect(actions.map((action) => action.textContent)).toEqual([
+      "Add files or photos",
+      "Add a connection",
+      expect.stringMatching(/^Model/),
+    ]);
     expect(actions.every((action) => !action.disabled)).toBe(true);
     expect(document.querySelector('[aria-label="Search skills"]')).toBeNull();
     expect(container.textContent).not.toContain("Add resource");
     expect(container.textContent).not.toContain("Legacy resource");
-    const connection = actions.find((action) => action.textContent?.includes("Add a new connection"))!;
+    const connection = actions.find((action) => action.textContent?.includes("Add a connection"))!;
     await act(async () => connection.click());
     expect(testState.gatekeeperModalProps?.open).toBe(true);
     expect(listSlashCommands).toHaveBeenCalledTimes(1);
@@ -468,9 +473,9 @@ describe("ChatComposer", () => {
 
     const add = container.querySelector<HTMLButtonElement>('[aria-label="Add to conversation"]')!;
     await act(async () => add.click());
-    await act(async () => vi.waitFor(() => expect(document.body.textContent).toContain("first skill")));
+    await act(async () => vi.waitFor(() => expect(document.body.textContent).toContain("First skill")));
     const connect = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes("Add a new connection"))!;
+      .find((option) => option.textContent?.includes("Add a connection"))!;
     await act(async () => connect.click());
     expect(testState.gatekeeperModalProps?.open).toBe(true);
 
@@ -494,7 +499,7 @@ describe("ChatComposer", () => {
     ));
     await act(async () => add.click());
     await act(async () => vi.waitFor(() => expect(document.body.textContent)
-      .toContain("new connection skill")));
+      .toContain("New connection skill")));
     expect(listSlashCommands).toHaveBeenCalledTimes(2);
   });
 

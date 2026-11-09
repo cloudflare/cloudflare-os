@@ -306,12 +306,19 @@ export function settleRestart(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, RESTART_SETTLE_MS));
 }
 
-/** Boot the Workshop with only the bundled fixture gatekeeper bound. */
-export function startTestGatekeeperHarness(options: { enableGadgetExecution?: boolean } = {})
+/**
+ * Boot the Workshop with only the bundled fixture gatekeeper bound. `reviewChanges` leaves each
+ * turn's changes pending, for suites about keeping, discarding and reverting them.
+ */
+export function startTestGatekeeperHarness(
+    options: { enableGadgetExecution?: boolean, reviewChanges?: boolean } = {})
     : Promise<Harness> {
   return startHarness({
     gatekeepers: [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }],
     enableGadgetExecution: options.enableGadgetExecution,
+    ...(options.reviewChanges
+      ? { patchWorkshop: config => { config.vars = { ...config.vars, AUTO_KEEP_CHANGES: "off" }; } }
+      : {}),
   });
 }
 

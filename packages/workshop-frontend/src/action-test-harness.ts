@@ -138,9 +138,13 @@ export function deferred<T = void>() {
   }
 }
 
-/** The switch of the hook titled `title`, found by its accessible name. */
+/**
+ * The switch of the hook titled `title`, found by its accessible name: "Hook: …" where hooks are
+ * listed as connections, or "…: on"/"…: paused" on an automation's card.
+ */
 export function hookSwitch(title: string): HTMLButtonElement {
-  const element = document.querySelector(`[role="switch"][aria-label="Hook: ${title}"]`)
+  const element = document.querySelector(
+      `[role="switch"][aria-label="Hook: ${title}"], [role="switch"][aria-label^="${title}: "]`)
   if (!(element instanceof HTMLButtonElement)) throw new Error(`No switch for the hook "${title}"`)
   return element
 }

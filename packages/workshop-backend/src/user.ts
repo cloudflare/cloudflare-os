@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
+import type { ChatReadState, ChatTimelineHead, FavoriteItem, FavoriteItemSpec, UnreadStateScope, WorkspaceKind, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -11,7 +11,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
-  type ChatReadCursor,
+  type ChatReadCursor, favoriteKey,
 } from "./storage-schema/user-storage.js";
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
@@ -730,7 +730,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #cursor(workspaceId: string, chatId: number): ChatReadCursor {
     return this.#readCursors.get(`${workspaceId}:${chatId}`) ??
-      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
+      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1,
+        unjoined: true};
   }
 
   #storeCursor(cursor: ChatReadCursor): boolean {
@@ -743,6 +744,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
+        old.head?.spawnerName === cursor.head?.spawnerName && old.archived === cursor.archived &&
+        old.unjoined === cursor.unjoined &&
         old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
         old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
     this.storage.chatReadCursors.put(cursor);
@@ -783,7 +786,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (scope !== "summary") {
       for (let cursor of this.#readCursors.values()) {
         if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted &&
-            (scope === "unread" ? cursor.unreadCount > 0 : cursor.workspaceId === scope.workspaceId)) {
+            (scope === "all" || (scope === "unread" ? cursor.unreadCount > 0 :
+              cursor.workspaceId === scope.workspaceId))) {
           chats.push(this.#readState(cursor));
         }
       }
@@ -885,15 +889,79 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Read inbox rows directly from the user's local projection. */
   async getUnreadThreads(): Promise<UnreadThread[]> {
+    return this.#threads(cursor => cursor.unreadCount > 0);
+  }
+
+  /** Every chat row in the user's local projection, read or unread. */
+  async getChatThreads(): Promise<UnreadThread[]> {
+    return this.#threads(() => true);
+  }
+
+  #threads(include: (cursor: ChatReadCursor) => boolean): UnreadThread[] {
     return [...this.#readCursors.values()]
-      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
+      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && include(cursor))
       .map(cursor => ({...this.#readState(cursor),
         chatTitle: cursor.head?.chatTitle ?? `Thread ${cursor.chatId}`,
         latestSequence: cursor.head?.latestSequence ?? -1,
         latestMessagePreview: cursor.head?.latestMessagePreview,
-        latestActivityAt: cursor.head?.latestActivityAt}))
+        latestActivityAt: cursor.head?.latestActivityAt,
+        ...(cursor.head?.spawnerName === undefined ? {} : {spawnerName: cursor.head.spawnerName}),
+        ...(cursor.archived ? {archived: true as const} : {}),
+        ...(cursor.unjoined ? {unjoined: true as const} : {})}))
       .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0) ||
         a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId) || a.chatId - b.chatId);
+  }
+
+  /** See `AuthenticatedApi.setChatArchived()`. */
+  async setChatArchived(workspaceId: string, chatId: number, archived: boolean): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) throw new Error("No such workspace belonging to user.");
+    let current = this.#cursor(workspaceId, chatId);
+    if (current.deleted) throw new Error("No such chat.");
+    let next: ChatReadCursor = {...current};
+    if (archived) next.archived = true;
+    else {
+      delete next.archived;
+      delete next.unjoined;
+    }
+    if (this.#storeCursor(next)) this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /**
+   * Called by a workspace when the user opens one of its chats: it joins their recent chats
+   * (see `UnreadThread.unjoined`).
+   */
+  async joinChat(workspaceId: string, chatId: number): Promise<void> {
+    let cursor = this.#readCursors.get(`${workspaceId}:${chatId}`);
+    if (!cursor?.unjoined || cursor.deleted) return;
+    let {unjoined: _, ...joined} = cursor;
+    if (this.#storeCursor(joined)) this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /** See `AuthenticatedApi.listFavorites()`. */
+  async listFavorites(): Promise<FavoriteItem[]> {
+    return [...this.storage.favorites.list()]
+      .filter(item => this.storage.gadgets.get(item.workspaceId) !== undefined)
+      .toSorted((a, b) => b.starred.getTime() - a.starred.getTime());
+  }
+
+  /** See `AuthenticatedApi.setFavorite()`. */
+  async setFavorite(item: FavoriteItemSpec, favorite: boolean): Promise<void> {
+    if (!favorite) {
+      this.storage.favorites.delete(favoriteKey(item));
+      return;
+    }
+    if (!this.storage.gadgets.get(item.workspaceId)) {
+      throw new Error("No such workspace belonging to user.");
+    }
+    // Only the fields its kind defines, so a client can't store anything else in the record.
+    let common = {workspaceId: item.workspaceId, title: item.title, starred: new Date()};
+    this.storage.favorites.put(item.kind === "app"
+      ? {...common, kind: "app", workpieceId: item.workpieceId,
+          ...(item.output ? {output: item.output} : {})}
+      : item.kind === "chat"
+      ? {...common, kind: "chat", chatId: item.chatId}
+      : {...common, kind: "file", chatId: item.chatId, fileId: item.fileId,
+          ...(item.mimeType ? {mimeType: item.mimeType} : {})});
   }
 
   /** Only tracked private state for this workspace; its ordinary thread list stays source-owned. */
@@ -953,7 +1021,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let update: Promise<void>;
       if (!change) {
         update = subscriber.updated(this.#unreadSnapshot(scope, summary));
-      } else if (scope === "summary" || (scope !== "unread" && scope.workspaceId !== change.workspaceId)) {
+      } else if (scope === "summary" ||
+          (scope !== "unread" && scope !== "all" && scope.workspaceId !== change.workspaceId)) {
         update = subscriber.summaryUpdated(change.summary);
       } else {
         update = subscriber.chatUpdated(change.workspaceId, change.chatId,
@@ -1055,6 +1124,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     cursor = {...cursor, ...this.#mergeHead(cursor, progress), latestVisibleSequence: latest,
       unreadCount: latest - readThroughVisibleSequence};
+    if (progress.latestMessageAuthorId === this.storage.profile.get().id) delete cursor.unjoined;
     let changed = this.ctx.storage.transactionSync(() => {
       let stored = this.#storeCursor(cursor);
       for (let event of progress.notifications) {
@@ -1126,6 +1196,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
     this.ctx.storage.transactionSync(() => {
       if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+      this.storage.favorites.byWorkspace.delete(workspaceId);
       for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:`}))) {
         this.storage.notificationOutbox.deleteRecord(event);
       }
@@ -1224,7 +1295,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: ChatAdmissionBaseline[]
+      notificationBaselines: ChatAdmissionBaseline[], kind?: WorkspaceKind
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
@@ -1238,6 +1309,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       record.title = title;
       record.owner = ownerProfile;
       record.role = role;
+      if (kind) record.kind = kind; else delete record.kind;
+      delete record.invited;
       this.storage.gadgets.put(record);
     } else {
       // First time opening this shared workspace.
@@ -1248,6 +1321,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         role,
         created: now,
         lastActive: now,
+        ...(kind ? {kind} : {}),
       });
     }
     if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
@@ -1262,7 +1336,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
               head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
-              latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
+              latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence,
+              ...(cursor ? {} : {unjoined: true as const})});
             changed = true;
           } else {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
@@ -1274,6 +1349,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (changed) this.#unreadChanged();
       await this.#armExpirySweep();
     }
+  }
+
+  /**
+   * Called by a workspace when someone adds this user to it, so it is listed as shared with them
+   * before they first open it. Presentation only, like `recordSharedWorkspaceOpen()`: the
+   * workspace authorizes every open. Leaves an existing listing alone.
+   */
+  async recordSharedWorkspaceInvite(workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo,
+      role: CollaboratorRole, kind?: WorkspaceKind): Promise<void> {
+    if (this.storage.gadgets.get(workspaceId)) return;
+    let now = new Date();
+    this.storage.gadgets.put({id: workspaceId, title, owner: ownerProfile, role, created: now,
+      lastActive: now, invited: true, ...(kind ? {kind} : {})});
   }
 
   /**
@@ -1628,9 +1716,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.gadgets.get(id) || null;
   }
 
-  async newWorkspace(id: string, title: string): Promise<void> {
+  /**
+   * Record a new workspace the user owns. A named workspace (`kind`) is fully created at once, so
+   * it is listed before it has any activity.
+   */
+  async newWorkspace(id: string, title: string, kind?: WorkspaceKind): Promise<void> {
     let created = new Date();
-    this.storage.gadgets.put({id, title, created});
+    this.storage.gadgets.put(kind ? {id, title, created, kind, lastActive: created} : {id, title, created});
   }
 
   async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {

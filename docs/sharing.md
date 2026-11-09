@@ -143,6 +143,71 @@ Revocation is a two-phase process in the UI:
 
 A non-owner can only sever their own `user` edges to the target (and only if such an edge exists -- otherwise the call is rejected). If the target still has edges from other sources, they retain the access those grant; if the caller's edges were their only support, the target becomes unreachable like any other lazily-removed user.
 
+## Shared views
+
+Sharing a gadget shares the owner's view of it; access to the data decides whether the recipient
+may also use it live. A `use` collaborator who cannot be verified against what the gadget reaches
+-- they have no account for a source, or the source refuses theirs -- is shown the owner's view
+instead of being refused. (Design record: `plans/share-what-you-see.md`.)
+
+**The view.** A copy of the gadget: its own code and UI, run over a clone of its storage, with
+no bindings at all. It lives as a second facet of the Overseer beside the gadget's own
+(`viewFacetName()`), loaded from the same worker modules at the commit the view was taken at,
+with an empty `env`, no tails, and a bare stub rather than a `ctx.restore()`-minted one, so it can
+neither reach a gatekeeper nor mint a persistent stub that restores against the running gadget.
+A gadget without a UI (`client.js`) or a server side (`server.js`) has no view. The copy shows
+what the gadget had put in storage; whatever its UI reads through a binding instead is missing
+there, which is why the agent's system prompt tells it to keep what the UI displays in storage,
+render from storage, and treat a missing binding as nothing new rather than an error. The copy
+is writable -- a viewer's clicks may change it -- and whatever they change is overwritten by the
+owner's next open; it is never reflected back to the owner.
+
+**When it is taken.** The owner's `connectToGadget()` on mainline code and sharing a gadget
+with its first collaborator retake it in the background, and every opening of the view (a view
+admission, or the owner's `openView()`) retakes it first and waits (`OverseerImpl.refreshView`),
+so viewers see what the gadget holds now -- including what its scheduled work wrote while nobody
+had it open -- and the UI, the copy and its time come from one clone. A retake is
+`ctx.facets.clone()` of the gadget's facet onto the view's: one copy of the storage, no reads of
+anything, so nothing new is read on anyone's behalf. Only while the admin policy is on, and while someone
+holds the gadget through `use` or the owner previews it (`GadgetClient.openView()`, which takes the
+first view before any share and is audited like every other); at most once per `VIEW_REFRESH_INTERVAL_MS` per gadget, and
+never while a clone is running. Cloning over a running view ends it ("Facet was cloned-over");
+viewers' UIs reconnect and land on the new copy.
+
+**Storage.** The view's facet, beside a `ViewRecord` in the Overseer (`views` collection) naming
+when it was taken, by whom, at which commit, and the observer requirements in the gadget's scope
+then. Replaced in place, never by a failed clone: a failure keeps the last good view and sets
+`ViewRecord.failedAt`, which the owner's share dialog shows. Every clone writes a `viewPublished`
+action record carrying the same requirement keys, shown in the action log as an observation,
+which is what records that restricted data left its access controls. The view goes with its
+gadget and its workspace: `deleteView()` deletes the facet with the record.
+
+**Admission.** `authorizeGadget()` resolves `"live"`, `"view"` or `false`. Access decides first
+and still refuses like a missing gadget. If verification then fails, or cannot run because no
+configuration callback was given, and a view exists while the deployment serves views, the result
+is `"view"` and `getGadget()` returns a `ViewGadgetClientInterface`: default-deny like
+`UseGadgetClientInterface`, allowing `getId()`, `getTitle()`, `getAccessMode()`, `getView()`, and
+`getUiBundle()` / `connectToGadget()` only without a `chatId`, which serve the view's copy, so a
+view session reaches no gatekeeper and never the running gadget, and cannot export. It does not
+join a session, since it holds nothing a scope widening would need to sever. The owner sees the
+same copy through `GadgetClient.openView()`, which the share dialog previews. Clients
+call `getGadget()` without a callback first, so someone who never chose an account sees the view
+with no prompt, and pass one only when the collaborator asks to explore. A collaborator whose
+account was verified before keeps it (`ObserverRecord.accountChoices`), so their next open
+re-verifies silently and admits them live as soon as the source allows it. A failed check
+publishes no account choice -- observations check every published choice, so a refused one would
+refuse the owner's own reads -- so the Workshop client remembers a refused choice per device and
+re-checks with it. Each admission records how the collaborator opened the gadget, which
+`listCollaborators()` reports as `lastOpened`.
+
+**Revocation and policy.** Removing a collaborator severs their edge as before: their next
+`getGadget()` refuses, and the revocation restart drops any session they hold, view or live. Under
+`ownerInvitesOnly` only the owner's direct grantees hold access at all, so only they can see a
+view. A view whose publisher no longer holds `build` is deleted the next time it is looked up.
+`AdminConfig.sharedViews` (default on, set by `AdminApi.setSharedViews()` and audited like every
+admin setting) turns views off deployment-wide, restoring the plain refusal, and is what
+`WorkspaceMetadata.sharedViewsAvailable` reports.
+
 ## Resource isolation between collaborators
 
 Collaborators share the gadget's code, storage, and AI chat history, but certain resources are scoped to individual users:

@@ -28,7 +28,7 @@ const network = new NetworkInterceptor({ handlers: [models.handler] });
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true });
+  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true, reviewChanges: true });
 });
 
 afterAll(async () => {
@@ -279,9 +279,12 @@ export default async function(self, env) {
     await waitForIdleChat(ws, card.chatId);
     expect(model.remainingSteps()).toBe(0);
 
-    const listed = (await ws.listHooks()).find(h => h.description.title === `Test hook ${hookKey}`);
-    if (!listed) throw new Error(`No hook listed for ${hookKey}`);
-    expect(listed).toMatchObject({ gatekeeperId: sourceId, enabled: false });
+    // The hook turned on by itself, bound in a turn the user started; turn it off, to watch what
+    // turning it back on does to a viewer.
+    const listed = await waitFor("the hook to turn on", async () =>
+      (await ws.listHooks()).find(h => h.description.title === `Test hook ${hookKey}` && h.enabled) ?? null);
+    expect(listed).toMatchObject({ gatekeeperId: sourceId });
+    await ws.disableHook(listed.id);
     using gadget = await ws.getGadget(listed.gadgetId);
     expect((await gadget.listBindings()).some(b => b.target === sourceId)).toBe(false);
     return { hook: listed, viewer: await addViewer(ws, listed.gadgetId) };

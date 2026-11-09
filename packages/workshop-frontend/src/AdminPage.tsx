@@ -17,6 +17,7 @@ import { auditSettingsOf, type AuditSettings } from './features/admin-audit/audi
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
 import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
+import { SharedViewsCard } from './features/shared-view/SharedViewsCard'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -59,6 +60,7 @@ export default function AdminPage() {
   // What a workspace that has observed restricted data may still fetch.
   const [restrictedWebFetchHosts, setRestrictedWebFetchHosts] = useState<string[]>([])
   const [restrictedWebFetchApprovals, setRestrictedWebFetchApprovals] = useState(false)
+  const [sharedViews, setSharedViews] = useState(true)
 
   // Top-bar notice: last-saved value + current editor draft.
   const [savedAnnouncement, setSavedAnnouncement] = useState('')
@@ -149,6 +151,7 @@ export default function AdminPage() {
     setInstructionsDraft(view.instanceInstructions)
     setRestrictedWebFetchHosts(view.restrictedWebFetchHosts)
     setRestrictedWebFetchApprovals(view.restrictedWebFetchApprovals)
+    setSharedViews(view.sharedViews)
     setSavedAnnouncement(view.announcement)
     setAnnouncementDraft(view.announcement)
     setSavedBanner(view.banner)
@@ -950,6 +953,10 @@ export default function AdminPage() {
           approvals={restrictedWebFetchApprovals}
           onApprovalsSaved={setRestrictedWebFetchApprovals}
         />
+      )}
+
+      {activeTab === 'general' && (
+        <SharedViewsCard admin={admin.api} enabled={sharedViews} onSaved={setSharedViews} />
       )}
 
       {/* Gatekeeper resources */}

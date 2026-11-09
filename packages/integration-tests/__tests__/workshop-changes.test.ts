@@ -48,7 +48,7 @@ let harness: Harness;
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true });
+  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true, reviewChanges: true });
 });
 
 afterAll(async () => {

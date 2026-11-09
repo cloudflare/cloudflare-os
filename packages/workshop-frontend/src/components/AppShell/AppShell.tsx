@@ -1,55 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouterState } from '@tanstack/react-router'
-import { List, X } from '@phosphor-icons/react'
 import TopBarNotice from '../../TopBarNotice'
 import ReconnectingChip from '../ReconnectingChip'
 import { useConnectionLost } from '../../RpcContext'
 import Sidebar from './Sidebar'
 import CommandPalette from './CommandPalette'
-import { OPEN_COMMAND_PALETTE_EVENT } from './commandPaletteBus'
-
-const STORAGE_KEY_COLLAPSED = 'gadgets:sidebar-collapsed'
-
-// Read synchronously for the initial state so the rail doesn't flash open then collapse.
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(STORAGE_KEY_COLLAPSED) === '1'
-  } catch {
-    return false
-  }
-}
+import { OPEN_COMMAND_PALETTE_EVENT, OPEN_SIDEBAR_DRAWER_EVENT } from './commandPaletteBus'
+import { WorkspacesProvider } from '../../features/workspaces/WorkspacesContext'
+import { BareShellProvider, CONTENT_CARD_CLASS } from './shellChrome'
 
 /**
- * The authenticated, non-fullscreen application chrome: a persistent left rail + a thin top notice
- * strip + the routed content. Replaces the old <Header /> on these routes. Chat and Gadget editor
- * pages are still rendered fullscreen by __root.tsx without this shell.
+ * The authenticated application chrome (Figma frame "MacBook Pro 14\""): the sidebar and a white
+ * content card side by side on the elevated canvas, 8px in from the edges with a 12px gutter. Every
+ * page renders inside the card and draws its own header row, except a page that calls
+ * `useBareShell` to lay out cards of its own, as the chat does to show an app beside it.
  *
- * Mobile: below `md` the rail collapses to an overlay drawer triggered by a hamburger button in a
- * minimal top bar. We don't try to gracefully shrink the rail at narrow widths; the overlay model
- * is simpler and matches how the rest of the app handles small screens.
+ * Below `md` the sidebar is a full-screen drawer opened from each page's header (see
+ * `openSidebarDrawer`), as in the design's phone frames, where the chat list is its own screen.
  */
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [bare, setBare] = useState(false)
   const drawerRef = useRef<HTMLDivElement>(null)
-  const menuButtonRef = useRef<HTMLButtonElement>(null)
   const connectionLost = useConnectionLost()
 
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev
-      try { localStorage.setItem(STORAGE_KEY_COLLAPSED, next ? '1' : '0') } catch {}
-      return next
-    })
+  useEffect(() => {
+    const open = () => setMobileOpen(true)
+    window.addEventListener(OPEN_SIDEBAR_DRAWER_EVENT, open)
+    return () => window.removeEventListener(OPEN_SIDEBAR_DRAWER_EVENT, open)
   }, [])
 
-  // Close mobile drawer when escape is pressed.
+  // Escape closes the drawer, and focus stays inside it while it's open.
   useEffect(() => {
     if (!mobileOpen) return
-    const previousFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : menuButtonRef.current
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     drawerRef.current?.focus()
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -78,18 +63,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [mobileOpen])
 
-  // Close the mobile drawer on navigation. Links in the drawer (primary nav, Gatekeepers, the user
-  // menu, workspace rows) otherwise navigate while leaving the drawer covering the page — so on a
-  // phone it looks like nothing happened. Watching the pathname catches every navigation source
-  // without prop-drilling a close callback through the whole rail. No-op on desktop, where the
-  // drawer is never open.
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  // Close the drawer on navigation: picking a chat or a menu item navigates while the drawer would
+  // otherwise keep covering the page. Watching the location catches every source of navigation.
+  const location = useRouterState({ select: (s) => s.location.href })
   useEffect(() => {
     setMobileOpen(false)
-  }, [pathname])
+  }, [location])
 
-  // Global ⌘K / Ctrl+K opens the command palette; the rail's search button opens it via a custom
-  // event so it doesn't have to prop-drill into the palette.
+  // Global ⌘K / Ctrl+K opens the command palette; the sidebar's search button opens it via a
+  // custom event so it doesn't have to prop-drill into the palette.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
@@ -107,67 +89,39 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }, [])
 
   return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden bg-kumo-base">
-      {/* Desktop sidebar — hidden on mobile in favor of the drawer. */}
-      <div className="hidden h-full md:flex">
-        <Sidebar collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
-      </div>
-
-      {/* Mobile drawer */}
-      {mobileOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] md:hidden"
-            onClick={() => setMobileOpen(false)}
-            aria-hidden="true"
-          />
+    <WorkspacesProvider>
+      <div className="flex h-full min-h-0 w-full gap-3 overflow-hidden bg-kumo-elevated p-0 md:p-2">
+        <div className="hidden h-full md:flex">
+          <Sidebar />
+        </div>
+        {mobileOpen && (
           <div
             ref={drawerRef}
             role="dialog"
             aria-modal="true"
-            aria-label="Primary navigation"
+            aria-label="Chats"
             tabIndex={-1}
-            className="fixed inset-y-0 left-0 z-50 outline-none md:hidden"
+            className="fixed inset-0 z-50 flex bg-kumo-elevated p-2 outline-none md:hidden"
           >
-            <Sidebar collapsed={false} onToggleCollapsed={() => setMobileOpen(false)} />
+            <Sidebar />
           </div>
-        </>
-      )}
-
-      {/* Main column */}
-      <div
-        className="flex min-w-0 flex-1 flex-col"
-        inert={mobileOpen ? true : undefined}
-        aria-hidden={mobileOpen ? true : undefined}
-      >
-        {/* Top bar. Same height as the sidebar's brand row (h-14) so they read as one continuous
-            chrome strip across the top. Mostly empty — carries the mobile hamburger on the left,
-            any admin TopBarNotice centered, and the reconnecting chip on the right. */}
-        <div className="relative flex h-14 shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-3">
-          <button
-            type="button"
-            ref={menuButtonRef}
-            onClick={() => setMobileOpen((o) => !o)}
-            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
-            className="flex h-11 w-11 items-center justify-center rounded-md text-kumo-default transition-colors hover:bg-kumo-tint md:hidden"
-          >
-            {mobileOpen ? <X size={16} /> : <List size={16} />}
-          </button>
-          <TopBarNotice />
-          {/* `ml-auto` rather than the container's `justify-between`: on desktop the hamburger is
-              hidden, leaving this the only in-flow child, which `justify-between` would park on the
-              left. */}
-          <div className="ml-auto flex items-center gap-2">
-            {connectionLost && <ReconnectingChip />}
-            <span aria-hidden="true" className="h-11 w-11 md:hidden" />
+        )}
+        <div
+          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden ${bare ? 'bg-kumo-base md:bg-transparent' : CONTENT_CARD_CLASS}`}
+          inert={mobileOpen ? true : undefined}
+          aria-hidden={mobileOpen ? true : undefined}
+        >
+          {/* The admin's notice, or the reconnecting chip, float over the middle of whichever page
+              header is showing: every page header leaves that span empty. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-[60px] items-center justify-center">
+            {connectionLost ? <span className="pointer-events-auto"><ReconnectingChip /></span> : <TopBarNotice />}
           </div>
+          <main className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <BareShellProvider value={setBare}>{children}</BareShellProvider>
+          </main>
         </div>
-
-        {/* Routed content. Flat enterprise canvas — no texture. */}
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       </div>
-
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
-    </div>
+    </WorkspacesProvider>
   )
 }

@@ -11,9 +11,14 @@ type Props = {
   gadget: RpcStub<GadgetClient> | null
   gadgetTitle: string
   chatId?: number
+  /**
+   * Renders as an "Export" submenu of an enclosing dropdown menu, styled by `itemClassName`, in
+   * place of its own icon button. The app pane's "more" menu holds it this way.
+   */
+  asSubmenu?: { itemClassName: string, contentClassName: string }
 }
 
-export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props) {
+export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, asSubmenu }: Props) {
   const [formats, setFormats] = useState<GadgetExportFormat[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -84,21 +89,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
   const exportingFormat = formats?.find(format => format.id === exportingId)
   const tooltip = exportingFormat ? `Exporting to ${exportingFormat.label}` : 'Export Gadget'
 
-  return (
-    <Tooltip content={tooltip} asChild>
-      <span className="relative inline-flex">
-        <DropdownMenu onOpenChange={handleOpenChange}>
-          <DropdownMenu.Trigger
-            render={(
-              <WorkshopIconButton
-                aria-label="Export Gadget"
-                disabled={exportingId !== null}
-              >
-                <DownloadSimple size={17} />
-              </WorkshopIconButton>
-            )}
-          />
-          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
+  const items = (<>
             {loading ? (
               <div role="status" aria-label="Loading export formats" className="space-y-1 py-0.5">
                 {['w-20', 'w-14'].map(width => (
@@ -133,6 +124,35 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
                 {format.label}
               </DropdownMenu.Item>
             ))}
+</>)
+
+  if (asSubmenu) {
+    return (
+      <DropdownMenu.Sub onOpenChange={handleOpenChange}>
+        <DropdownMenu.SubTrigger className={asSubmenu.itemClassName} disabled={exportingId !== null}>
+          {exportingFormat ? `Exporting to ${exportingFormat.label}…` : 'Export'}
+        </DropdownMenu.SubTrigger>
+        <DropdownMenu.SubContent className={asSubmenu.contentClassName}>{items}</DropdownMenu.SubContent>
+      </DropdownMenu.Sub>
+    )
+  }
+
+  return (
+    <Tooltip content={tooltip} asChild>
+      <span className="relative inline-flex">
+        <DropdownMenu onOpenChange={handleOpenChange}>
+          <DropdownMenu.Trigger
+            render={(
+              <WorkshopIconButton
+                aria-label="Export Gadget"
+                disabled={exportingId !== null}
+              >
+                <DownloadSimple size={17} />
+              </WorkshopIconButton>
+            )}
+          />
+          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
+            {items}
           </DropdownMenu.Content>
         </DropdownMenu>
         {exportingId !== null && (

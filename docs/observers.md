@@ -752,6 +752,11 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    log, so the exposure is limited to what the agent chose to persist, and the forward
    remedy is binding the producer to a gadget — that puts it in the gadget's scope, so every
    collaborator holding it is verified against it at their next open.
+   A `use` collaborator who fails this verification may still see the owner's *view* of the
+   gadget, a static rendering the owner's open published, instead of being refused. That is the
+   deliberate, audited form of the indirect disclosure this section and §10 describe: each view
+   records the requirements in the gadget's scope, and admins can turn views off. See
+   `sharing.md`, "Shared views".
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
    resource (inherent to the security model). Because that next open is what verifies them, the
@@ -1050,6 +1055,9 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   gadget without checking its "use" collaborators against the chat's requirements, including
   content a chat queued in an action that is not yet approved, or is later rejected.
   Attribution follows the original authorizer, not wherever its capability is passed.
+  The owner's view of a shared gadget is the one such disclosure the Workshop makes itself, and
+  it is audited: its `viewPublished` record keeps the requirement keys the view may hold (see
+  `sharing.md`, "Shared views").
 - **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
   outlives its executeCode call cannot authorize an observation that reports subresources. Reads
   that omit them are unaffected, as before.

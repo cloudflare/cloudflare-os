@@ -48,12 +48,14 @@ vi.mock("./features/chat/composer/ChatComposer", () => ({
   },
 }));
 
-vi.mock("./components/MeshBackground", () => ({ default: () => null }));
-vi.mock("./components/AppShell/HomeTaskSuggestions", () => ({ default: () => null }));
+vi.mock("./features/workspaces/WorkspacePicker", () => ({ WorkspacePicker: () => null }));
+vi.mock("./features/workspaces/CreateWorkspaceDialog", () => ({ CreateWorkspaceDialog: () => null }));
+vi.mock("./useGatekeeperApps", () => ({ useGatekeeperApps: () => [] }));
+vi.mock("./components/SiteLogo", () => ({ default: ({ children }: { children: unknown }) => children }));
 vi.mock("./features/deployment-updates/UpdateAvailableNotice", () => ({ UpdateAvailableNotice: () => null }));
 vi.mock("./useDocumentTitle", () => ({ useDocumentTitle: () => {} }));
 
-import { HomePageContent } from "./routes/index";
+import { HomePageContent } from "./pages/home/HomePage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

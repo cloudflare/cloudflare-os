@@ -29,7 +29,8 @@ vi.unstubAllGlobals()
 
 const TITLE = 'Watch acme/widgets on GitHub'
 const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
-const hookSwitch = () => page.getByRole('switch', { name: `Hook: ${TITLE}` })
+// The Connections page names a switch "Hook: <title>"; the chat's card, "<title>: on" or "…: paused".
+const hookSwitch = () => page.getByRole('switch', { name: new RegExp(`^(Hook: ${TITLE}|${TITLE}: (on|paused))$`) })
 
 let root: Root | undefined
 let container: HTMLElement | undefined

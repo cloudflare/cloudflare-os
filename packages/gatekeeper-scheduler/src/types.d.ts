@@ -2,8 +2,10 @@
 // current agent session alive. The capability is scoped to the current workspace: registrations and
 // `list()` never cross workspace boundaries, even though scheduling is coordinated per account.
 //
-// Registration creates a disabled hook. The user must enable it in Connections before it can run or
-// appear in `list()`. Keep the returned schedule ID as the immediate registration receipt.
+// A registration made during a turn the user started is on at once: it runs and appears in `list()`
+// shortly after the call returns. One made otherwise (from a scheduled run, or by a spawned agent)
+// waits until the user turns it on in the chat or the workspace's Automations. Keep the returned
+// schedule ID as the immediate registration receipt.
 //
 // Choose the entry point by how the user described the cadence:
 //
@@ -248,6 +250,13 @@ export interface ScheduledFiring {
   actualTime: number;
   /** Schedule timezone, or `UTC` for elapsed intervals and numeric one-shots. */
   timeZone: string;
+  /** The title the schedule was registered with. */
+  title: string;
+  /**
+   * The description the schedule was registered with: what each run does. A callback that is a
+   * chat's `self` reads its instructions here.
+   */
+  description: string;
 }
 
 /**
@@ -266,7 +275,21 @@ export interface ScheduledTaskHook {
 /**
  * Workspace-scoped Scheduled Tasks capability.
  *
- * Define the callback in the Gadget's `[restore]()` method, then pass a persistent stub for it to a
+ * When the work is something you can do yourself with this chat's bindings, such as "summarize my
+ * inbox every morning", pass executeCode's `self` as the callback: each run then arrives in this
+ * chat as a `self.onSchedule(firing)` callback, and you do the work and reply there. No Gadget is
+ * needed. Write what each run should do into the description, which the firing carries back to
+ * you and the user sees on the schedule:
+ *
+ * @example
+ * // executeCode
+ * const scheduleId = await env.SCHEDULER.calendarAt(
+ *   { timeZone: "Europe/London", freq: "weekly", byDay: ["MO", "TU", "WE", "TH", "FR"], hour: 8, minute: 0 },
+ *   self,
+ *   { title: "Morning inbox summary", description: "Summarize unread email and flag anything urgent." },
+ * );
+ *
+ * When the work needs code or saved state of its own, define the callback in the Gadget's `[restore]()` method, then pass a persistent stub for it to a
  * registration method. Inside the Gadget, create the stub with `this.ctx.restore(params)`; from
  * `executeCode`, through the Gadget's binding, as "Persistent Stubs and `ctx.restore()`" in your
  * instructions describes (`ctx.restore()` there targets the executeCode worker, not the Gadget).
@@ -275,8 +298,8 @@ export interface ScheduledTaskHook {
  * `ctx`; pass any required dependencies, such as `this.ctx.storage`, to it from `[restore]()`.
  *
  * Use the Scheduler binding shown in the agent environment directly; it does not need to be saved as
- * a Gadget binding. Registration returns a stable schedule ID immediately, but the schedule remains
- * disabled and absent from `list()` until the user enables it in Connections. The callback itself
+ * a Gadget binding. Registration returns a stable schedule ID immediately. A schedule registered during
+ * the user's own turn turns on by itself; any other waits for the user to turn it on. The callback itself
  * runs through the restored Gadget and does not need the Scheduler binding.
  *
  * Every successful registration call creates a distinct hook; registration is not idempotent.
@@ -313,8 +336,8 @@ export interface ScheduleSession {
    * skipped rather than replayed.
    *
    * @param callback A persistent `ScheduledTaskHook` stub.
-   * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
-   * or run until the user enables it in Connections.
+   * @returns The stable schedule ID and immediate registration receipt. The schedule is on once
+   * its hook is: at once for a registration in the user's own turn.
    */
   every(
     everyMs: number,
@@ -327,8 +350,8 @@ export interface ScheduleSession {
    * or infer it. See `CalendarRule` for supported hourly, daily, and weekly shapes.
    *
    * @param callback A persistent `ScheduledTaskHook` stub.
-   * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
-   * or run until the user enables it in Connections.
+   * @returns The stable schedule ID and immediate registration receipt. The schedule is on once
+   * its hook is: at once for a registration in the user's own turn.
    */
   calendarAt(
     rule: CalendarRule,
@@ -341,8 +364,8 @@ export interface ScheduleSession {
    * in UTC. A wall-clock `when` requires an explicit IANA timezone; ask the user rather than guessing.
    *
    * @param callback A persistent `ScheduledTaskHook` stub.
-   * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
-   * or run until the user enables it in Connections.
+   * @returns The stable schedule ID and immediate registration receipt. The schedule is on once
+   * its hook is: at once for a registration in the user's own turn.
    */
   runAt(
     when: OneShotTime | number,
@@ -351,11 +374,11 @@ export interface ScheduleSession {
   ): Promise<string>;
 
   /**
-   * Lists only enabled schedules belonging to the current workspace. A newly registered schedule is
-   * absent until the user enables it in Connections, so do not call this method in the same turn to
-   * confirm registration: the ID returned by the registration method is the confirmation. Persist
-   * that ID immediately. This method cannot confirm registration or detect duplicates among disabled
-   * hooks. Use the returned cadence and status metadata to inspect enabled and terminal schedules.
+   * Lists only enabled schedules belonging to the current workspace. A newly registered schedule
+   * may not be listed yet, even when it turns on by itself, so do not call this method in the same
+   * turn to confirm registration: the ID returned by the registration method is the confirmation.
+   * Persist that ID immediately. This method cannot confirm registration or detect duplicates among
+   * hooks that are off. Use the returned cadence and status metadata to inspect enabled and terminal schedules.
    */
   list(): Promise<ScheduleSummary[]>;
 }

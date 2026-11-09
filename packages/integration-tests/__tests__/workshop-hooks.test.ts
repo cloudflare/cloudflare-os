@@ -6,6 +6,7 @@ import {
   ADMIN_USERNAME, hookServer, startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState,
   testControl, type Harness,
 } from "../src/harness.js";
+import { loadAllChatHistory } from "../src/agent-session.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
@@ -100,8 +101,11 @@ async function armHooks(prefix: string, names: string[]): Promise<ArmedHooks> {
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);
 
-  const listed = await ws.listHooks();
-  expect(listed.map(hook => hook.enabled)).toEqual(names.map(() => false));
+  // Bound in a turn the user started, each hook turns on by itself.
+  const listed = await waitFor("the hooks to turn on", async () => {
+    const hooks = await ws.listHooks();
+    return hooks.length === names.length && hooks.every(hook => hook.enabled) ? hooks : null;
+  });
   const hooks = Object.fromEntries(names.map(name => {
     const hook = listed.find(h => h.description.title === `Test hook ${keys[name]}`);
     if (!hook) throw new Error(`No hook listed for ${keys[name]}`);
@@ -126,7 +130,6 @@ it("an enabled hook fires into a restarted workspace; disabled and deleted hooks
   using armed = await armHooks("hookowner", ["live", "paused", "removed"]);
   const { username, label, workspaceId, ws, keys, hooks } = armed;
 
-  for (const hook of Object.values(hooks)) await ws.enableHook(hook.id);
   expect(await hookState(keys.live)).toEqual({
     enabled: true,
     target: { workspaceId, gadgetId: hooks.live.gadgetId },
@@ -169,8 +172,7 @@ it("an enabled hook fires into a restarted workspace; disabled and deleted hooks
 
 it("an administratively disabled gatekeeper's hook refuses to fire", async () => {
   using armed = await armHooks("hookadmin", ["admin"]);
-  const { label, ws, keys: { admin: key }, hooks } = armed;
-  await ws.enableHook(hooks.admin.id);
+  const { label, keys: { admin: key } } = armed;
 
   using publicApi = connect(harness.url);
   using adminApi = await signUp(publicApi, ADMIN_USERNAME);
@@ -186,4 +188,51 @@ it("an administratively disabled gatekeeper's hook refuses to fire", async () =>
 
   expect(await fire(key, 202)).toEqual({ fired: true });
   expect((await actionState(label)).pending.map(action => action.value)).toEqual([202]);
+});
+
+it("a hook a chat binds to itself wakes that chat; one bound by such a run waits to be turned on", async () => {
+  const [username] = nextUsernames("hookself");
+  const [first, second] = [`${username}:first`, `${username}:second`];
+  const watchSelf = (key: string) =>
+    `export default async function(self, env) { await env.TEST_AMBIENT.watch(${JSON.stringify(key)}, self); }`;
+  const model = models.script([
+    { toolCall: { id: "watch", name: "executeCode", arguments: { code: watchSelf(first) } } },
+    { text: "Watching." },
+    // The firing's own turn binds another hook, with no user there to have asked for it.
+    { toolCall: { id: "again", name: "executeCode", arguments: { code: watchSelf(second) } } },
+    { text: "Saw it." },
+    { text: "It is paused." },
+  ]);
+
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, username);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  await waitFor("the ambient account", async () =>
+    (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
+  using ws = await api.newWorkspace();
+
+  const chatId = await ws.newChat("Tell me whenever a value is requested.", SCRIPTED_MODEL_ID);
+  await waitFor("the watch turn", async () => model.requests.length === 2 || null);
+  await waitForIdleChat(ws, chatId);
+  const hook = await waitFor("the hook to turn on", async () =>
+    (await ws.listHooks()).find(h => h.description.title === `Test hook ${first}` && h.enabled) ?? null);
+  expect(hook.chatId).toBe(chatId);
+
+  expect(await fire(first, 7)).toEqual({ fired: true });
+  await waitFor("the firing's turn", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  const history = await loadAllChatHistory(beforeSequence => ws.getChatHistory(chatId, beforeSequence));
+  expect(history.filter(message => message.type === "agentCallback"))
+      .toMatchObject([{ methodName: "onValueRequested", argsSummary: expect.stringContaining("7") }]);
+
+  const later = (await ws.listHooks()).find(h => h.description.title === `Test hook ${second}`);
+  expect(later).toMatchObject({ chatId, enabled: false });
+
+  // The agent learns what the user has since done with them.
+  await ws.disableHook(hook.id);
+  await ws.sendChatMessage(chatId, "Is it still running?", SCRIPTED_MODEL_ID);
+  await waitFor("the question's turn", async () => model.requests.length === 5 || null);
+  expect(JSON.stringify(model.requests[4])).toContain(
+    `\\"Test hook ${first}\\" is paused by the user`);
 });

@@ -1,3 +1,8 @@
+import { Books, Clock, Globe, type Icon } from '@phosphor-icons/react'
+
+// The built-in connections have no vendor logo; a glyph reads better than their initial.
+const BUILT_IN_GLYPHS: Record<string, Icon> = { scheduler: Clock, websearch: Globe, context: Books }
+
 export function GatekeeperIcon({
   vendorId,
   fallbackText,
@@ -30,6 +35,18 @@ export function GatekeeperIcon({
         style={{ backgroundColor: color ?? 'var(--color-kumo-tint)' }}
       >
         <img src={logoUrl} alt="" className="h-full w-full object-contain p-1" />
+      </div>
+    )
+  }
+
+  const Glyph = vendorId ? BUILT_IN_GLYPHS[vendorId] : undefined
+  if (Glyph) {
+    return (
+      <div
+        className={`flex shrink-0 items-center justify-center text-kumo-default ${className}`}
+        style={{ backgroundColor: 'var(--color-kumo-tint)' }}
+      >
+        <Glyph size={Math.max(14, Math.round(size * 0.95))} aria-hidden="true" />
       </div>
     )
   }

@@ -1,9 +1,11 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
-import { Dialog, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { Dialog, DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import {
-  Pencil,
-  Trash,
   Blueprint,
+  Clock,
+  Lightning,
+  Pencil,
+  PlugsConnected,
   Warning,
   X,
 } from '@phosphor-icons/react'
@@ -14,14 +16,19 @@ import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
 import { useVendorBranding } from './useVendorBranding'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
-import { EmptyState } from './components/EmptyState'
+import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
+import { MoreIcon, PlusIcon, TrashIcon } from './components/icons/designIcons'
+import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
+import { roundButtonClass } from './components/RoundButton'
+import { isScheduleUrl } from './features/automations/AutomationCard'
+import { DeleteAutomationDialog } from './features/automations/AutomationList'
 import {
   BindingCardData,
   BlueprintBindingCard,
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
-import { classifyRpcError, rpcFailureDescription } from './rpcErrors'
+import { classifyRpcError, logRpcFailure, rpcFailureDescription } from './rpcErrors'
 import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
@@ -78,9 +85,11 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       setHooks(hookList.filter((hook) => hook.gadgetId === id))
       onHasGatekeepersChange?.(bindingList.length > 0)
     } catch (err) {
-      // Loud on purpose: this panel has no retry path, so a quieted transient failure would
-      // silently render "no connected resources".
-      console.error('Failed to load gatekeepers:', err)
+      // A dropped or replaced session (moving to another workspace's chat disposes this one) is
+      // cured without a retry here: its replacement brings a new gadget stub, which loads afresh
+      // (see the effect below). Anything else is loud, since this panel has no retry path and a
+      // quiet failure would read as "no connected resources".
+      if (logRpcFailure('Failed to load gatekeepers:', err)) return
       reportIssue('connections.load', err)
       toasts.add({ title: 'Failed to load connections', variant: 'error' })
     } finally {
@@ -230,157 +239,105 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     }
   }
 
+  const openConnect = () => setIsNewConnectionModalVisible(true)
+
   return (
     <div className="h-full overflow-auto bg-kumo-base">
-      <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col px-4 py-5 sm:px-6">
-        <section>
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="mx-auto flex w-full max-w-[640px] flex-col gap-8 px-4 py-6 sm:px-6">
+        <section className="flex flex-col gap-3">
+          <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="m-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-                Connections
-              </h2>
-              <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                External resources this gadget can use.
-              </p>
+              <h2 className="text-[15px] font-medium leading-5 text-kumo-default">Connections</h2>
+              <p className="text-[13px] leading-[18px] text-kumo-subtle">What this app can use, and the name its code knows each by.</p>
             </div>
-            <WorkshopButton
-              tone="primary"
-              onClick={() => setIsNewConnectionModalVisible(true)}
-              className="self-start"
-            >
-              Connect resource
-            </WorkshopButton>
+            {!loading && bindings.length > 0 && (
+              <button type="button" onClick={openConnect} className={roundButtonClass('pill', 'h-[34px] shrink-0 !gap-1.5 !px-3 !text-[13px]')}>
+                <PlusIcon size={13} aria-hidden="true" /> Connect
+              </button>
+            )}
           </div>
 
           {loading ? (
-            <div className="rounded-xl border border-kumo-line bg-kumo-base px-4 py-6 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-              Loading connections...
+            <div className="flex justify-center py-10">
+              <div className="size-5 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />
             </div>
           ) : bindings.length === 0 ? (
-            <EmptyState
-              title="No connected resources"
-              description="Connect Google Docs, GitHub, Google Sheets, and other services so this gadget can safely use external data."
-              actionLabel="Connect resource"
-              onAction={() => setIsNewConnectionModalVisible(true)}
-            />
+            <div className="flex flex-col items-center gap-2 rounded-2xl px-6 py-10 text-center ring-1 ring-kumo-line">
+              <span className="flex size-9 items-center justify-center rounded-full bg-kumo-tint text-kumo-default" aria-hidden="true">
+                <PlugsConnected size={16} />
+              </span>
+              <p className="text-[14px] font-medium leading-5 text-kumo-default">Nothing connected yet</p>
+              <p className="max-w-[340px] text-[13px] leading-[18px] text-kumo-subtle">
+                Connect your email, a spreadsheet or another service, and this app can use it safely.
+              </p>
+              <button
+                type="button"
+                onClick={openConnect}
+                className="mt-2 inline-flex h-[34px] cursor-pointer items-center gap-1.5 rounded-full bg-kumo-contrast px-3.5 text-[13px] font-medium text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+              >
+                <PlusIcon size={13} aria-hidden="true" /> Connect
+              </button>
+            </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
+            <div className="flex flex-col rounded-2xl bg-kumo-base ring-1 ring-kumo-line">
               {bindings.map((gk, index) => {
                 const isEditing = editingBinding === gk.name
-                const isDeleting = deleteTarget?.name === gk.name
                 // Still provisional to the open chat (see GadgetBindingInfo.chatId). Blueprint
                 // annotations are excluded, since a blueprint only ever exports permanent edges.
                 const isPending = gk.chatId !== undefined
-
                 return (
-                  <div
-                    key={gk.name}
-                    className={`px-3 py-3 ${index > 0 ? 'border-t border-kumo-line' : ''} ${isDeleting ? 'bg-kumo-danger-tint/40' : ''}`}
-                  >
-                    {isDeleting ? (
-                      <div className="flex flex-wrap items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-danger">
-                            Delete {gk.resourceTitle}?
-                          </p>
-                          <p className="truncate text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-                            The binding <span className="font-mono">{gk.name}</span> will be removed from this gadget.
-                          </p>
-                        </div>
-                        <WorkshopButton
-                          tone="danger"
-                          className="min-w-[68px]"
-                          onClick={handleDeleteConfirm}
-                        >
-                          Delete
-                        </WorkshopButton>
-                        <WorkshopButton
-                          onClick={() => setDeleteTarget(null)}
-                        >
-                          Cancel
-                        </WorkshopButton>
-                      </div>
-                    ) : isEditing ? (
-                      <div className="flex items-center gap-2">
+                  <div key={gk.name} className={`flex min-h-14 items-center gap-3 px-3 py-2 ${index > 0 ? 'border-t border-kumo-line' : ''}`}>
+                    <GatekeeperIcon
+                      vendorId={gk.vendorId}
+                      fallbackText={gk.resourceTitle || gk.name}
+                      className="size-8 rounded-lg"
+                      {...(gk.vendorId ? vendorBranding.get(gk.vendorId) : undefined)}
+                    />
+                    {isEditing ? (
+                      <form
+                        className="flex min-w-0 flex-1 items-center gap-2"
+                        onSubmit={(e) => { e.preventDefault(); void handleEditSave(gk.name) }}
+                      >
                         <WorkshopInput
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onKeyDown={(e) => {
                             if (isImeComposing(e)) return
-                            if (e.key === 'Enter') handleEditSave(gk.name)
                             if (e.key === 'Escape') handleEditCancel()
                           }}
-                          placeholder="Binding name"
-                          aria-label="Binding name"
+                          placeholder="Name in code"
+                          aria-label="Name in code"
                           autoFocus
                           className="min-w-0 flex-1 font-mono"
                         />
-                        <WorkshopButton
-                          tone="primary"
-                          className="!h-8"
-                          onClick={() => handleEditSave(gk.name)}
+                        <button type="button" onClick={handleEditCancel} className={roundButtonClass('pill', 'h-8 !px-3 !text-[13px]')}>Cancel</button>
+                        <button
+                          type="submit"
                           disabled={!editValue.trim()}
+                          className="inline-flex h-8 cursor-pointer items-center rounded-full bg-kumo-contrast px-3 text-[13px] font-medium text-kumo-inverse hover:opacity-85 disabled:cursor-default disabled:opacity-50"
                         >
                           Save
-                        </WorkshopButton>
-                        <WorkshopButton
-                          onClick={handleEditCancel}
-                        >
-                          Cancel
-                        </WorkshopButton>
-                      </div>
+                        </button>
+                      </form>
                     ) : (
-                      <div className="flex items-center gap-3">
-                        <GatekeeperIcon
-                          vendorId={gk.vendorId}
-                          fallbackText={gk.resourceTitle || gk.name}
-                          {...(gk.vendorId ? vendorBranding.get(gk.vendorId) : undefined)}
-                        />
+                      <>
                         <div className="min-w-0 flex-1">
-                          <p className="flex items-center gap-2 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+                          <p className="flex items-center gap-2 text-[14px] leading-5 text-kumo-default">
                             <span className="min-w-0 truncate">{gk.resourceTitle}</span>
                             {isPending && (
-                              <Tooltip content="Added in this chat; kept when you accept the chat's changes" asChild>
-                                <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
-                                  Draft
-                                </span>
+                              <Tooltip content="Added in this chat; kept with the chat's changes" asChild>
+                                <span className="shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">Draft</span>
                               </Tooltip>
                             )}
                           </p>
-                          <p className="mt-0.5 truncate text-[11px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-                            Referenced in code as: <span className="font-mono text-kumo-subtle">{gk.name}</span>
-                          </p>
+                          <p className="truncate font-mono text-[12px] leading-4 text-kumo-inactive">env.{gk.name}</p>
                         </div>
-                        <div className="ml-auto flex shrink-0 items-center gap-1">
-                          <Tooltip content="Edit name used in code" asChild>
-                            <WorkshopIconButton
-                              onClick={() => handleEditStart(gk.name)}
-                              aria-label="Edit name used in code"
-                            >
-                              <Pencil size={14} />
-                            </WorkshopIconButton>
-                          </Tooltip>
-                          {!isPending && (
-                            <Tooltip content="Edit blueprint settings" asChild>
-                              <WorkshopIconButton
-                                onClick={() => setAnnotationTarget(gk)}
-                                aria-label="Edit blueprint settings"
-                              >
-                                <Blueprint size={14} />
-                              </WorkshopIconButton>
-                            </Tooltip>
-                          )}
-                          <Tooltip content="Delete connection" asChild>
-                            <WorkshopIconButton
-                              danger
-                              onClick={() => setDeleteTarget({ name: gk.name, resourceTitle: gk.resourceTitle })}
-                              aria-label="Delete connection"
-                            >
-                              <Trash size={14} />
-                            </WorkshopIconButton>
-                          </Tooltip>
-                        </div>
-                      </div>
+                        <RowMenu label={gk.resourceTitle} items={[
+                          { label: 'Rename in code', icon: <Pencil size={14} />, onClick: () => handleEditStart(gk.name) },
+                          ...(!isPending ? [{ label: 'Blueprint settings', icon: <Blueprint size={14} />, onClick: () => setAnnotationTarget(gk) }] : []),
+                          { label: 'Remove', icon: <TrashIcon size={14} />, danger: true, onClick: () => setDeleteTarget({ name: gk.name, resourceTitle: gk.resourceTitle }) },
+                        ]} />
+                      </>
                     )}
                   </div>
                 )
@@ -390,98 +347,68 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
         </section>
 
         {!loading && hooks.length > 0 && (
-          <section className="mt-8">
-            <div className="mb-3">
-              <h2 className="m-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-                Hooks
-              </h2>
-              <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                Callbacks that let connected resources wake up this gadget when events happen.
-              </p>
+          <section className="flex flex-col gap-3">
+            <div>
+              <h2 className="text-[15px] font-medium leading-5 text-kumo-default">Automations</h2>
+              <p className="text-[13px] leading-[18px] text-kumo-subtle">What runs this app&rsquo;s code, on a schedule or when something happens.</p>
             </div>
-
-            <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
-              {hooks.map((hook, index) => {
-                const isDeleting = deleteHookTarget?.id === hook.id
-                const vendorId = bindings.find((b) => b.target === hook.gatekeeperId)?.vendorId
-
+            <div className="flex flex-col gap-2">
+              {hooks.map((hook) => {
+                const schedule = isScheduleUrl(hook.resourceUrl)
+                const Icon = schedule ? Clock : Lightning
+                const detail = !schedule && hook.resourceTitle
+                  ? [hook.resourceTitle, hook.description.description].filter(Boolean).join(' · ')
+                  : hook.description.description
                 return (
-                  <div
-                    key={hook.id}
-                    className={`px-3 py-3 ${index > 0 ? 'border-t border-kumo-line' : ''} ${isDeleting ? 'bg-kumo-danger-tint/40' : ''}`}
-                  >
-                    {isDeleting ? (
-                      <div className="flex flex-wrap items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-danger">
-                            Delete hook "{hook.description.title}"?
-                          </p>
-                          <p className="truncate text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-                            This permanently removes the hook. Future events will stop being delivered.
-                          </p>
-                        </div>
-                        <WorkshopButton
-                          tone="danger"
-                          className="min-w-[68px]"
-                          onClick={handleDeleteHookConfirm}
-                        >
-                          Delete
-                        </WorkshopButton>
-                        <WorkshopButton
-                          onClick={() => setDeleteHookTarget(null)}
-                        >
-                          Cancel
-                        </WorkshopButton>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3">
-                        <GatekeeperIcon
-                          vendorId={vendorId}
-                          fallbackText={hook.resourceTitle}
-                          {...(vendorId ? vendorBranding.get(vendorId) : undefined)}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                            {hook.description.title}
-                          </p>
-                          {hook.description.description && (
-                            <p className="mt-0.5 truncate text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-                              {hook.description.description}
-                            </p>
-                          )}
-                          {hook.resourceTitle && (
-                            <p className="mt-0.5 truncate text-[11px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-                              {hook.resourceTitle}
-                            </p>
-                          )}
-                        </div>
-                        <div className="ml-auto flex shrink-0 items-center gap-2">
-                          <HookToggle
-                            hookTitle={hook.description.title}
-                            enabled={hook.enabled}
-                            pending={togglingHooks.has(hook.id)}
-                            onToggle={(enabled) => handleToggleHook(hook.id, enabled)}
-                          />
-                          <Tooltip content="Delete hook" asChild>
-                            <WorkshopIconButton
-                              danger
-                              onClick={() => setDeleteHookTarget({ id: hook.id, title: hook.description.title })}
-                              aria-label="Delete hook"
-                            >
-                              <Trash size={14} />
-                            </WorkshopIconButton>
-                          </Tooltip>
-                        </div>
-                      </div>
-                    )}
+                  <div key={hook.id} className="flex items-start gap-3 rounded-2xl bg-kumo-base p-3 ring-1 ring-kumo-line">
+                    <span
+                      className={`flex size-9 shrink-0 items-center justify-center rounded-full transition-colors duration-200 ${hook.enabled ? 'bg-kumo-tint text-kumo-default' : 'bg-kumo-recessed text-kumo-inactive'}`}
+                      aria-hidden="true"
+                    >
+                      <Icon size={17} />
+                    </span>
+                    <div className="flex min-h-9 min-w-0 flex-1 flex-col justify-center">
+                      <p className="flex min-w-0 items-center gap-2 text-[14px] font-medium leading-5 text-kumo-default">
+                        <span className="min-w-0 truncate">{hook.description.title}</span>
+                        {!hook.enabled && <span className="shrink-0 text-[13px] font-normal text-kumo-subtle">Paused</span>}
+                      </p>
+                      {detail && <p className="line-clamp-2 text-[13px] leading-[18px] text-kumo-subtle">{detail}</p>}
+                    </div>
+                    <div className="flex h-9 shrink-0 items-center gap-1">
+                      <HookToggle
+                        hookTitle={hook.description.title}
+                        enabled={hook.enabled}
+                        pending={togglingHooks.has(hook.id)}
+                        onToggle={(enabled) => handleToggleHook(hook.id, enabled)}
+                      />
+                      <RowMenu label={hook.description.title} items={[
+                        { label: 'Delete', icon: <TrashIcon size={14} />, danger: true, onClick: () => setDeleteHookTarget({ id: hook.id, title: hook.description.title }) },
+                      ]} />
+                    </div>
                   </div>
                 )
               })}
             </div>
           </section>
         )}
-
       </div>
+
+      <DeleteConfirmationDialog
+        open={deleteTarget !== null}
+        title="Remove connection?"
+        description={<>This app stops being able to use <span className="font-medium text-kumo-default">{deleteTarget?.resourceTitle}</span>. Its code still names <span className="font-mono">env.{deleteTarget?.name}</span> until it&rsquo;s changed.</>}
+        confirmLabel="Remove"
+        confirmingLabel="Removing…"
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+        onConfirm={() => void handleDeleteConfirm()}
+      />
+      <DeleteAutomationDialog
+        title={deleteHookTarget?.title}
+        open={deleteHookTarget !== null}
+        isDeleting={false}
+        onOpenChange={(open) => { if (!open) setDeleteHookTarget(null) }}
+        onConfirm={() => void handleDeleteHookConfirm()}
+      />
 
       <GatekeeperModal
         open={isNewConnectionModalVisible}
@@ -517,6 +444,36 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     </div>
   )
 }
+
+/** A row's More menu: its actions, the destructive one last. */
+const RowMenu = ({ label, items }: {
+  label: string
+  items: { label: string; icon: ReactNode; danger?: boolean; onClick: () => void }[]
+}) => (
+  <DropdownMenu>
+    <DropdownMenu.Trigger render={
+      <button
+        type="button"
+        aria-label={`More for ${label}`}
+        className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring data-[popup-open]:bg-kumo-tint"
+      >
+        <MoreIcon size={16} />
+      </button>
+    } />
+    <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE} align="end">
+      {items.map(item => (
+        <DropdownMenu.Item
+          key={item.label}
+          onClick={item.onClick}
+          className={item.danger ? `${MENU_ITEM_DANGER} text-kumo-danger` : MENU_ITEM}
+        >
+          {item.icon}
+          {item.label}
+        </DropdownMenu.Item>
+      ))}
+    </DropdownMenu.Content>
+  </DropdownMenu>
+)
 
 function BlueprintAnnotationModal({
   target,

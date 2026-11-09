@@ -47,9 +47,6 @@ function RootComponent() {
   // detail) feel native — sidebar and all — instead of floating on a bare page.
   const standalone = isSignup || isHandoff || (isBlueprint && !isAuthenticated)
 
-  // The workspace editor renders fullscreen (no app chrome). /gadget/ is the legacy URL, kept
-  // here so the chrome doesn't flash in during the redirect to /workspace/.
-  const isWorkspaceEditor = pathname.startsWith('/workspace/') || pathname.startsWith('/gadget/')
 
   const handleLoginSuccess = () => {
     const token = localStorage.getItem('authToken')
@@ -136,10 +133,7 @@ function RootComponent() {
               <BrowserPushBridge />
               <NativeAppBridge />
               <PageUpdateNotice />
-              <AuthenticatedShell
-                authenticatedApi={authenticatedApi}
-                isWorkspaceEditor={isWorkspaceEditor}
-              />
+              <AuthenticatedShell authenticatedApi={authenticatedApi} />
             </UnreadStateBridge>
           </Toasty>
         </TooltipProvider>
@@ -155,10 +149,8 @@ function RootComponent() {
  */
 function AuthenticatedShell({
   authenticatedApi,
-  isWorkspaceEditor,
 }: {
   authenticatedApi: RpcStub<AuthenticatedApi>
-  isWorkspaceEditor: boolean
 }) {
   // null = still checking, true = needs onboarding, false = onboarding done
   const [onboardingNeeded, setOnboardingNeeded] = useState<boolean | null>(null)
@@ -189,22 +181,15 @@ function AuthenticatedShell({
     return <OnboardingWizard onComplete={() => setOnboardingNeeded(false)} />
   }
 
-  // Normal app shell. The workspace editor is rendered fullscreen (no chrome); everything else
-  // gets the persistent left-rail AppShell. Connection loss is surfaced by a chip in whichever of
-  // those two top bars is showing, never by a banner that reflows the page (see ReconnectingChip).
-  const fullscreen = isWorkspaceEditor
+  // Every signed-in page, the workspace editor included, renders inside the AppShell: the design
+  // keeps the sidebar of recent chats beside the chat. Connection loss is surfaced by a chip over
+  // the page header, never by a banner that reflows the page (see ReconnectingChip).
   return (
     <>
       <AccountSelectionModal />
-      {fullscreen ? (
-        <main className="h-full min-h-0">
-          <Outlet />
-        </main>
-      ) : (
-        <AppShell>
-          <Outlet />
-        </AppShell>
-      )}
+      <AppShell>
+        <Outlet />
+      </AppShell>
     </>
   )
 }

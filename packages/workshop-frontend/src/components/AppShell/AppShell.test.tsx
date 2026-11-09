@@ -10,6 +10,9 @@ vi.mock('@tanstack/react-router', () => ({ useRouterState: () => '/' }))
 vi.mock('../../RpcContext', () => ({ useConnectionLost: () => false }))
 vi.mock('../../TopBarNotice', () => ({ default: () => null }))
 vi.mock('./CommandPalette', () => ({ default: () => null }))
+vi.mock('../../features/workspaces/WorkspacesContext', () => ({
+  WorkspacesProvider: ({ children }: { children: unknown }) => children,
+}))
 vi.mock('./Sidebar', () => ({
   default: () => <aside data-testid="sidebar" />,
 }))

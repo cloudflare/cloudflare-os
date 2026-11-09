@@ -141,13 +141,15 @@
 .markdownContent img { max-width: 100%; height: auto; }
 
 /* ── Streaming placeholder ────────────────────────────────────────────────── */
+/* The design's "Thinking..." (Figma "Frame 799"): full-strength text with a light band sweeping
+   through it, rather than grey text with a darker one. */
 .thinkingShimmer {
-  color: var(--text-color-kumo-inactive);
+  color: var(--text-color-kumo-default);
   background: linear-gradient(
     90deg,
-    var(--text-color-kumo-inactive) 0%,
-    var(--text-color-kumo-subtle) 45%,
-    var(--text-color-kumo-inactive) 90%
+    var(--text-color-kumo-default) 0%,
+    color-mix(in srgb, var(--text-color-kumo-default) 22%, transparent) 45%,
+    var(--text-color-kumo-default) 90%
   );
   background-size: 220% 100%;
   background-clip: text;
@@ -204,3 +206,25 @@
   margin-right: 0.35em;
   vertical-align: -0.1em;
 }
+
+/* ── Agent answer bubbles (Figma "Frame 835") ─────────────────────────────── */
+/* Consecutive answers read as one group: the corners where two bubbles meet tighten from 20px to
+   10px, so the first is 20/20/10/10, the last 10/10/20/20 and any between 10 all round. */
+.markdownContent.agentBubble { line-height: 20px; }
+
+.agentTextEntry + .agentTextEntry .agentBubble {
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+}
+.agentTextEntry:has(+ .agentTextEntry) .agentBubble {
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+/* The user bubble is set tighter than prose: 17px lines, as the design's pill (Figma "Frame 793"). */
+.markdownContent.userBubble { line-height: 17px; }
+.userBubble p { margin: 0.5em 0; }
+
+/* Links and inline code inside the dark user bubble follow its text color. */
+.userBubble a { color: inherit; text-decoration: underline; }
+.userBubble code { color: inherit; background: color-mix(in srgb, currentColor 14%, transparent); }

@@ -6,7 +6,7 @@
  * panel adds nothing (the highlighted row already shows where you are) while fighting the border.
  */
 export const MENU_CONTENT =
-  'themed-floating-shadow !z-[1100] !min-w-[180px] rounded-lg border border-kumo-line bg-kumo-base p-1 outline-none focus:outline-none focus-visible:outline-none'
+  'themed-floating-shadow !z-[1100] !min-w-[180px] rounded-xl border border-kumo-line bg-kumo-base p-1 outline-none focus:outline-none focus-visible:outline-none'
 
 /**
  * Kumo portals the menu to document.body and applies MENU_CONTENT's className to the *inner* popup,
@@ -18,7 +18,7 @@ export const MENU_CONTENT =
 export const MENU_POSITIONER_STYLE = { zIndex: 1100 } as const
 
 export const MENU_ITEM =
-  '!h-auto rounded-md !px-2.5 !py-1.5 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default data-highlighted:bg-kumo-tint'
+  '!h-auto rounded-lg !px-2.5 !py-1.5 text-[13px] leading-[18px] text-kumo-default data-highlighted:bg-kumo-tint'
 
 export const MENU_ITEM_DANGER =
-  '!h-auto rounded-md !px-2.5 !py-1.5 text-[13px] leading-[18px] tracking-[-0.25px] data-highlighted:bg-kumo-danger-tint'
+  '!h-auto rounded-lg !px-2.5 !py-1.5 text-[13px] leading-[18px] data-highlighted:bg-kumo-danger-tint'

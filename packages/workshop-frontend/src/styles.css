@@ -4,8 +4,9 @@
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
 
 @theme {
-  /* ===== FONTS ===== */
-  --font-sans: "FT Kunst Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI",
+  /* ===== FONTS =====
+     The Cloudflare OS design is set entirely in Inter, self-hosted from @fontsource-variable/inter. */
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
     "Roboto", "Helvetica Neue", sans-serif;
   --font-mono: "Apercu Mono Pro", "SF Mono", Menlo, Monaco, Consolas, monospace;
 
@@ -20,74 +21,78 @@
   --text-lg--line-height: 1.75rem;
 
   /* ===== KUMO SEMANTIC COLOR OVERRIDES =====
-     Near-neutral, barely-warm greys for every surface, border, and neutral text. The brand orange
-     is reserved for *intent only* (active item, links, primary action, focus) so it actually pops.
-     This is the single biggest lever between a "consumer/playground" feel and an enterprise one. */
+     The Cloudflare OS palette (Figma "Messing Around" page): pure neutrals built from black at low
+     opacities over white, so every surface, hairline and hover reads the same on the near-white
+     canvas and on the white content cards. The brand orange marks the logo, unread dots and
+     intent; black is the primary action color. */
 
-  /* Background tokens — near-white neutrals with a faint warm undertone */
-  --color-kumo-base: #fcfcfb;
-  --color-kumo-elevated: #f8f8f7;
-  --color-kumo-tint: #f3f3f1;
-  --color-kumo-overlay: #fbfbfa;
-  --color-kumo-recessed: #efeeec;
+  /* Surfaces. The app canvas and sidebar are elevated (#fafafa); content cards are base (white).
+     Tint is the hover/selected row wash (black 4%), recessed the agent's chat bubble (black 6%). */
+  --color-kumo-base: #ffffff;
+  --color-kumo-elevated: #fafafa;
+  --color-kumo-tint: #0000000a;
+  --color-kumo-overlay: #ffffff;
+  --color-kumo-recessed: #0000000f;
   --color-kumo-control: #ffffff;
-  --color-kumo-contrast: #14110f;
-  --color-kumo-fill: #e8e7e4;
-  --color-kumo-fill-hover: #dededb;
-  --color-kumo-interact: #cac8c3;
+  --color-kumo-contrast: #000000;
+  --color-kumo-fill: #0000000a;
+  --color-kumo-fill-hover: #00000014;
+  --color-kumo-interact: #e4e4e4;
 
-  /* Brand — warm orange accent (intent only) */
-  --color-kumo-brand: #ff4801;
-  --color-kumo-brand-hover: #e03f00;
+  /* Brand */
+  --color-kumo-brand: #ff5c2e;
+  --color-kumo-brand-hover: #f04a1a;
 
-  /* Border / line tokens — neutral hairlines */
-  --color-kumo-line: #1411100f;
-  --color-kumo-ring: #cac8c3;
+  /* Hairlines: black 6% for dividers and control outlines; card outlines use the lighter
+     border-kumo-line/70 (black 4%). */
+  --color-kumo-line: #0000000f;
+  --color-kumo-ring: #00000033;
 
-  /* Chat surface tokens */
-  --color-kumo-bubble-user: #f1f0ee;
+  /* Chat surface tokens: the user's message is a near-black pill. */
+  --color-kumo-bubble-user: #292929;
 
-  /* Status tints — keep functional colors, warm the tints */
-  --color-kumo-info: oklch(62.3% 0.214 259.815);
-  --color-kumo-info-tint: oklch(90% 0.06 250);
+  /* Status */
+  --color-kumo-info: #2b7fff;
+  --color-kumo-info-tint: #2b7fff1a;
   --color-kumo-warning: oklch(79.5% 0.184 86.047);
   --color-kumo-warning-tint: oklch(92% 0.08 85);
-  --color-kumo-danger: oklch(63.7% 0.237 25.331);
-  --color-kumo-danger-tint: oklch(92% 0.06 25);
-  --color-kumo-success: oklch(72.3% 0.219 149.579);
-  --color-kumo-success-tint: oklch(92% 0.08 150);
+  --color-kumo-danger: #c10007;
+  --color-kumo-danger-tint: #c100070f;
+  --color-kumo-success: #10b981;
+  --color-kumo-success-tint: #10b9811a;
 
   /* Tooltip */
-  --color-kumo-tip-shadow: #14111014;
+  --color-kumo-tip-shadow: #00000014;
   --color-kumo-arrow-edge: var(--color-kumo-line);
   --color-kumo-arrow-stroke: transparent;
 
-  /* Text color tokens — near-neutral greys (faint warm undertone, no brown) */
-  --text-color-kumo-default: #1c1a18;
-  --text-color-kumo-default-hover: #100f0d;
+  /* Text: black, with secondary text at 50% and placeholder/inactive at 40%. */
+  --text-color-kumo-default: #000000;
+  --text-color-kumo-default-hover: #000000;
   --text-color-kumo-inverse: #ffffff;
-  --text-color-kumo-strong: #100f0d;
-  --text-color-kumo-subtle: oklch(52% 0.006 60);
-  --text-color-kumo-inactive: oklch(66% 0.005 60);
-  --text-color-kumo-brand: #ff4801;
-  --text-color-kumo-link: #ff4801;
-  --text-color-kumo-success: oklch(72.3% 0.219 149.579);
-  --text-color-kumo-danger: oklch(63.7% 0.237 25.331);
+  --text-color-kumo-bubble-user: #ffffff;
+  --text-color-kumo-strong: #000000;
+  --text-color-kumo-subtle: #00000080;
+  --text-color-kumo-inactive: #00000066;
+  --text-color-kumo-brand: #ff5c2e;
+  --text-color-kumo-link: #ff5c2e;
+  --text-color-kumo-success: #10b981;
+  --text-color-kumo-danger: #c10007;
   --text-color-kumo-warning: oklch(47.6% 0.114 61.907);
 
-  /* ===== CUSTOM BRAND TOKENS (for direct use alongside Kumo tokens) ===== */
-  --color-accent-100: #ff4801;
-  --color-accent-200: #ff7038;
-  --color-background-100: #fcfcfb;
-  --color-background-200: #f8f8f7;
-  --color-background-300: #f3f3f1;
-  --color-foreground-100: #100f0d;
-  --color-foreground-200: #100f0d;
-  --color-foreground-300: #1c1a18;
-  --color-border-100: #e8e7e4;
-  --color-border-100-50: #e8e7e480;
-  --color-selection-bg: #ffe9e0;
-  --color-selection-text: #ff500a;
+  /* ===== CUSTOM BRAND TOKENS (legacy; kept in step with the palette above) ===== */
+  --color-accent-100: #ff5c2e;
+  --color-accent-200: #ff8a63;
+  --color-background-100: #ffffff;
+  --color-background-200: #fafafa;
+  --color-background-300: #f5f5f5;
+  --color-foreground-100: #000000;
+  --color-foreground-200: #000000;
+  --color-foreground-300: #000000;
+  --color-border-100: #efefef;
+  --color-border-100-50: #efefef80;
+  --color-selection-bg: #ffe6dd;
+  --color-selection-text: #000000;
   --color-shadow-accent-light: #ffa683;
   --color-shadow-accent-dark: #b13200;
 
@@ -142,24 +147,25 @@
 }
 
 [data-mode="dark"] {
-  /* Seal-inspired dark palette: violet-tinted surfaces around hue 285, not neutral black. */
-  --color-kumo-base: oklch(0.115 0.012 285);
-  --color-kumo-elevated: oklch(0.155 0.011 285);
-  --color-kumo-tint: oklch(0.225 0.025 285);
-  --color-kumo-overlay: oklch(0.155 0.011 285);
-  --color-kumo-recessed: oklch(0.1 0.012 285);
-  --color-kumo-control: oklch(0.155 0.011 285);
-  --color-kumo-contrast: var(--color-kumo-brand);
-  --color-kumo-strong: var(--color-kumo-brand-hover);
-  --color-kumo-fill: oklch(0.225 0.025 285);
-  --color-kumo-fill-hover: oklch(0.295 0.045 285);
-  --color-kumo-interact: oklch(0.34 0.022 285);
-  --color-kumo-line: oklch(0.34 0.022 285);
-  --color-kumo-ring: oklch(0.52 0.065 285);
-  --color-kumo-bubble-user: oklch(0.225 0.025 285);
+  /* The design has no dark mode. These are neutral greys that mirror the light scheme: an
+     elevated canvas behind darker content cards, white at low opacities for hovers and lines. */
+  --color-kumo-base: #141414;
+  --color-kumo-elevated: #0c0c0c;
+  --color-kumo-tint: #ffffff0f;
+  --color-kumo-overlay: #1c1c1c;
+  --color-kumo-recessed: #ffffff14;
+  --color-kumo-control: #1c1c1c;
+  --color-kumo-contrast: #ffffff;
+  --color-kumo-strong: #ffffff;
+  --color-kumo-fill: #ffffff0f;
+  --color-kumo-fill-hover: #ffffff1f;
+  --color-kumo-interact: #3a3a3a;
+  --color-kumo-line: #ffffff14;
+  --color-kumo-ring: #ffffff40;
+  --color-kumo-bubble-user: #e8e8e8;
 
-  --color-kumo-brand: #b84e00;
-  --color-kumo-brand-hover: #a54200;
+  --color-kumo-brand: #ff5c2e;
+  --color-kumo-brand-hover: #ff7a52;
 
   --color-kumo-info: oklch(62.3% 0.214 259.815);
   --color-kumo-info-tint: oklch(0.25 0.065 259.815);
@@ -174,30 +180,31 @@
   --color-kumo-arrow-edge: transparent;
   --color-kumo-arrow-stroke: var(--color-kumo-line);
 
-  --text-color-kumo-default: oklch(0.92 0.01 285);
-  --text-color-kumo-default-hover: oklch(0.97 0.006 285);
+  --text-color-kumo-default: #ffffff;
+  --text-color-kumo-default-hover: #ffffff;
   --text-color-kumo-inverse: #ffffff;
-  --text-color-kumo-strong: oklch(0.92 0.01 285);
-  --text-color-kumo-subtle: oklch(0.66 0.02 285);
-  --text-color-kumo-inactive: oklch(0.58 0.025 285);
-  --text-color-kumo-brand: #ff8a5c;
-  --text-color-kumo-link: #ff8a5c;
+  --text-color-kumo-bubble-user: #000000;
+  --text-color-kumo-strong: #ffffff;
+  --text-color-kumo-subtle: #ffffff80;
+  --text-color-kumo-inactive: #ffffff66;
+  --text-color-kumo-brand: #ff7a52;
+  --text-color-kumo-link: #ff7a52;
   --text-color-kumo-success: oklch(79.2% 0.209 151.711);
   --text-color-kumo-danger: oklch(70.4% 0.191 22.216);
   --text-color-kumo-warning: oklch(82.8% 0.189 84.429);
 
-  --color-accent-100: #b84e00;
+  --color-accent-100: #ff5c2e;
   --color-accent-200: #ff8a5c;
-  --color-background-100: oklch(0.115 0.012 285);
-  --color-background-200: oklch(0.155 0.011 285);
-  --color-background-300: oklch(0.225 0.025 285);
-  --color-foreground-100: oklch(0.92 0.01 285);
-  --color-foreground-200: oklch(0.78 0.018 285);
-  --color-foreground-300: oklch(0.66 0.02 285);
-  --color-border-100: oklch(0.34 0.022 285);
-  --color-border-100-50: oklch(0.34 0.022 285 / 0.5);
+  --color-background-100: #141414;
+  --color-background-200: #0c0c0c;
+  --color-background-300: #1c1c1c;
+  --color-foreground-100: #ffffff;
+  --color-foreground-200: #ffffffcc;
+  --color-foreground-300: #ffffff80;
+  --color-border-100: #ffffff14;
+  --color-border-100-50: #ffffff0a;
   --color-selection-bg: color-mix(in srgb, var(--color-kumo-brand) 28%, transparent);
-  --color-selection-text: oklch(0.97 0.006 285);
+  --color-selection-text: #ffffff;
   --color-shadow-accent-light: #ff663355;
   --color-shadow-accent-dark: #00000080;
 
@@ -587,14 +594,40 @@ html {
   animation: presence-pop-out 0.13s var(--ease-out) both;
 }
 
+/* Shared views. Each runs once and rests; nothing on a view animates forever. */
+@keyframes shared-view-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A source being checked. A static dot under reduced motion. */
+.shared-view-spin {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-kumo-line);
+  border-top-color: var(--color-kumo-brand);
+  border-radius: 50%;
+  animation: shared-view-spin 0.8s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .share-confirm-in,
   .share-expand-in,
   .share-fade-in,
   .share-row-land,
   .presence-pop-in,
-  .presence-pop-out {
+  .presence-pop-out,
+  .shared-view-spin {
     animation: none;
+  }
+
+  .shared-view-spin {
+    width: 6px;
+    height: 6px;
+    border: 0;
+    background: currentColor;
   }
 }
 

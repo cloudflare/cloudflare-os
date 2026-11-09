@@ -228,7 +228,8 @@ export class CodePreviewManager {
  * characters decoded since the last event.
  */
 export class ExecuteCodeStreamManager {
-  #streams = new Map<string, {parser: StreamingToolInputParser, emittedLength: number}>();
+  #streams = new Map<string,
+      {parser: StreamingToolInputParser, emittedLength: number, summarized?: true}>();
 
   constructor(private emit: (event: AiChatStreamEvent) => void) {}
 
@@ -259,6 +260,14 @@ export class ExecuteCodeStreamManager {
       }
 
       if (!stream.parser.prefixFields) return;
+
+      // The summary precedes the code (see the tool's parameters), so it is known once the code
+      // starts. One the model wrote after the code arrives only with the finished call.
+      let summary = stream.parser.prefixFields.summary;
+      if (!stream.summarized && typeof summary === "string" && summary.trim() !== "") {
+        stream.summarized = true;
+        this.emit({type: "toolCallSummary", toolCallId, summary: summary.trim()});
+      }
 
       let newDelta = takeStreamedDelta(stream.parser, stream);
       if (newDelta !== "") {

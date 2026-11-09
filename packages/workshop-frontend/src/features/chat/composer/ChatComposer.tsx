@@ -8,8 +8,8 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
-import { Brain, DotsThree, File as FileIcon } from "@phosphor-icons/react";
+import { useKumoToastManager } from "@cloudflare/kumo";
+import { PaperclipIcon } from "@phosphor-icons/react";
 import { RpcStub } from "capnweb";
 import type {
   AiChatAuthorInfo,
@@ -34,8 +34,12 @@ import CapsuleOverlay from "../../../CapsuleOverlay";
 import type { SelectableItem } from "../../../ResourcePicker";
 import GatekeeperModal from "../../../GatekeeperModal";
 import { formatIconDataUrl } from "../../../components/format/formatIconImage";
-import ComposerFormatMenuItems from "../../../components/format/ComposerFormatMenuItems";
-import { WorkshopIconButton } from "../../../components/WorkshopControls";
+import { ArrowUpIcon } from "../../../components/icons/designIcons";
+
+// The composer's send button (Figma "Frame 62"): a white 26px circle with a hairline, holding the
+// arrow. Stopping the agent uses the inverse, filled circle so it reads as the primary action.
+const COMPOSER_ROUND_BUTTON = "flex size-[26px] flex-shrink-0 cursor-pointer items-center justify-center rounded-full bg-kumo-base text-kumo-default ring-1 ring-inset ring-kumo-interact transition-colors hover:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring";
+const COMPOSER_ROUND_BUTTON_PRIMARY = "flex size-[26px] flex-shrink-0 cursor-pointer items-center justify-center rounded-full bg-kumo-contrast text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring";
 import { handlePickerKeyDown } from "../../../pickerNavigation";
 import { useAuthenticatedApi } from "../../../AuthContext";
 import { useVendorBranding } from "../../../useVendorBranding";
@@ -49,7 +53,7 @@ import {
 } from "./attachments/useComposerAttachments";
 import { CapturedConsoleLogsPrompt } from "./CapturedConsoleLogsPrompt";
 import ComposerAddMenu from "./ComposerAddMenu";
-import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
+import type { SelectedModel } from "./composerModel";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
 import {
@@ -93,7 +97,7 @@ export const ChatComposer = ({
   newChat = false,
   offerFormats = false,
   autoFocus = false,
-  minRows = 2,
+  minRows = 1,
   seedText,
   seedNonce,
   draftStorageKey,
@@ -104,6 +108,7 @@ export const ChatComposer = ({
   queuedSteers,
   showThinkingTraces = true,
   onToggleThinkingTraces,
+  trailing,
 }: {
   createCapsuleGatekeeper: (
     accountId: number,
@@ -160,6 +165,10 @@ export const ChatComposer = ({
   queuedSteers?: readonly string[];
   showThinkingTraces?: boolean;
   onToggleThinkingTraces?: () => void;
+  /**
+   * Controls drawn just before the send button, such as the workspace picker (Figma "Frame 732").
+   */
+  trailing?: ReactNode;
   /** Show the "Pre-approve actions" menu item (only when there are uncovered candidates). */
   /** Open the pre-approval dialog (owned by the parent). */
   /** Called after a gatekeeper is connected via the attach flow, so the parent can refresh the
@@ -315,6 +324,7 @@ export const ChatComposer = ({
   const {
     canAttachMore,
     isActive: isAttachmentDragActive,
+    isDragging: isAttachmentDragging,
     onDragEnter: handleAttachmentDragEnter,
     onDragLeave: handleAttachmentDragLeave,
     onDragOver: handleAttachmentDragOver,
@@ -708,7 +718,7 @@ export const ChatComposer = ({
     // captured-log floating chip with z-10, the textarea/mirror with z-[1])
     // so they can't paint on top of body-level portaled popovers like the
     // model picker dropdown opening above the composer.
-    <div className="relative isolate px-2 py-2 sm:px-4 sm:py-4">
+    <div className="relative isolate p-3">
       <input
         ref={attachmentInputRef}
         type="file"
@@ -728,25 +738,31 @@ export const ChatComposer = ({
         onDiscard={onDiscardConsoleLogs}
       />
 
-      {/* Prompt card. Brighter than the page surface (kumo-control vs kumo-base) and gently lifted
-          with a soft neutral shadow so the composer reads as a distinct surface instead of blending
-          into the canvas; the lift intensifies a touch on focus. */}
+      {/* Prompt card (Figma "Navbar"): a 42px pill on the elevated surface with an inset hairline,
+          holding the add menu, the message and the trailing controls on one row. It grows into a
+          rounded card when the message wraps or attachments are queued. */}
       <div
         ref={promptCardRef}
-        className="relative overflow-visible rounded-2xl bg-kumo-control shadow-md ring ring-kumo-hairline shadow-black/4 transition-shadow duration-150 ease-out focus-within:shadow-lg"
+        data-dragging={isAttachmentDragging || undefined}
+        className={`${styles.promptCard} relative overflow-visible rounded-[21px] bg-kumo-elevated ring-1 ring-inset ring-kumo-line focus-within:ring-kumo-ring/60`}
         onDragEnter={handleAttachmentDragEnter}
         onDragOver={handleAttachmentDragOver}
         onDragLeave={handleAttachmentDragLeave}
         onDrop={handleAttachmentDrop}
       >
-        {isAttachmentDragActive && (
-          <div className={`themed-inset-outline pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-2xl border-2 border-solid p-4 backdrop-blur-[1px] transition-[opacity,transform] duration-150 ease-out ${canAttachMore ? "border-kumo-brand/55 bg-kumo-brand/10" : "border-kumo-warning/60 bg-kumo-warning/10"}`}>
-            <div className={`themed-floating-shadow flex items-center gap-2 rounded-full border bg-kumo-base/90 px-3 py-2 text-[13px] font-medium leading-4 tracking-[-0.2px] text-kumo-default ${canAttachMore ? "border-kumo-brand/25" : "border-kumo-warning/30"}`}>
-              <span className={`grid h-7 w-7 place-items-center rounded-full ${canAttachMore ? "bg-kumo-brand/12 text-kumo-brand" : "bg-kumo-warning/15 text-kumo-warning"}`}>
-                <FileIcon size={16} weight="duotone" />
-              </span>
-              {canAttachMore ? "Drop files to attach" : "Messages are limited to 5 attachments"}
-            </div>
+        {/* Files over the window: the composer says, in its own shape and voice, that it takes
+            them -- its hairline darkens and it lifts a touch, and its row fades to the words.
+            Over the composer itself, it settles onto a tint to say "here". */}
+        {isAttachmentDragging && (
+          <div
+            data-over={isAttachmentDragActive || undefined}
+            className={`${styles.dropCue} pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-[21px] px-4 text-[14px] leading-5`}
+            role="status"
+          >
+            <PaperclipIcon size={16} className="shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {canAttachMore ? "Drop files to attach" : "You can attach up to 5 files"}
+            </span>
           </div>
         )}
         {draftUpdateBanner}
@@ -763,8 +779,26 @@ export const ChatComposer = ({
           disabled={isSending}
           onRemove={removeAttachment}
         />
+        <div className="flex items-end gap-2 py-2 pl-2 pr-2.5">
+          <ComposerAddMenu
+            anchorRef={promptCardRef}
+            catalogVersion={catalogVersion}
+            disabled={isBlocked}
+            getOverseer={getOverseer}
+            chatExists={!newChat}
+            skillSelected={selectedSlashCommand !== null}
+            onOpen={rememberAddMenuCaret}
+            onUpload={() => attachmentInputRef.current?.click()}
+            onAddConnection={handleAttachOpen}
+            onSelectSkill={selectSkillFromAddMenu}
+            model={{ models, selected: selectedModel, onChange: onModelChange }}
+            onSelectFormat={canChooseFormat ? (format) => void chooseFormat(format) : undefined}
+            thinking={onToggleThinkingTraces
+              ? { shown: showThinkingTraces, onToggle: onToggleThinkingTraces }
+              : undefined}
+          />
         {/* Textarea */}
-        <div className="relative px-4 pb-2.5 pt-3">
+        <div className="relative min-w-0 flex-1 py-[4.5px]">
           {slashCommandPicker.popup}
           {/* The resolved command is marked by color alone, so announce it for screen readers. */}
           <div className="sr-only" aria-live="polite">
@@ -842,9 +876,7 @@ export const ChatComposer = ({
                   ? blockedReason
                   : isAgentActive
                     ? "Message the agent while it works…"
-                    : newChat
-                      ? "Start a new conversation…"
-                      : "Ask a follow-up…"
+                    : "Ask anything..."
               }
               autoFocus={autoFocus}
               rows={minRows}
@@ -944,111 +976,39 @@ export const ChatComposer = ({
                   syncMirrorScroll(el);
                 }
               }}
-              className={`relative z-[1] w-full resize-none border-none bg-transparent p-0 text-[16px] leading-[22px] outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed sm:text-[14px] ${composerTextareaClass}`}
+              className={`relative z-[1] w-full resize-none border-none bg-transparent p-0 text-[16px] leading-[17px] text-kumo-default outline-none placeholder:text-kumo-subtle disabled:cursor-not-allowed sm:text-[14px] ${composerTextareaClass}`}
             />
           </div>
         </div>
 
-        {/* Footer row: connection/options left, model + send right */}
-        <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-            <ComposerAddMenu
-              anchorRef={promptCardRef}
-              catalogVersion={catalogVersion}
-              disabled={isBlocked}
-              getOverseer={getOverseer}
-              chatExists={!newChat}
-              skillSelected={selectedSlashCommand !== null}
-              onOpen={rememberAddMenuCaret}
-              onUpload={() => attachmentInputRef.current?.click()}
-              onAddConnection={handleAttachOpen}
-              onSelectSkill={selectSkillFromAddMenu}
-            />
-            {(canChooseFormat || onToggleThinkingTraces) && <DropdownMenu>
-              <DropdownMenu.Trigger
-                render={
-                  <button
-                    type="button"
-                    className="group flex h-10 w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.96] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-subtle sm:h-8 sm:w-8"
-                    aria-label="More chat options"
-                  >
-                    <DotsThree size={18} weight="bold" />
-                  </button>
-                }
-              />
-              <DropdownMenu.Content collisionPadding={16} className="themed-floating-shadow-lg !z-[1100] !min-w-[170px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
-                {/* The deployment's standard formats. Picking one drops its name into the message at
-                    the caret; the agent is told what to build from it. */}
-                {canChooseFormat && (
-                  <ComposerFormatMenuItems
-                    onSelect={(format) => void chooseFormat(format)}
-                    showTrailingSeparator={onToggleThinkingTraces !== undefined}
-                  />
-                )}
-                {onToggleThinkingTraces && (
-                  <DropdownMenu.Item
-                    onClick={onToggleThinkingTraces}
-                    className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
-                  >
-                    <span className="inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
-                      <Brain size={14} />
-                    </span>
-                    <span className="flex-1">
-                      {showThinkingTraces ? "Hide thinking" : "Show thinking"}
-                    </span>
-                  </DropdownMenu.Item>
-                )}
-              </DropdownMenu.Content>
-            </DropdownMenu>}
-          </div>
-
           {/* Right actions */}
-          <div className="ml-auto flex min-w-0 flex-shrink items-center gap-1.5">
-              <ComposerModelSelector
-                models={models}
-                selectedModel={selectedModel}
-                onModelChange={onModelChange}
-              />
+          <div className="flex h-[26px] min-w-0 flex-shrink-0 items-center gap-2">
+              {trailing}
               {isAgentActive && onStop && (
                 // A steer still being sent can't be handed back to the draft yet.
-                <WorkshopIconButton
+                <button
+                  type="button"
                   onClick={handleStop}
                   disabled={isSending || isStopping}
-                  tone={canSteer ? "ghost" : "primary"}
-                  className="!h-10 !w-10 sm:!h-8 sm:!w-8"
+                  className={`${canSteer ? COMPOSER_ROUND_BUTTON : COMPOSER_ROUND_BUTTON_PRIMARY} disabled:cursor-not-allowed disabled:opacity-40`}
                   aria-label="Stop agent"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                  >
-                    <rect x="5" y="5" width="14" height="14" rx="2" />
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+                    <rect width="10" height="10" rx="2" />
                   </svg>
-                </WorkshopIconButton>
+                </button>
               )}
               {(!isAgentActive || !onStop || canSteer) && (
-                <WorkshopIconButton
+                <button
+                  type="button"
                   onClick={submitMessage}
                   disabled={!canSend && !canSteer}
-                  tone="primary"
-                  className="!h-10 !w-10 disabled:cursor-not-allowed disabled:opacity-30 sm:!h-8 sm:!w-8"
+                  // The design draws the idle send button at full strength; it only stops responding.
+                  className={`${COMPOSER_ROUND_BUTTON} disabled:cursor-default disabled:hover:bg-kumo-base`}
                   aria-label="Send message"
                 >
-                  {/* Arrow-up icon */}
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  >
-                    <line x1="12" y1="19" x2="12" y2="5" />
-                    <polyline points="5 12 12 5 19 12" />
-                  </svg>
-                </WorkshopIconButton>
+                  <ArrowUpIcon size={14} />
+                </button>
               )}
           </div>
         </div>

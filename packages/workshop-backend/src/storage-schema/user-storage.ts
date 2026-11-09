@@ -7,7 +7,7 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, FavoriteItem, FavoriteItemRef,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -117,6 +117,9 @@ type LibraryBlueprintRecord = {
 export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
+  // Set on a shared workspace the user was added to but hasn't opened yet; see
+  // `WorkspaceMetadataWithTimestamps.invited`.
+  invited?: true;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 };
@@ -177,6 +180,14 @@ export type ChatReadCursor = {
    * deletion can't bring the chat back. Chat IDs are never reused.
    */
   deleted?: true;
+  /** Set while the user has the chat archived; see `AuthenticatedApi.setChatArchived()`. */
+  archived?: true;
+  /**
+   * Set on a row created for a chat the user hasn't taken part in; cleared once they open it,
+   * write in it or unarchive it (see `UnreadThread.unjoined`). Absent on rows from before this
+   * was recorded, which count as joined.
+   */
+  unjoined?: true;
 };
 
 /**
@@ -210,6 +221,15 @@ export type WorkspaceOutputEntry = {
   /** The format the gadget was built as, if it was instantiated from a blueprint declaring one. */
   output?: BlueprintOutput;
 };
+
+/** The storage key of a starred item: its kind and its identity within its workspace. */
+export function favoriteKey(item: FavoriteItemRef): string {
+  switch (item.kind) {
+    case "app": return `${item.workspaceId}:app:${item.workpieceId}`;
+    case "chat": return `${item.workspaceId}:chat:${item.chatId}`;
+    case "file": return `${item.workspaceId}:file:${item.chatId}:${item.fileId}`;
+  }
+}
 
 type OutputRecord = WorkspaceOutputEntry & {
   // The workspace containing this output (an Overseer DO id).
@@ -280,6 +300,14 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // Outputs page is one cheap read of the user's own DO. Entries are meaningful only while the
       // corresponding `gadgets` record exists; `syncWorkspaceOutputs()` and the `gadgets` deletion
       // paths keep the two in step.
+      // The apps and files the user has starred (AuthenticatedApi.setFavorite()), each with the
+      // title and kind it had when starred so the Library can list them without opening workspaces.
+      favorites: collection<FavoriteItem>()({
+        primaryKey: favoriteKey,
+        nonUniqueIndexes: {
+          byWorkspace(record: FavoriteItem) { return record.workspaceId; },
+        },
+      }),
       outputs: collection<OutputRecord>()({
         primaryKey: record => `${record.workspaceId}:${record.workpieceId}`,
         nonUniqueIndexes: {
