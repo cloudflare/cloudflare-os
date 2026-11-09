@@ -153,17 +153,40 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
+/** How `readPdf()` reads a PDF. */
+export type DrivePdfReadOptions = {
+  /**
+   * Transcribe a scanned or image-only PDF, which has no text of its own, by having a vision
+   * model read its page images. Off by default, since each page is a billed model call. A PDF
+   * with any text of its own is returned as that text whether or not this is set.
+   */
+  ocr?: boolean;
+};
+
 /** A Drive PDF's text, streamed. */
 export type DrivePdfText = {
   /**
    * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
    * headings, and pages before the first with text left out. Read it with
    * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
-   * `hasText` is false. A failure partway through errors the stream.
+   * `hasText` is false and `transcribed` is too. A failure partway through errors the stream.
+   *
+   * When `transcribed`, each page is read from Drive and transcribed only as you read the text, so
+   * stop reading, and cancel, to stop paying for pages you do not need. Read it without long
+   * pauses: a transcription left unread for a minute, or whose model stops answering for one, is
+   * ended with an error, and the PDF must be read again. Pages are numbered in the order the file
+   * stores their images, which is page order for a scanner's output.
    */
   text: ReadableStream<Uint8Array>;
-  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
+  /** False for a scanned or image-only PDF, which has no text layer. */
   hasText: boolean;
+  /**
+   * True when `text` is a vision model's reading of the page images of a PDF with no text of its
+   * own, which `readPdf()` gives only with `ocr: true`. It is not the document's own text: the
+   * model can misread, most often small print and the codes, numbers and names in it, so check
+   * anything that matters against the file.
+   */
+  transcribed: boolean;
 };
 
 /** Which bytes of a Drive file `readFile()` reads. */
@@ -261,8 +284,20 @@ export interface GoogleDriveReadSession {
   /**
    * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
    * when the Google account was connected before Drive bindings could read file content.
+   *
+   * A scanned PDF has no text: `hasText` is false and `text` is empty. Pass `{ ocr: true }` to
+   * have its pages transcribed instead (see `DrivePdfText.transcribed`). Every image in the file
+   * that is at least 200 pixels on each side, and is not a mask, is read as one page, so a PDF
+   * with no such image still comes back empty with `transcribed` false, and a page the file
+   * stores as several images comes back as several pages, less any piece smaller than that.
+   * Pages stored as JPEG are read, and so are losslessly compressed (Flate) pages in plain grey
+   * or RGB. It fails, before transcribing anything, for an encrypted PDF; for a page, or a mask
+   * the size of one (where a scan stored in layers keeps its text), stored as fax or JBIG2; for
+   * a page stored as JPEG 2000 or as any other kind of image, such as one with a palette or in
+   * CMYK; for a page image that is over 12 MiB as stored, that would have to be uncompressed to
+   * over 128 MiB, or that is not where the file says it is; and for more than 2,000 page images.
    */
-  readPdf(fileId: string): Promise<DrivePdfText>;
+  readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
 
   /**
    * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
@@ -319,10 +354,11 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /**
-   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
-   * reconnect when the Google account was connected before Drive bindings could read file content.
+   * Read a live direct-child PDF's text, converted to Markdown and streamed, as
+   * `GoogleDriveReadSession.readPdf()` does. Fails asking to reconnect when the Google account
+   * was connected before Drive bindings could read file content.
    */
-  readPdf(fileId: string): Promise<DrivePdfText>;
+  readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
 
   /**
    * Read a live direct child's own content as a stream of bytes, as

@@ -79,7 +79,10 @@ import {
   writeRefusal, WRITE_CONNECTION_REFUSED, WRITES_GRANT_MISSING, type DriveActor,
   type DriveWriteTargetPayload, type QueuedWrite,
 } from "./drive-writes";
-import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import {
+  CONVERSION_FAILED, pdfToText, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
+  type PdfRangeReader,
+} from "./drive-pdf";
 import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
@@ -94,11 +97,12 @@ import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF,
   MOVE_SINGLE_FILE, PDF_MIME_TYPE,
   requireDriveBindingScope, type DriveBindingScope, type DriveCore, type DriveWriteTarget,
-  type NativeObservation, type NativeRead,
+  type NativeObservation, type NativeRead, type NativeReadOptions,
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
-  DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfText, DriveScope,
+  DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfReadOptions,
+  DrivePdfText, DriveScope,
   DriveSessionSearchQuery, DriveShareOptions, DriveShareRole,
   DriveSuggestEditOptions, GoogleDriveFolderSession, GoogleDriveSession,
 } from "./drive-types";
@@ -4029,7 +4033,8 @@ export class GoogleDriveGatekeeperImpl
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
     let ai = this.env.AI as unknown as AiFetcher | undefined;
     let gatewayId = this.env.CF_AI_GATEWAY;
-    let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
+    let convertPdf: PdfConverter | undefined =
+      ai && ((pdf, readRange) => pdfToText(ai, gatewayId, pdf, readRange));
     let writes: DriveQueue = {
       access: this.#writes ? "write" : "read",
       writeRefusal: () => this.#writeRefusal(),
@@ -4426,21 +4431,72 @@ export class GoogleDriveSessionImpl extends RpcTarget
         new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
   }
 
-  async readPdf(fileId: string): Promise<DrivePdfText> {
-    // The text stream needs no queue of its own, so this reads through the session's, as getEntry.
-    let core = this.#core;
+  async readPdf(fileId: string, options: DrivePdfReadOptions = {}): Promise<DrivePdfText> {
+    // A conversion's text needs no queue of its own, so that reads through the session's, as
+    // getEntry.
+    if (!options.ocr) return this.#readPdf(this.#core, fileId, false);
+    // A transcription's page reads are authorized as its text is read, which may be after this
+    // session is disposed, so the text holds a queue of its own until it ends.
+    return this.#withQueue(async (queue, core) => {
+      let result = await this.#readPdf(core, fileId, true);
+      let release = () => queue[Symbol.dispose]();
+      if (result.transcribed) return {...result, text: releasedAtEnd(result.text, release)};
+      release();
+      return result;
+    });
+  }
+
+  async #readPdf(core: DriveCore, fileId: string, ocr: boolean): Promise<DrivePdfText> {
     let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
     let converted: DrivePdfText | undefined;
-    return core.nativeRead(id, PDF_MIME_TYPE, {content: true})(async () => {
+    // A transcription reads the file again, page by page, at places found in the bytes converted,
+    // so its reads must all be of that file as it was. A folder binding's re-proofs see the
+    // modification time, which must not move from the first one on; a file of another size is
+    // refused on any binding. As for readFile(), an account or exact-file binding does not
+    // detect a rewrite that kept the size.
+    let modifiedTime: string | undefined;
+    let read: NativeReadOptions = ocr ? {
+      content: true,
+      unchanged: current => {
+        modifiedTime ??= current.modifiedTime;
+        if (current.modifiedTime !== modifiedTime) throw new Error(FILE_CHANGED);
+      },
+    } : {content: true};
+    // Each page read is a content read of its own, made as the text is read: checked against the
+    // binding's scope, re-proved on a folder binding, and reported, like the first.
+    let readRange: PdfRangeReader = async ({page, offset, length, fileSize}) => {
+      let opened: ReadableStream<Uint8Array> | undefined;
+      let download = await core.nativeRead(id, PDF_MIME_TYPE, read)(async () => {
+        let answer = await this.#driveApi.downloadRange(id, offset, length)
+          .catch((error: unknown) => { throw fileReadError(error); });
+        opened = answer.content;
+        if ((answer.fileSize ?? fileSize) !== fileSize || (answer.length ?? length) < length) {
+          throw new Error(FILE_CHANGED);
+        }
+        return opened;
+      }, () => ({
+        title: "Read PDF from Google Drive",
+        description: `Read page image ${page} of Drive file ${id}, to transcribe it.`,
+      })).catch(async (error: unknown) => {
+        await opened?.cancel().catch(() => undefined);
+        throw error;
+      });
+      return exactRange(download, length);
+    };
+    // A refusal to transcribe says what the file's content is like, so it discloses something
+    // too and has to be authorized. It rides back as a value so one guarded read covers both
+    // outcomes.
+    let outcome = await core.nativeRead(id, PDF_MIME_TYPE, read)(async (
+    ): Promise<DrivePdfText | { refusal: TranscriptionRefusal }> => {
       let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
         throw lacksFileContentAccess(error) ? new Error(contentAccessMissing("PDFs")) : error;
       })).getReader();
       // The checks after this fetch must cover everything the text is converted from, so a
       // conversion that answers before the download has ended is refused.
       let downloaded = false;
-      converted = await convert(new ReadableStream<Uint8Array>({
+      let result = await convert(new ReadableStream<Uint8Array>({
         async pull(controller) {
           let chunk = await download.read();
           if (chunk.done) {
@@ -4451,12 +4507,16 @@ export class GoogleDriveSessionImpl extends RpcTarget
           }
         },
         cancel: reason => download.cancel(reason),
-      }, { highWaterMark: 0 }));
+      }, { highWaterMark: 0 }), ocr ? readRange : undefined).catch((error: unknown) => {
+        if (error instanceof TranscriptionRefusal) return { refusal: error };
+        throw error;
+      });
+      if (!("refusal" in result)) converted = result;
       if (!downloaded) {
         await download.cancel().catch(() => undefined);
         throw new Error(CONVERSION_FAILED);
       }
-      return converted;
+      return result;
     }, () => ({
       title: "Read PDF from Google Drive",
       description: `Read the text of Drive file ${id}.`,
@@ -4465,6 +4525,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await converted?.text.cancel().catch(() => undefined);
       throw error;
     });
+    if ("refusal" in outcome) throw outcome.refusal;
+    return outcome;
   }
 
   async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
