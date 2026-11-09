@@ -6,10 +6,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
-import {
-  FILE_READ_IDLE_MS, FILE_READ_WAIT_MS, FILE_READS_BUSY, MAX_OPEN_FILE_READS,
-} from "../../src/drive-file-read";
-import { Semaphore } from "../../src/mutex";
+import { FILE_READ_IDLE_MS } from "../../src/drive-file-read";
 import type { DriveBindingScope } from "../../src/drive-session";
 import type { PdfConverter } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
@@ -111,8 +108,11 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();
+  /** Titles whose authorization waits for the promise mapped to them. */
+  readonly holds = new Map<string, Promise<void>>();
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    await this.holds.get(description.title);
     if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
   }
@@ -252,7 +252,6 @@ function newSession(
       new GoogleSheetsApi(getAccessToken),
       new GoogleSlidesApi(getAccessToken),
       convertPdf,
-      new Semaphore(MAX_OPEN_FILE_READS),
       scope,
       queueStub,
     )),
@@ -812,92 +811,51 @@ describe("Drive file reads", () => {
     expect(state.cancelled).toBe(true);
   });
 
-  /** Opens `count` reads of the stream-only file, leaving each stream unread. */
-  async function openReads(session: ReturnType<typeof newSession>["session"], count: number) {
-    const answers = Array.from({ length: count }, () => chunkedAnswer(BIG / 65_536));
-    let next = 0;
-    answerDownload = () => answers[next++]!.answer();
-    const reads = [];
-    for (let i = 0; i < count; i++) reads.push(await session.readFile("stream-1"));
-    return { answers, reads };
-  }
-
-  // Each open stream holds a download, so a binding opens only so many at once.
-  it("opens only so many downloads at once, a further read waiting for a stream to end", async () => {
+  // An agent that drops a stream without cancelling it must not hold its download for good.
+  it("ends a stream left unread for a minute, letting its download go", async () => {
+    const { state, answer } = chunkedAnswer(BIG / 65_536);
+    answerDownload = answer;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     using session = newSession().session;
-    const { answers, reads } = await openReads(session, MAX_OPEN_FILE_READS);
-    answerDownload = undefined;
+    const read = await session.readFile("stream-1");
 
-    const further = Promise.resolve(session.readFile("csv-1"));
-    await scheduler.wait(50);
-    expect(downloads).toHaveLength(MAX_OPEN_FILE_READS);
-
-    await reads[1]!.content.cancel();
-    expect(await bytesOf(await further)).toEqual(CSV_BYTES);
-    expect(answers.flatMap(({ state }, index) => state.cancelled ? [index] : [])).toEqual([1]);
-    for (const read of reads) await read.content.cancel();
-  });
-
-  it("refuses a read that no stream ends in time for, without downloading", async () => {
-    using session = newSession().session;
-    const { reads } = await openReads(session, MAX_OPEN_FILE_READS);
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-
-    const further = Promise.resolve(session.readFile("stream-1")).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(FILE_READ_WAIT_MS);
-
-    expect(await further).toEqual(expect.objectContaining({ message: FILE_READS_BUSY }));
-    expect(downloads).toHaveLength(MAX_OPEN_FILE_READS);
-    vi.useRealTimers();
-    for (const read of reads) await read.content.cancel();
-  });
-
-  // An agent that drops a stream without cancelling it must not hold its download, or its turn.
-  it("ends a stream left unread for a minute, freeing its download and its turn", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    using session = newSession().session;
-    const { answers, reads } = await openReads(session, MAX_OPEN_FILE_READS);
-
-    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS);
+    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS - 1_000);
+    expect(state.cancelled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
     vi.useRealTimers();
 
-    await vi.waitFor(() =>
-      expect(answers.every(({ state }) => state.cancelled)).toBe(true));
-    await expect(bytesOf(reads[0]!)).rejects.toThrow();
-    answerDownload = undefined;
-    expect(await bytesOf(await session.readFile("csv-1"))).toEqual(CSV_BYTES);
+    await vi.waitFor(() => expect(state.cancelled).toBe(true));
+    await expect(bytesOf(read)).rejects.toThrow();
   });
 
-  // Were a turn kept by a read that ended without a stream, one read too many would wait for it.
-  it.each([
-    ["is not authorized", (queue: TestApprovalQueue) => {
-      queue.refuse.add("Read file from Google Drive");
-    }, "Observation refused"],
-    ["is refused by Drive", () => {
-      answerDownload = () => Response.json(
-        { error: { code: 403, errors: [{ reason: "cannotDownloadAbusiveFile" }] } }, { status: 403 });
-    }, "Google identified this file as malware or spam"],
-    ["finds the file changed", () => {
-      answerDownload = () => new Response(grown, {
-        headers: { "Content-Length": String(grown.byteLength) },
-      });
-    }, "The Drive file changed while it was being read; read it again."],
-  ])("frees the turn of a read that %s", async (_name, arrange, message) => {
+  // The stream's wait starts when it is handed over. Were it to start with the download, a slow
+  // authorization would use it up, and the read would return a stream already ended.
+  it("does not count a slow authorization against the stream it returns", async () => {
     const { queue, session } = newSession();
     using owned = session;
-    arrange(queue);
+    const authorized = Promise.withResolvers<void>();
+    queue.holds.set("Read file from Google Drive", authorized.promise);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 
-    for (let i = 0; i <= MAX_OPEN_FILE_READS; i++) {
-      await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow(message);
-    }
+    const pending = Promise.resolve(owned.readFile("csv-1"));
+    await scheduler.wait(50);
+    expect(downloads).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2 * FILE_READ_IDLE_MS);
+    authorized.resolve();
+    const read = await pending;
+    vi.useRealTimers();
+
+    expect(await bytesOf(read)).toEqual(CSV_BYTES);
   });
 
-  it("frees the turn of each stream read to its end", async () => {
+  // Nothing limits how many a binding reads at once: an open stream costs it a chunk, not a file.
+  it("opens as many reads at once as are asked for", async () => {
     using session = newSession().session;
 
-    for (let i = 0; i <= MAX_OPEN_FILE_READS; i++) {
-      expect(await bytesOf(await session.readFile("csv-1"))).toEqual(CSV_BYTES);
-    }
+    const reads = await Promise.all(Array.from({ length: 12 }, () => session.readFile("csv-1")));
+
+    expect(downloads).toHaveLength(12);
+    for (const read of reads) expect(await bytesOf(read)).toEqual(CSV_BYTES);
   });
 
   it("reads the bound file of an exact-file binding", async () => {
@@ -1187,7 +1145,6 @@ describe("folder-scoped native sessions", () => {
         new GoogleSheetsApi(getAccessToken),
         new GoogleSlidesApi(getAccessToken),
         convertPdf,
-        new Semaphore(MAX_OPEN_FILE_READS),
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
       )),
@@ -1532,8 +1489,9 @@ describe("folder-scoped native sessions", () => {
     expect(nativeCalls).toEqual(["download", "download cancelled"]);
   });
 
-  // The file was in the folder when Drive began its answer, and the answer is of the file as it
-  // was then, so the rest of it is still the folder's to read.
+  // The file was in the folder when Drive began its answer, so the rest of that answer is still
+  // read. This takes it that Drive answers from the revision current when it began, which
+  // nothing here checks.
   it("finishes a stream whose file leaves the folder after Drive began answering", async () => {
     const nodes = subtree();
     nodes.set("data-1", dataNode(ROOT));

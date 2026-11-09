@@ -42,10 +42,7 @@ import {
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
-import {
-  downloadableFile, exactRange, fileReadRange, FILE_CHANGED, FILE_READ_WAIT_MS, FILE_READS_BUSY,
-  MAX_OPEN_FILE_READS,
-} from "./drive-file-read";
+import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
@@ -109,7 +106,7 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
-import { Mutex, Semaphore } from "./mutex";
+import { Mutex } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
@@ -3367,8 +3364,6 @@ export type GoogleDriveGatekeeperImplProps = {
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
     implements Gatekeeper<GoogleDriveSession> {
-  /** Shared by every session this binding starts, so the limit holds across all of them. */
-  #fileReads = new Semaphore(MAX_OPEN_FILE_READS);
   #tokens = new AccessTokenCache(opts => {
     let account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -3435,7 +3430,6 @@ export class GoogleDriveGatekeeperImpl
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
       convertPdf,
-      this.#fileReads,
       this.#scope,
       approvalQueue.dup(),
     );
@@ -3630,8 +3624,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #slidesApi: GoogleSlidesApi;
   /** Absent when the deployment has no Workers AI binding, so PDFs cannot be read. */
   #convertPdf: PdfConverter | undefined;
-  /** The binding's turns for {@link readFile}, each held for as long as its download is open. */
-  #fileReads: Semaphore;
   #scope: DriveBindingScope;
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
@@ -3643,7 +3635,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
     sheetsApi: GoogleSheetsApi,
     slidesApi: GoogleSlidesApi,
     convertPdf: PdfConverter | undefined,
-    fileReads: Semaphore,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     location?: FolderLocation,
@@ -3654,7 +3645,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#sheetsApi = sheetsApi;
     this.#slidesApi = slidesApi;
     this.#convertPdf = convertPdf;
-    this.#fileReads = fileReads;
     this.#scope = scope;
     this.#location = scope.kind === "folder"
       ? location ?? {folderIds: [scope.folderId]}
@@ -3689,7 +3679,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#fileReads, this.#scope, queue, location,
+        this.#scope, queue, location,
       );
     });
   }
@@ -3765,45 +3755,42 @@ export class GoogleDriveSessionImpl extends RpcTarget
         `offset ${offset} is past the end of the Drive file, which is ${size} bytes long.`);
     }
     let length = Math.min(range.length, size - offset);
-    let content: ReadableStream<Uint8Array> | undefined;
-    let release: (() => void) | undefined;
+    let opened: ReadableStream<Uint8Array> | undefined;
     // The fetch ends once Drive begins its answer, with none of it read or held here. A folder
     // binding's re-proof after it shows the file was still the folder's as that answer began, and
     // the stream carries only that answer; a move or rewrite later in it is not looked for, on
     // the understanding (unchecked) that Drive answers a download from one revision. The
     // re-proof re-reads the file's metadata anyway, so a folder binding also refuses a rewrite
     // that kept the size: its modification time moved.
-    return core.nativeRead(file.id, mimeType, {
+    let download = await core.nativeRead(file.id, mimeType, {
       content: true,
       unchanged: current => {
         if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
       },
-    })(async (): Promise<DriveFileBytes> => {
-      if (length === 0) {
-        content = new ReadableStream({ start: controller => controller.close() });
-      } else {
-        // Held until the stream ends, however it does, since the download stays open that long.
-        release = await this.#fileReads.acquire(FILE_READ_WAIT_MS);
-        if (!release) throw new Error(FILE_READS_BUSY);
-        let download = await this.#driveApi.downloadRange(file.id, offset, length)
-          .catch((error: unknown) => { throw fileReadError(error); });
-        content = exactRange(download.content, length, release);
-        // Another size, or a range that ends inside the file, means bytes from another revision
-        // than the one described.
-        if ((download.fileSize ?? size) !== size || (download.length ?? length) < length) {
-          throw new Error(FILE_CHANGED);
-        }
+    })(async () => {
+      if (length === 0) return undefined;
+      let answer = await this.#driveApi.downloadRange(file.id, offset, length)
+        .catch((error: unknown) => { throw fileReadError(error); });
+      opened = answer.content;
+      // Another size, or a range that ends inside the file, means bytes from another revision
+      // than the one described.
+      if ((answer.fileSize ?? size) !== size || (answer.length ?? length) < length) {
+        throw new Error(FILE_CHANGED);
       }
-      return {mimeType, size, modifiedTime, offset, length, content};
+      return opened;
     }, () => ({
       title: "Read file from Google Drive",
       description: `Read ${length} bytes of Drive file ${file.id}, from byte ${offset}.`,
     })).catch(async (error: unknown) => {
-      // A read refused after Drive began its answer still holds the download open, and its turn.
-      await content?.cancel().catch(() => undefined);
-      release?.();
+      // A read refused after Drive began its answer still holds the download open.
+      await opened?.cancel().catch(() => undefined);
       throw error;
     });
+    // Its idle wait starts only now, so one spent on authorization is not counted against it.
+    let content = download
+      ? exactRange(download, length)
+      : new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+    return {mimeType, size, modifiedTime, offset, length, content};
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

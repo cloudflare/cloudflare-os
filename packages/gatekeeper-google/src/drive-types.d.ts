@@ -165,8 +165,8 @@ export type DriveFileBytes = {
    * `await new Response(content).arrayBuffer()` (or `.text()`), or use a reader to stop early.
    * Read it straight away, and cancel it if you will not: a stream left unread for a minute is
    * ended. A stream that fails partway, whatever its error says, did not deliver the file: it was
-   * left unread, Google stopped answering or the file changed while it was being read, so read
-   * the file again.
+   * left unread, or Google stopped sending it or sent less of it than the file had, so read the
+   * file again.
    */
   content: ReadableStream<Uint8Array>;
 };
@@ -224,9 +224,7 @@ export interface GoogleDriveReadSession {
    * are folders, shortcuts and other Google-native files (MIME types starting
    * `application/vnd.google-apps.`), which have no content to download. Fails when Google does not
    * let the account download the file, and asks to reconnect when the account was connected before
-   * Drive bindings could read file content. A binding has at most five of these streams open at
-   * once, so finish or cancel each before reading a sixth file: a further call waits up to 30
-   * seconds for one to end, then fails.
+   * Drive bindings could read file content.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 }

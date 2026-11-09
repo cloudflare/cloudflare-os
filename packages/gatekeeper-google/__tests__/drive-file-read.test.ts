@@ -86,8 +86,7 @@ describe("exactRange", () => {
   it("ends a stream whose answer stops arriving, letting the download go", async () => {
     vi.useFakeTimers();
     let { body, state } = stallingBody(1);
-    let onEnd = vi.fn();
-    let reader = exactRange(body, 100, onEnd).getReader();
+    let reader = exactRange(body, 100).getReader();
     expect((await reader.read()).value).toHaveLength(4);
 
     let stalled = reader.read();
@@ -98,7 +97,7 @@ describe("exactRange", () => {
 
     await outcome;
     expect(state.cancelled).toBe(true);
-    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([
@@ -107,65 +106,74 @@ describe("exactRange", () => {
   ])("ends a stream whose reader %s", async (_name, reads) => {
     vi.useFakeTimers();
     let { body, state } = countedBody(4);
-    let onEnd = vi.fn();
-    let reader = exactRange(body, 100, onEnd).getReader();
+    let reader = exactRange(body, 100).getReader();
     for (let i = 0; i < reads; i++) await reader.read();
 
-    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS);
+    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS - 1);
+    expect(state.cancelled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
 
     await expect(reader.read()).rejects.toThrow("went unread");
     expect(state.cancelled).toBe(true);
     expect(state.pulls).toBe(reads);
-    expect(onEnd).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps a stream that moves before each wait runs out, however long it takes in all", async () => {
-    vi.useFakeTimers();
-    let { body, state } = countedBody(4);
-    let onEnd = vi.fn();
-    let reader = exactRange(body, 100, onEnd).getReader();
-
-    for (let i = 0; i < 5; i++) {
-      await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS - 1);
-      expect((await reader.read()).value).toHaveLength(4);
-    }
-    expect(state.cancelled).toBe(false);
-    expect(onEnd).not.toHaveBeenCalled();
-    await reader.cancel();
-  });
-
-  it.each([
-    ["is read to its end", async (content: ReadableStream<Uint8Array>) => { await bytesOf(content); }],
-    ["is cancelled", (content: ReadableStream<Uint8Array>) => content.cancel()],
-    ["is cancelled twice over", async (content: ReadableStream<Uint8Array>) => {
-      let reader = content.getReader();
-      await reader.read();
-      await reader.cancel();
-      await reader.cancel();
-    }],
-  ])("ends once, starting no further wait, when it %s", async (_name, use) => {
-    vi.useFakeTimers();
-    let { body } = countedBody(4);
-    let onEnd = vi.fn();
-
-    await use(exactRange(body, 8, onEnd));
-
-    expect(onEnd).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each([
-    ["ends short", () => new Response(new Uint8Array(3)).body!],
-    ["breaks off", () => new ReadableStream<Uint8Array>({
-      pull: controller => controller.error(new Error("connection lost")),
-    }, { highWaterMark: 0 })],
-  ])("ends once when the answer %s", async (_name, answer) => {
+  // The wait is for the next movement either way, so one spent on Drive is not added to one
+  // spent on the reader: each starts it over.
+  it("starts its wait over when Drive is asked and again when its bytes are handed on", async () => {
     vi.useFakeTimers();
-    let onEnd = vi.fn();
+    let sends: (() => void)[] = [];
+    let body = new ReadableStream<Uint8Array>({
+      pull: controller => new Promise<void>(resolve => {
+        sends.push(() => { controller.enqueue(new Uint8Array(4)); resolve(); });
+      }),
+    }, { highWaterMark: 0 });
+    let reader = exactRange(body, 100).getReader();
 
-    await expect(bytesOf(exactRange(answer(), 8, onEnd))).rejects.toThrow();
+    for (let round = 0; round < 3; round++) {
+      // The reader takes almost the whole wait to ask, then Drive almost the whole wait to answer.
+      await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS - 1);
+      let read = reader.read();
+      await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS - 1);
+      sends[round]!();
+      expect((await read).value).toHaveLength(4);
+    }
+    await reader.cancel();
+  });
 
-    expect(onEnd).toHaveBeenCalledTimes(1);
+  it("lets a download go at once when cancelled while Drive is being waited on", async () => {
+    let { body, state } = stallingBody(0);
+    let reader = exactRange(body, 100).getReader();
+    let pending = reader.read();
+
+    await reader.cancel();
+
+    expect(state.cancelled).toBe(true);
+    expect((await pending).done).toBe(true);
+  });
+
+  it.each([
+    ["is read to its end", 8, async (content: ReadableStream<Uint8Array>) => { await bytesOf(content); }],
+    ["is cancelled", 8, (content: ReadableStream<Uint8Array>) => content.cancel()],
+    ["ends short", 9, (content: ReadableStream<Uint8Array>) =>
+      expect(bytesOf(content)).rejects.toThrow(FILE_CHANGED)],
+  ])("leaves no wait running once it %s", async (_name, length, use) => {
+    vi.useFakeTimers();
+
+    await use(exactRange(new Response(new Uint8Array(8)).body!, length));
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("leaves no wait running once the download breaks off", async () => {
+    vi.useFakeTimers();
+    let broken = new ReadableStream<Uint8Array>({
+      pull: controller => controller.error(new Error("connection lost")),
+    }, { highWaterMark: 0 });
+
+    await expect(bytesOf(exactRange(broken, 8))).rejects.toThrow("connection lost");
+
     expect(vi.getTimerCount()).toBe(0);
   });
 });
