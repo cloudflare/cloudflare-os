@@ -2,6 +2,8 @@ import { cn } from '@cloudflare/kumo/utils'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 
 export type ConversationListItemProps = {
+  /** Identifies the row to the sidebar's shared highlight. */
+  id?: string
   workspaceLabel: string
   title: string
   /** A line under the title: the latest message, or when the conversation was last active. */
@@ -11,20 +13,9 @@ export type ConversationListItemProps = {
   onSelect: () => void
 }
 
-// The row's tappable area reaches 1px past its edges so the 2px gap Sidebar leaves between rows
-// (`gap-0.5`) has no dead strip. Keep this at half of that gap.
-const GAP_FILLER = "relative after:absolute after:inset-x-0 after:-inset-y-px after:content-['']"
-
-// Rows touch, so two highlighted neighbours (the selected one, the hovered one) read as one shape:
-// the corners where they meet square off, and the radius transitions as the highlight moves.
-// Written out in full because Tailwind only picks up class names it can read as literal strings.
-const CONNECTED =
-  'transition-[border-radius] motion-reduce:transition-none ' +
-  '[&:is([aria-current],:hover):has(+:is([aria-current],:hover))]:rounded-b-none ' +
-  '[:is([aria-current],:hover)+&:is([aria-current],:hover)]:rounded-t-none'
-
 /** One conversation in the sidebar: its workspace, title, subtitle and unread dot. */
 export const ConversationListItem = ({
+  id,
   workspaceLabel,
   title,
   subtitle,
@@ -34,13 +25,14 @@ export const ConversationListItem = ({
 }: ConversationListItemProps) => (
   <button
     type="button"
+    data-conversation-id={id}
     onClick={onSelect}
     aria-current={selected || undefined}
     className={cn(
-      GAP_FILLER,
-      CONNECTED,
-      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 pr-4 text-left text-base hover:bg-kumo-fill',
-      selected && 'bg-kumo-fill',
+      // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
+      "relative after:absolute after:inset-0 after:content-['']",
+      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 pr-4 text-left text-base not-data-underlay:hover:bg-kumo-fill',
+      selected && 'not-data-underlay:bg-kumo-fill',
     )}
   >
     <WorkspaceIcon label={workspaceLabel} />
