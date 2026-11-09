@@ -88,7 +88,7 @@ const writing = ({ target, access }: DriveConfiguratorValues, accepted: readonly
  * blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
  */
 const ungrantedEditors = (accepted: readonly string[] | undefined): string[] =>
-  accepted?.includes(ACCOUNT_PATTERN) && accepted.includes(FOLDER_PATTERN)
+  accepted && allows(accepted, ACCOUNT_PATTERN) && allows(accepted, FOLDER_PATTERN)
     ? Object.values(EDITORS).map(({ pattern }) => pattern).filter(pattern => !accepted.includes(pattern))
     : [];
 
