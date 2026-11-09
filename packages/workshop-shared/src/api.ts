@@ -6550,6 +6550,36 @@ export type ReportedGadgetConsoleLog = {
   text: string;
 };
 
+/** Which entries Overseer.listConsoleLogs() returns. The filters combine. */
+export type GadgetConsoleLogQuery = {
+  /** Only this gadget's entries. An id that names no gadget, or a deleted one, is not an error. */
+  gadgetId?: WorkpieceId;
+  /**
+   * Only entries recorded under this chat, or with null only those recorded under no chat: a
+   * gadget's mainline (see GadgetConsoleLogEntry.chatId). Absent, entries are listed whatever
+   * their chat. An id that names no chat, or a deleted one, is not an error.
+   */
+  chatId?: number | null;
+  /** Only entries from this source. */
+  source?: GadgetConsoleLogEntry["source"];
+  /** Only entries of this level. */
+  level?: GadgetConsoleLogEntry["level"];
+  /** Only entries whose `time` is at or after this. */
+  since?: Date;
+  /** Only entries whose `time` is at or before this. */
+  until?: Date;
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+};
+
+/** One page of Overseer.listConsoleLogs(). */
+export type GadgetConsoleLogPage = {
+  /** The page's entries, newest first by the order they were kept in. */
+  entries: GadgetConsoleLogEntry[];
+  /** Pass as `cursor` for the next-older page; absent once there is none. */
+  nextCursor?: string;
+};
+
 /**
  * Summary of one workpiece, delivered via Overseer.subscribeToWorkpieces(), discriminated by
  * `type`. Gadgets and worktrees are published (gatekeeper workpieces -- chat capsules, ambient
