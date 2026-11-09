@@ -113,6 +113,18 @@ finishes using them. Return an owned `DisposableStack` with `stack.move()` rathe
 `using` dispose the workspace before returning a child read session; that workspace owns the native
 RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRestart()`.
 
+### Reaching a Durable Object's storage from a test
+
+`await harness.server.getWorker(name).getDurableObjectStorage(className, { id } | { name })` returns
+a handle on one Durable Object's SQLite storage, whose `exec()` resolves to the result rows.
+`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. The admin suites use it to
+fault a store: to show that a call fails when its audit record cannot be written, the suite installs
+a trigger on `admin_audit`, the deployment-wide audit log's table
+(`CREATE TRIGGER ... BEFORE INSERT ON admin_audit BEGIN SELECT RAISE(ABORT, ...); END`), and drops it
+afterwards. The insert then fails exactly as a real storage failure would, inside the real Worker,
+and production code carries no test hook, which would be a switch that disables the audit shipped
+in every deployment.
+
 ### A redeploy keeps storage, so an upgrade can be tested
 
 `server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
@@ -130,15 +142,15 @@ installer, and the check that decides whether to run it, are the Workshop's own.
 A gatekeeper's `main` is such an input too, so a gatekeeper can be upgraded from an older release:
 `build:upgrade-base` bundles gatekeeper-google as an earlier revision of the repo had it, the
 Google hooks suite boots that bundle, and `upgradeGoogle()` (`__tests__/google-fake.ts`) swaps in
-this tree's build with `server.update(current => …)`, replacing only that Worker's config.
+this tree's build with `deploy(harness.server, current => …)`, replacing only that Worker's config.
 
 `update()` resolves at the first reload, not the last. It hands each Worker its new config in
 turn, and each rebuilds and reloads on its own, so the reload it waited for can be running one
 Worker's new build beside the other's old one, with a second reload still to come. That second
-restart breaks the sessions and the requests the test has opened since. `upgradeGoogle()` gives
-every Worker's config a mark unique to the update, and waits until each reports it through
+restart breaks the sessions and the requests the test has opened since. So `deploy()`
+(`src/harness.ts`), which `Harness.redeployWorkshop()` and `upgradeGoogle()` both go through,
+gives every Worker's config a mark unique to the update, and waits until each reports it through
 `getWorker(name).getEnv()`, the one state no reload can leave half-applied.
-`Harness.redeployWorkshop()` doesn't wait this way yet.
 
 ### wrangler and miniflare versions are coupled
 

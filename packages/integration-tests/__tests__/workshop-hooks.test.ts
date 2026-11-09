@@ -32,10 +32,13 @@ afterAll(async () => {
   }
 });
 
-const watchCode = (keys: string[]) => `import { restore } from "cloudflare:workers";
+/** How a gadget binds its hook: fired by hand (`fire`), or kept in the kit's `HookRegistry` (`queue`). */
+type Binding = "watch" | "subscribe";
+
+const watchCode = (keys: string[], binding: Binding) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
   for (const key of ${JSON.stringify(keys)}) {
-    await env.TEST_AMBIENT.watch(key, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
+    await env.TEST_AMBIENT.${binding}(key, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
   }
 }`;
 
@@ -43,6 +46,8 @@ type HookState = { enabled: boolean; target?: HookTargetMetadata; disableCount: 
 
 const fire = (key: string, value: number) => testControl(harness, "fire-hook", { key, value });
 const hookState = (key: string) => testControl<HookState>(harness, "hook-state", { key });
+const queue = (name: string, id: string, value: number) =>
+  testControl<{ hooks: number }>(harness, "queue-hook", { name, id, value });
 const actionState = (label: string) => testActionState(harness, label);
 
 type ArmedHooks = Disposable & {
@@ -55,7 +60,7 @@ type ArmedHooks = Disposable & {
 };
 
 /** A workspace whose HOOKED gadget watched `${username}:${name}` for each name, all public calls. */
-async function armHooks(prefix: string, names: string[]): Promise<ArmedHooks> {
+async function armHooks(prefix: string, names: string[], binding: Binding = "watch"): Promise<ArmedHooks> {
   const [username] = nextUsernames(prefix);
   const keys = Object.fromEntries(names.map(name => [name, `${username}:${name}`]));
   const model = models.script([
@@ -76,7 +81,7 @@ async function armHooks(prefix: string, names: string[]): Promise<ArmedHooks> {
     },
     { text: "Built." },
     {
-      toolCall: { id: "watch", name: "executeCode", arguments: { code: watchCode(Object.values(keys)) } },
+      toolCall: { id: "watch", name: "executeCode", arguments: { code: watchCode(Object.values(keys), binding) } },
     },
     { text: "Watching." },
   ]);
@@ -186,4 +191,29 @@ it("an administratively disabled gatekeeper's hook refuses to fire", async () =>
 
   expect(await fire(key, 202)).toEqual({ fired: true });
   expect((await actionState(label)).pending.map(action => action.value)).toEqual([202]);
+});
+
+it("a hook kept in the kit's HookRegistry is delivered through its restored stub while enabled", async () => {
+  using armed = await armHooks("hookqueue", ["queued"], "subscribe");
+  const { label, ws, keys: { queued: name }, hooks } = armed;
+  const delivered = async () => (await actionState(label)).pending.map(action => action.value);
+
+  expect(await queue(name, "m0", 300)).toEqual({ hooks: 0 });
+
+  await ws.enableHook(hooks.queued.id);
+  expect(await queue(name, "m1", 301)).toEqual({ hooks: 1 });
+  // The second delivery reads the stubs out of storage again, after the first disposed its own.
+  expect(await queue(name, "m2", 302)).toEqual({ hooks: 1 });
+  expect(await queue(name, "m2", 303)).toEqual({ hooks: 1 });
+  expect(await delivered()).toEqual([301, 302]);
+  const { entries: observations } = await ws.listActions({ filter: "observation" });
+  expect(observations.map(({ description }) => description.title))
+      .toEqual([`Hook ${name} requested 302`, `Hook ${name} requested 301`]);
+
+  await ws.disableHook(hooks.queued.id);
+  expect(await queue(name, "m3", 304)).toEqual({ hooks: 0 });
+
+  await ws.enableHook(hooks.queued.id);
+  expect(await queue(name, "m4", 305)).toEqual({ hooks: 1 });
+  expect(await delivered()).toEqual([301, 302, 305]);
 });

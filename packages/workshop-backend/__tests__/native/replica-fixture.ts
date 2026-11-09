@@ -6,7 +6,6 @@
 // Worktree binding meanwhile.
 
 import {WorkspaceGitCache} from "../../src/git-cache";
-import {GitStore} from "../../src/git-store";
 import {InMemoryWorktree} from "../../src/git-binding";
 import {makeOverseerStorage} from "../../src/storage-schema/overseer-storage";
 import {worktreeGitPull} from "../../src/worktree-git";
@@ -17,10 +16,9 @@ import {makeMockStorage} from "../mock-storage";
 async function start() {
   const storage = makeOverseerStorage(makeMockStorage());
   const cache = new WorkspaceGitCache(storage, {pull: async () => { throw new Error("Nothing to pull."); }});
-  const store = new GitStore(storage.gitObjects);
-  const base = await store.writeFilesAsCommit(new Map([["a.txt", "one\ntwo\n"], ["lib/b.txt", "bee\n"]]),
+  const base = await cache.writeFilesAsCommit(new Map([["a.txt", "one\ntwo\n"], ["lib/b.txt", "bee\n"]]),
     {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
-  const worktree = new InMemoryWorktree(cache, store, base);
+  const worktree = new InMemoryWorktree(cache, base);
   const replicas = new WorktreeReplicas(worktree, worktree, () => true, {type: "agent", id: "test", name: "Test"});
   return {worktree, replicas, commands: [] as WorktreeCommand[]};
 }

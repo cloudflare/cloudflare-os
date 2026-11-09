@@ -24,6 +24,7 @@
     "./git-pull-transfer": "./src/git-pull-transfer.ts",
     "./git-transport": "./src/git-transport.ts",
     "./hook-delivery-queue": "./src/hook-delivery-queue.ts",
+    "./hook-registry": "./src/hook-registry.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
     "./oauth-client": "./src/oauth-client.ts",
@@ -31,7 +32,8 @@
     "./response-body": "./src/response-body.ts",
     "./serial-queue": "./src/serial-queue.ts",
     "./simulation": "./src/simulation.ts",
-    "./single-flight": "./src/single-flight.ts"
+    "./single-flight": "./src/single-flight.ts",
+    "./subresource-ids": "./src/subresource-ids.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
@@ -48,6 +50,7 @@
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

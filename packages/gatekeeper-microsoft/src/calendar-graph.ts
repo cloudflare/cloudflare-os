@@ -19,6 +19,9 @@ import { idPath, isMailId, type GraphAddress } from "./outlook-graph";
 /** The `Prefer` values every calendar request sends: immutable IDs, times in UTC. */
 export const CALENDAR_PREFER = ['IdType="ImmutableId"', 'outlook.timezone="UTC"'];
 
+/** The most people one `getSchedule` request asks about. */
+export const MAX_SCHEDULE_ADDRESSES = 20;
+
 /** An event's parent folder entry ID (`PidTagParentEntryId`): what membership is checked by. */
 const PARENT_ENTRY_ID = "Binary 0x0E09";
 /** A calendar folder's own entry ID (`PidTagEntryId`), compared with its events' parent. */
@@ -410,11 +413,11 @@ export class CalendarApi {
     return json?.recurrence ?? null;
   }
 
-  /** People's free/busy over a window, at most 20 at a time. Always asked of the signed-in user's own calendar. */
+  /** People's free/busy over a window, MAX_SCHEDULE_ADDRESSES at a time. Always asked of the signed-in user's own calendar. */
   async schedules(addresses: readonly string[], startMs: number, endMs: number): Promise<GraphSchedule[]> {
     const found: GraphSchedule[] = [];
-    for (let start = 0; start < addresses.length; start += 20) {
-      const chunk = addresses.slice(start, start + 20);
+    for (let start = 0; start < addresses.length; start += MAX_SCHEDULE_ADDRESSES) {
+      const chunk = addresses.slice(start, start + MAX_SCHEDULE_ADDRESSES);
       const body = await this.api.request<{ value?: unknown }>("POST", "/me/calendar/getSchedule", {
         body: {
           schedules: chunk,

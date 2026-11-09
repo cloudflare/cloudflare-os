@@ -1,6 +1,7 @@
-// Where a binding can reach: a malformed issue or PR URL never widens to the whole repo, and the
-// gatekeeper follows GitHub's redirects only within the repository id it pinned, so a renamed repo
-// keeps working while a transferred issue never leaks another repository's content.
+// Where a binding can reach: a malformed issue or PR URL never widens to the whole repo, and once
+// the gatekeeper has pinned the repository's id it reads the repository by that id, following no
+// redirect, so a renamed repo keeps working while a transferred issue never leaks another
+// repository's content.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -68,12 +69,11 @@ async function repoGatekeeper() {
 }
 
 describe("GitHubGatekeeperImpl redirects", () => {
-  it("follows a rename within its pinned repository id and refuses any other", async () => {
+  it("reads its pinned repository by id and refuses a redirect into any other", async () => {
     const requested = fakeGitHub({
       "/repos/octo/repo": () => Response.json({ id: 42 }),
-      "/repos/octo/repo/commits/main": movedTo("/repositories/42/commits/main"),
       "/repositories/42/commits/main": sha,
-      "/repos/octo/repo/commits/other": movedTo("/repositories/43/commits/other"),
+      "/repositories/42/commits/other": movedTo("/repositories/43/commits/other"),
     });
     const gk = await repoGatekeeper();
 
@@ -81,12 +81,9 @@ describe("GitHubGatekeeperImpl redirects", () => {
     const refused = await gk.resolveRef("other");
     expect(refused).toEqual({ error: expect.stringContaining("out of the bound repository") });
     expect(JSON.stringify(refused)).not.toContain("43");
-    // The id is probed once, and the other repository is never requested.
+    // The id is probed once by name, and the other repository is never requested.
     expect(requested).toEqual([
-      "/repos/octo/repo",
-      "/repos/octo/repo/commits/main",
-      "/repositories/42/commits/main",
-      "/repos/octo/repo/commits/other",
+      "/repos/octo/repo", "/repositories/42/commits/main", "/repositories/42/commits/other",
     ]);
   });
 
@@ -94,22 +91,17 @@ describe("GitHubGatekeeperImpl redirects", () => {
     const requested = fakeGitHub({
       "/repos/octo/repo": movedTo("/repositories/42"),
       "/repositories/42": () => Response.json({ id: 42 }),
-      "/repos/octo/repo/commits/main": movedTo("/repositories/42/commits/main"),
       "/repositories/42/commits/main": sha,
     });
     const gk = await repoGatekeeper();
 
     expect(await gk.resolveRef("main")).toEqual({ ok: { id: SHA, fromCache: false } });
-    expect(requested).toEqual([
-      "/repos/octo/repo", "/repositories/42",
-      "/repos/octo/repo/commits/main", "/repositories/42/commits/main",
-    ]);
+    expect(requested).toEqual(["/repos/octo/repo", "/repositories/42", "/repositories/42/commits/main"]);
   });
 
-  it("trusts no redirect when the root's redirect names no repository id", async () => {
+  it("reads nothing when the root's redirect names no repository id", async () => {
     const requested = fakeGitHub({
       "/repos/octo/repo": movedTo("/repos/octo/elsewhere"),
-      "/repos/octo/repo/commits/main": movedTo("/repositories/42/commits/main"),
     });
     const gk = await repoGatekeeper();
 
@@ -117,9 +109,7 @@ describe("GitHubGatekeeperImpl redirects", () => {
       .toEqual({ error: expect.stringContaining("out of the bound repository") });
     expect(await gk.resolveRef("main"))
       .toEqual({ error: expect.stringContaining("out of the bound repository") });
-    // The failed probe is not repeated by the second read.
-    expect(requested).toEqual([
-      "/repos/octo/repo", "/repos/octo/repo/commits/main", "/repos/octo/repo/commits/main",
-    ]);
+    // Nothing is read by name in its place, and the failed probe is not repeated.
+    expect(requested).toEqual(["/repos/octo/repo"]);
   });
 });

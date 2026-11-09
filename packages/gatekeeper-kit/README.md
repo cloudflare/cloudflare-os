@@ -37,9 +37,10 @@ Workshop owns connect completion ticket minting and redemption.
 | Actions | Durable submission and resolution, serialization, journaling, retention mechanics, connection fences, and dependency tracking and refusal. | Approval text, provider calls, idempotency and reconciliation, action-specific simulation, revert semantics, and retention policy. |
 | Action files | Bounded chunk storage, integrity verification, aggregate accounting, deletion, and orphan-pruning mechanics. | Byte limits and key prefixes, keeping references in action records, describing the same bytes that will be applied, and releasing files with their records. |
 | Simulation | Ordered pending-action views, pure replay with explicit incomplete results, and durable provisional-ID allocation and binding. | Target extraction, state transitions, unsupported-effect policy, provider ID syntax, and projecting pending effects onto every affected read. |
-| Observations | Admission strategies, tracked-collection fencing, exclusion derivation, reporting Workshop-checked subresources, judging them per observer, and the guarded authorization call. | Calling the gate for every read, truthful escaped descriptions, choosing the matching strategy and scope, ACL oracles, and collection and subresource canonicalization. |
+| Observations | Explicit subresource reporting, `observerAccessVerifier` over a batched ACL oracle, canonical subresource ID encoding, and legacy admission/tracking mechanisms for existing-code migration only. | Authorizing every disclosure through a typed helper requiring `subresources`; reporting all resource, tenant, and membership requirements; implementing their provider ACL checks in `verifyObserverAccess()`; preserving actual historical requirements when migrating existing code. |
 | Cursors | Serialized walks, buffering, a per-call provider fetch bound, common page/offset/token continuation, merging injected simulated rows, filtering hooks, and per-page authorization callbacks. | Provider page adapters, page limits and termination semantics, the injected rows and their order, resource lifetime, and the observation description for each returned page. |
 | Cache | Authority partitioning, stale-fill fencing, TTL storage, single-flight loads, and invalidation. | Cache families, names and keys, authority dimensions, TTLs, value projection, and deciding which reads are safe to cache. |
+| Hook delivery | Each enabled hook's stored registration and stubs, their disposal, deduplication, retry with backoff, and the `startHook()` firing handed to the binding's delivery stub. | The driver Durable Object and its alarm, the provider's webhooks, watches, subscriptions and cursors, which events a hook watches for, the controller, and dropping an account's hooks when it disconnects. |
 | HTTP endpoints and responses | Operator-supplied endpoint normalization, dot-segment-safe path-segment encoding, common no-access probes, byte-capped text decoding, and best-effort error-body prefixes. | Host allowlists, redirect and header policy, provider id grammar, response schemas, provider errors, and binary or streaming limits. |
 
 When a provider does not fit a leaf, implement the canonical TypeScript interface directly and keep
@@ -53,8 +54,14 @@ do not call around a stateful module while relying on its journal, fence, or lif
   storage, consumer-side RPC, refresh, replay, expiry, and action fences.
 - For provider writes, use [`./actions`](#module-inventory) and read
   [Actions and files](USAGE.md#actions-and-files).
-- For every gatekeeper's observer methods, select a strategy from `./observers` and read
-  [Observations](USAGE.md#observations).
+- For every new gatekeeper, start with [Observations](USAGE.md#observations): require explicit
+  `subresources` on every read and implement `verifyObserverAccess()` with `observerAccessVerifier`,
+  or by hand with the same obligations (parse and reject unknown IDs, check every ID per observer,
+  throw when access cannot be determined). Choose the [reporting and verification strategies](USAGE.md#choosing-reporting-and-verification-strategies)
+  per disclosure, including account-private discovery, individual ACLs, and derived or hierarchical reads.
+  Follow the [new-gatekeeper observer contract](USAGE.md#new-gatekeeper-observer-contract),
+  including the required empty `getHistoricalSubresources()` export and no-op add/remove methods.
+  Legacy admission/tracking strategies are for existing-code migration only.
 - For details attached to one class, function, option, or error, read that export's JSDoc.
 
 Import from the narrow subpath:
@@ -77,7 +84,7 @@ import {
 | `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
 | `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
 | `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |
-| `./cache` | Authority-partitioned Durable Object TTL caching. | Provider reads repeat and reconnects must fence stale fills. |
+| `./cache` | Authority-partitioned Durable Object TTL caching, one key at a time or a batch whose misses load together. | Provider reads repeat and reconnects must fence stale fills. |
 | `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
 | `./serial-queue` | FIFO serialization of async operations; a failed one never blocks the next. | Operations on shared state must not interleave, such as preparing changes that each check those queued before them. |
 | `./cursors` | Array, page-number, offset, and continuation-token cursors, with injected simulated rows (`CursorInjection`); `PageHookCursor`, which runs a hook on each page of a cursor the gatekeeper already built; and `SessionGitCache`, a git session's `GitCache` stub holder that advertises returned commit ids. | A session returns more rows than one RPC reply should carry. |
@@ -85,8 +92,10 @@ import {
 | `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
 | `./action-description` | Approval-text builder: prose plus exact typed fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |
 | `./simulation` | Pending-action replay and provisional-ID mapping. | An action continues with simulation and later reads must include its projected effect. |
-| `./observers` | Observer admission strategies, per-read authorization, and `verifyObserverAccess()` over a batched ACL oracle. | A gatekeeper implements its required observer methods, or reports subresources for the Workshop to check. |
-| `./hook-delivery-queue` | Per-hook queue of pushed events: deduplication, retry with backoff, and bounded delivery runs from the driver's alarm. | A hook driver delivers provider pushes through `HookInitiator.startHook()`. |
+| `./observers` | `observerAccessVerifier` for explicit per-observation access dependencies. Legacy admission strategies, trackers and `ObservationGate` remain for existing-code migration only. | A new gatekeeper checks every reported dependency through its observer's verifier, or existing code must preserve historical enforcement during migration. A typed observation helper reports subresources directly, without a gate. |
+| `./subresource-ids` | `GLOBAL_SUBRESOURCE_ID` (`"global"`) for [connection-only access](USAGE.md#connection-only-access-global) on a deployment-fixed service instance, plus canonical structured resource IDs. | Report access dependencies and decode them in `verifyObserverAccess()`. Structured IDs use an optional product-family namespace and `name`/`id` fragments, tenant-qualified unless deployment configuration fixes the tenant; bounds are in `ObservationDescription.subresources`. |
+| `./hook-registry` | `HookRegistry`: a driver's enabled hooks (`reg:`/`caps:` records and stub disposal) over a `HookDeliveryQueue`, delivering each due message through `HookInitiator.startHook()` to the hook's `HookDelivery` stub. | A hook driver fans each provider push out to the hooks enabled against it, queued per hook, and their bindings decide what they receive. |
+| `./hook-delivery-queue` | Per-hook queue of pushed events: deduplication, retry with backoff, and bounded delivery runs from the driver's alarm. | A driver delivers some other way than `HookRegistry`, which already owns one. A driver on the registry still takes `DELIVERED_RETENTION_MS` and `disposeStubs` from here. |
 | `./oauth-client` | OAuth 2.0 token-endpoint client, PKCE, and refresh adapter. | A gatekeeper exchanges, refreshes, or revokes OAuth 2.0 tokens. |
 | `./preview-oauth` | Signed OAuth state and stable-to-preview callback relay. | Preview Workers share one callback registered with the OAuth provider. |
 | `./endpoint` | User-supplied provider endpoint normalization, and agent-supplied path-segment encoding (`pathSegment`, `pathSegments`). | A user enters a self-hosted provider URL, or an agent-supplied id goes into a request path. |

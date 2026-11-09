@@ -14,7 +14,7 @@ import type { XGatekeeperImplProps } from "../../src/x-env.js";
 
 export { default } from "../../src/x.js";
 export * from "../../src/x.js";
-import { GatekeeperUserImpl, XVerifier } from "../../src/x.js";
+import { GatekeeperUserImpl, XGatekeeperImpl, XVerifier } from "../../src/x.js";
 
 /**
  * The account entrypoint, reachable for tests. Under the capnweb-validate *vite* plugin, which
@@ -97,7 +97,18 @@ type GatekeeperFacet = {
   revertAction(actionId: number): Promise<unknown>;
   addObserver(id: string, verifier: unknown): Promise<void>;
   removeObserver(id: string): Promise<void>;
+  verifyObserverAccess(observers: { id: string; verifier: unknown }[], subresources: string[]):
+    Promise<{ allowedObserverIds: string[] }>;
+  getHistoricalSubresources(): Promise<string[]>;
+  putTestStorage(key: string, value: unknown): void;
 };
+
+// Installed only in this test Worker, to seed what an earlier version stored. The exported class
+// remains the production implementation, with its real capnweb-validated RPC surface.
+(XGatekeeperImpl.prototype as unknown as Pick<GatekeeperFacet, "putTestStorage">).putTestStorage =
+  function(this: { ctx: DurableObjectState }, key: string, value: unknown): void {
+    this.ctx.storage.kv.put(key, value);
+  };
 
 class NullGitCache extends RpcTarget {}
 
@@ -133,22 +144,26 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       Promise<Outcome<unknown>> {
     return await outcome(async () => {
       const session = await this.#gatekeeper(facetName, props).startSession(this.#queue(facetName));
+      // Every capability a step returned and the scenario walked on from, the session's included.
+      const owned: Callable[] = [session];
       try {
         let target: Callable = session;
         for (const [index, [method, ...args]] of steps.entries()) {
           const result = await target[method](...args);
           if (index === steps.length - 1) {
             if (options.pages === undefined) return result;
-            const cursor = result as { next(): Promise<unknown[] | null> };
+            const cursor = result as Callable & { next(): Promise<unknown[] | null> };
+            owned.push(cursor);
             const pages: unknown[][] = [];
             for (let page; pages.length < options.pages && (page = await cursor.next()) !== null;) pages.push(page);
             return pages;
           }
           target = result as Callable;
+          owned.push(target);
         }
         return undefined;
       } finally {
-        session[Symbol.dispose]?.();
+        for (const capability of owned.toReversed()) capability[Symbol.dispose]?.();
       }
     });
   }
@@ -188,6 +203,24 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       Promise<Outcome<void>> {
     const verifier = this.#exports.TestVerifier({ props: { userObjectId: observerUserObjectId } });
     return await outcome(() => this.#gatekeeper(facetName, props).addObserver(observerId, verifier));
+  }
+
+  /** `verifyObserverAccess` with each observer's verifier minted for its account. */
+  async verifyObserverAccess(facetName: string, props: GatekeeperProps,
+                             observers: { id: string; userObjectId: string }[], subresources: string[]):
+      Promise<Outcome<{ allowedObserverIds: string[] }>> {
+    const minted = observers.map(({ id, userObjectId }) =>
+      ({ id, verifier: this.#exports.TestVerifier({ props: { userObjectId } }) }));
+    return await outcome(() => this.#gatekeeper(facetName, props).verifyObserverAccess(minted, subresources));
+  }
+
+  async historicalSubresources(facetName: string, props: GatekeeperProps): Promise<Outcome<string[]>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).getHistoricalSubresources());
+  }
+
+  /** Writes `key` into the facet's storage, as an earlier version of the gatekeeper would have. */
+  async putStorage(facetName: string, props: GatekeeperProps, key: string, value: unknown): Promise<void> {
+    await this.#gatekeeper(facetName, props).putTestStorage(key, value);
   }
 
   /** Restarts the gatekeeper, as an eviction would: its storage stays, its memory does not. */

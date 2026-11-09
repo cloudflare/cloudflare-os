@@ -160,7 +160,7 @@ export async function restartWorkspace(baseUrl: URL, ws: RpcStub<Overseer>): Pro
   const [collaborator] = nextUsernames("restartcollaborator");
   using publicApi = connect(baseUrl);
   using _api = await signUp(publicApi, collaborator);
-  const added = await ws.addCollaborator(collaborator, "build");
+  const added = await ws.addCollaborator(collaborator, "workspace");
   if (!added) throw new Error(`Failed to share the workspace with ${collaborator}`);
   await ws.removeCollaborator(added.profile.id, []);
 }

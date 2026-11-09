@@ -49,7 +49,7 @@ async function installOne(env: InstallEnv, entry: BundledBlueprint)
     : Promise<BlueprintPublicInfo> {
   // Packed the way a published release is, which checks the files against everything a reader
   // will demand of them: a blueprint that installs is one that instantiates.
-  let {commitId, objects} = await buildSnapshotRelease(new Map(entry.files));
+  let {commitId, objects} = buildSnapshotRelease(new Map(entry.files));
   let pack = await buildReleasePack(oid => objects.get(oid), commitId);
 
   let installed: BlueprintMetadata = {

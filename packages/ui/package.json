@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
-    "motion": "^14.3.0"
+    "motion": "^14.7.1"
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.16.0",
@@ -32,7 +32,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "jsdom": "^26.1.0",
-    "motion": "^14.3.0",
+    "motion": "^14.7.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "catalog:",

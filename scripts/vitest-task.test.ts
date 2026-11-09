@@ -20,6 +20,7 @@ const HAND_DECLARED_CONFIGS = [
   "packages/workshop-backend/vite.config.ts",
   "packages/integration-tests/vite.config.ts",
   "scripts/vite.config.ts",
+  "packages/api-cli/vite.config.ts",
 ];
 
 const [DISABLE_VAR] = TESTS_WITH_TIMEOUT_ENV;
@@ -136,6 +137,13 @@ describe("the watchdog environment policy", () => {
     ]);
     for (const variable of TESTS_WITH_TIMEOUT_ENV) {
       assert.ok(vitestTask("vitest run").cache.env.includes(variable));
+    }
+  });
+
+  // What `property-runs.ts` reads. A suite whose task dropped it would run a fresh seed in CI.
+  it("is joined by the property suites' seed on every generated test task", () => {
+    for (const task of [vitestTask("vitest run"), vitestTaskWithExclusions("vitest run", [])]) {
+      assert.ok(task.cache.env.includes("FAST_CHECK_SEED"));
     }
   });
 

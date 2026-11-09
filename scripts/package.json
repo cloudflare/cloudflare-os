@@ -41,10 +41,14 @@
       "types": "./worker-config.ts",
       "import": "./worker-config.ts"
     },
+    "./property-runs": {
+      "types": "./property-runs.ts",
+      "import": "./property-runs.ts"
+    },
     "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
-    "@cloudflare/config": "0.20.0",
+    "@cloudflare/config": "0.28.1",
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
     "typescript6": "catalog:",

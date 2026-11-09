@@ -187,6 +187,7 @@ function session(scope: OutlookScope, access: OutlookAccessLevel = "read", optio
   const host: OutlookSessionHost = {
     scope, access,
     owner: async () => ME,
+    fixesTenant: true,
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as OutlookAction })) as never,

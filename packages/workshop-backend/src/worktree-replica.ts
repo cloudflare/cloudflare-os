@@ -19,9 +19,11 @@ import type {
   WorktreeCommand, WorktreeSnapshot, WorktreeState,
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
-import { UnreadableContentError } from "./git-cache";
+import {
+  commitIdentityForAuthor, TreeShapeError, UnreadableContentError, type FileEntry,
+} from "./git-cache";
 import { encodeGitTree, parseGitTree, validateGitOid, type GitTreeEntry } from "./git-codec";
-import { commitIdentityForAuthor, threeWayMerge, TreeShapeError, type FileEntry } from "./git-store";
+import { threeWayMerge } from "./three-way-merge";
 import { worktreeChanges, type WorktreeSessionHost } from "./worktree-session";
 
 /** A file entry on one side of a tree diff, with the tree holding it (for pull hints). */
@@ -87,7 +89,7 @@ export class WorktreeReplicas {
       let result = current.tree === from ? { tree, conflicts: [] }
           : await this.#merge(from, tree, submitted, current.tree);
       let commit = result.tree === current.tree ? undefined
-          : await this.host.gitStore.writeCommitForTree(result.tree, {
+          : this.host.gitCache.writeCommitForTree(result.tree, {
             parents: [current.base], author: commitIdentityForAuthor(this.author),
             message: "Command result", timestamp: new Date(),
           });
@@ -117,7 +119,7 @@ export class WorktreeReplicas {
     let base = this.turn.getBaseCommit(worktreeId);
     if (base === undefined) throw new Error("This worktree is not part of the current session.");
     let revision = this.turn.getRevision(worktreeId);
-    let tree = await this.host.gitStore.writeChangedTree(
+    let tree = await this.host.gitCache.writeChangedTree(
         base, worktreeChanges(this.turn, worktreeId));
     return { base, revision, tree };
   }
@@ -166,7 +168,7 @@ export class WorktreeReplicas {
     for (let { path, mode } of texts) {
       let text = merged.files.get(path);
       let blob = text === undefined ? undefined
-          : await this.host.gitStore.writeBlob(new TextEncoder().encode(text));
+          : this.host.gitCache.writeBlob(new TextEncoder().encode(text));
       changes.set(path, blob === undefined ? null : { mode, oid: blob.oid });
     }
     conflicts.push(...merged.conflictPaths);
@@ -174,9 +176,9 @@ export class WorktreeReplicas {
       // Deletions first, so that a file the workspace replaced with a directory, or a directory
       // with a file, is gone before its replacement is written.
       let deletions = new Map([...changes].filter(([, entry]) => entry === null));
-      let deleted = await this.host.gitStore.writeChangedTreeOf(tree, deletions);
+      let deleted = await this.host.gitCache.writeChangedTreeOf(tree, deletions);
       let writes = new Map([...changes].filter(([, entry]) => entry !== null));
-      return { tree: await this.host.gitStore.writeChangedTreeOf(deleted, writes), conflicts };
+      return { tree: await this.host.gitCache.writeChangedTreeOf(deleted, writes), conflicts };
     } catch (error) {
       if (!(error instanceof TreeShapeError)) throw error;
       throw new Error("The command's result can't be merged with the worktree's concurrent " +
@@ -250,12 +252,9 @@ export class WorktreeReplicas {
         let change = { from: file(x, aTree), to: file(y, bTree) };
         if (change.from === undefined && change.to === undefined) continue;
         if (submitted && change.to !== undefined) {
-          // Reading a stored blob checks its type; the rest are pulled together below.
-          if (cache.hasLocalObject(change.to.oid)) {
-            await cache.ensureObject(change.to.oid, { type: "blob" });
-          } else {
-            missing.add(change.to.oid);
-          }
+          // A stored blob's type is checked without reading it (blobSize throws for another
+          // type); the rest are pulled together below.
+          if (cache.blobSize(change.to.oid) === undefined) missing.add(change.to.oid);
         }
         changes.set(path, change);
       }

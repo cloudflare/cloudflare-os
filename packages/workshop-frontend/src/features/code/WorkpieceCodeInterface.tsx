@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import { Banner, useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
-  FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
+  Overseer, WorkpieceId, WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange, FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
@@ -14,7 +14,7 @@ import type {
   ChatCodeChanges, ChatLiveChangeRows, ChatLiveEditPreviews, EditPreviewEvent,
 } from '../../ChatInterface'
 import { ChatOtClient, type ChatContentReader, type RemoteFileEvent } from './otClient'
-import { commitFileStore, type CommitFileReader } from './commitFileStore'
+import { commitFileStore, type CommitFile, type CommitFileReader } from './commitFileStore'
 import { useChangedPaths, useCommitTree, useFilesAtCommit } from './useCommitContent'
 import {
   EMPTY_BROWSER_TREE, browserTreePaths, buildBrowserTree, deriveChanges, mergedPathStatuses,
@@ -1368,7 +1368,7 @@ export default function WorkpieceCodeInterface({
 
   // The open file's text as displayed -- what the agent reads: the overlay's (preview, chat
   // content, or removed), else the content base's. Undefined while the base read is in flight.
-  let activeResolved: FileAtCommit | undefined = { kind: 'absent' }
+  let activeResolved: CommitFile | undefined = { kind: 'absent' }
   if (activeFile !== null) {
     const overlaid = overlayText(activeFile)
     if (overlaid !== undefined) {
@@ -1380,7 +1380,7 @@ export default function WorkpieceCodeInterface({
     }
   }
   const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
-  // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
+  // A base entry with no readable text (symlink, submodule, binary) shows its reason in place
   // of content, read-only.
   const activeFileUnreadable = activeResolved?.kind === 'unreadable'
     ? activeResolved.message : null

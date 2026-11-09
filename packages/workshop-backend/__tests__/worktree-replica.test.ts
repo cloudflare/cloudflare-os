@@ -6,8 +6,8 @@ import {buildGitFetchRequest, demuxGitFetchResponse, encodePktLine, FLUSH_PKT, D
   from "@gadgets/gatekeeper-kit/git-transport";
 import {abortAllDurableObjects} from "cloudflare:test";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type TranscriptContext} from "@earendil-works/pi-ai";
-import {buildPackStream, concatBytes, decodePackStream, gitObjectOid, parseGitTree, type PackableObject}
-  from "../src/git-codec";
+import {buildPackStream, concatBytes, decodePackStream, encodeGitTree, gitObjectOid, parseGitTree,
+  type PackableObject} from "../src/git-codec";
 import {runAgent} from "../src/agent";
 import {byteStream} from "./git-cache-fixtures";
 import {worktreeGitPull} from "../src/worktree-git";
@@ -19,7 +19,7 @@ type Impl = OverseerDurableObject["impl"];
 const author = {type: "agent" as const, id: "test", name: "Test"};
 async function setup(impl: Impl) {
   impl.storage.chatMeta.put({id: 1, title: "Mounted worktree", started: new Date(), lastActive: new Date()});
-  const commit = await impl.gitStore.writeFilesAsCommit(new Map([
+  const commit = await impl.gitCache.writeFilesAsCommit(new Map([
     ["a.txt", "abc"], ["untouched.txt", "base"], ["raw.bin", "\0binary\xff"],
   ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
   const tree = await impl.createWorktree("Repo", 1, commit);
@@ -84,7 +84,7 @@ async function preamble(reader: ReadableStreamDefaultReader<Uint8Array>) {
 // Commit `files` on top of the worktree's head, as the agent's commit() does.
 async function commitOnHead(impl: Impl, id: number, files: [string, string][]) {
   const previousHead = impl.getWorktreeRecord(id).headCommit;
-  const commit = await impl.gitStore.writeChangedFilesAsCommit(new Map(files), {
+  const commit = await impl.gitCache.writeChangedFilesAsCommit(new Map(files), {
     treeBase: previousHead, parents: [previousHead], author: {name: "Test", email: "test@example.com"},
     message: "Explicit worktree commit", timestamp: new Date(),
   });
@@ -97,10 +97,10 @@ async function commitOnHead(impl: Impl, id: number, files: [string, string][]) {
 // merge does.
 async function mergeOnHead(impl: Impl, id: number, ids: number[]) {
   const previousHead = impl.getWorktreeRecord(id).headCommit;
-  const merged = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "abc"], ["other.txt", "other"]]),
+  const merged = await impl.gitCache.writeFilesAsCommit(new Map([["a.txt", "abc"], ["other.txt", "other"]]),
     {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Other", timestamp: new Date(0)});
   const sources = await connectGitSource(impl, merged, ids);
-  const commit = await impl.gitStore.writeChangedFilesAsCommit(new Map([["other.txt", "other"]]), {
+  const commit = await impl.gitCache.writeChangedFilesAsCommit(new Map([["other.txt", "other"]]), {
     treeBase: previousHead, parents: [previousHead, merged], author: {name: "Test", email: "test@example.com"},
     message: "Merge", timestamp: new Date(),
   });
@@ -362,7 +362,7 @@ async function withCommands(test: (impl: Impl, id: number, base: string) => Prom
   await runInDurableObject(testEnv.TEST_OVERSEER.getByName(name ?? crypto.randomUUID()), async instance => {
     const impl = instance.impl;
     impl.storage.chatMeta.put({id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0)});
-    const base = await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(BASE)),
+    const base = await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(BASE)),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
     const {id} = await impl.createWorktree("Repo", 1, base);
     await impl.commitAgentStep(1, author, [], {changes: [], createdGadgets: [], addedBindings: [],
@@ -432,18 +432,39 @@ async function commandResult(impl: Impl, from: string,
     edits: Record<string, string | null | {mode: string; text: string}>, keep = false) {
   // Deletions first, so that a file can become a directory.
   const deleted = Object.keys(edits).filter(path => edits[path] === null);
-  let tree: string = await impl.gitStore.writeChangedTreeOf(from, new Map(deleted.map(path => [path, null])));
+  let tree: string = await impl.gitCache.writeChangedTreeOf(from, new Map(deleted.map(path => [path, null])));
   const changes = new Map<string, unknown>();
   for (const [path, edit] of Object.entries(edits)) {
     if (edit !== null) changes.set(path, typeof edit === "string" ? edit
-      : {mode: edit.mode, oid: (await impl.gitStore.writeBlob(enc(edit.text))).oid});
+      : {mode: edit.mode, oid: (await impl.gitCache.writeBlob(enc(edit.text))).oid});
   }
-  tree = await impl.gitStore.writeChangedTreeOf(tree, changes as never);
+  tree = await impl.gitCache.writeChangedTreeOf(tree, changes as never);
+  return packedResult(impl, from, tree, keep);
+}
+
+// `commandResult` for a tree already in the store.
+function packedResult(impl: Impl, from: string, tree: string, keep = false) {
   const old = reachable(impl, from);
   const objects = [...reachable(impl, tree)].filter(oid => !old.has(oid))
     .map(oid => ({oid, ...impl.gitCache.readLocalObject(oid)!}));
   if (!keep) for (const {oid} of objects) impl.storage.gitObjects.delete(oid);
   return {tree, pack: () => buildPackStream(objects.length, (async function* () { yield* objects; })())};
+}
+
+// Tree `tree` with a file holding `text` at `path`, written by hand: the store refuses to write
+// the names Git reserves, which a container's tree may still hold.
+function treeWithFile(impl: Impl, tree: string | undefined, path: string, text: string): string {
+  const [name, ...rest] = path.split("/");
+  const entries = tree === undefined ? [] : parseGitTree(impl.gitCache.readLocalObject(tree)!.payload);
+  const old = entries.find(entry => entry.name === name);
+  const object = rest.length ? {type: "tree" as const, oid: treeWithFile(impl, old?.oid, rest.join("/"), text)}
+    : {type: "blob" as const, payload: enc(text)};
+  const oid = "oid" in object ? object.oid : gitObjectOid("blob", object.payload);
+  if (!("oid" in object)) impl.gitCache.importObjects([object]);
+  const payload = encodeGitTree([...entries.filter(entry => entry !== old),
+    {mode: rest.length ? "40000" : "100644", name, oid}]);
+  impl.gitCache.importObjects([{type: "tree", payload}]);
+  return gitObjectOid("tree", payload);
 }
 
 // A tree's files, by path.
@@ -486,8 +507,8 @@ describe("worktree commands", () => {
     // The step re-rooted the chat's pin at a hidden commit of it, on the accepted commit.
     const [pin] = pins(impl);
     expect(pin).toEqual({gadgetId: id, baseCommit: expect.any(String), mergedCommit: base});
-    expect(await impl.gitStore.commitTree(pin.baseCommit)).toBe(result);
-    expect((await impl.gitStore.readCommitObject(pin.baseCommit)).parent).toEqual([base]);
+    expect(await impl.gitCache.commitTree(pin.baseCommit)).toBe(result);
+    expect((await impl.gitCache.readCommitObject(pin.baseCommit)).parents).toEqual([base]);
     expect(await turn(impl, [[read("a.txt"), read("new/d.txt")]])).toEqual(["one\ntwo\nthree\nbuffered\n", "dee\n"]);
     // Accepting keeps the executable bit.
     expect(await impl.mergeChanges(1, {profile: {type: "user", id: "alice@example.com", name: "Alice"}}, "alice-user-do"))
@@ -567,12 +588,14 @@ describe("worktree commands", () => {
         expect(second.tree).toBe(first.tree);
         const one = await commandResult(impl, first.tree, {"b.txt": "bee\none\n"}, true);
         const two = await commandResult(impl, first.tree, {"a.txt": "one\ntwo\nthree\ntwo\n"}, true);
-        // The agent's code writes while the first submission is writing its commit.
-        const writeCommit = impl.gitStore.writeCommitForTree.bind(impl.gitStore);
+        // The agent's code writes while the first submission is writing the tree of the
+        // worktree's current files.
+        const writeTree = impl.gitCache.writeChangedTree.bind(impl.gitCache);
         let wrote = false;
-        impl.gitStore.writeCommitForTree = async (...args) => {
+        impl.gitCache.writeChangedTree = async (...args) => {
+          const tree = await writeTree(...args);
           if (!wrote) { wrote = true; await repo.writeFile("dir/c.txt", "written\n"); }
-          return writeCommit(...args);
+          return tree;
         };
         await Promise.all([first.command.submit(one.tree, one.pack()), second.command.submit(two.tree, two.pack())]);
         return "ran";
@@ -712,8 +735,9 @@ describe("worktree commands", () => {
     runCode(impl, id, {
       command: async repo => {
         const snapshot = await repo.snapshot();
-        for (const edits of [{"link": {mode: "120000", text: "a.txt"}}, {".git/config": "x\n"}, {"sub/.GIT": "x\n"}]) {
-          const command = await commandResult(impl, snapshot.tree, edits);
+        for (const command of [await commandResult(impl, snapshot.tree, {"link": {mode: "120000", text: "a.txt"}}),
+          packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, ".git/config", "x\n")),
+          packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, "sub/.GIT", "x\n"))]) {
           refused.push(await snapshot.command.submit(command.tree, command.pack()).catch((error: Error) => error.message));
         }
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "lost\n"});

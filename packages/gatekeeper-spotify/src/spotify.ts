@@ -5,6 +5,7 @@ import {
   stripTrailingSlashes,
   workerVersionTag,
   type AccountDescription,
+  type ActionKind,
   type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -57,6 +58,7 @@ import type {
   SpotifyUserRef,
   SpotifyPlaylistDetailsUpdate,
 } from "./types";
+import { autoApprovableKinds, autoApprovalOf } from "./action-kinds";
 import TYPES_CODE from "./types.txt";
 import SPOTIFY_LOGO_SVG from "./spotify-logo.svg";
 import SPOTIFY_ACCOUNT_CONFIGURATOR_HTML from "./generated/account-configurator-ui.txt";
@@ -96,7 +98,7 @@ type StoredCredentials = {
   scopes: string[];
 };
 
-type ResourceKind = "account" | "playlist";
+export type ResourceKind = "account" | "playlist";
 
 type SpotifyGatekeeperImplProps = {
   userObjectId: string;
@@ -851,7 +853,7 @@ type PlayerAction = BaseAction & { type: "player"; command: PlayerCommand };
 type PlaylistTrackAction =
   PlaylistAddAction | PlaylistRemoveAction | PlaylistReorderAction | PlaylistReplaceAction;
 
-type SpotifyAction =
+export type SpotifyAction =
   | SaveTracksAction | RemoveSavedTracksAction | SaveAlbumsAction | RemoveSavedAlbumsAction
   | FollowArtistsAction | UnfollowArtistsAction
   | PlaylistCreateAction | PlaylistTrackAction | PlaylistDetailsAction
@@ -1175,8 +1177,8 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKinds(this.ctx.props.resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<SpotifyAccountSession | SpotifyPlaylist> {
@@ -1812,12 +1814,22 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
     try {
       // The text comes from the prepared payload, not the caller, so it always shows what applies.
-      await queue.submitAction(action.approvalId, { ...presentation, ...describeSpotifyAction(action) });
+      await queue.submitAction(action.approvalId,
+        { ...presentation, ...describeSpotifyAction(action), ...autoApprovalOf(action) });
     } catch (error) {
+      // An auto-approval can apply the action before the reply arrives, so a record the overseer
+      // has moved past staged (being applied, applied, or failed and kept for a retry) proves it
+      // received the action: failing would invite a repeated write, and deleting would strand the
+      // retry.
+      const state = this.#getRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;
     }
-    const record = this.#requireRecord(action.approvalId);
+    // For the same reason the action may already be applied (and retired) or failed by now; only a
+    // record still staged becomes pending.
+    const record = this.ctx.storage.kv.get<StoredActionRecord>(this.#actionKey(action.approvalId));
+    if (record?.state !== "staged") return;
     record.state = "pending";
     this.ctx.storage.kv.put(this.#actionKey(action.approvalId), record);
     this.#invalidatePendingCache();
@@ -1872,11 +1884,20 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
 
   async applyAction(actionId: number): Promise<void> {
     const record = this.#requireRecord(actionId);
+    // The overseer records completion only after this returns, so an apply that already ran can be
+    // delivered again after a lost reply or a restart; it has nothing left to do.
+    if (record.state === "approved") return;
     // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
     if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
       throw new Error(`Spotify action ${actionId} is no longer pending.`);
     }
     const action = record.action;
+    if (record.state === "staged") {
+      // Being applied proves the overseer received the action, which a lost submit reply relies on.
+      record.state = "pending";
+      this.ctx.storage.kv.put(this.#actionKey(actionId), record);
+      this.#invalidatePendingCache();
+    }
     try {
       await this.#performAction(action, record);
     } catch (error) {

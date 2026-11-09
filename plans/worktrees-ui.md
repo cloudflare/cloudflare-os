@@ -1,5 +1,11 @@
 # Plan: Worktrees in the Workshop UI
 
+This is the original plan. Since it was written, `GitStore` was replaced by
+`WorkspaceGitCache` and `MAX_GIT_OBJECT_SIZE` was removed: no blob is refused for its size
+(see [chunked git storage](chunked-git.md)), and `readFilesAtCommit` streams a file over
+`MAX_BUFFERED_BLOB_SIZE` rather than reporting it unreadable. The text below is updated to
+match where it states current behaviour.
+
 ## Goal
 
 Make worktrees (plans/worktrees.md) visible and reviewable in the Workshop: a worktree
@@ -87,7 +93,7 @@ Backend:
 - `getCodeAtCommit` (`:10899`) → non-faulting whole-tree `readCommitFiles`; use role
   denies (`:12266`). Its only frontend caller is `GadgetCodeInterface`'s
   `commitFilesCache` (verify no other caller before deleting it).
-- Constants: `MAX_GIT_OBJECT_SIZE` 1 MiB, `EAGER_BLOB_LIMIT` 64 KiB (`git-cache.ts:75,92`);
+- Constants: `EAGER_BLOB_LIMIT` 64 KiB (`git-cache.ts:75,92`);
   `MAX_FILE_TEXT_LENGTH` 512K UTF-16 units (`code-change.ts:126`).
 
 ## Locked decisions
@@ -235,8 +241,7 @@ Backend:
 - **No worktree operations from the UI in v1** (commit/push/branches/log). Editing is in
   scope because ingestion already exists.
 - **Limits are surfaced, not worked around.** Symlinks/submodules list with their kind and
-  don't open; binary or oversized (`MAX_GIT_OBJECT_SIZE`) blobs open to a placeholder
-  naming the reason; a readable file longer than `MAX_FILE_TEXT_LENGTH` opens read-only.
+  don't open; binary blobs open to a placeholder naming the reason; a readable file longer than `MAX_FILE_TEXT_LENGTH` opens read-only.
 
 ## Design
 
@@ -268,7 +273,7 @@ Every export doc-commented to the kernel bar.
     FileAtCommit][]>`, `FileAtCommit = { kind: "text"; text: string } | { kind: "absent" } |
     { kind: "unreadable"; message: string }`. `absent` covers a missing path and a directory
     path; `unreadable` carries
-    the descriptive message for symlink / submodule / binary / oversized content. One
+    the descriptive message for symlink / submodule / binary content. One
     batched blob pull for all missing blobs. Pull/provenance failures throw the whole call
     (transient or actionable, not per-file facts). Caps: `MAX_READ_FILES_PER_CALL` paths,
     and the server returns entries in request order **stopping early once accumulated
@@ -342,7 +347,7 @@ Every export doc-commented to the kernel bar.
   `deadWorktreeIds` key becomes inert (delete it in the next storage-version bump). Keep
   the `readGadgetFiles` defense — it guards a gadget-only path.
 - Delete `getCodeAtCommit` from `OverseerInterface` and `UseOverseerInterface`.
-  `GitStore.readCommitFiles` stays for its internal callers.
+  `WorkspaceGitCache.readCommitFiles` stays for its internal callers.
 - Reads in `OverseerInterface` where `getCodeAtCommit` was, `validateOid`'d:
   - `listTree` → new `WorkspaceGitCache.readCommitTree(commit): Promise<TreeNode[]>`, the
     nested sibling of `listCommitTreePaths` (same eager-tree `ensureObject` walk, emitting
@@ -549,8 +554,8 @@ can't yet show.
    Workerd tests: `listTree` nesting and all five kinds against a real-git fixture tree
    (git order preserved; `@validateRpc` compiles the recursive type), `absent` for
    missing/dir paths,
-   `unreadable` for symlink/submodule/binary/oversized, one pull per batch (counted on a
-   mock gatekeeper), per-oid too-large tolerance, byte-budget early stop, path cap, oid
+   `unreadable` for symlink/submodule/binary, one pull per batch (counted on a
+   mock gatekeeper), byte-budget early stop, path cap, oid
    validation.
 2. **backend: worktrees pin on first modification** (§2a) with `proposedChangeWorkpieceIds`
    still excluding worktrees (one line, removed in commit 7). Tests per §2a.

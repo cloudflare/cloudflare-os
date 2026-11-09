@@ -21,3 +21,16 @@ export type ManagementSchedulePage = {
   schedules: ManagementSchedule[];
   cursor?: string;
 };
+
+/**
+ * The read-only management capability the Scheduled Tasks app UI holds: the account's schedules,
+ * across all of its workspaces, without the authority to change them. Hook enablement stays in the
+ * Workshop's Connections UI.
+ */
+export interface ScheduleManagementApi {
+  /**
+   * Lists the account's scheduled tasks, across its workspaces, one page of at most 100 at a time,
+   * filtered by `options`; pass a page's `cursor` back for the next.
+   */
+  list(options?: ManagementListOptions): Promise<ManagementSchedulePage>;
+}

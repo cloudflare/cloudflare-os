@@ -37,7 +37,19 @@ through logs and errors, then everything else.
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
-  `readAdminConfig(env)`. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+  `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
+  for the audit log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The
+  admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` is env-driven, like auth config. Flag code that enforces or
+  prunes with `adminAuditRetentionDays` without `adminAccessPolicy()`.
+- A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
+  `#mutateAdminConfig()`, or records explicitly before any other write.
+- `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
+  (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
+  harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump
+  against casual use: a client can send any User-Agent, so never rely on it for authorization; the
+  API's own checks are the boundary. Flag code that grants anything by User-Agent, and any
+  deployment config that sets `WORKSHOP_ENVIRONMENT`.
 - In `packages/mcp-shared/`, `tools.ts` is the trust boundary: nothing outside it may read a tool's
   annotations, a tool is an observation only when the server declares `readOnlyHint: true`, and
   auto-applying a write additionally requires a `vetted` endpoint. Every SDK OAuth operation must be
@@ -52,7 +64,16 @@ Correctness is not enough. Pressure-test the agent-facing API
 (`packages/gatekeeper-*/src/*types.d.ts`): does the shape make sense, does it cover the most common
 user stories, what would you do differently? Check that the seams (resource granularities, bindings,
 sessions) partition authority along the lines users actually grant. The checklist is "Reviewing a
-gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
+gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`. Check every action's `autoApprovable`
+verdict against that skill's "Action kinds and auto-approval" policy.
+
+For **new gatekeepers**, enforce that checklist's "Observer protocol" items, including a read-only
+`getHistoricalSubresources()` returning `[]`. The current `Gatekeeper` interface enforces none of
+them, so code that type-checks can still violate them. For **existing migrations**,
+preserve old enforcement until every affected read reports complete requirements and a shipped
+kernel importer has committed the complete historical requirements exported through
+`getHistoricalSubresources()` to the observer ledger. The current kernel does not consume this
+export yet; do not apply the new-gatekeeper empty-history/no-op rule to existing data.
 
 ## Logging, errors and secrets
 

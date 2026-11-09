@@ -430,8 +430,10 @@ nothing scheduled that week.`,
         const otherWeeks = SEEDED.filter(window => !WEEK_41.includes(window));
         const listsOtherWeeks = bullets.some(bullet => otherWeeks.some(window =>
           bullet.toLowerCase().includes(window.reason.toLowerCase())));
+        // The gadget's title (checked above) names the plan; the document's own stored title is
+        // not shown anywhere, so it isn't required to match.
         return {
-          pass: document.title === PLAN && headings.length === expected.length &&
+          pass: headings.length === expected.length &&
             expected.every((service, index) => headings[index]?.includes(service)) && bulletsMatch &&
             !listsOtherWeeks,
           evidence: { title: document.title, sections, expected },

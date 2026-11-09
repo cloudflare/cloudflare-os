@@ -60,6 +60,8 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+/** What an enabled hook delivers its events through, likewise. */
+export { GatekeeperHookLoopback } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather

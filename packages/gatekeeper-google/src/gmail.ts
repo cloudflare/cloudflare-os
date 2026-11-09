@@ -57,9 +57,11 @@ import {
 import {
   ActionDescriptionBuilder, buildDescription, plainInline, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
+import {formatSubresourceId, parseSubresourceId} from "@gadgets/gatekeeper-kit/subresource-ids";
 import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
 import {CursorPager} from "./cursor";
 import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-approval-queue";
+import {verifyGoogleSubresourceAccess} from "./google-verifier-types";
 import {
   UNDELIVERED_GMAIL_LABELS, type GmailHookDelivery, type GmailHookParams, type GmailMessageHookTarget,
 } from "./gmail-hooks";
@@ -91,6 +93,31 @@ export type GmailGatekeeperImplProps = {
   searchQuery?: string;
   labelName?: string;
 };
+
+/** The namespace of the subresource IDs Gmail reads report. */
+export const GMAIL_SUBRESOURCE_NAMESPACE = "gmail";
+
+/**
+ * The subresource ID every read through a Gmail binding reports: `gmail/user/<sub>`, naming the
+ * mailbox by its owner as Gmail's REST API does (`users/{userId}`), but by the Google account's
+ * stable subject rather than an address, which can change. A mailbox is private to its owner, so
+ * only an observer whose account is that same Google account can read it.
+ */
+function gmailUserSubresourceId(subject: string): string {
+  return formatSubresourceId({
+    namespace: GMAIL_SUBRESOURCE_NAMESPACE, fragments: [{name: "user", id: subject}],
+  });
+}
+
+/** The Google account subject a {@link gmailUserSubresourceId} ID names; throws for any other ID. */
+export function parseGmailUserSubresource(id: string): string {
+  const {namespace, fragments} = parseSubresourceId(id);
+  if (namespace !== GMAIL_SUBRESOURCE_NAMESPACE || fragments.length !== 1 ||
+      fragments[0].name !== "user") {
+    throw new Error("Not a Gmail user subresource ID.");
+  }
+  return fragments[0].id;
+}
 
 type GmailSourceAttachment = GmailForwardSnapshotReference & {
   messageId: string;
@@ -286,11 +313,12 @@ function actionKinds(labels: Record<string, string>): ActionKind[] {
 
 function gmailAutoApprovalMetadata(
     action: GmailAction,
-): Partial<Pick<ActionDescription, "actionKind" | "autoApprovable">> {
+): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
   switch (action.type) {
   case "send":
   case "draftSend":
-    return {};
+    // Rule 2: sends mail as the user to people outside the bound mailbox.
+    return {autoApprovable: false};
   case "messageMutation":
     return {
       actionKind: {tag: action.operation, label: MESSAGE_MUTATION_LABELS[action.operation]},
@@ -2018,6 +2046,11 @@ type GmailReadContext = {
   api: GmailApi;
   store: GmailStore;
   selfEmail: string;
+  /**
+   * The mailbox owner's Google account subject, which every read reports (see
+   * gmailUserSubresourceId).
+   */
+  accountSubject: string;
   searchQuery?: string;
   labelId?: string;
   labelName?: string;
@@ -4781,7 +4814,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     return token;
   }
 
-  async #getSelfEmail(): Promise<string> {
+  /** The mailbox's address and its owner's Google account subject, which the binding pins. */
+  async #getAccount(): Promise<{email: string; subject: string}> {
     const cached = this.ctx.storage.kv.get<string>("selfEmail");
     const token = await this.#getAccessToken();
     const [subject, description] = await Promise.all([
@@ -4801,7 +4835,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     }
     if (!pinned) this.ctx.storage.kv.put("gmail:accountSubject", subject);
     this.ctx.storage.kv.put("selfEmail", description.uniqueName);
-    return description.uniqueName;
+    return {email: description.uniqueName, subject};
   }
 
   async #resolveBindingLabel(api: GmailApi): Promise<{id?: string; name?: string}> {
@@ -4881,13 +4915,14 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     if (this.ctx.props.searchQuery !== undefined) {
       validateGmailQueryForGrouping(this.ctx.props.searchQuery);
     }
-    const selfEmail = await this.#getSelfEmail();
-    const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
+    const account = await this.#getAccount();
+    const api = new GmailApi(account.email, opts => this.#getAccessToken(opts));
     const bindingLabel = await this.#resolveBindingLabel(api);
     return {
       api,
       store: new GmailStore(this.ctx.storage),
-      selfEmail,
+      selfEmail: account.email,
+      accountSubject: account.subject,
       searchQuery: this.ctx.props.searchQuery,
       labelId: bindingLabel.id,
       labelName: bindingLabel.name,
@@ -4899,7 +4934,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   #context(read: GmailReadContext, approvalQueue: RpcStub<ApprovalQueue>): GmailContext {
     const ctx: GmailContext = {
       ...read,
-      approvalQueue: new SharedApprovalQueue(approvalQueue.dup()),
+      approvalQueue: new SharedApprovalQueue(
+        approvalQueue.dup(), [gmailUserSubresourceId(read.accountSubject)]),
       subscribe: (threadId, hook) => this.#subscribe(ctx, threadId, hook),
     };
     return ctx;
@@ -4943,7 +4979,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
     this.#applying.add(actionId);
     try {
-      const selfEmail = await this.#getSelfEmail();
+      const selfEmail = (await this.#getAccount()).email;
       const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
 
       await reconcileDraftActionAlias(api, store, initialAction);
@@ -5440,10 +5476,26 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     throw new Error("Gmail actions are not revertible.");
   }
 
+  /**
+   * Refuses every observer: reads made before reads reported their owner's account recorded
+   * nothing to check an observer against.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     throw new Error(
       "Gmail data is private to the connected account owner and cannot be shared with observers.");
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the `gmail/user/<sub>` subresource every read reports, failing the whole call for any
+   * other ID. An observer is allowed only when their account is that same Google account, as their
+   * UserAccount answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+      observers: {id: string; verifier: Fetcher<GatekeeperUserVerifier>}[],
+      subresources: string[]): Promise<{allowedObserverIds: string[]}> {
+    for (const id of subresources) parseGmailUserSubresource(id);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }

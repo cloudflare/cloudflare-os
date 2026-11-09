@@ -11,7 +11,13 @@ const testState = vi.hoisted(() => ({
   nextId: 0,
   uploadBlob: {
     size: 4,
-    arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+    stream: () => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.of(1, 2));
+        controller.enqueue(Uint8Array.of(3, 4));
+        controller.close();
+      },
+    }),
   } as Blob,
 }));
 
@@ -82,7 +88,13 @@ describe("useComposerAttachments", () => {
       new File(["one"], "one.txt", { type: "text/plain" }),
     ]));
     await waitFor(() => attachments[0]?.uploadState === "ready");
-    expect(uploadBlob).toHaveBeenCalledWith(Uint8Array.of(1, 2, 3, 4));
+    // Streamed, with its length for the server to verify.
+    const [upload] = uploadBlob.mock.calls[0];
+    if (upload instanceof Uint8Array) throw new Error("expected a streamed upload");
+    expect(upload.byteLength).toBe(4);
+    const pieces: number[] = [];
+    for await (const piece of upload.stream) pieces.push(...piece);
+    expect(pieces).toEqual([1, 2, 3, 4]);
     expect(attachments[0].ref).toEqual({
       oid: expect.stringMatching(/^[0-9a-f]{40}$/), mimeType: "text/plain", name: "one.txt",
     });

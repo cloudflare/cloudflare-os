@@ -43,7 +43,8 @@ SUPABASE_CLIENT_SECRET=<oauth app client secret>
 ## Notes
 
 - Reads are logged as observations; mutating SQL (`execute()`) is submitted to the approval queue
-  and only runs once a human approves it.
+  and only runs once a human approves it. It is never auto-approved: one statement can be a
+  harmless `INSERT` or a `DROP`, and the gatekeeper has no SQL parser to tell them apart.
 - Mutating SQL is **not** simulated — arbitrary statements cannot be reliably previewed through the
   stateless query endpoint, so a `query()` will not observe an un-approved change. This is
   documented in the API types.

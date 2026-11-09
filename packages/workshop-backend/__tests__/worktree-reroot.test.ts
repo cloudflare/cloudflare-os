@@ -42,7 +42,7 @@ async function withImpl(fn: (impl: any) => Promise<void>, name?: string): Promis
 let commitCounter = 0;
 async function commitFiles(impl: any, files: Record<string, string>, parents: string[] = [])
     : Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: `test commit ${++commitCounter}`,
@@ -377,7 +377,7 @@ describe("reads around a re-root", () => {
 describe("accepting a re-rooted worktree", () => {
   // The worktree's history from its accepted commit, by commit id.
   async function history(impl: any, id: number): Promise<string[]> {
-    let log = await impl.gitStore.readCommitLog(impl.storage.gadgets.get(id).pinBase);
+    let log = await impl.gitCache.readCommitLog(impl.storage.gadgets.get(id).pinBase);
     return log.map((entry: { oid: string }) => entry.oid);
   }
 
@@ -398,7 +398,7 @@ describe("accepting a re-rooted worktree", () => {
     expect(await impl.mergeChanges(CHAT, { profile: USER }, "alice-user-do"))
         .toEqual({ outcome: "merged" });
     let accepted = impl.storage.gadgets.get(id).pinBase;
-    expect(await impl.gitStore.commitTree(accepted)).toBe(await impl.gitStore.commitTree(result));
+    expect(await impl.gitCache.commitTree(accepted)).toBe(await impl.gitCache.commitTree(result));
     expect(await history(impl, id)).toEqual([accepted, base]);
     expect(pins(impl)).toEqual([]);
     expect(await agentReads(impl, ["a.txt", "c.txt"])).toEqual(["one\ncommand\n", "new\n"]);
@@ -410,7 +410,7 @@ describe("accepting a re-rooted worktree", () => {
     expect(await impl.mergeChanges(CHAT, { profile: USER }, "alice-user-do"))
         .toEqual({ outcome: "merged" });
     let accepted = impl.storage.gadgets.get(id).pinBase;
-    expect(Object.fromEntries(await impl.gitStore.readCommitFiles(accepted)))
+    expect(Object.fromEntries(await impl.gitCache.readCommitFiles(accepted)))
         .toEqual({ ...COMMAND_RESULT, "c.txt": "newer\n" });
     expect(await history(impl, id)).toEqual([accepted, base]);
     expect(await history(impl, id)).not.toContain(result);

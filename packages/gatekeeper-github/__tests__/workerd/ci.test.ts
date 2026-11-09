@@ -6,7 +6,8 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionDescription, GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type {
   GitHubCheckRunDetails, GitHubCommitChecks, GitHubLogPage, GitHubPullRequestChecks,
@@ -17,7 +18,10 @@ import type {
 
 const OWNER = "acme";
 const REPO = "widgets";
-const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** Where the binding reads the repository once pinned: by its id, 1. */
+const API_BASE = "https://api.github.com/repositories/1";
+/** The repository by name, which the binding reads only to pin its id. */
+const NAME_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const RECEIVE_PACK_URL = `https://github.com/${OWNER}/${REPO}.git/git-receive-pack`;
 const BLOB_ORIGIN = "https://blob.example.net";
 
@@ -222,8 +226,9 @@ class FakeGitHub {
     if (path === "https://api.github.com/user") {
       return Response.json({ login: "ada", name: null, html_url: "https://github.com/ada", avatar_url: null });
     }
-    if (path === API_BASE) {
-      return Response.json({ id: 1, description: null, visibility: "public", private: false, default_branch: "main" });
+    if (path === API_BASE || path === NAME_ROOT) {
+      return Response.json({ id: 1, name: REPO, owner: { login: OWNER }, description: null,
+        visibility: "public", private: false, default_branch: "main" });
     }
     const rest = path.slice(API_BASE.length);
     let match: RegExpMatchArray | null;
@@ -391,6 +396,11 @@ class TestGitCache extends RpcTarget {
     return this.#objects.get(id) ?? null;
   }
 
+  async stat(id: GitOid): Promise<{ type: GitObjectType; size: number } | null> {
+    const object = this.#objects.get(id);
+    return object === undefined ? null : { type: object.type, size: object.content.length };
+  }
+
   async isAncestor(): Promise<boolean> {
     return true;
   }
@@ -462,7 +472,7 @@ async function gatekeeper(pull?: number) {
     async queuePush(branch: string): Promise<number> {
       const action = await unwrap(hooks.preparePush(
         scenario, props, branch, PUSHED, false, new RpcStub(queue.cache) as never)) as PushActionData;
-      const description: ActionDescription = {
+      const description: ActionPresentation = {
         title: "push", description: "push", pushedCommits: [PUSHED], implementsRevert: true,
       };
       await unwrap(hooks.submitPush(scenario, props, new RpcStub(queue) as never, action, description));

@@ -67,7 +67,7 @@ durable batch receipts).
 
 The docs describe the behaviour; these are the mechanisms behind it.
 
-- **`snapshot()`** builds its tree with `GitStore.writeChangedTree`, the tree half of the
+- **`snapshot()`** builds its tree with `WorkspaceGitCache.writeChangedTree`, the tree half of the
   binding's `commit()`, from the chat pin's `baseCommit` plus the chat's pending edits plus the
   step's buffered edits (`worktreeChanges` in `worktree-session.ts`). It requires an entry in
   `#activeExecutions` for the chat, and remembers the tree on that execution for `gitPull()`.
@@ -88,7 +88,7 @@ The docs describe the behaviour; these are the mechanisms behind it.
 - **Accepting** builds the worktree's accepted content on the pin's `baseCommit` tree, applying
   only the paths touched after the last re-root (`#worktreeTouchedPaths` resets at each pin
   declaration), and keeps the old `pinBase` as the commit's parent.
-- **Hidden commits stay reachable:** `git-store.ts` lists pin declarations in chat logs as roots
+- **Hidden commits stay reachable:** `git-cache.ts` lists pin declarations in chat logs as roots
   for the future garbage collection.
 
 ## Git fetches
@@ -186,7 +186,7 @@ a command runs Git, and fetching the head first avoids it.
 4. **`pinBase` stays a commit.** Turning it into a tree is a separate refactor.
 5. **A submission re-roots the chat's pin at a hidden commit** of the result tree, instead of
    being converted into OTs. File modes survive: later edits keep an entry's mode
-   (`GitStore.writeChangedTree`), and so does accepting.
+   (`WorkspaceGitCache.writeChangedTree`), and so does accepting.
 6. **A command's handle lives in memory, bound to its execution, and accepts one submission.**
    This fences out a command abandoned by a restart, which could otherwise submit against the
    resumed execution's first snapshot (usually the same tree ID, since the crash rolled the

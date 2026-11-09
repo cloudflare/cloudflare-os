@@ -229,12 +229,18 @@ const settingCheckbox = (label: string) => {
 const userModelsSwitch = () => settingSwitch('Users may add their own models')
 const userModelsCheckbox = () => settingCheckbox('Users may add their own models')
 
-const providersSection = () => {
+const section = (name: string) => {
   const heading = Array.from(document.body.querySelectorAll('h3'))
-    .find((element) => element.textContent === 'Providers')
-  if (!heading) throw new Error('No Providers section')
+    .find((element) => element.textContent === name)
+  if (!heading) throw new Error(`No ${name} section`)
   return heading.closest('section')!
 }
+
+const providersSection = () => section('Providers')
+
+/** The names of the models a section lists, in order. */
+const modelNames = (name: string) => Array.from(section(name).querySelectorAll('li'))
+  .map((item) => item.querySelector('p > span')?.textContent)
 
 const providerSwitches = () =>
   Array.from(providersSection().querySelectorAll<HTMLButtonElement>('[role="switch"]'))
@@ -411,6 +417,8 @@ describe('AdminModelsPanel', () => {
     const setGatewayModelSettings = vi.fn<AdminApi['setGatewayModelSettings']>(async () => {})
     const setDefaultReasoning = vi.fn<AdminApi['setDefaultReasoning']>(async () => {})
     const setGatewayProviderEnabled = vi.fn<AdminApi['setGatewayProviderEnabled']>(async () => {})
+    const setGatewayProviderOrder = vi.fn<AdminApi['setGatewayProviderOrder']>(async () => {})
+    const setGatewayModelOrder = vi.fn<AdminApi['setGatewayModelOrder']>(async () => {})
     const testGatewayProvider = vi.fn<AdminApi['testGatewayProvider']>(async () => TEST_PASSED)
     const testGatewayModel = vi.fn<AdminApi['testGatewayModel']>(
       async (modelId) => ({ model: modelId, ok: true }))
@@ -420,7 +428,8 @@ describe('AdminModelsPanel', () => {
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
+      setGatewayProviderEnabled, setGatewayProviderOrder, setGatewayModelOrder,
+      testGatewayProvider, testGatewayModel, testNewGatewayModel,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -433,8 +442,8 @@ describe('AdminModelsPanel', () => {
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
-      onChanged, show,
+      setGatewayProviderEnabled, setGatewayProviderOrder, setGatewayModelOrder,
+      testGatewayProvider, testGatewayModel, testNewGatewayModel, onChanged, show,
     }
   }
 
@@ -532,7 +541,7 @@ describe('AdminModelsPanel', () => {
     ])('when %s, says what removing a model does to its bindings', async (enabled, inList, inDialog) => {
       await render({ gatewayModels: { ...GATEWAY_MODELS, userModelsEnabled: enabled } })
 
-      expect(row('GPT Custom').closest('section')?.textContent)
+      expect(section('Added by this deployment').textContent)
         .toContain(`gadget model bindings made for it ${inList}`)
       await click(button('Remove GPT Custom'))
       expect(confirmation()?.textContent)
@@ -1399,6 +1408,36 @@ describe('AdminModelsPanel', () => {
       expect(document.activeElement).toBe(providerSwitch('Google'))
     })
 
+    // The move that reaches an end disables its own button, which can't take focus back.
+    type Direction = 'up' | 'down'
+    it.each<[string, string, Direction, Direction,
+      'setGatewayProviderOrder' | 'setGatewayModelOrder', GatewayModels]>([
+      ['a provider up to the top', 'OpenAI', 'up', 'down', 'setGatewayProviderOrder',
+        { ...RUNTIME_MODELS, providerSettings: [RUNTIME_MODELS.providerSettings[1]!,
+          RUNTIME_MODELS.providerSettings[0]!, ...RUNTIME_MODELS.providerSettings.slice(2)] }],
+      ['a model up to the top', 'Claude Haiku', 'up', 'down', 'setGatewayModelOrder',
+        { ...RUNTIME_MODELS, models: [HAIKU, OPUS, SONNET, GPT, ADDED] }],
+      ['a model down to the bottom', 'Claude Haiku', 'down', 'up', 'setGatewayModelOrder',
+        { ...RUNTIME_MODELS, models: [OPUS, SONNET, HAIKU, GPT, ADDED] }],
+    ])('moves focus to the other move button after moving %s', async (
+      _case, name, pressed, other, method, reported,
+    ) => {
+      const rendered = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      rendered[method].mockReturnValueOnce(call.promise)
+      const move = button(`Move ${name} ${pressed}`)
+
+      await focus(move)
+      await click(move)
+      await dropFocus()
+      // The re-read reports the new order while the write is still in flight.
+      await rendered.show(reported)
+      await act(async () => call.resolve())
+
+      expect(button(`Move ${name} ${pressed}`).disabled).toBe(true)
+      expect(document.activeElement).toBe(button(`Move ${name} ${other}`))
+    })
+
     it('leaves focus on a Test button that was pressed while the write was in flight', async () => {
       const { setGatewayProviderEnabled, testGatewayProvider } = await render()
       const call = deferred()
@@ -1605,14 +1644,13 @@ describe('AdminModelsPanel', () => {
   })
 
   describe('added models', () => {
-    it('lists them apart from the catalog, with their provider', async () => {
-      await render()
+    it('lists them among their provider’s models, in the server’s order, marked Added', async () => {
+      await render({ gatewayModels: { ...RUNTIME_MODELS, models: [OPUS, ADDED, GPT, SONNET] } })
 
-      expect(row('GPT Custom').closest('section')?.querySelector('h3')?.textContent)
-        .toBe('Added by this deployment')
-      expect(row('GPT Custom').textContent).toContain('OpenAI')
-      expect(row('Claude Sonnet').closest('section')?.querySelector('h3')?.textContent)
-        .toBe('Anthropic')
+      expect(modelNames('Anthropic')).toEqual(['Claude Opus', 'Claude Sonnet'])
+      expect(modelNames('OpenAI')).toEqual(['GPT Custom', 'GPT Main'])
+      expect(row('GPT Custom').textContent).toContain('Added')
+      expect(row('GPT Main').textContent).not.toContain('Added')
     })
 
     it('removes a model only once the removal is confirmed', async () => {
@@ -1650,6 +1688,75 @@ describe('AdminModelsPanel', () => {
         description: 'No such added model: gpt-custom',
         variant: 'error',
       }))
+    })
+  })
+
+  describe('order', () => {
+    it('moves a model within its provider, sending the provider’s whole order', async () => {
+      const { setGatewayModelOrder, onChanged } = await render({ gatewayModels: RUNTIME_MODELS })
+
+      await click(button('Move Claude Haiku up'))
+
+      expect(setGatewayModelOrder).toHaveBeenCalledExactlyOnceWith(
+        'anthropic', ['claude-haiku', 'claude-opus', 'claude-sonnet'])
+      expect(onChanged).toHaveBeenCalledOnce()
+    })
+
+    it('moves an added model as any other', async () => {
+      const { setGatewayModelOrder } = await render({ gatewayModels: RUNTIME_MODELS })
+
+      await click(button('Move GPT Custom up'))
+
+      expect(setGatewayModelOrder).toHaveBeenCalledExactlyOnceWith(
+        'openai', ['gpt-custom', 'gpt-main'])
+    })
+
+    it('cannot move a provider’s first model up or its last model down', async () => {
+      await render({ gatewayModels: RUNTIME_MODELS })
+
+      expect(button('Move Claude Opus up').disabled).toBe(true)
+      expect(button('Move Claude Opus down').disabled).toBe(false)
+      expect(button('Move Claude Sonnet down').disabled).toBe(true)
+      expect(button('Move GPT Custom down').disabled).toBe(true)
+    })
+
+    it('moves a provider, sending every provider in the new order', async () => {
+      const { setGatewayProviderOrder, onChanged } = await render()
+
+      await click(button('Move OpenAI up', providersSection()))
+
+      expect(setGatewayProviderOrder).toHaveBeenCalledExactlyOnceWith(
+        ['openai', 'anthropic', 'google', 'cloudflare'])
+      expect(onChanged).toHaveBeenCalledOnce()
+    })
+
+    it('reports a refused move with the server’s message', async () => {
+      const { setGatewayModelOrder, onChanged } = await render({ gatewayModels: RUNTIME_MODELS })
+      setGatewayModelOrder.mockRejectedValueOnce(new Error('The order is stale.'))
+
+      await click(button('Move Claude Haiku up'))
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        title: 'Couldn’t reorder the Anthropic models',
+        description: 'The order is stale.',
+        variant: 'error',
+      }))
+      expect(onChanged).not.toHaveBeenCalled()
+    })
+
+    it('locks every move while a change is in flight', async () => {
+      const { setGatewayModelOrder } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelOrder.mockReturnValueOnce(call.promise)
+
+      await click(button('Move Claude Haiku up'))
+
+      const moves = Array.from(document.body.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label^="Move "]'))
+      expect(moves.length).toBeGreaterThan(0)
+      for (const move of moves) expect(move.disabled).toBe(true)
+      await act(async () => call.resolve())
+      expect(button('Move Claude Haiku up').disabled).toBe(false)
     })
   })
 
