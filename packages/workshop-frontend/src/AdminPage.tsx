@@ -14,6 +14,7 @@ import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
 import { AdminAuditPanel } from './features/admin-audit/AdminAuditPanel'
 import { auditSettingsOf, type AuditSettings } from './features/admin-audit/auditSettings'
+import { AdminPasskeysCard } from './features/admin-writes/AdminPasskeysCard'
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
 import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
@@ -112,6 +113,12 @@ export default function AdminPage() {
   const [reloadAuditSettings] = useState(() =>
     latestReads<AdminSettingsView>((view) => setAuditSettings(auditSettingsOf(view))))
 
+  // Whether the deployment lets admins write to workspaces, null while the backend is older than
+  // those writes and has none of the methods the passkeys card calls.
+  const [adminWorkspaceWrites, setAdminWorkspaceWrites] = useState<boolean | null>(null)
+  // The signed-in admin, by whose id the passkeys card tells their passkeys from other admins'.
+  const [profile, setProfile] = useState<{ id: string; name: string } | null>(null)
+
   // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters;
   // changing either replaces the history entry on the same route, which keeps this component and
   // its drafts.
@@ -159,6 +166,8 @@ export default function AdminPage() {
     setFormats(view.formats)
     setGatewayModels(view.gatewayModels)
     setAuditSettings(auditSettingsOf(view))
+    const writes: unknown = view.adminWorkspaceWrites
+    setAdminWorkspaceWrites(typeof writes === 'boolean' ? writes : null)
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -191,6 +200,12 @@ export default function AdminPage() {
             logRpcFailure('Failed to read the deployment update status:', err)
             setUpdateStatus(null)
           },
+        )
+        // Read beside the settings without holding them up: a failure leaves the Access tab without
+        // its passkeys card rather than the page without its settings.
+        authenticatedApi.whoami().then(
+          ({ id, name }) => { if (!cancelled) setProfile({ id, name }) },
+          (err) => { if (!cancelled) logRpcFailure('Failed to read the admin’s profile:', err) },
         )
         applySettings(await api.getSettings())
       } catch (err) {
@@ -543,7 +558,7 @@ export default function AdminPage() {
         />
       )}
 
-      {/* Sign-ups and user search */}
+      {/* Sign-ups, user search and the passkeys that approve writes to workspaces */}
       {activeTab === 'access' && (
         <>
           <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
@@ -587,6 +602,15 @@ export default function AdminPage() {
               />
             </div>
           </div>
+
+          {adminWorkspaceWrites !== null && profile !== null && (
+            <AdminPasskeysCard
+              admin={admin.api}
+              user={profile}
+              siteName={savedSiteName || DEFAULT_SITE_NAME}
+              writesOn={adminWorkspaceWrites}
+            />
+          )}
         </>
       )}
 
