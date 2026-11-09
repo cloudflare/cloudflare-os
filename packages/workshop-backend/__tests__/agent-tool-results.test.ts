@@ -1,4 +1,5 @@
 import {describe, expect, it} from "vitest";
+import {waitingForApprovalNote} from "../src/agent";
 import {formatGrep, matchBlob, matchLines, scanWorkpieceForGrep, type GrepScan} from "../src/grep";
 import {BlobReader, BlobWriter, CHUNK_MAX_SIZE, type ChunkStore} from "../src/git-chunked-blob";
 import {encodeLooseObject} from "../src/git-codec";
@@ -92,5 +93,27 @@ describe("grep", () => {
         .toThrow("big.bin is not a text file");
     expect(() => matchBlob(openBlob("a\0b").reader, /a/, "small.bin"))
         .toThrow("small.bin is not a text file");
+  });
+});
+
+describe("waitingForApprovalNote", () => {
+  it("says nothing when nothing is waiting", () => {
+    expect(waitingForApprovalNote([])).toBe("");
+  });
+
+  it("lists what is waiting, on one line each, and tells the agent not to call it done", () => {
+    let note = waitingForApprovalNote([
+      {title: "Edit Google Doc", resourceTitle: "Launch Plan"},
+      {title: "Send email:\nQ3 numbers"},
+    ]);
+    expect(note).toContain("- Edit Google Doc (Launch Plan)\n- Send email: Q3 numbers\n");
+    expect(note).toContain("don't say they are done");
+  });
+
+  it("caps a long list and counts the rest", () => {
+    let note = waitingForApprovalNote(
+        Array.from({length: 14}, (_, i) => ({title: `Edit ${i}`})));
+    expect(note.match(/^- Edit/gm)).toHaveLength(10);
+    expect(note).toContain("- …and 4 more\n");
   });
 });

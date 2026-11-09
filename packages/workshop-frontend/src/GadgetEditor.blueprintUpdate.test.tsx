@@ -92,6 +92,9 @@ vi.mock('@cloudflare/kumo', () => {
         disabled?: boolean
       }) => <button type="button" role="menuitem" onClick={onClick} disabled={disabled}>{children}</button>,
       Separator: () => <hr />,
+      RadioGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+      RadioItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+      RadioItemIndicator: () => null,
     },
   )
   const Tooltip = ({ render }: { render: ReactElement }) => render

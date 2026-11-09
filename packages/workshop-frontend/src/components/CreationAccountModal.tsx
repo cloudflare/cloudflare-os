@@ -27,7 +27,8 @@ type Configurator = { accountId: number } & ({ frame: GatekeeperUiFrame } | { er
  * Approving a creation (see ActionLogEntry.creation) makes the resource in one of the approver's
  * own accounts for its vendor. This asks which, and offers to connect one. For a type with a
  * creation configurator (see SupportedResource.creationConfigurator), it also hosts that
- * account's configurator, whose choice becomes CreationApproval.configuration.
+ * account's configurator, whose choice becomes CreationApproval.configuration. With nothing to
+ * configure and one usable account, there is nothing to ask: it chooses that account unseen.
  */
 export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCancel }: {
   overseer: RpcStub<Overseer>
@@ -166,6 +167,15 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   const configured =
     configuratorPattern === null || (frame && configuratorReady === true && collector)
 
+  // The only account it could be made in, when nothing else needs choosing.
+  const sole = ready && target && configuratorPattern === null && matching.length === 1 && usable(matching[0])
+    ? matching[0].id : undefined
+  const onChooseRef = useRef(onChoose)
+  onChooseRef.current = onChoose
+  useEffect(() => {
+    if (sole !== undefined) onChooseRef.current({ accountId: sole })
+  }, [sole])
+
   const approve = async (accountId: number) => {
     if (configuratorPattern === null) return onChoose({ accountId })
     const attempt = {}
@@ -183,6 +193,9 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
     }
     if (collectAttempt.current === attempt) onChoose({ accountId, configuration })
   }
+
+  // Asks nothing until it knows there is something to ask.
+  if (!ready || !target || sole !== undefined) return null
 
   return (
     <Dialog.Root open onOpenChange={open => { if (!open) onCancel() }}>

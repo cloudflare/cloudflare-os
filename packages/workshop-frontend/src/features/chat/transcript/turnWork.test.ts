@@ -59,6 +59,29 @@ describe('workByTurn', () => {
   })
 })
 
+describe('workByTurn, changes', () => {
+  it('lists each change the agent made as a step, with where it stands', () => {
+    sequence = 0
+    const action = (seconds: number, actionId: number, log: object) => ({
+      type: 'action', chatId: 1, sequence: sequence++, timestamp: at(seconds), author: agent, actionId,
+      actionLog: { type: 'action', id: actionId, ...log },
+    }) as never
+    const turns = workByTurn([
+      say(user, 0, { message: 'Update the sheet' }),
+      action(2, 7, { state: 'pending', description: { title: 'Edit Budget' } }),
+      action(3, 8, { state: 'pending', description: { title: 'Send email', awaitDecision: true } }),
+      action(4, 9, { state: 'approved', autoApproved: true, description: { title: 'Format Budget' } }),
+      action(5, 10, { state: 'rejected', description: { title: 'Delete rows' } }),
+    ])
+    expect(turns.get(0)).toMatchObject({ worked: true, steps: [
+      { text: 'Edit Budget', outcome: 'drafted', actionId: 7 },
+      { text: 'Send email', outcome: 'waiting', actionId: 8 },
+      { text: 'Format Budget', outcome: 'auto', actionId: 9 },
+      { text: 'Delete rows', outcome: 'discarded', actionId: 10 },
+    ] })
+  })
+})
+
 describe('formatWorkedFor', () => {
   it('reads like a person would say it', () => {
     expect(formatWorkedFor(0.2)).toBe('Worked for 1s')

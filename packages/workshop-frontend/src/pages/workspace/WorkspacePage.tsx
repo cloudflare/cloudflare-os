@@ -46,7 +46,8 @@ import {
   type LibrarySort,
 } from '../../features/library/LibraryToolbar'
 import { LibraryPreviewPane } from '../../features/library/LibraryPreviewPane'
-import { favoriteRefKey, useFavorites } from '../../features/library/useLibraryData'
+import { favoriteRefKey, readExternalFiles, useFavorites } from '../../features/library/useLibraryData'
+import type { ExternalFileSource } from '../../features/library/externalFiles'
 import { useLibraryItems } from '../../features/library/useLibraryItems'
 import { useLibraryLayout } from '../../features/library/useLibraryLayout'
 import { AutomationList } from '../../features/automations/AutomationList'
@@ -296,6 +297,16 @@ export function WorkspacePage({
     return () => { cancelled = true }
   }, [overseer, latestActivity])
 
+  // Google files and the like its agents worked on, read again as files are.
+  const [externalFiles, setExternalFiles] = useState<ExternalFileSource[]>([])
+  useEffect(() => {
+    let cancelled = false
+    readExternalFiles(overseer, { id: workspaceId }).then(
+      list => { if (!cancelled) setExternalFiles(list) },
+      err => logRpcFailure('Failed to list the workspace\'s connected files:', err))
+    return () => { cancelled = true }
+  }, [overseer, workspaceId, latestActivity])
+
   // Everyone in the workspace: the owner first, then whoever it is shared with.
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[] | null>(null)
   useEffect(() => {
@@ -397,7 +408,7 @@ export function WorkspacePage({
   [gadgets, workspaceId, lastActive])
   const workspaceFiles = useMemo(() => (files ?? []).map(file => ({ ...file, workspaceId })), [files, workspaceId])
   const { appItems, fileItems, preview, setPreview } = useLibraryItems({
-    apps, files: workspaceFiles, favorites: favorites ?? [], starred, showContext: false,
+    apps, files: workspaceFiles, external: externalFiles, favorites: favorites ?? [], starred, showContext: false,
   })
   const libraryFilter = filters.library
   const libraryItems: LibraryItem[] = useMemo(() => arrangeLibraryItems(
@@ -584,7 +595,7 @@ export function WorkspacePage({
             items={libraryItems}
             layout={layout}
             grouping="favorites"
-            onToggleStar={item => void setStarred(item.favorite, !item.starred)}
+            onToggleStar={item => { if (item.favorite) void setStarred(item.favorite, !item.starred) }}
             empty={query ? 'Nothing matches your search.' : 'Apps made here and files added to its chats will show up here.'}
           />
         ))}

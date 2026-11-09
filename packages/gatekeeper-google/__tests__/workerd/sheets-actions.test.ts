@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SpreadsheetPreview } from "@gadgets/workshop-shared/gatekeeper";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry } from "../../src/sheets-actions";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { RestCellFormat } from "../../src/sheets-format";
@@ -59,6 +60,17 @@ const AUTO_APPROVABLE = [
 ];
 
 /** Fields of a cell's value, which no format read may ask for. */
+/** The format Google gives a new spreadsheet's cells, as its API returns it. */
+const STANDARD_FORMAT = {
+  backgroundColorStyle: { rgbColor: { red: 1, green: 1, blue: 1 } },
+  verticalAlignment: "BOTTOM",
+  wrapStrategy: "OVERFLOW_CELL",
+  textFormat: {
+    foregroundColorStyle: { rgbColor: {} }, fontFamily: "arial,sans,sans-serif", fontSize: 10,
+    bold: false, italic: false, strikethrough: false, underline: false,
+  },
+};
+
 const VALUE_FIELDS = ["formattedValue", "effectiveValue", "userEnteredValue", "hyperlink", "note"];
 
 const BORDER_SIDES = ["top", "bottom", "left", "right", "innerHorizontal", "innerVertical"];
@@ -159,7 +171,9 @@ class SheetsProvider {
           ? this.#gridData(url, await request.json())
           : this.#formatsByDataFilter(url, await request.json());
       }
-      if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
+      if (path === "" && url.searchParams.has("ranges")) {
+        return url.searchParams.get("fields")?.includes("formattedValue") ? this.#previewRead(url) : this.#formatRead(url);
+      }
       if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
       if (path === "/values:batchGet") return this.#batchGet(url);
       let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
@@ -273,6 +287,53 @@ class SheetsProvider {
       endColumn: Math.min(parsed.rect.endColumn, sheet.columnCount),
     };
     return Response.json({ sheets: [this.#formatSheet(sheet, [rect], paths)] });
+  }
+
+  /**
+   * `spreadsheets.get` of a preview: A1 ranges of the sheets Google holds, each cell as entered,
+   * as displayed and as drawn (its effective format, Sheets' standard format with its own over it,
+   * left out where it has none), each row 21 pixels high, and each column 100 pixels wide but
+   * column B, 150; with the spreadsheet's default format, which is the standard one.
+   */
+  #previewRead(url: URL): Response {
+    let blocks = url.searchParams.getAll("ranges").map(range => {
+      let parsed = parseRange(range);
+      let sheet = this.sheets.find(s => s.title.toLowerCase() === parsed.sheet?.toLowerCase());
+      return sheet && parsed.rect.endRow <= sheet.rowCount && parsed.rect.endColumn <= sheet.columnCount
+        ? { sheet, rect: parsed.rect } : undefined;
+    });
+    if (blocks.some(block => !block)) return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    let sheets = [...new Set(blocks.map(block => block!.sheet))].map(sheet => ({
+      properties: sheet.id === 0 ? {} : { sheetId: sheet.id },
+      data: blocks.filter(block => block!.sheet === sheet).map(block => {
+        let { rect } = block!;
+        return {
+          ...(rect.startRow ? { startRow: rect.startRow } : {}),
+          ...(rect.startColumn ? { startColumn: rect.startColumn } : {}),
+          rowMetadata: Array.from({ length: rect.endRow - rect.startRow }, () => ({ pixelSize: 21 })),
+          columnMetadata: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
+            ({ pixelSize: rect.startColumn + c === 1 ? 150 : 100 })),
+          rowData: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) => ({
+            values: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) => {
+              let cell = key(sheet.id, rect.startRow + r, rect.startColumn + c);
+              let value = this.cells.get(cell) ?? null;
+              let format = this.formats.get(cell);
+              return {
+                ...(value === null ? {} : {
+                  userEnteredValue: userEnteredValue(value), formattedValue: this.#shown(value, "FORMATTED_VALUE"),
+                }),
+                ...(format ? {
+                  effectiveFormat: {
+                    ...STANDARD_FORMAT, ...format, textFormat: { ...STANDARD_FORMAT.textFormat, ...format.textFormat },
+                  },
+                } : {}),
+              };
+            }),
+          })),
+        };
+      }),
+    }));
+    return Response.json({ properties: { defaultFormat: STANDARD_FORMAT }, sheets });
   }
 
   /** `spreadsheets:getByDataFilter` by grid range, with grid data, each sheet once. */
@@ -753,6 +814,7 @@ function gatekeeper() {
     passWindow: async () => hooks().seedSheetsMarkers(facet, (await hooks().sheetsMarkers(facet)).map(entry =>
       typeof entry === "number" ? entry : { ...entry, sentAt: entry.sentAt - MARKER_RETENTION_MS })),
     orphan: (actionId: number) => hooks().orphanSheetsClaim(facet, actionId),
+    preview: (subject?: string) => hooks().previewSheets(facet, subject),
   };
 }
 
@@ -2203,5 +2265,57 @@ describe("Google Sheets formatting", () => {
     expect(await sheets.apply(format.actionId!)).toBeNull();
     expect(await sheets.apply(copy.actionId!)).toBeNull();
     expect(await sheets.formats("Copy!A1:A2")).toEqual(previewed);
+  });
+});
+
+describe("Google Sheets previews for the approver", () => {
+  const SUBJECT = {
+    id: "sheet-1", title: "Budget", url: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+    mediaType: "application/vnd.google-apps.spreadsheet",
+  };
+
+  it("draws the top left of the first sheet when nothing is queued, in one read", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!A1", { textFormat: { bold: true } });
+    let sheets = gatekeeper();
+    let preview = await sheets.preview();
+    expect(preview).toMatchObject({ title: "Budget", url: SUBJECT.url, actions: [] });
+    let content = preview!.content as SpreadsheetPreview;
+    expect(content.sheets).toEqual([{ id: 0, title: "Sales" }, { id: 7, title: "Q3 Plan" }]);
+    let [area] = content.areas;
+    expect(area).toMatchObject({ sheetId: 0, row: 0, column: 0 });
+    expect([area.cells.length, area.cells[0].length]).toEqual([20, 6]);
+    expect(area.cells[0][0]).toEqual({ text: "Region", format: { bold: true } });
+    expect(area.cells[1][2]).toEqual({ text: "0", formula: "=B2*2" });
+    expect(area.columnWidths).toEqual([100, 150, 100, 100, 100, 100]);
+    // The metadata, then the cells: nothing is observed or queued.
+    expect(provider.requests.map(url => url.searchParams.has("ranges"))).toEqual([false, true]);
+  });
+
+  it("draws a queued change where it lands, naming the spreadsheet in its description", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId, action } = await sheets.queued([
+      { op: "writeCells", range: "Sales!B2:C2", values: [[6, "=B2*3"]] },
+    ]);
+    expect(action!.subject).toEqual({ ...SUBJECT, role: "edited" });
+
+    let preview = await sheets.preview("sheet-1");
+    expect(preview!.actions).toEqual([actionId]);
+    let [area] = (preview!.content as SpreadsheetPreview).areas;
+    let at = (row: number, column: number) => area.cells[row - area.row][column - area.column];
+    // Sheets right-aligns a number.
+    expect(at(1, 1)).toEqual({ text: "6", change: 0, previous: "4", format: { horizontalAlignment: "right" } });
+    expect(at(1, 2)).toEqual({ formula: "=B2*3", change: 0, previous: "0" });
+    expect(at(1, 0)).toEqual({ text: "EMEA" });
+    expect(provider.batches).toEqual([]);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect((await sheets.preview())!.actions).toEqual([]);
+  });
+
+  it("draws nothing for an item it does not hold", async () => {
+    budget();
+    expect(await gatekeeper().preview("another-file")).toBeNull();
   });
 });

@@ -26,10 +26,17 @@ export type SlideLabel = { number: number; title?: string };
 export type ThemeLabel = { name?: string; master?: string };
 
 /**
+ * What every queued change carries for the approver: the presentation's title when it was queued,
+ * which names the presentation in the change's `subject`. Absent from changes queued before it was
+ * recorded.
+ */
+export type QueuedFor = { presentation?: string };
+
+/**
  * An `updateSlides()` batch. `slides` labels each slide a change is on, and `themes` each master
  * or layout, by ID; `themes` may be absent when there are none.
  */
-export type DesignBatch = {
+export type DesignBatch = QueuedFor & {
   changes: DesignChange[];
   slides: Record<string, SlideLabel>;
   themes?: Record<string, ThemeLabel>;
@@ -57,24 +64,24 @@ export type SlidesActions = {
   editSlides: DesignBatch;
   updateSlides: DesignBatch;
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
-  duplicateSlide: {
+  duplicateSlide: QueuedFor & {
     slideId: string; newSlideId: string; objectIds: Record<string, string>; slide: SlideLabel;
   };
-  deleteSlide: { slideId: string; slide: SlideLabel };
+  deleteSlide: QueuedFor & { slideId: string; slide: SlideLabel };
   /** `after: null` moves the slides to the start. */
-  moveSlides: {
+  moveSlides: QueuedFor & {
     slideIds: string[]; after: string | null; slides: SlideLabel[]; afterSlide?: SlideLabel;
   };
   /**
    * `layout` is the layout's display name; an absent `after` adds the slide at the end, `null`
    * at the start.
    */
-  createSlide: {
+  createSlide: QueuedFor & {
     newSlideId: string; layoutId: string; layout: string; after?: string | null;
     placeholders: CreatedPlaceholder[]; afterSlide?: SlideLabel;
   };
   /** `slides` labels `slideIds` in presentation order. */
-  skipSlides: { slideIds: string[]; skipped: boolean; slides: SlideLabel[] };
+  skipSlides: QueuedFor & { slideIds: string[]; skipped: boolean; slides: SlideLabel[] };
 };
 
 /** A queued change, as the journal stores it. */

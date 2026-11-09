@@ -439,6 +439,30 @@ describe("local counts and explicit read boundaries", () => {
       latestActivityAt: new Date(1_004), latestMessagePreview: "x".repeat(240), unreadMessageCount: 2});
   });
 
+  it("counts the chat's drafts on its head, read or not, as they are queued and decided", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    const draft = (id: number, chatId: number, state: "pending" | "approved" = "pending") => ({
+      id, gatekeeperId: 4, caller: {from: "agent" as const, chatId}, createdAt: new Date(), state,
+      type: "action" as const, action: id,
+      description: {title: "Edit", description: "Edit", implementsRevert: false, autoApprovable: true},
+    });
+    const drafts = async () => (await fixture.user.getChatThreads())[0].draftsWaiting;
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.actions.put(draft(1, 1));
+      impl.storage.actions.put(draft(2, 1));
+      impl.storage.actions.put(draft(3, 2)); // Another chat's.
+      await impl.deliverDirtyChats();
+    });
+    expect(await drafts()).toBe(2);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.actions.put(draft(1, 1, "approved"));
+      impl.storage.actions.put(draft(2, 1, "approved"));
+      await impl.deliverDirtyChats();
+    });
+    expect(await drafts()).toBeUndefined();
+  });
+
   it("lists a chat as the user's own once they write in it, open it or unarchive it", async () => {
     const fixture = await setup();
     const {reader, profile} = await addReader(fixture);

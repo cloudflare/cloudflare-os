@@ -12,7 +12,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { UnreadStateBridge } from "./UnreadStateBridge";
 import { ReadTimeline } from "./ReadTimeline";
-import { TimelineReadItem } from "./TimelineReadItem";
+import { MarkUnreadButton, TimelineReadItem } from "./TimelineReadItem";
 import { reportVisibleChat } from "./visibleChat";
 import { TimelineContext } from "./readTimelineContext";
 
@@ -76,6 +76,7 @@ describe("timeline read/unread experience", () => {
             .map((sequence) => (
               <TimelineReadItem key={sequence} start={sequence} end={sequence}>
                 <p>Item {sequence}</p>
+                <MarkUnreadButton sequence={sequence} className="" />
               </TimelineReadItem>
             ))}
         </ReadTimeline>
@@ -106,7 +107,6 @@ describe("timeline read/unread experience", () => {
   };
   const markUnreadFrom = async (sequence: number) => {
     await act(async () => container.querySelector<HTMLButtonElement>(`[data-read-start="${sequence}"] button`)!.click());
-    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
   };
 
   beforeEach(() => {
@@ -175,7 +175,7 @@ describe("timeline read/unread experience", () => {
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     expect(container.querySelector("[data-unread-divider]")).toBeNull();
-    expect(container.textContent).not.toContain("Unread activity");
+    expect(container.textContent).not.toMatch(/\d+ unread/);
     await settle();
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
@@ -187,7 +187,7 @@ describe("timeline read/unread experience", () => {
     await updateChat({...arrival, unreadChatCount: 1, unreadMessageCount: 1,
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     expect(container.querySelector("[data-unread-divider]")).not.toBeNull();
-    expect(container.textContent).toContain("Unread activity");
+    expect(container.textContent).toMatch(/\d+ unread/);
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
   });
@@ -221,13 +221,12 @@ describe("timeline read/unread experience", () => {
     viewport.scrollTop = 40;
     const trigger = container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!;
     await act(async () => trigger.click());
-    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
     expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
     await settle();
     expect(viewport.scrollTop).toBe(40);
     await update(snapshot(1, 0));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
@@ -248,7 +247,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     visibleBottom = 450;
     await act(async () => viewport.dispatchEvent(new Event("scroll")));
     await settle();
@@ -262,7 +261,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     await updateChat(snapshot(1, 0));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
@@ -290,7 +289,7 @@ describe("timeline read/unread experience", () => {
     if (confirmationCount === 0) await updateChat(confirmed);
     await act(async () => failed.reject(Object.assign(new Error("Object restarted"), {durableObjectReset: true})));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -309,7 +308,7 @@ describe("timeline read/unread experience", () => {
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     await act(async () => failed.reject(Object.assign(new Error("Object restarted"), {durableObjectReset: true})));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
 
@@ -364,7 +363,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -387,7 +386,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -396,7 +395,7 @@ describe("timeline read/unread experience", () => {
     await markUnreadFrom(2); await markUnreadFrom(1);
     await updateChat(snapshot(2, 1)); await updateChat(snapshot(3, 0));
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
@@ -415,7 +414,7 @@ describe("timeline read/unread experience", () => {
       chats: [{...arrival.chats[0], unreadMessageCount: 1}]});
     if (ackAt === "after arrival") await act(async () => ack.resolve(false));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
 
@@ -430,7 +429,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("2");
     expect(markChatRead).not.toHaveBeenCalled();
   });
@@ -441,7 +440,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     const ack = Promise.withResolvers<void>();
     markChatRead.mockReturnValueOnce(ack.promise);
-    const markRead = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!;
+    const markRead = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark read")!;
     await act(async () => markRead.click());
     await update(snapshot(2, 2)); // The read ran first, but its ACK is still in flight.
     await markUnreadFrom(1);
@@ -449,7 +448,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 350;
     await act(async () => ack.resolve());
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
@@ -460,14 +459,14 @@ describe("timeline read/unread experience", () => {
     await settle();
     const failed = Promise.withResolvers<void>();
     markChatRead.mockReturnValueOnce(failed.promise);
-    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark read")!.click());
     await update(snapshot(2, 0));
     await settle();
     await act(async () => failed.reject(new Error("Read command failed")));
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
@@ -478,13 +477,13 @@ describe("timeline read/unread experience", () => {
     await settle();
     markChatUnread.mockResolvedValueOnce(false);
     await markUnreadFrom(1); // The server is already at 0 and publishes no local echo.
-    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Mark read")!.click());
     await updateChat(snapshot(2, 2));
     await updateChat(snapshot(3, horizon)); // A genuinely later command from another device.
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
@@ -494,7 +493,7 @@ describe("timeline read/unread experience", () => {
     markChatUnread.mockRejectedValueOnce(new Error("Unread command failed"));
     await markUnreadFrom(1);
     await updateChat(snapshot(2, 0));
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -507,7 +506,7 @@ describe("timeline read/unread experience", () => {
     await updateChat(snapshot(2, 0));
     await act(async () => first.reject(new Error("Earlier command failed")));
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
   });
 
   it("rolls back a failed newer unread without treating the earlier successful rewind as remote", async () => {
@@ -527,7 +526,7 @@ describe("timeline read/unread experience", () => {
     expect(viewport.scrollTop).toBe(40);
     expect(navigate).not.toHaveBeenCalledWith(true);
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("2");
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -542,7 +541,7 @@ describe("timeline read/unread experience", () => {
     if (freshSnapshot) await update(snapshot(2, 0));
     await act(async () => failed.reject(new Error("Unread command failed")));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
@@ -570,7 +569,7 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
     await update(snapshot(2, 0)); // Another device rewound while this subscription was absent.
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
@@ -589,7 +588,7 @@ describe("timeline read/unread experience", () => {
     await update(snapshot(2, 2));
     await settle();
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     visibleBottom = 450;
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
     const arrival = snapshot(3, 2);
@@ -598,7 +597,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
     await updateChat(snapshot(3, 1));
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
   });
 
   it("does not acknowledge hidden documents, unfocused windows or a zero-size pane", async () => {
@@ -692,7 +691,7 @@ describe("timeline read/unread experience", () => {
     visibleBottom = 450;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
     expect(markChatRead).not.toHaveBeenCalled();
   });
@@ -704,16 +703,16 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
     await update(snapshot(2, 0));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     expect(markChatRead).not.toHaveBeenCalled();
     await update(snapshot(3, 2));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     await update(snapshot(4, 0));
     visibleBottom = 350;
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
   });
 
   it.each([0, 2])("resumes explicit reading when a message beats the mark-read ACK (history starts at %s)", async oldest => {
@@ -726,17 +725,17 @@ describe("timeline read/unread experience", () => {
     await settle();
     await update(earlier(0));
     await settle();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
     const ack = Promise.withResolvers<void>();
     markChatRead.mockReturnValueOnce(ack.promise);
-    const button = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!;
+    const button = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark read")!;
     await act(async () => button.click());
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1);
     await render(<View oldest={oldest} latestSequence={2} />);
     await update(snapshot(2, 1)); // Message 2 arrives while the receipt for message 1 is pending.
     await act(async () => ack.resolve());
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(container.textContent).not.toContain("Kept unread");
     expect(markChatRead).toHaveBeenCalledOnce();
     visibleBottom = 350;
     await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
@@ -758,7 +757,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     const retry = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Jump to first unread",
+      (button) => button.getAttribute("aria-label") === "Jump to first unread",
     );
     await act(async () => retry!.click());
     expect(loadEarlier).toHaveBeenCalledTimes(2);
@@ -796,18 +795,18 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     const markRead = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Mark thread read",
+      (button) => button.textContent === "Mark read",
     );
     await act(async () => markRead!.click());
     expect(markChatRead).toHaveBeenCalledOnce();
     await update(snapshot(2, 2));
     await settle();
-    expect(container.textContent).not.toContain("Jump to first unread");
+    expect(container.querySelector('[aria-label="Jump to first unread"]')).toBeNull();
     markChatRead.mockClear();
     await update(snapshot(3, 1));
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("automatic reading paused");
+    expect(container.textContent).toContain("Kept unread");
   });
 
   it("cleans viewport listeners/timers on leaving and preserves the visit divider as receipts advance", async () => {
@@ -832,6 +831,7 @@ describe("timeline read/unread experience", () => {
         </TimelineReadItem>
         <TimelineReadItem start={11} end={11} previousUnreadEnd={9}>
           New item
+          <MarkUnreadButton sequence={11} className="" />
         </TimelineReadItem>
       </TimelineContext.Provider>,
     );
@@ -841,10 +841,8 @@ describe("timeline read/unread experience", () => {
         ?.closest("[data-read-start]")
         ?.getAttribute("data-read-start"),
     ).toBe("11");
-    const trigger = container.querySelector<HTMLButtonElement>('[data-read-start="11"] button');
-    await act(async () => trigger!.click());
-    const action = document.querySelector<HTMLElement>('[role="menuitem"]');
-    expect(action?.textContent).toContain("Mark unread from here");
+    const action = container.querySelector<HTMLButtonElement>('[data-read-start="11"] button');
+    expect(action?.getAttribute("aria-label")).toBe("Mark unread from here");
     await act(async () => action!.click());
     expect(markUnread).toHaveBeenCalledExactlyOnceWith(11);
   });

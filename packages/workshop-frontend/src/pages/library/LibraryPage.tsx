@@ -19,7 +19,8 @@ import {
   type LibrarySort,
 } from '../../features/library/LibraryToolbar'
 import { LibraryPreviewPane } from '../../features/library/LibraryPreviewPane'
-import { useFavorites, useOutputs, useWorkspaceFiles } from '../../features/library/useLibraryData'
+import { useExternalFiles, useFavorites, useOutputs, useWorkspaceFiles } from '../../features/library/useLibraryData'
+import { mediaKind } from '../../features/drafts/drafts'
 import { useLibraryItems } from '../../features/library/useLibraryItems'
 import { useLibraryLayout } from '../../features/library/useLibraryLayout'
 
@@ -37,10 +38,11 @@ const FILE_FILTERS: LibraryFilterOption[] = [
   { value: 'image', label: 'Images' },
   { value: 'pdf', label: 'PDFs' },
   { value: 'audio', label: 'Audio' },
+  { value: 'google', label: 'Docs, Sheets and Slides' },
   { value: 'other', label: 'Other' },
 ]
 
-const fileKind = (mimeType = '') => mimeType.startsWith('image/') ? 'image'
+const fileKind = (mimeType = '') => mediaKind(mimeType) ? 'google' : mimeType.startsWith('image/') ? 'image'
   : mimeType === 'application/pdf' ? 'pdf' : mimeType.startsWith('audio/') ? 'audio' : 'other'
 
 // Favorites shows starred items, then a card of the most recent others to reach for.
@@ -71,13 +73,14 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
     .toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
     .map(w => ({ id: w.id, title: w.title })), [workspaces])
   const files = useWorkspaceFiles(workspaces.length ? fileWorkspaces : null)
+  const external = useExternalFiles(workspaces.length ? fileWorkspaces : null)
 
   const apps = useMemo(() => (outputs ?? []).map(output => ({
     workspaceId: output.workspaceId, workpieceId: output.workpieceId, title: output.title,
     output: output.output, date: output.lastActive, workspaceTitle: output.workspaceTitle,
   })), [outputs])
   const { appItems, fileItems, favoriteItems, preview, setPreview } = useLibraryItems({
-    apps, files: files ?? [], favorites: favorites ?? [], starred, showContext: true,
+    apps, files: files ?? [], external: external ?? undefined, favorites: favorites ?? [], starred, showContext: true,
   })
 
   const appFilters: LibraryFilterOption[] = useMemo(() => [
@@ -106,7 +109,7 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
     return [...starredItems, ...recent]
   }, [tab, appItems, fileItems, favoriteItems, filter, sort, query])
 
-  const toggleStar = (item: LibraryItem) => void setStarred(item.favorite, !item.starred)
+  const toggleStar = (item: LibraryItem) => { if (item.favorite) void setStarred(item.favorite, !item.starred) }
   const selectedItems = shown.filter(item => selected.has(item.key))
 
   return (
@@ -167,7 +170,7 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
             empty={query ? 'Nothing matches your search.'
               : tab === 'favorites' ? 'Star apps and files to keep them here.'
               : tab === 'apps' ? 'Apps you make will show up here.'
-              : 'Files you add to chats will show up here.'}
+              : 'Files you add to chats, and Google files agents work on, will show up here.'}
             selection={{
               selected,
               onChange: (key, isSelected) => setSelected(current => {
@@ -187,7 +190,7 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
             <button type="button" className="h-7 cursor-pointer rounded-full px-3 hover:bg-kumo-inverse/15"
               onClick={() => {
                 const star = selectedItems.some(item => !item.starred)
-                for (const item of selectedItems) if (item.starred !== star) void setStarred(item.favorite, star)
+                for (const item of selectedItems) if (item.favorite && item.starred !== star) void setStarred(item.favorite, star)
                 setSelected(new Set())
               }}>
               {selectedItems.some(item => !item.starred) ? 'Star' : 'Unstar'}

@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  HookDescription, ObservationDescription, ResourceDescription, ResourcePreview, ResourceSubject,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
@@ -13,12 +13,12 @@ import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
 import GoogleWorker, {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 } from "../src/google";
 
 export {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 };
 export default GoogleWorker;
@@ -67,9 +67,11 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionDescription?: string;
   actionFields: ActionField[] = [];
   readonly observations: string[] = [];
+  readonly observationSubjects: (ResourceSubject | undefined)[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
+    this.observationSubjects.push(description.subject);
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -97,6 +99,8 @@ export class TestHooks extends DurableObject<Env> {
   #lastActionFields: ActionField[] = [];
   #lastActionVerdict: { actionKind?: ActionKind; autoApprovable?: boolean } = {};
   #lastObservations: string[] = [];
+  #lastActionSubject: ResourceSubject | undefined;
+  #lastObservationSubjects: (ResourceSubject | undefined)[] = [];
   /** The class each facet runs, where it is not the default bound Google Doc. */
   #classes = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
   /** The class each facet's applyCreation() returned, until adoptCreated() switches to it. */
@@ -125,6 +129,20 @@ export class TestHooks extends DurableObject<Env> {
   /** Observation descriptions authorized by the most recent session, successful or not. */
   get lastObservations(): string[] {
     return this.#lastObservations;
+  }
+
+  /** The `subject` of the edit most recently submitted through these hooks. */
+  get lastActionSubject(): ResourceSubject | undefined {
+    return this.#lastActionSubject;
+  }
+
+  /** The `subject` of each of `lastObservations`, in order. */
+  get lastObservationSubjects(): (ResourceSubject | undefined)[] {
+    return this.#lastObservationSubjects;
+  }
+
+  async previewResource(facetName: string, subject?: string): Promise<ResourcePreview | null> {
+    return this.#gatekeeper(facetName).previewResource(subject);
   }
 
   #gatekeeper(facetName: string) {
@@ -222,6 +240,8 @@ export class TestHooks extends DurableObject<Env> {
         actionKind: queue.action?.actionKind, autoApprovable: queue.action?.autoApprovable,
       };
       this.#lastObservations = queue.observations;
+      this.#lastActionSubject = queue.action?.subject;
+      this.#lastObservationSubjects = queue.observationSubjects;
     }
   }
 
@@ -329,6 +349,11 @@ export class TestHooks extends DurableObject<Env> {
     return { ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations };
   }
 
+  /** A Slides facet's preview of its queued changes. */
+  async previewSlides(facetName: string, subject?: string): Promise<ResourcePreview | null> {
+    return this.#slides(facetName).previewResource(subject);
+  }
+
   /** Applies a Slides change. `entered` is called once the apply has run up to its first wait. */
   async applySlides(
     facetName: string, actionId: number, entered?: () => void,
@@ -363,6 +388,7 @@ export class TestHooks extends DurableObject<Env> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
   }
 
+
   #sheets(facetName: string) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
     return this.ctx.facets.get<GoogleSheetsGatekeeperImpl>(facetName, () => ({
@@ -370,6 +396,11 @@ export class TestHooks extends DurableObject<Env> {
         props: { userObjectId, spreadsheetId: "sheet-1" },
       }),
     }));
+  }
+
+  /** A Sheets facet's preview of its queued changes. */
+  async previewSheets(facetName: string, subject?: string): Promise<ResourcePreview | null> {
+    return this.#sheets(facetName).previewResource(subject);
   }
 
   /**

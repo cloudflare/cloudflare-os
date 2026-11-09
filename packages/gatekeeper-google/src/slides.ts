@@ -4,6 +4,7 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
+  ResourcePreview, ResourceSubject,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
@@ -16,10 +17,13 @@ import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
+import { obsContext } from "./observability";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
-  BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
+  BlankPresentation, downloadContentImage, GoogleSlidesApi, type PresentationReader,
+  type PreviewReader, type ThumbnailSize,
 } from "./slides-api";
 import {
   layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
@@ -29,6 +33,9 @@ import type {
 } from "./slides-read-types";
 import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
+import {
+  inlineImages, presentationPreview, PREVIEW_SLIDE_PIXELS, previewSlideIds, type PreviewImage, type PreviewRender,
+} from "./slides-preview";
 import {
   batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
   replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
@@ -51,10 +58,14 @@ const THUMBNAIL_SIZES = {
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
 // A move or skip names each of its slides to the approver.
 const MAX_SLIDES_PER_CHANGE = 100;
+// The most slides one preview has Google render, for what their reads cannot describe.
+const MAX_PREVIEW_RENDERS = 4;
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
 
 type Env = Cloudflare.Env;
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", vendorId: "google" });
 
 let slidesTypesCode: string | undefined;
 
@@ -174,6 +185,56 @@ export class GoogleSlidesGatekeeperImpl
         }),
       },
     );
+  }
+
+  /**
+   * The presentation as it will be once every queued change applies (see `slides-preview.ts`),
+   * read from Google and replayed as the agent's reads are, while no change is being applied. Not
+   * authorized as an observation: only the approver sees it. A presentation not yet created is
+   * drawn from the recording of a new one, and has no ID for `subject` to name.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let props = this.ctx.props;
+    let simulated = isSimulated(props);
+    if (subject !== undefined && (simulated || subject !== this.#presentationId)) return null;
+    let reader: PreviewReader = isSimulated(props) ? new BlankPresentation(props.creation.title) : this.#api;
+    let id = this.#presentationId;
+    let { preview, images, renders } = await this.#reads.read(async () => {
+      let changes = this.#journal.listUndecided();
+      let outline = await reader.getPreviewOutline(id);
+      let order = slideIds(outline);
+      return presentationPreview({
+        outline,
+        slides: await reader.getPreviewSlides(id, previewSlideIds(order, changes), order),
+        changes,
+        ...(simulated ? {} : { url: googleFileUrl("presentation", id) }),
+      });
+    });
+    let rendered = simulated ? [] : await this.#slideRenders(renders);
+    await inlineImages([...images, ...rendered], downloadContentImage, error => logger.debug(
+      "preview image not inlined", { event: "slides.preview.image.skipped", error }));
+    return preview;
+  }
+
+  /**
+   * The pictures `renders` ask for, each slide's render fetched once. As Google counts a render as
+   * an expensive read, a preview asks for few; the rest are drawn as their reads allow.
+   */
+  async #slideRenders(renders: PreviewRender[]): Promise<PreviewImage[]> {
+    let bySlide = Map.groupBy(renders, ({ slideId }) => slideId);
+    let wanted = [...bySlide.keys()].slice(0, MAX_PREVIEW_RENDERS);
+    let urls = await Promise.all(wanted.map(slideId =>
+      this.#api.getThumbnailUrl(this.#presentationId, slideId, "LARGE").catch((error: unknown) => {
+        logger.debug("slide render not fetched", { event: "slides.preview.render.skipped", error });
+        return undefined;
+      })));
+    return wanted.flatMap((slideId, i) => {
+      let contentUrl = urls[i];
+      let places = bySlide.get(slideId)!;
+      return contentUrl
+        ? [{ contentUrl, pixels: PREVIEW_SLIDE_PIXELS, place: (url: string) => places.forEach(({ place }) => place(url)) }]
+        : [];
+    });
   }
 
   async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
@@ -318,6 +379,12 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /** `{subject}` naming the presentation a read observes, or nothing while it is not yet created. */
+  #subject(title: string): { subject?: ResourceSubject } {
+    return this.#presentationId === UNCREATED_FILE_ID
+      ? {} : { subject: googleFileSubject("presentation", this.#presentationId, title, "read") };
+  }
+
   /**
    * The slide order, every master and layout, and the content of the slides among `pages`, with
    * queued changes applied. A slide that no longer exists, or never did, is absent from
@@ -349,15 +416,18 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   async #prepare(ids: readonly string[], purpose: string, themePages: readonly string[] = []) {
     return preparable(ids, await this.#read(
       () => this.#simulated([...ids, ...themePages]),
-      ({ title }) => ids.length === 0 && themePages.length > 0 ? {
-        title: "Read Google Slides masters and layouts to change them",
-        description: `Read the masters and layouts of "${title}" to ${purpose}.`,
-      } : {
-        title: "Read Google Slides slides to change them",
-        description: ids.length === 0
-          ? `Read the slide order of "${title}" to ${purpose}.`
-          : `Read ${ids.length} slide(s) in "${title}" to ${purpose}.`,
-      }));
+      ({ title }) => ({
+        ...ids.length === 0 && themePages.length > 0 ? {
+          title: "Read Google Slides masters and layouts to change them",
+          description: `Read the masters and layouts of "${title}" to ${purpose}.`,
+        } : {
+          title: "Read Google Slides slides to change them",
+          description: ids.length === 0
+            ? `Read the slide order of "${title}" to ${purpose}.`
+            : `Read ${ids.length} slide(s) in "${title}" to ${purpose}.`,
+        },
+        ...this.#subject(title),
+      })));
   }
 
   async getPresentation(): Promise<PresentationInfo> {
@@ -387,6 +457,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         description:
           `Read the outline of "${info.title}": its masters and layouts, and its ` +
           `${info.slides.length} slide(s), their layouts, and their titles.`,
+        ...this.#subject(info.title),
       }));
   }
 
@@ -414,6 +485,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ? "Read one Google Slides slide"
           : `Read ${ids.length} Google Slides slides`,
         description: `Read the text and speaker notes of ${ids.length} slide(s) in "${title}".`,
+        ...this.#subject(title),
       }));
     if (read.missing !== undefined) throw noSlide(read.missing, read.title);
     return read.slides;
@@ -435,6 +507,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         title: "Render a Google Slides slide",
         description:
           `Render an image of ${index < 0 ? "a slide" : `slide ${index + 1}`} in "${title}".`,
+        ...this.#subject(title),
       }));
     if (thumbnail) return { mimeType: "image/png", ...thumbnail };
     let queued = await this.#changes.snapshot(async changes => changes.find(({ action }) =>
@@ -455,7 +528,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       return pageType === "SLIDE" ? [] : [id];
     }))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them", themePages);
+      let { title, deck } = await this.#prepare(ids, "queue changes to them", themePages);
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
       // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
       let unborn = prepared.find((change): change is Extract<DesignChange, { op: "editText" }> =>
@@ -489,6 +562,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       });
       return {
         payload: {
+          presentation: title,
           changes: queued,
           slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id)])),
           ...(themePages.length > 0
@@ -502,14 +576,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async duplicateSlide(slideId: string): Promise<string> {
     return this.#changes.queue("duplicateSlide", async () => {
-      let { deck } = await this.#prepare([slideId], "queue copying one");
+      let { title, deck } = await this.#prepare([slideId], "queue copying one");
       let source = deck.slides.get(slideId)!;
       let newSlideId = mintObjectId();
       // Minted here rather than by Google, so changes queued to the copy can name its elements.
       let objectIds = Object.fromEntries(
         elementIdsOf(source.pageElements).map(id => [id, mintObjectId()]));
       return {
-        payload: { slideId, newSlideId, objectIds, slide: labelOf(deck, slideId) },
+        payload: { presentation: title, slideId, newSlideId, objectIds, slide: labelOf(deck, slideId) },
         result: newSlideId,
       };
     });
@@ -517,8 +591,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async deleteSlide(slideId: string): Promise<void> {
     await this.#changes.queue("deleteSlide", async () => {
-      let { deck } = await this.#prepare([slideId], "queue deleting one");
-      return { payload: { slideId, slide: labelOf(deck, slideId) }, result: undefined };
+      let { title, deck } = await this.#prepare([slideId], "queue deleting one");
+      return { payload: { presentation: title, slideId, slide: labelOf(deck, slideId) }, result: undefined };
     });
   }
 
@@ -529,7 +603,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("moveSlides", async () => {
       let ids = after === null ? slideIds : [...slideIds, after];
-      let { deck } = await this.#prepare(ids, "queue moving them");
+      let { title, deck } = await this.#prepare(ids, "queue moving them");
       let moved: string[];
       try {
         moved = movedOrder(deck.order, slideIds, after);
@@ -542,6 +616,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       let moving = new Set(slideIds);
       return {
         payload: {
+          presentation: title,
           slideIds,
           after,
           slides: deck.order.filter(id => moving.has(id)).map(id => labelOf(deck, id)),
@@ -574,6 +649,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
             title: "Read Google Slides slides to change them",
             description: `Read the slide order of "${title}" and the placeholders of ` +
               `${layout === undefined ? "a layout" : `its layout "${layout}"`} to queue adding a slide.`,
+            ...this.#subject(title),
           };
         });
       let { title, layouts, deck } = preparable(ids, simulated);
@@ -584,6 +660,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       // Minted here rather than by Google, so changes queued to the slide can name it and them.
       let newSlideId = mintObjectId();
       let payload = {
+        presentation: title,
         newSlideId,
         layoutId,
         layout,
@@ -606,13 +683,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     }
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("skipSlides", async () => {
-      let { deck } = await this.#prepare(slideIds, skipped ? "queue skipping them" : "queue unskipping them");
+      let { title, deck } = await this.#prepare(slideIds, skipped ? "queue skipping them" : "queue unskipping them");
       if (slideIds.every(id => (deck.slides.get(id)?.slideProperties?.isSkipped === true) === skipped)) {
         throw new Error(skipped ? "Those slides are already skipped." : "None of those slides is skipped.");
       }
       let listed = new Set(slideIds);
       return {
         payload: {
+          presentation: title,
           slideIds,
           skipped,
           slides: deck.order.filter(id => listed.has(id)).map(id => labelOf(deck, id)),

@@ -2,6 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
+import type { DraftGroup } from './features/drafts/drafts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
@@ -54,8 +55,6 @@ import {
   clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
 } from './action-test-harness'
 import ChatInterface from './ChatInterface'
-import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
-import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
 
 const testRoot = makeTestRoot()
@@ -97,13 +96,14 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: { restricted?: boolean, selectedChatId?: number, onReviewDrafts?: (group: DraftGroup) => void } = {},
 ) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      onReviewDrafts={props.onReviewDrafts}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -175,6 +175,7 @@ const longDescription = [
 
 function pendingLog(over: Partial<Record<string, unknown>> = {}) {
   return entry(1, {
+    gatekeeperId: 4,
     description: {
       title: 'Send email', description: longDescription, implementsRevert: false,
       autoApprovable: false, ...over,
@@ -195,115 +196,119 @@ async function renderPendingCard(log: ActionLogEntry, props: { restricted?: bool
   chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
 }
 
-const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
+const tray = () => document.querySelector('[aria-label="Drafted changes"]')
+const trayButton = (name: string) =>
+  [...(tray()?.querySelectorAll('button') ?? [])].find(b => b.textContent?.trim() === name)
 
-// The text a screen reader announces as the Approve button's description.
-function approveDescribedBy(): string | null {
-  const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
-  if (!approve) throw new Error('No Approve button rendered')
-  const ids = approve.getAttribute('aria-describedby')
-  if (ids === null) return null
-  return ids.split(' ').map(id => {
-    const el = document.getElementById(id)
-    if (!el) throw new Error(`aria-describedby names a missing element: ${id}`)
-    return el.textContent ?? ''
-  }).join('\n')
-}
-
-describe('restricted approval', () => {
-  it('shows the notice and the full request on a pending card while restricted', async () => {
-    await renderPendingCard(pendingLog(), { restricted: true })
-
-    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(document.body.textContent).toContain('Regards, the workspace.')
-    expect(clampedDescription()).toBeNull()
-    // The controls precede the review text in DOM order, so the buttons name it explicitly.
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).toContain('Regards, the workspace.')
-    expect(described).toContain(INCOMPLETE_DESCRIPTION_COPY)
-  })
-
-  it('names only the restricted notice and request for a complete description', async () => {
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true }), { restricted: true })
-
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
-  })
-
-  it('shows the notice and the full request on a blocking card while restricted', async () => {
-    await renderPendingCard(pendingLog({ awaitDecision: true }), { restricted: true })
-
-    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(clampedDescription()).toBeNull()
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).toContain('Regards, the workspace.')
-  })
-
-  it('names the fields as part of the request while restricted', async () => {
-    const fields = [{ label: 'To', kind: 'list', items: ['a@example.com'] }]
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true, fields }), { restricted: true })
-
-    expect(approveDescribedBy()).toContain('a@example.com')
-  })
-
-  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
-    it(`shows a ${name} card's long fields without a scroll cap while restricted`, async () => {
-      const fields = [{ label: 'Body', kind: 'text', value: 'Full body text' }]
-      await renderPendingCard(pendingLog({ ...over, fields }), { restricted: true })
-
-      const body = [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
-      expect(body?.className).not.toContain('max-h-56')
-      expect(document.querySelector('[class*="max-h-[360px]"]')).toBeNull()
-    })
-  }
-
-  it('keeps the scrolling description and no notice when not restricted', async () => {
+describe('drafts', () => {
+  it('shows a pending action as a drafted line, decided from the tray above the composer', async () => {
     await renderPendingCard(pendingLog())
 
-    expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
-    expect(clampedDescription()).not.toBeNull()
-    expect(approveDescribedBy()).toBeNull()
-  })
-})
-
-describe('incomplete description notice', () => {
-  it('flags a pending action whose description is not marked complete', async () => {
-    await renderPendingCard(pendingLog())
-
-    expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(document.body.textContent).toContain('Send email · Drafted')
+    expect(tray()?.textContent).toContain('1 change drafted, not applied yet')
+    expect(trayButton('Apply')).toBeDefined()
+    // No card asks for this one decision on its own.
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Approve')).toBe(false)
   })
 
-  it('flags a blocking action whose description is not marked complete', async () => {
+  it('says when the agent is waiting on a draft', async () => {
     await renderPendingCard(pendingLog({ awaitDecision: true }))
 
-    expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(document.body.textContent).toContain('Send email · Waiting for you')
+    expect(tray()?.textContent).toContain('The agent is waiting for you to decide.')
   })
 
-  it('shows no notice when the description is complete', async () => {
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+  it('offers no blind Apply while restricted, only the review that shows the whole request', async () => {
+    await renderPendingCard(pendingLog(), { restricted: true })
 
-    expect(document.body.textContent).toContain('Regards, the workspace.')
-    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+    expect(trayButton('Apply')).toBeUndefined()
+    expect(tray()?.textContent).toContain('Review')
+  })
+
+  it('applies the chat\'s drafts from the tray, and the tray goes once none wait', async () => {
+    const server = makeOverseer()
+    const approved: number[] = []
+    Object.assign(server.overseer as object, {
+      approveAction: async (id: number) => { approved.push(id) },
+    })
+    const chat = withChatApi(server, undefined, [openChat])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    const logs = [pendingLog(), { ...pendingLog(), id: 2 }] as ActionLogEntry[]
+    await server.resolvePendingQuery({ entries: logs })
+    chat.emitMessage({ ...actionMessage, actionLog: logs[0] } as AiChatMessage)
+    chat.emitMessage({ ...actionMessage, sequence: 1, actionId: 2, actionLog: logs[1] } as AiChatMessage)
+
+    await act(async () => trayButton('Apply all 2')!.click())
+    expect(approved).toEqual([1, 2])
+    expect(tray()).toBeNull()
+    expect(document.body.textContent).toContain('Send email · Applied')
+  })
+
+  it('shows a drafted line\'s fields as literal text once opened', async () => {
+    const body = 'LGTM ```but``` <script>alert(1)</script>'
+    await renderPendingCard(pendingLog({ fields: [{ label: 'Body', kind: 'text', value: body, syntax: 'markdown' }] }))
+
+    const line = [...document.querySelectorAll('button')].find(b => b.textContent?.includes('Send email · Drafted'))!
+    await act(async () => line.click())
+    expect([...document.body.querySelectorAll('pre')].some(el => el.textContent === body)).toBe(true)
+    expect(document.body.querySelector('script')).toBeNull()
+    expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
   })
 })
 
-describe('action fields', () => {
-  const body = 'LGTM ```but``` <script>alert(1)</script>'
-  const fields = [{ label: 'Body', kind: 'text', value: body, syntax: 'markdown' }]
+describe('drafts made in a turn', () => {
+  it('fold into the turn\'s Worked for line, whose step opens the draft\'s review', async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    const onReviewDrafts = vi.fn<(group: DraftGroup) => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, onReviewDrafts })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    const started = Date.now() - 60_000
+    chat.emitMessage({ type: 'message', chatId: 1, sequence: 0, timestamp: new Date(started),
+      author: { type: 'user', id: 'u', name: 'Ada' }, message: 'Email Alice' } as AiChatMessage)
+    chat.emitMessage({ type: 'message', chatId: 1, sequence: 1, timestamp: new Date(started + 1000),
+      author: { type: 'agent', id: 'model', name: 'Model' }, message: '',
+      toolCalls: [{ toolCallId: 't', toolName: 'executeCode', input: { code: 'x', summary: 'Drafting the email' } }],
+    } as AiChatMessage)
+    chat.emitMessage({ ...actionMessage, sequence: 2, timestamp: new Date(started + 2000), actionLog: pendingLog() } as AiChatMessage)
 
-  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
-    it(`shows a ${name} action's fields as literal text after the description`, async () => {
-      await renderPendingCard(pendingLog({ ...over, fields }))
+    // The line settles into how long the turn took on the next tick.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    const worked = [...document.querySelectorAll('button')].find(b => b.textContent?.includes('Worked for'))!
+    expect(document.querySelector('[aria-label="Steps"]')?.textContent).toContain('Send email · Drafted')
+    expect([...document.querySelectorAll('button')].filter(b => b.textContent?.includes('Send email · Drafted'))).toHaveLength(1)
+    await act(async () => worked.click())
+    const step = [...document.querySelectorAll('[aria-label="Steps"] button')].find(b => b.textContent?.includes('Send email'))!
+    await act(async () => (step as HTMLButtonElement).click())
+    expect(onReviewDrafts).toHaveBeenCalledWith(expect.objectContaining({ drafts: [expect.objectContaining({ id: 1 })] }))
+  })
+})
 
-      const pre = [...document.body.querySelectorAll('pre')].find(el => el.textContent === body)
-      expect(pre).toBeDefined()
-      expect(document.body.querySelector('script')).toBeNull()
-      expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
-    })
-  }
+describe('a file the agent creates', () => {
+  it('shows as a card in the chat, which opens its review while it is a draft', async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    const onReviewDrafts = vi.fn<(group: DraftGroup) => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, onReviewDrafts })
+    await server.resolveSubscription()
+    const creation = { ...pendingLog(), resourceTitle: 'Michael Jordan', creation: true } as ActionLogEntry
+    await server.resolvePendingQuery({ entries: [creation] })
+    chat.emitMessage({ type: 'message', chatId: 1, sequence: 0, timestamp: new Date(),
+      author: { type: 'agent', id: 'model', name: 'Model' }, message: 'Made you a doc.',
+      toolCalls: [{ toolCallId: 't', toolName: 'createExternalResource',
+        input: { vendorId: 'google', resourceUrlPattern: 'https://docs.google.com/document/d/*', title: 'Michael Jordan', bindingName: 'DOC' },
+        output: { gatekeeperId: 4 } }],
+    } as AiChatMessage)
+    chat.emitMessage({ ...actionMessage, sequence: 1, actionLog: creation } as AiChatMessage)
+
+    const card = [...document.querySelectorAll('button')].find(b => b.getAttribute('title') === 'New Google Doc · Click to review')!
+    expect(card.textContent).toContain('Michael Jordan')
+    expect(card.textContent).toContain('Draft')
+    await act(async () => card.click())
+    expect(onReviewDrafts).toHaveBeenCalledWith(expect.objectContaining({ gatekeeperId: 4 }))
+  })
 })
 
 // The server's refusal for a chat whose model an administrator disabled.

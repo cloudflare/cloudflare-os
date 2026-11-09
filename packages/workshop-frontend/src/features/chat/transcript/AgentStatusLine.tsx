@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AgentMark } from '../../../components/icons/brandMarks'
 import { ChevronRightIcon } from '../../../components/icons/designIcons'
-import { formatWorkedFor, type TurnWork } from './turnWork'
+import { formatWorkedFor, type ChangeOutcome, type TurnWork } from './turnWork'
 import styles from './transcript.module.css'
 
 /** What the agent is doing, as the status line says it. */
@@ -16,8 +16,24 @@ export type AgentStatus = {
   waiting?: boolean
 }
 
-/** A finished turn's work, and whether its steps are open. */
-export type FinishedWork = { work: TurnWork; expanded: boolean; onToggle: () => void }
+/**
+ * A finished turn's work, and whether its steps are open. `onOpenChange` opens the review of a
+ * change the turn drafted, from its step.
+ */
+export type FinishedWork = {
+  work: TurnWork
+  expanded: boolean
+  onToggle: () => void
+  onOpenChange?: (actionId: number) => void
+}
+
+const OUTCOME: Record<ChangeOutcome, { label: string; className: string }> = {
+  drafted: { label: 'Drafted', className: 'text-kumo-warning' },
+  waiting: { label: 'Waiting for you', className: 'text-kumo-warning' },
+  applied: { label: 'Applied', className: 'text-kumo-inactive' },
+  auto: { label: 'Applied automatically', className: 'text-kumo-inactive' },
+  discarded: { label: 'Discarded', className: 'text-kumo-inactive' },
+}
 
 const THINKING = 'Thinking...'
 
@@ -153,11 +169,32 @@ export function AgentStatusLine({ status, done, still = false }: {
             <div className={styles.steps} data-open={expanded}>
               <div className="min-h-0 overflow-hidden">
                 <ol className="ml-[17px] border-l border-kumo-line pb-1 pl-[19px] pt-0.5" aria-label="Steps">
-                  {finished.work.steps.map((step, index) => (
-                    <li key={index} className={`${styles.step} relative py-[3px] text-[13px] leading-[18px] text-kumo-subtle`}>
-                      {step}
-                    </li>
-                  ))}
+                  {finished.work.steps.map((step, index) => {
+                    if (typeof step === 'string') {
+                      return (
+                        <li key={index} className={`${styles.step} relative py-[3px] text-[13px] leading-[18px] text-kumo-subtle`}>
+                          {step}
+                        </li>
+                      )
+                    }
+                    const outcome = OUTCOME[step.outcome]
+                    const opens = finished.onOpenChange && (step.outcome === 'drafted' || step.outcome === 'waiting')
+                    const words = <>{step.text}<span className={outcome.className}> · {outcome.label}</span></>
+                    return (
+                      <li key={index} className={`${styles.step} relative py-[3px] text-[13px] leading-[18px] text-kumo-subtle`}>
+                        {opens ? (
+                          <button
+                            type="button"
+                            onClick={() => finished.onOpenChange!(step.actionId)}
+                            className="group/step inline-flex cursor-pointer items-center gap-0.5 rounded text-left transition-colors hover:text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+                          >
+                            <span>{words}</span>
+                            <ChevronRightIcon size={12} className="shrink-0 opacity-0 transition-opacity group-hover/step:opacity-60 group-focus-visible/step:opacity-60" />
+                          </button>
+                        ) : words}
+                      </li>
+                    )
+                  })}
                 </ol>
               </div>
             </div>

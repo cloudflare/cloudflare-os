@@ -42,3 +42,22 @@ export const LAYOUT_PAGE_FIELDS =
 export const SLIDE_FIELDS =
   `objectId,pageProperties(${BACKGROUND_FIELDS}),pageElements,` +
   "slideProperties(layoutObjectId,masterObjectId,isSkipped,notesPage(notesProperties,pageElements))";
+// The approver's preview alone downloads a picture background, through the bearer URL of the copy
+// Google keeps, which it never returns or logs (see `slides-preview.ts`).
+const PREVIEW_BACKGROUND_FIELDS = "pageBackgroundFill(propertyState,solidFill,stretchedPictureFill)";
+/**
+ * What the approver's preview draws a slide over: the page size, and every master and layout whole,
+ * since a slide's placeholders take their place, fills and text styles from their layout's, and
+ * those from their master's, and a slide shows its layout's and master's other elements behind
+ * its own. A live deck's masters and layouts, styles and all, are some hundreds of KiB.
+ */
+export const PREVIEW_OUTLINE_FIELDS = (
+  `presentationId,title,pageSize,${MASTER_FIELDS.slice(0, -1)},pageElements),` +
+  `layouts(${LAYOUT_PROPERTIES},pageElements),slides(objectId,slideProperties(masterObjectId,isSkipped))`
+).replaceAll(BACKGROUND_FIELDS, PREVIEW_BACKGROUND_FIELDS);
+/**
+ * One slide as the approver's preview draws it: as SLIDE_FIELDS, speaker notes and all, since
+ * queued changes replay over them, with its picture background's URL.
+ */
+export const PREVIEW_SLIDE_FIELDS =
+  SLIDE_FIELDS.replace(BACKGROUND_FIELDS, PREVIEW_BACKGROUND_FIELDS);

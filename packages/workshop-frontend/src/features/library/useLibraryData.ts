@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
+import type { RpcStub } from 'capnweb'
 import type {
+  ActionLogEntry,
   ChatFileSummary,
+  Overseer,
   FavoriteItem,
   FavoriteItemRef,
   FavoriteItemSpec,
@@ -9,6 +12,7 @@ import type {
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { logRpcFailure } from '../../rpcErrors'
+import { externalFiles, type ExternalFileSource } from './externalFiles'
 
 /** The key a starred item is known by, matching the server's (see `favoriteKey`). */
 export const favoriteRefKey = (item: FavoriteItemRef) => item.kind === 'app'
@@ -92,6 +96,55 @@ export function useWorkspaceFiles(workspaces: { id: string; title: string }[] | 
         return list.map(file => ({ ...file, workspaceId: id, workspaceTitle: title }))
       } catch (err) {
         logRpcFailure('Failed to list a workspace\'s files:', err)
+        return []
+      } finally {
+        overseer[Symbol.dispose]()
+      }
+    })).then(lists => { if (!cancelled) setFiles(lists.flat()) })
+    return () => { cancelled = true }
+  }, [authenticatedApi, ids])
+  return files
+}
+
+// How many pages of each workspace's action log the Library reads for connected files, newest first.
+const ACTION_PAGES_READ = 4
+
+/** The connected files `overseer`'s workspace has worked on, from its recent action log. */
+export async function readExternalFiles(
+  overseer: RpcStub<Overseer>, workspace: { id: string; title?: string },
+): Promise<ExternalFileSource[]> {
+  const entries: ActionLogEntry[] = []
+  let beforeId: number | undefined
+  for (let page = 0; page < ACTION_PAGES_READ; page++) {
+    const result = await overseer.listActions(beforeId === undefined ? {} : { beforeId })
+    entries.push(...result.entries)
+    beforeId = result.nextBeforeId
+    if (beforeId === undefined) break
+  }
+  return externalFiles(entries, workspace)
+}
+
+/**
+ * The files in connected services, such as Google Docs, that the given workspaces' agents and
+ * gadgets read, changed or created (see externalFiles). Asked as useWorkspaceFiles asks.
+ */
+export function useExternalFiles(workspaces: { id: string; title: string }[] | null) {
+  const { authenticatedApi } = useAuthenticatedApi()
+  const [files, setFiles] = useState<ExternalFileSource[] | null>(null)
+  const ids = workspaces?.slice(0, FILE_WORKSPACE_LIMIT).map(w => `${w.id}\u0000${w.title}`).join('\u0001')
+  useEffect(() => {
+    if (ids === undefined) return
+    let cancelled = false
+    const targets = ids === '' ? [] : ids.split('\u0001').map(entry => {
+      const [id, title] = entry.split('\u0000')
+      return { id, title }
+    })
+    Promise.all(targets.map(async workspace => {
+      const overseer = authenticatedApi.openWorkspace(workspace.id)
+      try {
+        return await readExternalFiles(overseer, workspace)
+      } catch (err) {
+        logRpcFailure('Failed to list a workspace\'s connected files:', err)
         return []
       } finally {
         overseer[Symbol.dispose]()

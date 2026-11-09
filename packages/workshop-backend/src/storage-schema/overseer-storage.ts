@@ -178,6 +178,12 @@ export type GadgetRecord = {
   created: Date;
 
   /**
+   * Set while the gadget is in Auto (see GadgetClient.setAutoApprove()): who put it there, under
+   * whose authority its auto-approvable actions apply.
+   */
+  autoApprove?: {enabledBy: AiChatAuthorInfo};
+
+  /**
    * The output format this gadget was built as, copied from the blueprint it was instantiated
    * from (see BlueprintMetadata.output). Absent for a gadget built from scratch, which displays as
    * a generic app. Purely descriptive: it names and draws the gadget, and confers nothing.

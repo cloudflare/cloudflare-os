@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, ResourcePreview } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -46,7 +46,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, waitingForApprovalNote, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -82,7 +82,7 @@ import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule, awaitsManualApproval } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -112,8 +112,11 @@ function isCountableChatMessage(message: StoredChatMessage): boolean {
     (!!message.message.trim() || !!message.attachments?.length);
 }
 
-function headForMessage(meta: AiChatMetadata, message?: StoredChatMessage): ChatTimelineHead {
-  let spawner = meta.spawnerName === undefined ? {} : {spawnerName: meta.spawnerName};
+function headForMessage(meta: AiChatMetadata, message?: StoredChatMessage, draftsWaiting = 0): ChatTimelineHead {
+  let spawner = {
+    ...(meta.spawnerName === undefined ? {} : {spawnerName: meta.spawnerName}),
+    ...(draftsWaiting > 0 ? {draftsWaiting} : {}),
+  };
   return message && isCountableChatMessage(message) ? {chatTitle: meta.title, latestSequence: message.sequence,
     latestActivityAt: message.timestamp, latestMessagePreview: message.type === "message"
       ? message.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : "", ...spawner}
@@ -614,6 +617,8 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        gadgetId: record.caller.from === "gadget" || record.caller.from === "hook"
+            ? record.caller.gadgetId : undefined,
       };
     case "bindHook":
       return {
@@ -765,6 +770,15 @@ export function sanitizeMessageFormatRefs(
 // session is a "build" capability but never an observer's, so it is counted apart from the
 // collaborator roles.
 type SessionKind = CollaboratorRole | "owner";
+
+// Where a turn segment begins, reading a chat backwards: a prompt or callback starts a turn, a
+// nudge resumes one after a decision, and a built-in /compact closes what came before.
+function startsTurnSegment(msg: StoredChatMessage): boolean {
+  return msg.type === "agentCallback" || msg.type === "agentNudge" ||
+      (msg.type === "slashCommand" && msg.request.id.builtin === true &&
+       msg.request.id.commandId === "compact") ||
+      isTurnPrompt(msg);
+}
 
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
@@ -1307,7 +1321,7 @@ class OverseerImpl implements AgentHooks {
         let counter = this.storage.nextChatSequences.get(chatId);
         let latestMessage = counter?.latestVisibleMessageSequence === undefined ? undefined :
           this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
-        let head = meta ? headForMessage(meta, latestMessage) : undefined;
+        let head = meta ? headForMessage(meta, latestMessage, this.#draftsWaiting(chatId)) : undefined;
         let latestVisibleSequence = counter?.visibleThroughSequence ?? 0;
         let latestMessageAuthorId = head && head.latestSequence >= 0 && latestMessage?.author.type === "user"
           ? latestMessage.author.id : undefined;
@@ -1379,7 +1393,16 @@ class OverseerImpl implements AgentHooks {
     if (!meta) return;
     let latest = this.storage.nextChatSequences.get(chatId)?.latestVisibleMessageSequence;
     let message = latest === undefined ? undefined : this.storage.chats.get(chatKey(chatId, latest));
-    return headForMessage(meta, message);
+    return headForMessage(meta, message, this.#draftsWaiting(chatId));
+  }
+
+  // How many actions made in chat `chatId` wait as drafts (see ChatTimelineHead.draftsWaiting).
+  #draftsWaiting(chatId: number): number {
+    let count = 0;
+    for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
+      if (record.type === "action" && "chatId" in record.caller && record.caller.chatId === chatId) count++;
+    }
+    return count;
   }
 
   async setChatReadHorizon(userId: string, chatId: number, sequence: number | undefined,
@@ -1452,6 +1475,24 @@ class OverseerImpl implements AgentHooks {
       add: meta => this.markChatDirty(meta.id),
       update: (old, meta) => { if (old.title !== meta.title) this.markChatDirty(meta.id); },
       remove: meta => this.markChatDirty(meta.id),
+    });
+    // A chat's head counts its drafts, so one queued or decided changes it.
+    let draftOf = (record: ActionRecord) =>
+      record.type === "action" && record.state === "pending" && "chatId" in record.caller
+        ? record.caller.chatId : undefined;
+    this.storage.actions.subscribe({
+      add: record => {
+        let chatId = draftOf(record);
+        if (chatId !== undefined) this.markChatDirty(chatId);
+      },
+      update: (old, record) => {
+        let chatId = draftOf(old) ?? draftOf(record);
+        if (chatId !== undefined && draftOf(old) !== draftOf(record)) this.markChatDirty(chatId);
+      },
+      remove: record => {
+        let chatId = draftOf(record);
+        if (chatId !== undefined) this.markChatDirty(chatId);
+      },
     });
     this.storage.chatNotifications.subscribe({
       add: event => this.markChatDirty(event.chatId, event.sequence),
@@ -2389,6 +2430,9 @@ class OverseerImpl implements AgentHooks {
       }
       if (record.madeInChatId !== undefined && includePending) {
         summary.madeInChatId = record.madeInChatId;
+      }
+      if (record.autoApprove && includePending) {
+        summary.autoApprove = true;
       }
       if (record.pending) {
         summary.chatId = record.pending.chatId;
@@ -5799,6 +5843,18 @@ class OverseerImpl implements AgentHooks {
     return this.#autoApprovalDrainer.drain(gatekeeperId);
   }
 
+  // Drains every connection holding a pending action whose caller matches, as a newly enabled
+  // mode for that caller may now apply them.
+  drainAutoApprovalsOf(matches: (caller: GatekeeperCaller) => boolean): void {
+    let gatekeeperIds = new Set<WorkpieceId>();
+    for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
+      if (record.type === "action" && matches(record.caller)) gatekeeperIds.add(record.gatekeeperId);
+    }
+    for (let gatekeeperId of gatekeeperIds) {
+      this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
+    }
+  }
+
   // Blocks other messages and agent turns for this chat until the returned object is disposed.
   reserveChatMessagePreparation(chatId: number): Disposable {
     if (this.#preparingChatMessages.has(chatId)) {
@@ -6808,7 +6864,7 @@ class OverseerImpl implements AgentHooks {
 
     // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
     // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
-    let willAutoApprove = autoApprovalRule(this.storage, gatekeeperId, description) !== undefined;
+    let willAutoApprove = autoApprovalRule(this.storage, gatekeeperId, description, caller) !== undefined;
     if (!willAutoApprove) this.traceAgentActionApproval(record, "requested");
 
     // Only agent turns suspend on awaitDecision, and only when a manual decision is pending: on this
@@ -6817,7 +6873,7 @@ class OverseerImpl implements AgentHooks {
     if (caller.from === "agent" && description.awaitDecision && (!willAutoApprove ||
         [...this.storage.actions.pendingByGatekeeper.get(gatekeeperId)].some(queued =>
             queued.type === "action" &&
-            autoApprovalRule(this.storage, gatekeeperId, queued.description) === undefined))) {
+            autoApprovalRule(this.storage, gatekeeperId, queued.description, queued.caller) === undefined))) {
       this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
     }
 
@@ -9994,6 +10050,7 @@ class OverseerImpl implements AgentHooks {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
+    let firstActionId = this.storage.nextActionId.get();
 
     // Register the execution, with the turn's worktree state, for the binding loopbacks (see
     // startGatekeeperSession's "worktree" case and ObserverLedger.authorizeObservation), for
@@ -10085,7 +10142,7 @@ class OverseerImpl implements AgentHooks {
         log = "(function succeeded with no output)";
       }
 
-      return log;
+      return log + this.#waitingForApprovalNote(chatId, firstActionId);
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
       if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
@@ -10095,6 +10152,20 @@ class OverseerImpl implements AgentHooks {
       this.#codeModeResolvers.delete(executionId);
       this.#forgedRestoreTargets.delete(chatId);
     }
+  }
+
+  // Told to the agent after a run that left changes waiting for the user. Reads simulate pending
+  // actions, so without this the agent reads its own writes back and reports them done. An
+  // awaitDecision action is left out: the turn suspends on it, and resumes saying how it went.
+  #waitingForApprovalNote(chatId: number, firstActionId: number): string {
+    let waiting: Array<{title: string, resourceTitle?: string}> = [];
+    for (let record of this.storage.actions.list({start: firstActionId})) {
+      if (record.type !== "action" || record.description.awaitDecision ||
+          !awaitsManualApproval(this.storage, record)) continue;
+      if (record.caller.from !== "agent" || record.caller.chatId !== chatId) continue;
+      waiting.push({title: record.description.title, resourceTitle: record.resourceTitle});
+    }
+    return waitingForApprovalNote(waiting);
   }
 
   consumeCapturedActions(chatId: number)
@@ -10118,7 +10189,8 @@ class OverseerImpl implements AgentHooks {
   // person waits on completion; callbacks and spawned agents notify only when permission is needed.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     if (!this.storage.chatMeta.get(chatId)) return;
-    let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
+    let awaitingDecision = (this.#decisionWait(chatId)?.pending ?? false) ||
+        this.#segmentLeftActionsWaiting(chatId);
     if (!awaitingDecision && initiator.type !== "user") return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
     let sequence = this.nextChatSequencePeek(chatId) - 1;
@@ -10127,6 +10199,19 @@ class OverseerImpl implements AgentHooks {
     if (previous?.kind === kind && previous.userId === initiatorUserId) return;
     this.storage.chatNotifications.put({id: crypto.randomUUID(), chatId, sequence,
       userId: initiatorUserId, kind});
+  }
+
+  // Whether the chat's latest turn segment left an action waiting for someone to approve it. Such
+  // an action does not suspend the turn (only awaitDecision ones do), so the turn finishes with
+  // its work unapplied -- an unattended run included -- and someone has to hear about it.
+  #segmentLeftActionsWaiting(chatId: number): boolean {
+    for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+      if (startsTurnSegment(msg)) return false;
+      if (msg.type !== "action") continue;
+      let record = this.storage.actions.get(msg.actionId);
+      if (record && awaitsManualApproval(this.storage, record)) return true;
+    }
+    return false;
   }
 
   // The log is the wait record. A nudge is the consumption boundary for a previous decision,
@@ -10142,12 +10227,7 @@ class OverseerImpl implements AgentHooks {
     let steered = false;
     let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      if (msg.type === "agentCallback" || msg.type === "agentNudge" ||
-          (msg.type === "slashCommand" && msg.request.id.builtin === true &&
-           msg.request.id.commandId === "compact") ||
-          isTurnPrompt(msg)) {
-        break;
-      }
+      if (startsTurnSegment(msg)) break;
       // Null means a committed final response, not an interrupted segment to run again.
       // It also consumed any earlier inline approvals without suspending. A steer the agent read
       // after that response still needs an answer, so the turn is unfinished, waiting on nothing.
@@ -13077,6 +13157,40 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return (await Promise.all(perGatekeeper)).flat();
   }
 
+  async previewResource(gatekeeperId: WorkpieceId, subject?: string)
+      : Promise<ResourcePreview | null> {
+    if (!this.isOwner) return null;
+    if (!this.impl.storage.gatekeepers.get(gatekeeperId)) {
+      throw new Error(`No such gatekeeper: ${gatekeeperId}`);
+    }
+    // previewResource is optional on Gatekeeper, and workerd rejects a call to a method the facet
+    // lacks with this TypeError; that one failure means "draws no preview".
+    let facet = await this.impl.getGatekeeperFacet(gatekeeperId) as
+        Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "previewResource">>>;
+    let preview = await facet.previewResource(subject).catch((error: unknown) => {
+      if (error instanceof TypeError &&
+          error.message.includes('does not implement the method "previewResource"')) return null;
+      throw error;
+    });
+    if (!preview) return null;
+
+    // The preview numbers actions as the gatekeeper does; the client knows them by log entry id.
+    // An action that is no longer pending (decided while the preview was drawn) maps to -1 in
+    // `actions`, keeping the indices that content uses, and leaves `omitted`.
+    let ids = new Map<number | "create", number>();
+    for (let record of this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
+      if (record.type === "action") ids.set(record.action, record.id);
+    }
+    return {
+      ...preview,
+      actions: preview.actions.map(action => ids.get(action) ?? -1),
+      omitted: preview.omitted?.flatMap(({action, reason}) => {
+        let id = ids.get(action);
+        return id === undefined ? [] : [{action: id, reason}];
+      }),
+    };
+  }
+
   // The messages of the chat a connection or web fetch request was made in. The request id
   // encodes the chat id as a prefix (`${chatId}:...`) so we only scan that thread's messages.
   #requestChatMessages(requestId: string) {
@@ -13294,6 +13408,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (message.type === "connectionRequest" && message.state === "accepted" &&
           message.gatekeeperId !== undefined) {
         add(message.gatekeeperId, "chat", message.bindingName);
+      } else if (message.type === "action") {
+        // A connection the chat read or changed through, however it was reached: attached in the
+        // composer, created by the agent, or opened through another connection.
+        let record = storage.actions.get(message.actionId);
+        if (record) add(record.gatekeeperId, "chat");
       }
     }
     for (let [name, target] of Object.entries(this.impl.defaultBindingList())) add(target, "workspace", name);
@@ -13514,6 +13633,32 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     meta.lastActive = this.impl.getChatTimestamp();
     meta.title = title;
     this.impl.storage.chatMeta.put(meta);
+  }
+
+  async setChatAutoApprove(chatId: number, enabled: boolean): Promise<void> {
+    let meta = this.impl.storage.chatMeta.get(chatId);
+    if (!meta) {
+      throw new Error("No such chatId: " + chatId);
+    }
+    if (enabled) {
+      meta.autoApprove = {enabledBy: await this.#getClientProfile()};
+    } else {
+      delete meta.autoApprove;
+    }
+    this.impl.storage.chatMeta.put(meta);
+    if (!enabled) return;
+
+    // What the chat's agent left waiting now applies, in order per connection, as new work will.
+    let gatekeeperIds = new Set<WorkpieceId>();
+    for (let record of this.impl.storage.actions.byHistoryFilter.get("pending")) {
+      if (record.type === "action" && record.caller.from === "agent" &&
+          record.caller.chatId === chatId) {
+        gatekeeperIds.add(record.gatekeeperId);
+      }
+    }
+    for (let gatekeeperId of gatekeeperIds) {
+      this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId));
+    }
   }
 
   async mergeChanges(chatId: number): Promise<MergeChangesResult> {
@@ -14161,6 +14306,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async listPreApprovableActions(): Promise<PreApprovableAction[]> { this.#deny(); }
+  async previewResource(_gatekeeperId: WorkpieceId, _subject?: string)
+      : Promise<ResourcePreview | null> { this.#deny(); }
   async getGatekeeperById(_id: number): Promise<GatekeeperClient<any>> { this.#deny(); }
   async newGatekeeper(_accountId: number, _resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> { this.#deny(); }
@@ -14238,6 +14385,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listChatFiles(_chatId?: number): Promise<ChatFileSummary[]> { this.#deny(); }
   async listChatConnections(_chatId: number): Promise<ChatConnectionInfo[]> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
+  async setChatAutoApprove(_chatId: number, _enabled: boolean): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {
     this.#deny();
   }
@@ -14333,6 +14481,20 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     let record = this.impl.getGadgetRecord(this.id);
     record.title = title;
     this.impl.storage.gadgets.put(record);
+  }
+
+  async setAutoApprove(enabled: boolean): Promise<void> {
+    let record = this.impl.getGadgetRecord(this.id);
+    if (enabled) {
+      let enabledBy = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
+      record = this.impl.getGadgetRecord(this.id);
+      record.autoApprove = {enabledBy};
+    } else {
+      delete record.autoApprove;
+    }
+    this.impl.storage.gadgets.put(record);
+    if (enabled) this.impl.drainAutoApprovalsOf(caller =>
+        (caller.from === "gadget" || caller.from === "hook") && caller.gadgetId === this.id);
   }
 
   async remove(): Promise<void> {
@@ -14673,6 +14835,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   // A live "use" collaborator renders the UI bundle; the view is for those who can't.
   async getView(): Promise<GadgetView> { this.#deny(); }
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
+  async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async remove(): Promise<void> { this.#deny(); }
@@ -14759,6 +14922,7 @@ class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
   // --- Denied methods ---
 
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
+  async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
   async getExportFormats(_chatId?: number): Promise<GadgetExportFormat[]> { this.#deny(); }
   async export(_id: string, _chatId?: number): Promise<ReadableStream<Uint8Array>> {
     this.#deny();

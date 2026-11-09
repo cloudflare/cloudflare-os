@@ -234,6 +234,10 @@ describe("Google Sheets spreadsheet session", () => {
     expect(queue.observations.map(o => o.title)).toEqual([
       "Read Google spreadsheet metadata", "Read Google Sheets range Sales!A1:B1",
     ]);
+    // The metadata read named the spreadsheet, so the range read needs no request to name it.
+    expect(queue.observations.map(o => [o.subject?.title, o.subject?.role])).toEqual([
+      ["Budget", "read"], ["Budget", "read"],
+    ]);
   });
 
   it("reads metadata and values with changes queued, showing them over what Google returns", async () => {
@@ -466,7 +470,7 @@ function fieldMasks(): string[] {
 }
 
 describe("Google Sheets format reads", () => {
-  it("reads formats with one request when no change is queued, asking for no value", async () => {
+  it("reads formats with one request when no change is queued, asking for no value, then the title it is named by", async () => {
     let { queue, session } = newSession();
     using _session = session;
 
@@ -474,14 +478,23 @@ describe("Google Sheets format reads", () => {
       range: "Sales!A19:B20",
       formats: [[{ fontSize: 1800 }, { fontSize: 1801 }], [{ fontSize: 1900 }, { fontSize: 1901 }], [null, null]],
     });
-    expect(requested()).toEqual([["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS]]);
+    // No read has seen the spreadsheet's title yet, so it is fetched once to name it.
+    expect(requested()).toEqual([
+      ["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS], ["/v4/spreadsheets/sheet-1", "properties(title)"],
+    ]);
     expect(providerFetches[0].searchParams.getAll("ranges")).toEqual(["sales!a19:b21"]);
     for (let field of VALUE_FIELDS) expect(fieldMasks()[0]).not.toContain(field);
     expect(queue.observations).toEqual([{
       title: "Read Google Sheets formatting of Sales!A19:B20",
       description: "Read the formatting of 6 cell(s) in the connected spreadsheet.",
       subresources: ["sheets/spreadsheet/sheet-1"],
+      subject: {
+        id: "sheet-1", title: "Budget", url: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+        mediaType: "application/vnd.google-apps.spreadsheet", role: "read",
+      },
     }]);
+    await session.readFormats("B2");
+    expect(requested()).toHaveLength(3);
   });
 
   it("refuses an unbounded range, or one of more than 10,000 cells, before fetching anything", async () => {
@@ -583,7 +596,9 @@ describe("Google Sheets format reads", () => {
     ));
 
     expect((await session.readFormats("B2")).formats).toEqual([[{ fontSize: 101 }]]);
-    expect(requested()).toEqual([["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS]]);
+    expect(requested()).toEqual([
+      ["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS], ["/v4/spreadsheets/sheet-1", "properties(title)"],
+    ]);
     expect(formatFilterReads).toEqual([]);
   });
 });

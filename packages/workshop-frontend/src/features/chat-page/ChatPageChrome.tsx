@@ -121,6 +121,7 @@ export function PaneHeader({
   activeId,
   onSelect,
   menu,
+  actions,
   onShare,
   shareLabel = 'Share app',
   onExpand,
@@ -136,6 +137,8 @@ export function PaneHeader({
   onSelect?: (id: number) => void
   /** The More menu's items, or nothing to leave the button out. */
   menu?: ReactNode
+  /** Controls before the More button, such as a link to open the item with its provider. */
+  actions?: ReactNode
   /** Shares what the pane shows on its own; nothing leaves the button out, `false` shows it disabled. */
   onShare?: (() => void) | false
   shareLabel?: string
@@ -189,6 +192,7 @@ export function PaneHeader({
         <div className={`${pillClass} cursor-default hover:!bg-kumo-base`} title={title}>{pill}</div>
       )}
       <span className="flex-1" />
+      {actions}
       {menu && (
         <DropdownMenu>
           <DropdownMenu.Trigger render={

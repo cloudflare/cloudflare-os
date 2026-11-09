@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, type DocumentEdit, type ResourcePreview, type ResourceSubject, type ResourceSubjectRole } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
@@ -104,6 +104,8 @@ import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
+import { trimDocumentPreviewMarkdown, type MarkdownSpan } from "./docs-preview";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
 import {
@@ -2152,21 +2154,49 @@ export class GoogleDocGatekeeperImpl
     return [EDIT_DOCUMENT_ACTION];
   }
 
+  /** What this binding reads the document through: a blank stand-in until it is created. */
+  #docReader(): { docsApi: GoogleDocReader; documentId: string } {
+    let props = this.ctx.props;
+    return isSimulated(props)
+      ? { docsApi: new BlankGoogleDoc(props.creation.title), documentId: UNCREATED_FILE_ID }
+      : { docsApi: new GoogleDocsApi(opts => this.#getAccessToken(opts)), documentId: props.documentId };
+  }
+
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleDocSession> {
-    let props = this.ctx.props;
+    let { docsApi, documentId } = this.#docReader();
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
     // A blank document always has a revision, so the session never reaches Drive for one.
     return new GoogleDocSessionImpl(
-        isSimulated(props)
-          ? new BlankGoogleDoc(props.creation.title)
-          : new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+        docsApi,
         new DriveApi(opts => this.#getAccessToken(opts)),
-        isSimulated(props) ? UNCREATED_FILE_ID : props.documentId,
+        documentId,
         approvalQueue.dup(),
         pendingActions,
         this.ctx.storage,
         this.#simulationCache);
+  }
+
+  /**
+   * The document with every pending edit drawn applied, read through the same snapshot cache and
+   * replay the agent's session uses (so it may invalidate an edit that no longer applies, as any
+   * read does). Not authorized as an observation: only the approver sees it.
+   *
+   * `subject` names the document by its Drive ID; one not yet created has none to name. Each tab
+   * is bounded as googleDocPreview() describes.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let { docsApi, documentId } = this.#docReader();
+    if (subject !== undefined && (documentId === UNCREATED_FILE_ID || subject !== documentId)) {
+      return null;
+    }
+    let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+    let simulation = new GoogleDocSimulation(
+        docsApi, documentId, pendingActions, this.ctx.storage, this.#simulationCache);
+    let snapshot = await simulation.snapshot();
+    let contentByTabId = simulation.replay(snapshot);
+    return googleDocPreview(snapshot, contentByTabId, pendingActions.list(),
+        documentId === UNCREATED_FILE_ID ? undefined : googleFileUrl("document", documentId));
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
@@ -2366,6 +2396,211 @@ export class GoogleDocGatekeeperImpl
   }
 }
 
+/**
+ * The document as this binding reads it, with its pending edits replayed over it. Shared by the
+ * agent's session and previewResource(), so both read through one snapshot cache and one replay.
+ */
+class GoogleDocSimulation {
+  constructor(
+    private docsApi: GoogleDocReader,
+    private documentId: string,
+    private pendingActions: PendingActionStore<GoogleDocAction>,
+    private storage: DurableObjectStorage,
+    private cache: GoogleDocSimulationCacheHolder,
+  ) {}
+
+  /** The document as last read, reread once DOC_SNAPSHOT_TTL_MS passes and its revision moves. */
+  async snapshot(): Promise<GoogleDocSnapshot> {
+    for (;;) {
+      let writes = this.cache.writes;
+      // A snapshot written before tabs existed has no tab list and is simply replaced.
+      let cached = await this.storage.get<unknown>(DOC_SNAPSHOT_KEY);
+      if (isGoogleDocSnapshot(cached) && Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) {
+        return cached;
+      }
+      let snapshot = isGoogleDocSnapshot(cached) &&
+          await googleDocRevisionUnchanged(this.docsApi, this.documentId, cached)
+        ? { ...cached, fetchedAt: Date.now() }
+        : googleDocSnapshot(await this.docsApi.getDocument(this.documentId));
+      // What Google returned before a write landed is stale: the edit is no longer pending to be
+      // replayed over it, so it would read as missing, and edits queued after it could not replay.
+      if (writes !== this.cache.writes) continue;
+      await this.storage.put(DOC_SNAPSHOT_KEY, snapshot);
+      return snapshot;
+    }
+  }
+
+  /**
+   * Every tab's content with the pending queue replayed over `snapshot`, invalidating any edit
+   * that no longer applies. A tab no edit touched may be missing from the result.
+   */
+  replay(snapshot: GoogleDocSnapshot): Map<string, GoogleDocSimulatedContent> {
+    let pending = this.pendingActions.list();
+    let pendingFingerprint = googleDocPendingFingerprint(pending);
+    let cached = this.cache.current;
+    // An unknown revision cannot be shown to match, so the replay is recomputed.
+    if (cached && cached.baseRevisionId !== undefined &&
+        cached.baseRevisionId === snapshot.revisionId &&
+        cached.pendingFingerprint === pendingFingerprint) {
+      return cached.contentByTabId;
+    }
+
+    // An edit whose marker is already in its tab committed even though its response never
+    // arrived, so this snapshot contains it. Replaying it would show that content twice; the
+    // action stays pending, and applyAction() settles it from the same marker.
+    let replayable = pending.filter(({action}) => {
+      let {writeId} = action;
+      return writeId === undefined || !googleDocActionTabs(snapshot.tabs, action.tabId)
+          .some(candidate => candidate.committedWriteIds.includes(writeId));
+    });
+
+    let contentByTabId = invalidateUnreplayableGoogleDocActions(
+        this.pendingActions,
+        snapshot,
+        replayable,
+        "Pending Google Doc edit could not be replayed against the current document");
+    this.cache.current = {
+      baseRevisionId: snapshot.revisionId,
+      pendingFingerprint: googleDocPendingFingerprint(this.pendingActions.list()),
+      contentByTabId,
+    };
+    return contentByTabId;
+  }
+}
+
+/**
+ * What one pending edit puts in place of what, as the replay applies it: `after` is the rendered
+ * form the approval shows as "New" or "Resulting", which is what the simulated tab holds.
+ */
+function googleDocActionEdit(action: GoogleDocAction): { before: string; after: string } {
+  switch (action.type) {
+    case "replaceText":
+      return {
+        before: action.oldMarkdown,
+        after: canonicalizeMarkdownReplacement(action.oldMarkdown, action.newMarkdown),
+      };
+    case "appendText":
+      return { before: "", after: canonicalizeMarkdownForWrite(action.markdown) };
+    default:
+      action satisfies never;
+      throw new Error("unknown Google Doc action type");
+  }
+}
+
+/** How much of the text around an edit DocumentEdit.context carries, at most, on each side. */
+const DOC_EDIT_CONTEXT = 48;
+
+/**
+ * The text on either side of where each pending edit landed, as the tab stood just after it
+ * applied (see DocumentEdit.context), by action id. Replays the queue from the snapshot itself,
+ * so an edit it cannot locate (one already committed, say) is simply left out.
+ */
+function googleDocEditContexts(
+  snapshot: GoogleDocSnapshot,
+  pending: GoogleDocPendingAction[],
+): Map<number, { before: string; after: string }> {
+  let contexts = new Map<number, { before: string; after: string }>();
+  let contentByTabId = new Map(snapshot.tabs.map(tab => [tab.tabId, googleDocSimulatedContent(tab)]));
+  for (let { id, action } of pending) {
+    if (action.invalidatedReason) continue;
+    try {
+      let { tabId } = googleDocActionTab(snapshot, action);
+      let content = contentByTabId.get(tabId)!;
+      let { after } = googleDocActionEdit(action);
+      let start = action.type === "replaceText"
+        ? findUniqueMarkdown(content.markdown, action.oldMarkdown, "previewResource", tabId)
+        : undefined;
+      let next = applyGoogleDocActionToContent(content, action, tabId);
+      contentByTabId.set(tabId, next);
+      let at = start ?? (after === "" ? next.markdown.length : next.markdown.lastIndexOf(after));
+      if (at < 0 || next.markdown.slice(at, at + after.length) !== after) continue;
+      contexts.set(id, {
+        before: next.markdown.slice(Math.max(0, at - DOC_EDIT_CONTEXT), at),
+        after: next.markdown.slice(at + after.length, at + after.length + DOC_EDIT_CONTEXT),
+      });
+    } catch {
+      // Not locatable here; the preview draws the edit without its context.
+    }
+  }
+  return contexts;
+}
+
+/**
+ * The document as it will be once its pending edits apply (see Gatekeeper.previewResource()).
+ *
+ * `pending` is the queue as `replay` left it, so an edit it invalidated is omitted with its
+ * reason. An edit whose write already committed is drawn too: the snapshot already shows it.
+ *
+ * A tab longer than MAX_PREVIEW_TAB_MARKDOWN is cut down around where its edits' `after` text
+ * lands (see trimDocumentPreviewMarkdown); a deletion leaves no text to find, so only the other
+ * edits anchor what is kept.
+ */
+function googleDocPreview(
+  snapshot: GoogleDocSnapshot,
+  contentByTabId: Map<string, GoogleDocSimulatedContent>,
+  pending: GoogleDocPendingAction[],
+  url: string | undefined,
+): ResourcePreview {
+  let actions: number[] = [];
+  let omitted: { action: number; reason: string }[] = [];
+  let editsByTabId = new Map<string, (DocumentEdit & { append: boolean })[]>();
+  let contexts = googleDocEditContexts(snapshot, pending);
+  for (let { id, action } of pending) {
+    if (action.invalidatedReason) {
+      omitted.push({ action: id, reason: action.invalidatedReason });
+      continue;
+    }
+    let tabId;
+    try {
+      tabId = googleDocActionTab(snapshot, action).tabId;
+    } catch (error) {
+      // Only a committed edit skipped the replay that would have invalidated it.
+      omitted.push({ action: id, reason: errorMessage(error) });
+      continue;
+    }
+    let edits = editsByTabId.get(tabId) ?? [];
+    let context = contexts.get(id);
+    edits.push({
+      change: actions.length, ...googleDocActionEdit(action), append: action.type === "appendText",
+      ...context ? { context } : {},
+    });
+    editsByTabId.set(tabId, edits);
+    actions.push(id);
+  }
+
+  return {
+    title: snapshot.title,
+    ...url === undefined ? {} : { url },
+    actions,
+    ...omitted.length === 0 ? {} : { omitted },
+    content: {
+      type: "document",
+      tabs: snapshot.tabs.map(tab => {
+        let { markdown } = contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
+        let edits = editsByTabId.get(tab.tabId) ?? [];
+        let keep = edits.flatMap(({ after, append, context }): MarkdownSpan[] => {
+          if (context) {
+            let around = context.before + after + context.after;
+            let start = markdown.indexOf(around);
+            if (start !== -1) return [{ start, end: start + around.length }];
+          }
+          if (after === "") return [];
+          // An append lands at the end; a replacement's text may also occur earlier.
+          let start = append ? markdown.lastIndexOf(after) : markdown.indexOf(after);
+          return start === -1 ? [] : [{ start, end: start + after.length }];
+        });
+        return {
+          id: tab.tabId,
+          title: tab.title,
+          markdown: trimDocumentPreviewMarkdown(markdown, keep),
+          edits: edits.map(({ change, before, after, context }) =>
+            ({ change, before, after, ...context ? { context } : {} })),
+        };
+      }),
+    },
+  };
+}
+
 @validateRpc()
 class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #docsApi: GoogleDocReader;
@@ -2375,6 +2610,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #pendingActions: PendingActionStore<GoogleDocAction>;
   #storage: DurableObjectStorage;
   #simulationCache: GoogleDocSimulationCacheHolder;
+  #simulation: GoogleDocSimulation;
   /** What every read reports: the document, or nothing for one not created yet. */
   #subresources: string[];
 
@@ -2398,6 +2634,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#subresources = documentId === UNCREATED_FILE_ID
       ? []
       : [fileSubresourceId({kind: "document", fileId: documentId})];
+    this.#simulation = new GoogleDocSimulation(
+        docsApi, documentId, pendingActions, storage, simulationCache);
   }
 
   // Every read authorizes through here, which reports the document it read as its subresource.
@@ -2405,26 +2643,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     return this.#approvalQueue.authorizeObservation({
       ...description, subresources: this.#subresources,
     });
-  }
-
-  async #getSnapshot(): Promise<GoogleDocSnapshot> {
-    for (;;) {
-      let writes = this.#simulationCache.writes;
-      // A snapshot written before tabs existed has no tab list and is simply replaced.
-      let cached = await this.#storage.get<unknown>(DOC_SNAPSHOT_KEY);
-      if (isGoogleDocSnapshot(cached) && Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) {
-        return cached;
-      }
-      let snapshot = isGoogleDocSnapshot(cached) &&
-          await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)
-        ? { ...cached, fetchedAt: Date.now() }
-        : googleDocSnapshot(await this.#docsApi.getDocument(this.#documentId));
-      // What Google returned before a write landed is stale: the edit is no longer pending to be
-      // replayed over it, so it would read as missing, and edits queued after it could not replay.
-      if (writes !== this.#simulationCache.writes) continue;
-      await this.#storage.put(DOC_SNAPSHOT_KEY, snapshot);
-      return snapshot;
-    }
   }
 
   /**
@@ -2440,40 +2658,17 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     snapshot: GoogleDocSnapshot,
     tab: GoogleDocTabSnapshot,
   }> {
-    let snapshot = await this.#getSnapshot();
+    let snapshot = await this.#simulation.snapshot();
     let tab = resolveGoogleDocTab(snapshot, tabId, operation);
-    let pending = this.#pendingActions.list();
-    let pendingFingerprint = googleDocPendingFingerprint(pending);
-    let cached = this.#simulationCache.current;
-    // An unknown revision cannot be shown to match, so the replay is recomputed.
-    if (cached && cached.baseRevisionId !== undefined &&
-        cached.baseRevisionId === snapshot.revisionId &&
-        cached.pendingFingerprint === pendingFingerprint) {
-      let content = cached.contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
-      return {snapshot, tab, ...content};
-    }
-
-    // An edit whose marker is already in its tab committed even though its response never
-    // arrived, so this snapshot contains it. Replaying it would show that content twice; the
-    // action stays pending, and applyAction() settles it from the same marker.
-    let replayable = pending.filter(({action}) => {
-      let {writeId} = action;
-      return writeId === undefined || !googleDocActionTabs(snapshot.tabs, action.tabId)
-          .some(candidate => candidate.committedWriteIds.includes(writeId));
-    });
-
-    let contentByTabId = invalidateUnreplayableGoogleDocActions(
-        this.#pendingActions,
-        snapshot,
-        replayable,
-        "Pending Google Doc edit could not be replayed against the current document");
-    this.#simulationCache.current = {
-      baseRevisionId: snapshot.revisionId,
-      pendingFingerprint: googleDocPendingFingerprint(this.#pendingActions.list()),
-      contentByTabId,
-    };
-    let content = contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
+    let content = this.#simulation.replay(snapshot).get(tab.tabId) ?? googleDocSimulatedContent(tab);
     return {snapshot, tab, ...content};
+  }
+
+  /** `{subject}` naming this document for a log entry, or nothing while it is not yet created. */
+  #subject(title: string, role: ResourceSubjectRole): { subject?: ResourceSubject } {
+    return this.#documentId === UNCREATED_FILE_ID
+      ? {}
+      : { subject: googleFileSubject("document", this.#documentId, title, role) };
   }
 
   /**
@@ -2497,6 +2692,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     await this.#authorizeRead({
       title: "Read Google Doc metadata",
       description: "Read the title and modification time of the document.",
+      ...this.#subject(metadata.title, "read"),
     });
 
     let lastModified = pendingActions.reduce(
@@ -2555,11 +2751,12 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   }
 
   async listTabs(): Promise<GoogleDocTab[]> {
-    let snapshot = await this.#getSnapshot();
+    let snapshot = await this.#simulation.snapshot();
 
     await this.#authorizeRead({
       title: "List Google Doc tabs",
       description: "Read the document's tab names and hierarchy.",
+      ...this.#subject(snapshot.title, "read"),
     });
 
     return snapshot.tabs.map(googleDocTabMetadata);
@@ -2582,6 +2779,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       title: "Read Google Doc content",
       description:
         `Read the full simulated content of tab ${googleDocTabLabel(selected.tab)} as Markdown.`,
+      ...this.#subject(selected.snapshot.title, "read"),
     });
     return selected.markdown;
   }
@@ -2640,6 +2838,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Edit Google Doc",
         ...description.finish(),
+        ...this.#subject(snapshot.title, "edited"),
         implementsRevert: false,
         // Group all document edits under one tag
         actionKind: EDIT_DOCUMENT_ACTION,
@@ -2695,6 +2894,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Append to Google Doc",
         ...description.finish(),
+        ...this.#subject(snapshot.title, "edited"),
         implementsRevert: false,
         // Same "editDocument" tag as replaceText
         actionKind: EDIT_DOCUMENT_ACTION,

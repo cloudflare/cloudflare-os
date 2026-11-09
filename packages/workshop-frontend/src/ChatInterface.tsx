@@ -2,7 +2,7 @@ import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
 import { useUnreadState } from "./features/notifications/UnreadStateBridge";
 import { UnreadBadge } from "./features/notifications/UnreadBadge";
 import { ReadTimeline } from "./features/notifications/ReadTimeline";
-import { TimelineReadItem } from "./features/notifications/TimelineReadItem";
+import { MarkUnreadButton, TimelineReadItem } from "./features/notifications/TimelineReadItem";
 import { timelineReadRanges } from "./features/notifications/timelineReadRanges";
 import {
   Fragment,
@@ -51,7 +51,7 @@ import {
   File as FileIcon,
   PencilSimple,
   Brain,
-  ShieldCheck,
+  PencilSimpleLine,
   Terminal,
   Globe,
   MagnifyingGlass,
@@ -98,7 +98,6 @@ import { SetUpAgentDialog, agentNameFrom, type AgentAccessChoice } from "./featu
 import { composeEpochChanges, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow, ChatContentReader } from "./features/code/otClient";
 import { commitFileStore, type CommitFileReader } from "./features/code/commitFileStore";
-import { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
@@ -112,11 +111,10 @@ import { DeleteAutomationDialog } from "./features/automations/AutomationList";
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./components/IncompleteDescriptionNotice";
 import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
-import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
-import { AgentStatusLine, type AgentStatus } from "./features/chat/transcript/AgentStatusLine";
+import { AgentStatusLine, type AgentStatus, type FinishedWork } from "./features/chat/transcript/AgentStatusLine";
 import { ChatReceipt, RequestButton, RequestCard, requestButtonClass } from "./features/chat/transcript/RequestCard";
 import { ChangeLine, listApps } from "./features/chat/transcript/ChangeLine";
 import { PdfPages, pdfThumbnail } from "./features/library/PdfPages";
@@ -126,8 +124,14 @@ import { SmoothHeight } from "./features/chat/transcript/SmoothHeight";
 import { describeAgentStep, type EditedApp } from "./features/chat/transcript/agentSteps";
 import { workByTurn, type TurnWork } from "./features/chat/transcript/turnWork";
 import { actionLogResumed, useActionEntries } from "./useActions";
-import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
-import { useResolveAction } from "./useResolveAction";
+import { DraftsTray } from "./features/drafts/DraftsTray";
+import { ApprovalModeMenu, type ApprovalMode } from "./features/drafts/ApprovalModeMenu";
+import {
+  allDrafts, autoApplying, AUTO_APPLY_GRACE_MS, draftGroups, kindOfUrl, type DraftGroup, type DraftKind,
+} from "./features/drafts/drafts";
+import { DraftFileIcon } from "./features/drafts/DraftFileIcon";
+import { useDraftDecisions } from "./features/drafts/useDraftDecisions";
+import { defaultApprovalMode, rememberApprovalMode, startInDefaultMode } from "./features/drafts/approvalModeDefault";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
@@ -261,12 +265,23 @@ type CreatedWorkpieceCardInfo = {
   // A worktree is private to its chat for life, so its creation is not a draft awaiting
   // acceptance (see AiChatMetadata.proposedChangeWorkpieces) and the card doesn't say so.
   | { type: "worktree" }
+  // A file the agent made with createExternalResource: a draft, reviewed with its changes, until
+  // someone creates it; then it opens with its provider. The workpiece is its connection.
+  | { type: "file"; kind: DraftKind; isPending: boolean; url?: string }
 );
+
+const FILE_NOUN: Partial<Record<DraftKind, string>> = {
+  document: "Google Doc", spreadsheet: "Google Sheet", presentation: "Google Slides",
+};
 
 // The card's caption: what the workpiece is and what clicking does. A worktree has no app to
 // preview; opening it lands on its code.
 function describeCreatedWorkpiece(created: CreatedWorkpieceCardInfo): string {
   if (created.type === "worktree") return "Worktree · Click to open its code";
+  if (created.type === "file") {
+    const noun = FILE_NOUN[created.kind] ?? "File";
+    return created.isPending ? `New ${noun} · Click to review` : `${noun} · Click to view`;
+  }
   const noun = formatOf(created.output).noun;
   return created.isPending
     ? `New ${noun.toLowerCase()} · Click to preview`
@@ -292,11 +307,13 @@ function CreatedWorkpieceChatCard({
       <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-kumo-tint text-kumo-default" aria-hidden="true">
         {created.type === "worktree"
           ? <GitBranch size={16} />
-          : <FormatGlyph output={created.output} size="md" />}
+          : created.type === "file"
+            ? <DraftFileIcon kind={created.kind} size={18} />
+            : <FormatGlyph output={created.output} size="md" />}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-[14px] font-medium leading-[17px] text-kumo-default">{created.title}</span>
-        {created.type === "gadget" && created.isPending && (
+        {created.type !== "worktree" && created.isPending && (
           <span className="shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
             Draft
           </span>
@@ -2562,7 +2579,7 @@ export function isAgentTextEntry(entry: ChatDisplayEntry | null | undefined): bo
 }
 
 // The transcript without the agent's steps (see SHOW_THINKING_TRACES_KEY): no tool rows, no
-// resource reads, no "Used the gadget". A row that held only steps stays when `keep` says it
+// resource reads, no changes, no "Used the gadget". A row that held only steps stays when `keep` says it
 // carries something else for its sequence -- the cards of what its turn made -- and goes
 // otherwise, so no empty row leaves a gap.
 function withoutAgentSteps(
@@ -2570,7 +2587,12 @@ function withoutAgentSteps(
   keep: (sequence: number) => boolean,
 ): ChatDisplayEntry[] {
   const out: ChatDisplayEntry[] = [];
+  // Whether a turn has started, whose line holds the changes made in it (see workByTurn).
+  let inTurn = false;
   for (const entry of entries) {
+    if (entry.type === "message" && (isUserMessageEntry(entry) || entry.message.type === "agentCallback")) {
+      inTurn = true;
+    }
     if (entry.type === "workRun") {
       if (keep(entry.lastMessageSequence)) out.push({ ...entry, toolCallGroups: [] });
       continue;
@@ -2581,6 +2603,9 @@ function withoutAgentSteps(
     }
     const m = entry.message;
     if (m.type === "useGadget" || isObservationActionMessage(m)) continue;
+    // A change the agent made is a step of its turn's work (see workByTurn); drafts are decided
+    // in the tray above the composer.
+    if (inTurn && m.type === "action" && m.actionLog?.type === "action") continue;
     // An accept that changed no app's code (one adding bindings only) is no point to go back to.
     if (m.type === "merge" && m.commits.length === 0) continue;
     if (m.type === "message" && m.author.type !== "user") {
@@ -2756,9 +2781,6 @@ interface ChatInterfaceProps {
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
-  // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
-  // Auto-approval list reflects it without a reload.
-  onAutoApproveChange?: () => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2775,6 +2797,10 @@ interface ChatInterfaceProps {
   // Reports the selected chat's title and origin as they load and change, for a host drawing the
   // chat's header.
   onChatHeadChange?: (head: ChatHead | null) => void;
+  /** The selected chat's drafts waiting to be applied, grouped by what they change. */
+  onDraftsChange?: (groups: readonly DraftGroup[]) => void;
+  /** Opens one group of the selected chat's drafts for review, on the file in the pane. */
+  onReviewDrafts?: (group: DraftGroup) => void;
   // Leaves out the list of chats shown while none is selected, for a host that lists them itself.
   hideChatList?: boolean;
   // Reports the workspace's chats, most recently active first, once loaded and as they change.
@@ -2973,7 +2999,8 @@ function ChatInterface({
   onDiscardConsoleLogs,
   onChatCountChange,
   onAgentActiveChange,
-  onAutoApproveChange,
+  onDraftsChange,
+  onReviewDrafts,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -3418,7 +3445,7 @@ function ChatInterface({
   const sendBlockedReason = hasPendingConnectionRequest
     ? "Set up or deny the connection request above to continue."
     : hasPendingAwaitedAction
-      ? "Approve or reject the pending action above to continue."
+      ? "Apply or discard the change the agent is waiting on to continue."
       : pendingWebFetchRequestIds.length > 0
         ? "Approve or deny the web fetch request above to continue."
         : undefined;
@@ -4431,6 +4458,7 @@ function ChatInterface({
         // Create a new chat (with optional capsules).
         const newChatId = await overseer.newChat(
             message, model, capsules, attachments, formats);
+        void startInDefaultMode(overseer, newChatId);
         onNavigateToChatRef.current(newChatId);
       } else {
         // Send message to existing chat.
@@ -4469,6 +4497,7 @@ function ChatInterface({
     try {
       const newChatId = await overseer.newChat(
           message, model, capsules, attachments, formats);
+      void startInDefaultMode(overseer, newChatId);
       onNavigateToChatRef.current(newChatId);
     } catch (err) {
       if (!logRpcFailure("Failed to create new chat:", err, { reportSite: "chat.new" })) {
@@ -4862,22 +4891,57 @@ function ChatInterface({
     }
   }, [overseer, selectedChatId, toasts]);
 
-  // Pending "always approve this type" confirmation, opened from a pending action card.
-  const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
-  >(null);
 
-  // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
-  // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
+  const approvalMode: ApprovalMode = currentChatMetadata?.autoApprove ? "auto" : "review";
+  // On Auto, a draft being applied never shows as waiting; one still waiting after a moment does.
+  const [draftsCheckedAt, setDraftsCheckedAt] = useState(() => Date.now());
+  const chatDraftGroups = useMemo(() => {
+    const groups = draftGroups(currentMessages);
+    if (approvalMode !== "auto" || restricted === true) return groups;
+    const applying = autoApplying(groups, draftsCheckedAt);
+    return groups.map((group) => ({ ...group, drafts: group.drafts.filter((draft) => !applying.has(draft.id)) }))
+      .filter((group) => group.drafts.length > 0);
+  }, [currentMessages, approvalMode, restricted, draftsCheckedAt]);
+  const awaitingAutoApply = approvalMode === "auto" && restricted !== true &&
+    autoApplying(draftGroups(currentMessages), draftsCheckedAt).size > 0;
+  useEffect(() => {
+    if (!awaitingAutoApply) return;
+    const timer = setTimeout(() => setDraftsCheckedAt(Date.now()), AUTO_APPLY_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingAutoApply, currentMessages]);
+  const chatDraftsRef = useRef(chatDraftGroups);
+  chatDraftsRef.current = chatDraftGroups;
+  const chatDraftsSignature = chatDraftGroups
+    .map((group) => `${group.key}:${group.drafts.map((draft) => draft.id).join(".")}`).join("|");
+  useEffect(() => {
+    onDraftsChange?.(chatDraftsRef.current);
+  }, [chatDraftsSignature, onDraftsChange]);
+  const draftDecisions = useDraftDecisions(overseer, (draft, decision) => {
+    if (applyOptimisticActionState(draft.id, decision === "apply" ? "approved" : "rejected")) forceUpdate();
+  });
 
-  const { resolveAction, creationAccountModal } =
-    useResolveAction(overseer, setProcessingActions, (actionId, state) => {
-      if (applyOptimisticActionState(actionId, state)) forceUpdate();
-    });
+  const [newChatMode, setNewChatMode] = useState<ApprovalMode>(defaultApprovalMode);
+  const [approvalModeBusy, setApprovalModeBusy] = useState(false);
+  const handleApprovalModeChange = async (mode: ApprovalMode) => {
+    rememberApprovalMode(mode);
+    if (selectedChatId === null) {
+      setNewChatMode(mode);
+      return;
+    }
+    setApprovalModeBusy(true);
+    try {
+      await overseer.setChatAutoApprove(selectedChatId, mode === "auto");
+    } catch (err) {
+      console.error("Failed to change the chat's approval mode:", err);
+      toasts.add({
+        title: mode === "auto" ? "Couldn't turn on Auto" : "Couldn't switch to Review",
+        description: rpcFailureDescription(err),
+        variant: "error",
+      });
+    } finally {
+      setApprovalModeBusy(false);
+    }
+  };
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
@@ -5280,9 +5344,37 @@ function ChatInterface({
       creationAnchorSeq = null;
     };
 
+    // The type of each file the agent made, from the call that made it.
+    const filePatterns = new Map<WorkpieceId, string>();
+    for (const m of currentMessages) {
+      if (m.type !== "message") continue;
+      for (const call of m.toolCalls ?? []) {
+        if (call.toolName === "createExternalResource" && call.output) {
+          filePatterns.set(call.output.gatekeeperId, call.input.resourceUrlPattern);
+        }
+      }
+    }
+
     for (const m of currentMessages) {
       if (m.type === "slashCommand" || m.type === "merge" || m.type === "revert") {
         resetTurn();
+        continue;
+      }
+
+      const log = m.type === "action" ? m.actionLog : undefined;
+      if (log?.type === "action" && log.creation && log.gatekeeperId !== undefined) {
+        const gatekeeperId = log.gatekeeperId;
+        if (log.state !== "rejected") {
+          creations = [...creations.filter((created) => created.workpieceId !== gatekeeperId), {
+            type: "file",
+            workpieceId: gatekeeperId,
+            title: log.resourceTitle,
+            kind: kindOfUrl(log.resourceUrl ?? filePatterns.get(gatekeeperId) ?? ""),
+            isPending: log.state === "pending",
+            ...(log.resourceUrl ? { url: log.resourceUrl } : {}),
+          }];
+        }
+        attachCreations();
         continue;
       }
 
@@ -5349,6 +5441,20 @@ function ChatInterface({
     }
     return anchor === null ? null : { anchor, created: createdWorkpiecesByTurnItemSeq.get(anchor)! };
   }, [showThinkingTraces, isAgentActive, currentMessages, createdWorkpiecesByTurnItemSeq]);
+
+  // A gadget or worktree opens in the workspace; a file opens beside the chat, drawn as it will
+  // be with any drafts waiting on it, or as it is (see DraftReviewPane), and with its provider
+  // only where there is no pane to open it in.
+  const openCreated = (created: CreatedWorkpieceCardInfo) => {
+    if (created.type !== "file") return onOpenGadget(created.workpieceId);
+    const group = chatDraftGroups.find((candidate) => candidate.gatekeeperId === created.workpieceId) ?? {
+      key: `chat:${created.workpieceId}:`, gatekeeperId: created.workpieceId, title: created.title,
+      ...(created.url ? { url: created.url } : {}), kind: created.kind, drafts: [], holdsAgent: false,
+    };
+    const url = safeExternalUrl(created.url);
+    if (onReviewDrafts) onReviewDrafts(group);
+    else if (url) window.open(url, "_blank", "noopener,noreferrer");
+  };
 
   const createdWorkpiecesAt = (sequence: number) =>
     sequence === activeTurnCreations?.anchor ? [] : createdWorkpiecesByTurnItemSeq.get(sequence) ?? [];
@@ -5473,8 +5579,12 @@ function ChatInterface({
   }, [changesWaiting, selectedChatId]);
   const latestTurnKey = useMemo(() => [...turnWork.keys()].at(-1), [turnWork]);
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<number>>(new Set());
-  const finishedWork = (work: TurnWork) => ({
+  const finishedWork = (work: TurnWork): FinishedWork => ({
     work,
+    onOpenChange: onReviewDrafts && ((actionId) => {
+      const group = chatDraftGroups.find((candidate) => candidate.drafts.some((draft) => draft.id === actionId));
+      if (group) onReviewDrafts(group);
+    }),
     expanded: expandedTurns.has(work.key),
     onToggle: () => setExpandedTurns((prev) => {
       const next = new Set(prev);
@@ -5672,28 +5782,10 @@ function ChatInterface({
     // decision. Resolved actions are history, and collapse so a long thread stays scannable.
     const metadata = log.resourceTitle;
     const stateLabel = isApproved
-      ? "Approved"
+      ? log.autoApproved ? "Applied automatically" : "Applied"
       : isRejected
-        ? "Denied"
+        ? "Discarded"
         : null;
-    // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.) Not offered while
-    // restricted.
-    const autoApproveTarget =
-      !restricted &&
-      log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
-        ? {
-            actionId: msg.actionId,
-            gatekeeperId: log.gatekeeperId,
-            resourceTitle: log.resourceTitle,
-            actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
-          }
-        : undefined;
-
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
     // a render closure, not a component, so useId is unavailable, and one card renders per action.
@@ -5704,35 +5796,7 @@ function ChatInterface({
     const incompleteId = `action-${msg.actionId}-incomplete-notice`;
     const hasFields = entryFields(log).length > 0;
     const incomplete = isPending && isDescriptionIncomplete(log);
-    const describedBy = restrictedReview
-      ? [
-        noticeId,
-        requestId,
-        ...(hasFields ? [fieldsId] : []),
-        ...(incomplete ? [incompleteId] : []),
-      ].join(" ")
-      : undefined;
 
-    const actionControls = isPending ? (
-      <>
-        {autoApproveTarget &&
-          !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
-          <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
-            <RequestButton tone="quiet" onClick={() => setAutoApproveConfirm(autoApproveTarget)} disabled={isProc}>
-              Always approve
-            </RequestButton>
-          </Tooltip>
-        )}
-        <RequestButton tone="secondary" onClick={() => void resolveAction(log, "deny")} disabled={isProc}
-          aria-describedby={describedBy}>
-          Deny
-        </RequestButton>
-        <RequestButton tone="primary" onClick={() => void resolveAction(log, "approve")} disabled={isProc}
-          aria-describedby={describedBy}>
-          Approve
-        </RequestButton>
-      </>
-    ) : null;
 
     // Resource label, shown at the top of the blocking callout and at the bottom of the subtle
     // inline row.
@@ -5773,18 +5837,20 @@ function ChatInterface({
       </>
     );
 
-    // Waiting on the person, blocking the agent or not: a card with the request and its answers.
-    // A blocking one (awaitDecision) also holds the composer, which says so.
+    // Waiting: a draft, decided with the rest of the chat's drafts in the tray above the composer
+    // or on the file in the pane, never one card at a time here.
     if (isPending) {
       return (
-        <RequestCard
-          icon={<ShieldCheck size={18} />}
-          title={log.description.title}
-          meta={resourceMeta}
-          footer={<div className="flex flex-wrap items-center justify-end gap-1.5">{actionControls}</div>}
+        <ChatReceipt
+          icon={<PencilSimpleLine size={14} />}
+          expanded={open}
+          onToggle={() => toggleActionExpansion(msg.actionId)}
+          title={formatFullTimestamp(msg.timestamp)}
+          detail={<>{details}{resourceMeta && <div className="mt-2">{resourceMeta}</div>}</>}
         >
-          {details}
-        </RequestCard>
+          {log.description.title}
+          <span className="text-kumo-warning"> · {log.description.awaitDecision ? "Waiting for you" : "Drafted"}</span>
+        </ChatReceipt>
       );
     }
 
@@ -6057,6 +6123,16 @@ function ChatInterface({
             draftStorageKey={currentUser && workspaceId
               ? composerDraftStorageKey(currentUser.id, `workspace:${workspaceId}:new`)
               : undefined}
+            trailing={
+              <ApprovalModeMenu
+                scope="chat"
+                mode={newChatMode}
+                waiting={0}
+                restricted={restricted === true}
+                busy={false}
+                onChange={(mode) => void handleApprovalModeChange(mode)}
+              />
+            }
           />
           {/* Reserve the same height as the token/cost row to avoid layout shift. */}
           <div aria-hidden className="min-h-[1rem]" />
@@ -6481,7 +6557,7 @@ function ChatInterface({
                               <CreatedWorkpieceChatCard
                                 key={created.workpieceId}
                                 created={created}
-                                onOpen={() => onOpenGadget(created.workpieceId)}
+                                onOpen={() => openCreated(created)}
                               />
                             ))}
                           </div>
@@ -6663,6 +6739,10 @@ function ChatInterface({
                                     </Tooltip>
                                     );
                                   })()}
+                                  <MarkUnreadButton
+                                    sequence={msg.sequence}
+                                    className="flex cursor-pointer items-center rounded-md p-1 text-kumo-inactive transition-[color,transform] duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.96]"
+                                  />
                                   <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
                                     <span className="px-1 font-mono text-[11px] leading-4 text-kumo-inactive">
                                       {msg.timestamp.toLocaleTimeString([], {
@@ -6679,7 +6759,7 @@ function ChatInterface({
                               <CreatedWorkpieceChatCard
                                 key={created.workpieceId}
                                 created={created}
-                                onOpen={() => onOpenGadget(created.workpieceId)}
+                                onOpen={() => openCreated(created)}
                               />
                             ))}
 
@@ -6971,7 +7051,7 @@ function ChatInterface({
                             <div className="mt-2">
                               <CreatedWorkpieceChatCard
                                 created={created}
-                                onOpen={() => onOpenGadget(created.workpieceId)}
+                                onOpen={() => openCreated(created)}
                               />
                             </div>
                           </LiveEntry>
@@ -7170,6 +7250,12 @@ function ChatInterface({
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 ${hideChatHeader ? "relative bg-gradient-to-t from-kumo-base from-60% to-transparent" : `bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}`}>
                 <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                  <DraftsTray
+                    groups={chatDraftGroups}
+                    decisions={draftDecisions}
+                    restricted={restricted === true}
+                    onReview={(group) => onReviewDrafts?.(group)}
+                  />
                   {/* Remount all transient composer state when the conversation changes. */}
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}
@@ -7200,6 +7286,16 @@ function ChatInterface({
                         )
                       : undefined}
                     blockedReason={sendBlockedReason}
+                    trailing={
+                      <ApprovalModeMenu
+                        scope="chat"
+                        mode={approvalMode}
+                        waiting={allDrafts(chatDraftGroups).length}
+                        restricted={restricted === true}
+                        busy={approvalModeBusy}
+                        onChange={(mode) => void handleApprovalModeChange(mode)}
+                      />
+                    }
                   />
 
                   {/* Token / cost summary. A host drawing its own header shows these on the chat's
@@ -7326,26 +7422,6 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && autoApproveConfirm && (
-        <AutoApproveConfirmDialog
-          open
-          actionLabel={autoApproveConfirm.actionLabel}
-          resourceTitle={autoApproveConfirm.resourceTitle}
-          isProcessing={processingActions.has(autoApproveConfirm.actionId)}
-          onOpenChange={(open) => {
-            if (!open) setAutoApproveConfirm(null);
-          }}
-          onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = autoApproveConfirm;
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
-              setAutoApproveConfirm(null);
-            }
-          }}
-        />
-      )}
-
-      {creationAccountModal}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}

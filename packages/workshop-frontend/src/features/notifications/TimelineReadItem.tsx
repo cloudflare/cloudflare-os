@@ -1,7 +1,28 @@
 import { useContext, type ReactNode } from "react";
-import { Button, DropdownMenu } from "@cloudflare/kumo";
-import { DotsThree } from "@phosphor-icons/react";
+import { Tooltip } from "@cloudflare/kumo";
+import { EnvelopeSimple } from "@phosphor-icons/react";
 import { TimelineContext } from "./readTimelineContext";
+
+/**
+ * Marks the chat unread from the message at `sequence`, among that message's own actions, so the
+ * person comes back to it as new; nothing when the chat isn't tracked for reading.
+ */
+export const MarkUnreadButton = ({ sequence, className }: { sequence: number; className: string }) => {
+  const timeline = useContext(TimelineContext);
+  if (!timeline || sequence > timeline.latestSequence) return null;
+  return (
+    <Tooltip content="Mark unread from here" asChild>
+      <button
+        type="button"
+        onClick={() => timeline.markUnread(sequence)}
+        className={className}
+        aria-label="Mark unread from here"
+      >
+        <EnvelopeSimple size={15} />
+      </button>
+    </Tooltip>
+  );
+};
 
 /** One rendered work item, which may group several persisted timeline records. */
 export const TimelineReadItem = ({
@@ -41,32 +62,6 @@ export const TimelineReadItem = ({
           </div>
         )}
       {children}
-      {timeline && (
-        <div className="absolute right-0 top-0 opacity-100 focus-within:opacity-100 sm:opacity-0 sm:group-hover/read:opacity-100">
-          <DropdownMenu>
-            <DropdownMenu.Trigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  shape="square"
-                  aria-label="Read actions for this item"
-                >
-                  <DotsThree size={16} />
-                </Button>
-              }
-            />
-            <DropdownMenu.Content>
-              <DropdownMenu.Item
-                disabled={start > timeline.latestSequence}
-                onClick={() => timeline.markUnread(start)}
-              >
-                Mark unread from here
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu>
-        </div>
-      )}
       <div data-read-through={end} className="h-px w-full" aria-hidden="true" />
     </div>
   );

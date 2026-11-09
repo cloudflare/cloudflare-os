@@ -33,7 +33,11 @@ import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
 import { CountBadge } from './components/CountBadge'
-import ActivityNotifications from './ActivityNotifications'
+import { DraftFileIcon } from './features/drafts/DraftFileIcon'
+import { DraftReviewPane } from './features/drafts/DraftReviewPane'
+import { allDrafts, gadgetDraftGroups, OPEN_LABEL, type DraftGroup } from './features/drafts/drafts'
+import { GadgetApprovalMode, GadgetDraftsTray } from './features/drafts/GadgetDrafts'
+import { safeExternalUrl } from './utils/safeExternalUrl'
 import ChatInterface, {
   type ActiveFileTarget,
   type ChatCodeChanges,
@@ -537,6 +541,9 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
   const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
+  const [chatDrafts, setChatDrafts] = useState<readonly DraftGroup[]>([])
+  // The drafts the pane reviews, kept once they are all decided so the pane can say how it went.
+  const [reviewedDrafts, setReviewedDrafts] = useState<DraftGroup | null>(null)
   // The selected chat's live edit-preview stream (the agent's in-progress writeFile/editFile
   // content), likewise subscription-shaped (see ChatLiveEditPreviews).
   const [liveEditPreviews, setLiveEditPreviews] =
@@ -887,6 +894,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   }, [workpiecesReady, urlWorkpieceId, visibleWorkpieces, setWorkspaceVisibility])
 
   const openActivity = useCallback((initialView: ActivityView) => {
+    setReviewedDrafts(null)
     setWorkspaceTransitionEnabled(true)
     setActivityClosing(false)
     if (workspaceView?.mode !== 'activity') activityReturnViewRef.current = workspaceView
@@ -894,7 +902,13 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
     setWorkspaceView({ mode: 'activity' })
   }, [workspaceView])
 
+  const openDraftReview = useCallback((group: DraftGroup) => {
+    openActivity(activityView)
+    setReviewedDrafts(group)
+  }, [openActivity, activityView])
+
   const closeWorkspacePane = useCallback(() => {
+    if (workspaceView?.mode === 'activity') setReviewedDrafts(null)
     if (workspaceView?.mode !== 'activity') {
       setWorkspaceVisibility('closed')
       // The closed view is what this workspace reopens with, so the address must stop naming the
@@ -1651,6 +1665,14 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   // ── always render the full two-pane edit layout; preview overlays on top ──────
   const chatHeaderTitle = chatHead?.title ?? (effectiveSelectedChatId === 0 ? metadata.title : 'Chat')
   const chatSpawned = chatHead?.agentStarted ?? false
+  // The live drafts of the group the pane reviews; none once every one of them is decided.
+  const selectedGadgetDrafts = selectedGadgetSummary && selectedGadgetSummary.chatId === undefined
+    ? gadgetDraftGroups(pendingActions, selectedGadgetSummary.id) : []
+  const reviewedGroup = reviewedDrafts && (
+    [...chatDrafts, ...(reviewedDrafts.key.startsWith('gadget')
+      ? gadgetDraftGroups(pendingActions, Number(/^gadget(\d+):/.exec(reviewedDrafts.key)?.[1])) : [])]
+      .find(group => group.key === reviewedDrafts.key) ?? { ...reviewedDrafts, drafts: [], holdsAgent: false })
+  const reviewedUrl = reviewedGroup ? safeExternalUrl(reviewedGroup.url) : undefined
   const selectedWorkpieceGlyph = selectedWorkpieceSummary
     ? <WorkpieceGlyph summary={selectedWorkpieceSummary} />
     : null
@@ -1747,11 +1769,6 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                 authenticatedApi={authenticatedApi}
                 currentUserId={userInfo?.id ?? null}
               />
-              <ActivityNotifications
-                overseer={overseer.stub}
-                onViewActivity={openActivity}
-                restricted={metadata?.containsRestrictedData === true}
-              />
             </>}
           />
         )}
@@ -1790,7 +1807,8 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                   onChatListChange={setChatList}
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+                  onDraftsChange={setChatDrafts}
+                  onReviewDrafts={openDraftReview}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
@@ -1839,7 +1857,21 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
           opacity: paneShown ? 1 : 0,
         }}
       >
-        {paneShowsActivity ? (
+        {paneShowsActivity && reviewedGroup ? (
+          <PaneHeader
+            glyph={<DraftFileIcon kind={reviewedGroup.kind} size={14} />}
+            title={reviewedGroup.title}
+            badge={reviewedGroup.drafts.length > 0 ? 'Draft' : undefined}
+            actions={reviewedUrl && (
+              <a href={reviewedUrl} target="_blank" rel="noopener noreferrer"
+                className="hidden h-8 shrink-0 items-center rounded-full px-3 text-[13px] font-medium leading-4 text-kumo-default ring-1 ring-inset ring-kumo-line transition-colors hover:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring sm:inline-flex">
+                {OPEN_LABEL[reviewedGroup.kind]} ↗
+              </a>
+            )}
+            onClose={closeWorkspacePane}
+            closeLabel="Close review"
+          />
+        ) : paneShowsActivity ? (
           <PaneHeader
             glyph={<Pulse size={13} />}
             title="Activity"
@@ -1855,6 +1887,15 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
             choices={paneChoices}
             activeId={selectedWorkpieceId}
             onSelect={handleSelectWorkpiece}
+            actions={selectedGadgetStub && selectedGadgetSummary?.chatId === undefined && metadata.role !== 'use' && (
+              <GadgetApprovalMode
+                key={selectedGadgetSummary!.id}
+                gadget={selectedGadgetStub}
+                mode={selectedGadgetSummary!.autoApprove ? 'auto' : 'review'}
+                waiting={allDrafts(selectedGadgetDrafts).length}
+                restricted={metadata?.containsRestrictedData === true}
+              />
+            )}
             onShare={!selectedGadgetSummary || metadata.role === 'use' ? undefined
               : selectedGadgetSummary.chatId === undefined ? () => openShareModal(selectedGadgetSummary.id)
               : false}
@@ -1918,6 +1959,15 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
             </>}
           />
         )}
+        {!paneShowsActivity && overseer && (
+          <GadgetDraftsTray
+            key={selectedGadgetSummary?.id}
+            overseer={overseer.stub}
+            groups={selectedGadgetDrafts}
+            restricted={metadata?.containsRestrictedData === true}
+            onReview={openDraftReview}
+          />
+        )}
         <PaneSheet>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {paneShowsActivity && (
@@ -1935,7 +1985,15 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
             )}
             {paneShowsActivity && (
               <div className="min-h-0 flex-1">
-                {!showingPage && activityPanel}
+                {!showingPage && (reviewedGroup ? (
+                  <DraftReviewPane
+                    key={reviewedGroup.key}
+                    overseer={overseer.stub}
+                    group={reviewedGroup}
+                    restricted={metadata?.containsRestrictedData === true}
+                    url={reviewedUrl}
+                  />
+                ) : activityPanel)}
               </div>
             )}
             <div className={paneShowsActivity ? 'hidden' : 'contents'}>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { defaultApprovalMode, rememberApprovalMode, startInDefaultMode } from '../../features/drafts/approvalModeDefault'
+import { ApprovalModeMenu, type ApprovalMode } from '../../features/drafts/ApprovalModeMenu'
 import { useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
 import { RpcStub } from "capnweb";
@@ -57,6 +59,7 @@ export const HomePageContent = ({ prompt, workspace }: HomeSearch) => {
   const toasts = useKumoToastManager();
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [newChatMode, setNewChatMode] = useState<ApprovalMode>(defaultApprovalMode);
   // Bumped each time something seeds the composer; it re-reads its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
   // A workspace's "New chat" arrives with that workspace already picked.
@@ -134,6 +137,7 @@ export const HomePageContent = ({ prompt, workspace }: HomeSearch) => {
           overseer.newChat(message, modelId, capsules, attachments, formats),
           overseer.getMetadata(),
         ]);
+        await startInDefaultMode(overseer, chat);
         overseerRef.current?.stub[Symbol.dispose]();
         overseerRef.current = null;
         navigate({ to: "/workspace/$id", params: { id }, search: { chat } });
@@ -221,7 +225,20 @@ export const HomePageContent = ({ prompt, workspace }: HomeSearch) => {
           seedText={seed?.text}
           seedNonce={seed?.nonce}
           draftStorageKey={currentUser ? composerDraftStorageKey(currentUser.id, "home") : undefined}
-          trailing={<span className="hidden md:contents">{picker("chip")}</span>}
+          trailing={<>
+            <ApprovalModeMenu
+              scope="chat"
+              mode={newChatMode}
+              waiting={0}
+              restricted={false}
+              busy={false}
+              onChange={(mode) => {
+                rememberApprovalMode(mode);
+                setNewChatMode(mode);
+              }}
+            />
+            <span className="hidden md:contents">{picker("chip")}</span>
+          </>}
         />
       </div>
       <CreateWorkspaceDialog open={creatingWorkspace} onOpenChange={setCreatingWorkspace} />

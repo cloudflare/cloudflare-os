@@ -11,7 +11,7 @@ import type {
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
 import { ReadTimeline } from "./ReadTimeline";
-import { TimelineReadItem } from "./TimelineReadItem";
+import { MarkUnreadButton, TimelineReadItem } from "./TimelineReadItem";
 import { UnreadStateBridge } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 import { timelineReadRanges } from "./timelineReadRanges";
@@ -52,6 +52,8 @@ const View = ({sequences = [0, 1, 2], overseer}: {sequences?: number[]; overseer
               Item {sequence}
               {sequence === 0 && <button>Focus chat</button>}
             </div>
+            {/* Under its message, as the transcript draws a message's actions. */}
+            <MarkUnreadButton sequence={sequence} className="" />
           </TimelineReadItem>
         ))}
       </ReadTimeline>
@@ -138,17 +140,15 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0),
   );
 
-  // The first item's actions are now visible at the viewport edge. Open them as a real pointer user.
-  const firstActions = page.getByRole("button", { name: "Read actions for this item" }).nth(0);
-  await act(async () => userEvent.click(firstActions));
+  // The first item's own actions are now visible at the viewport edge. Use one as a real pointer user.
   const beforeUnread = viewport.scrollTop;
   navigate.mockClear();
   await act(async () =>
-    userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
+    userEvent.click(page.getByRole("button", { name: "Mark unread from here" }).nth(0)),
   );
   expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 0);
   if (ackFirst) await act(async () => updateChat());
-  await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
+  await expect.element(page.getByText(/Kept unread/)).toBeVisible();
   const calls = markChatRead.mock.calls.length;
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(markChatRead).toHaveBeenCalledTimes(calls);
@@ -165,8 +165,8 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   await render(<View overseer={api} />);
   withdraw = reportVisibleChat(() => ({ workspaceId: "workspace", chatId: 1 }));
   await act(async () => userEvent.click(page.getByRole("button", { name: "Focus chat" })));
-  await expect.element(page.getByText(/Unread activity/)).toBeVisible();
-  expect(host.textContent).not.toContain("automatic reading paused");
+  await expect.element(page.getByText(/\d+ unread/)).toBeVisible();
+  expect(host.textContent).not.toContain("Kept unread");
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(markChatRead).toHaveBeenCalledTimes(calls);
   const returnedViewport = host.querySelector<HTMLElement>("[data-viewport]")!;
@@ -183,7 +183,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     expect(markChatRead).toHaveBeenLastCalledWith(1, 0),
   );
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
-  await act(async () => userEvent.click(page.getByRole("button", { name: "Mark thread read" })));
+  await act(async () => userEvent.click(page.getByRole("button", { name: "Mark read" })));
   expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
 });
 
@@ -224,7 +224,7 @@ it.each(["delta", "replacement", "reconnect"])("preserves real scroll geometry o
       workspace: {workspaceId: "workspace", unreadChatCount: 1, unreadMessageCount: 2},
     });
   });
-  await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
+  await expect.element(page.getByText(/Kept unread/)).toBeVisible();
   await new Promise(resolve => setTimeout(resolve, 400));
   // Browser scroll anchoring may compensate for the paused banner's extra height.
   expect(Math.abs(item.getBoundingClientRect().top - viewport.getBoundingClientRect().top - before)).toBeLessThan(1);
@@ -409,7 +409,7 @@ it("keeps a live reply stable in a caught-up viewport without inserting unread c
     workspace: {workspaceId: "workspace", unreadChatCount: 1, unreadMessageCount: 1},
   }));
   expect(host.querySelector("[data-unread-divider]")).toBeNull();
-  expect(host.textContent).not.toContain("Unread activity");
+  expect(host.textContent).not.toMatch(/\d+ unread/);
   expect(viewport.scrollTop).toBe(before);
   await vi.waitFor(() => expect(api.markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
 });

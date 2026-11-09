@@ -1,10 +1,12 @@
 import { Link } from '@tanstack/react-router'
+import { PencilSimpleLine } from '@phosphor-icons/react'
 import type { UnreadThread } from '@gadgets/workshop-shared/api'
 import { ChatGlyph, type ChatGlyphKind } from './ChatGlyph'
 
 /**
  * One chat in the sidebar (Figma "Frame 771"): its glyph, title and latest message, with an orange
- * dot while it has unread messages. The selected chat sits on the black-4% wash.
+ * dot while it has unread messages, and a pencil while changes made in it wait for a decision,
+ * read or not. The selected chat sits on the black-4% wash.
  */
 export const RecentChatRow = ({ chat, glyph, selected }: {
   chat: UnreadThread
@@ -12,6 +14,7 @@ export const RecentChatRow = ({ chat, glyph, selected }: {
   selected: boolean
 }) => {
   const unread = chat.unreadMessageCount > 0
+  const drafts = chat.draftsWaiting ?? 0
   return (
     <Link
       to="/workspace/$id"
@@ -35,6 +38,15 @@ export const RecentChatRow = ({ chat, glyph, selected }: {
           {chat.latestMessagePreview || ' '}
         </span>
       </span>
+      {drafts > 0 && (
+        <span
+          title={`${drafts} ${drafts === 1 ? 'change' : 'changes'} to review`}
+          className="flex size-[18px] shrink-0 items-center justify-center rounded-full bg-kumo-warning-tint text-kumo-warning"
+        >
+          <PencilSimpleLine size={11} weight="bold" aria-hidden="true" />
+          <span className="sr-only">{drafts} {drafts === 1 ? 'change' : 'changes'} to review</span>
+        </span>
+      )}
       {unread && (
         <span className="size-2 shrink-0 rounded-full bg-kumo-brand">
           <span className="sr-only">Unread messages</span>

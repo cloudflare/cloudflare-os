@@ -12,6 +12,14 @@ const makeStorage = makeActionStorage;
 
 const GK = 1;
 const ENABLER: AiChatAuthorInfo = { type: "user", id: "enabler@example.com", name: "Enabler" };
+const AGENT = { from: "agent", chatId: 1 } as const;
+
+function setChatAuto(storage: AutoApprovalStorage, chatId = 1) {
+  storage.chatMeta.put({
+    id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(0),
+    autoApprove: { enabledBy: ENABLER },
+  });
+}
 
 function enableRule(storage: AutoApprovalStorage, actionTag = "edit", gatekeeperId = GK) {
   storage.autoApproveTags.put({
@@ -313,14 +321,14 @@ describe("autoApprovalRule", () => {
   it("returns the enabling rule when every gate passes", () => {
     let storage = makeStorage();
     enableRule(storage);
-    let rule = autoApprovalRule(storage, GK, eligibleDescription());
+    let rule = autoApprovalRule(storage, GK, eligibleDescription(), AGENT);
     expect(rule?.enabledBy).toEqual(ENABLER);
   });
 
   it("requires the author's autoApprovable verdict", () => {
     let storage = makeStorage();
     enableRule(storage);
-    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false })))
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false }), AGENT))
         .toBeUndefined();
   });
 
@@ -333,23 +341,23 @@ describe("autoApprovalRule", () => {
       implementsRevert: true,
       actionKind: { tag: "edit", label: "Edits" },
     };
-    expect(autoApprovalRule(storage, GK, legacy)).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, legacy, AGENT)).toBeUndefined();
   });
 
   it("requires an actionKind", () => {
     let storage = makeStorage();
     enableRule(storage);
-    expect(autoApprovalRule(storage, GK, eligibleDescription({ actionKind: undefined })))
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ actionKind: undefined }), AGENT))
         .toBeUndefined();
   });
 
   it("requires a user-enabled rule for the kind on this gatekeeper", () => {
     let storage = makeStorage();
-    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
     enableRule(storage, "edit", GK + 1);  // right tag, wrong gatekeeper
-    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
     enableRule(storage, "delete", GK);    // right gatekeeper, wrong tag
-    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
   });
 
   it("refuses every action while the restricted-data latch is set", () => {
@@ -359,7 +367,46 @@ describe("autoApprovalRule", () => {
     storage.containsRestrictedData.put(true);
     // The latch is workspace-wide: every action submitAction lets pend must be read by a human,
     // on every gatekeeper.
-    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
-    expect(autoApprovalRule(storage, GK + 1, eligibleDescription())).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), AGENT)).toBeUndefined();
+  });
+
+  it("applies an auto-approvable action from an agent whose chat is in Auto, with no rule", () => {
+    let storage = makeStorage();
+    setChatAuto(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ actionKind: undefined }), AGENT)?.enabledBy)
+        .toEqual(ENABLER);
+    // Another chat's agent, a gadget, or a person in that chat are not covered.
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), { from: "agent", chatId: 2 }))
+        .toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), { from: "gadget", chatId: 1 }))
+        .toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), { from: "user", chatId: 1 }))
+        .toBeUndefined();
+  });
+
+  it("keeps a chat in Auto from applying what its gatekeeper did not mark auto-approvable", () => {
+    let storage = makeStorage();
+    setChatAuto(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false }), AGENT))
+        .toBeUndefined();
+    storage.containsRestrictedData.put(true);
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
+  });
+});
+
+describe("AutoApprovalDrainer with a chat in Auto", () => {
+  it("applies the chat's auto-approvable actions in order and stops at one that must ask", async () => {
+    let storage = makeStorage();
+    setChatAuto(storage);
+    putAction(storage, 1, { autoApprovable: true });
+    putAction(storage, 2, { autoApprovable: true });
+    putAction(storage, 3, { autoApprovable: false });
+    putAction(storage, 4, { autoApprovable: true });
+    let { applyFn, calls } = makeImmediateApply(storage);
+    await new AutoApprovalDrainer(storage, applyFn).drain(GK);
+    expect(calls).toEqual([1, 2]);
+    expect(getAction(storage, 1).resolvedBy).toEqual(ENABLER);
+    expect(getAction(storage, 3).state).toBe("pending");
   });
 });

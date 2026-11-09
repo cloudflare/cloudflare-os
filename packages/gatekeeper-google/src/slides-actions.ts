@@ -16,7 +16,9 @@ import {
 import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
-import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionKind, ResourceSubject } from "@gadgets/workshop-shared/gatekeeper";
+import { UNCREATED_FILE_ID } from "./creation";
+import { googleFileSubject } from "./resource-subject";
 import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import {
@@ -28,7 +30,7 @@ import { mastersOf, slideIds, themePagesOf } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
   movedOrder, newSlidePlace, requireNewSlide, requirePlaceholders, requireSlide, type Deck,
-  type DesignBatch, type SlideLabel, type SlidesActions, type ThemeLabel,
+  type DesignBatch, type QueuedFor, type SlideLabel, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
@@ -38,6 +40,17 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", 
 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
+
+/**
+ * `{subject}` naming the presentation a change edits, or nothing while it is not yet created or
+ * for a change queued before its title was recorded.
+ */
+function subjectOf(
+  { presentation }: QueuedFor, { presentationId }: SlidesHost,
+): { subject?: ResourceSubject } {
+  return presentationId === UNCREATED_FILE_ID || presentation === undefined ? {}
+    : { subject: googleFileSubject("presentation", presentationId, presentation, "edited") };
+}
 
 // What a user may let apply without asking: any change but deleting a slide, or a batch that
 // deletes elements, table rows or columns, or makes Google download an image from a URL the agent
@@ -554,7 +567,7 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
     autoApprovable,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: batch => {
+    describe: (batch, host) => {
       let { changes, slides, themes } = batch;
       let ids = slideIdsOf(changes);
       let pages = changes.map(pageOf).filter(page => page.pageType !== "SLIDE");
@@ -576,6 +589,7 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
       return {
         title: sanitizeTitle(title),
         ...builder.finish(),
+        ...subjectOf(batch, host),
         implementsRevert: false,
       };
     },
@@ -602,9 +616,10 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ slide }) => ({
-      title: sanitizeTitle(`Duplicate ${slideName(slide)}`),
-      description: `Adds a copy of ${slideName(slide)}, with its speaker notes, right after it.`,
+    describe: (payload, host) => ({
+      title: sanitizeTitle(`Duplicate ${slideName(payload.slide)}`),
+      description: `Adds a copy of ${slideName(payload.slide)}, with its speaker notes, right after it.`,
+      ...subjectOf(payload, host),
       descriptionIsComplete: true,
       implementsRevert: false,
     }),
@@ -628,9 +643,10 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ slide }) => ({
-      title: sanitizeTitle(`Delete ${slideName(slide)}`),
-      description: `Deletes ${slideName(slide)}, with its content and speaker notes.`,
+    describe: (payload, host) => ({
+      title: sanitizeTitle(`Delete ${slideName(payload.slide)}`),
+      description: `Deletes ${slideName(payload.slide)}, with its content and speaker notes.`,
+      ...subjectOf(payload, host),
       descriptionIsComplete: true,
       implementsRevert: false,
     }),
@@ -648,12 +664,14 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ slides, afterSlide }) => {
+    describe: (payload, host) => {
+      let { slides, afterSlide } = payload;
       let names = slides.map(slideName).join(", ");
       let where = afterSlide ? `to follow ${slideName(afterSlide)}` : "to the start of the presentation";
       return {
         title: sanitizeTitle(slides.length === 1 ? `Move ${names}` : `Move ${slides.length} slides`),
         description: `Moves ${names} ${where}, keeping their order.`,
+        ...subjectOf(payload, host),
         descriptionIsComplete: true,
         implementsRevert: false,
       };
@@ -680,12 +698,14 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ layout, after, afterSlide }) => {
+    describe: (payload, host) => {
+      let { layout, after, afterSlide } = payload;
       let where = after === undefined ? "at the end of the presentation"
         : afterSlide ? `after ${slideName(afterSlide)}` : "at the start of the presentation";
       return {
         title: sanitizeTitle("Add a slide"),
         description: `Adds a slide with the layout "${plainInline(layout, 60)}" ${where}.`,
+        ...subjectOf(payload, host),
         descriptionIsComplete: true,
         implementsRevert: false,
       };
@@ -716,7 +736,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     autoApprovable: true,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ skipped, slides }) => {
+    describe: (payload, host) => {
+      let { skipped, slides } = payload;
       let names = slides.map(slideName).join(", ");
       let verb = skipped ? "Skip" : "Stop skipping";
       return {
@@ -724,6 +745,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         description: skipped
           ? `Skips ${names}, leaving ${slides.length === 1 ? "it" : "them"} out when presenting.`
           : `Stops skipping ${names}, showing ${slides.length === 1 ? "it" : "them"} again when presenting.`,
+        ...subjectOf(payload, host),
         descriptionIsComplete: true,
         implementsRevert: false,
       };

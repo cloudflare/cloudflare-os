@@ -152,7 +152,7 @@ export function ChatDetailsPage({
   })
   const items: LibraryItem[] = useMemo(() => arrangeLibraryItems([
     // A chat's apps open beside it, where its drafts can be seen.
-    ...appItems.map(item => item.favorite.kind === 'app'
+    ...appItems.map(item => item.favorite?.kind === 'app'
       ? { ...item, onOpen: () => onOpenApp((item.favorite as { workpieceId: WorkpieceId }).workpieceId) }
       : item),
     ...fileItems,
@@ -274,7 +274,7 @@ export function ChatDetailsPage({
                   items={items}
                   layout={layout}
                   grouping="recency"
-                  onToggleStar={item => void setStarred(item.favorite, !item.starred)}
+                  onToggleStar={item => { if (item.favorite) void setStarred(item.favorite, !item.starred) }}
                   empty={query ? 'Nothing matches your search.' : 'Files added to this chat and apps it makes will show up here.'}
                 />
               )}

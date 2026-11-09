@@ -1,6 +1,12 @@
 import type { AiChatMessage, AiToolCall } from '@gadgets/workshop-shared/api'
 import { asStatus } from './agentSteps'
 
+/** Where a change the agent made stands, as its step says it. */
+export type ChangeOutcome = 'drafted' | 'waiting' | 'applied' | 'auto' | 'discarded'
+
+/** One thing the agent did: a step in plain words, or a change it made, with where that stands. */
+export type TurnStep = string | { text: string; outcome: ChangeOutcome; actionId: number }
+
 /** What the agent did in one turn, for the line that ends it ("Worked for 42s"). */
 export type TurnWork = {
   /** The sequence of the message that started the turn: the person's, or the chat's first. */
@@ -8,8 +14,11 @@ export type TurnWork = {
   seconds: number
   /** Whether the agent used any tools, which is what earns the turn its line. */
   worked: boolean
-  /** Its steps in plain words, as the status line said them, without repeats in a row. */
-  steps: string[]
+  /**
+   * Its steps in plain words, as the status line said them, without repeats in a row, and the
+   * changes it made to connected things where it made them.
+   */
+  steps: TurnStep[]
 }
 
 type AppName = { title: string; turn: number }
@@ -108,6 +117,14 @@ export function workByTurn(messages: readonly AiChatMessage[]): Map<number, Turn
     }
     if (m.type === 'message' && m.author.type === 'user') continue
     turn.end = Math.max(turn.end, m.timestamp.getTime())
+    if (m.type === 'action' && m.actionLog?.type === 'action') {
+      const log = m.actionLog
+      const outcome: ChangeOutcome = log.state === 'pending' ? log.description.awaitDecision ? 'waiting' : 'drafted'
+        : log.state === 'approved' ? log.autoApproved ? 'auto' : 'applied' : 'discarded'
+      turn.worked = true
+      turn.steps.push({ text: log.description.title, outcome, actionId: m.actionId })
+      continue
+    }
     if (m.type !== 'message' || !m.toolCalls) continue
     for (const call of m.toolCalls) {
       turn.worked = true

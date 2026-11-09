@@ -2271,3 +2271,178 @@ describe("a Google Doc that is an Office file", () => {
       .toBe("Google Docs batch update document failed [http=400]");
   });
 });
+
+const DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
+
+/** The subject a log entry about the test document carries. */
+function docSubject(role: string) {
+  return {
+    id: "doc-1",
+    title: "Test document",
+    url: DOC_URL,
+    mediaType: "application/vnd.google-apps.document",
+    role,
+  };
+}
+
+describe("previewing a Google Doc's pending edits", () => {
+  it("draws replace and append edits in apply order", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Alpha\nBeta");
+    docs.install();
+    let replaceId = await hooks().submitReplace("preview-edits", "Alpha", "Gamma *now*");
+    let appendId = await hooks().submitAppend("preview-edits", "Delta");
+    let simulated = await hooks().readContent("preview-edits");
+
+    expect(await hooks().previewResource("preview-edits")).toEqual({
+      title: "Test document",
+      url: DOC_URL,
+      actions: [replaceId, appendId],
+      content: {
+        type: "document",
+        tabs: [{
+          id: MAIN_TAB,
+          title: "Main",
+          markdown: simulated,
+          edits: [
+            // The text around each edit locates it where its own text cannot (see DocumentEdit).
+            { change: 0, before: "Alpha", after: "Gamma *now*", context: { before: "", after: "\nBeta\n" } },
+            { change: 1, before: "", after: "Delta", context: { before: "Gamma *now*\nBeta\n\n", after: "\n" } },
+          ],
+        }],
+      },
+    });
+    expect(simulated).toContain("Gamma *now*");
+    expect(simulated).toContain("Delta");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("puts each edit on the tab it targets", async () => {
+    nestedDocs();
+    let metricsId = await hooks().submitAppend("preview-tabs", "alpha", "metrics");
+    let mainId = await hooks().submitReplace("preview-tabs", "shared", "changed", MAIN_TAB);
+
+    let preview = await hooks().previewResource("preview-tabs");
+    expect(preview?.actions).toEqual([metricsId, mainId]);
+    expect(preview?.content.type).toBe("document");
+    let tabs = preview?.content.type === "document" ? preview.content.tabs : [];
+    expect(tabs.map(({ id, title, edits }) =>
+      ({ id, title, edits: edits.map(({ context: _, ...edit }) => edit) }))).toEqual([
+      { id: MAIN_TAB, title: "Main", edits: [{ change: 1, before: "shared", after: "changed" }] },
+      { id: "details", title: "Details", edits: [] },
+      { id: "metrics", title: "Metrics", edits: [{ change: 0, before: "", after: "alpha" }] },
+    ]);
+    expect(tabs[0].markdown).toBe(await hooks().readContent("preview-tabs", MAIN_TAB));
+    expect(tabs[1].markdown).toBe(await hooks().readContent("preview-tabs", "details"));
+    expect(tabs[2].markdown).toBe(await hooks().readContent("preview-tabs", "metrics"));
+  });
+
+  it("omits an edit that no longer applies, with its reason", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "shared");
+    docs.install();
+    let replaceId = await hooks().submitReplace("preview-invalid", "shared", "changed");
+    let appendId = await hooks().submitAppend("preview-invalid", "beta");
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    let preview = await hooks().previewResource("preview-invalid");
+    expect(preview?.actions).toEqual([appendId]);
+    expect(preview?.omitted).toEqual([{
+      action: replaceId,
+      reason: expect.stringContaining("oldMarkdown was not found"),
+    }]);
+    let [tab] = preview?.content.type === "document" ? preview.content.tabs : [];
+    expect(tab.edits).toEqual([expect.objectContaining({ change: 0, before: "", after: "beta" })]);
+    expect(tab.markdown).toContain("rewritten");
+    expect(tab.markdown).toContain("beta");
+    expect(tab.markdown).not.toContain("changed");
+    // The replay that found it invalid recorded that, as the agent's next read would have.
+    expect(await hooks().applyAction("preview-invalid", replaceId))
+      .toContain("oldMarkdown was not found");
+  });
+
+  it("draws the current document when nothing is queued", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Unchanged");
+    docs.install();
+
+    expect(await hooks().previewResource("preview-empty")).toEqual({
+      title: "Test document",
+      url: DOC_URL,
+      actions: [],
+      content: {
+        type: "document",
+        tabs: [{
+          id: MAIN_TAB, title: "Main", markdown: await hooks().readContent("preview-empty"), edits: [],
+        }],
+      },
+    });
+  });
+
+  it("reads through the cached snapshot rather than fetching again", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Cached");
+    docs.install();
+    await hooks().submitAppend("preview-cache", "more");
+    let fetches = docs.documentFetches;
+
+    await hooks().previewResource("preview-cache");
+    expect(docs.documentFetches).toBe(fetches);
+  });
+
+  it("draws only the document a subject names", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    expect(await hooks().previewResource("preview-subject", "other-doc")).toBeNull();
+    expect(await hooks().previewResource("preview-subject", "doc-1"))
+      .toMatchObject({ title: "Test document", actions: [] });
+  });
+
+  it("names the document on its edits and reads", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "shared");
+    docs.install();
+
+    await hooks().submitReplace("subject-doc", "shared", "changed");
+    expect(await hooks().lastActionSubject).toEqual(docSubject("edited"));
+    await hooks().submitAppend("subject-doc", "more");
+    expect(await hooks().lastActionSubject).toEqual(docSubject("edited"));
+
+    await hooks().readContent("subject-doc");
+    expect(await hooks().lastObservationSubjects).toEqual([docSubject("read")]);
+    await hooks().listTabs("subject-doc");
+    expect(await hooks().lastObservationSubjects).toEqual([docSubject("read")]);
+    await hooks().readMetadata("subject-doc");
+    expect(await hooks().lastObservationSubjects).toEqual([docSubject("read")]);
+  });
+
+  it("names no subject, and previews the blank document, while it is not created", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("subject-pending", DOC_PATTERN, "Plan");
+
+    let actionId = await hooks().submitAppend("subject-pending", "added");
+    expect(await hooks().lastActionSubject).toBeUndefined();
+    await hooks().readContent("subject-pending");
+    expect(await hooks().lastObservationSubjects).toEqual([undefined]);
+
+    expect(await hooks().previewResource("subject-pending", "doc-1")).toBeNull();
+    expect(await hooks().previewResource("subject-pending")).toEqual({
+      title: "Plan",
+      actions: [actionId],
+      content: {
+        type: "document",
+        tabs: [{
+          id: "t.0",
+          title: "Tab 1",
+          markdown: "added\n",
+          edits: [expect.objectContaining({ change: 0, before: "", after: "added" })],
+        }],
+      },
+    });
+    expect(docs.fetches).toBe(0);
+  });
+});

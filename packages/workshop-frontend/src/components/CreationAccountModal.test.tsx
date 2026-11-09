@@ -130,7 +130,7 @@ afterEach(() => {
   openConnectWindow.mockReset()
 })
 
-async function renderModal() {
+async function renderModal({ configurator = true, accounts = ['work', 'home'] } = {}) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -142,14 +142,12 @@ async function renderModal() {
       id: 'google',
       description: { displayName: 'Google' },
       supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
-        creationConfigurator: true }],
+        creationConfigurator: configurator }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       testState.subscriber = subscriber
-      subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
-      subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
+      accounts.forEach((uniqueName, i) => subscriber.add(5 + i, { uniqueName } as AccountDescription,
+        {} as VendorDescription, [], true, 'google'))
       subscriber.ready()
       return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
     },
@@ -195,6 +193,18 @@ const accountButton = (name: string) => button(b => b.textContent?.startsWith(na
 const reportReady = () => act(() => testState.reportReady!(true))
 
 describe('CreationAccountModal', () => {
+  it('asks nothing when there is nothing to configure and one account to make it in', async () => {
+    const { onChoose } = await renderModal({ configurator: false, accounts: ['work'] })
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 5 })
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('asks which account when there are several, even with nothing to configure', async () => {
+    const { onChoose } = await renderModal({ configurator: false })
+    expect(onChoose).not.toHaveBeenCalled()
+    expect(approveButton()).toBeDefined()
+  })
+
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
     expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, PATTERN)

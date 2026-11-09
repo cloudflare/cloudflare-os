@@ -340,15 +340,16 @@ export function formatRequests(range: ReturnType<typeof gridRange>, format: Shee
  * Records in `work` what `format` sets on each cell of `rect` of `sheet`: a border along the
  * range's edge on the cells of that edge, and one between its rows or columns on both cells it
  * divides. An edge has one owner, so a cell beside an outer edge whose border changes loses its own
- * border on that side, as Google removes it.
+ * border on that side, as Google removes it. Each format it touches records `by`, the queued change.
  */
-function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetFormatChange): void {
+function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetFormatChange, by: number): void {
   let { borders = {}, ...set } = format;
   let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
   let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
   let update = (row: string, column: string, change: (entry: FormatEntry) => FormatEntry) => {
     let key = cellKey(sheet.id, row, column);
-    enterFormat(work, sheet.id, key, change(work.formats.get(key) ?? { set: {}, borders: {} }));
+    let entry = change(work.formats.get(key) ?? { set: {}, borders: {} });
+    enterFormat(work, sheet.id, key, by ? { ...entry, by } : entry);
   };
   rows.forEach((row, r) => columns.forEach((column, c) => {
     let sides: FormatEntry["borders"] = {};
@@ -410,7 +411,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
       if (change.op === "formatCells") {
         room(formatsAdded(work, sheet, rect, change.format));
-        recordFormat(work, sheet, rect, change.format);
+        recordFormat(work, sheet, rect, change.format, by);
         return formatRequests(range, change.format);
       }
       room(unentered(work.cells, sheet.id, rows, columns));

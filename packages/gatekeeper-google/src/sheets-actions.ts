@@ -37,6 +37,7 @@ import {
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
+import { googleFileSubject } from "./resource-subject";
 import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
 import { callsOnlySpreadsheetFunctions } from "./sheets-formula";
 import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
@@ -421,7 +422,7 @@ function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition
     autoApprovable,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ changes, sheets }) => {
+    describe: ({ changes, sheets, title: fileTitle }, host) => {
       // The sheets the batch acts on or makes, copies included.
       let ids = [...new Set(changes.flatMap(change =>
         change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId]))];
@@ -442,6 +443,10 @@ function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition
           ? ids.length === 1 ? `Add the sheet ${sheetName(sheets[ids[0]], ids[0])}` : `Add ${ids.length} sheets`
           : ids.length === 1 ? `${verb} ${sheetName(sheets[ids[0]], ids[0])}` : `${verb} ${ids.length} sheets`),
         ...builder.finish(),
+        // Changes are queued only to a spreadsheet that exists, so none creates its file.
+        ...(fileTitle === undefined ? {} : {
+          subject: googleFileSubject("spreadsheet", host.spreadsheetId, fileTitle, "edited"),
+        }),
         implementsRevert: false,
       };
     },

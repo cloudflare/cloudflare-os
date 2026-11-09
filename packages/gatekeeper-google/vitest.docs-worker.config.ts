@@ -22,6 +22,7 @@ export default defineConfig({
           CALENDAR_TEST_HOOKS: { className: "CalendarTestHooks", useSQLite: true },
           GOOGLE_CALENDAR_GATEKEEPER: { className: "GoogleCalendarGatekeeperImpl", useSQLite: true },
           GOOGLE_DOC_GATEKEEPER: { className: "GoogleDocGatekeeperImpl", useSQLite: true },
+          GOOGLE_DRIVE_GATEKEEPER: { className: "GoogleDriveGatekeeperImpl", useSQLite: true },
           GOOGLE_SHEETS_GATEKEEPER: { className: "GoogleSheetsGatekeeperImpl", useSQLite: true },
           GOOGLE_SLIDES_GATEKEEPER: { className: "GoogleSlidesGatekeeperImpl", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },

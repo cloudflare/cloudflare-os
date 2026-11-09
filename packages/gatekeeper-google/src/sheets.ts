@@ -4,6 +4,7 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
+  ResourcePreview, ResourceSubject,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
@@ -14,8 +15,10 @@ import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
+import { obsContext } from "./observability";
 import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { nativeFileUrl } from "./resources";
 import {
   batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
@@ -41,10 +44,13 @@ import {
   simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
   type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
 } from "./sheets-simulation";
+import { previewSpreadsheet } from "./sheets-preview";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
 import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.sheets", vendorId: "google" });
 
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
@@ -249,6 +255,23 @@ export class GoogleSheetsGatekeeperImpl
     });
   }
 
+  /**
+   * The spreadsheet as its queued changes leave it, for the person deciding them; see
+   * `previewSpreadsheet`. Read as a session reads, while no change is being applied or rejected,
+   * but not recorded as an observation: it is shown to the approver, never to the agent.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let props = this.ctx.props;
+    // A spreadsheet not yet created has no change queued, and nothing to draw.
+    if (isSimulated(props)) return null;
+    let { spreadsheetId } = props;
+    if (subject !== undefined && subject !== spreadsheetId) return null;
+    return this.#reads.read(async () => previewSpreadsheet(
+      await this.#api.getMetadata(spreadsheetId), this.#journal.listUndecided(),
+      googleFileUrl("spreadsheet", spreadsheetId),
+      areas => this.#api.readPreviewCells(spreadsheetId, areas)));
+  }
+
   #prepareExclusively<T>(body: () => Promise<T>): Promise<T> {
     this.#inPreparation++;
     return this.#preparing.run(body).finally(() => this.#inPreparation--);
@@ -383,6 +406,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SheetsChangeQueue;
+  #title?: string;
 
   /** `reader` makes the reads with nothing queued: for a spreadsheet not created yet, a blank one. */
   constructor(
@@ -406,6 +430,43 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /**
+   * The spreadsheet as an observation of it names it, titled `title`; none for one not created
+   * yet, which has no file to name.
+   */
+  #subject(title: string | undefined): { subject?: ResourceSubject } {
+    if (this.#spreadsheetId === UNCREATED_FILE_ID || title === undefined) return {};
+    return { subject: googleFileSubject("spreadsheet", this.#spreadsheetId, title, "read") };
+  }
+
+  /** Records `title` as the spreadsheet's latest, for observations of reads that do not fetch it. */
+  #sawTitle(title: string): string {
+    this.#title = title;
+    return title;
+  }
+
+  /**
+   * `result`, a read's, with the spreadsheet's title as last seen, fetched if no read has seen it
+   * yet, but not for a read refused, which fetches nothing more. Undefined for one not created
+   * yet, or when it cannot be fetched, which leaves the observation unnamed rather than failing
+   * the read.
+   */
+  async #withTitle<T>(result: T): Promise<[T, string | undefined]> {
+    if (this.#title !== undefined || result instanceof RefusedRead || this.#spreadsheetId === UNCREATED_FILE_ID) {
+      return [result, this.#title];
+    }
+    let title = await this.#api.getTitle(this.#spreadsheetId).catch((error: unknown) => {
+      logger.warn("could not fetch a spreadsheet's title to name a read", { event: "sheets.read.title.failed", error });
+      return undefined;
+    });
+    return [result, title === undefined ? undefined : this.#sawTitle(title)];
+  }
+
+  #sawMetadata<M extends { title: string }>(metadata: M): M {
+    this.#sawTitle(metadata.title);
+    return metadata;
+  }
+
   async getSpreadsheet(): Promise<SpreadsheetInfo> {
     return this.#read(
       () => this.#changes.snapshot(async pending => {
@@ -427,6 +488,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
         description:
           `Read metadata for "${spreadsheet.title}", including its ${spreadsheet.sheets.length} ` +
           "worksheet(s).",
+        ...this.#subject(this.#sawTitle(spreadsheet.title)),
       }));
   }
 
@@ -458,7 +520,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let conflict: string | undefined;
     if (mayMoveCells(pending)) {
       validateRanges(ranges);
-      let replay = replayed(gridOf(await this.#api.getMetadata(this.#spreadsheetId)), pending);
+      let replay = replayed(gridOf(this.#sawMetadata(await this.#api.getMetadata(this.#spreadsheetId))), pending);
       conflict = replay.conflict;
       shown = replay.grid.log.length > 0
         ? await this.#movedRanges(replay.grid, parsed, mode ?? "formatted")
@@ -468,7 +530,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
         this.#api.getMetadata(this.#spreadsheetId),
         this.#api.readRanges(this.#spreadsheetId, ranges, mode),
       ]);
-      let replay = replayed(gridOf(metadata), pending);
+      let replay = replayed(gridOf(this.#sawMetadata(metadata)), pending);
       conflict = replay.conflict;
       shown = overlaid(read, parsed, replay.grid, mode);
     }
@@ -522,18 +584,21 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     ranges: string[],
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]> {
-    let read = await this.#read(
+    let [read] = await this.#read(
       () => this.#changes.snapshot(pending => this.#simulatedRanges(ranges, pending, options?.valueMode))
         .catch((error: unknown) => {
           if (error instanceof RefusedRead) return error;
           throw error;
-        }),
-      result => {
+        })
+        .then(result => this.#withTitle(result)),
+      ([result, title]) => {
+        let subject = this.#subject(title);
         if (result instanceof RefusedRead) {
           return {
             title: "Read Google Sheets ranges",
             description: `Looked up ${ranges.length} range(s) in the connected spreadsheet with the ` +
               "queued changes applied.",
+            ...subject,
           };
         }
         let cellCount = result.reduce(
@@ -547,6 +612,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           description:
             `Read ${cellCount.toLocaleString()} cell(s) from ${result.length} bounded range(s) ` +
             "in the connected spreadsheet.",
+          ...subject,
         };
       });
     if (read instanceof RefusedRead) throw read.refusal;
@@ -554,18 +620,21 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
   }
 
   async readFormats(range: string): Promise<SpreadsheetFormats> {
-    let read = await this.#read(
+    let [read] = await this.#read(
       () => this.#changes.snapshot(pending => this.#simulatedFormats(range, pending))
         .catch((error: unknown) => {
           if (error instanceof RefusedRead) return error;
           throw error;
-        }),
-      result => {
+        })
+        .then(result => this.#withTitle(result)),
+      ([result, title]) => {
+        let subject = this.#subject(title);
         if (result instanceof RefusedRead) {
           return {
             title: "Read Google Sheets formatting",
             description: "Looked up a range in the connected spreadsheet with the queued changes " +
               "applied.",
+            ...subject,
           };
         }
         let cellCount = result.formats.reduce((sum, row) => sum + row.length, 0);
@@ -573,6 +642,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           title: `Read Google Sheets formatting of ${result.range}`,
           description: `Read the formatting of ${cellCount.toLocaleString()} cell(s) in the ` +
             "connected spreadsheet.",
+          ...subject,
         };
       });
     if (read instanceof RefusedRead) throw read.refusal;
@@ -604,7 +674,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
         this.#api.readFormats(this.#spreadsheetId, range),
       ]);
     }
-    let { grid, conflict } = replayed(gridOf(metadata), pending);
+    let { grid, conflict } = replayed(gridOf(this.#sawMetadata(metadata)), pending);
     let area: SimulatedArea;
     let pieces: SheetArea[];
     try {
@@ -689,6 +759,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
         ({ title }) => ({
           title: "Read Google Sheets cells to change them",
           description: `Read the cells ${prepared.length} change(s) write in "${title}" to queue them.`,
+          ...this.#subject(this.#sawTitle(title)),
         }));
       if (!read.editable) {
         throw new Error(
@@ -701,7 +772,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       if (read.refusal) throw read.refusal;
       // Minted here, so every attempt to apply the batch carries the same marker.
       let marker = { id: randomId(), token: crypto.randomUUID() };
-      return { payload: { ...read.batch!, marker }, result: undefined };
+      return { payload: { ...read.batch!, title: read.title, marker }, result: undefined };
     });
   }
 }

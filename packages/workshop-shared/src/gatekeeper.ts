@@ -1248,6 +1248,20 @@ export interface Gatekeeper<Session> extends DurableObject {
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}>;
 
   /**
+   * Draws the item this gatekeeper's resource is as it will be once every action still queued on
+   * it is applied (see ResourcePreview), for the person deciding them. `subject` picks one item of
+   * a resource that holds several, by its `ResourceSubject.id`; without it, the resource's own
+   * item. Returns null when there is no one item to draw.
+   *
+   * The Overseer calls this only for someone who may decide the queued actions, and shows the
+   * result to them alone, never to the agent: it is not an observation and is not recorded as
+   * one. Like a read, it may fetch the item. Keep the result bounded by drawing the parts the
+   * queued actions change, with enough around them to recognize where they are, rather than the
+   * whole of a large item.
+   */
+  previewResource?(subject?: string): Promise<ResourcePreview | null>;
+
+  /**
    * Attempts to revert an action that was already applied.
    *
    * Gatekeepers are not required to implement this. If unimplemented, the user will be instructed
@@ -1495,6 +1509,9 @@ export type ObservationDescription = {
   /** Values shown literally after `description`, as in `ActionDescription.fields`. */
   fields?: ActionField[];
 
+  /** The item this observation read, when it concerns one (see `ResourceSubject`). */
+  subject?: ResourceSubject;
+
   // ----------------------------------------------------------------------------
   // Policy hints
   //
@@ -1668,6 +1685,9 @@ export type ActionDescription = {
    */
   fields?: ActionField[];
 
+  /** The item this action creates or changes, when it concerns one (see `ResourceSubject`). */
+  subject?: ResourceSubject;
+
   /**
    * The gatekeeper's assertion that `description` and `fields` together reproduce, verbatim, every
    * piece of content originating in this workspace that applying the action will write or send:
@@ -1780,6 +1800,531 @@ export type ActionDescription = {
    */
   actionKind?: ActionKind;
 }
+
+/**
+ * How a log entry touched the item it names: read it, made it, changed it, relocated it, or
+ * changed who may see it. Shown to people reviewing what an agent worked on, so it describes the
+ * outcome for the item rather than the API call that produced it.
+ */
+export type ResourceSubjectRole = "read" | "created" | "edited" | "moved" | "shared";
+
+/**
+ * The one item within a connected resource that an observation or action concerns, such as a
+ * Google Doc. Lets the Workshop list what an agent worked on and open it, without parsing
+ * descriptions. Display metadata only: it carries no authority, and the gatekeeper remains the
+ * only judge of what a binding may reach.
+ */
+export type ResourceSubject = {
+  /** Stable provider identifier, so repeated entries about one item group together. */
+  id: string;
+
+  /** The item's display name when the entry was recorded. */
+  title: string;
+
+  /** Browser URL for opening the item with its provider. */
+  url: string;
+
+  /** Provider media type, e.g. "application/vnd.google-apps.document", for choosing an icon. */
+  mediaType?: string;
+
+  /** What this entry did to the item. */
+  role: ResourceSubjectRole;
+};
+
+/**
+ * A connected item drawn as it will be once the actions queued on it are applied, in the item's
+ * own form -- a document as pages, a spreadsheet as a grid, a presentation as slides -- so the
+ * person deciding them sees the result rather than a list of operations. See
+ * Gatekeeper.previewResource().
+ *
+ * Each part a queued action changes names that action by its index in `actions`, so a surface can
+ * mark every change where it lands and let each be decided in place. Display data only: it is
+ * shown to the person deciding, never to the agent, and carries no authority. Colors are CSS
+ * colors from the item itself.
+ */
+export type ResourcePreview = {
+  /** The item's display name. */
+  title: string;
+
+  /** Browser URL for opening the item with its provider, when it has one. */
+  url?: string;
+
+  /**
+   * The queued actions drawn applied, in the order they apply. From Gatekeeper.previewResource()
+   * these are the gatekeeper's action numbers, as applyAction() takes them; from
+   * Overseer.previewResource() they are ActionLogEntry ids.
+   */
+  actions: number[];
+
+  /**
+   * Queued actions that could not be drawn, numbered as `actions` is, with a sentence saying why
+   * (an edit that no longer applies, say), so a surface says so rather than imply they are shown.
+   */
+  omitted?: { action: number; reason: string }[];
+
+  /** The item as it will be. */
+  content: DocumentPreview | SpreadsheetPreview | PresentationPreview;
+};
+
+/** A document as it will be: each tab's text as Markdown, and where each queued edit put it. */
+export type DocumentPreview = {
+  type: "document";
+
+  /** The document's tabs, in order; a document without tabs has one. */
+  tabs: {
+    /** The provider's tab ID. */
+    id: string;
+
+    /** The tab's name. */
+    title: string;
+
+    /** The tab's whole text with every drawn action applied, as Markdown. */
+    markdown: string;
+
+    /** What each drawn action changed in this tab, in the order they apply. */
+    edits: DocumentEdit[];
+  }[];
+};
+
+/**
+ * One queued action's change to a document tab: `after` takes the place of `before`. An insertion
+ * has an empty `before` and a deletion an empty `after`. Both are Markdown. `after` appears in the
+ * tab's `markdown` as written unless a later edit changed it.
+ */
+export type DocumentEdit = {
+  /** The action, as an index into `ResourcePreview.actions`. */
+  change: number;
+
+  /** The Markdown the action replaces, as the tab held it just before. */
+  before: string;
+
+  /** The Markdown the action puts in its place. */
+  after: string;
+
+  /**
+   * The Markdown on either side of `after` as the tab stood once the action applied, a few words
+   * each, so a surface can find where it landed when `after` alone cannot say: a deletion, or
+   * text that occurs more than once. Absent when the gatekeeper could not tell. A later edit may
+   * have changed it, in which case it is not found either.
+   */
+  context?: { before: string; after: string };
+};
+
+/** A spreadsheet as it will be: its sheets, and the areas of them the queued actions change. */
+export type SpreadsheetPreview = {
+  type: "spreadsheet";
+
+  /** Every sheet, in tab order, including sheets a queued action adds or removes. */
+  sheets: {
+    /** The provider's sheet ID; a sheet a queued action adds has the ID it will be given. */
+    id: number;
+
+    /** The sheet's name as it will be. */
+    title: string;
+
+    /** Set when a queued action adds or removes the sheet. */
+    status?: "added" | "removed";
+
+    /** How many leading rows stay in view as the sheet scrolls, when any do. */
+    frozenRows?: number;
+
+    /** How many leading columns stay in view as the sheet scrolls, when any do. */
+    frozenColumns?: number;
+
+    /** Set when the sheet hides its gridlines; cell borders still show. */
+    hideGridlines?: true;
+  }[];
+
+  /**
+   * The format of a cell that sets none of its own, where the spreadsheet's default differs from
+   * Sheets' standard: Arial 10pt, black on white, bottom-aligned, overflowing.
+   */
+  defaultFormat?: SpreadsheetCellFormat;
+
+  /** The changed areas, each with a few rows and columns of context, sheets in tab order. */
+  areas: SpreadsheetArea[];
+};
+
+/** A rectangle of one sheet as it will be. */
+export type SpreadsheetArea = {
+  /** The sheet, by `SpreadsheetPreview.sheets[].id`. */
+  sheetId: number;
+
+  /** Zero-based index of the area's first row in the sheet as it will be. */
+  row: number;
+
+  /** Zero-based index of the area's first column in the sheet as it will be. */
+  column: number;
+
+  /** The area's cells, a row at a time; null is a blank cell. */
+  cells: (SpreadsheetCell | null)[][];
+
+  /** Column widths in pixels, one per column of `cells`, where the sheet sets them. */
+  columnWidths?: number[];
+
+  /**
+   * Row heights in pixels, one per row of `cells`, where the sheet sets them. Sheets grows a row
+   * for larger text only once an action applies, so a row a queued action enlarges text in may be
+   * drawn taller.
+   */
+  rowHeights?: number[];
+
+  /** Area-relative indices of rows the sheet hides, which Sheets does not draw. */
+  hiddenRows?: number[];
+
+  /** Area-relative indices of columns the sheet hides, which Sheets does not draw. */
+  hiddenColumns?: number[];
+
+  /**
+   * Merged cells, area-relative and clipped to the area: each draws as one cell showing its top
+   * left cell, which holds what it shows; the cells it covers are null.
+   */
+  merges?: { row: number; column: number; rows: number; columns: number }[];
+
+  /** Area-relative indices of rows a queued action inserts. */
+  insertedRows?: number[];
+
+  /** Area-relative indices of columns a queued action inserts. */
+  insertedColumns?: number[];
+
+  /** Rows a queued action deletes, drawn where they stood, in the order they stand now. */
+  deletedRows?: SpreadsheetDeletedLines[];
+
+  /** Columns a queued action deletes, drawn where they stood, in the order they stand now. */
+  deletedColumns?: SpreadsheetDeletedLines[];
+};
+
+/** Consecutive rows, or columns, of a sheet that one queued action deletes, with what they hold. */
+export type SpreadsheetDeletedLines = {
+  /**
+   * The area-relative index of the line they stood just before once the actions apply, or the
+   * area's row (or column) count when they stood after its last.
+   */
+  before: number;
+
+  /** Zero-based index of the first of them in the sheet as it is now. */
+  index: number;
+
+  /** How many lines the action deletes here; `cells` gives only the first few. */
+  count: number;
+
+  /** The queued action that deletes them, as an index into `ResourcePreview.actions`. */
+  change?: number;
+
+  /**
+   * What the lines show now, a line at a time: across the area's columns for rows, down its rows
+   * for columns. Null is a blank cell, or one of a line a queued action inserts.
+   */
+  cells: (string | null)[][];
+
+  /** Their sizes in pixels, one per line of `cells`, where the sheet sets them. */
+  sizes?: number[];
+};
+
+/** One cell as it will be. */
+export type SpreadsheetCell = {
+  /**
+   * What the cell shows. Absent when only the provider can work it out once the action applies,
+   * such as a queued formula's result: a surface then shows `formula`, marked as not yet known.
+   */
+  text?: string;
+
+  /** The formula entered in the cell, starting with "=". */
+  formula?: string;
+
+  /** The queued action that enters this cell's value, as an index into `ResourcePreview.actions`. */
+  change?: number;
+
+  /** What the cell showed before that action, when it replaces something. */
+  previous?: string;
+
+  /**
+   * The cell's formatting as it will be, as Sheets draws it (conditional formatting included),
+   * where it differs from `SpreadsheetPreview.defaultFormat`.
+   */
+  format?: SpreadsheetCellFormat;
+};
+
+/** How a spreadsheet cell is drawn. Colours are `#rrggbb`. */
+export type SpreadsheetCellFormat = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  /** The font's name, such as "Roboto". */
+  fontFamily?: string;
+  /** Font size in points. */
+  fontSize?: number;
+  textColor?: string;
+  backgroundColor?: string;
+  /**
+   * Set too where the cell sets none but holds a literal number, date or time, which Sheets
+   * right-aligns, or a boolean, which it centres.
+   */
+  horizontalAlignment?: "left" | "center" | "right";
+  verticalAlignment?: "top" | "middle" | "bottom";
+  /**
+   * Whether text too wide for the cell runs on over blank neighbours (Sheets' default), wraps
+   * onto more lines, or is cut off.
+   */
+  wrapStrategy?: "overflow" | "wrap" | "clip";
+  /** The lines drawn along the cell's edges. */
+  borders?: Partial<Record<"top" | "right" | "bottom" | "left", SpreadsheetBorder>>;
+};
+
+/**
+ * One edge of a cell's border: Sheets draws `solid`, `dashed` and `dotted` 1px wide, `medium` 2px,
+ * and `thick` and `double` 3px.
+ */
+export type SpreadsheetBorder = {
+  style: "solid" | "medium" | "thick" | "dashed" | "dotted" | "double";
+  /** As `#rrggbb`. */
+  color: string;
+};
+
+/** A presentation as it will be: its slides, laid out as the provider lays them out. */
+export type PresentationPreview = {
+  type: "presentation";
+
+  /** Slide width in points. */
+  width: number;
+
+  /** Slide height in points. */
+  height: number;
+
+  /** The slides in order, including any a queued action adds or removes. */
+  slides: PresentationSlide[];
+};
+
+/** One slide as it will be. */
+export type PresentationSlide = {
+  /** The provider's slide ID; a slide a queued action adds has the ID it will be given. */
+  id: string;
+
+  /** The queued actions that change this slide, as indices into `ResourcePreview.actions`. */
+  changes: number[];
+
+  /** Set when a queued action adds or removes the slide. */
+  status?: "added" | "removed";
+
+  /** The slide's background color, its layout's or master's where it sets none. */
+  background?: string;
+
+  /**
+   * A picture stretched over the whole slide in front of `background`, as a `data:image/...` URL:
+   * absent when the background is not a picture, or the picture was not fetched.
+   */
+  backgroundImage?: string;
+
+  /** The slide's elements, back to front. */
+  elements: SlideElement[];
+};
+
+/**
+ * One element of a slide, positioned in points from the slide's top left corner. Its look is
+ * resolved through the placeholders and theme it inherits from, so what is given is what the
+ * provider draws.
+ */
+export type SlideElement = {
+  /** The provider's element ID. */
+  id: string;
+
+  kind: "shape" | "image" | "line" | "table";
+
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+
+  /** Clockwise rotation in degrees, about the element's centre. */
+  rotation?: number;
+
+  /**
+   * Set when a shape's outline or a picture is mirrored top to bottom before it is rotated; a
+   * left-to-right mirror is this and a half turn. Text is never mirrored.
+   */
+  flipped?: true;
+
+  /**
+   * A shape's outline as Google Slides names it (`ShapeType`), such as "ROUND_RECTANGLE",
+   * "ELLIPSE" or "RIGHT_ARROW", in its default proportions. Absent for a rectangle or text box; a
+   * surface draws one it does not know as a rectangle.
+   */
+  geometry?: string;
+
+  /** Fill color of a shape. */
+  fill?: string;
+
+  /** The outline of a shape or picture, or the stroke of a line. */
+  outline?: SlideStroke;
+
+  /** The shadow a shape or picture casts. */
+  shadow?: SlideShadow;
+
+  /**
+   * Where a shape's text sits in its box when it is shorter than the box; absent for the top.
+   * Slides insets text 0.1in from each edge of its box, which the provider does not report.
+   */
+  verticalAlign?: "middle" | "bottom";
+
+  /**
+   * The text in a shape, a paragraph at a time. It wraps within the box and, like Slides', runs
+   * out past the box's bottom rather than being cut off.
+   */
+  text?: SlideParagraph[];
+
+  /** A table's grid and cells. */
+  table?: SlideTable;
+
+  /** An image's content as a `data:image/...` URL; absent when not fetched, drawn as a placeholder. */
+  image?: string;
+
+  /**
+   * The fractions of a picture's width and height cut from each edge, before what remains is
+   * stretched over the element's box. With an `angle`, the picture so placed is then turned that
+   * many degrees clockwise about its own centre, and the box still shows only what falls in it.
+   */
+  crop?: { left: number; top: number; right: number; bottom: number; angle?: number };
+
+  /** A picture's opacity, from 0 to 1, when it is see-through. */
+  opacity?: number;
+
+  /** The arrowhead at a line's start, the left end of its box before rotation. */
+  startArrow?: SlideArrow;
+
+  /** The arrowhead at a line's end, the right end of its box before rotation. */
+  endArrow?: SlideArrow;
+
+  /** The last queued action that changes this element, as an index into `ResourcePreview.actions`. */
+  change?: number;
+};
+
+/** A line drawn along an outline, a line element or a table cell's edge. */
+export type SlideStroke = {
+  color: string;
+
+  /** Thickness in points. */
+  weight: number;
+
+  /** The dash pattern, in Slides' proportions to the weight; absent for a solid line. */
+  dash?: "dot" | "dash" | "dashDot" | "longDash" | "longDashDot";
+};
+
+/** An arrowhead as Slides draws it: a stealth, filled or open arrow, or a filled or open shape. */
+export type SlideArrow =
+  | "stealthArrow" | "fillArrow" | "fillCircle" | "fillSquare" | "fillDiamond"
+  | "openArrow" | "openCircle" | "openSquare" | "openDiamond";
+
+/** A drop shadow, offset and blurred in points. */
+export type SlideShadow = {
+  color: string;
+  x: number;
+  y: number;
+  blur: number;
+};
+
+/** A table: its grid in points, its cells, and the lines along their edges. */
+export type SlideTable = {
+  /** Column widths, left to right. */
+  columns: number[];
+
+  /** Row heights, top to bottom: the least each takes, as Slides grows a row to fit its text. */
+  rows: number[];
+
+  /** The cells, a row at a time; null where a merged cell covers the cell. */
+  cells: (SlideTableCell | null)[][];
+
+  /**
+   * The lines along the top of each row and the bottom of the last, a cell's width at a time:
+   * `rows.length + 1` lists of `columns.length`, null where no line is drawn.
+   */
+  horizontalBorders: (SlideStroke | null)[][];
+
+  /**
+   * The lines along the left of each column and the right of the last, a cell's height at a time:
+   * `rows.length` lists of `columns.length + 1`, null where no line is drawn.
+   */
+  verticalBorders: (SlideStroke | null)[][];
+};
+
+/** One table cell, or the top left of a merged one. */
+export type SlideTableCell = {
+  /** The cell's text, a paragraph at a time. Slides insets it 0.1in left and right, 0.05in top and bottom. */
+  text?: SlideParagraph[];
+
+  fill?: string;
+
+  /** How many rows a merged cell spans, when more than one. */
+  rowSpan?: number;
+
+  /** How many columns a merged cell spans, when more than one. */
+  columnSpan?: number;
+
+  /** Where the text sits in the cell when it is shorter; absent for the top. */
+  verticalAlign?: "middle" | "bottom";
+};
+
+/** A paragraph of slide text. Indents and spacing are in points. */
+export type SlideParagraph = {
+  align?: "start" | "center" | "end" | "justified";
+
+  /** The paragraph's bullet or number, when it is in a list. */
+  bullet?: SlideBullet;
+
+  /** How far the paragraph's lines are indented from the start of the text area. */
+  indentStart?: number;
+
+  /** How far its first line, or its bullet, is indented instead; `indentStart` when absent. */
+  indentFirstLine?: number;
+
+  /** The distance between lines as a percentage of single spacing, the font's own; 100 when absent. */
+  lineSpacing?: number;
+
+  /** Extra space above the paragraph. */
+  spaceAbove?: number;
+
+  /** Extra space below the paragraph. */
+  spaceBelow?: number;
+
+  runs: SlideTextRun[];
+};
+
+/**
+ * How slide text is drawn. Absent fields are Slides' defaults: Arial at 14pt, regular, black, on
+ * no highlight. A link is given the color and underline it is drawn with.
+ */
+export type SlideTextStyle = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+
+  /** Set when lowercase letters are drawn as small capitals. */
+  smallCaps?: boolean;
+
+  /** The font's weight, from 100 to 900, when it is neither regular (400) nor bold (700). */
+  weight?: number;
+
+  /** Font size in points. */
+  fontSize?: number;
+
+  color?: string;
+
+  /** The highlight behind the text. */
+  background?: string;
+
+  /** The font's name, such as "Open Sans". */
+  fontFamily?: string;
+
+  /** Text raised or lowered off the line, which Slides also draws smaller. */
+  baseline?: "superscript" | "subscript";
+};
+
+/** A run of slide text in one style. */
+export type SlideTextRun = SlideTextStyle & { text: string };
+
+/** A bullet as Slides renders it: its glyph, or its number such as "2." or "iv.", and its style. */
+export type SlideBullet = SlideTextStyle & { glyph: string };
 
 /**
  * Describes a registered hook, for display purposes (e.g. so the user can see what hooks are

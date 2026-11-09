@@ -49,6 +49,7 @@ export type RestCellFormat = {
     italic?: boolean;
     underline?: boolean;
     strikethrough?: boolean;
+    fontFamily?: string;
     fontSize?: number;
     foregroundColor?: RestColor;
     foregroundColorStyle?: RestColorStyle;
@@ -208,11 +209,13 @@ export type BorderSide = "top" | "bottom" | "left" | "right";
 
 /**
  * What queued changes set on a cell's own formatting, in the order they were queued: each field
- * set, `null` for one reset, and each side of its border drawn, `null` for one removed.
+ * set, `null` for one reset, and each side of its border drawn, `null` for one removed. `by` is the
+ * ID of the queued change that set any of it last, 0 or absent outside a replay.
  */
 export type FormatEntry = {
   set: Omit<SheetFormatChange, "borders">;
   borders: Partial<Record<BorderSide, SheetBorder | null>>;
+  by?: number;
 };
 
 /** `base`, a cell's formatting, with what `entry` sets on it; null when that leaves none set. */

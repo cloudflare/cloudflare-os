@@ -4,8 +4,10 @@ import type {
   RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText,
   RestThemeColorPair,
 } from "../../src/slides-api";
+import type { PresentationPreview } from "@gadgets/workshop-shared/gatekeeper";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
+import { picturePixels } from "../../src/slides-preview";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 
@@ -103,6 +105,9 @@ function storedFill({ propertyState, ...fill }: RestPageBackgroundFill): RestPag
   return propertyState === "RENDERED" ? fill : { propertyState, ...fill };
 }
 
+// A picture's first bytes, which are all a preview checks of what Google's image host serves.
+const PNG_PIXEL = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const FOLLOWING: Record<string, string> = {
   TEXT1: "DARK1", BACKGROUND1: "LIGHT1", TEXT2: "LIGHT2", BACKGROUND2: "DARK2",
 };
@@ -134,6 +139,18 @@ class SlidesProvider {
       let url = new URL(request.url);
       if (url.pathname === "/v1/presentations/deck-1:batchUpdate") {
         return this.#batch(await request.json());
+      }
+      if (url.hostname.endsWith(".googleusercontent.com")) return new Response(PNG_PIXEL);
+      if (url.hostname === "www.googleapis.com" && url.pathname === "/drive/v3/files/deck-1") {
+        return Response.json({
+          id: "deck-1", name: this.deck.title, mimeType: "application/vnd.google-apps.presentation",
+          modifiedTime: "2026-01-01T00:00:00.000Z",
+        });
+      }
+      // An uploaded picture, as Docs serves it: one redirect to the image host, at full size.
+      if (url.hostname === "docs.google.com" && url.pathname.startsWith("/upload-image/")) {
+        let name = url.pathname.slice("/upload-image/".length);
+        return new Response(null, { status: 302, headers: { location: `https://lh7-rt.googleusercontent.com/rd-slides-images-rt/${name}=s2048?key=k` } });
       }
       let fields = url.searchParams.get("fields");
       let mask = fields === null ? true : parseMask(fields);
@@ -417,6 +434,7 @@ function gatekeeper() {
     reject: (actionId: number) => hooks().rejectSlides(facet, actionId),
     autoApprovable: () => hooks().slidesAutoApprovable(facet),
     orphan: (actionId: number) => hooks().orphanSlidesClaim(facet, actionId),
+    preview: () => hooks().previewSlides(facet),
   };
 }
 
@@ -1086,6 +1104,135 @@ describe("Google Slides design changes", () => {
     let outcome = await slides.call("updateSlides", [{ ...BADGE, ref: "b2" }]);
     expect(outcome.error).toContain('The ref "b2" is also an element\'s ID');
     expect(outcome.actionId).toBeUndefined();
+  });
+});
+
+/**
+ * `deck()` styled as Google reads a themed deck through the preview's masks: a master whose title
+ * placeholder sets the text style a slide's title inherits, and whose background is a picture
+ * served from Google's image host; and on slide 2 a callout, a cropped picture and a bordered
+ * table, each property as Google reports it, defaults and all.
+ */
+function styledDeck(): RestPresentation {
+  let styled = deck();
+  let emuPt = (points: number) => ({ magnitude: points * 12_700, unit: "EMU" as const });
+  let notRendered = { propertyState: "NOT_RENDERED" as const };
+  styled.masters![0].pageProperties!.pageBackgroundFill = {
+    stretchedPictureFill: { contentUrl: PICTURE_COPY, size: { width: emuPt(720), height: emuPt(405) } },
+  };
+  styled.masters![0].pageElements = [{
+    objectId: "m-title", ...BOX,
+    shape: {
+      shapeType: "TEXT_BOX", placeholder: { type: "TITLE" },
+      shapeProperties: { contentAlignment: "BOTTOM", outline: notRendered, shadow: { ...notRendered, type: "OUTER" } },
+      text: { textElements: [
+        { endIndex: 1, paragraphMarker: { style: { alignment: "START", lineSpacing: 100, direction: "LEFT_TO_RIGHT" } } },
+        { endIndex: 1, textRun: { content: "\n", style: {
+          fontFamily: "Montserrat", weightedFontFamily: { fontFamily: "Montserrat", weight: 700 },
+          fontSize: { magnitude: 32, unit: "PT" }, foregroundColor: { opaqueColor: { themeColor: "DARK2" } },
+        } } },
+      ] },
+    },
+  }];
+  styled.layouts![1].pageElements = [{
+    objectId: "l-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "TITLE", parentObjectId: "m-title" } },
+  }];
+  let s2 = styled.slides![1];
+  s2.pageElements![0].shape!.placeholder!.parentObjectId = "l-title";
+  s2.pageElements!.push(
+    {
+      objectId: "callout", ...BOX,
+      shape: {
+        shapeType: "WEDGE_ROUND_RECTANGLE_CALLOUT",
+        shapeProperties: {
+          shapeBackgroundFill: { propertyState: "RENDERED", solidFill: { color: { themeColor: "ACCENT4" }, alpha: 1 } },
+          outline: {
+            propertyState: "RENDERED", outlineFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } },
+            weight: { magnitude: 9525, unit: "EMU" }, dashStyle: "DOT",
+          },
+          shadow: { ...notRendered, type: "OUTER", alpha: 1, color: { rgbColor: {} }, rotateWithShape: false },
+          contentAlignment: "MIDDLE",
+          autofit: { autofitType: "NONE", fontScale: 1 },
+        },
+        text: text(["Ships Friday"]),
+      },
+    },
+    {
+      objectId: "photo", ...BOX,
+      image: {
+        contentUrl: "https://docs.google.com/upload-image/photo",
+        imageProperties: {
+          cropProperties: { leftOffset: 0.25, rightOffset: 0.25 },
+          transparency: 0, outline: { ...notRendered, outlineFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } } },
+          shadow: { ...notRendered, type: "OUTER" },
+        },
+      },
+    },
+  );
+  let grid = s2.pageElements!.find(element => element.objectId === "tb2")!;
+  let edge = (rowIndex: number, columnIndex: number) => ({
+    location: { ...(rowIndex ? { rowIndex } : {}), ...(columnIndex ? { columnIndex } : {}) },
+    tableBorderProperties: {
+      tableBorderFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } }, weight: emuPt(1), dashStyle: "SOLID",
+    },
+  });
+  Object.assign(grid, { transform: BOX.transform });
+  Object.assign(grid.table!, {
+    tableColumns: [{ columnWidth: emuPt(120) }, { columnWidth: emuPt(80) }],
+    horizontalBorderRows: [0, 1, 2].map(r => ({ tableBorderCells: [edge(r, 0), edge(r, 1)] })),
+    verticalBorderRows: [0, 1].map(r => ({ tableBorderCells: [edge(r, 0), edge(r, 1), edge(r, 2)] })),
+  });
+  grid.table!.tableRows!.forEach(row => { row.rowHeight = emuPt(20); });
+  return styled;
+}
+
+describe("Google Slides preview", () => {
+  it("draws a queued edit over a themed deck with every property resolved, pictures inlined", async () => {
+    let provider = new SlidesProvider(styledDeck()).install();
+    let slides = gatekeeper();
+    await slides.edit([{ slideId: "s2", elementId: "callout", find: "Friday", replace: "Monday" }]);
+    let fetches = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)));
+
+    let preview = await slides.preview();
+
+    let content = preview!.content as PresentationPreview;
+    let s2 = content.slides.find(({ id }) => id === "s2")!;
+    let byId = new Map(s2.elements.map(element => [element.id, element]));
+    expect(s2.backgroundImage).toMatch(/^data:image\/png;base64,/);
+    expect(byId.get("t2")).toMatchObject({
+      verticalAlign: "bottom",
+      text: [{ align: "start", runs: [{ text: "Revenue", bold: true, fontFamily: "Montserrat", fontSize: 32, color: "#595959" }] }],
+    });
+    expect(byId.get("callout")).toMatchObject({
+      geometry: "WEDGE_ROUND_RECTANGLE_CALLOUT", fill: "#ffab40", verticalAlign: "middle",
+      outline: { color: "#000000", weight: 0.75, dash: "dot" }, change: 0,
+      text: [{ runs: [{ text: "Ships Monday" }] }],
+    });
+    expect(byId.get("callout")).not.toHaveProperty("shadow");
+    expect(byId.get("photo")).toMatchObject({
+      kind: "image", crop: { left: 0.25, top: 0, right: 0.25, bottom: 0 }, image: expect.stringMatching(/^data:image\/png/),
+    });
+    expect(byId.get("photo")).not.toHaveProperty("outline");
+    // Followed to the image host, and fetched only as wide as it is drawn.
+    let photoFetches = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)))
+      .filter(url => url.pathname.includes("photo"));
+    expect(photoFetches.map(url => `${url.hostname}${url.pathname}`)).toEqual([
+      "docs.google.com/upload-image/photo",
+      `lh7-rt.googleusercontent.com/rd-slides-images-rt/photo=s${picturePixels(500, 720)}-l85`,
+    ]);
+    let black = { color: "#000000", weight: 1 };
+    expect(byId.get("tb2")!.table).toMatchObject({
+      columns: [120, 80], rows: [20, 20],
+      horizontalBorders: Array.from({ length: 3 }, () => [black, black]),
+      verticalBorders: Array.from({ length: 2 }, () => [black, black, black]),
+    });
+    // Only the preview asks for a picture background's URL; no Google URL reaches the approver.
+    let previewReads = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)))
+      .slice(fetches.length).filter(url => url.hostname === "slides.googleapis.com");
+    expect(previewReads.every(url => url.searchParams.get("fields")!.includes("stretchedPictureFill)"))).toBe(true);
+    expect(fetches.some(url => url.searchParams.get("fields")?.includes("stretchedPictureFill)"))).toBe(false);
+    expect(JSON.stringify(preview)).not.toContain("googleusercontent");
+    expect(provider.batches).toEqual([]);
   });
 });
 

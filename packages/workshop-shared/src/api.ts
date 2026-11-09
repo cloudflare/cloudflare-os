@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourcePreview, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
@@ -283,6 +283,12 @@ export type ChatTimelineHead = {
    * this field.
    */
   spawnerName?: string;
+  /**
+   * How many changes made in the chat are drafted and wait for someone to apply or discard them,
+   * so a chat list can show the chat needs a decision even once it is read. Absent when none do,
+   * and when the server is older than this field.
+   */
+  draftsWaiting?: number;
 };
 
 /**
@@ -3289,6 +3295,13 @@ export type ActionLogEntry = {
    * which the resource is created.
    */
   creation?: true;
+
+  /**
+   * The gadget whose own code made the action, whoever was using it or when a hook woke it;
+   * absent for an agent's or a person's. What that gadget's Auto (GadgetSummary.autoApprove)
+   * would cover.
+   */
+  gadgetId?: WorkpieceId;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -3410,7 +3423,7 @@ export type ChatConnectionInfo = {
   name?: string;
 
   /**
-   * Where it comes from: accepted in this chat, held by one of the workspace's apps, or
+   * Where it comes from: accepted or used in this chat, held by one of the workspace's apps, or
    * available to every chat.
    */
   scope: "chat" | "workspace" | "always";
@@ -3779,6 +3792,19 @@ export interface Overseer extends RpcTarget {
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
   /**
+   * The item connection `gatekeeperId` is, drawn as it will be once its pending actions are applied
+   * (see ResourcePreview), with `actions` as ActionLogEntry ids; one decided while the preview was
+   * drawn is -1 there, so indices into `actions` hold, and is left out of `omitted`. `subject`
+   * picks one item of a connection that holds several, by its `ResourceSubject.id`. Null when the
+   * connection draws no preview, and for anyone but the workspace's owner: the gatekeeper reads
+   * the item with the owner's access, and a preview shows all of it rather than what one action
+   * describes.
+   *
+   * Records no observation, since it goes to the person deciding and never to the agent.
+   */
+  previewResource(gatekeeperId: WorkpieceId, subject?: string): Promise<ResourcePreview | null>;
+
+  /**
    * Accept an agent's pending connection request (a "connectionRequest" chat message). The caller
    * is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the
    * resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the
@@ -3969,9 +3995,9 @@ export interface Overseer extends RpcTarget {
   listChatFiles(chatId?: number): Promise<ChatFileSummary[]>;
 
   /**
-   * What chat `chatId`'s agent can use: the connections accepted in the chat, the workspace's
-   * connections its apps hold, and the resources always available to every chat. Each connection
-   * is listed once, under the first of those it falls in.
+   * What chat `chatId`'s agent can use: the connections accepted in the chat or read or changed
+   * through in it, the workspace's connections its apps hold, and the resources always available
+   * to every chat. Each connection is listed once, under the first of those it falls in.
    */
   listChatConnections(chatId: number): Promise<ChatConnectionInfo[]>;
 
@@ -3982,6 +4008,13 @@ export interface Overseer extends RpcTarget {
    * the first message.
    */
   setChatTitle(chatId: number, title: string): Promise<void>;
+
+  /**
+   * Put chat `chatId` in Auto (`enabled`), attributed to the caller, or back in Review (see
+   * AiChatMetadata.autoApprove). Entering Auto also applies, in order, the chat's agent's
+   * auto-approvable actions already waiting, since the chat's changes now apply as they are made.
+   */
+  setChatAutoApprove(chatId: number, enabled: boolean): Promise<void>;
 
   /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
@@ -4345,6 +4378,16 @@ export type AiChatMetadata = {
    * `Overseer.stopAgent`). Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+
+  /**
+   * Set while the chat is in Auto: its agent's actions that their gatekeeper marks
+   * `autoApprovable` apply as soon as they are made, under the authority of `enabledBy`, rather
+   * than waiting as drafts for someone to approve them. Actions not so marked (sending, sharing,
+   * deleting) still wait. Absent, the chat is in Review, and every action waits unless a
+   * workspace auto-approval rule covers it. Never applies once the workspace has read restricted
+   * data. See `Overseer.setChatAutoApprove()`.
+   */
+  autoApprove?: {enabledBy: AiChatAuthorInfo};
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -6057,6 +6100,13 @@ export type GadgetSummary = {
    * not be updated. Delivered only to subscribers with the "build" role.
    */
   viewUpdateFailedAt?: Date;
+
+  /**
+   * Set while the gadget is in Auto: actions its own code makes that their gatekeeper marks
+   * `autoApprovable` apply as soon as it makes them, whoever is using it, rather than waiting as
+   * drafts (see `GadgetClient.setAutoApprove()`). Delivered to build-role clients only.
+   */
+  autoApprove?: true;
 };
 
 /**
@@ -6669,6 +6719,16 @@ export type GadgetView = {
  * sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.
  */
 export interface GadgetClient extends WorkpieceClient {
+  /**
+   * Put the gadget in Auto (`enabled`), attributed to the caller, or back in Review (see
+   * GadgetSummary.autoApprove). In Auto, actions the gadget's own code makes -- whoever is using
+   * it, and when a hook wakes it -- apply as they are made if their gatekeeper marks them
+   * `autoApprovable`; the rest still wait for someone to approve them. Entering Auto also applies
+   * those of its auto-approvable actions already waiting, in order. Never applies once the
+   * workspace has read restricted data.
+   */
+  setAutoApprove(enabled: boolean): Promise<void>;
+
   /**
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *

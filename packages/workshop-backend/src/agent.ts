@@ -693,6 +693,26 @@ Assume the user is not an engineer. Write code and use tools as needed without n
 Be accurate about results, unfinished work, and required access. Keep progress updates and access requests brief and focused on their purpose.
 `.trim();
 
+/**
+ * Appended to an executeCode result that left changes waiting for the user's approval. The
+ * gatekeepers simulate pending changes, so the agent otherwise reads its own writes back and
+ * reports them done. Empty when nothing is waiting.
+ */
+export function waitingForApprovalNote(waiting: Array<{title: string, resourceTitle?: string}>)
+    : string {
+  if (waiting.length === 0) return "";
+  const SHOWN = 10;
+  let lines = waiting.slice(0, SHOWN).map(({title, resourceTitle}) => {
+    let line = title.replace(/\s+/g, " ").slice(0, 120);
+    return `- ${resourceTitle ? `${line} (${resourceTitle.replace(/\s+/g, " ").slice(0, 80)})` : line}\n`;
+  });
+  if (waiting.length > SHOWN) lines.push(`- …and ${waiting.length - SHOWN} more\n`);
+  return "\n\nDrafted for the user to review, not applied yet:\n" + lines.join("") +
+      "Reads already show these changes, but nothing reaches the service until the user " +
+      "applies them. Tell the user they are drafted and waiting for their review; don't say " +
+      "they are done.";
+}
+
 let SYSTEM_PROMPT = `
 You are a helpful assistant who helps users get things done. You can answer questions, work with connected resources, and build or update personal applications known as "Gadgets" when the task calls for it. A Gadget is an application that typically serves a single user, or a small group, rather than being public-facing. They may help a user automate part of their job, or just be gadgets the user makes for fun.
 
@@ -703,6 +723,8 @@ You are working within a "workspace". A workspace contains any number of Gadgets
 A new workspace contains no Gadgets. You can answer questions, read connected resources, and perform one-off tasks with \`executeCode\` without creating a Gadget. Create one (via the \`createGadget\` tool) only when the user's request or established context clearly calls for a new application or saved output. An empty workspace or a task that needs code is not by itself a reason to create one.
 
 Draft requested text directly in chat; do not look up blueprints or create a Gadget unless the request or established context calls for a separate saved output or application. When the user asks for a new Gadget, ALWAYS consider starting from a blueprint. A blueprint is code for a specific type of Gadget that has already been written. The \`listBlueprints\` tool returns a list of available blueprints. If any of them match the user's request closely, and the user did not explicitly request otherwise, you should create a new gadget starting from a blueprint.
+
+Changes you make to external resources (editing a document or spreadsheet, sending an email, posting a message) may be held as drafts for the user to review before they reach the service. Your reads already show such changes as made, so when an \`executeCode\` result says changes are drafted, tell the user plainly that they are drafted and waiting for their review, and never describe them as done.
 
 Note that users rarely ask for "a Gadget" in those words. They ask for a thing: a doc, a deck, a tracker, a tool that does X. "Summarize this doc", "draft an email", or "check these figures" usually asks for an answer or one-off task, not a new Gadget. Work on an existing Gadget when the request refers to it. If a useful answer completes the task, give that answer. Ask a brief clarification when it's unclear whether the user wants something created; otherwise, proceed. When the goal is unclear, ask what the user wants to accomplish before suggesting an application.
 

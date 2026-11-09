@@ -7,7 +7,8 @@ import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-stora
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
 import type {
-  ActionRecord, AutoApproveTagRecord, StoredActionDescription,
+  ActionRecord, AutoApproveTagRecord, GatekeeperCaller, StoredActionDescription, StoredChatMetadata,
+  WorkpieceRecord,
 } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
@@ -16,25 +17,47 @@ export interface AutoApprovalStorage {
   actions: Collection<ActionRecord, number>
       & { pendingByGatekeeper: NonUniqueIndex<ActionRecord, number> };
   autoApproveTags: Collection<AutoApproveTagRecord>;
+  chatMeta: Collection<StoredChatMetadata, number>;
+  gadgets: Collection<WorkpieceRecord, number>;
 
   /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
   containsRestrictedData: Singleton<boolean>;
 }
 
 /**
- * The single authority on whether an action may be applied without a human: the enabling rule if
- * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
- * this gatekeeper, and the workspace has not latched restricted mode; else undefined. A stored
- * description may lack the verdict, which counts as no.
+ * The single authority on whether an action may be applied without a human, returning who
+ * authorized it: the author marked the action `autoApprovable`, the workspace has not latched
+ * restricted mode, and either the agent's chat or the acting gadget is in Auto
+ * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove) or the user enabled a rule for the
+ * action's `actionKind` on this gatekeeper; else undefined. A stored description may lack the
+ * verdict, which counts as no. A gadget caller recorded without its gadget names none.
  */
 export function autoApprovalRule(
-    storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription)
-    : AutoApproveTagRecord | undefined {
+    storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription,
+    caller: GatekeeperCaller)
+    : Pick<AutoApproveTagRecord, "enabledBy"> | undefined {
   if (description.autoApprovable !== true) return undefined;
+  if (storage.containsRestrictedData.get()) return undefined;
+  if (caller.from === "agent") {
+    let chatRule = storage.chatMeta.get(caller.chatId)?.autoApprove;
+    if (chatRule) return chatRule;
+  } else if ((caller.from === "gadget" || caller.from === "hook") && caller.gadgetId !== undefined) {
+    let gadget = storage.gadgets.get(caller.gadgetId);
+    if (gadget?.type === "gadget" && gadget.autoApprove) return gadget.autoApprove;
+  }
   let tag = description.actionKind?.tag;
   if (tag === undefined) return undefined;
-  if (storage.containsRestrictedData.get()) return undefined;
   return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
+}
+
+/**
+ * Whether the record is an action waiting for a person to approve or reject it: pending, and not
+ * one an auto-approval rule will apply. (One queued behind such an action still counts as
+ * applying on its own; it waits only on the other's decision.)
+ */
+export function awaitsManualApproval(storage: AutoApprovalStorage, record: ActionRecord): boolean {
+  return record.type === "action" && record.state === "pending" &&
+      autoApprovalRule(storage, record.gatekeeperId, record.description, record.caller) === undefined;
 }
 
 /**
@@ -84,8 +107,8 @@ export class AutoApprovalDrainer {
   // applying -- it is never skipped ahead of. This preserves in-order application and the
   // invariant that nothing is silently applied past a human gate.
   //
-  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
-  // rule for the action's kind, and no restricted-data latch.
+  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, the agent's chat or
+  // the gadget in Auto, or a user-enabled rule for the action's kind, and no restricted-data latch.
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),
@@ -95,7 +118,7 @@ export class AutoApprovalDrainer {
     for (let record of pending) {
       if (record.type !== "action") continue;
 
-      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
+      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description, record.caller);
       if (rule === undefined) {
         // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
         return;

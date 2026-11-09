@@ -3,6 +3,8 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import { FileText, ImageSquare } from '@phosphor-icons/react'
 import type { BlueprintOutput, FavoriteItemSpec } from '@gadgets/workshop-shared/api'
 import { FormatGlyph } from '../../components/format/FormatVisuals'
+import { DraftFileIcon } from '../drafts/DraftFileIcon'
+import { mediaKind } from '../drafts/drafts'
 import { FileAudioIcon, FilePdfIcon, MoreIcon, StarIcon } from '../../components/icons/designIcons'
 import { MENU_CONTENT, MENU_POSITIONER_STYLE } from '../../components/menuStyles'
 import { ContextMenu, DropdownMenuEntries, type MenuEntry } from '../../components/ContextMenu'
@@ -16,8 +18,11 @@ export type LibraryItem = {
   /** When it was last touched: an app's workspace activity, a file's upload. */
   date: Date
   starred: boolean
-  /** What starring it records; see `AuthenticatedApi.setFavorite()`. */
-  favorite: FavoriteItemSpec
+  /**
+   * What starring it records; see `AuthenticatedApi.setFavorite()`. Absent for what can't be
+   * starred: a file in a connected service, which lives there rather than here.
+   */
+  favorite?: FavoriteItemSpec
   /** Where it lives, shown under its name in the global Library. */
   context?: string
   mimeType?: string
@@ -77,8 +82,13 @@ export function useImageUrl(item: Pick<LibraryItem, 'mimeType' | 'loadContent'>,
   return { ref, url }
 }
 
-/** The icon the design gives a file of this type: PDF and audio drawn as such, the rest generic. */
+/**
+ * The icon the design gives a file of this type: a Google file, PDF and audio drawn as such, the
+ * rest generic.
+ */
 export function FileTypeIcon({ mimeType, size = 16 }: { mimeType?: string; size?: number }) {
+  const google = mimeType && mediaKind(mimeType)
+  if (google) return <DraftFileIcon kind={google} size={size + 2} />
   if (mimeType === 'application/pdf') return <FilePdfIcon size={size + 4} />
   if (mimeType?.startsWith('audio/')) return <FileAudioIcon size={size} />
   if (mimeType?.startsWith('image/')) return <ImageSquare size={size} weight="light" />
@@ -141,8 +151,8 @@ function ItemMenu({ item, className = '' }: { item: LibraryItem; className?: str
 // A right-click offers the More menu's actions, and starring.
 const contextActions = (item: LibraryItem, onToggleStar: (item: LibraryItem) => void): MenuEntry[] => [
   ...(item.actions ?? []),
-  ...(item.actions?.length ? ['separator' as const] : []),
-  { label: item.starred ? 'Unstar' : 'Star', onSelect: () => onToggleStar(item) },
+  ...(item.actions?.length && item.favorite ? ['separator' as const] : []),
+  ...(item.favorite ? [{ label: item.starred ? 'Unstar' : 'Star', onSelect: () => onToggleStar(item) }] : []),
 ]
 
 /** A Library row (Figma "Frame 681"): glyph, name, when, star and More. */
@@ -184,7 +194,9 @@ function LibraryRow({ item, onToggleStar, selection }: {
             )}
           </span>
           <span className="shrink-0 text-[13px] leading-[22px] text-kumo-subtle">{libraryTimeLabel(item.date)}</span>
-          <StarButton item={item} onToggle={onToggleStar} alwaysVisible={false} />
+          {item.favorite
+            ? <StarButton item={item} onToggle={onToggleStar} alwaysVisible={false} />
+            : <span className="size-6 shrink-0" />}
           <ItemMenu item={item} />
         </div>
       </div>
@@ -228,7 +240,7 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
             </span>
           </>
         )}
-        <span className={`absolute right-2 top-2 ${url && !isPdf ? 'text-white [&_button]:!text-white' : ''}`}>
+        {item.favorite && <span className={`absolute right-2 top-2 ${url && !isPdf ? 'text-white [&_button]:!text-white' : ''}`}>
           <button
             type="button"
             onClick={event => { event.stopPropagation(); onToggleStar(item) }}
@@ -240,7 +252,7 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
           >
             {item.starred ? <StarFilledIcon size={16} /> : <StarIcon size={16} />}
           </button>
-        </span>
+        </span>}
         <ItemMenu item={item} className="absolute bottom-2 right-2 bg-kumo-base/80" />
       </div>
     </ContextMenu>

@@ -160,6 +160,19 @@ describe("listing a chat's connections", () => {
         {gatekeeperId: 12, title: "Web Search", vendorId: "websearch", scope: "always"},
       ]);
       await expect(client.listChatConnections(2)).rejects.toThrow(/No such chat/);
+
+      // A connection the chat only read through, never asked for, is the chat's too.
+      gatekeeper(13, "Q4 Plan", {type: "gatekeeper", vendorId: "google", resourceUrl: "https://docs/q4", typeUrlPattern: "https://*"});
+      impl.storage.actions.put({
+        id: 0, type: "observation", gatekeeperId: 13, caller: {from: "agent", chatId: 1},
+        resourceTitle: "Q4 Plan", createdAt: new Date(2), state: "approved",
+        description: {title: "Read Google Doc", description: ""},
+      } as never);
+      impl.storage.chats.put({
+        chatId: 1, sequence: 2, timestamp: new Date(2), author: AGENT, type: "action", actionId: 0,
+      } as never);
+      expect((await client.listChatConnections(1)).map(entry => [entry.gatekeeperId, entry.scope]))
+          .toEqual([[10, "chat"], [13, "chat"], [11, "workspace"], [12, "always"]]);
     });
   });
 });

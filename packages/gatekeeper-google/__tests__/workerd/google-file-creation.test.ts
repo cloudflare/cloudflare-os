@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import NEW_DECK from "../../src/blank-presentation.json";
+import type { PresentationPreview } from "@gadgets/workshop-shared/gatekeeper";
 import type { PresentationInfo, Slide } from "../../src/slides-read-types";
 
 const SHEETS_PATTERN = "https://docs.google.com/spreadsheets/d/:spreadsheetId/*";
@@ -128,6 +129,21 @@ describe("creating a Google Slides presentation", () => {
       .toMatchObject({ slides: [{ id: "p", title: "Pitch" }, { id: newSlideId }] });
     expect(await hooks().callSlides("create-deck", "getSlideThumbnail", ["p"]))
       .toMatchObject({ error: expect.stringContaining("doesn't exist yet") });
+
+    // The approver's preview draws it from the recording, its placeholders styled as Simple Light's.
+    let preview = await hooks().previewSlides("create-deck");
+    expect(preview).toMatchObject({ title: "Pitch", actions: [title.actionId, added.actionId] });
+    expect(preview).not.toHaveProperty("url");
+    let content = preview!.content as PresentationPreview;
+    expect(content).toMatchObject({ type: "presentation", width: 720, height: 405 });
+    expect(content.slides.map(({ id, status, changes }) => ({ id, status, changes }))).toEqual([
+      { id: "p", changes: [0] }, { id: newSlideId, status: "added", changes: [1] },
+    ]);
+    expect(content.slides[0].elements.find(({ id }) => id === "i0")).toMatchObject({
+      change: 0, verticalAlign: "bottom",
+      text: [{ runs: [{ text: "Pitch", fontFamily: "Arial", fontSize: 52 }] }],
+    });
+    expect(await hooks().previewSlides("create-deck", "deck-1")).toBeNull();
     expect(requests).toEqual([]);
 
     expect(await hooks().applyCreation("create-deck"))

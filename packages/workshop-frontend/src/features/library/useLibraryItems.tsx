@@ -6,6 +6,8 @@ import type { PreviewFile } from './FilePreviewPane'
 import type { LibraryPreview } from './LibraryPreviewPane'
 import { favoriteRefKey, useFileLoader } from './useLibraryData'
 import { saveBytesToFile } from './saveBytes'
+import type { ExternalFileSource } from './externalFiles'
+import { OPEN_LABEL } from '../drafts/drafts'
 
 /** An app as the Library's builders take it. */
 export type LibraryAppSource = {
@@ -32,13 +34,17 @@ export type LibraryFileSource = {
 export const fileTitle = (file: { name?: string; mimeType: string }) =>
   file.name ?? `Untitled ${file.mimeType.split('/')[1] ?? 'file'}`
 
+const NO_EXTERNAL: ExternalFileSource[] = []
+
 /**
  * Turns apps, files and favorites into Library items with their actions: opening an app full
- * screen, previewing a file in the page's pane, starring, and the More menu's links.
+ * screen, previewing a file in the page's pane, starring, and the More menu's links. Files in
+ * connected services are listed among the files, but not starred: they live with their provider.
  */
-export function useLibraryItems({ apps, files, favorites, starred, showContext }: {
+export function useLibraryItems({ apps, files, external = NO_EXTERNAL, favorites, starred, showContext }: {
   apps: LibraryAppSource[]
   files: LibraryFileSource[]
+  external?: ExternalFileSource[]
   favorites: FavoriteItem[]
   starred: ReadonlySet<string>
   /** Name each item's workspace beside it, as the all-workspaces Library does. */
@@ -105,8 +111,23 @@ export function useLibraryItems({ apps, files, favorites, starred, showContext }
     }
   }
 
+  const externalItem = (file: ExternalFileSource): LibraryItem => {
+    const open = () => setPreview({ kind: 'external', file })
+    return {
+      key: `external:${file.workspaceId}:${file.subjectId}`, kind: 'file', title: file.title, date: file.date,
+      starred: false, mimeType: file.mediaType,
+      context: showContext ? file.workspaceTitle : undefined,
+      onOpen: open,
+      actions: [
+        { label: 'Preview', onSelect: open },
+        { label: OPEN_LABEL[file.kind], onSelect: () => window.open(file.url, '_blank', 'noopener') },
+      ],
+    }
+  }
+
   const appItems = useMemo(() => apps.map(appItem), [apps, starred, showContext])
-  const fileItems = useMemo(() => files.map(fileItem), [files, starred, showContext])
+  const fileItems = useMemo(() => [...files.map(fileItem), ...external.map(externalItem)],
+    [files, external, starred, showContext])
 
   // A starred item no longer in the listings (a file in a workspace the Library didn't read, say)
   // is still shown from what starring recorded.

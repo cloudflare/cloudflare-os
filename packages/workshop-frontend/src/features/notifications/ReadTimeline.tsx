@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 import type { ChatReadState, Overseer } from "@gadgets/workshop-shared/api";
-import { Button } from "@cloudflare/kumo";
+import { ArrowUp } from "@phosphor-icons/react";
 import { useUnreadState } from "./UnreadStateBridge";
 import { isChatVisible, subscribeVisibleChat } from "./visibleChat";
 
@@ -285,37 +285,46 @@ export const ReadTimeline = ({
     >
       <div ref={root} className={className}>
         {chat && chat.unreadMessageCount > 0 && (visit?.divider !== undefined || visit?.paused) && (
-          <div ref={toolbar} className="sticky top-0 z-10 mb-3 flex flex-wrap items-center justify-center gap-2 rounded-md bg-kumo-base p-2 text-sm text-kumo-subtle">
-            {visit?.paused
-              ? "Marked unread — automatic reading paused until you leave this thread."
-              : "Unread activity"}
-            <Button
-              size="xs"
-              onClick={() => {
-                jumpSequence.current = chat.readThroughSequence + 1;
-                requestedPage.current = undefined;
-                onUnreadNavigation(true);
-                setJump((request) => request + 1);
-              }}
+          <div ref={toolbar} className="pointer-events-none sticky top-0 z-10 mb-3 flex justify-center pt-2">
+            <div
+              role="group"
+              aria-label="Unread messages"
+              title={visit?.paused ? "Reading this chat won’t mark it read until you leave it." : undefined}
+              className="themed-floating-shadow pointer-events-auto inline-flex items-center gap-0.5 rounded-full bg-kumo-base p-1 text-[12.5px] leading-4 ring-1 ring-kumo-line"
             >
-              Jump to first unread
-            </Button>
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={() => {
-                const action = Symbol();
-                latestAction.current = action;
-                void unread?.markRead(overseer, chatId, latestSequence).then(() => {
-                  if (latestAction.current !== action) return;
-                  setVisit(current => current && {...current, paused: false});
-                  onUnreadNavigation(false);
-                  setJump(0);
-                }).catch(() => {});
-              }}
-            >
-              Mark thread read
-            </Button>
+              <button
+                type="button"
+                aria-label="Jump to first unread"
+                onClick={() => {
+                  jumpSequence.current = chat.readThroughSequence + 1;
+                  requestedPage.current = undefined;
+                  onUnreadNavigation(true);
+                  setJump((request) => request + 1);
+                }}
+                className="flex cursor-pointer items-center gap-1.5 rounded-full py-1 pr-2 pl-2.5 font-medium text-kumo-default transition-colors hover:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+              >
+                <span aria-hidden="true" className="size-1.5 rounded-full bg-kumo-brand" />
+                {visit?.paused ? "Kept unread" : `${chat.unreadMessageCount} unread`}
+                <ArrowUp size={12} weight="bold" aria-hidden="true" className="text-kumo-subtle" />
+              </button>
+              <span aria-hidden="true" className="h-3.5 w-px bg-kumo-line" />
+              <button
+                type="button"
+                onClick={() => {
+                  const action = Symbol();
+                  latestAction.current = action;
+                  void unread?.markRead(overseer, chatId, latestSequence).then(() => {
+                    if (latestAction.current !== action) return;
+                    setVisit(current => current && {...current, paused: false});
+                    onUnreadNavigation(false);
+                    setJump(0);
+                  }).catch(() => {});
+                }}
+                className="cursor-pointer rounded-full px-2.5 py-1 text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+              >
+                Mark read
+              </button>
+            </div>
           </div>
         )}
         {children}
