@@ -89,16 +89,22 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
   }
 
   /**
-   * Enable hook `key`, or replace what it was enabled with, releasing the stubs it replaces.
+   * Enable hook `key`, or replace what it was enabled with, releasing the stubs it replaces. A
+   * throw from its second write does not undo its first: call it within
+   * `ctx.storage.transactionSync()` so that a registration that can't be stored leaves the hook as
+   * it was.
    * @throws {TypeError} If `key` contains `:`, which separates it from a message id in the queue.
    */
   set(key: string, registration: Registration, capabilities: HookCapabilities<Hook, Message>): void {
     if (key.includes(":")) throw new TypeError("A hook key must not contain ':'.");
     const replaced = this.#kv.get<object>(CAPABILITIES + key);
-    // Stubs first: a registration stored without them would have its messages finished undelivered.
-    this.#kv.put(CAPABILITIES + key, capabilities);
-    this.#kv.put(REGISTRATIONS + key, registration);
-    disposeStubs(replaced);
+    try {
+      // Stubs first: a registration stored without them would have its messages finished undelivered.
+      this.#kv.put(CAPABILITIES + key, capabilities);
+      this.#kv.put(REGISTRATIONS + key, registration);
+    } finally {
+      disposeStubs(replaced);
+    }
   }
 
   /**

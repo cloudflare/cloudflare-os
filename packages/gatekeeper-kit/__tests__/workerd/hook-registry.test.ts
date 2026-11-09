@@ -15,3 +15,16 @@ it("delivers through the stubs it stored, across deliveries and a replacement", 
   await host.enable("hook");
   expect(await host.deliver("hook", "third")).toEqual(["first", "second", "third"]);
 });
+
+// A throw alone undoes no write, so the stubs `set()` stores first would outlive it.
+it("leaves a hook as it was when the driver's transaction around set() fails", async () => {
+  const host = env.HOOK_HOST.getByName("rolls-back");
+  const refused = (key: string) => host.enable(key, false).then(() => false, () => true);
+
+  expect(await refused("new")).toBe(true);
+  expect(await host.holdsStubs("new")).toBe(false);
+
+  await host.enable("hook");
+  expect(await refused("hook")).toBe(true);
+  expect(await host.deliver("hook", "message")).toEqual(["message"]);
+});

@@ -2449,7 +2449,10 @@ the same drivers already share. The keys are the ones they wrote, so a port migr
   deliveries, and returns the registration**, which GitHub needs for the removed hook's repository.
   `remove()` only forgets: provider teardown stays in the driver's `unregister`. `set()` stores the
   stubs before the registration, since a throw is not rolled back and a registration left without
-  them would have its messages finished undelivered.
+  them would have its messages finished undelivered. The mirror case, a replacement's stubs left
+  beside the registration they were to replace, is the driver's to close by calling `set()` inside
+  `ctx.storage.transactionSync()`, which the registry cannot reach through `KvScannable`. The copy
+  of the replaced stubs `set()` read is released either way.
 - **A `run()` called while one is in flight joins it.** Two would each list the same due messages
   and deliver them twice. The guard is in memory, which one registry per activation makes enough;
   delivery stays at-least-once across a crash, as the queue's is.

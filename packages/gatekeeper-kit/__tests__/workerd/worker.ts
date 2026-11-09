@@ -102,14 +102,19 @@ export class FixtureHookDelivery extends WorkerEntrypoint {
 
 /** A driver's registry over a real DO's storage, which hands back a fresh stub on every read. */
 export class HookHost extends DurableObject {
-  readonly #hooks = new HookRegistry<FixtureHook, string, string>(this.ctx.storage.kv, () => {});
+  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, () => {});
   readonly #received: string[] = [];
 
-  enable(key: string): void {
-    this.#hooks.set(key, "registration", {
+  /** Enables `key` in a transaction, with a registration storage refuses unless `storable`. */
+  enable(key: string, storable = true): void {
+    this.ctx.storage.transactionSync(() => this.#hooks.set(key, storable ? "registration" : () => {}, {
       delivery: this.ctx.exports.FixtureHookDelivery({}),
       initiator: this.ctx.exports.FixtureHookInitiator({ props: { host: this.ctx.id.name! } }),
-    } as never);
+    } as never));
+  }
+
+  holdsStubs(key: string): boolean {
+    return this.ctx.storage.kv.get(`caps:${key}`) !== undefined;
   }
 
   /** Queues and runs `message`, and reports everything the hook has received. */

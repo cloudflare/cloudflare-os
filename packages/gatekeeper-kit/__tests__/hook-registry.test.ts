@@ -110,6 +110,16 @@ describe("HookRegistry", () => {
     expect(kv.keys()).toEqual([]);
   });
 
+  it("releases the stubs it read of a hook whose replacement can't be stored", () => {
+    const kv = kvHoldingStubs();
+    const enabled = hook();
+    registry(kv).set("a", { repo: "one" }, enabled.capabilities);
+    const full: FakeKv = { ...kv, put: () => { throw new Error("storage is full"); } };
+
+    expect(() => registry(full).set("a", { repo: "two" }, hook().capabilities)).toThrow("storage is full");
+    expect(enabled.disposed).toEqual(["delivery", "initiator"]);
+  });
+
   it("starts a firing and hands it to the hook's delivery with the message", async () => {
     const hooks = registry();
     const { capabilities, deliver, firing, disposed } = hook();
