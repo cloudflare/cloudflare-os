@@ -834,8 +834,8 @@ export default function GadgetEditor() {
 
   // The stub for the selected gadget arrives via an effect; during a switch it briefly lags the
   // selection, in which case gadget-dependent views render their empty states for a frame.
-  const selectedGadgetStub =
-    gadget !== null && gadget.id === selectedGadgetId ? gadget.stub : null
+  const selectedGadget = gadget !== null && gadget.id === selectedGadgetId ? gadget : null
+  const selectedGadgetStub = selectedGadget?.stub ?? null
   // Only the selected chat's streaming drives this editor. Everything downstream then narrows it
   // further to the selected workpiece.
   const streamingActiveFile = streamingActiveFileState?.chatId === effectiveSelectedChatId
@@ -2185,10 +2185,12 @@ export default function GadgetEditor() {
                     : 'h-full'
               }
             >
-              {selectedGadgetStub && !previewMode ? (
+              {selectedGadget && !previewMode ? (
                 <GadgetUI
                   key={selectedGadgetId}
-                  gadget={selectedGadgetStub}
+                  gadget={selectedGadget.stub}
+                  gadgetId={selectedGadget.id}
+                  overseer={overseerStub}
                   height="100%"
                   reloadTrigger={uiReloadTrigger}
                   isVisible={activeTab === 'app' && !previewMode}
@@ -2282,10 +2284,12 @@ export default function GadgetEditor() {
       {/* ═══ PREVIEW OVERLAY ══════════════════════════════════════════════════ */}
       {previewMode && (
         <div className="absolute inset-x-0 bottom-0 bg-kumo-base z-10" style={{ top: TOPBAR_H }}>
-          {selectedGadgetStub && (
+          {selectedGadget && (
             <GadgetUI
               key={selectedGadgetId}
-              gadget={selectedGadgetStub}
+              gadget={selectedGadget.stub}
+              gadgetId={selectedGadget.id}
+              overseer={overseerStub}
               height="100%"
               reloadTrigger={uiReloadTrigger}
               isVisible={true}
