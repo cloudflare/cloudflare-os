@@ -4785,7 +4785,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
-   * be approved in the future.
+   * be approved in the future. An action whose connection has since been removed is rejected with
+   * no gatekeeper left to notify: removing the connection discarded what it held for the action.
    */
   rejectAction(id: number): Promise<void>;
 
