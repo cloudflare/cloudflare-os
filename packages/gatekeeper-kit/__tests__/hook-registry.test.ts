@@ -1,18 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DELIVERED_RETENTION_MS } from "../src/hook-delivery-queue";
+import { DELIVERED_RETENTION_MS, MAX_DELIVERY_ATTEMPTS } from "../src/hook-delivery-queue";
 import { HookRegistry } from "../src/hook-registry";
 import { fakeKv, type FakeKv } from "./fake-kv";
 
 const MINUTE = 60_000;
 
-/** `fakeKv`, holding capabilities by reference: a clone can't carry a stub's methods. */
+/** A stub as a storage read returns it: the reader's own to dispose, and dead once disposed. */
+function copyOf<Stub extends Disposable>(stub: Stub): Stub {
+  let disposed = false;
+  return new Proxy(stub, {
+    get(target, property) {
+      if (property === Symbol.dispose) return () => (disposed = true, target[Symbol.dispose]());
+      if (disposed) throw new Error("A stub was used after it was disposed.");
+      return Reflect.get(target, property);
+    },
+  });
+}
+
+/** `fakeKv`, which can't clone a stub's methods, holding capabilities aside and reading back copies. */
 function kvHoldingStubs(): FakeKv {
   const kv = fakeKv();
-  const stubs = new Map<string, unknown>();
+  const stubs = new Map<string, Record<string, Disposable>>();
+  const read = (key: string) => {
+    const held = stubs.get(key);
+    return held && Object.fromEntries(Object.entries(held).map(([name, stub]) => [name, copyOf(stub)]));
+  };
   return {
     ...kv,
-    get: <T>(key: string) => (stubs.get(key) ?? kv.get(key)) as T | undefined,
-    put: (key, value) => key.startsWith("caps:") ? void stubs.set(key, value) : kv.put(key, value),
+    get: <T>(key: string) => (read(key) ?? kv.get(key)) as T | undefined,
+    put: (key, value) => key.startsWith("caps:") ? void stubs.set(key, value as never) : kv.put(key, value),
     delete: key => {
       stubs.delete(key);
       kv.delete(key);
@@ -20,7 +36,7 @@ function kvHoldingStubs(): FakeKv {
   };
 }
 
-/** A hook's stubs, recording what the registry disposes and what its delivery is handed. */
+/** A hook's stubs, recording which copies the registry disposes and what its delivery is handed. */
 function hook() {
   const disposed: string[] = [];
   const disposable = (name: string) => ({ [Symbol.dispose]: () => void disposed.push(name) });
@@ -58,10 +74,39 @@ describe("HookRegistry", () => {
     expect(second.disposed).toEqual([]);
   });
 
+  it("takes up the records a driver stored by hand, and stores its own under the same keys", async () => {
+    const kv = kvHoldingStubs();
+    const stored = hook();
+    kv.put("reg:old", { repo: "one" });
+    kv.put("caps:old", stored.capabilities);
+    const hooks = registry(kv);
+
+    expect(hooks.entries()).toEqual([["old", { repo: "one" }]]);
+    hooks.enqueue("old", "m1", "message", Date.now());
+    await hooks.run(Date.now());
+    expect(stored.deliver).toHaveBeenCalledTimes(1);
+
+    const added = hook();
+    hooks.set("new", { repo: "two" }, added.capabilities);
+    expect(kv.get("reg:new")).toEqual({ repo: "two" });
+    expect(kv.get("caps:new")).toBeDefined();
+
+    hooks.remove("old");
+    expect([kv.get("reg:old"), kv.get("caps:old")]).toEqual([undefined, undefined]);
+  });
+
   it("refuses a key the queue could not tell from a message id", () => {
     const kv = kvHoldingStubs();
 
     expect(() => registry(kv).set("a:b", { repo: "one" }, hook().capabilities)).toThrow(TypeError);
+    expect(kv.keys()).toEqual([]);
+  });
+
+  it("leaves no registration behind when its stubs can't be stored", () => {
+    // The plain fake refuses them as storage refuses a stub with no durable address.
+    const kv = fakeKv();
+
+    expect(() => registry(kv).set("a", { repo: "one" }, hook().capabilities)).toThrow();
     expect(kv.keys()).toEqual([]);
   });
 
@@ -90,6 +135,36 @@ describe("HookRegistry", () => {
 
     await hooks.run(hooks.nextDue()!);
     expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins a run already in flight, where a second would deliver its messages again", async () => {
+    const hooks = registry();
+    const { capabilities, deliver } = hook();
+    const delivering = Promise.withResolvers<void>();
+    deliver.mockReturnValueOnce(delivering.promise);
+    hooks.set("a", { repo: "one" }, capabilities);
+    hooks.enqueue("a", "m1", "message", Date.now());
+
+    const runs = [hooks.run(Date.now()), hooks.run(Date.now())];
+    delivering.resolve();
+    await Promise.all(runs);
+
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a message until it is due, and reports it dropped after its last attempt", async () => {
+    const onDrop = vi.fn();
+    const hooks = registry(kvHoldingStubs(), onDrop);
+    const { capabilities, deliver } = hook();
+    deliver.mockRejectedValue(new Error("the gadget failed"));
+    hooks.set("a", { repo: "one" }, capabilities);
+    hooks.enqueue("a", "m1", "message", Date.now() + MINUTE);
+
+    await hooks.run(Date.now());
+    expect(deliver).not.toHaveBeenCalled();
+
+    for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) await hooks.run(hooks.nextDue()!);
+    expect(onDrop).toHaveBeenCalledTimes(1);
   });
 
   it("returns what a removed hook was registered with, and ends its deliveries even if enabled again", async () => {

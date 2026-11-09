@@ -24,13 +24,18 @@ export type HookCapabilities<Hook extends RpcTarget, Message> = {
   initiator: Fetcher<HookInitiator<Hook>>;
 };
 
+type StartHook<Hook extends RpcTarget> = HookInitiator<Hook>["startHook"];
+
 /**
  * A hook's stored stubs as a delivery calls them: the interfaces themselves, since Worker RPC's
- * mapped stub types don't resolve over an unbound `Hook` or `Message`.
+ * mapped stub types don't resolve over an unbound `Hook` or `Message`. Mapped over
+ * `HookCapabilities`, so the two name the same stubs.
  */
 type Held<Hook extends RpcTarget, Message> = {
-  delivery: Disposable & Pick<HookDelivery<Hook, Message>, "deliver">;
-  initiator: { startHook(): Promise<Disposable & Awaited<ReturnType<HookInitiator<Hook>["startHook"]>>> };
+  [Stub in keyof HookCapabilities<Hook, Message>]: {
+    delivery: Disposable & Pick<HookDelivery<Hook, Message>, "deliver">;
+    initiator: { startHook(...args: Parameters<StartHook<Hook>>): Promise<Disposable & Awaited<ReturnType<StartHook<Hook>>>> };
+  }[Stub];
 };
 
 const REGISTRATIONS = "reg:";
@@ -40,10 +45,13 @@ const CAPABILITIES = "caps:";
  * A driver's enabled hooks, stored under `reg:{key}` (what the driver filters events by) and
  * `caps:{key}` (the hook's stubs), with their `HookDeliveryQueue`. Every method but `run()` is
  * synchronous, so a driver can change its own records and a hook's in one turn. The driver owns its
- * alarm, as with the queue: it calls `run()` from it, and sets it for `nextDue()` afterwards.
+ * alarm, as with the queue: it brings it forward after `enqueue()`, calls `run()` from it, and sets
+ * it for `nextDue()` afterwards.
  *
- * Nothing is kept in memory, so a driver may read or delete these records itself, as on
- * disconnecting. One that deletes a `caps:{key}` passes it to `disposeStubs()` first.
+ * The records live only in storage, so a driver may read them itself, and may delete all of its
+ * storage at once, as on disconnecting, passing each `caps:{key}` to `disposeStubs()`
+ * (`./hook-delivery-queue`) first. One hook alone goes through `remove()`: deleting only its records
+ * leaves its queued messages to be delivered if it is enabled again.
  *
  * There is no lookup by key: no driver's provider names the hook it pushes for. Add a `get(key)`
  * reading `reg:{key}` when one does.
@@ -56,12 +64,20 @@ const CAPABILITIES = "caps:";
  *   for (const [key, registration] of this.#hooks.entries()) {
  *     if (watches(registration, event)) this.#hooks.enqueue(key, event.id, event, Date.now());
  *   }
+ *   await this.ctx.storage.setAlarm(Date.now());
+ * }
+ *
+ * async alarm() {
+ *   await this.#hooks.run(Date.now());
+ *   const next = this.#hooks.nextDue();
+ *   if (next !== undefined) await this.ctx.storage.setAlarm(next);
  * }
  * ```
  */
 export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
   readonly #kv: KvScannable;
   readonly #queue: HookDeliveryQueue<Message>;
+  #running?: Promise<void>;
 
   /**
    * @param kv The driver's `ctx.storage.kv`.
@@ -79,8 +95,9 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
   set(key: string, registration: Registration, capabilities: HookCapabilities<Hook, Message>): void {
     if (key.includes(":")) throw new TypeError("A hook key must not contain ':'.");
     const replaced = this.#kv.get<object>(CAPABILITIES + key);
-    this.#kv.put(REGISTRATIONS + key, registration);
+    // Stubs first: a registration stored without them would have its messages finished undelivered.
     this.#kv.put(CAPABILITIES + key, capabilities);
+    this.#kv.put(REGISTRATIONS + key, registration);
     disposeStubs(replaced);
   }
 
@@ -108,9 +125,13 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
     this.#queue.enqueue(key, messageId, message, now);
   }
 
-  /** Deliver what has come due, as `HookDeliveryQueue.run()` does. */
-  async run(now: number): Promise<void> {
-    await this.#queue.run(now, (key, message) => this.#deliver(key, message));
+  /**
+   * Deliver what has come due, as `HookDeliveryQueue.run()` does. A call made while one is in flight
+   * joins it, as two runs would each deliver the same messages.
+   */
+  run(now: number): Promise<void> {
+    return this.#running ??= this.#queue.run(now, (key, message) => this.#deliver(key, message))
+      .finally(() => { this.#running = undefined; });
   }
 
   /** @returns When the queue next needs the driver's alarm, if it does. */

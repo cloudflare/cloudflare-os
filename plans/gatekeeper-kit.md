@@ -2441,19 +2441,27 @@ message to the binding's delivery stub, dispose what was read. `HookRegistry` is
 once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, bounded runs)
 the same drivers already share. The keys are the ones they wrote, so a port migrates nothing.
 
-- **Synchronous but for `run()`.** Every driver relies on nothing awaiting between its provider
-  work and the registration, and GitHub writes it inside a serialized webhook change. `set()` and
-  `remove()` are plain storage writes, so those invariants stay in the driver's hands.
+- **Synchronous but for `run()`.** Gmail and Chat rely on nothing awaiting between their provider
+  work and the registration, GitHub writes it inside a serialized webhook change, and Outlook
+  registers before it subscribes. `set()` and `remove()` are plain storage writes, so each ordering
+  stays in the driver's hands.
 - **`set()` disposes the stubs it replaces; `remove()` disposes them, ends the hook's queued
   deliveries, and returns the registration**, which GitHub needs for the removed hook's repository.
-  `remove()` only forgets: provider teardown stays in the driver's `unregister`.
+  `remove()` only forgets: provider teardown stays in the driver's `unregister`. `set()` stores the
+  stubs before the registration, since a throw is not rolled back and a registration left without
+  them would have its messages finished undelivered.
+- **A `run()` called while one is in flight joins it.** Two would each list the same due messages
+  and deliver them twice. The guard is in memory, which one registry per activation makes enough;
+  delivery stays at-least-once across a crash, as the queue's is.
 - **`entries()` returns bare keys, listed in full**, so it is safe across the writes and awaits a
   live KV iterator is not.
 - **`set()` refuses a key containing `:`**, which the queue's row keys split on.
 - **The delivery call type-checks without suppression** because the stored stubs are read as the
-  interfaces themselves (`Pick<HookDelivery, "deliver">`, the awaited `startHook()` result): Worker
-  RPC's mapped stub types do not resolve over an unbound `Hook` or `Message`. Being derived, the
-  read type stops compiling if `startHook()` changes shape.
+  interfaces themselves: Worker RPC's mapped stub types do not resolve over an unbound `Hook` or
+  `Message`. The read type is mapped over `HookCapabilities` and built from `HookDelivery["deliver"]`
+  and `startHook()`'s parameters and result, so renaming a stored stub or changing either signature
+  stops the kit compiling. What `set()` stores and what a delivery reads remain two declarations,
+  compared only by their stub names.
 
 The Durable Object, its alarm, the provider lifecycle (webhooks, watches, subscriptions, cursors),
 ingest filters, the controller and account-disconnect handling stay in each gatekeeper. Email and
@@ -2464,7 +2472,8 @@ Rejected:
 
 - **A `HookDriver` Durable Object base class.** That is Layer 2, and the drivers order their alarm
   differently around `run()` (sync before, check before, renew after).
-- **A kit controller.** About fifteen lines each, and only the driver lookup differs.
+- **A kit controller.** About fifteen lines each, and each projects its own registration and
+  looks up its own driver.
 - **`clear()`**, with one caller (GitHub's disconnect, which can remove its hooks one at a time), and
   **`offer(id, message, admits)`**, which does not fit Gmail's and Outlook's cursor syncs.
 - **Account-disconnect tracking.** Google, Microsoft and GitHub have three different contracts.
@@ -2479,8 +2488,10 @@ Left out until a driver needs it, each an additive change:
 - **Key-prefix options**, as the journal, cache and observer tracker have for ports with records
   already written. The four share `reg:`/`caps:`, and the queue's `msg:`/`queue:` are fixed too.
 
-Until then the escape hatch is the storage itself: the registry keeps nothing in memory, so a
-driver may read or delete its records directly, disposing a `caps:` record's stubs when it does.
+Until then the escape hatch is the storage itself: the records live nowhere else, so a driver may
+read them directly, and may delete all of its storage at once, disposing each `caps:` record's
+stubs as it does. It must not delete one hook's records alone: only `remove()` also ends the hook's
+queued deliveries, which would otherwise reach it when it is enabled again.
 
 ## 5. Layer 2: the assembly
 
