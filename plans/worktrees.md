@@ -39,8 +39,9 @@ The current pull contract is `Gatekeeper.gitPull(oids, options): Promise<GitPull
 in `packages/workshop-shared/src/gatekeeper.ts`. Providers return a one-shot raw PACK stream
 plus terminal status; the overseer owns bounded cache ingestion and requested-object checks.
 This kernel-facing method is not exposed to gadgets: the kernel routes pulls using recorded
-provenance, while the transport checks oid syntax, not advertisement history. A native
-container consumer requires separate kernel bootstrap support and enforces its own limits.
+provenance, while the transport checks oid syntax, not advertisement history. Native Git in a
+container goes through the kernel instead (`ReplicableWorktree.gitPull()`, see
+`docs/worktree-replicas.md`), which asks providers for what it doesn't store.
 
 ## Locked decisions
 

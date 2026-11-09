@@ -2,78 +2,44 @@
 
 Status: implemented on the `ddr/split-worktree-replicas` branch, in the five commits under
 [Commits](#commits), with the deviations listed under
-[Implementation notes](#implementation-notes). It replaced the branch's live sync protocol (sync
-sessions, subscribers, revisions and OT delivery to the container).
-[`docs/worktree-replicas.md`](../docs/worktree-replicas.md) describes the result, and the API is
-`packages/workshop-shared/src/worktree-replica.ts`.
-Builds on [`plans/step-transactionality.md`](step-transactionality.md) and
-[`plans/git-proxy.md`](git-proxy.md).
-
-## Implementation notes
-
-Where the code differs from the design below, the code wins. The differences:
-
-- **The stored stub** (`926b2352`). What agent code passes on is the binding loopback, which
-  used to fail once its execution ended. Every call through it now resolves to the
-  `WorktreeEndpoint` of the execution that minted it: its file methods still work only during
-  that execution, while `gitPull()` works at any time and `snapshot()` serves whichever execution
-  is running in the chat. So a stub the agent passes to a gadget also keeps replica access.
-- **API types** (`926b2352`). `WorktreeSnapshot.command` is typed `WorktreeCommand` (the receiver
-  gets a stub), not `RpcStub<WorktreeCommand>`, and `WorktreeState.head` is never null.
-- **Object check on submit** (`926b2352`). Rather than every object reachable from `tree` but not
-  `from`, each object at a path where they differ must be stored or pullable, so a command can
-  move a file the workspace never loaded. Submitted trees must also be canonical, which rejects
-  names such as `..` and `sub/.git`.
-- **Retries** (`926b2352`). A failed submission frees its handle for a retry, and every call,
-  retries included, requires the execution to still be running.
-- **Merging** (`926b2352`). A mode merges on its own, so one command's `chmod` survives another's
-  edit (a binary file still takes the command's bytes), and merged changes are written deletions first, so a file replaced by a directory on one
-  side alone isn't refused.
-- **Re-root** (`560403c4`). A re-rooting step writes no chat change rows: its changes are
-  composed into its "changes" message. `executeCode` is refused after a re-root in the same step,
-  as well as the file tools (`readFile`, `grep`, `writeFile`, `editFile`).
-- **The boundary** (`d7cfef5a`). `WorktreeGitSource` has no `shallowCommit`: the boundary is the
-  union of the connections' boundary commits. The clone's shallow lines are the connection's own.
-  A boundary tree the workspace lacks is fetched blob-less a level at a time. The refusal is
-  narrower than "needs both": a fetch needing workspace commits is refused only with remote
-  wants, or with history beyond the boundary when the client has some of the history. An absolute
-  depth over several boundary commits is rebased on the nearest.
-- **Snapshot tree fetches** (`926b2352`, `d7cfef5a`) must want only snapshot trees, and for a
-  worktree from a connected repository need a `have` in the history.
+[Implementation notes](#implementation-notes).
+[`docs/worktree-replicas.md`](../docs/worktree-replicas.md) describes the design as built: the
+API, the container's command sequence, what `snapshot()` and `submit()` do, re-rooting the
+chat's pin, and the Git transport. The API is `packages/workshop-shared/src/worktree-replica.ts`.
+This record keeps what the docs don't: why the design is this way, the decisions behind it, how
+the kernel implements it, and how it was tested. Builds on
+[`plans/step-transactionality.md`](step-transactionality.md).
 
 ## Goal
 
 A container gatekeeper mounts a worktree and runs short commands against it: tests, linters,
-formatters, auto-fixers. Those commands' file edits must flow back to the workspace, and
-the workspace's edits must reach the container before each command.
+formatters, auto-fixers. Those commands' file edits must flow back to the workspace, and the
+workspace's edits must reach the container before each command. Some of those commands run Git
+themselves (for example `packages/integration-tests/scripts/build-upgrade-base.ts` runs
+`git fetch --depth=1 origin <UPGRADE_BASE>`), so the container's `origin` must answer whatever
+mix of workspace and remote history they ask for.
 
-The branch currently does this with a persistent, live protocol. That protocol breaks step
+## Alternative considered: a live sync protocol
+
+An earlier design on this branch streamed edits both ways as OTs, through persistent sync
+sessions with subscribers, and saved each batch a command submitted at once. That broke step
 transactionality, the rule that a step's effects are saved if and only if its transcript is.
-
-## Why the current design has to change
-
-Today, each `submitChanges()` batch is saved at once, through `flushReplica`. That also saves the
-step's other buffered edits early, before the step's transcript. Consider a crash mid-command:
+Consider a crash mid-command:
 
 - The command's edits so far are saved, but the `executeCode` call that made them is not.
 - The resumed turn replays the log and asks the model again. The early "changes" message is
   agent-authored, so replay applies it without telling the model.
 - The model most likely runs the same command again, on top of the half-applied edits. The old
-  command may also still be running in the container. Its later batches are saved either as
-  *user* edits (if they arrive before the resumed turn registers) or folded into the new step.
+  command may also still be running in the container, and its later batches land either as
+  *user* edits or folded into the new step.
 
 An agent can't sensibly recover from a half-finished command, and the commands this is for can
-easily be re-run. Throwing the partial edits away and running the command again is both simpler
-and more correct. Keeping the edits also costs a lot of kernel code:
-- `flushReplica`, and `AiToolCall.effectsPersisted`.
-- The `output` fields on `readFile`, `writeFile` and `editFile`.
-- `AgentStepChange.toolCallId`, `earlyFileFlush` and `stepFileReads`.
-- `registerWorktreeReplicaTurn` and `reloadForReplica`.
-- Durable subscriptions with alarm-driven retry, and durable batch receipts.
+easily be re-run. Throwing the partial edits away and running the command again is simpler and
+more correct, and it needs none of the machinery saving them early took (an early flush of the
+step's buffer, per-tool-call persistence flags, durable subscriptions with alarm-driven retry,
+durable batch receipts).
 
-## Design
-
-### Principles
+## Principles
 
 - **Step transactionality holds.** A command's edits join the running step's buffer, and are
   saved with its transcript or lost with it.
@@ -86,273 +52,131 @@ and more correct. Keeping the edits also costs a lot of kernel code:
   edits; at worst it checks out a newer tree incrementally.
 - **The container needs only stock Git.** It runs no OT engine. Merging, where there is any,
   happens in the kernel, with the three-way merge it already uses for accepting a chat's
-  changes.
+  changes. The native Git operations relied on (fetching a bare tree by ID, packing with
+  `rev-list` between two trees, the two-way `read-tree`) were checked against Git 2.53.
 - **A submission moves the chat's pin; it isn't turned back into OTs.** The submitted (or merged)
   tree becomes a hidden commit, and the chat's pin for the worktree re-roots at it, as
   `updateChatFromMainline` re-roots a gadget's pin at a merge commit. File modes and binary files
   then need nothing special: the tree carries them.
+- **The clone is cut where the history reaches a connected repository.** Everything below that
+  boundary is on the remote, so once the container has the head, any further history it asks
+  for is purely remote and can be proxied whole, with no request served half locally and half
+  remotely.
 
-### API
+## Kernel implementation
 
-On the persistent Worktree stub (`ReplicableWorktree`):
+The docs describe the behaviour; these are the mechanisms behind it.
 
-As implemented, `head` is never null and `command` is typed `WorktreeCommand` (see
-[Implementation notes](#implementation-notes)).
+- **`snapshot()`** builds its tree with `GitStore.writeChangedTree`, the tree half of the
+  binding's `commit()`, from the chat pin's `baseCommit` plus the chat's pending edits plus the
+  step's buffered edits (`worktreeChanges` in `worktree-session.ts`). It requires an entry in
+  `#activeExecutions` for the chat, and remembers the tree on that execution for `gitPull()`.
+- **`submit()`** ingests the pack through the same path as a gatekeeper's pack
+  (`consumePackFromGatekeeper`, with no gatekeeper), diffs only subtrees whose IDs differ
+  (faulting in remote trees as reads do), and merges with `threeWayMerge`. Everything until the
+  re-root awaits, during which the agent's code can write through the binding or the execution
+  can end. So it reads the turn's edit counter (`WorktreeTurnAccess.getRevision`) with the
+  current tree, and in one synchronous block just before the re-root checks it again and checks
+  `isLiveExecution()`; if the counter moved it merges again, and if the execution ended it fails.
+  Conflicted paths are recorded on the execution, and the `executeCode` result reports them.
+- **The re-root** is `WorktreeTurnAccess.reRoot`. It strips the worktree's edits from the step's
+  buffer and records the commit in `step.reRoots`, which `commitAgentStep` declares as a pin in
+  the step's "changes" message, with a destructive generation bump, as `updateChatFromMainline`
+  does. Replay drops the worktree's accumulated content when it applies a re-root pin. The
+  file-tool guard (`assertNoExecutedChanges`) refuses later file tools and `executeCode` in the
+  step.
+- **Accepting** builds the worktree's accepted content on the pin's `baseCommit` tree, applying
+  only the paths touched after the last re-root (`#worktreeTouchedPaths` resets at each pin
+  declaration), and keeps the old `pinBase` as the commit's parent.
+- **Hidden commits stay reachable:** `git-store.ts` lists pin declarations in chat logs as roots
+  for the future garbage collection.
 
-```ts
-interface WorktreeState {
-  tree: GitOid;         // the worktree's current files, including uncommitted edits
-  head: GitOid | null;  // the worktree's Git head
-}
-interface WorktreeSnapshot extends WorktreeState {
-  command: RpcStub<WorktreeCommand>;  // submits this command's result
-}
-interface WorktreeCommand extends RpcTarget {
-  submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
-}
-interface ReplicableWorktree {
-  snapshot(): Promise<WorktreeSnapshot>;
-  gitPull(request: Request): Promise<Response>;
-}
-```
+## Git fetches
 
-- **`snapshot()` requires a running `executeCode` call** in the worktree's chat.
-- **`WorktreeCommand` is an in-memory handle, bound to that execution.** Its `from` is implicit:
-  the snapshot's tree. It stops working when the execution ends, and a Durable Object restart
-  breaks it outright. That fences out an abandoned command. Without the handle, a command left
-  running across a restart could submit against the resumed execution's first snapshot, which
-  usually has the same tree ID, because the crash rolled the edits back.
-- **A handle accepts one submission.** Calling `submit()` again with the same tree returns the
-  first result, and any other tree is refused. A retry after a lost reply therefore never merges
-  twice; an identical retry of a merge would otherwise nest the conflict markers.
-- **`gitPull()` works at any time.**
-- **Removed:** `WorktreeSyncSession`, `WorktreeSubscriber`, `WorktreeSubscription`,
-  `WorktreeRevision` and `FileChangeByPath`.
+`gitPull()` is `worktreeGitPull` in `packages/workshop-backend/src/worktree-git.ts`, fed by the
+overseer's `worktreeGitPull` and `#remoteHistoryBoundaries`.
 
-### A command, from the container's side
+### Policy
 
-1. **Snapshot.** Call `snapshot()`.
-   - If `head` changed, fetch it (`git fetch origin`).
-   - Compute the tree of the files as they actually are, with the private index (`git add -A`,
-     then `git write-tree`), not the tree last synced. They differ when a command was cut off,
-     for example by a restart. If the actual tree differs from the snapshot's, fetch the
-     snapshot's tree (`git fetch origin <tree>`) and update the files with
-     `GIT_INDEX_FILE=<private index> git read-tree -m -u <actual tree> <tree>`. That also
-     removes files an interrupted command created.
-   - Reset the real index and HEAD to `head` (`git reset --mixed <head>`), so `git status` shows
-     the uncommitted changes as the workspace would.
-2. **Run** the command.
-3. **Submit.** Build a tree of the files with the private index (`git add -A`, then
-   `git write-tree`). Using `git add -A` keeps ignored files (`node_modules`, build output) out.
-   - If the tree equals the snapshot's, there is nothing to submit.
-   - Otherwise call `command.submit(tree, pack)` on the snapshot's handle, where `pack` is
-     `git rev-list --objects <tree> ^<snapshot tree> | git pack-objects --stdout`.
-   - If the returned tree differs from the submitted one, the workspace merged in concurrent
-     edits. Check it out as in step 1.
+Mounting a worktree permits fetching the entire history of its head commit. Commit IDs hash
+their whole history, so when several connections can provide part of it, it doesn't matter which
+one serves it.
 
-Two commands in one `executeCode` call (format, then lint) need nothing extra: the second
-snapshot's tree equals the first submission's result, so step 1 does nothing.
+- A worktree is not tied to a remote; its head is often a commit no remote has. Its remote
+  history begins at the *boundary*: walking back from the head through locally stored commits,
+  the first commits with recorded provenance (`gitObjectMetadata.onRemote`/`pullableFrom` naming
+  a live connection).
+- Whether a remote commit is in the head's history is decided by asking a connection that has
+  boundary commits: a commit-only fetch (`filter tree:0`) of the wanted commits with a `have` per
+  boundary commit. An empty pack means yes. The answer is trusted, since the data it protects is
+  the connection's own repository. A "no" moves on to the next connection; the fetch is refused
+  only if some connection answered and none confirmed.
+- Nothing is looked up in the agent's environment. Other refs of the origin (e.g. `main`) and
+  other repositories are out of scope; if they are needed later, the agent should pass them to
+  the gatekeeper as objects.
 
-A checkout runs one command at a time, from `snapshot()` through the final checkout after
-`submit()`. Otherwise one command's snapshot checkout can overwrite files another command is
-still writing, before that one submits, and serializing submissions in the kernel can't recover
-them. Commands that run in parallel need separate checkouts.
+### RPC shape
 
-If the connection to the workspace drops while a command runs, the execution is gone. The
-gatekeeper should stop the command and everything it started, rather than let it keep writing
-files; the next command's step 1 then restores them.
+`Gatekeeper.gitPull(oids, hints): Promise<GitPullTransfer>` keeps main's structured shape, and
+providers keep implementing it with `startGitPull`: the kit turns the hints into the protocol-v2
+request, so a provider still only adds its credentials and POSTs to its `git-upload-pack`. The
+GitHub and GitLab gatekeepers are unchanged. `GitPullHints` gains:
 
-These native Git operations were checked against Git 2.53: fetching a bare tree by ID, packing
-with `rev-list` between two trees, and the two-way `read-tree`.
+- `haves`: commits the requester has, so the remote leaves out their history. Packs stay
+  self-contained, since the kit never asks for thin packs. Cache fills still send none.
+- `shallow`: the requester's shallow boundary, which the remote needs to answer a deepen.
+- `commitHistory: {kind: "relative", depth}`, for `--deepen=N`.
+- `GitPullTransfer.shallowInfo()`, beside `status()`: the response's `shallow`/`unshallow`
+  lines, which a proxied fetch must pass on but the raw pack doesn't carry. The kit reads them
+  (`openGitFetchResponse`) without consuming pack data.
 
-Initial setup is `git clone` of the made-up remote URL. The clone is shallow when the worktree
-came from a connected repository (see below), so no special flags are needed.
+The ancestry probe is an ordinary `gitPull(wants, {type: "commit", commitHistory: {kind: "full"},
+filterTreeDepth: 0, haves: boundaries})` whose pack header the kernel inspects.
 
-### Kernel: `snapshot()`
+### Request handling
 
-- **Require a running execution.** Fail unless `#activeExecutions` has one for the worktree's
-  chat.
-- **Build the tree** of the worktree's current files. That is the chat pin's base commit (the
-  accepted commit, or the last re-root) plus the chat's pending edits plus the running step's
-  buffered edits to this worktree, which is what the Worktree binding's `readFile` already
-  sees.
-  - Use `GitStore.writeChangedTree`
-    ([git-store.ts:393](../packages/workshop-backend/src/git-store.ts)), the tree half of the
-    binding's `commit()`.
-  - Only the changed directories' trees are new. For a worktree from a connected repository,
-    the unchanged subtrees keep their remote IDs.
-- **Store the tree** in the Git cache like any other object. Nothing else about it is stored:
-  a later garbage collection of unreachable cache objects will clean up snapshot trees that no
-  submission turned into a hidden commit. (Hidden commits stay reachable; see the re-root
-  section.)
-- **Remember the tree in memory** for the running execution. Only those trees can be fetched
-  with `gitPull()`, since the Durable Object's Git cache holds other worktrees' objects too.
-- **Return a `WorktreeCommand` handle** bound to the execution and to this tree as `from`.
+The kernel parses every request. Ref discovery is local. For `fetch` it extracts the fields it
+understands (`want`, `have`, `shallow`, `deepen`, `deepen-since`, `deepen-relative`, `filter` as
+`blob:none`, `blob:limit=<n>` or `tree:0`, `done`, and harmless arguments such as `ofs-delta`,
+`thin-pack`, `no-progress` and `include-tag`) and refuses anything else. An upstream request is
+always re-encoded from these checked fields: an allowlist, never the container's own bytes.
 
-### Kernel: `submit()`
+A fetch is classified by what the container lacks, not by its `want` lines. For example,
+`git fetch --deepen=N` sends `want <head>`, `have <head>`, `shallow <boundary>` and `deepen N`:
+the head is local, but the container already has it, and what it lacks is purely remote. A
+deepen reaches past the boundary if it is relative, if its depth exceeds the boundary's depth
+from the wanted commits, or if its date is no later than the boundary's commit time. Negotiation
+takes one round: a request without `done` is answered at once with `ready` and the pack.
 
-1. **Check the request.** Require the handle's execution to still be the running one. If the
-   handle already accepted a submission, return its result for the same tree and refuse any
-   other.
-   - Run submissions for one worktree one at a time.
-2. **Ingest `pack`** into the Git cache with its usual object and size limits, as the gatekeeper
-   pack ingestion (`consumePackFromGatekeeper`) does. Check that every object reachable from
-   `tree` but not from `from` is now stored.
-3. **Find the changed paths.** Diff `from` against `tree`, and `from` against the worktree's
-   current tree (a new snapshot). Only descend into subtrees whose IDs differ. A differing
-   subtree on the `from` side may be a remote tree the cache doesn't hold; fault it in, as reads
-   do. Refuse `.git` entries, symlinks and submodules, as the file tools do.
-4. **Merge.** If no path changed on both sides, the result is simply the submitted content for
-   the paths the command changed. Otherwise run `threeWayMerge`
-   ([git-store.ts:652](../packages/workshop-backend/src/git-store.ts)) on just the changed paths,
-   with `from` as the base, the current files as one side and the submitted files as the other.
-   - Concurrent edits can only come from the same execution: user edits are rejected while an
-     agent turn runs (`plans/step-transactionality.md`), and tool calls run one at a time. So
-     this is the agent's code writing through the Worktree binding while a command runs, or two
-     commands on the same worktree in parallel.
-   - Conflicting hunks get diff3-style conflict markers, and a file deleted on one side and
-     changed on the other keeps the changed content. Both are reported as conflicts.
-   - `threeWayMerge` handles text only. A binary file changed on both sides keeps the command's
-     version and is reported as a conflict.
-   - `threeWayMerge` works path by path, so it can return both a file `a` and a file `a/b`, for
-     example when the command replaced a file with a directory while the agent's code edited
-     the file. No tree can hold both, so refuse the submission with an error saying to run the
-     command again. It needs concurrent edits plus a type change, so it is very rare.
-5. **Re-root the chat's pin.** Write the result tree (the submitted tree, or the merge of it) as a
-   hidden commit whose parent is the chat pin's current base commit. Buffer, in the running
-   step, a re-root of the chat's pin for this worktree at that commit (see below). Nothing is
-   converted to `FileChange`s.
-   - Steps 2 to 5 await, and the agent's code can write through the Worktree binding during
-     those awaits. So read the turn's edit counter (`WorktreeTurnAccess.getRevision`) when
-     reading the current tree in step 3, and check it again just before installing the re-root,
-     in the same synchronous block. If it moved, redo steps 3 to 5 against the new current
-     files.
-   - The execution can also end during those awaits, without the edit counter moving. So the
-     same synchronous block checks again that the handle's execution is still running
-     (`isLiveExecution()`), and fails the submission if not. Otherwise a late re-root would
-     land in the turn's state after its tool call had finished.
-6. **Report conflicts to the agent.** Record the conflicted paths on the running execution. The
-   `executeCode` tool result then says which files were merged with conflicts, so the agent
-   resolves them before continuing.
-7. **Return the resulting tree and head.** The tree is remembered as in `snapshot()`, so the
-   container can fetch it. Record the result on the handle, for retries.
+Then the fetch is served locally (with the boundary commits at depth 1 from one connection),
+proxied whole to a connection that confirmed the wanted commits, or refused if it needs both;
+the docs give the exact rules.
 
-The re-root is attributed to the agent step that ran the command, and is saved at that step's
-barrier, together with its transcript.
+### Why spanning requests need storage
 
-### Kernel: re-rooting the chat's pin
+A pack can't contain the same object twice: native Git rejects it ("The same object %s appears
+twice in the pack"). Pack entries carry content, not object IDs; an ID is the hash of the full
+object, and an entry may be a delta against an earlier one, so learning a proxied pack's IDs
+means decoding it and keeping delta bases around. Workspace-created trees and blobs can coincide
+with remote ones (a reverted file, an unchanged subdirectory), so a local half and a proxied
+remote half can't be merged blindly. This is also why the local half of a clone leaves out every
+object in the boundary commits' trees, matching by content rather than path.
 
-A chat pin for a gadget already has two commits (`ChatGadgetPinState`):
-- **`baseCommit`:** what the chat's content builds on, and what its OT rows compose on.
-- **`mergedCommit`:** the accepted commit the chat's changes are reviewed and accepted against.
+Protocol v2's `packfile-uris` does allow several packs in one fetch, with duplicates across
+packs. But each URI line carries the pack's checksum and comes before the client downloads
+anything, and the kernel can't know a proxied pack's checksum until it has streamed through.
 
-`updateChatFromMainline` moves `baseCommit` to a synthesized merge commit mid-chat, and keeps
-`mergedCommit` at the head it merged. A submission does the same for a worktree:
-
-- **`baseCommit` moves to the hidden commit.** The worktree record's `pinBase` and the pin's
-  `mergedCommit` stay at the accepted commit. Moving `pinBase` would accept the chat's changes
-  without review; keeping it means the user still reviews everything the chat changed, the
-  command's edits included, as a diff against the accepted commit.
-- **The re-root absorbs the step's earlier edits to this worktree.** They are already in the
-  submitted tree, since the snapshot included them. They leave the step's buffer, and edits later
-  in the step compose on the new base. Several submissions in one step chain their hidden
-  commits; only the last one is declared.
-- **At the barrier,** the step's "changes" message declares the re-root as a pin, which replay
-  applies before the message's change. As in `updateChatFromMainline`, the content changed
-  without OTs, so the barrier bumps the chat's code-base generation and clients rebuild from the
-  log.
-- **Replay of later file tools in the same step.** Live, a `readFile` after a submission in the
-  same step sees the re-rooted content. On replay, `executeCode` re-runs nothing, so the read
-  would see the old content. (The same already happens on main for writes the agent's code makes
-  through the Worktree binding.) Recording read outputs would bring back the `output` fields
-  this plan deletes. Instead, extend the existing `executeCode` guard the other way: a file tool
-  refuses to run after an `executeCode` call earlier in the same step changed files, and tells
-  the model to call it in its next step. All of a step's tool calls are issued before any of
-  them runs, so such a call was made without seeing the command's result anyway.
-- **On accept,** today's epoch reset (`overseer.ts:4083`) rebuilds a worktree's accepted content
-  by applying the paths the epoch's OT edits touched on top of `record.pinBase`. A re-root
-  touches no paths, so its content would be lost. Instead, build on the pin's `baseCommit` tree,
-  applying only the paths touched after the last re-root; paths touched before it are already
-  in that tree. The resulting auto-commit keeps the old `pinBase` as its parent, as it already
-  does, so the hidden commits never appear in the worktree's history.
-- **The hidden commits stay in the Git cache.** The changes messages name them in their pin
-  declarations, and replay rebuilds closed epochs from those. `git-store.ts:40` lists pin
-  declarations in chat logs as roots for the future garbage collection. They are collected only
-  if the history that names them goes away, for example when the chat is deleted.
-
-### Kernel: `gitPull()` and the shallow boundary
-
-Today the clone is cut off at `shallowCommit`, the commit the worktree was created at. Instead,
-cut it at the history's *boundary*, as defined in `plans/git-proxy.md`. Walking back from the
-head through locally stored commits, the boundary is the first commits with live provenance
-(`#remoteHistoryBoundaries`). The clone holds every commit only the workspace has, plus the
-boundary commits as shallow commits.
-
-- **What this fixes.** Everything below the boundary is on the remote, since a commit a remote
-  has comes with its whole history. So once the container has the current head, any further
-  history it asks for (`--deepen`, `--unshallow`, `git fetch --depth=1 origin <sha>`) is purely
-  remote and is proxied whole.
-- **No hybrid requests are left.**
-  - A request that still needs both workspace-only and remote objects is refused, with an error
-    telling the container to fetch `head` first.
-  - A `git clone --depth=N` deeper than the boundary is given less history, as any shallow
-    server does. Stock Git accepts that.
-  - The cache fill (formerly commit `2ea4bfb0`, kept on `backup/git-pull-cache-fill`) is
-    dropped.
-- **When the boundary differs from `shallowCommit`.**
-  - *The agent pushed some of its commits:* the newest pushed commit becomes the boundary.
-  - *The agent merged in a commit from a connected repository:* that commit becomes an extra
-    boundary.
-  - In the merge case, today's walk to `shallowCommit` follows the merged commit's parents,
-    which aren't stored locally, and faults them in one object at a time. The boundary walk
-    fixes that.
-- **Streaming the boundary commits.** They come with their files at depth 1, in one request to
-  one connection that has them all, so the pack doesn't duplicate the objects their trees
-  share. If no single connection has every boundary commit, refuse rather than merge packs.
-- **Leaving out the boundary's objects.** The local half must leave out every tree and blob ID
-  reachable from any boundary commit's tree, because a pack can't contain the same object twice.
-  That includes renamed, copied and reverted files, which match by content, not by path. This
-  generalizes today's `excludeBase` from one commit to the union of the boundary.
-  - A pushed workspace commit's trees are stored locally.
-  - A merged remote commit's trees are fetched once with `filter blob:none` and cached as
-    metadata, as is done for the created-at commit today.
-- **Snapshot trees** are fetchable by ID, but only those remembered for the running execution
-  (see `snapshot()`). A tree want
-  is served from the local walk. Its unchanged subtrees and blobs are the head's, which the
-  container already has, so its `have`s exclude them.
-
-### What is removed
-
-**Kernel:**
-- The sync session machinery: `openWorktreeSync`, `submitWorktreeChanges`,
-  `#flushWorktreeTurn`, `#syncRows` and `drainWorktreeSubscription`.
-- The storage collections `worktreeSyncSessions`, `worktreeSyncSubscriptions` and
-  `worktreeSyncCommits`, together with their alarm retry. Check whether deployed Durable
-  Objects can hold records in them (the branch is unreleased, so probably not) before deciding
-  whether existing records need cleaning up.
-- From `runAgentPass`: `flushReplica`, `registerWorktreeReplicaTurn`, `reloadForReplica`,
-  `earlyFileFlush`, `stepFileReads`, the `toolCallNotes` merging at the barrier, and
-  `AgentStepChange.toolCallId`.
-- In `commitAgentStep`: `replicaCommit` and `replicaAccess`.
-- From `worktreeGitPull`: the `localHeads` and `pending` collection from subscription records.
-  Snapshot trees and `head` replace it.
-
-**Shared API:**
-- `AiToolCall.effectsPersisted`, and the `output` fields on `readFile`, `writeFile` and
-  `editFile`.
-- Everything in `worktree-replica.ts` except `ReplicableWorktree.gitPull`, which stays and has
-  its docs updated.
-
-**Tests and fixtures:**
-- The `ReplicaGitSource`/subscriber fixtures.
-- `replica-transfer-worker.ts`.
-- `test-gatekeeper.ts`'s subscriber.
-- The replay tests for early flushes.
+Serving a spanning request would therefore mean filling the workspace's Git cache from the
+remote first. That was built (formerly commit `2ea4bfb0`, kept on `backup/git-pull-cache-fill`)
+and dropped: with the clone cut at the boundary, a spanning request needs the head to move while
+a command runs Git, and fetching the head first avoids it.
 
 ## Decisions
 
 1. **Concurrent edits are merged**, with three-way conflict markers on conflicts, using the
-   existing `threeWayMerge`. The `executeCode` result flags the conflicts (see `submit()`).
+   existing `threeWayMerge`. The `executeCode` result flags the conflicts. They can only come
+   from the same execution: user edits are rejected while an agent turn runs, and tool calls run
+   one at a time.
 2. **Snapshot trees are stored in the Git cache, with no other stored record.** A future garbage
    collection of unreachable objects cleans up those that never became a hidden commit. The
    execution remembers its trees in memory only, for authorization.
@@ -363,23 +187,29 @@ boundary commits as shallow commits.
 5. **A submission re-roots the chat's pin at a hidden commit** of the result tree, instead of
    being converted into OTs. File modes survive: later edits keep an entry's mode
    (`GitStore.writeChangedTree`), and so does accepting.
+6. **A command's handle lives in memory, bound to its execution, and accepts one submission.**
+   This fences out a command abandoned by a restart, which could otherwise submit against the
+   resumed execution's first snapshot (usually the same tree ID, since the crash rolled the
+   edits back). An identical retry returns the first result, so a lost reply never merges twice.
+7. **Spanning requests are refused**, not served by a cache fill (see
+   [Why spanning requests need storage](#why-spanning-requests-need-storage)).
 
 ## Open questions
 
-Re-rooting a worktree's pin mid-epoch is new. These needed checking during implementation; 1 to
+Re-rooting a worktree's pin mid-epoch was new. These needed checking during implementation; 1 to
 5 were settled in `560403c4`, and symlinks and submodules (6) stay refused:
 
-1. **The `baseCommit === pinBase` invariant.** `WorktreeRecord.pinBase`'s docs say a worktree's
+1. **The `baseCommit === pinBase` invariant.** `WorktreeRecord.pinBase`'s docs said a worktree's
    chat pin always has `baseCommit === pinBase`, and that moving it mid-epoch would double-apply
    live rows on replay. A re-root keeps `mergedCommit === pinBase` instead, and absorbs the
-   step's rows. Every use of `pinBase` needs auditing: about 29 in `overseer.ts`, 3 in
+   step's rows. Every use of `pinBase` needed auditing: about 29 in `overseer.ts`, 3 in
    `agent.ts`, and the frontend's `otClient.ts` and `WorkpieceCodeInterface.tsx`.
-2. **Replay.** For a worktree, `applyReplayedPin` keeps the accumulated session content when a
-   pin is re-established, on the grounds that it is all base-derived. After a re-root it isn't,
+2. **Replay.** For a worktree, `applyReplayedPin` kept the accumulated session content when a
+   pin was re-established, on the grounds that it is all base-derived. After a re-root it isn't,
    so replay must drop that worktree's session content and forget which of its files were read.
    Replay must also not re-apply the absorbed tool calls' edits.
-3. **Re-root pins in agent steps.** Today an agent step's pins are only first-touch pins,
-   checked against the gadget's current head. `commitAgentStep` needs a re-root kind, with the
+3. **Re-root pins in agent steps.** An agent step's pins were only first-touch pins, checked
+   against the gadget's current head. `commitAgentStep` needed a re-root kind, with the
    generation bump.
 4. **The frontend.** It must read a worktree's chat content from the pin's `baseCommit` and
    review it against `mergedCommit`, as it does for re-rooted gadget pins.
@@ -388,22 +218,43 @@ Re-rooting a worktree's pin mid-epoch is new. These needed checking during imple
 6. **Symlinks and submodules.** The hidden commit could carry them as it carries modes. They stay
    refused until the file tools' handling of them is checked.
 
+## Implementation notes
+
+Where the implementation departed from the design as first reviewed:
+
+- **The stored stub** (`926b2352`). What agent code passes on is the binding loopback, which
+  used to fail once its execution ended. Every call through it now resolves to the
+  `WorktreeEndpoint` of the execution that minted it: its file methods still work only during
+  that execution, while `gitPull()` works at any time and `snapshot()` serves whichever execution
+  is running in the chat. So a stub the agent passes to a gadget also keeps replica access.
+- **Object check on submit** (`926b2352`). Rather than every object reachable from the submitted
+  tree but not the snapshot's, each object at a path where they differ must be stored or
+  pullable, so a command can move a file the workspace never loaded. Submitted trees must also
+  be canonical, which rejects names such as `..` and `sub/.git`.
+- **Retries** (`926b2352`). A failed submission frees its handle for a retry, and every call,
+  retries included, requires the execution to still be running.
+- **Merging** (`926b2352`). A mode merges on its own, so one command's `chmod` survives another's
+  edit (a binary file still takes the command's bytes), and merged changes are written deletions
+  first, so a file replaced by a directory on one side alone isn't refused.
+- **Re-root** (`560403c4`). A re-rooting step writes no chat change rows: its changes are
+  composed into its "changes" message. `executeCode` is refused after a re-root in the same
+  step, as well as the file tools (`readFile`, `grep`, `writeFile`, `editFile`).
+- **The boundary** (`d7cfef5a`). The boundary is the union of the connections' boundary commits,
+  and the clone's shallow lines are the connection's own. A boundary tree the workspace lacks is
+  fetched blob-less a level at a time. The refusal is narrower than "needs both": a fetch needing
+  workspace commits is refused only with remote wants, or with history beyond the boundary when
+  the client has some of the history. An absolute depth over several boundary commits is rebased
+  on the nearest.
+- **Snapshot tree fetches** (`926b2352`, `d7cfef5a`) must want only snapshot trees, and for a
+  worktree from a connected repository need a `have` in the history.
+
 ## Commits
 
 Each commit keeps the backend separate from tests and docs where it can, for kernel review.
 
-1. **Remove the live sync protocol.** Delete everything listed under
-   [What is removed](#what-is-removed). That's the sync sessions, subscribers, receipts and
-   subscription storage, the early-flush machinery, and `effectsPersisted` and the `output`
-   fields. Only `gitPull` is left, so a mount is read-only: a container can clone and fetch but
-   not write back. Nearly all deletions, and it brings `agent.ts` back close to main.
-   - Deleting only the early-flush machinery would leave a half-design. It is what makes
-     `submitChanges()` work during a turn. Without it, a submission mid-turn would either be
-     refused, which is the only time commands run, or go into the step's buffer. In the buffer,
-     revisions already delivered to the container would vanish on a crash, breaking the durable
-     receipts and `subscribe(after)`.
-2. **Re-root a worktree's chat pin in an agent step.** The riskiest kernel change, on its own
-   (see [Kernel: re-rooting the chat's pin](#kernel-re-rooting-the-chats-pin)):
+1. **Remove the live sync protocol** that this plan replaces, leaving only `gitPull`, so a mount
+   is read-only for one commit. It brings `agent.ts` back to main.
+2. **Re-root a worktree's chat pin in an agent step.** The riskiest kernel change, on its own:
    - `commitAgentStep` accepts a re-root, which absorbs the step's earlier edits to the
      worktree, with the generation bump.
    - Replay drops the worktree's accumulated content after a re-root.
@@ -417,40 +268,25 @@ Each commit keeps the backend separate from tests and docs where it can, for ker
 4. **Shallow boundary at the remote boundary.** Serve the clone shallow at
    `#remoteHistoryBoundaries`, stream several boundary commits from one connection, leave out
    their union, serve snapshot trees, and refuse spanning requests.
-5. **Docs.** Rewrite `docs/worktree-replicas.md`: the scenarios, initial capture and delivery,
-   returning edits, and container responsibilities. Mark the superseded parts of
-   `plans/git-proxy.md`.
+5. **Docs.** Rewrite `docs/worktree-replicas.md`: the scenarios, the container's command
+   sequence, what the kernel does, and the Git transport.
 
 ## Testing
 
-**Backend tests (`__tests__/worktree-replica.test.ts`):**
-- `snapshot()`/`submit()` fail outside an execution.
-- A snapshot includes the step's buffered binding writes.
-- A submission's edits are saved with the step's transcript, and are lost when the step is
-  aborted or the DO restarts before the barrier.
-- A retried submission returns the first result without applying or merging again, including
-  after a merge with conflicts; a second, different submission on one handle is refused.
-- A handle from an earlier execution is refused, and so is one used after a DO restart.
-- A submission whose execution ends while it is ingesting the pack installs nothing.
-- Two submissions in parallel, and a binding write landing during a submission, keep everyone's
-  edits.
-- A file tool after an `executeCode` that changed files in the same step is refused.
-- A file replaced by a directory, against a concurrent edit of the file, is refused.
-- Concurrent binding writes during a command are merged, with conflict markers on overlapping
-  hunks and the conflicts named in the `executeCode` result.
-- Symlinks and `.git` entries are refused.
-- A submission re-roots the chat's pin: replay, a reload, a revert of the step, and the user's
-  review diff all show the command's edits, and an executable bit survives accepting.
-- Accepting a chat whose only change to a worktree is a submission keeps the submitted content.
-  The accepted commit's parent is the old `pinBase`, with no hidden commits in its history.
-
-**Native Git against workerd (`__tests__/native/worktree-git.test.ts`):**
-- The full container sequence: clone, snapshot, `read-tree` checkout, edit, `write-tree`, pack,
-  submit, and a second command with no transfer.
-- A container left dirty by an interrupted command, including a new untracked file, is restored
-  by the next snapshot's checkout.
-- A clone shallow at a pushed commit.
-- A clone with two boundary commits from a merge.
-- A `--deepen` after the clone, proxied whole.
-- A spanning request, refused.
-- A `--depth` clone deeper than the boundary, served shallower.
+- **`__tests__/worktree-reroot.test.ts`** drives `reRoot` from a stand-in for `executeCodeMode`:
+  live reads and the declared pin, the destructive generation bump, replay, reloads and
+  restarts, loss before the barrier, reverting, reads overtaken by a re-root, accepting (the
+  content kept on the old `pinBase`, only paths touched after the last re-root, executable
+  bits), and the file-tool guard.
+- **`__tests__/worktree-replica.test.ts`** covers commands (refused outside an execution, saved
+  with the step's transcript or lost before its barrier, tree fetches only during the execution,
+  stored stubs, retries, parallel submissions and writes, mode merging, an execution ending
+  mid-submission, stale handles, file-versus-directory refusals, symlinks, `.git` entries and
+  missing objects) and fetches (the request check, the ancestry probe and its fallback to the
+  next connection, deepens, the boundary pull from one connection, shallower clones, the
+  spanning refusal, and stream cancellation on removal and deletion).
+- **`__tests__/native/worktree-git.test.ts`** runs native Git against workerd with a real
+  `git upload-pack` upstream (`uploadpack.allowFilter` on, as GitHub and GitLab have): a clone
+  shallow at a pushed commit then deepened, a clone with a merged-in second boundary, and the
+  full container command sequence, including a checkout left dirty by an interrupted command.
+- **Kit tests** cover the new hint encodings and capturing shallow information.

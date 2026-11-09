@@ -39,11 +39,11 @@ binary deltas are deliberately not supported. Text transforms remain unchanged.
 
 Ordinary worktree bindings expose `readBytes()` and `writeBytes(path, rawBytes)`; writes store
 the blob before appending its whole-file OT. There is no staged/resumable upload protocol.
-Git pack export streams one object at a time, so container materialization can transfer files
-without decoding them as text or buffering the entire repository. Containers consume the same
-canonical worktree rather than needing a separate attachment download path. The container-specific
-replica API remains in the replica/binary follow-up PRs; this attachment ingress does not require
-a container.
+Containers consume the same canonical worktree rather than needing a separate attachment download
+path: a container gatekeeper clones the scratch worktree with native Git through
+`ReplicableWorktree.gitPull()` (see [`worktree-replicas.md`](worktree-replicas.md)), which
+streams files without decoding them as text. This attachment ingress does not require a
+container.
 
 Download/replay reads the original upload's immutable Git blob, not a subsequently edited
 workspace file. On the next message or agent turn, legacy attachments are migrated lazily,

@@ -9,13 +9,14 @@ The workspace is always the source of truth. A replica syncs with it only at the
 command, and the unit of sync is a Git tree. Trees are content-addressed, so a replica's files
 match the workspace's exactly when the tree IDs match.
 
-The kernel knows the worktree, its Git history and the chat's edits. It knows nothing about
-containers, guest paths, mount names or command lifetimes. The container gatekeeper owns those,
-for example as `mountWorktree(worktree, mountName)` and `exec(command, options)`, with the mount
-at `/workspace/<mountName>` in the guest.
+The kernel knows the worktree, its Git history and the chat's edits, and hands out a handle for
+each command that is bound to the agent's running `executeCode` call. It knows nothing about
+containers, guest paths, mount names, processes or command approvals. The container gatekeeper
+owns those, for example as `mountWorktree(worktree, mountName)` and `exec(command, options)`, with
+the mount at `/workspace/<mountName>` in the guest.
 
-The design record is [`plans/tree-sync-replicas.md`](../plans/tree-sync-replicas.md); Git fetch
-handling is in [`plans/git-proxy.md`](../plans/git-proxy.md). The kernel code is
+The design record, including the Git fetch policy, is
+[`plans/tree-sync-replicas.md`](../plans/tree-sync-replicas.md). The kernel code is
 `packages/workshop-backend/src/worktree-replica.ts` (snapshots and submissions) and
 `packages/workshop-backend/src/worktree-git.ts` (`gitPull`).
 
@@ -216,8 +217,7 @@ chain their hidden commits, and only the last is declared. The step's "changes" 
 the re-root as a pin, which replay applies before the message's change, and the barrier bumps the
 chat's code-base generation so that clients rebuild from the log. The re-root also forgets which
 of the worktree's files the model has read, so it must read a file again before editing it. A
-revert of the step undoes the
-re-root, as it undoes `updateChatFromMainline`'s.
+revert of the step undoes the re-root, as it undoes `updateChatFromMainline`'s.
 
 Replay re-runs no `executeCode`, so a file tool that ran after such a command in the same step
 would replay against content without the command's edits. Instead, once an `executeCode` call has
@@ -298,11 +298,12 @@ history, so its clones and fetches then fail on the missing objects.
 - **Refused.** A fetch that needs both workspace commits and remote history (for example the
   head moved while a command was running Git) is refused, with an error telling the guest to
   fetch the worktree's head first. Merging a local pack with a proxied one risks duplicate
-  objects, which Git rejects (see [`plans/git-proxy.md`](../plans/git-proxy.md)). A guest that
-  fetches each new head at step 1 never hits this. A clone is the exception: a `git clone
-  --depth=N` that needs workspace commits and reaches past the boundary is just given less
-  history, as any shallow server may do. (If the head is itself a boundary commit, a deeper clone
-  is proxied whole.)
+  objects, which Git rejects (see
+  [`plans/tree-sync-replicas.md`](../plans/tree-sync-replicas.md#why-spanning-requests-need-storage)).
+  A guest that fetches each new head at step 1 never hits this. A clone is the exception: a
+  `git clone --depth=N` that needs workspace commits and reaches past the boundary is just given
+  less history, as any shallow server may do. (If the head is itself a boundary commit, a deeper
+  clone is proxied whole.)
 - If no single connection has every boundary commit, a fetch that needs them is refused.
 
 Other refs of the worktree's origin (e.g. its `main` branch) and other repositories are not

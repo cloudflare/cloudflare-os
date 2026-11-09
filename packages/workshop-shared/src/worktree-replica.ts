@@ -43,11 +43,9 @@ export interface WorktreeState {
    * A Git tree of the worktree's files: the chat's accepted content plus its uncommitted edits,
    * including edits made earlier in the current execution. Fetch it with
    * `ReplicableWorktree.gitPull()` (`git fetch origin <tree>`) during the execution that received
-   * it. Update the files with e.g. `git read-tree -m -u <actual tree> <tree>`, using an index of
-   * the replica's own so that the real index stays at `head`, where `<actual tree>` is the tree of
-   * the replica's files as they are now (`git add -A` and `git write-tree` with that index). Don't
-   * rely on the last tree you synced: a command cut off by a restart may have left the files
-   * changed. `git diff <head> <tree>` shows the worktree's uncommitted changes.
+   * it, and update the files to it from the tree they actually have, not the last tree synced (a
+   * command cut off by a restart may have left them changed). docs/worktree-replicas.md gives the
+   * Git commands.
    */
   tree: GitOid;
 
@@ -89,9 +87,9 @@ export interface WorktreeCommand extends RpcTarget {
    * concurrent edits, in which case update the replica's files to it.
    *
    * `pack` is a Git packfile holding every object reachable from `tree` that isn't reachable
-   * from the snapshot's tree, and must not rely on objects outside itself (no thin packs), e.g.
-   * the output of `git rev-list --objects <tree> ^<snapshot tree> | git pack-objects --stdout`.
-   * The workspace's Git cache object and size limits apply.
+   * from the snapshot's tree, and must not rely on objects outside itself (no thin packs); see
+   * docs/worktree-replicas.md for the Git command. The pack may be at most 64 MiB, and each
+   * file at most 8 MB.
    *
    * File modes are kept. The call fails if a changed entry is a symlink or a submodule, if
    * `tree` contains a `.git` entry, or if merging would make a path both a file and a directory;
