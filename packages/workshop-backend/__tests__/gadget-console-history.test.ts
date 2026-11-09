@@ -106,6 +106,10 @@ export class Gadget extends DurableObject {
   fail() {
     throw new Error("${prefix}boom");
   }
+
+  leak() {
+    throw new Error("GET https://api.example/v1?access_token=abc123 failed");
+  }
 }
 
 export class ExportHandler extends WorkerEntrypoint {
@@ -556,6 +560,36 @@ describe("an exception a gadget's method did not catch", () => {
     await rejection(gadget.fail());
     await vi.waitFor(async () => expect(await failEntries(ws)).toHaveLength(2), KEPT_SOON);
     expect((await failEntries(ws)).map(entry => entry.chatId)).toStrictEqual([null, 2]);
+  }), GADGET_TEST_MS);
+
+  it("is kept redacted, in the error the gadget threw and in the method its caller named",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    let events = await subscribe(ws);
+    let key = "sk-live0123456789abcdefghij";
+    let thrown = "Error: GET https://api.example/v1?access_token=abc123 failed\n    at leak()";
+
+    // The error's text is the gadget's choice, and the method named is its caller's.
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    expect(await rejection(gadget.leak())).toContain("access_token=abc123");
+    await rejection(gadget[key]());
+
+    // The proxy's entries, newest first, found by how they end: a redacted name leaves that.
+    let caught = async () =>
+      texts({ entries: await kept(ws, { gadgetId: GADGET_ID, level: "error" }) })
+          .filter(text => text.endsWith("()"));
+    await vi.waitFor(async () => expect(await caught()).toHaveLength(2), KEPT_SOON);
+    expect(await caught()).toStrictEqual([
+      expect.stringMatching(/at \[redacted\]\(\)$/),
+      thrown.replace("abc123", "[redacted]"),
+    ]);
+    expect((await caught()).join("\n")).not.toContain(key);
+
+    // A subscriber is told each whole: only what is kept is redacted.
+    let told = events.flatMap(event => event.logs).map(log => String(log.message[0]));
+    expect(told).toContain(thrown);
+    expect(told).toContainEqual(expect.stringContaining(`at ${key}()`));
   }), GADGET_TEST_MS);
 
   it("reaches the gadget's caller as the gadget's own error when its append fails",

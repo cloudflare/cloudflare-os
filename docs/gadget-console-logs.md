@@ -596,9 +596,9 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   for each source, oldest first, pruning on write and by alarm, the alarm's failures, and
   `destroy()`.
 - `gadget-console-history.test.ts`: the Overseer's side. A trace, a caught exception and a report
-  kept under the right chat; a trace's entries passing no rate limit, and caught exceptions held
-  to theirs with a marker; a batch that names no gadget; a trace from before the workspace was
-  initialised;
+  kept redacted, under the right chat; a trace's entries passing no rate limit, and caught
+  exceptions held to theirs with a marker; a batch that names no gadget; a trace from before the
+  workspace was initialised;
   failed appends logged with nothing of an entry, and a report that could not be kept refused
   with the Overseer's own error; the report's cap, rate limit and markers; the listing for a build
   and a use session; a deleted gadget and a deleted chat; and the workspace's deletion, with an
