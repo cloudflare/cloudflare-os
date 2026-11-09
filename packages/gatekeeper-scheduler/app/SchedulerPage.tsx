@@ -1,11 +1,4 @@
-import {
-  CalendarBlank,
-  CaretDown,
-  Clock,
-  MagnifyingGlass,
-  Plus,
-  WarningCircle,
-} from "@phosphor-icons/react";
+import { CaretDown, Clock, MagnifyingGlass, WarningCircle } from "@phosphor-icons/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ManagementListOptions,
@@ -14,44 +7,6 @@ import type {
 } from "../src/management-types";
 import type { ScheduleStatus } from "../src/types";
 import { formatCadence, formatOccurrences, formatTiming } from "./format";
-
-export const CREATE_SCHEDULE_PROMPT =
-  "Help me create a scheduled task. Ask me what it should do, which workspace and resources it should use, when it should run, and which timezone to use. Then set up the schedule.";
-
-const STARTERS = [
-  {
-    title: "Daily brief",
-    cadence: "Weekdays at 8:00 AM",
-    description: "Your calendar for the day plus the unread mail that needs a reply",
-    prompt:
-      "Every weekday at 8:00 AM, send me a short brief of my calendar for the day and the unread email that needs a reply. Ask me which calendar and mailbox to use and which timezone to use, then set up the schedule.",
-    icon: CalendarBlank,
-  },
-  {
-    title: "Weekly roundup",
-    cadence: "Fridays at 4:00 PM",
-    description: "Turn the week’s Linear issues and GitHub pull requests into a status update",
-    prompt:
-      "Every Friday at 4:00 PM, turn this week’s Linear issues and GitHub pull requests into a status update. Ask me which Linear team, GitHub repositories, and timezone to use, then set up the schedule.",
-    icon: CalendarBlank,
-  },
-  {
-    title: "Follow-up monitor",
-    cadence: "Weekdays at 9:00 AM",
-    description: "Flag the Gmail threads that are waiting on your reply",
-    prompt:
-      "Every weekday at 9:00 AM, flag the Gmail threads that are waiting on my reply. Ask me which mailbox, destination, and timezone to use, then set up the schedule.",
-    icon: WarningCircle,
-  },
-  {
-    title: "Metrics snapshot",
-    cadence: "Mondays at 8:00 AM",
-    description: "Refresh a spreadsheet or query and call out what moved",
-    prompt:
-      "Every Monday at 8:00 AM, refresh a spreadsheet or query and call out what moved. Ask me which data source, destination, and timezone to use, then set up the schedule.",
-    icon: Clock,
-  },
-] as const;
 
 type Filter = "all" | "active" | "dead" | "finished";
 
@@ -65,18 +20,16 @@ export type ScheduleManagementClient = {
 type Props = {
   api: ScheduleManagementClient;
   openWorkspace: (workspaceId: string, gadgetId?: number) => void | Promise<void>;
-  openPrompt: (prompt: string) => void | Promise<void>;
   // Resolves the live title of each workspace ID, or null when the user can no longer see it. The
   // schedule rows hold only IDs, so titles are never a stale snapshot.
   resolveWorkspaceTitles: (ids: string[]) => Promise<(string | null)[]>;
 };
 
-export default function SchedulerPage({
-  api,
-  openWorkspace,
-  openPrompt,
-  resolveWorkspaceTitles,
-}: Props) {
+/**
+ * What the account has scheduled, read-only, shown beneath the Workshop Library's own header:
+ * schedules are set up by asking in a chat, and paused or deleted where they live.
+ */
+export default function SchedulerPage({ api, openWorkspace, resolveWorkspaceTitles }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -191,91 +144,75 @@ export default function SchedulerPage({
   const isEmpty =
     !loading && !error && schedules.length === 0 && !debouncedQuery && filter === "all";
   return (
-    <main className="mx-auto min-h-full w-full max-w-5xl px-5 py-10 sm:px-8 sm:py-12">
-      <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-            Scheduled tasks
-          </h1>
-          <p className="mt-1 text-sm text-kumo-subtle">
-            Wake a workspace and run its code on a schedule you choose.
-          </p>
-        </div>
-        <button
-          type="button"
-          data-action="create-schedule"
-          className="press inline-flex h-9 items-center justify-center gap-2 self-start rounded-lg bg-kumo-brand px-3.5 text-sm font-medium text-white hover:bg-kumo-brand-hover"
-          onClick={() => void runHostAction(() => openPrompt(CREATE_SCHEDULE_PROMPT))}
-        >
-          <Plus size={16} weight="bold" /> Create schedule
-        </button>
-      </header>
-
+    <main className="min-h-full w-full px-4 pb-8 pt-2.5 md:px-[45px]">
       {!isEmpty && (
-        <>
-          <label className="mt-4 flex h-9 items-center gap-2 rounded-lg border border-kumo-line bg-kumo-control px-3 text-kumo-inactive focus-within:ring-2 focus-within:ring-kumo-ring">
-            <MagnifyingGlass size={15} />
-            <span className="sr-only">Search scheduled tasks</span>
-            <input
-              className="min-w-0 flex-1 bg-transparent text-sm text-kumo-default outline-none placeholder:text-kumo-inactive"
-              type="search"
-              value={query}
-              maxLength={200}
-              placeholder="Search scheduled tasks…"
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-          </label>
-
-          <nav className="mt-4 flex gap-5 border-b border-kumo-line" aria-label="Schedule status">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <nav className="flex flex-wrap gap-1" aria-label="Schedule status">
             {FILTERS.map((item) => (
               <button
                 key={item.value}
                 type="button"
                 data-filter={item.value}
                 aria-current={filter === item.value ? "page" : undefined}
-                className={`relative pb-2 text-sm ${filter === item.value ? "font-medium text-kumo-default" : "text-kumo-subtle hover:text-kumo-default"}`}
+                className={`h-[30px] rounded-full px-3 text-[13px] leading-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring ${filter === item.value ? "bg-kumo-fill font-medium text-kumo-default" : "text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default"}`}
                 onClick={() => setFilter(item.value)}
               >
                 {item.label}
-                {filter === item.value && (
-                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-kumo-brand" />
-                )}
               </button>
             ))}
           </nav>
-        </>
+          <span className="flex-1" />
+          <label className="flex h-[34px] w-[min(220px,50vw)] shrink-0 items-center gap-2 rounded-full bg-kumo-base px-2.5 ring-1 ring-kumo-line focus-within:ring-2 focus-within:ring-kumo-ring">
+            <MagnifyingGlass size={16} className="shrink-0 text-kumo-subtle" />
+            <span className="sr-only">Search scheduled tasks</span>
+            <input
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-kumo-default outline-none placeholder:text-kumo-subtle"
+              type="search"
+              value={query}
+              maxLength={200}
+              placeholder="Search"
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+          </label>
+        </div>
       )}
 
-      <section aria-live="polite" aria-busy={loading} className={isEmpty ? undefined : "min-h-32"}>
+      <section aria-live="polite" aria-busy={loading}>
         {loading ? (
-          <p className="py-12 text-center text-sm text-kumo-subtle">Loading scheduled tasks…</p>
+          <div role="status" aria-label="Loading scheduled tasks" className="flex justify-center py-16">
+            <span className="size-5 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />
+          </div>
         ) : error ? (
-          <div className="flex flex-col items-center gap-3 py-12 text-center">
-            <p className="text-sm text-kumo-danger">Couldn’t load scheduled tasks.</p>
+          <div className="flex flex-col items-center gap-3 py-16 text-center">
+            <p className="text-[13px] text-kumo-danger">Couldn’t load scheduled tasks.</p>
             <button
-              className="text-sm font-medium text-kumo-link hover:text-kumo-brand-hover"
+              type="button"
+              className="inline-flex h-[34px] items-center rounded-full bg-kumo-base px-3 text-[13px] font-medium text-kumo-default ring-1 ring-kumo-line hover:bg-kumo-elevated"
               onClick={() => void load()}
             >
               Try again
             </button>
           </div>
-        ) : isEmpty ? null : schedules.length === 0 ? (
-          <p className="py-12 text-center text-sm text-kumo-subtle">
-            No scheduled tasks match these filters.
+        ) : isEmpty ? (
+          <p className="mx-auto max-w-sm py-16 text-center text-[13px] leading-5 text-kumo-subtle">
+            Nothing is scheduled yet. Ask in any chat, like “every weekday at 8, send me my
+            calendar”, and it shows up here.
+          </p>
+        ) : schedules.length === 0 ? (
+          <p className="py-16 text-center text-[13px] leading-5 text-kumo-subtle">
+            {debouncedQuery ? "Nothing matches your search." : "No scheduled tasks here."}
           </p>
         ) : (
-          <div className="divide-y divide-kumo-line">
+          <div className="flex flex-col rounded-[20px] bg-kumo-contrast/[0.03] p-2">
             {schedules.map((schedule) => {
               const rowKey = scheduleRowKey(schedule);
-              const detailsOpen = expanded.has(rowKey);
-              const targetTitle = workspaceTitles.get(schedule.workspaceId) ?? null;
               return (
                 <ScheduleRow
                   key={rowKey}
                   schedule={schedule}
-                  targetTitle={targetTitle}
+                  targetTitle={workspaceTitles.get(schedule.workspaceId) ?? null}
                   now={now}
-                  expanded={detailsOpen}
+                  expanded={expanded.has(rowKey)}
                   onToggle={toggleSchedule}
                   onOpen={openSchedule}
                 />
@@ -289,48 +226,13 @@ export default function SchedulerPage({
               type="button"
               data-action="load-more"
               disabled={loadingMore}
-              className="rounded-lg border border-kumo-line bg-kumo-control px-4 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint disabled:opacity-50"
+              className="inline-flex h-[34px] items-center rounded-full bg-kumo-base px-3 text-[13px] font-medium text-kumo-default ring-1 ring-kumo-line hover:bg-kumo-elevated disabled:opacity-50"
               onClick={() => void load(cursor)}
             >
               {loadingMore ? "Loading…" : "Load more"}
             </button>
           </div>
         )}
-      </section>
-
-      <section className={isEmpty ? "mt-6" : "mt-8"} aria-labelledby="get-started-heading">
-        <h2
-          id="get-started-heading"
-          className="text-xs font-medium uppercase tracking-[0.12em] text-kumo-inactive"
-        >
-          Get started
-        </h2>
-        <div className="mt-3 grid gap-1">
-          {STARTERS.map((starter) => {
-            const Icon = starter.icon;
-            return (
-              <button
-                key={starter.title}
-                type="button"
-                className="group flex items-center gap-3 rounded-lg px-1 py-2.5 text-left hover:bg-kumo-tint"
-                onClick={() => void runHostAction(() => openPrompt(starter.prompt))}
-              >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-kumo-subtle">
-                  <Icon size={15} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-kumo-default">
-                    {starter.title}{" "}
-                    <span className="ml-1 font-normal text-kumo-inactive">{starter.cadence}</span>
-                  </span>
-                  <span className="block truncate text-xs text-kumo-subtle">
-                    {starter.description}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
       </section>
     </main>
   );
@@ -365,40 +267,34 @@ const ScheduleRow = memo(function ScheduleRow({
   // of the open button, never nested inside it, so the rest of the row stays one click target.
   const needsAttention = schedule.status === "dead";
   return (
-    <article className={`-mx-2 rounded-lg px-2 py-3 ${unavailable ? "" : "hover:bg-kumo-tint"}`}>
-      <div className="flex items-center gap-3">
+    <article>
+      <div className="flex items-center">
         <button
           type="button"
           data-action="open-schedule"
           disabled={unavailable}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+          title={timing.absolute || undefined}
+          className={`flex h-[49px] min-w-0 flex-1 items-center gap-3 rounded-[14px] px-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-kumo-ring ${unavailable ? "cursor-default" : "hover:bg-kumo-tint"}`}
           onClick={() => onOpen(schedule)}
         >
           <span
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${needsAttention ? "bg-kumo-danger-tint text-kumo-danger" : "bg-kumo-fill text-kumo-subtle"}`}
+            className={`flex size-[25px] shrink-0 items-center justify-center rounded-[10px] ${needsAttention ? "text-kumo-danger" : "text-kumo-default"}`}
           >
-            {needsAttention ? <WarningCircle size={16} /> : <Clock size={16} />}
+            {needsAttention ? <WarningCircle size={18} /> : <Clock size={18} weight="light" />}
           </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-kumo-default">
+          <span className="flex min-w-0 flex-1 items-baseline gap-2">
+            <span className="truncate text-[14px] font-medium leading-[17px] text-kumo-default">
               {schedule.title}
             </span>
-            <span className="block truncate text-xs text-kumo-subtle">
+            <span className="hidden truncate text-[13px] text-kumo-subtle sm:inline">
               {[formatCadence(schedule.cadence), formatOccurrences(schedule), target]
                 .filter(Boolean).join(" · ")}
-              {/* Narrow screens drop the timing column, so carry the relative time here instead. */}
-              <span className="sm:hidden"> · {timing.relative}</span>
             </span>
           </span>
-          <span className="hidden shrink-0 text-right sm:block">
-            <span
-              className={`block text-xs ${needsAttention ? "text-kumo-danger" : "text-kumo-subtle"}`}
-            >
-              {timing.relative}
-            </span>
-            {timing.absolute && (
-              <span className="block text-[11px] text-kumo-inactive">{timing.absolute}</span>
-            )}
+          <span
+            className={`shrink-0 text-[13px] leading-[22px] ${needsAttention ? "text-kumo-danger" : "text-kumo-subtle"}`}
+          >
+            {timing.relative}
           </span>
         </button>
         {needsAttention && (
@@ -407,7 +303,7 @@ const ScheduleRow = memo(function ScheduleRow({
             data-action="toggle-diagnostic"
             aria-expanded={expanded}
             aria-label={`${expanded ? "Hide" : "Show"} why ${schedule.title} needs attention`}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-kumo-inactive hover:bg-kumo-fill hover:text-kumo-default"
+            className="ml-1 flex size-8 shrink-0 items-center justify-center rounded-full text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
             onClick={() => onToggle(schedule)}
           >
             <CaretDown
@@ -418,7 +314,7 @@ const ScheduleRow = memo(function ScheduleRow({
         )}
       </div>
       {needsAttention && expanded && timing.diagnostic && (
-        <p className="ml-12 mt-2 rounded-lg bg-kumo-elevated px-3 py-2.5 text-xs leading-5 text-kumo-danger">
+        <p className="mb-2 ml-[49px] mr-3 rounded-[14px] bg-kumo-danger-tint px-3 py-2.5 text-[13px] leading-5 text-kumo-danger">
           {timing.diagnostic}
         </p>
       )}

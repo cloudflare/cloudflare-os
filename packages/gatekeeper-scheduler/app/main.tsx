@@ -23,7 +23,6 @@ interface HostCapability extends RpcTarget {
   subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
-  openPrompt(prompt: string): Promise<void>;
 }
 
 function main() {
@@ -52,7 +51,6 @@ function main() {
         api={host.ui}
         openWorkspace={(workspaceId, gadgetId) => host.openWorkspace(workspaceId, gadgetId)}
         resolveWorkspaceTitles={(ids) => host.resolveWorkspaceTitles(ids)}
-        openPrompt={(prompt) => host.openPrompt(prompt)}
       />
     </ErrorBoundary>,
   );

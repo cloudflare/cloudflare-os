@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadState, ChatTimelineHead, FavoriteItem, FavoriteItemSpec, UnreadStateScope, WorkspaceKind, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
+import type { ChatReadState, ChatTimelineHead, FavoriteItem, FavoriteItemSpec, LibraryItemRef, LibraryRemoval, UnreadStateScope, WorkspaceKind, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -11,7 +11,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
-  type ChatReadCursor, favoriteKey,
+  type ChatReadCursor, favoriteKey, libraryItemKey,
 } from "./storage-schema/user-storage.js";
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
@@ -968,6 +968,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           ...(item.mimeType ? {mimeType: item.mimeType} : {})});
   }
 
+  /** See `AuthenticatedApi.listLibraryRemovals()`. */
+  async listLibraryRemovals(): Promise<LibraryRemoval[]> {
+    return [...this.storage.libraryRemovals.list()];
+  }
+
+  /** See `AuthenticatedApi.setLibraryRemoved()`. */
+  async setLibraryRemoved(item: LibraryItemRef, removed: boolean): Promise<void> {
+    if (!removed) {
+      this.storage.libraryRemovals.delete(libraryItemKey(item));
+      return;
+    }
+    if (!this.storage.gadgets.get(item.workspaceId)) {
+      throw new Error("No such workspace belonging to user.");
+    }
+    // Only the fields its kind defines, so a client can't store anything else in the record.
+    let common = {workspaceId: item.workspaceId, removed: new Date()};
+    this.storage.libraryRemovals.put(item.kind === "app"
+      ? {...common, kind: "app", workpieceId: item.workpieceId}
+      : item.kind === "file"
+      ? {...common, kind: "file", chatId: item.chatId, fileId: item.fileId}
+      : {...common, kind: "external", subjectId: item.subjectId});
+  }
+
   /** Only tracked private state for this workspace; its ordinary thread list stays source-owned. */
   async getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]> {
     if (!this.#hasWorkspace(workspaceId)) return [];
@@ -1201,6 +1224,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.ctx.storage.transactionSync(() => {
       if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
       this.storage.favorites.byWorkspace.delete(workspaceId);
+      this.storage.libraryRemovals.byWorkspace.delete(workspaceId);
       for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:`}))) {
         this.storage.notificationOutbox.deleteRecord(event);
       }

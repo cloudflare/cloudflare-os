@@ -403,6 +403,9 @@ importers:
       '@emoji-mart/data':
         specifier: ^1.2.1
         version: 1.2.1
+      '@fontsource-variable/inter':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts
@@ -953,6 +956,9 @@ importers:
       '@cloudflare/vitest-plugin':
         specifier: 'catalog:'
         version: 1.4.9(@cloudflare/workers-types@5.20261027.1)(@types/node@26.1.0)(vitest@5.0.5)
+      '@fontsource-variable/inter':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

@@ -213,9 +213,9 @@ export const UploadSkillsDialog = ({
       onOpenChange={(open) => { if (!open) dialog.requestClose(); }}
       onOpenChangeComplete={dialog.onOpenChangeComplete}
     >
-      <Dialog className="top-[8%]! flex max-h-[84vh] w-[min(620px,calc(100vw-32px))]! translate-y-0! flex-col overflow-hidden bg-kumo-base p-0" size="lg">
+      <Dialog className="top-[8%]! flex max-h-[84vh] w-[min(620px,calc(100vw-32px))]! translate-y-0! flex-col overflow-hidden bg-kumo-base p-0 rounded-[20px]!" size="lg">
         <div className="flex shrink-0 items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
-          <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+          <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
             Upload skills
           </Dialog.Title>
           <Dialog.Close

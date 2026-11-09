@@ -2,10 +2,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ManagementSchedule } from "../src/management-types";
-import SchedulerPage, {
-  CREATE_SCHEDULE_PROMPT,
-  type ScheduleManagementClient,
-} from "./SchedulerPage";
+import SchedulerPage, { type ScheduleManagementClient } from "./SchedulerPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -22,7 +19,6 @@ const TITLES = new Map([
 function hostProps() {
   return {
     openWorkspace: vi.fn<(workspaceId: string, gadgetId?: number) => void>(),
-    openPrompt: vi.fn<(prompt: string) => void>(),
     resolveWorkspaceTitles: vi.fn<(ids: string[]) => Promise<(string | null)[]>>(async (ids) =>
       ids.map((id) => TITLES.get(id) ?? null),
     ),
@@ -92,7 +88,7 @@ describe("SchedulerPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens the workspace from the row and delegates prompt actions", async () => {
+  it("opens the workspace from the row", async () => {
     const list = vi.fn<ScheduleManagementClient["list"]>(async () => ({
       schedules: [active, dead],
     }));
@@ -109,8 +105,8 @@ describe("SchedulerPage", () => {
     expect(host.openWorkspace).toHaveBeenCalledWith(BRIEF_WORKSPACE, undefined);
     await click('[data-action="open-schedule"]', "Weekly roundup");
     expect(host.openWorkspace).toHaveBeenLastCalledWith(ROUNDUP_WORKSPACE, 2);
-    await click('[data-action="create-schedule"]');
-    expect(host.openPrompt).toHaveBeenCalledWith(CREATE_SCHEDULE_PROMPT);
+    // Read-only: schedules are made by asking in a chat, not here.
+    expect(container!.querySelector('[data-action="create-schedule"]')).toBeNull();
   });
 
   it("expands the failure reason on needs-attention rows only", async () => {
@@ -195,13 +191,12 @@ describe("SchedulerPage", () => {
     const list = vi.fn<ScheduleManagementClient["list"]>(() => result.promise);
     await render(<SchedulerPage api={{ list }} {...hostProps()} />);
 
-    expect(container!.textContent).toContain("Loading scheduled tasks");
+    expect(container!.querySelector('[aria-label="Loading scheduled tasks"]')).not.toBeNull();
     await act(async () => result.resolve({ schedules: [] }));
 
     expect(container!.querySelector('input[type="search"]')).toBeNull();
     expect(container!.querySelector('[data-filter="all"]')).toBeNull();
-    expect(container!.querySelector('[data-action="create-schedule"]')).not.toBeNull();
-    expect(container!.textContent).toContain("Get started");
+    expect(container!.textContent).toContain("Ask in any chat");
   });
 
   it("shows a bounded error and retries the first page", async () => {
@@ -227,7 +222,7 @@ describe("SchedulerPage", () => {
     expect(list).toHaveBeenCalledTimes(1);
     await act(async () => new Promise((resolve) => setTimeout(resolve, 220)));
     expect(list).toHaveBeenLastCalledWith({ query: "weekly roundup", statuses: undefined });
-    expect(container!.textContent).toContain("No scheduled tasks match these filters");
+    expect(container!.textContent).toContain("Nothing matches your search.");
     // The search and tabs must survive an empty result, or the filter can't be cleared.
     expect(container!.querySelector('input[type="search"]')).not.toBeNull();
     expect(container!.querySelector('[data-filter="all"]')).not.toBeNull();

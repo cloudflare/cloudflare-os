@@ -8,6 +8,7 @@ import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
   WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, FavoriteItem, FavoriteItemRef,
+  LibraryItemRef, LibraryRemoval,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -231,6 +232,15 @@ export function favoriteKey(item: FavoriteItemRef): string {
   }
 }
 
+/** The storage key of an item taken out of the Library: its kind and identity in its workspace. */
+export function libraryItemKey(item: LibraryItemRef): string {
+  switch (item.kind) {
+    case "app": return `${item.workspaceId}:app:${item.workpieceId}`;
+    case "file": return `${item.workspaceId}:file:${item.chatId}:${item.fileId}`;
+    case "external": return `${item.workspaceId}:external:${item.subjectId}`;
+  }
+}
+
 type OutputRecord = WorkspaceOutputEntry & {
   // The workspace containing this output (an Overseer DO id).
   workspaceId: string;
@@ -306,6 +316,13 @@ export function makeUserStorage(storage: DurableObjectStorage) {
         primaryKey: favoriteKey,
         nonUniqueIndexes: {
           byWorkspace(record: FavoriteItem) { return record.workspaceId; },
+        },
+      }),
+      // The items the user took out of their Library (AuthenticatedApi.setLibraryRemoved()).
+      libraryRemovals: collection<LibraryRemoval>()({
+        primaryKey: libraryItemKey,
+        nonUniqueIndexes: {
+          byWorkspace(record: LibraryRemoval) { return record.workspaceId; },
         },
       }),
       outputs: collection<OutputRecord>()({

@@ -297,11 +297,11 @@ export const ShareCollectionDialog = ({
     >
       <Dialog
         aria-describedby={undefined}
-        className="top-[8%]! flex max-h-[84dvh] w-[min(560px,calc(100vw-32px))]! translate-y-0! flex-col bg-kumo-base p-0"
+        className="top-[8%]! flex max-h-[84dvh] w-[min(560px,calc(100vw-32px))]! translate-y-0! flex-col bg-kumo-base p-0 rounded-[20px]!"
         size="sm"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 px-4 pb-2 pt-5 sm:px-6">
-          <Dialog.Title className="min-w-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+          <Dialog.Title className="min-w-0 text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
             Share <span className="text-kumo-subtle">“{collection.title}”</span>
           </Dialog.Title>
           <Dialog.Close
