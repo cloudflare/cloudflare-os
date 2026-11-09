@@ -502,10 +502,11 @@ before anything is queued, with the two exceptions named after the list:
   which Google Docs would copy into the new row; the status tables Google Docs offers as building
   blocks are such tables. That is not supported yet, and the row is added in Google Docs;
 - changing the rows or columns of a table that holds suggested changes to its rows, columns or
-  cells, since deleting a suggested row or column would discard the suggestion. The text of such a
-  table's cells can still be replaced, and the table deleted, with a note on its approval card. A
-  table that comes to hold suggested changes after its deletion was requested is not deleted: the
-  deletion fails without writing, and is requested again.
+  cells, or to those of a table inside one of its cells, since deleting a suggested row or column
+  would discard the suggestion. The text of such a table's cells can still be replaced, and the
+  table deleted, with a note on its approval card. A table that comes to hold suggested changes
+  after its deletion was requested is not deleted: the deletion fails without writing, and is
+  requested again.
 
 A table holding merged cells or another table can still be deleted whole. The checks that ask
 whether paragraphs are list items are exact while the tab, with the changes waiting on it, reads

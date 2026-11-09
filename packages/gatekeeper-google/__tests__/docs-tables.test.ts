@@ -1919,6 +1919,26 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(queuedWith).toMatchObject({ suggested: true });
     expectSameAsGoogle(suggested(), queuedWith);
     expectSameAsGoogle(plain(), queuedWith);
+
+    // A suggestion in a table inside a cell is deleted with the cell, so it counts the same.
+    let holding = (suggestedRows?: Record<number, "deletion">) => buildTab([
+      para("Before"),
+      { table: [[{ paragraphs: [
+        { runs: ["\n"] }, { table: rows, ...(suggestedRows ? { suggestedRows } : {}) },
+        { runs: ["\n"] },
+      ] }, "x\n"], ["y\n", "z\n"]] },
+      para("After"),
+    ]);
+    expect(read(holding({ 0: "deletion" })).markdown).toBe(read(holding()).markdown);
+    let outer = dropTable(read(holding()), 0);
+    expect(outer).not.toHaveProperty("suggested");
+    expect(refusal(holding({ 0: "deletion" }), outer)).toBe(
+      "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
+      "cells since this change was queued.");
+    expect(refusal(holding({ 0: "deletion" }), dropRows(read(holding()), 0, 0))).toBe(
+      "deleteTableRows: this table holds suggested changes to its rows, columns or cells, so " +
+      "its rows and columns cannot be changed until they are accepted or rejected.");
+    expect(dropTable(read(holding({ 0: "deletion" })), 0)).toMatchObject({ suggested: true });
   });
 
   it("carries what a deletion would remove through the changes queued before it", () => {

@@ -67,7 +67,7 @@ export type EditableTable = MarkdownRange & {
   rows: number[][];
   /**
    * Set when the table, a row of it or a cell of it is a suggested insertion or suggested for
-   * deletion.
+   * deletion, or a table inside one of its cells holds such a suggestion.
    */
   suggested?: true;
 };
@@ -535,12 +535,22 @@ function isSuggested(
   return !!(value.suggestedInsertionIds?.length || value.suggestedDeletionIds?.length);
 }
 
+/**
+ * Whether the table, a row of it or a cell of it is a suggestion, or a table inside one of its
+ * cells holds one: deleting the cell discards that suggestion too. The table's own fields count
+ * beside those of its rows and cells, since a table that is itself a suggestion may mark only
+ * itself.
+ */
+function holdsSuggestion(table: Table): boolean {
+  return isSuggested(table) || !!table.tableRows?.some(row =>
+    isSuggested(row) || !!row.tableCells?.some(cell =>
+      isSuggested(cell) ||
+      !!cell.content?.some(element => !!element.table && holdsSuggestion(element.table))));
+}
+
 function tableDocMapping(element: StructuralElement, table: Table): TableDocMapping {
   let rows = table.tableRows ?? [];
-  // The table's own fields count beside those of its rows and cells: a table that is itself a
-  // suggestion may mark only itself.
-  let suggested = isSuggested(table) ||
-    rows.some(row => isSuggested(row) || !!row.tableCells?.some(isSuggested));
+  let suggested = holdsSuggestion(table);
   let pinnedRows = 0;
   while (rows[pinnedRows]?.tableRowStyle?.tableHeader === true) pinnedRows++;
   return {

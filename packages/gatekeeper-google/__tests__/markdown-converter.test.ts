@@ -1712,7 +1712,9 @@ describe("Google Docs table map", () => {
       ["a\n", { paragraphs: [{ runs: ["b\n"] }], suggested: "deletion" }],
     ] }])).suggested).toBe(true);
     expect(ownFields.map(table => table.suggested)).toEqual([true, true]);
-    for (let table of [plain, firstTableMap(emptyIds), firstTableMap(nested)]) {
+    // A table inside a cell: deleting the cell discards what is suggested in it.
+    expect(firstTableMap(nested).suggested).toBe(true);
+    for (let table of [plain, firstTableMap(emptyIds)]) {
       expect("suggested" in table).toBe(false);
     }
 
