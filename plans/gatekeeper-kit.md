@@ -2437,12 +2437,14 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
 }
 ```
 
-The drivers that queue provider pushes (GitHub, Gmail, Chat, Outlook) each keep the same three
+The drivers that queue provider pushes (GitHub, Gmail, Chat, Outlook) each kept the same three
 things by hand: a `reg:{key}` record the driver filters events by, a `caps:{key}` record holding the
 hook's stubs, and one delivery — start a firing through the `HookInitiator`, hand it with the
 message to the binding's delivery stub, dispose what was read. `HookRegistry` is that copy made
 once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, bounded runs)
-the same drivers already share. The keys are the ones they wrote, so a port migrates nothing.
+the same drivers already shared. The keys are the ones they wrote, so the ports migrated nothing.
+Each now aliases its delivery interface to `HookDelivery`, calls `set()` inside
+`ctx.storage.transactionSync()`, and keeps its own alarm.
 
 - **Synchronous but for `run()`.** Gmail and Chat rely on nothing awaiting between their provider
   work and the registration, GitHub writes it inside a serialized webhook change, and Outlook
@@ -2480,7 +2482,8 @@ Rejected:
   differently around `run()` (sync before, check before, renew after).
 - **A kit controller.** About fifteen lines each, and each projects its own registration and
   looks up its own driver.
-- **`clear()`**, with one caller (GitHub's disconnect, which can remove its hooks one at a time), and
+- **`clear()`**, with one caller (GitHub's disconnect, which sweeps its storage and disposes each
+  `caps:` record as it goes), and
   **`offer(id, message, admits)`**, which does not fit Gmail's and Outlook's cursor syncs.
 - **Account-disconnect tracking.** Google, Microsoft and GitHub have three different contracts.
 

@@ -17,14 +17,11 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import {
-  DELIVERED_RETENTION_MS, HookDeliveryQueue, disposeStubs,
-} from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { DELIVERED_RETENTION_MS, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import { ResponseTooLargeError, readBytesCapped } from "@gadgets/gatekeeper-kit/response-body";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
-import type {
-  ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
-} from "@gadgets/workshop-shared/gatekeeper";
+import type { HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
 import {
   GitHubApiError, isConnectionExpired, withAccountApi,
   type GitHubApi, type GitHubRepoWebhookResponse, type GitHubWebhookDeliveryResponse, type PinnedRepo,
@@ -47,14 +44,7 @@ export type GitHubEventHookTarget = RpcTarget & GitHubEventHook;
 export type GitHubHookParams = { number?: number };
 
 /** What a hook's delivery stub reaches: the connection's facet, narrowed to delivering. */
-export interface GitHubHookDelivery extends RpcTarget {
-  /**
-   * Deliver `event` to one firing of the hook, as `HookInitiator.startHook()` returned it, if the
-   * binding admits it; otherwise return without calling it.
-   */
-  deliver(callback: RpcStub<GitHubEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
-          event: GitHubWebhookEvent): Promise<void>;
-}
+export type GitHubHookDelivery = HookDelivery<GitHubEventHookTarget, GitHubWebhookEvent>;
 
 /** Everything a hook needs once enabled, captured when the facet binds it. */
 export type GitHubHookProps = GitHubHookParams & {
@@ -122,17 +112,12 @@ const MAX_REDELIVERIES_PER_CHECK = 20;
 const FINAL_REFUSALS = new Set([400, 404, 413]);
 
 type Registration = Omit<GitHubHookProps, "key" | "userObjectId" | "delivery">;
-type Capabilities = {
-  delivery: RpcStub<GitHubHookDelivery>;
-  initiator: Fetcher<HookInitiator<GitHubEventHookTarget>>;
-};
+type Capabilities = HookCapabilities<GitHubEventHookTarget, GitHubWebhookEvent>;
 /** A webhook this driver added to a repository. */
 type Webhook = { id: number; repo: PinnedRepo };
 /** A webhook this driver asked GitHub to add or change at `url`, whose id it may never have learned. */
 type Unrecorded = { repo: PinnedRepo; url: string };
 
-const registrationKey = (key: string) => `reg:${key}`;
-const capabilitiesKey = (key: string) => `caps:${key}`;
 const webhookKey = (repoId: number) => `webhook:${repoId}`;
 const unrecordedKey = (repoId: number, url: string) => `unrecorded:${repoId}:${url}`;
 const repairedKey = (repoId: number) => `repaired:${repoId}`;
@@ -164,7 +149,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
    * it.
    */
   #viewerReads = new SerialTaskQueue();
-  #queue = new HookDeliveryQueue<GitHubWebhookEvent>(this.ctx.storage.kv, () => {
+  #hooks = new HookRegistry<GitHubEventHookTarget, GitHubWebhookEvent, Registration>(this.ctx.storage.kv, () => {
     logger.warn("dropped a GitHub event after repeated delivery failures", { event: "hooks.delivery.dropped" });
   });
 
@@ -178,24 +163,17 @@ export class GitHubHookDriver extends DurableObject<Env> {
       // Disconnected while an earlier change ran.
       if (kv.get("revoked")) throw new Error(DISCONNECTED);
       await this.#readViewer(userObjectId);
-      const others = this.#registrations(repo).filter(([regKey]) => regKey !== registrationKey(key));
+      const others = this.#registrations(repo).filter(([other]) => other !== key);
       await this.#ensureWebhook(repo, [registration, ...others.map(([, other]) => other)]);
       // Recorded in the same change, so a removal queued after it sees this hook.
-      const replaced = kv.get<Capabilities>(capabilitiesKey(key));
-      kv.put(registrationKey(key), registration);
-      kv.put(capabilitiesKey(key), capabilities);
-      disposeStubs(replaced);
+      this.ctx.storage.transactionSync(() => this.#hooks.set(key, registration, capabilities));
     });
     await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
     const kv = this.ctx.storage.kv;
-    const registration = kv.get<Registration>(registrationKey(key));
-    disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
-    kv.delete(registrationKey(key));
-    kv.delete(capabilitiesKey(key));
-    this.#queue.cancel(key);
+    const registration = this.#hooks.remove(key);
     if (!registration) return;
     const { repo } = registration;
     await this.#webhookChanges.run(async () => {
@@ -314,9 +292,9 @@ export class GitHubHookDriver extends DurableObject<Env> {
     // Read before any hook is registered (see register()), and kept until the account disconnects.
     const viewerId = kv.get<number>("viewer")!;
     let queued = false;
-    for (const [regKey, registration] of this.#registrations({ id: repoId })) {
+    for (const [key, registration] of this.#registrations({ id: repoId })) {
       if (!watches(registration, event, senderId, viewerId)) continue;
-      this.#queue.enqueue(regKey.slice("reg:".length), id, event, now);
+      this.#hooks.enqueue(key, id, event, now);
       queued = true;
     }
     if (queued) await this.#wakeBy(now);
@@ -331,24 +309,8 @@ export class GitHubHookDriver extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     if ((this.ctx.storage.kv.get<number>("checkAt") ?? Infinity) <= Date.now()) await this.#checkWebhooks();
-    await this.#queue.run(Date.now(), (hookKey, event) => this.#deliver(hookKey, event));
+    await this.#hooks.run(Date.now());
     await this.#reschedule();
-  }
-
-  async #deliver(hookKey: string, event: GitHubWebhookEvent): Promise<void> {
-    // An unregistered hook's rows are finished, and it gets no new ones.
-    const capabilities = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(hookKey));
-    if (!capabilities) return;
-    try {
-      // A refused firing is retried like a failed one, being indistinguishable from a transient
-      // failure; disabling or deleting the hook unregisters it, which ends the retries. Awaited,
-      // not pipelined: workerd can't pass a property of a pending result into another call.
-      using hook = await capabilities.initiator.startHook();
-      // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
-      await capabilities.delivery.deliver(hook.callback, hook.approvalQueue, event);
-    } finally {
-      disposeStubs(capabilities);
-    }
   }
 
   /**
@@ -588,10 +550,9 @@ export class GitHubHookDriver extends DurableObject<Env> {
     return [...this.ctx.storage.kv.list<Unrecorded>({ prefix: "unrecorded:" })].map(([, unrecorded]) => unrecorded);
   }
 
-  /** The enabled hooks on `repo`, by their storage key. */
+  /** The enabled hooks on `repo`, by key. */
   #registrations(repo: Pick<PinnedRepo, "id">): [string, Registration][] {
-    return [...this.ctx.storage.kv.list<Registration>({ prefix: "reg:" })]
-      .filter(([, registration]) => registration.repo.id === repo.id);
+    return this.#hooks.entries().filter(([, registration]) => registration.repo.id === repo.id);
   }
 
   async #wakeBy(time: number): Promise<void> {
@@ -606,7 +567,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
   async #reschedule(): Promise<void> {
     const kv = this.ctx.storage.kv;
     const times: number[] = [];
-    const due = this.#queue.nextDue();
+    const due = this.#hooks.nextDue();
     if (due !== undefined) times.push(due);
     if (this.#webhooks().length > 0 || this.#unrecorded().length > 0) {
       let checkAt = kv.get<number>("checkAt");
