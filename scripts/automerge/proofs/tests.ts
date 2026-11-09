@@ -107,7 +107,8 @@ export function planScope(files: FileDiff[]): TestsScope {
   return { packageDir: `packages/${[...packages][0]}`, tests: files.map((file) => file.path) };
 }
 
-const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
+// The keyword may be followed by `{` or `*` as well as a space: `import{a}from"./a"` is valid.
+const IMPORT = /(?:^|[\s;])(?:import|export)(?=[\s{*])[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
 /** A type-only import or re-export, which brings no behavior with it. */
 const TYPE_ONLY = /^[\s;]*(?:import|export)\s+type\s/;
 /** Every `import` or `require` name; the next character past spaces says whether it is a call. */
@@ -116,18 +117,42 @@ const CALL_NAME = /(?<![\w$#.])(?:import|require)(?![\w$])/g;
 const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
 
+/** A `/` after one of these characters, or after one of REGEX_AFTER_WORD, starts a regex literal. */
+const REGEX_AFTER = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
+const REGEX_AFTER_WORD = /(?:^|[^\w$])(?:return|typeof|case|do|else|in|of|new|delete|void|throw|yield|await)$/;
+
+/** The end of the regex literal that starts at `at`, or -1 when it does not end on its line. */
+function regexEnd(text: string, at: number): number {
+  let inClass = false;
+  for (let j = at + 1; j < text.length; j += text[j] === "\\" ? 2 : 1) {
+    if (text[j] === "\n") return -1;
+    if (text[j] === "[") inClass = true;
+    else if (text[j] === "]") inClass = false;
+    else if (text[j] === "/" && !inClass) return j;
+  }
+  return -1;
+}
+
 /**
  * A source file with its comments blanked out, every position kept, so a quote or a stray
  * `import` in a comment cannot stop or start an import pattern. One linear pass that steps over
- * strings. It stops blanking at a string it cannot see the end of on its line (a regex literal or
- * JSX text holding a quote reads that way) and leaves the rest as it is; imports come first in a
- * file, so they are blanked. A block comment that never closes is a syntax error, and is returned.
+ * strings and regex literals (a `/` after an operator, a bracket or a keyword such as `return`).
+ * It stops blanking at a string or regex it cannot see the end of on its line (JSX text holding a
+ * quote reads that way) and leaves the rest as it is; imports come first in a file, so they are
+ * blanked. A block comment that never closes is a syntax error, and is returned.
  */
 function blankComments(text: string): { code: string; unclosedComment?: number } {
   // UTF-16 units, as string indexes count them.
   const code = text.split("");
   const blank = (from: number, to: number) => {
     for (let k = from; k < to; k++) if (text[k] !== "\n") code[k] = " ";
+  };
+  // The last few characters of code before the cursor, comments left out and each run of spaces
+  // kept as one, decide whether a `/` starts a regex: `a in /x/` is one, `a / b` is not.
+  let previous = "";
+  const regexStarts = () => {
+    const before = previous.trimEnd();
+    return before === "" || REGEX_AFTER.has(before.at(-1) ?? "") || REGEX_AFTER_WORD.test(before);
   };
   for (let i = 0; i < text.length;) {
     if (text.startsWith("//", i)) {
@@ -147,8 +172,16 @@ function blankComments(text: string): { code: string; unclosedComment?: number }
         if (text[j] === quote || (quote !== "`" && text[j] === "\n")) break;
       }
       if (j >= text.length || text[j] !== quote) break;
+      previous = "x";
       i = j + 1;
+    } else if (text[i] === "/" && regexStarts()) {
+      const end = regexEnd(text, i);
+      if (end === -1) break;
+      previous = "x";
+      i = end + 1;
     } else {
+      const space = /\s/.test(text[i]);
+      if (!space || !previous.endsWith(" ")) previous = (previous + (space ? " " : text[i])).slice(-12);
       i++;
     }
   }

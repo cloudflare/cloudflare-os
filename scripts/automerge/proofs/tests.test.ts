@@ -184,6 +184,28 @@ describe("proof-tests scope", () => {
     });
   });
 
+  // Bonk on #987, round 5: `//` inside a regex literal is not a comment. Clanky, same round: an
+  // import or re-export needs no space after its keyword.
+  it("reads an import after a regex literal holding //, and imports written without spaces", () => {
+    const read = files({
+      "packages/p/src/a.ts": "export const a = 1;\n",
+      "packages/p/src/b.ts": "export const b = 1;\n",
+      "packages/p/src/feature.ts": "export const f = 1;\n",
+      "packages/p/src/half.ts": "export const h = 1;\n",
+    });
+    const text = [
+      'import{a}from"./a.ts";',
+      'export*from"./b.ts";',
+      'const load = (url: string) => { if (/https?:\\/\\//.test(url)) return import("./feature.ts"); };',
+      'const ratio = 4 / 2; const h = import("./half.ts");',
+      "",
+    ].join("\n");
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts", "packages/p/src/b.ts", "packages/p/src/feature.ts", "packages/p/src/half.ts"],
+      problems: [],
+    });
+  });
+
   // Clanky on #987, round 2: a weakened assertion about another workspace package's code changes no
   // kill in this package's mutants.
   it("names a value import of another workspace package, but not a type-only one or a node_modules one", () => {
