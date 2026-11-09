@@ -26,7 +26,7 @@ afterAll(async () => {
   } finally { network.uninstall(); }
 });
 
-it("passes a worktree directly from code mode to a gatekeeper for Git hydration and OT writeback", async () => {
+it("passes a worktree from code mode to a gatekeeper, which fetches its commits with Git", async () => {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("replica")[0]!);
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
@@ -49,20 +49,30 @@ it("passes a worktree directly from code mode to a gatekeeper for Git hydration 
       export default async function(self, env) {
         console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
       }`}}},
-    {toolCall: {id: "read", name: "executeCode", arguments: {code: `
+    // The new head is fetchable within the step that committed it, before the step is saved.
+    {toolCall: {id: "commit", name: "executeCode", arguments: {code: `
       export default async function(self, env) {
-        console.log(await env.REPO.readFile("returned.txt"));
+        await env.REPO.writeFile("committed.txt", "committed");
+        console.log("commit " + await env.REPO.commit("Commit a file"));
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
+      }`}}},
+    {toolCall: {id: "fetch", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
       }`}}},
     {text: "Done."},
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  const chatId = await ws.newChat("Mount the worktree and return changes.", SCRIPTED_MODEL_ID);
-  await waitFor("the model's final request", async () => model.requests.length === 4 || null);
+  const chatId = await ws.newChat("Mount the worktree and fetch its commits.", SCRIPTED_MODEL_ID);
+  await waitFor("the model's final request", async () => model.requests.length === 5 || null);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   const outputs = history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
     .filter(call => call.toolName === "executeCode").map(call => call.output);
-  expect(outputs).toEqual([expect.stringContaining("worktree pack received"),
-    expect.stringContaining("from container")]);
+  const commit = /commit ([0-9a-f]{40})/.exec(outputs[1] ?? "")?.[1];
+  expect(commit).toBeDefined();
+  expect(outputs).toEqual([expect.stringContaining(`worktree pack received for ${baseCommit}`),
+    expect.stringContaining(`worktree pack received for ${commit}`),
+    expect.stringContaining(`worktree pack received for ${commit}`)]);
   expect(model.remainingSteps()).toBe(0);
 });

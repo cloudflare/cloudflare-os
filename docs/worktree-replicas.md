@@ -1,5 +1,11 @@
 # Worktree replicas
 
+> **Status:** the live sync protocol this document describes (sync sessions, subscriptions,
+> revisions and returning edits) has been removed. For now a mount is read-only: a container can
+> clone and fetch the worktree's commits with `gitPull()`, and nothing more. Its replacement is
+> planned in [`plans/tree-sync-replicas.md`](../plans/tree-sync-replicas.md), and this document
+> will be rewritten when it lands.
+
 A gatekeeper receives the Worktree capability directly. The kernel knows the selected worktree,
 its Git provenance and canonical change history; it knows nothing about containers, guest paths,
 mount names, or command lifetimes. The container gatekeeper owns `mountWorktree(worktree, mountName)`

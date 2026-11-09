@@ -34,9 +34,9 @@ import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
 
-import type {ReplicableWorktree, WorktreeSubscriber, FileChangeByPath}
-  from "@gadgets/workshop-shared/worktree-replica";
-import {buildGitFetchRequest, demuxGitFetchResponse} from "@gadgets/gatekeeper-kit/git-transport";
+import type {ReplicableWorktree} from "@gadgets/workshop-shared/worktree-replica";
+import {buildGitFetchRequest, DELIM_PKT, demuxGitFetchResponse, encodePktLine, FLUSH_PKT}
+  from "@gadgets/gatekeeper-kit/git-transport";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -55,7 +55,7 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
-  /** Mounts a passed worktree and returns a deterministic test edit. */
+  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would. */
   mountWorktree(worktree: unknown): Promise<string>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
@@ -430,42 +430,22 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
-    const key = crypto.randomUUID();
-    using session = await worktree.getSyncSession();
-    using subscriber = await this.ctx.restore<RpcStub<WorktreeSubscriber>>({worktree: key});
-    using subscription = await session.subscribe(subscriber);
-    const state = this.ctx.storage.kv.get<{revision: string; base: string}>(`worktree:${key}`)!;
-    const response = await worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
-      method: "POST", headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
-      body: buildGitFetchRequest([state.base], {type: "commit", commitHistory: {kind: "full"}}),
+    const post = (body: BodyInit) => worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
+      method: "POST", body,
+      headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
     }));
+    const refs = await (await post(new Blob([encodePktLine("command=ls-refs"), DELIM_PKT, FLUSH_PKT]))).text();
+    const head = /([0-9a-f]{40}) HEAD/.exec(refs)?.[1];
+    if (!head) throw new Error("No worktree HEAD advertised");
+    const response = await post(buildGitFetchRequest([head], {type: "commit", commitHistory: {kind: "full"}}));
     const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
     if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
-    await session.submitChanges("return", state.revision, [{path: "returned.txt", change: {set: "from container"}}]);
-    await subscription.unsubscribe();
-    return "worktree pack received";
+    return `worktree pack received for ${head}`;
   }
 
-  worktreeBase(key: string, state: {revision: string; base: string | null; head: string | null;
-      shallowCommit: string | null}): void {
-    this.ctx.storage.kv.put(`worktree:${key}`, state);
+  [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
+    return new GadgetResponseRecorder(this, messageKey);
   }
-
-  [restore](params: {messageKey: string} | {worktree: string}): GadgetResponseRecorder | TestWorktreeSubscriber {
-    return "messageKey" in params ? new GadgetResponseRecorder(this, params.messageKey)
-      : new TestWorktreeSubscriber(this, params.worktree);
-  }
-}
-
-/** The mount callback is persistent and minted in the receiving DO, not code-mode memory. */
-@validateRpc()
-class TestWorktreeSubscriber extends RpcTarget implements WorktreeSubscriber {
-  constructor(private readonly owner: TestControl, private readonly key: string) { super(); }
-  async setBaseCommit(state: {revision: string; base: string | null; head: string | null;
-      shallowCommit: string | null}): Promise<void> {
-    this.owner.worktreeBase(this.key, state);
-  }
-  async change(_revision: string, _batchId: string, _changes: FileChangeByPath[]): Promise<void> {}
 }
 
 /** Records each delivery rather than the latest, since delivery is at-least-once. */

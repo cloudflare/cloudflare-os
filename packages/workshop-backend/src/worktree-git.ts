@@ -3,7 +3,6 @@ import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
 import type {GitObjectType, GitPullHints, GitShallowInfo} from "@gadgets/workshop-shared/gatekeeper";
 import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, readGitCommitHeader} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
-import type {FileChangeByPath} from "@gadgets/workshop-shared/worktree-replica";
 
 /**
  * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer. The
@@ -15,23 +14,11 @@ export interface WorktreeGitSource {
   head: string;
 
   /**
-   * Other commits stored in the workspace that a client may fetch by ID, besides `head`: the
-   * worktree's base commit (`pinBase`) and the commits replicas have been told about.
-   */
-  localHeads?: string[];
-
-  /**
    * For a worktree that came from a connected repository, the commit it was created at: the
    * history boundary, as in a shallow clone. Its objects are streamed from `upstream()`, not
    * read from the workspace. Null when all of the worktree's history is in the workspace.
    */
   shallowCommit: string | null;
-
-  /**
-   * Uncommitted edits replicas may still need. Only their `setBytes` blob references matter:
-   * those blobs may be fetched by ID.
-   */
-  pending: FileChangeByPath[];
 
   /** Throws if access has ended (e.g. the worktree or its chat was deleted). Called repeatedly. */
   check(): void;
@@ -98,12 +85,11 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
   // Decide by what the client lacks, not by what it names: e.g. `git fetch --deepen=1` wants
   // the head the client already has, and lacks only history beyond the shallow boundary.
   const history = await localHistory(cache, source);
-  const blobs = new Set(source.pending.flatMap(({change}) => "setBytes" in change ? [change.setBytes.oid] : []));
   const has = commonHistory(history, source.shallowCommit, fetch.haves);
   // The client only has the base's files if it has some commit in the history and is not
   // shallower than the base.
   const hasBase = has.size > 0 && !fetch.shallow.some(oid => history.has(oid));
-  const localWants = fetch.wants.filter(oid => history.has(oid) || oid === source.shallowCommit || blobs.has(oid));
+  const localWants = fetch.wants.filter(oid => history.has(oid) || oid === source.shallowCommit);
   const remoteWants = fetch.wants.filter(oid => !localWants.includes(oid));
   // The base's own objects are remote ones (streamed from `upstream()`), so a connection can
   // serve them too.
@@ -112,8 +98,8 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
   const deeper = depth !== undefined && await wantsDeeperHistory(cache, source.shallowCommit!, depth, fetch);
   if (remoteWants.length || deeper) {
     // Serving this would mean merging a local pack with a proxied one that may contain some of
-    // the same objects, which Git rejects; see plans/git-proxy.md. A replica that fetches each
-    // new head as it is told about it never needs both.
+    // the same objects, which Git rejects; see plans/git-proxy.md. A replica that fetches the
+    // worktree's head before any older history never needs both.
     if (needsLocal) {
       throw new Error("This fetch needs both new commits from the workspace and older history from the " +
         "connected repository. Fetch the worktree's head first, then fetch again.");
@@ -122,28 +108,11 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
     return proxyFetch(source, fetch, remoteWants, base, deeper ? depth : undefined, has.size > 0);
   }
 
-  let pack: ReadableStream<Uint8Array>;
+  let pack = await localPack(cache, source.shallowCommit, localWants, [...has], source.check);
   let shallow: GitShallowInfo | undefined;
-  const commits = localWants.filter(oid => history.has(oid) || oid === source.shallowCommit);
-  if (commits.length) {
-    const local = await localPack(cache, source.shallowCommit, commits, [...has], source.check, source.pending);
-    if (source.shallowCommit && !hasBase) {
-      pack = await mergePackStreams([await source.upstream(), local]);
-      shallow = {shallow: [source.shallowCommit], unshallow: []};
-    } else {
-      pack = local;
-    }
-  } else {
-    const wanted = new Set(localWants);
-    async function* objects() {
-      for (const oid of wanted) {
-        source.check();
-        const object = await cache.ensureObject(oid, {type: "blob"});
-        source.check();
-        yield object;
-      }
-    }
-    pack = buildPackStream(wanted.size, objects());
+  if (source.shallowCommit && !hasBase) {
+    pack = await mergePackStreams([await source.upstream(), pack]);
+    shallow = {shallow: [source.shallowCommit], unshallow: []};
   }
   return fetchResponse(!fetch.done, shallow, pack, source.check);
 }
@@ -204,12 +173,11 @@ function parseFetch(items: ReturnType<typeof parsePktItems>): FetchRequest {
 
 /**
  * The workspace-stored commits of the history served: everything reachable from the worktree's
- * head and other local heads, back to (not including) `shallowCommit`. Maps each commit to its
- * parents.
+ * head, back to (not including) `shallowCommit`. Maps each commit to its parents.
  */
 async function localHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource): Promise<Map<string, string[]>> {
   const history = new Map<string, string[]>();
-  const stack = [source.head, ...source.localHeads ?? []];
+  const stack = [source.head];
   while (stack.length) {
     const oid = stack.pop()!;
     if (oid === source.shallowCommit || history.has(oid)) continue;
@@ -265,14 +233,12 @@ function baseDepth(history: Map<string, string[]>, shallowCommit: string, wants:
 }
 
 /**
- * Pack the workspace-stored history of `heads` back to `shallowCommit` (exclusive), plus the
- * blobs `pending` edits reference, leaving out the history of `haves`, which the client already
- * has. Objects in the base's tree are left out too: either the client has them, or the upstream
- * pack streamed alongside this one supplies them.
+ * Pack the workspace-stored history of `heads` back to `shallowCommit` (exclusive), leaving out
+ * the history of `haves`, which the client already has. Objects in the base's tree are left out
+ * too: either the client has them, or the upstream pack streamed alongside this one supplies them.
  */
 async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallowCommit: string | null,
-    heads: string[], haves: string[], requireLive: () => void,
-    pending: FileChangeByPath[]): Promise<ReadableStream<Uint8Array>> {
+    heads: string[], haves: string[], requireLive: () => void): Promise<ReadableStream<Uint8Array>> {
   const read = async (oid: string, type: GitObjectType, referencedBy?: string) => {
     requireLive();
     const object = await cache.ensureObject(oid, {type, referencedBy});
@@ -315,8 +281,6 @@ async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallow
   await collect(haves, present);
   const objects = new Map<string, {type: GitObjectType; referencedBy?: string}>();
   await collect(heads, objects, present);
-  for (const {change} of pending)
-    if ("setBytes" in change && !present.has(change.setBytes.oid)) objects.set(change.setBytes.oid, {type: "blob"});
   // The base's files are supplied by the upstream pack or are already in the client. A
   // rename/copy can reuse a base blob at another path: same-path comparisons above alone cannot
   // prevent duplicate objects, which native Git rejects in a single combined pack. Inspect tree

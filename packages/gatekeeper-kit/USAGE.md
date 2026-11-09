@@ -954,20 +954,13 @@ container's `haves`, its `shallow` boundary and any deepen (`commitHistory`, inc
 `shallowInfo()` reports the provider's `shallow-info` lines, which the raw pack doesn't carry.
 Cache fills never send `have`s.
 
-Container gatekeepers receive the Worktree capability directly. Open its persistable
-`getSyncSession()` and subscribe with a native persistent callback; fetch the
-subscription's file base and Git head through `worktree.gitPull(request)`, check out the base,
-apply its canonical OTs, and reset to the head before running.
-The gatekeeper invents its own guest-local Git URL. The workspace serves upstream and locally
-created commits through the same smart-HTTP endpoint, including ordinary Git ref discovery.
-Never buffer a whole pack or use base64. See the [mount contract](../../docs/worktree-replicas.md) for initialization,
-backpressure, durable ACKs, optimistic OT reconciliation and reconnect behavior.
-
-Changes stream in both directions while a command runs. `submitChanges(batchId, baseRevision,
-changes)` transforms against canonical history and durably deduplicates retries. The gatekeeper
-owns command approvals and mount lifetime, and does not resolve its synchronous command result
-until outbound changes are acknowledged and inbound canonical application has caught up through
-those ACKs.
+Container gatekeepers receive the Worktree capability directly. Clone and fetch the worktree
+with native Git through `worktree.gitPull(request)`; the gatekeeper invents its own guest-local
+Git URL. The workspace serves upstream and locally created commits through the same smart-HTTP
+endpoint, including ordinary Git ref discovery. Never buffer a whole pack or use base64. For now
+a mount is read-only: the chat's uncommitted edits don't reach it, and a command's file changes
+don't flow back (see `docs/worktree-replicas.md`). The gatekeeper owns command approvals and
+mount lifetime.
 
 ## Other module boundaries
 

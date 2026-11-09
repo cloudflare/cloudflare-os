@@ -113,8 +113,8 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
         run(deepened, "fsck", "--no-reflogs");
       }
 
-      // The fresh-start sequence: check out the file base, apply the pending changes, and reset
-      // to the head, so that Git shows the changes relative to the head.
+      // Commits can be fetched by ID, several in one fetch: check out the boundary, change a
+      // file, and reset to the head, so that Git shows the changes relative to the head.
       const fresh = join(dir, "fresh");
       run(dir, "init", "-q", fresh);
       await spawnGit(fresh, ["fetch", "-q", url, boundary, head]);

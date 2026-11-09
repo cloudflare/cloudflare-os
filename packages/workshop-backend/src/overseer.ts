@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { validateRpc, skipRpcValidation } from "capnweb-validate";
+import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -15,7 +15,7 @@ import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
-  type AiChatAgentContext, type BindingRecord, type WorktreeSyncRecord,
+  type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
@@ -45,7 +45,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -68,10 +68,8 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import type { WorktreeSyncSession, WorktreeSubscription, WorktreeSubscriber, ReplicableWorktree, FileChangeByPath }
-  from "@gadgets/workshop-shared/worktree-replica";
+import type { ReplicableWorktree } from "@gadgets/workshop-shared/worktree-replica";
 import type { Worktree } from "./worktree-binding";
-import { ReplicaChangedError, worktreeBatch } from "./worktree-replica";
 import { worktreeGitPull } from "./worktree-git";
 
 import { WebFetchEnv } from "./web-fetch";
@@ -1030,9 +1028,6 @@ class OverseerImpl implements AgentHooks {
       times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
     }
 
-    for (const subscription of this.storage.worktreeSyncSubscriptions.list())
-      if (subscription.retryAt) times.push(subscription.retryAt);
-
     let next = times.length > 0 ? Math.max(notBefore, Math.min(...times)) : null;
     if (next === this.#scheduledAlarm) return;
     this.#scheduledAlarm = next;
@@ -1062,9 +1057,6 @@ class OverseerImpl implements AgentHooks {
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
-          ...[...this.storage.worktreeSyncSubscriptions.list()]
-            .filter(record => record.retryAt && record.retryAt <= Date.now())
-            .map(record => this.drainWorktreeSubscription(record.sessionId)),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1216,7 +1208,6 @@ class OverseerImpl implements AgentHooks {
   #finishAgentTurn(chatId: number, turn?: {
     aiModel: UserAiModelRecord, initiator: AiChatAuthorInfo, initiatorUserId: string,
   }): void {
-    this.#worktreeReplicaTurns.delete(chatId);
     // A turn started by the drain gets a fresh context, and with it a fresh cancel controller --
     // this one may have been aborted.
     this.#liveChats.delete(chatId);
@@ -1279,11 +1270,9 @@ class OverseerImpl implements AgentHooks {
     // by UserDurableObject.deleteWorkspace(), which drops the whole workspace's entries.)
     this.storage.gadgets.subscribe({
       add: () => this.markOutputsDirty(),
-      update: () => { this.markOutputsDirty(); this.#wakeWorktreeSubscribers(); },
+      update: () => this.markOutputsDirty(),
       // Subscribers run before the row is deleted, so revoke once it is gone.
-      remove: () => {
-        this.markOutputsDirty(); queueMicrotask(() => this.#revokeGitTransfers()); this.#wakeWorktreeSubscribers();
-      },
+      remove: () => { this.markOutputsDirty(); queueMicrotask(() => this.#revokeGitTransfers()); },
     });
 
     this.ctx.blockConcurrencyWhile(async () => {
@@ -2489,8 +2478,7 @@ class OverseerImpl implements AgentHooks {
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
-                       submission?: {clientId: string, seq: number},
-                       replica?: ChatChangeRecord["replica"]): ChatChangeRecord {
+                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
@@ -2505,7 +2493,6 @@ class OverseerImpl implements AgentHooks {
       author,
       change,
       ...(submission !== undefined ? {submission} : {}),
-      ...(replica !== undefined ? {replica} : {}),
     };
     this.storage.chatChanges.put(row);
 
@@ -2533,7 +2520,6 @@ class OverseerImpl implements AgentHooks {
     meta.lastActive = row.timestamp;
     this.storage.chatMeta.put(meta);
     this.emitChatChangeApplied(row);
-    this.#wakeWorktreeSubscribers();
     return row;
   }
 
@@ -2557,18 +2543,10 @@ class OverseerImpl implements AgentHooks {
   // are no longer bridgeable at all.
   #pruneRetiredChatChanges(chatId: number): void {
     let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
-
-    const cursors = new Map<number, number>();
-    for (const record of this.storage.worktreeSyncSubscriptions.list()) {
-      if (this.storage.worktreeSyncSessions.get(record.sessionId)?.chatId !== chatId) continue;
-      const cursor = record.revision ?? record.bootstrap?.revision;
-      if (!cursor) continue;
-      const [generation, revision] = cursor.split(":").map(Number);
-      cursors.set(generation, Math.min(cursors.get(generation) ?? Infinity, revision));
-    }
     for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
-      if (row.retired && row.timestamp.getTime() < cutoff &&
-          (cursors.get(row.generation) ?? Infinity) >= row.revision) this.storage.chatChanges.deleteRecord(row);
+      if (row.retired && row.timestamp.getTime() < cutoff) {
+        this.storage.chatChanges.deleteRecord(row);
+      }
     }
   }
 
@@ -2892,7 +2870,14 @@ class OverseerImpl implements AgentHooks {
   // storage), or they would serve content the rows no longer back.
   async commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
-      step: Parameters<AgentHooks["commitAgentStep"]>[3],
+      step: {
+        changes: AgentStepChange[],
+        createdGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
+        createdWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
+        addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
+        worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
+        blueprintMerges: BlueprintMerge[],
+      },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
@@ -2934,7 +2919,7 @@ class OverseerImpl implements AgentHooks {
     let baseFilesByCommit = new Map<string, Map<string, string>>();
     let worktreeBases = new Map<WorkpieceId, string>();
     let worktreeSeeds = new Map<string, string | null>();
-    if (step.changes.length > 0 || step.replicaCommit !== undefined) {
+    if (step.changes.length > 0) {
       let content = await this.getCurrentChatContent(chatId, meta);
       worktreeBases = new Map([...this.worktreePinBases(meta), ...worktreePins]);
       if (worktreeBases.size > 0) {
@@ -2961,26 +2946,9 @@ class OverseerImpl implements AgentHooks {
     }
 
     try {
-      const materialized = this.storage.transaction(() => {
-        if (step.replicaAccess) {
-          const {current, revision} = step.replicaAccess;
-          if (this.#worktreeReplicaTurns.get(chatId)?.access !== current || current.getRevision?.() !== revision)
-            throw new ReplicaChangedError();
-        }
-        if (step.replicaCommit !== undefined) {
-          // Recovery can register its live view during the offline path's prefetches.
-          // Retry through that view instead of ACKing an edit it has never seen.
-          if (!step.replicaAccess && this.#worktreeReplicaTurns.get(chatId)?.access.flushReplica)
-            throw new ReplicaChangedError();
-          const session = this.requireWorktreeSync(step.replicaCommit.sessionId);
-          if (session.chatId !== chatId || this.replicaHistoryRevision(chatId) !== step.replicaCommit.revision ||
-              this.storage.worktreeSyncCommits.get(step.replicaCommit.id)) throw new ReplicaChangedError();
-        }
+      return this.storage.transaction(() => {
         let fresh = this.storage.chatMeta.get(chatId);
-        if (!fresh) {
-          if (step.replicaAccess) throw new ReplicaChangedError();
-          return false;  // chat deleted during the prefetches
-        }
+        if (!fresh) return false;  // chat deleted during the prefetches
 
         // Establish the step's worktree pins before the rows and the message: the pin is what
         // buildChatContent roots the worktree's changes at, and materializeChatChanges'
@@ -3009,7 +2977,7 @@ class OverseerImpl implements AgentHooks {
           }
           let content = cached.content;
 
-          for (let [index, {change, pin}] of step.changes.entries()) {
+          for (let {change, pin} of step.changes) {
             let newPins: ChatGadgetPinState[] = [];
             if (pin !== undefined) {
               let pins = this.chatCodeBase(fresh).pins;
@@ -3040,15 +3008,12 @@ class OverseerImpl implements AgentHooks {
             content = seeded;
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content, undefined,
-                step.replicaCommit && index === step.changes.length - 1 ? {
-                  sessionId: step.replicaCommit.sessionId, batchId: step.replicaCommit.batchId,
-                } : undefined);
+            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
           }
         }
 
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
-        let materialized = this.materializeChatChanges(chatId, undefined, {
+        return this.materializeChatChanges(chatId, undefined, {
           author,
           allowDuringTurn: true,
           createdGadgets: step.createdGadgets,
@@ -3057,14 +3022,7 @@ class OverseerImpl implements AgentHooks {
           worktreeCommits: step.worktreeCommits,
           blueprintMerges: step.blueprintMerges,
         }) !== undefined;
-        if (step.replicaCommit !== undefined) {
-          this.storage.worktreeSyncCommits.put({...step.replicaCommit,
-            revision: this.replicaHistoryRevision(chatId)});
-        }
-        return materialized;
       });
-      step.replicaAccess?.accept();
-      return materialized;
     } catch (err) {
       // The transaction rolled the rows back, but the append path already advanced the
       // in-memory caches to reflect them; drop both so later reads rebuild from storage.
@@ -5262,12 +5220,8 @@ class OverseerImpl implements AgentHooks {
               "This worktree binding is no longer live; worktree bindings are usable only " +
               "while the executeCode call they were provided to is running.");
         }
-        // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
-        // attributed to the collaborator, matching how accepted commits use the acting user's
-        // profile.
-        let initiator = execution.initiator;
         return this.ctx.restore({type: "worktree", worktreeId: target.id, chatId: caller.chatId,
-          executionId: target.executionId, author: initiator});
+          executionId: target.executionId});
       }
 
       case "exports":
@@ -5328,21 +5282,10 @@ class OverseerImpl implements AgentHooks {
     const active = this.#activeExecutions.get(chatId);
     if (!active?.worktree || active.executionId !== executionId ||
         this.getWorktreeRecord(worktreeId).chatId !== chatId) throw new Error("Worktree execution ended.");
+    // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
+    // attributed to the collaborator, matching how accepted commits use the acting user's
+    // profile.
     return new WorktreeSessionImpl(this, worktreeId, active.worktree, async () => active.initiator);
-  }
-
-  #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo }>();
-
-  registerWorktreeReplicaTurn(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
-      revision?: string): boolean {
-    if (revision !== undefined && revision !== this.replicaHistoryRevision(chatId)) return false;
-    this.#worktreeReplicaTurns.set(chatId, {access, author});
-    return true;
-  }
-
-  replicaHistoryRevision(chatId: number): string {
-    const base = this.chatCodeBase(this.getChatMetaOrThrow(chatId));
-    return `${base.generation}:${base.revision}`;
   }
 
   // Maps chat ID to action numbers recently performed by that chat's agent. These are drained into
@@ -6452,21 +6395,9 @@ class OverseerImpl implements AgentHooks {
     };
     check();
     const piece = this.getWorktreeRecord(worktreeId);
+    // As for the Worktree binding, HEAD includes a commit() buffered earlier in the running step.
+    const head = this.#activeExecutions.get(chatId)?.worktree?.getBufferedHead(worktreeId) ?? piece.headCommit;
     const sources = this.#liveGitSources(piece.baseCommit);
-    const pending = (this.#replicaOverlay(chatId)[worktreeId] ?? []).map(([path, change]) => ({path, change}));
-    const localHeads = [piece.pinBase];
-    const subscriptions = Array.from(this.storage.worktreeSyncSubscriptions.list());
-    for (const record of subscriptions) {
-      const session = this.storage.worktreeSyncSessions.get(record.sessionId);
-      if (session?.worktreeId !== worktreeId) continue;
-      for (const head of [record.base, record.head, record.bootstrap?.base, record.bootstrap?.head])
-        if (head) localHeads.push(head);
-      // A slow receiver may still be fetching an older binary event after a newer edit has
-      // replaced it in the current overlay. Keep unacknowledged object references pullable.
-      pending.push(...record.bootstrap?.changes ?? []);
-      if (record.revision) for (const row of this.#syncRows(session, record.revision) ?? [])
-        pending.push(...(row.change[worktreeId] ?? []).map(([path, change]) => ({path, change})));
-    }
     // Pull from a connection, ending the stream if worktree access ends or the connection is
     // removed.
     const pullFrom = async (source: WorkpieceId, oids: string[], hints: GitPullHints) => {
@@ -6507,14 +6438,14 @@ class OverseerImpl implements AgentHooks {
     // (commit IDs hash their history, so it doesn't matter which); worktreeGitPull() asks it to
     // confirm that a requested commit is in that history before fetching it.
     const remotes = new Map<WorkpieceId, string[]>();
-    for (const [commit, ids] of this.#remoteHistoryBoundaries(piece.headCommit))
+    for (const [commit, ids] of this.#remoteHistoryBoundaries(head))
       for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
     // The base commit's own connections can deepen history beyond it, even once a pushed
     // descendant has become the walk's boundary.
     for (const id of sources)
       if (!remotes.get(id)?.includes(piece.baseCommit)) remotes.set(id, [...remotes.get(id) ?? [], piece.baseCommit]);
-    return worktreeGitPull(this.gitCache, {head: piece.headCommit, localHeads, shallowCommit: sources.length ? piece.baseCommit : null,
-      pending, check,
+    return worktreeGitPull(this.gitCache, {head,
+      shallowCommit: sources.length ? piece.baseCommit : null, check,
       remotes: [...remotes].map(([id, haves]) => ({haves, pull: (oids, hints) => pullFrom(id, oids, hints)})),
       upstream: async () => {
         let cause: unknown;
@@ -6590,268 +6521,6 @@ class OverseerImpl implements AgentHooks {
       },
       async cancel(reason) { done(); await reader.cancel(reason); },
     }, {highWaterMark: 0});
-  }
-
-  requireWorktreeSync(id: string) {
-    const session = this.storage.worktreeSyncSessions.get(id);
-    if (!session) throw new Error("Unknown worktree sync session.");
-    const piece = this.getWorktreeRecord(session.worktreeId);
-    if (piece.chatId !== session.chatId || !this.storage.chatMeta.get(session.chatId))
-      throw new Error("Worktree access ended.");
-    return session;
-  }
-
-  async openWorktreeSync(chatId: number, worktreeId: number, author: AiChatAuthorInfo) {
-    const piece = this.getWorktreeRecord(worktreeId);
-    if (piece.chatId !== chatId) throw new Error("Worktree belongs to another chat.");
-    const session = {id: crypto.randomUUID(), chatId, worktreeId, author};
-    this.storage.worktreeSyncSessions.put(session);
-    this.requireWorktreeSync(session.id);
-    await this.#flushWorktreeTurn(chatId);
-    return this.ctx.restore({type: "worktree-sync", sessionId: session.id});
-  }
-
-  async #flushWorktreeTurn(chatId: number): Promise<void> {
-    const active = this.#worktreeReplicaTurns.get(chatId)?.access;
-    if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0))
-      throw new ReplicaChangedError("Workspace changed while flushing the live turn; retry.");
-  }
-
-  #replicaOverlay(chatId: number): CodeChange {
-    const history = this.loadChatHistory(chatId);
-    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
-    const meta = this.getChatMetaOrThrow(chatId);
-    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))
-      result = composeCodeChange(result, row.change);
-    return result;
-  }
-
-  #syncBase(session: WorktreeSyncRecord) {
-    const piece = this.getWorktreeRecord(session.worktreeId);
-    return {revision: this.replicaHistoryRevision(session.chatId), base: piece.pinBase, head: piece.headCommit,
-      shallowCommit: this.#liveGitSources(piece.baseCommit).length ? piece.baseCommit : null};
-  }
-
-  #syncBoundary(session: WorktreeSyncRecord, generation: number) {
-    const meta = this.getChatMetaOrThrow(session.chatId);
-    const base = this.chatCodeBase(meta);
-    const boundary = this.storage.chatChangeBoundaries.get(session.chatId);
-    if (base.prior?.generation !== generation || boundary?.generation !== generation ||
-        !boundary.boundaries.some(item => item.gadgetId === session.worktreeId &&
-          item.commitId === this.getWorktreeRecord(session.worktreeId).pinBase)) return;
-    return boundary;
-  }
-
-  #syncRows(session: WorktreeSyncRecord, after: string, through = this.replicaHistoryRevision(session.chatId)) {
-    const parse = (value: string) => {
-      if (!/^\d+:\d+$/.test(value)) throw new Error("Invalid worktree revision.");
-      const result = value.split(":").map(Number);
-      if (result.some(n => !Number.isSafeInteger(n))) throw new Error("Invalid worktree revision.");
-      return result;
-    };
-    const [generation, revision] = parse(after), [currentGeneration, currentRevision] = parse(through);
-    if (generation === currentGeneration)
-      return revision > currentRevision ? undefined : this.listChatChangesSince(session.chatId, generation, revision, currentRevision);
-    // Reuse the existing content-preserving accept boundary. Destructive reverts require a
-    // fresh bootstrap after the guest reconciles its outstanding batch receipts.
-    const boundary = this.#syncBoundary(session, generation);
-    if (!boundary || revision > boundary.finalRevision) return;
-    const old = this.listChatChangesSince(session.chatId, generation, revision, boundary.finalRevision);
-    const current = this.listChatChangesSince(session.chatId, currentGeneration, 0, currentRevision);
-    return old && current ? [...old, ...current] : undefined;
-  }
-
-  async subscribeWorktree(sessionId: string, subscriber: NativeRpcStub<WorktreeSubscriber>, after?: string) {
-    await this.#flushWorktreeTurn(this.requireWorktreeSync(sessionId).chatId);
-    const session = this.requireWorktreeSync(sessionId);
-    const state = this.#syncBase(session);
-    const old = this.storage.worktreeSyncSubscriptions.get(sessionId);
-    const id = crypto.randomUUID();
-    const replay = after !== undefined && this.#syncRows(session, after) !== undefined;
-    const changes = (this.#replicaOverlay(session.chatId)[session.worktreeId] ?? [])
-      .map(([path, change]) => ({path, change}));
-    if (codeChangeSerializedSize({[session.worktreeId]: changes.map(({path, change}) => [path, change])}) > 1024 * 1024)
-      throw new Error("Worktree bootstrap exceeds its transform budget; commit the pending changes first.");
-    // Registration and the captured canonical state are synchronous: there is no initial
-    // capture/subscription gap, even when a callback or its Git hydration takes a long time.
-    this.storage.worktreeSyncSubscriptions.put({sessionId, id, subscriber, retryAt: Date.now(),
-      ...(replay ? {revision: after} : {bootstrap: {...state, changes}})});
-    old?.subscriber[Symbol.dispose]();
-    this.#updateAlarm();
-    // Replacement may have joined an older in-flight drain. Do not report ready until this
-    // registration's own initial state has actually been applied and durably ACKed.
-    for (;;) {
-      await this.drainWorktreeSubscription(sessionId);
-      const current = this.storage.worktreeSyncSubscriptions.get(sessionId);
-      if (current?.id !== id) throw new Error("Worktree subscription replaced during initialization.");
-      if (!current.bootstrap && current.revision === this.replicaHistoryRevision(session.chatId)) break;
-    }
-    return this.ctx.restore({type: "worktree-subscription", sessionId, subscriptionId: id});
-  }
-
-  unsubscribeWorktree(sessionId: string, subscriptionId: string): void {
-    const current = this.storage.worktreeSyncSubscriptions.get(sessionId);
-    if (current?.id !== subscriptionId) return;
-    this.storage.worktreeSyncSubscriptions.delete(sessionId);
-    current.subscriber[Symbol.dispose]();
-    this.#updateAlarm();
-  }
-
-  #worktreeDrains = new Map<string, Promise<void>>();
-
-  drainWorktreeSubscription(sessionId: string): Promise<void> {
-    const running = this.#worktreeDrains.get(sessionId);
-    if (running) return running;
-    const drain = this.#drainWorktreeSubscription(sessionId).finally(() => {
-      if (this.#worktreeDrains.get(sessionId) === drain) this.#worktreeDrains.delete(sessionId);
-      this.#updateAlarm();
-    });
-    this.#worktreeDrains.set(sessionId, drain);
-    return drain;
-  }
-
-  async #drainWorktreeSubscription(sessionId: string): Promise<void> {
-    for (;;) {
-      const record = this.storage.worktreeSyncSubscriptions.get(sessionId);
-      if (!record) return;
-      let session: WorktreeSyncRecord;
-      try { session = this.requireWorktreeSync(sessionId); }
-      catch (error) { this.unsubscribeWorktree(sessionId, record.id); throw error; }
-      // Never queue callbacks in memory. Read one canonical row after the last durable ACK.
-      const current = () => this.storage.worktreeSyncSubscriptions.get(sessionId)?.id === record.id;
-      try {
-        if (record.bootstrap) {
-          const {changes, baseApplied, ...state} = record.bootstrap;
-          if (!baseApplied) {
-            await record.subscriber.setBaseCommit(state);
-            this.requireWorktreeSync(sessionId);
-            if (!current()) return;
-            record.bootstrap.baseApplied = true;
-            this.storage.worktreeSyncSubscriptions.put(record);
-          }
-          await record.subscriber.change(state.revision, `bootstrap:${record.id}`, changes);
-          this.requireWorktreeSync(sessionId);
-          if (!current()) return;
-          record.revision = state.revision;
-          record.base = state.base;
-          record.head = state.head;
-          delete record.bootstrap;
-          this.storage.worktreeSyncSubscriptions.put(record);
-          continue;
-        }
-        const state = this.#syncBase(session);
-        const rows = this.#syncRows(session, record.revision!);
-        if (!rows) {
-          // A destructive generation change cannot be represented as an OT from the old
-          // base. Stop rather than resetting a potentially dirty guest behind its back.
-          throw new Error("Worktree cursor expired; reconcile submissions and resubscribe.");
-        }
-        const generation = Number(record.revision!.split(":")[0]);
-        const currentGeneration = Number(state.revision.split(":")[0]);
-        const row = rows[0];
-        if (generation !== currentGeneration && (!row || row.generation !== generation)) {
-          const checkpoint = {...state, revision: `${currentGeneration}:0`};
-          await record.subscriber.setBaseCommit(checkpoint);
-          this.requireWorktreeSync(sessionId);
-          if (!current()) return;
-          record.revision = checkpoint.revision;
-          record.base = checkpoint.base;
-          record.head = checkpoint.head;
-          this.storage.worktreeSyncSubscriptions.put(record);
-          continue;
-        }
-        if (row) {
-          await record.subscriber.change(`${row.generation}:${row.revision}`,
-            row.replica?.sessionId === sessionId ? row.replica.batchId : `do:${row.generation}:${row.revision}`,
-            (row.change[session.worktreeId] ?? []).map(([path, change]) => ({path, change})));
-          this.requireWorktreeSync(sessionId);
-          if (!current()) return;
-          record.revision = `${row.generation}:${row.revision}`;
-          this.storage.worktreeSyncSubscriptions.put(record);
-          continue;
-        }
-        if (record.base !== state.base || record.head !== state.head) {
-          await record.subscriber.setBaseCommit(state);
-          this.requireWorktreeSync(sessionId);
-          if (!current()) return;
-          record.base = state.base;
-          record.head = state.head;
-          // Either may have moved again while the subscriber was applying this; look again.
-          this.storage.worktreeSyncSubscriptions.put(record);
-          continue;
-        }
-        record.retryAt = 0;
-        this.storage.worktreeSyncSubscriptions.put(record);
-        return;
-      } catch (error) {
-        if (current()) this.storage.worktreeSyncSubscriptions.put({...record, retryAt: Date.now() + 1000});
-        throw error;
-      }
-    }
-  }
-
-  #wakeWorktreeSubscribers(): void {
-    for (const record of this.storage.worktreeSyncSubscriptions.list()) {
-      this.storage.worktreeSyncSubscriptions.put({...record, retryAt: Date.now()});
-      this.ctx.waitUntil(Promise.resolve().then(() => this.drainWorktreeSubscription(record.sessionId)).catch(error => {
-        this.logger.warn("worktree subscription delivery interrupted", {
-          event: "worktree.subscription.retry", error,
-        });
-      }));
-    }
-    this.#updateAlarm();
-  }
-
-  async submitWorktreeChanges(sessionId: string, batchId: string, baseRevision: string,
-      changes: FileChangeByPath[]): Promise<{revision: string}> {
-    const session = this.requireWorktreeSync(sessionId);
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(batchId)) throw new Error("Invalid worktree batch ID.");
-    const change = worktreeBatch(session.worktreeId, changes);
-    this.#validateByteChanges(change);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256",
-      new TextEncoder().encode(JSON.stringify({baseRevision, changes})))).toHex();
-    const id = `${sessionId}:${batchId}`;
-    const accepted = () => {
-      const receipt = this.storage.worktreeSyncCommits.get(id);
-      if (!receipt) return;
-      if (receipt.digest !== digest) throw new Error("Worktree batch ID reused with different content.");
-      return {revision: receipt.revision};
-    };
-    for (let attempt = 0; attempt < 8; ++attempt) {
-      this.requireWorktreeSync(sessionId);
-      const prior = accepted();
-      if (prior) return prior;
-      try {
-        await this.#flushWorktreeTurn(session.chatId);
-        const version = this.replicaHistoryRevision(session.chatId);
-        const rows = this.#syncRows(session, baseRevision, version);
-        if (!rows) throw new Error("Worktree cursor expired; reconcile submissions and resubscribe.");
-        let transformed = change;
-        for (const row of rows) transformed = transformCodeChange(row.change, transformed).b;
-        const base = this.getWorktreeRecord(session.worktreeId).pinBase;
-        for (const [path] of transformed[session.worktreeId] ?? [])
-          await this.gitCache.assertWorktreePathWritable(base, path);
-        const receipt = {id, sessionId, batchId, digest, revision: version};
-        const active = this.#worktreeReplicaTurns.get(session.chatId);
-        if (active?.access.flushReplica) {
-          await active.access.flushReplica(transformed, active.access.getRevision?.() ?? 0, receipt,
-            () => this.replicaHistoryRevision(session.chatId) === version && !accepted());
-        } else {
-          await this.commitAgentStep(session.chatId, session.author, [], {
-            changes: Object.keys(transformed).length ? [{change: transformed}] : [],
-            createdGadgets: [], createdWorktrees: [], addedBindings: [], worktreeCommits: [],
-            blueprintMerges: [], replicaCommit: receipt,
-          });
-        }
-        const result = accepted();
-        if (result) return result;
-      } catch (error) {
-        const result = accepted();
-        if (result) return result;
-        if (!(error instanceof ReplicaChangedError)) throw error;
-      }
-    }
-    throw new Error("Worktree changed too quickly; retry the identical batch.");
   }
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
@@ -7711,7 +7380,6 @@ class OverseerImpl implements AgentHooks {
         start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
       })],
       measuredTokens: this.getChatMetaOrThrow(chatId).totalTokens ?? 0,
-      workspaceRevision: this.replicaHistoryRevision(chatId),
     };
   }
 
@@ -10789,16 +10457,11 @@ class OverseerImpl implements AgentHooks {
 
   restore(params: OverseerRestoreParams)
       : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> |
-        WorktreeEndpoint | WorktreeSyncEndpoint | WorktreeSubscriptionEndpoint {
+        WorktreeEndpoint {
     switch (params.type) {
       case "worktree":
         if (this.getWorktreeRecord(params.worktreeId).chatId !== params.chatId) throw new Error("Worktree access ended.");
         return new WorktreeEndpoint(this, params);
-      case "worktree-sync":
-        this.requireWorktreeSync(params.sessionId);
-        return new WorktreeSyncEndpoint(this, params.sessionId);
-      case "worktree-subscription":
-        return new WorktreeSubscriptionEndpoint(this, params.sessionId, params.subscriptionId);
 
       case "gadget": {
         if (params.codeId) {
@@ -10833,9 +10496,8 @@ class OverseerImpl implements AgentHooks {
 }
 
 type OverseerRestoreParams = {
-  type: "worktree"; worktreeId: number; chatId: number; executionId: string; author: AiChatAuthorInfo;
-} | {type: "worktree-sync"; sessionId: string}
-  | {type: "worktree-subscription"; sessionId: string; subscriptionId: string} | {
+  type: "worktree"; worktreeId: number; chatId: number; executionId: string;
+} | {
   // This is a stub pointing at the gadget. [restore]() will return the facet stub.
   type: "gadget";
 
@@ -13983,20 +13645,12 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
 
 /**
  * The Worktree stub handed to an agent's code (restored from "worktree" params). The file
- * methods work only while the code execution it was handed to is running. The replica methods
- * (ReplicableWorktree) keep working afterwards, so that a gatekeeper the stub was passed to can
- * keep syncing the worktree.
+ * methods work only while the code execution it was handed to is running; the replica method
+ * (ReplicableWorktree.gitPull) checks only that the worktree still belongs to the chat.
  */
 @validateRpc()
 class WorktreeEndpoint extends NativeRpcTarget implements Worktree, ReplicableWorktree {
   constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
-  // The returned persistent stub already targets a validated RpcTarget. The validator's
-  // additional server-side Proxy around a native stub loses its RPC methods on serialization.
-  @skipRpcValidation()
-  async getSyncSession(): Promise<NativeRpcStub<WorktreeSyncSession>> {
-    if (arguments.length) throw new Error("getSyncSession takes no arguments.");
-    return this.impl.openWorktreeSync(this.props.chatId, this.props.worktreeId, this.props.author);
-  }
   async gitPull(request: Request): Promise<Response> {
     return this.impl.worktreeGitPull(this.props.chatId, this.props.worktreeId, request);
   }
@@ -14033,35 +13687,6 @@ class WorktreeEndpoint extends NativeRpcTarget implements Worktree, ReplicableWo
   async structuredDiff(...args: Parameters<Worktree["structuredDiff"]>): ReturnType<Worktree["structuredDiff"]> {
     return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).structuredDiff(...args);
   }
-}
-
-/**
- * A replica's sync session stub (restored from "worktree-sync" params). All of its state is in
- * storage (WorktreeSyncRecord and related records), so it survives Durable Object restarts.
- */
-@validateRpc()
-class WorktreeSyncEndpoint extends NativeRpcTarget implements WorktreeSyncSession {
-  constructor(private impl: OverseerImpl, private sessionId: string) { super(); }
-  // Preserve the native persistent return stub; validate the two inputs before storing them.
-  @skipRpcValidation()
-  async subscribe(subscriber: NativeRpcStub<WorktreeSubscriber>, after?: string): Promise<NativeRpcStub<WorktreeSubscription>> {
-    if (arguments.length > 2 || !(subscriber instanceof NativeRpcStub) ||
-        (after !== undefined && typeof after !== "string")) throw new Error("Invalid worktree subscription.");
-    return this.impl.subscribeWorktree(this.sessionId, subscriber, after);
-  }
-  async submitChanges(batchId: string, revision: string, changes: FileChangeByPath[]) {
-    return this.impl.submitWorktreeChanges(this.sessionId, batchId, revision, changes);
-  }
-}
-
-/**
- * The handle for one subscription (restored from "worktree-subscription" params). It names the
- * subscription's own ID, so once the session has subscribed again, an old handle does nothing.
- */
-@validateRpc()
-class WorktreeSubscriptionEndpoint extends NativeRpcTarget implements WorktreeSubscription {
-  constructor(private impl: OverseerImpl, private sessionId: string, private subscriptionId: string) { super(); }
-  async unsubscribe(): Promise<void> { this.impl.unsubscribeWorktree(this.sessionId, this.subscriptionId); }
 }
 
 @validateRpc()

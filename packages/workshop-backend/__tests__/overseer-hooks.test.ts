@@ -4,7 +4,7 @@ import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-stora
 import { OverseerDurableObject } from "../src/overseer.js";
 import { openFakeOverseer } from "./fixtures.js";
 
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined }));
+vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
 
 function makeOverseer(
     getConfig: () => Promise<string | null>,

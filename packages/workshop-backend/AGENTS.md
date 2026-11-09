@@ -6,9 +6,9 @@ The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the b
 ## Worktree replicas
 
 See [`../../docs/worktree-replicas.md`](../../docs/worktree-replicas.md) before changing
-worktree Git transport or replica synchronization. Delegate the Worktree capability directly;
-reuse canonical OT rows and durable receipts. Guest paths, command completion and mount lifetimes
-belong to the gatekeeper, not the kernel.
+worktree Git transport or replica synchronization. Delegate the Worktree capability directly; a
+replica's sync must keep step transactionality (see `plans/tree-sync-replicas.md`). Guest paths,
+command completion and mount lifetimes belong to the gatekeeper, not the kernel.
 
 ## Bundled blueprints
 

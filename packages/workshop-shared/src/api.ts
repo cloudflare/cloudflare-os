@@ -4321,15 +4321,6 @@ export function isTextLikeAttachmentMimeType(mimeType: string): boolean {
  * is assumed, and it is an error for it to be omitted when there is no default.
  */
 export type AiToolCall = {
-  /**
-   * Set on a file-editing tool call whose edit is already recorded in an earlier "changes"
-   * message, so history replay must not apply it again. Normally a step's edits are saved
-   * together with its tool calls. But if a worktree replica submits edits while the agent's step
-   * is running (see `WorktreeSyncSession.submitChanges()`), the step's edits so far are saved
-   * early, in a "changes" message that precedes this tool call in the log.
-   */
-  effectsPersisted?: true;
-
   /** ID of the original tool call, useful to reproduce the model messages. */
   toolCallId: string;
 
@@ -4376,14 +4367,6 @@ export type AiToolCall = {
   observedOid?: string;
 
   /**
-   * The read's result exactly as the model saw it (after any line windowing). Usually absent:
-   * replay reproduces a read by re-reading the file as of the read's place in the log. Recorded
-   * when that is impossible because the step's edits were saved early (see `effectsPersisted`),
-   * putting them before this read in the log even though some happened after it.
-   */
-  output?: string;
-
-  /**
    * No longer written; honored when read. Before reads were stamped with the blob's oid
    * (`observedOid`), an unpinned read recorded the commit it read at; replay resolves the file's
    * blob from it by path.
@@ -4412,17 +4395,6 @@ export type AiToolCall = {
     filename: string;
     content: string;
   };
-
-  /**
-   * The successful result the model saw, so replay can reproduce it exactly. Absent on older
-   * logs, for which replay recomputes the change ID by counting "changes" messages. That count
-   * is wrong when the step's edits were saved early (see `effectsPersisted`), since doing so
-   * writes an extra "changes" message.
-   */
-  output?: {
-    /** Change ID returned to the model when this write succeeded. */
-    changeId: number;
-  };
 } | {
   toolName: "editFile";
   input: {
@@ -4430,12 +4402,6 @@ export type AiToolCall = {
     filename: string;
     textToReplace: string;
     replacement: string;
-  };
-
-  /** The successful result the model saw; see writeFile's `output`. */
-  output?: {
-    /** Change ID returned to the model when this edit succeeded, including a no-op edit. */
-    changeId: number;
   };
 } | {
   /**
