@@ -14349,8 +14349,12 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         }
         if (attempt >= 4) throw new Error("The chat is changing too quickly; please retry.");
       }
-      // Nothing is awaited from here on, so the pins and the change stream are the ones the
-      // content was folded from.
+      // Nothing is awaited from here on, so the pins and the change stream read below are those
+      // of the code base the content is at. The content may still be a cached fold that lacks
+      // one of those pins: a step that only commits in a worktree pins it without moving the
+      // generation or the revision, which are all the cache is keyed by. A worktree pinned that
+      // way and not edited since is then left out, where a fresh fold lists it with three empty
+      // lists.
       let pins = new Map(codeBase.pins.map(pin => [pin.gadgetId, pin]));
       let messages = [...impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
       let touched = impl.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
