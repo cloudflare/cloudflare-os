@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminVia, AdminViewAccess, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminViewAccess, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -584,16 +584,16 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Set the access level admins choose for inspectWorkspace(), recording the change `actor` makes.
-   * Throws for a level above the one ADMIN_WORKSPACE_ACCESS_MAX allows, which a compromised admin
-   * session can never raise.
+   * Set the access level admins choose for inspectWorkspace() and inspectUser(), recording the
+   * change `actor` makes. Throws for a level above the one ADMIN_WORKSPACE_ACCESS_MAX allows, which
+   * a compromised admin session can never raise.
    */
   async setAdminWorkspaceAccess(access: AdminWorkspaceAccess, actor: AdminSettingActor)
       : Promise<void> {
     let max = maxAdminWorkspaceAccess(this.env);
     if (lowerAdminWorkspaceAccess(access, max) !== access) {
-      throw new Error(`Admin access to workspaces can't be set above "${max}", the most this ` +
-          "deployment's ADMIN_WORKSPACE_ACCESS_MAX allows.");
+      throw new Error(`Admin access can't be set above "${max}", the most this deployment's ` +
+          "ADMIN_WORKSPACE_ACCESS_MAX allows.");
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminWorkspaceAccess: access }));
   }
@@ -1257,29 +1257,31 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // Capability for managing and investigating the deployment, obtained via
 // AuthenticatedApi.getAdminApi() (which is null for non-admins). The admin access check happens
 // once, when the capability is minted in server.ts, so its methods don't re-check, with one
-// exception: inspectWorkspace() re-checks, as openForAdmin() and every call on the view it mints
-// do, since a view is the one thing an admin holds that reads users' data. Setting by setting,
-// this is a thin validation+forwarding facade over the AdminSettings DO — fully user-independent —
-// so a disabled gatekeeper/resource can't be re-enabled via a crafted request, and the client
-// never receives a stub to the DO's internal methods. Every setter's change is recorded in the
-// deployment's audit log before it takes effect (see #mutateAdminConfig()). Covers branding, agent
-// instructions, signups, gatekeeper connector/resource availability, AI Gateway models, whether an
-// update is available, the user and workspace directory, and admin access to workspaces;
-// authentication config stays env-var driven.
+// exception: inspectWorkspace() and inspectUser() re-check, as openForAdmin() and every call on
+// the view either mints do, since a view is the one thing an admin holds that reads users' data.
+// Setting by setting, this is a thin validation+forwarding facade over the AdminSettings DO —
+// fully user-independent — so a disabled gatekeeper/resource can't be re-enabled via a crafted
+// request, and the client never receives a stub to the DO's internal methods. Every setter's
+// change is recorded in the deployment's audit log before it takes effect (see
+// #mutateAdminConfig()). Covers branding, agent instructions, signups, gatekeeper
+// connector/resource availability, AI Gateway models, whether an update is available, the user and
+// workspace directory, and admin access to workspaces and to users' accounts; authentication
+// config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   private admin: DurableObjectStub<AdminSettings>;
   private directories: DurableObjectNamespace<UserDirectoryDurableObject>;
   private audits: DurableObjectNamespace<AdminAuditDurableObject>;
   private overseers: DurableObjectNamespace<OverseerDurableObject>;
+  private users: DurableObjectNamespace<UserDurableObject>;
   #sessionId = crypto.randomUUID();
 
   /**
    * `adminUserId` is the requesting admin's canonical id and `via` the label derived from their
    * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
    * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
-   * AdminAudit and Overseer namespaces through `ctx.exports`, and reads ADMINS and the admin access
-   * bounds from `env`.
+   * AdminAudit, Overseer and User namespaces through `ctx.exports`, and reads ADMINS and the admin
+   * access bounds from `env`.
    */
   constructor(ctx: ExecutionContext, private env: Cloudflare.Env, private adminUserId: string,
               private via: AdminVia) {
@@ -1288,6 +1290,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     this.directories = ctx.exports.UserDirectoryDurableObject;
     this.audits = ctx.exports.AdminAuditDurableObject;
     this.overseers = ctx.exports.OverseerDurableObject;
+    this.users = ctx.exports.UserDurableObject;
   }
 
   // Who makes a change through `method` of this capability, as its audit record says.
@@ -1592,6 +1595,36 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       });
       return { title: "", ownerId: "" };
     }
+  }
+
+  async inspectUser(userId: string, reason: string, options: AdminInspectOptions = {})
+      : Promise<RpcStub<AdminUserView>> {
+    let { reason: trimmedReason, requested, access, expiresAt } =
+        await this.#openTerms(reason, options, () => {
+          if (userId === "") throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.userNotFound);
+        });
+    if (access === "off") {
+      // Refused before the account is reached, so the record names the id as the admin gave it.
+      // Appended without a retention, as a view's records are.
+      await this.audits.getByName("").append({
+        kind: "user", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
+        via: this.via, userId, method: "inspectUser",
+        args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, requested,
+        access: "off", exposed: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+      });
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
+    }
+
+    // As inspectWorkspace() does, the view runs at the lower of the level asked for and the
+    // deployment's. Reaching the account by name creates none: openForAdmin() refuses an id that
+    // names no account.
+    // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
+    //     system doesn't know this.
+    return this.users.getByName(userId).openForAdmin(
+        this.adminUserId, trimmedReason, this.#sessionId, {
+          via: this.via, requested, access: lowerAdminWorkspaceAccess(requested, access),
+          expiresAt,
+        });
   }
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {

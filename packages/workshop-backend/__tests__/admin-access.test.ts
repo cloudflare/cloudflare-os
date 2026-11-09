@@ -3,7 +3,8 @@ import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
-  type ActionLogEntry, type AdminChatState, type AdminWorkspaceMethod, type AiChatHistoryPage,
+  type ActionLogEntry, type AdminChatState, type AdminUserBlueprint,
+  type AdminUserConnectedAccount, type AdminWorkspaceMethod, type AiChatHistoryPage,
   type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo,
   type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
@@ -12,11 +13,12 @@ import {
   adminAuditStatsDays, adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange,
   adminViewCallAccess, adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent,
   chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent,
-  cutAdminAuditText, fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
-  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs,
-  validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
-  withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdHookContent,
-  workpieceHoldsContent,
+  connectedAccountHoldsContent, cutAdminAuditText, fileHoldsContent, hookHoldsContent,
+  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays,
+  redactAdminAuditArgs, userBlueprintHoldsContent, validateAdminAccessReason,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
+  withholdCommitContent, withholdConnectedAccountContent, withholdHookContent,
+  withholdUserBlueprintContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
 } from "../src/admin-access.js";
 
@@ -331,7 +333,46 @@ describe("withholding content", () => {
     expect(withholdBlueprintContent(blueprint)).toStrictEqual({ ...rest, id: "" });
     expect(blueprint).toStrictEqual(before);
   });
+
+  it("drops a connected account's description from a copy", () => {
+    let account = connectedAccount();
+    let before = structuredClone(account);
+    let { description: _description, ...rest } = before;
+    expect(withholdConnectedAccountContent(account)).toStrictEqual(rest);
+    expect(withholdConnectedAccountContent(account)).not.toHaveProperty("description");
+    expect(account).toStrictEqual(before);
+  });
+
+  it("drops a user's blueprint's id from a copy", () => {
+    let blueprint = userBlueprint();
+    let before = structuredClone(blueprint);
+    let { id: _id, ...rest } = before;
+    expect(withholdUserBlueprintContent(blueprint)).toStrictEqual(rest);
+    expect(withholdUserBlueprintContent(blueprint)).not.toHaveProperty("id");
+    expect(blueprint).toStrictEqual(before);
+  });
 });
+
+// A connected account as a user view lists it at "full": with its gatekeeper's description, whose
+// name here is an address carrying a token.
+function connectedAccount(): AdminUserConnectedAccount {
+  return {
+    id: 3, vendorId: "http", autoProvisioned: false, credentialExpiresAt: new Date(1700000000_000),
+    credentialsExpired: true,
+    description: {
+      displayName: "https://hooks.example.test/in?token=made-up", uniqueName: "hook-1",
+      avatar: { url: "https://example.test/avatar.png" }, grantedResourceUrlPatterns: ["https://*"],
+    },
+  };
+}
+
+// A blueprint a user published, as a user view lists it at "full": with its id.
+function userBlueprint(): AdminUserBlueprint {
+  return {
+    id: "bp-1", held: "published", title: "Kit", version: 2,
+    lastUpdated: new Date(1700000000_000), workspaceId: "w-1", featured: true,
+  };
+}
 
 // A published blueprint with a screenshot, whose URL holds its id.
 function blueprintSummary(id: string): BlueprintGadgetSummary {
@@ -433,6 +474,20 @@ describe("whether an answer holds content", () => {
     expect(blueprintHoldsContent(full)).toBe(true);
     expect(blueprintHoldsContent(blueprintSummary(""))).toBe(false);
     expect(blueprintHoldsContent(withholdBlueprintContent(full))).toBe(false);
+  });
+
+  it("finds a connected account's description", () => {
+    let full = connectedAccount();
+    expect(connectedAccountHoldsContent(full)).toBe(true);
+    expect(connectedAccountHoldsContent(withholdConnectedAccountContent(full))).toBe(false);
+    expect(connectedAccountHoldsContent({ ...full, description: undefined })).toBe(false);
+  });
+
+  it("finds a user's blueprint's id", () => {
+    let full = userBlueprint();
+    expect(userBlueprintHoldsContent(full)).toBe(true);
+    expect(userBlueprintHoldsContent(withholdUserBlueprintContent(full))).toBe(false);
+    expect(userBlueprintHoldsContent({ ...full, id: undefined })).toBe(false);
   });
 
   it("finds a hook's description", () => {

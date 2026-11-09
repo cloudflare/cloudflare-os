@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   createAdminAccessError, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminVia, type AdminViewAccess,
+  type AdminAccessRecord, type AdminUserAccessRecord, type AdminVia, type AdminViewAccess,
 } from "@gadgets/workshop-shared/api";
 import { AdminApiImpl } from "../src/admin-settings.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -58,6 +58,7 @@ function deployment(options: {
     AdminSettings: namespace("admin"),
     UserDirectoryDurableObject: namespace("directory"),
     AdminAuditDurableObject: namespace("audit"),
+    UserDurableObject: namespace("user"),
     OverseerDurableObject: {
       idFromString: (id: string) => {
         calls.push({ target: "overseers", method: "idFromString", args: [id] });
@@ -271,6 +272,178 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     const error = await rejection(mint().inspectWorkspace(workspaceId(), REASON));
     expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
     expect(calls.filter(call => call.target.startsWith("director"))).toEqual([]);
+  });
+});
+
+// Each call as "target.method", in the order made.
+const names = (calls: Call[]) => calls.map(call => `${call.target}.${call.method}`);
+
+describe("AdminApiImpl.inspectUser", () => {
+  const USER = "ada@example.test";
+
+  it("rejects a bad reason or lifetime before touching anything", async () => {
+    const { mint, calls } = deployment();
+    const api = mint();
+    for (let reason of ["", "   ", "r".repeat(501)]) {
+      expect(await rejection(api.inspectUser(USER, reason))).toBeInstanceOf(TypeError);
+    }
+    for (let lifetimeSeconds of [0, -1, 1.5, 3601]) {
+      expect(await rejection(api.inspectUser(USER, REASON, { lifetimeSeconds })))
+          .toBeInstanceOf(TypeError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("never runs with a level that is not \"metadata\" or \"full\"", () => {
+    // The validator refuses it before the method's body runs: synchronously, on a direct call.
+    const { mint, calls } = deployment();
+    const api = mint();
+    expect(() => api.inspectUser(USER, REASON, { access: "off" as any })).toThrow(TypeError);
+    expect(() => api.inspectUser(USER, REASON, { access: "everything" as any }))
+        .toThrow(TypeError);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a caller no longer an admin before touching anything", async () => {
+    const { mint, calls } = deployment();
+    const error = await rejection(mint("former@example.test").inspectUser(USER, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an empty id as not found before touching anything", async () => {
+    const { mint, calls } = deployment({ config: { adminWorkspaceAccess: "full" } });
+    const error = await rejection(mint().inspectUser("", REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.userNotFound);
+    expect(calls).toEqual([]);
+  });
+
+  describe.each([
+    ["the authoritative config", { config: { adminWorkspaceAccess: "off" as const } }],
+    ["ADMIN_WORKSPACE_ACCESS_MAX off", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "off" } }],
+    ["ADMIN_WORKSPACE_ACCESS_MAX not a level", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "none" } }],
+  ])("while access is off by %s", (_label, setup) => {
+    it("records the refused open in the deployment-wide log only, then refuses", async () => {
+      const { mint, calls, callsTo } = deployment(setup);
+      const api = mint();
+      const before = Date.now();
+      const error = await rejection(api.inspectUser(USER, `  ${REASON}  `, {
+        lifetimeSeconds: 60,
+      }));
+      const after = Date.now();
+      expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.accessOff);
+
+      // The account and the directory are never reached.
+      expect(names(calls)).toEqual(
+          ["admin.committedAdminConfig", "audits.getByName", "audit.append"]);
+      expect(callsTo("audits", "getByName")[0]!.args).toEqual([""]);
+      const appended = callsTo("audit", "append")[0]!.args;
+      // One argument: no retention, as a view's records are appended.
+      expect(appended).toHaveLength(1);
+      const [record] = appended as [AdminUserAccessRecord];
+      expect(record).toStrictEqual({
+        kind: "user", at: expect.any(Date), admin: ADMIN, sessionId: expect.any(String),
+        via: "cli", userId: USER, method: "inspectUser", args: { expiresAt: expect.any(String) },
+        reason: REASON, requested: "metadata", access: "off", exposed: "metadata",
+        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+      });
+      const expiresAt = record.args.expiresAt as string;
+      expect(new Date(expiresAt).toISOString()).toBe(expiresAt);
+      expect(Date.parse(expiresAt)).toBeGreaterThanOrEqual(before + 60_000);
+      expect(Date.parse(expiresAt)).toBeLessThanOrEqual(after + 60_000);
+
+      // A level asked for is recorded too, refused alike.
+      await rejection(api.inspectUser(USER, REASON, { access: "full" }));
+      const [second] = callsTo("audit", "append")[1]!.args as [AdminUserAccessRecord];
+      expect(second).toMatchObject({ requested: "full", access: "off" });
+      expect(second.sessionId).toBe(record.sessionId);
+    });
+
+    it("names the id as the admin gave it, whether or not it is an account's", async () => {
+      const { mint, callsTo } = deployment(setup);
+      await rejection(mint().inspectUser("No Such User", REASON));
+      const [record] = callsTo("audit", "append")[0]!.args as [AdminUserAccessRecord];
+      expect(record.userId).toBe("No Such User");
+    });
+
+    it("fails with the audit log's own error when the refusal cannot be recorded", async () => {
+      const { mint, calls } = deployment({ ...setup, handlers: { audit: { append: () => {
+        throw new Error("audit log unavailable");
+      } } } });
+      const error = await rejection(mint().inspectUser(USER, REASON));
+      expect(String(error)).toContain("audit log unavailable");
+      expect(getAdminAccessErrorCode(error)).toBeUndefined();
+      expect(calls.filter(call => call.target.startsWith("user"))).toEqual([]);
+    });
+  });
+
+  it.each([
+    ["full", "full", undefined, "metadata"],
+    ["full", "full", "full", "full"],
+    ["full", undefined, "full", "metadata"],
+    ["metadata", "full", "full", "metadata"],
+    ["metadata", "full", "metadata", "metadata"],
+  ] as const)("opens a view at the lowest of %s, the cap %s and the level asked for, %s",
+      async (chosen, max, requested, access) => {
+    // The view comes back wrapped in its validator, so it is told apart by what it answers.
+    const view = { describe: async () => "the minted view" };
+    const { mint, calls, callsTo } = deployment({
+      config: { adminWorkspaceAccess: chosen },
+      vars: max === undefined ? {} : { ADMIN_WORKSPACE_ACCESS_MAX: max },
+      handlers: { user: { openForAdmin: () => view } },
+    });
+    const before = Date.now();
+    const minted = await mint(ADMIN, "api").inspectUser(
+        USER, ` ${REASON} `, requested === undefined ? undefined : { access: requested });
+    expect(await minted.describe()).toBe("the minted view");
+    const after = Date.now();
+
+    // The account is reached by the id as given, and nothing is recorded here: the open's record
+    // is the view's own.
+    expect(names(calls)).toEqual(
+        ["admin.committedAdminConfig", "users.getByName", "user.openForAdmin"]);
+    expect(callsTo("users", "getByName")[0]!.args).toEqual([USER]);
+    const [adminId, reason, sessionId, terms] = callsTo("user", "openForAdmin")[0]!.args as
+        [string, string, string,
+         { via: string; requested: AdminViewAccess; access: AdminViewAccess; expiresAt: Date }];
+    expect([adminId, reason, typeof sessionId]).toEqual([ADMIN, REASON, "string"]);
+    expect(Object.keys(terms).toSorted()).toEqual(["access", "expiresAt", "requested", "via"]);
+    expect(terms.via).toBe("api");
+    expect(terms.requested).toBe(requested ?? "metadata");
+    expect(terms.access).toBe(access);
+    const lifetime = DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS * 1000;
+    expect(terms.expiresAt.getTime()).toBeGreaterThanOrEqual(before + lifetime);
+    expect(terms.expiresAt.getTime()).toBeLessThanOrEqual(after + lifetime);
+  });
+
+  it.each([
+    ["an account that does not exist", ADMIN_ACCESS_ERROR_CODES.userNotFound],
+    ["an expired view", ADMIN_ACCESS_ERROR_CODES.viewExpired],
+  ] as const)("passes the refusal of %s through, recording nothing", async (_case, code) => {
+    const { mint, calls } = deployment({ handlers: { user: { openForAdmin: () => {
+      throw createAdminAccessError(code);
+    } } } });
+    const error = await rejection(mint().inspectUser(USER, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(code);
+    expect(names(calls)).toEqual(
+        ["admin.committedAdminConfig", "users.getByName", "user.openForAdmin"]);
+  });
+
+  it("shares the capability's session id with inspectWorkspace()", async () => {
+    const { mint, callsTo } = deployment({ handlers: {
+      user: { openForAdmin: () => ({}) }, overseer: { openForAdmin: () => ({}) },
+    } });
+    const api = mint();
+    const another = mint();
+    await api.inspectUser(USER, REASON);
+    await api.inspectWorkspace(workspaceId(), REASON);
+    await another.inspectUser(USER, REASON);
+    const [first, other] = callsTo("user", "openForAdmin").map(call => call.args[2]);
+    const [workspace] = callsTo("overseer", "openForAdmin").map(call => call.args[2]);
+    expect(typeof first).toBe("string");
+    expect(workspace).toBe(first);
+    // Another capability has a session id of its own.
+    expect(other).not.toBe(first);
   });
 });
 

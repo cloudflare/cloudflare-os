@@ -29,6 +29,7 @@ import type { AdminViewTerms } from "../src/admin-access.js";
 import { encodeGitTree, gitObjectOid } from "../src/git-codec.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import { putAction } from "./fixtures.js";
+import { rpcSurface } from "./rpc-surface.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
 // first test's timeout.
 import "./test-worker.js";
@@ -565,18 +566,6 @@ async function memberVisibleState(ws: Workspace) {
     sessions: ws.impl.liveSessionCounts(),
     alarm: await ws.state.storage.getAlarm(),
   };
-}
-
-// What a holder of `view` can reach over RPC: every string-named member of its class, and of
-// any class between it and RpcTarget. Cap'n Web exposes prototype members, never own ones.
-function rpcSurface(view: object): Set<string> {
-  let names = new Set<string>();
-  for (let proto = Object.getPrototypeOf(view); proto !== RpcTarget.prototype;
-       proto = Object.getPrototypeOf(proto)) {
-    for (let name of Object.getOwnPropertyNames(proto)) names.add(name);
-  }
-  names.delete("constructor");
-  return names;
 }
 
 describe("opening an admin view", () => {

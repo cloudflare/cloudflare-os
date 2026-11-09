@@ -1,5 +1,5 @@
-// Deployment admin status, the bounds on admin access to workspaces, and the text an audit record
-// keeps.
+// Deployment admin status, the bounds on admin access to workspaces and to users' accounts, and
+// the text an audit record keeps.
 //
 // This is the one place the admin access bounds are decided, and the one place audit text is
 // bounded (admin status is isDeploymentAdmin() in auth/config.ts). The bounds come from the environment, beside ADMINS, so that a compromised
@@ -16,7 +16,8 @@ import {
   MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminSettingChange,
-  type AdminSettingRecord, type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
+  type AdminSettingRecord, type AdminUserBlueprint, type AdminUserConnectedAccount,
+  type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
   type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata,
   type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
   type WorkpieceSummary,
@@ -54,7 +55,7 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
     reportedInvalidAccessMax.add(raw);
     logger.error(
         "ADMIN_WORKSPACE_ACCESS_MAX is not off, metadata or full, so admin access to workspaces " +
-            "is off",
+            "and users is off",
         { event: "admin.access.config.invalid" });
   }
   return "off";
@@ -115,8 +116,8 @@ export function adminAccessPolicy(
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
 
-/** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()), fixed for
- * the view's life. */
+/** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
+ * UserDurableObject.openForAdmin()), fixed for the view's life. */
 export type AdminViewTerms = {
   /** Recorded on every record the view makes (see AdminVia). */
   via: AdminVia;
@@ -250,7 +251,8 @@ export function cutAdminAuditText(text: string, maxLength: number): string {
 // alike, share one.
 const OWNER_DIGEST_LENGTH = 20;
 
-/** A workspace owner's id as an audit record keeps it (see AdminAccessRecord.workspaceOwner): whole
+/** The id of the user an admin view's record is about, as the record keeps it: a workspace's owner
+ * (AdminAccessRecord.workspaceOwner) or an account's user (AdminUserAccessRecord.userId). Whole
  * while at most MAX_ADMIN_AUDIT_ARG_LENGTH characters, else its start, "…#" and a digest of the
  * whole id, MAX_ADMIN_AUDIT_ARG_LENGTH characters in all. An id is an identity, so unlike
  * cutAdminAuditText() this keeps two long ids sharing a start apart. Applied to its own result it
@@ -467,4 +469,29 @@ export function chatPageHoldsContent(page: AiChatHistoryPage): boolean {
  * quote the file (a symlink's quotes its target). */
 export function fileHoldsContent(file: FileAtCommit): boolean {
   return file.kind !== "absent";
+}
+
+/** A copy of `account` as a user view below "full" lists it: without `description`, which is its
+ * gatekeeper's own text, and a name in it can carry a secret. */
+export function withholdConnectedAccountContent(account: AdminUserConnectedAccount)
+    : AdminUserConnectedAccount {
+  let { description: _description, ...rest } = account;
+  return rest;
+}
+
+/** Whether `account` holds what withholdConnectedAccountContent() drops: a description. */
+export function connectedAccountHoldsContent(account: AdminUserConnectedAccount): boolean {
+  return account.description !== undefined;
+}
+
+/** A copy of `blueprint` as a user view below "full" lists it: without `id`, which is a share
+ * link to the blueprint's code. */
+export function withholdUserBlueprintContent(blueprint: AdminUserBlueprint): AdminUserBlueprint {
+  let { id: _id, ...rest } = blueprint;
+  return rest;
+}
+
+/** Whether `blueprint` holds what withholdUserBlueprintContent() drops: an id. */
+export function userBlueprintHoldsContent(blueprint: AdminUserBlueprint): boolean {
+  return blueprint.id !== undefined;
 }

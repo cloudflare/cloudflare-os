@@ -1,5 +1,6 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
+import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -33,6 +34,9 @@ import {
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryActivity } from "./user-directory.js";
+import type { AdminViewTerms } from "./admin-access.js";
+import { openAdminUserView } from "./admin-user-view.js";
+import { assertAdminViewTerms } from "./admin-view.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -1230,6 +1234,47 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       return null;
     }
     return this.storage.profile.get();
+  }
+
+  /**
+   * Mint a deployment admin's read-only view of this account (AdminUserView), for
+   * AdminApiImpl.inspectUser(): reachable only over the Workshop's Durable Object binding, never
+   * through a capability a user holds.
+   *
+   * Refuses (`userNotFound`) an account never created, before anything else and writing nothing:
+   * reaching this object by a name no one signed up with creates no account. Rejects (TypeError)
+   * malformed terms, as OverseerDurableObject.openForAdmin() does.
+   *
+   * The open is the view's first call ("inspectUser"): it passes the view's checks, runs at most
+   * at the deployment's current level (so an open while that is "off" is recorded as refused and
+   * throws `accessOff`), and is recorded in the deployment-wide log before the view is returned;
+   * a record that cannot be written refuses the open.
+   *
+   * Nothing is written to this object, no session starts, the directory is not synced, no alarm
+   * is set and no gatekeeper is called: the view is handed this object's store to read, and each
+   * connected account without its gatekeeper stub. Waking the object still runs what its
+   * constructor runs for any wake, which delivers notifications already queued and re-arms a
+   * missing alarm.
+   */
+  async openForAdmin(adminId: string, reason: string, sessionId: string, terms: AdminViewTerms)
+      : Promise<AdminUserView> {
+    if (!this.storage.created.get()) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.userNotFound);
+    }
+
+    let trimmedReason = assertAdminViewTerms(reason, terms);
+    let view = await openAdminUserView({
+      // A function, so that the view reads this object's environment at each use.
+      env: () => this.env,
+      storage: this.storage,
+      audits: this.ctx.exports.AdminAuditDurableObject,
+      // The stub is dropped here, so the view never holds one.
+      connectedAccounts: () => Array.from(
+          this.#connectedAccountRecords(), ({ account: _account, ...record }) => record),
+      nextAlarm: () => this.ctx.storage.getAlarm(),
+    }, adminId, trimmedReason, sessionId, terms);
+    logger.info("admin user view opened", { event: "admin.user.view.opened" });
+    return view;
   }
 
   /**

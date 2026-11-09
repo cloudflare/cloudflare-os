@@ -615,11 +615,12 @@ export const createGatekeeperError = gatekeeperErrors.create;
 export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
 
 /**
- * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and of
- * AdminWorkspaceView calls.
+ * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
+ * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls.
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
+  userNotFound: "ADMIN_USER_NOT_FOUND",
   accessOff: "ADMIN_WORKSPACE_ACCESS_OFF",
   contentWithheld: "ADMIN_CONTENT_WITHHELD",
   viewExpired: "ADMIN_VIEW_EXPIRED",
@@ -632,15 +633,16 @@ export type AdminAccessErrorCode =
 
 const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
   [ADMIN_ACCESS_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
+  [ADMIN_ACCESS_ERROR_CODES.userNotFound]: "User not found.",
   [ADMIN_ACCESS_ERROR_CODES.accessOff]:
-      "Admin access to workspaces is turned off on this deployment.",
+      "Admin access to workspaces and users is turned off on this deployment.",
   [ADMIN_ACCESS_ERROR_CODES.contentWithheld]:
       "This view is limited to workspace metadata, so this content is withheld. Content needs a " +
       "view whose inspection asked for \"full\" access, on a deployment that allows it: " +
       "describe() reports this view's level, and getSettings() the deployment's.",
-  [ADMIN_ACCESS_ERROR_CODES.viewExpired]:
-      "This admin view has expired. Inspect the workspace again.",
-  [ADMIN_ACCESS_ERROR_CODES.notAdmin]: "Only a deployment admin can inspect a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.viewExpired]: "This admin view has expired. Inspect again.",
+  [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
+      "Only a deployment admin can inspect a workspace or a user.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -1272,10 +1274,11 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Returns a capability for managing and investigating the deployment as an admin, or null when
    * the caller is not one. The access check happens here, once, for every AdminApi method but
-   * workspace inspection: AdminApi.inspectWorkspace() and each call on the view it mints check
-   * again (see AdminWorkspaceView). Every audit record the capability makes is labelled with an
-   * AdminVia derived from the client's User-Agent. (Authentication config — sign-in providers,
-   * password login — is intentionally not managed here; it stays env-var driven.)
+   * inspection: AdminApi.inspectWorkspace(), AdminApi.inspectUser() and each call on the view
+   * either mints check again (see AdminWorkspaceView and AdminUserView). Every audit record the
+   * capability makes is labelled with an AdminVia derived from the client's User-Agent.
+   * (Authentication config — sign-in providers, password login — is intentionally not managed
+   * here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1470,9 +1473,9 @@ export type AdminSettingsView = {
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
   /**
-   * How much of a workspace an admin may inspect (see AdminApi.setAdminWorkspaceAccess):
-   * inspectWorkspace() opens each view at the lower of `effective` and the level the inspection
-   * asks for (AdminInspectOptions.access).
+   * How much of a workspace or of a user's account an admin may inspect (see
+   * AdminApi.setAdminWorkspaceAccess): inspectWorkspace() and inspectUser() open each view at the
+   * lower of `effective` and the level the inspection asks for (AdminInspectOptions.access).
    */
   adminWorkspaceAccess: {
     /** The level enforced: the lower of `chosen` and `max`. */
@@ -1753,18 +1756,21 @@ export type AdminWorkspacePage = {
 };
 
 /**
- * How much of a workspace a deployment admin may inspect through AdminApi.inspectWorkspace(), in
- * increasing order:
- *   - "off":      nothing; inspectWorkspace() is refused.
- *   - "metadata": its structure: titles, workpieces, collaborators, observers, connections, the
- *                 chat and action lists, file names, commit ids and authors, the names, types,
- *                 sizes and content hashes of attachments, the titles and descriptions of
- *                 blueprints, share links' notes, and diagnostics. Chat messages, queued steers,
- *                 attachments, file contents (at any commit, or pending in a chat), commit
- *                 messages, the arguments of calls queued for an agent, which blueprint a gadget
- *                 follows, the ids of the blueprints the workspace publishes, and the
- *                 descriptions and fields of actions, observations and hooks are withheld.
- *                 Titles, names, notes and blueprint descriptions stay, and can echo content.
+ * How much of a workspace or of a user's account a deployment admin may inspect through
+ * AdminApi.inspectWorkspace() and AdminApi.inspectUser(), in increasing order:
+ *   - "off":      nothing; inspectWorkspace() and inspectUser() are refused.
+ *   - "metadata": a workspace's structure: titles, workpieces, collaborators, observers,
+ *                 connections, the chat and action lists, file names, commit ids and authors, the
+ *                 names, types, sizes and content hashes of attachments, the titles and
+ *                 descriptions of blueprints, share links' notes, and diagnostics. Chat messages,
+ *                 queued steers, attachments, file contents (at any commit, or pending in a
+ *                 chat), commit messages, the arguments of calls queued for an agent, which
+ *                 blueprint a gadget follows, the ids of the blueprints the workspace publishes,
+ *                 and the descriptions and fields of actions, observations and hooks are
+ *                 withheld. Titles, names, notes and blueprint descriptions stay, and can echo
+ *                 content. Of a user's account, everything but what its gatekeepers say of its
+ *                 connected accounts (AdminUserConnectedAccount.description) and its blueprints'
+ *                 ids.
  *   - "full":     everything, what "metadata" withholds included.
  */
 export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata", "full"] as const;
@@ -1777,7 +1783,8 @@ export function isAdminWorkspaceAccess(value: unknown): value is AdminWorkspaceA
   return ADMIN_WORKSPACE_ACCESS_LEVELS.includes(value as AdminWorkspaceAccess);
 }
 
-/** The access level of a working AdminWorkspaceView: never "off", at which none works. */
+/** The access level of a working AdminWorkspaceView or AdminUserView: never "off", at which none
+ * works. */
 export type AdminViewAccess = Exclude<AdminWorkspaceAccess, "off">;
 
 /** The access level a deployment has until an admin sets one. */
@@ -1792,14 +1799,15 @@ export const DEFAULT_ADMIN_AUDIT_RETENTION_DAYS = 90;
 /** The longest retention an admin may set, in days: ten years. */
 export const MAX_ADMIN_AUDIT_RETENTION_DAYS = 3650;
 
-/** How long an AdminWorkspaceView lasts unless AdminInspectOptions.lifetimeSeconds says: 15
- * minutes. */
+/** How long an AdminWorkspaceView or an AdminUserView lasts unless
+ * AdminInspectOptions.lifetimeSeconds says: 15 minutes. */
 export const DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS = 900;
 
-/** The longest an AdminWorkspaceView may last, in seconds: an hour. */
+/** The longest an AdminWorkspaceView or an AdminUserView may last, in seconds: an hour. */
 export const MAX_ADMIN_VIEW_LIFETIME_SECONDS = 3600;
 
-/** The longest reason AdminApi.inspectWorkspace() takes, in characters, once trimmed. */
+/** The longest reason AdminApi.inspectWorkspace() and AdminApi.inspectUser() take, in characters,
+ * once trimmed. */
 export const MAX_ADMIN_ACCESS_REASON_LENGTH = 500;
 
 /** How many commits AdminWorkspaceView.getCommitLog() returns when the caller gives no `depth`. */
@@ -1808,7 +1816,7 @@ export const DEFAULT_ADMIN_COMMIT_LOG_DEPTH = 20;
 /** The most commits one AdminWorkspaceView.getCommitLog() call returns. */
 export const MAX_ADMIN_COMMIT_LOG_DEPTH = 100;
 
-/** Options for AdminApi.inspectWorkspace(). */
+/** Options for AdminApi.inspectWorkspace() and AdminApi.inspectUser(). */
 export type AdminInspectOptions = {
   /** How long the view lasts: a whole number of seconds from 1 to
    * MAX_ADMIN_VIEW_LIFETIME_SECONDS, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS when absent. */
@@ -1820,8 +1828,8 @@ export type AdminInspectOptions = {
    * describe() reports that. While the deployment's level is "off", every open is refused, whatever
    * it asks for. Every record the view makes keeps the level asked for
    * (AdminAccessRecord.requested). An investigation therefore starts at "metadata" and asks for
-   * "full" deliberately, in a new inspectWorkspace() call with a reason of its own, only to read
-   * content. The audit log shows when it did.
+   * "full" deliberately, in a new inspectWorkspace() or inspectUser() call with a reason of its
+   * own, only to read content. The audit log shows when it did.
    */
   access?: AdminViewAccess;
 };
@@ -1844,17 +1852,17 @@ export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
 export const ADMIN_USER_METHODS = [
   "inspectUser", "describe", "listWorkspaces", "listConnectedAccounts", "listModels",
   "listSessions", "listBlueprints", "getDiagnostics",
-] as const;
+] as const satisfies readonly ("inspectUser" | keyof AdminUserView)[];
 
 /** One of ADMIN_USER_METHODS. */
 export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
 
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
- * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord. The rest
- * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
- * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
- * tests, and checkForUpdates.
+ * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord and
+ * inspectUser() as an AdminUserAccessRecord. The rest change no setting and are not recorded: the
+ * reads (getSettings, isBlueprintFeatured, getUpdateStatus, listUsers, listWorkspaces,
+ * listAdminAudit, getAdminAuditStats), the gateway tests, and checkForUpdates.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2166,12 +2174,13 @@ export type AdminAuditStats = {
  * Capability for managing and investigating the deployment, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
  * capability is minted, so these methods don't re-check, with one exception: inspectWorkspace()
- * re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is the one
- * thing an admin holds that reads users' data. Covers branding, agent instructions, which
- * gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, the
- * user and workspace directory, and admin access to workspaces — NOT authentication config (that's
- * env-var driven). Each setter throws on invalid input, and records the change it makes in the
- * deployment's audit log before making it (see AdminSettingRecord).
+ * and inspectUser() re-check, and so does every call on the view either mints (AdminWorkspaceView,
+ * AdminUserView), since a view is the one thing an admin holds that reads users' data. Covers
+ * branding, agent instructions, which gatekeeper connectors/resources are offered, the models an
+ * AI Gateway deployment provides, the user and workspace directory, and admin access to
+ * workspaces and to users' accounts — NOT authentication config (that's env-var driven). Each
+ * setter throws on invalid input, and records the change it makes in the deployment's audit log
+ * before making it (see AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -2542,6 +2551,25 @@ export interface AdminApi {
       : Promise<RpcStub<AdminWorkspaceView>>;
 
   /**
+   * Open a read-only view of a user's account to investigate it (see AdminUserView), as
+   * inspectWorkspace() opens one of a workspace: `reason`, `options`, the level and the lifetime
+   * follow the same rules, and the deployment's one level
+   * (AdminSettingsView.adminWorkspaceAccess.effective) bounds both. `userId` is the user's canonical
+   * id, exactly as listUsers() lists it. The open is recorded as an AdminUserAccessRecord
+   * ("inspectUser") before the view is returned, so an open whose record cannot be written is
+   * refused.
+   *
+   * Refused with a code from ADMIN_ACCESS_ERROR_CODES, checked in this order: `notAdmin` once the
+   * caller is no longer a deployment admin; `userNotFound` for an empty id; `accessOff` while the
+   * access level is "off", recorded in the deployment-wide log without the account being reached;
+   * `userNotFound` for an id that names no account, which this does not create; `viewExpired`
+   * should the view's lifetime run out before the account answers. Only `accessOff` refusals are
+   * recorded.
+   */
+  inspectUser(userId: string, reason: string, options?: AdminInspectOptions)
+      : Promise<RpcStub<AdminUserView>>;
+
+  /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
    * holds access to workspaces and to users' accounts, and changes to settings. Rejects a `limit`
    * that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a
@@ -2554,11 +2582,12 @@ export interface AdminApi {
   getAdminAuditStats(options?: AdminAuditStatsQuery): Promise<AdminAuditStats>;
 
   /**
-   * Set how much of a workspace inspectWorkspace() may show (see ADMIN_WORKSPACE_ACCESS_LEVELS),
-   * DEFAULT_ADMIN_WORKSPACE_ACCESS by default. Throws for a level above the deployment's maximum
-   * (AdminSettingsView.adminWorkspaceAccess.max), which only its ADMIN_WORKSPACE_ACCESS_MAX
-   * environment variable can raise. A view already minted runs at the lower of its own level and
-   * the new one from its next call once the setting reaches it, within about a minute.
+   * Set how much of a workspace or a user's account inspectWorkspace() and inspectUser() may show
+   * (see ADMIN_WORKSPACE_ACCESS_LEVELS), DEFAULT_ADMIN_WORKSPACE_ACCESS by default. Throws for a
+   * level above the deployment's maximum (AdminSettingsView.adminWorkspaceAccess.max), which only
+   * its ADMIN_WORKSPACE_ACCESS_MAX environment variable can raise. A view already minted, of
+   * either kind, runs at the lower of its own level and the new one from its next call once the
+   * setting reaches it, within about a minute.
    */
   setAdminWorkspaceAccess(access: AdminWorkspaceAccess): Promise<void>;
 
@@ -2943,6 +2972,258 @@ export interface AdminWorkspaceView extends RpcTarget {
   /** The workspace's operational state. Admin access records are not part of it: they are kept
    * only in the deployment-wide log (AdminApi.listAdminAudit()). */
   getDiagnostics(): Promise<AdminWorkspaceDiagnostics>;
+}
+
+/** A user's account as AdminUserView.describe() presents it. */
+export type AdminUserDescription = {
+  /** The user's profile, as AuthenticatedApi.whoami() gives it to them; `id` is their canonical
+   * user id. */
+  profile: AiChatAuthorInfo;
+  /** When the account was created. Absent for one created before the deployment recorded it. */
+  created?: Date;
+  /** When the user last started a session, as the account last told the deployment directory: to
+   * within an hour, as AdminUserRecord.lastLogin is. Absent until it has told it of one. */
+  lastLogin?: Date;
+  /** Whether the user is a deployment admin at the time of the call: named in the deployment's
+   * ADMINS variable. */
+  isAdmin: boolean;
+  /** Whether the account has a password to sign in with; false for one that signs in through a
+   * provider or Cloudflare Access. */
+  hasPassword: boolean;
+  /** Whether the user has finished onboarding. */
+  onboardingCompleted: boolean;
+  /** How many of each thing the account holds; the view's list methods give the things. */
+  counts: {
+    /** Workspaces the user owns. */
+    ownedWorkspaces: number;
+    /** Workspaces shared with the user that they have opened. */
+    sharedWorkspaces: number;
+    /** Connected accounts. */
+    connectedAccounts: number;
+    /** Models the user added. */
+    models: number;
+    /** Sign-in sessions. */
+    sessions: number;
+    /** Blueprints of the user's own: those listBlueprints() lists as "published" or
+     * "imported". */
+    ownBlueprints: number;
+    /** Blueprints in the user's library: those listBlueprints() lists as "uploaded" or
+     * "added". */
+    libraryBlueprints: number;
+  };
+  /** The level this call ran at: the view's own level (the lower of the level its open asked for
+   * and the deployment's level then), lowered to the deployment's current setting (see
+   * AdminUserView). */
+  access: AdminViewAccess;
+  /** When this view stops working. */
+  expiresAt: Date;
+};
+
+/** One workspace a user's account lists, as AdminUserView.listWorkspaces() lists it: what the
+ * account itself records of it. `owner` is present for a workspace shared with the user, and
+ * `role` is then their role in it. */
+export type AdminUserWorkspace = Pick<WorkspaceMetadata,
+    "id" | "title" | "totalCost" | "notificationMute" | "owner" | "role"> & {
+  /** When the account first recorded the workspace: its creation for one the user owns, the
+   * user's first open of it for one shared with them. */
+  created: Date;
+  /** When it was last active or, for one shared with the user, when they last opened it. Absent
+   * for a workspace whose creation has not finished. */
+  lastActive?: Date;
+};
+
+/** One connected account of a user, as AdminUserView.listConnectedAccounts() lists it. */
+export type AdminUserConnectedAccount = {
+  /** Its id among the user's connected accounts, as AuthenticatedApi.disconnectAccount() takes
+   * it. */
+  id: number;
+  /** The vendor whose gatekeeper holds it. */
+  vendorId: string;
+  /** Whether the Workshop created it with no OAuth flow (see
+   * VendorDescription.autoProvisionsAccount), rather than the user connecting it. */
+  autoProvisioned: boolean;
+  /** When its credentials are expected to expire, if its gatekeeper said. */
+  credentialExpiresAt?: Date;
+  /** Whether its gatekeeper has reported its credentials expired. */
+  credentialsExpired: boolean;
+  /** The account as its gatekeeper last described it to the Workshop: its names, avatar, granted
+   * resource types and what it provides. Content, absent below "full". At "full" it is returned
+   * as stored: the gatekeeper chooses the names, and a name that carries a secret (an address
+   * with its token, say) is returned with it, as "full" returns chat messages and files that can
+   * hold one. */
+  description?: AccountDescription;
+};
+
+/** A model a user added to their account, as AdminUserView.listModels() lists it. Its API token
+ * and extra headers are credentials and are never returned. Nor is its API URL: that is free
+ * text, not a credential, but a URL can carry one, so only whether one is set is reported. */
+export type AdminUserModel = {
+  /** The model's id among the user's models, as chats name it. */
+  id: string;
+  /** The display name the user gave it. */
+  name: string;
+  /** The provider that hosts it. */
+  provider: AiModelProvider;
+  /** The model's name, as given to the provider's API. */
+  model: string;
+  /** Whether it overrides the provider's API URL (AiModelConfig.apiUrl). */
+  customApiUrl: boolean;
+};
+
+/** A user's model settings, as AdminUserView.listModels() reports them. */
+export type AdminUserModels = {
+  /** The models the user added, in id order. A deployment's own AI Gateway models are not among
+   * them (see AdminSettingsView.gatewayModels). */
+  models: AdminUserModel[];
+  /** The id of the model the user prefers (AuthenticatedApi.setPreferredModel()), as stored: it
+   * may name one no longer offered. Null while none is set. */
+  preferredModel: string | null;
+  /** The id of the model the user chose for quick tasks such as chat titles
+   * (AuthenticatedApi.setQuickModel()), as stored. Null while none is set. */
+  quickModel: string | null;
+};
+
+/** One sign-in session of a user, as AdminUserView.listSessions() lists it. Never its token, nor
+ * the token's hash. */
+export type AdminUserSession = {
+  /** When it was created: a sign-in, or the staging of a device session. */
+  created: Date;
+  /** When it stops working. Absent for a browser session, which does not expire. */
+  expiresAt?: Date;
+  /** Present on a device session staged for a handoff its device has not completed: when that
+   * handoff lapses. It cannot sign in meanwhile. */
+  pendingUntil?: Date;
+};
+
+/** A user's sign-in sessions, as AdminUserView.listSessions() reports them. An account behind
+ * Cloudflare Access holds none. */
+export type AdminUserSessions = {
+  /** How many sessions the account holds. */
+  total: number;
+  /** The latest ADMIN_LIST_MAX_LIMIT of them, latest first. */
+  sessions: AdminUserSession[];
+};
+
+/** One blueprint a user's account holds, as AdminUserView.listBlueprints() lists it. */
+export type AdminUserBlueprint = {
+  /** The blueprint's id, as PublicApi.getBlueprint() takes it. Content, absent below "full": a
+   * blueprint's id is a share link to its code, which is why AdminWorkspaceView.listBlueprints()
+   * withholds a workspace's too. */
+  id?: string;
+  /** How the account holds it. Of the user's own blueprints: "published" from one of their
+   * workspaces, or "imported" for one that names no workspace (BlueprintSource's "imported"). Of
+   * their library: "uploaded" by the user, or "added" by its id, which may be any blueprint's. */
+  held: "published" | "imported" | "uploaded" | "added";
+  /** Its title. */
+  title: string;
+  /** Its version as the account records it; each update increments it. */
+  version: number;
+  /** When that version was released. */
+  lastUpdated: Date;
+  /** For a published one, the workspace it was published from, whether or not that still
+   * exists. */
+  workspaceId?: string;
+  /** For one of the user's own ("published" or "imported"), whether it is featured
+   * deployment-wide. */
+  featured?: boolean;
+};
+
+/** A user account's operational state, as AdminUserView.getDiagnostics() reports it. None of it
+ * is content: the billing account's id, its credit balance and the daily count of model calls are
+ * returned at every level. */
+export type AdminUserDiagnostics = {
+  /** When the account's alarm next fires. Absent while none is set. */
+  nextAlarm?: Date;
+  /** Connect, reconnect and grant flows the user started that have neither finished nor lapsed
+   * (see ConnectFlowStart): a lapsed one the account has yet to sweep is not counted. */
+  pendingConnectFlows: number;
+  /** Sign-ins staged for a native app that the app has neither completed nor let lapse (see
+   * AuthenticatedApi.beginDeviceSessionHandoff()), counted as pendingConnectFlows is. */
+  pendingDeviceHandoffs: number;
+  /** The devices registered for the user's push notifications. */
+  pushDevices: {
+    /** Phones. */
+    phones: number;
+    /** Browsers. */
+    browsers: number;
+  };
+  /** Notifications the account accepted from workspaces and has yet to deliver. */
+  queuedNotifications: number;
+  /** The model calls counted against the user's daily allowance on `day` (a UTC date,
+   * YYYY-MM-DD), on a deployment that applies Cloudflare usage limits. Absent until one is
+   * counted; a `day` before today counts as none. */
+  dailyModelCalls?: {
+    /** The UTC date counted. */
+    day: string;
+    /** The calls counted on it. */
+    count: number;
+  };
+  /** The Cloudflare account the user's AI Gateway usage is billed to. Absent until the user
+   * connects one. */
+  billing?: {
+    /** The account's id, once one is chosen. */
+    accountId?: string;
+    /** Its credit balance in US dollars as last fetched; absent when unknown. */
+    creditsRemaining?: number;
+    /** When that balance was fetched. */
+    creditsUpdatedAt?: Date;
+  };
+};
+
+/**
+ * A deployment admin's read-only view of one user's account, minted by AdminApi.inspectUser(). It
+ * reads only what the account itself stores, and nothing it does changes the account or is seen by
+ * its user: it writes nothing there, starts no session, leaves the user's last login and the
+ * deployment directory alone, sets no alarm, and never calls a gatekeeper, a connected account's
+ * own included. No method connects, disconnects, renames or deletes anything. One effect is the
+ * wake's and not the view's: reaching an account whose Durable Object was asleep wakes it, and any
+ * wake delivers the notifications already queued for the user and re-arms a missing alarm.
+ *
+ * Each call runs as an AdminWorkspaceView call does: the same checks, refused unrecorded
+ * (`viewExpired`, `notAdmin`, and `userNotFound` should the account be gone), at the same level
+ * (the view's own, lowered to the deployment's current setting), in the same order. A call that
+ * level refuses is recorded and refused having read nothing (`accessOff`); any other reads its
+ * answer, is recorded as an AdminUserAccessRecord with what that answer exposed, and only then
+ * answers. No method is refused below "full": what that level withholds is left out of the answers
+ * (a connected account's description, a blueprint's id).
+ *
+ * At no level does a call return what the account stores as a credential: a session token or its
+ * hash, the password's hash, a model's API token or extra headers, a push subscription, or a
+ * pending connect or sign-in ticket. Free text is not a credential, and the two pieces of it that
+ * can carry one are treated differently. A model's API URL is never returned either, only whether
+ * one is set (AdminUserModel.customApiUrl): nothing an investigation needs is in it. A connected
+ * account's description is its gatekeeper's own text and is returned as stored at "full", so a
+ * name a gatekeeper built around a secret is returned with it (see
+ * AdminUserConnectedAccount.description). A restart of the account's Durable Object ends the view;
+ * inspect again.
+ */
+export interface AdminUserView extends RpcTarget {
+  /** The account's profile, when it was created and last signed in, whether its user is a
+   * deployment admin, and how much it holds, with the level this call ran at and the view's
+   * expiry. */
+  describe(): Promise<AdminUserDescription>;
+
+  /** The workspaces the account lists, in id order: those the user owns, and those of other users
+   * that they have opened as a collaborator. */
+  listWorkspaces(): Promise<AdminUserWorkspace[]>;
+
+  /** The user's connected accounts, in id order; below "full", without each one's `description`.
+   * At "full" a description is returned as its gatekeeper stored it, and a name in it can carry a
+   * token (see AdminUserConnectedAccount.description). */
+  listConnectedAccounts(): Promise<AdminUserConnectedAccount[]>;
+
+  /** The models the user added, and the ones they chose. */
+  listModels(): Promise<AdminUserModels>;
+
+  /** The account's sign-in sessions, latest first. */
+  listSessions(): Promise<AdminUserSessions>;
+
+  /** The blueprints the account holds: the user's own, then those in their library; below "full",
+   * without each one's `id`. */
+  listBlueprints(): Promise<AdminUserBlueprint[]>;
+
+  /** The account's operational state. */
+  getDiagnostics(): Promise<AdminUserDiagnostics>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */

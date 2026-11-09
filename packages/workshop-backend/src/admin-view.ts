@@ -6,8 +6,8 @@
 
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
-  type AdminAccessExposure, type AdminAccessRecord, type AdminViewAccess,
-  type AdminWorkspaceAccess,
+  type AdminAccessExposure, type AdminAccessRecord, type AdminUserAccessRecord,
+  type AdminViewAccess, type AdminWorkspaceAccess,
 } from "@gadgets/workshop-shared/api";
 import {
   adminAccessPolicy, adminViewCallAccess, lowerAdminWorkspaceAccess, validateAdminAccessReason,
@@ -61,7 +61,7 @@ export type AdminViewCallHost = {
   /** Builds the call's record. Synchronous: adminViewCall() builds and sends a record with nothing
    * awaited since its last check. */
   recordOf(access: AdminWorkspaceAccess, exposed: AdminAccessExposure,
-      refused?: AdminAccessRecord["refused"]): AdminAccessRecord;
+      refused?: AdminAccessRecord["refused"]): AdminAccessRecord | AdminUserAccessRecord;
 };
 
 /**
