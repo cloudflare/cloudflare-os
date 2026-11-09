@@ -3,42 +3,30 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocActionTab } from "../../src/google";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { officeFileError } from "../../src/office-conversion";
-import type { GoogleDocsTab } from "../../src/docs-api";
+import type { DocsRange, GoogleDocsRequest, GoogleDocsTab } from "../../src/docs-api";
 import type { GoogleDocSession } from "../../src/docs-types";
-import { buildTab } from "../doc-fixture";
+import {
+  alignmentAt, applyDocsRequests, fontSizeAt, indentedParagraphs, pinnedHeaderRows,
+} from "../docs-body-model";
+import type { ModelParagraphStyle, ModelTextStyle } from "../docs-body-model";
+import { buildTab, BULLET_LIST } from "../doc-fixture";
 
-/** Every write coordinate names the tab it applies to; tab bodies index independently. */
-type DocCoordinate = { tabId?: string };
+/** A request that changes content, or one of the two that create and delete a write marker. */
+type BatchRequest =
+  | GoogleDocsRequest
+  | { createNamedRange: { name: string; range: DocsRange } }
+  | { deleteNamedRange: { namedRangeId: string } };
 
-type BatchRequest = {
-  createNamedRange?: { name: string; range: DocCoordinate };
-  deleteNamedRange?: { namedRangeId: string };
-  insertText?: { location: DocCoordinate & { index: number }; text: string };
-  deleteContentRange?: { range: DocCoordinate & { startIndex: number; endIndex: number } };
-  updateParagraphStyle?: {
-    range: DocCoordinate & { startIndex: number; endIndex: number };
-    paragraphStyle: { namedStyleType?: string };
-    fields: string;
+/** A comment write: a comment attached to text, or a reply to a comment or a suggestion. */
+type CommentRequest =
+  | { insertComment: { content: string; range: DocsRange } }
+  | {
+    addCommentReply: {
+      commentId?: string;
+      suggestionId?: string;
+      post: { content?: string; commentAction?: "RESOLVE" | "REOPEN" };
+    };
   };
-  createParagraphBullets?: {
-    range: DocCoordinate & { startIndex: number; endIndex: number };
-    bulletPreset: string;
-  };
-  deleteParagraphBullets?: {
-    range: DocCoordinate & { startIndex: number; endIndex: number };
-  };
-  updateTextStyle?: {
-    range: DocCoordinate & { startIndex: number; endIndex: number };
-    textStyle?: { link?: { url: string } };
-    fields?: string;
-  };
-  insertComment?: { content: string; range: DocCoordinate & { startIndex: number; endIndex: number } };
-  addCommentReply?: {
-    commentId?: string;
-    suggestionId?: string;
-    post: { content?: string; commentAction?: "RESOLVE" | "REOPEN" };
-  };
-};
 
 /** One post of a comment thread, as Docs returns it. */
 type ModelPost = {
@@ -59,6 +47,30 @@ type ModelThread = {
   replies: ModelPost[];
 };
 
+/**
+ * The tab a request names. Every write coordinate names the tab it applies to, since tab bodies
+ * index independently; a request that leaves it out has none.
+ */
+function requestTabId(
+  request: Exclude<BatchRequest, { deleteNamedRange: unknown }>,
+): string | undefined {
+  if ("createNamedRange" in request) return request.createNamedRange.range.tabId;
+  if ("insertText" in request) return request.insertText.location.tabId;
+  if ("deleteContentRange" in request) return request.deleteContentRange.range.tabId;
+  if ("updateTextStyle" in request) return request.updateTextStyle.range.tabId;
+  if ("updateParagraphStyle" in request) return request.updateParagraphStyle.range.tabId;
+  if ("createParagraphBullets" in request) return request.createParagraphBullets.range.tabId;
+  if ("deleteParagraphBullets" in request) return request.deleteParagraphBullets.range.tabId;
+  if ("insertTable" in request) return request.insertTable.location.tabId;
+  if ("pinTableHeaderRows" in request) return request.pinTableHeaderRows.tableStartLocation.tabId;
+  // A row or column request names its table, and the table's start names the tab.
+  let cell = "insertTableRow" in request ? request.insertTableRow.tableCellLocation
+    : "insertTableColumn" in request ? request.insertTableColumn.tableCellLocation
+    : "deleteTableRow" in request ? request.deleteTableRow.tableCellLocation
+    : request.deleteTableColumn.tableCellLocation;
+  return cell.tableStartLocation.tabId;
+}
+
 type ModelListItem = { id: string; preset: string };
 /** `"indented"` is the indent Google leaves on a paragraph whose bullet was removed. */
 type ModelListSlot = ModelListItem | "indented" | null;
@@ -74,13 +86,13 @@ type ModelTab = {
   parentId?: string;
   text: string;
   table?: { before: string; rows: string[][]; after: string };
+  /** A body the shared model edits, with the list definitions its paragraphs reference. */
   body?: GoogleDocsTab["body"];
+  lists?: GoogleDocsTab["lists"];
   links: { start: number; end: number; url: string }[];
   paragraphStyles?: string[];
   paragraphLists?: ModelListSlot[];
 };
-type BodyElement = GoogleDocsTab["body"]["content"][number];
-
 function withoutDeletedParagraphs<T>(
   text: string,
   values: T[],
@@ -124,6 +136,10 @@ class DocsModel {
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
   contentBatches = 0;
+  /** The content requests of the last batch applied, without its marker. */
+  lastContentRequests: GoogleDocsRequest[] = [];
+  /** Whether a tab given a body copies into new cells the look Google copies. */
+  copyStyles = false;
   maxMarkerCount = 0;
   /** Google withholds `revisionId` from a caller without edit access. */
   editable = true;
@@ -233,8 +249,68 @@ class DocsModel {
   setTable(tabId: string, before: string, rows: string[][], after: string): void {
     this.#tab(tabId).table = { before, rows, after };
   }
-  setBody(tabId: string, body: GoogleDocsTab["body"]): void {
+
+  /** Give a tab a body, which the shared model edits, and the lists its paragraphs reference. */
+  setBody(tabId: string, body: GoogleDocsTab["body"], lists: GoogleDocsTab["lists"] = {}): void {
+    let tab = this.#tab(tabId);
+    tab.body = body;
+    tab.lists = lists;
+  }
+
+  /** A collaborator's edit to a tab that has a body: the body is replaced, the revision moves. */
+  externalBody(tabId: string, body: GoogleDocsTab["body"]): void {
     this.#tab(tabId).body = body;
+    this.#revision++;
+  }
+
+  /** A collaborator replaces the text of the first paragraph of one cell of a tab's body. */
+  externalCellEdit(
+    table: number, row: number, column: number, text: string, tabId = MAIN_TAB,
+  ): void {
+    let [index] = this.cellParagraphs(table, row, column, tabId);
+    let [first] = this.cellRuns(table, row, column, tabId);
+    let old = first.content.replace(/\n$/, "");
+    this.externalBody(tabId, applyDocsRequests(this.bodyTab(tabId), [
+      { deleteContentRange: { range: { startIndex: index, endIndex: index + old.length, tabId } } },
+      { insertText: { location: { index, tabId }, text } },
+    ]).body);
+  }
+
+  /** A tab that has a body, as the shared model takes it. */
+  bodyTab(tabId = MAIN_TAB): GoogleDocsTab {
+    let tab = this.#tab(tabId);
+    if (!tab.body) throw new Error(`Tab "${tabId}" has no body`);
+    return {
+      tabId: tab.id, title: tab.title, index: 0, nestingLevel: 0,
+      body: tab.body, lists: tab.lists ?? {}, namedRanges: {},
+    };
+  }
+
+  /** The tables of a tab's body, in order. */
+  tables(tabId = MAIN_TAB) {
+    return this.bodyTab(tabId).body.content.flatMap(element =>
+      element.table ? [{ start: element.startIndex, rows: element.table.tableRows ?? [] }] : []);
+  }
+
+  /** The start index of each paragraph of one cell of a tab's body. */
+  cellParagraphs(table: number, row: number, column: number, tabId = MAIN_TAB): number[] {
+    let cell = this.tables(tabId)[table]?.rows[row]?.tableCells?.[column];
+    if (!cell) throw new Error(`Table ${table} has no cell at row ${row}, column ${column}`);
+    return (cell.content ?? []).flatMap(element => element.paragraph ? [element.startIndex] : []);
+  }
+
+  /** The text of one cell of a tab's body, its paragraphs joined by line breaks. */
+  cellText(table: number, row: number, column: number, tabId = MAIN_TAB): string {
+    return this.cellRuns(table, row, column, tabId).map(run => run.content).join("")
+      .replace(/\n$/, "");
+  }
+
+  /** The text runs of one cell of a tab's body, in order. */
+  cellRuns(table: number, row: number, column: number, tabId = MAIN_TAB) {
+    let cell = this.tables(tabId)[table]?.rows[row]?.tableCells?.[column];
+    if (!cell) throw new Error(`Table ${table} has no cell at row ${row}, column ${column}`);
+    return (cell.content ?? []).flatMap(element =>
+      element.paragraph?.elements.flatMap(part => part.textRun ?? []) ?? []);
   }
 
   text(tabId = MAIN_TAB): string {
@@ -343,11 +419,13 @@ class DocsModel {
       requests: BatchRequest[];
       writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
     };
-    let first = body.requests[0];
-    if (first?.insertComment || first?.addCommentReply || body.writeControl?.writeMode === "SUGGEST") {
-      return this.#commentWrite(body);
+    let first = body.requests[0] as BatchRequest | CommentRequest | undefined;
+    if (first && ("insertComment" in first || "addCommentReply" in first) ||
+        body.writeControl?.writeMode === "SUGGEST") {
+      return this.#commentWrite(
+        body as { requests: (GoogleDocsRequest | CommentRequest)[]; writeControl?: typeof body.writeControl });
     }
-    let isDelete = body.requests.length === 1 && !!body.requests[0].deleteNamedRange;
+    let isDelete = body.requests.length === 1 && "deleteNamedRange" in body.requests[0];
     await this.#hold(isDelete ? "cleanup" : "content");
     if (!isDelete && this.refusesEdits) {
       return Response.json({
@@ -363,28 +441,49 @@ class DocsModel {
       return Response.json({ error: { code: 400, message: "revision mismatch" } }, { status: 400 });
     }
 
-    let replies: unknown[] = [];
-    let hasContent = false;
+    // Google resolves an unqualified coordinate against a default tab, so a request that omits
+    // the ID would edit whichever tab that happens to be.
+    let contentRequests: GoogleDocsRequest[] = [];
+    let bodyRequests = new Map<ModelTab, GoogleDocsRequest[]>();
     for (const request of body.requests) {
-      if (request.deleteNamedRange) {
+      if ("deleteNamedRange" in request) continue;
+      let tabId = requestTabId(request);
+      if (!tabId) {
+        throw new Error(`Google Docs request is missing tabId: ${JSON.stringify(request)}`);
+      }
+      if ("createNamedRange" in request) continue;
+      contentRequests.push(request);
+      let tab = this.#tab(tabId);
+      if (tab.body) bodyRequests.set(tab, [...bodyRequests.get(tab) ?? [], request]);
+    }
+    // A tab given a body is edited by the shared model: all of a batch, or none of it, the
+    // marker included.
+    let editedBodies = new Map<ModelTab, GoogleDocsTab["body"]>();
+    for (const [tab, requests] of bodyRequests) {
+      try {
+        let edited = applyDocsRequests(
+          this.bodyTab(tab.id), requests, { copyStyles: this.copyStyles });
+        editedBodies.set(tab, edited.body);
+      } catch (error) {
+        let message = error instanceof Error ? error.message : String(error);
+        return Response.json(
+          { error: { code: 400, status: "INVALID_ARGUMENT", message } }, { status: 400 });
+      }
+    }
+    for (const [tab, edited] of editedBodies) tab.body = edited;
+
+    let replies: unknown[] = [];
+    let hasContent = contentRequests.length > 0;
+    for (const request of body.requests) {
+      if ("deleteNamedRange" in request) {
         this.markers.delete(request.deleteNamedRange.namedRangeId);
         this.deletedMarkerIds.push(request.deleteNamedRange.namedRangeId);
         replies.push({});
         continue;
       }
 
-      // Google resolves an unqualified coordinate against a default tab, so a request that omits
-      // the ID would edit whichever tab that happens to be.
-      let coordinate = request.createNamedRange?.range ?? request.insertText?.location ??
-        request.deleteContentRange?.range ?? request.updateParagraphStyle?.range ??
-        request.createParagraphBullets?.range ?? request.deleteParagraphBullets?.range ??
-        request.updateTextStyle?.range;
-      if (!coordinate?.tabId) {
-        throw new Error(`Google Docs request is missing tabId: ${JSON.stringify(request)}`);
-      }
-      let tab = this.#tab(coordinate.tabId);
-
-      if (request.createNamedRange) {
+      let tab = this.#tab(requestTabId(request) ?? "");
+      if ("createNamedRange" in request) {
         let id = `marker-${this.#nextMarkerId++}`;
         this.addMarker(request.createNamedRange.name, id, tab.id);
         this.markerTabIds.push(tab.id);
@@ -392,37 +491,11 @@ class DocsModel {
         continue;
       }
 
-      hasContent = true;
-      if (request.insertText) {
-        this.#insertText(
-          tab, request.insertText.location.index, request.insertText.text,
-        );
-      } else if (request.deleteContentRange) {
-        let { startIndex, endIndex } = request.deleteContentRange.range;
-        this.#deleteText(tab, startIndex, endIndex);
-      } else if (request.updateParagraphStyle) {
-        let { range, paragraphStyle, fields } = request.updateParagraphStyle;
-        if (paragraphStyle.namedStyleType) {
-          this.#setParagraphStyle(tab, range, paragraphStyle.namedStyleType);
-        }
-        if (fields.split(",").includes("indentStart")) this.#clearIndent(tab, range);
-      } else if (request.deleteParagraphBullets) {
-        this.#setBullets(tab, request.deleteParagraphBullets.range);
-      } else if (request.createParagraphBullets) {
-        this.#setBullets(
-          tab, request.createParagraphBullets.range, request.createParagraphBullets.bulletPreset,
-        );
-      } else if (request.updateTextStyle && (
-        request.updateTextStyle.textStyle?.link || request.updateTextStyle.fields?.includes("link")
-      )) {
-        let { startIndex, endIndex } = request.updateTextStyle.range;
-        this.#setLink(
-          tab, startIndex - 1, endIndex - 1,
-          request.updateTextStyle.textStyle?.link?.url,
-        );
-      }
+      // The shared model has applied the requests of a tab that has a body.
+      if (!tab.body) this.#applyToText(tab, request);
       replies.push({});
     }
+    if (hasContent) this.lastContentRequests = contentRequests;
     if (hasContent) this.contentBatches++;
     this.#revision++;
     this.#recordMarkerCount();
@@ -511,7 +584,8 @@ class DocsModel {
 
   /** A batch of comment writes, or one suggestion, as Docs applies it. */
   #commentWrite(body: {
-    requests: BatchRequest[]; writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
+    requests: (GoogleDocsRequest | CommentRequest)[];
+    writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
   }): Response {
     let refuse = (code: number, status: string, message: string) =>
       Response.json({ error: { code, status, message } }, { status: code });
@@ -522,29 +596,30 @@ class DocsModel {
     let replies: unknown[] = [];
     let suggestionResponses: unknown[] = [];
     if (body.writeControl?.writeMode === "SUGGEST") {
-      let [{ deleteContentRange }, insert] = body.requests;
-      let { startIndex, endIndex, tabId } = deleteContentRange!.range;
+      let [remove, insert] = body.requests;
+      if (!remove || !("deleteContentRange" in remove)) throw new Error("A suggestion starts with a deletion");
+      let { startIndex, endIndex, tabId } = remove.deleteContentRange.range;
       let old = this.#tab(tabId!).text.slice(startIndex - 1, endIndex - 1);
       let id = `suggest.s${this.suggestions.length + 1}`;
       this.suggestions.push({
         suggestionId: id, notes: [],
-        summaryText: insert?.insertText ? `Replace: “${old}” with “${insert.insertText.text}”` : `Delete: “${old}”`,
+        summaryText: insert && "insertText" in insert ? `Replace: “${old}” with “${insert.insertText.text}”` : `Delete: “${old}”`,
       });
       suggestionResponses.push({ createdSuggestionIds: [id] });
     }
     for (let request of body.requests) {
-      if (request.insertComment) {
+      if ("insertComment" in request) {
         let { content, range } = request.insertComment;
         let quote = this.#tab(range.tabId!).text.slice(range.startIndex - 1, range.endIndex - 1);
         let thread = this.addThread(content, { quote, me: true });
         replies.push({ insertComment: { commentThread: { commentId: thread.commentId } } });
-      } else if (request.addCommentReply?.suggestionId) {
-        let suggestion = this.suggestions.find(
-          candidate => candidate.suggestionId === request.addCommentReply!.suggestionId);
+      } else if ("addCommentReply" in request && request.addCommentReply.suggestionId) {
+        let { suggestionId } = request.addCommentReply;
+        let suggestion = this.suggestions.find(candidate => candidate.suggestionId === suggestionId);
         if (!suggestion) return refuse(404, "NOT_FOUND", "No such suggestion.");
         suggestion.notes.push(request.addCommentReply.post.content ?? "");
         replies.push({});
-      } else if (request.addCommentReply) {
+      } else if ("addCommentReply" in request) {
         let { commentId, post } = request.addCommentReply;
         let thread = this.threads.find(candidate => candidate.commentId === commentId);
         if (!thread) return refuse(404, "NOT_FOUND", `Comment with ID ${commentId} does not exist.`);
@@ -569,11 +644,38 @@ class DocsModel {
     });
   }
 
-  #insertText(tab: ModelTab, index: number, text: string): void {
-    if (tab.body) {
-      this.#replaceBodyText(tab, index, index, text);
-      return;
+  /** Apply one content request to a tab that holds text, or a `setTable` table, and no body. */
+  #applyToText(tab: ModelTab, request: GoogleDocsRequest): void {
+    if ("insertText" in request) {
+      this.#insertText(tab, request.insertText.location.index, request.insertText.text);
+    } else if ("deleteContentRange" in request) {
+      let { startIndex, endIndex } = request.deleteContentRange.range;
+      this.#deleteText(tab, startIndex, endIndex);
+    } else if ("updateParagraphStyle" in request) {
+      let { range, paragraphStyle, fields } = request.updateParagraphStyle;
+      if (typeof paragraphStyle.namedStyleType === "string") {
+        this.#setParagraphStyle(tab, range, paragraphStyle.namedStyleType);
+      }
+      if (fields.split(",").includes("indentStart")) this.#clearIndent(tab, range);
+    } else if ("deleteParagraphBullets" in request) {
+      this.#setBullets(tab, request.deleteParagraphBullets.range);
+    } else if ("createParagraphBullets" in request) {
+      this.#setBullets(
+        tab, request.createParagraphBullets.range, request.createParagraphBullets.bulletPreset);
+    } else if ("updateTextStyle" in request) {
+      let { range, textStyle, fields } = request.updateTextStyle;
+      let { link } = textStyle;
+      if (link || fields.includes("link")) {
+        this.#setLink(
+          tab, range.startIndex - 1, range.endIndex - 1,
+          link && "url" in link ? link.url : undefined);
+      }
+    } else {
+      throw new Error("Fixture cannot edit table structure");
     }
+  }
+
+  #insertText(tab: ModelTab, index: number, text: string): void {
     if (tab.table) {
       this.#replaceTableText(tab, index, index, text);
       return;
@@ -601,10 +703,6 @@ class DocsModel {
   }
 
   #deleteText(tab: ModelTab, startIndex: number, endIndex: number): void {
-    if (tab.body) {
-      this.#replaceBodyText(tab, startIndex, endIndex, "");
-      return;
-    }
     if (tab.table) {
       this.#replaceTableText(tab, startIndex, endIndex, "");
       return;
@@ -633,56 +731,6 @@ class DocsModel {
     }
     tab.links = this.#normalizeLinks(links);
     tab.text = tab.text.slice(0, start) + tab.text.slice(end);
-  }
-
-  #replaceBodyText(
-    tab: ModelTab, startIndex: number, endIndex: number, replacement: string,
-  ): void {
-    let content = tab.body!.content;
-    for (let structureIndex = 0; structureIndex < content.length; structureIndex++) {
-      let structure = content[structureIndex];
-      let elements = structure.paragraph?.elements;
-      if (!elements) continue;
-      let elementIndex = elements.findIndex(element => element.textRun &&
-        startIndex >= element.startIndex && endIndex <= element.endIndex);
-      if (elementIndex < 0) continue;
-
-      let element = elements[elementIndex];
-      let text = element.textRun!.content;
-      let start = startIndex - element.startIndex;
-      let end = endIndex - element.startIndex;
-      element.textRun!.content = text.slice(0, start) + replacement + text.slice(end);
-      let delta = replacement.length - (endIndex - startIndex);
-      element.endIndex += delta;
-      for (let index = elementIndex + 1; index < elements.length; index++) {
-        elements[index].startIndex += delta;
-        elements[index].endIndex += delta;
-      }
-      structure.endIndex += delta;
-      for (let index = structureIndex + 1; index < content.length; index++) {
-        this.#shiftBodyElement(content[index], delta);
-      }
-      return;
-    }
-    throw new Error("Fixture cannot edit structured content");
-  }
-
-  #shiftBodyElement(element: BodyElement, delta: number): void {
-    element.startIndex += delta;
-    element.endIndex += delta;
-    for (let part of element.paragraph?.elements ?? []) {
-      part.startIndex += delta;
-      part.endIndex += delta;
-    }
-    for (let row of element.table?.tableRows ?? []) {
-      row.startIndex += delta;
-      row.endIndex += delta;
-      for (let cell of row.tableCells ?? []) {
-        cell.startIndex += delta;
-        cell.endIndex += delta;
-        for (let child of cell.content ?? []) this.#shiftBodyElement(child, delta);
-      }
-    }
   }
 
   #setBullets(
@@ -744,15 +792,6 @@ class DocsModel {
     range: { startIndex: number; endIndex: number },
     namedStyleType: string,
   ): void {
-    if (tab.body) {
-      for (let element of tab.body.content) {
-        if (element.paragraph && range.startIndex < element.endIndex &&
-            range.endIndex > element.startIndex) {
-          element.paragraph.paragraphStyle.namedStyleType = namedStyleType;
-        }
-      }
-      return;
-    }
     let styles = tab.paragraphStyles ??=
       tab.text.split("\n").map(() => "NORMAL_TEXT");
     for (let index of paragraphsIn(tab.text, range)) styles[index] = namedStyleType;
@@ -825,7 +864,7 @@ class DocsModel {
     }
     let body = tab.body;
     if (!body && tab.table) body = this.#tableBody(tab.table);
-    let lists: GoogleDocsTab["lists"] = {};
+    let lists: GoogleDocsTab["lists"] = { ...tab.lists };
     let paragraphLists = tab.paragraphLists;
     let paragraphStyles = tab.paragraphStyles;
     // One paragraph per line, carrying whichever of the per-paragraph attributes this tab has.
@@ -887,6 +926,250 @@ function markdownField(label: string, value: string) {
   return { label, kind: "text", value, syntax: "markdown" };
 }
 
+function htmlField(label: string, value: string) {
+  return { label, kind: "text", value, syntax: "html" };
+}
+
+/** What a failed edit authorizes: the error says whether a tab, or what is in it, exists. */
+const GENERIC_READ = "Read the content of one tab of the document.";
+
+/** A model whose main tab has `body`, which the shared model of Google Docs edits. */
+function docsWithBody(body: GoogleDocsTab["body"], lists: GoogleDocsTab["lists"] = {}): DocsModel {
+  let docs = new DocsModel();
+  docs.setBody(MAIN_TAB, body, lists);
+  docs.install();
+  return docs;
+}
+
+type WriteMethod = Parameters<ReturnType<typeof hooks>["submitEdit"]>[1];
+
+/** Call one write method of a fresh session: the action it queued, and what it resolved to. */
+function edit(facet: string, method: WriteMethod, ...args: unknown[]) {
+  return Promise.resolve(hooks().submitEdit(facet, method, args));
+}
+
+/** Move the clock past the snapshot's time to live, so the next read asks Google again. */
+function passSnapshotTtl(): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + 60_000);
+}
+
+/** A table as `getContent()` writes it, from the inline HTML of each cell's one paragraph. */
+function tableOf(rows: string[][]): string {
+  let lines = rows.map(row =>
+    "  <tr>\n" + row.map(cell => `    <td><p>${cell}</p></td>\n`).join("") + "  </tr>\n");
+  return `<table>\n${lines.join("")}</table>`;
+}
+
+/** One row of a table as `getContent()` writes it, without its last line break. */
+function rowOf(...cells: string[]): string {
+  return "  <tr>\n" + cells.map(cell => `    <td><p>${cell}</p></td>\n`).join("") + "  </tr>";
+}
+
+/** `Before`, a table of two rows and two columns, and `After`. */
+function tableBody(): GoogleDocsTab["body"] {
+  return buildTab([
+    { runs: ["Before\n"] },
+    { table: [["Task\n", "Status\n"], ["Fix login\n", "Open\n"]] },
+    { runs: ["After\n"] },
+  ]).body;
+}
+
+/** How the tab of `tableBody()` reads. */
+const TABLE_ROWS = [["Task", "Status"], ["Fix login", "Open"]];
+const TABLE_CONTENT = `Before\n\n${tableOf(TABLE_ROWS)}\n\nAfter\n`;
+
+/** What a row, column or delete change is refused with while table `other` reads as its own. */
+const twin = (op: string, table: number, other: number) =>
+  `${op}: table ${table} reads the same as table ${other} of this tab (numbers in square ` +
+  "brackets and where numbered lists start aside), so the change could not be kept to the " +
+  "table it is meant for. Make the two differ first, for example by changing the text of a " +
+  `cell with replaceText(), then call ${op}() again.`;
+
+/** The reasons a queued change is dropped with, by what happened to its table. */
+const gone = (op: string) =>
+  `${op}: the table no longer reads as it did when this change was queued, or it is gone.`;
+const same = (op: string) =>
+  `${op}: another table of the tab now reads the same as the table this change was queued ` +
+  "for, so the change can no longer be kept to it.";
+const gate = (op: string) =>
+  `${op}: an earlier queued change to this tab's tables no longer applies, and this change ` +
+  "named its table among the tables as that one left them.";
+
+/** What adding to a tab's tables is refused with once they would hold `cells` cells. */
+const room = (op: string, cells: number) =>
+  `${op}: tables, rows and columns can be added only until the tables of a tab hold 5000 ` +
+  `cells in all, a cell counting once for each paragraph in it, and those of this tab would ` +
+  `hold ${cells}.`;
+
+const paragraph = (text: string) => ({ runs: [`${text}\n`] });
+const heading = (text: string) => ({ runs: [`${text}\n`], namedStyleType: "HEADING_2" });
+const table = (...rows: string[][]) => ({ table: rows.map(row => row.map(cell => `${cell}\n`)) });
+
+/** A cell that reads `Revenue[<number>]`: text and a footnote reference. */
+const footnoteCell = (id: string, number: string) => ({
+  paragraphs: [{ runs: ["Revenue", { footnote: { id, number } }, "\n"] }],
+});
+
+/** A list whose one level is numbered, keyed `L`, and an item of it. */
+const NUMBERED_LIST: GoogleDocsTab["lists"] = {
+  L: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } },
+};
+const numberedItem = (text: string) => ({ runs: [`${text}\n`], bullet: { listId: "L" } });
+
+/** A list whose one level has no marker, keyed `N`, and an item of it. */
+const UNMARKED_LIST: GoogleDocsTab["lists"] = {
+  N: { listProperties: { nestingLevels: [{ glyphType: "NONE" }] } },
+};
+const unmarkedItem = (text: string) => ({ runs: [`${text}\n`], bullet: { listId: "N" } });
+
+/** Marks the paragraph at `position` in a tab's body as the anchor of a positioned image. */
+function anchorImage(tab: GoogleDocsTab, position: number): GoogleDocsTab {
+  let anchor = tab.body.content[position].paragraph;
+  if (!anchor) throw new Error(`Element ${position} is not a paragraph`);
+  anchor.positionedObjectIds = ["image-1"];
+  return tab;
+}
+
+/** Two tables that read differently, between three paragraphs. */
+const TWO_CONTENT = `Before\n\n${tableOf([["Task", "Owner"]])}\n\nMid\n\n` +
+  `${tableOf([["Risk", "Owner"]])}\n\nAfter\n`;
+function twoTables(): DocsModel {
+  return docsWithBody(buildTab([
+    paragraph("Before"), table(["Task", "Owner"]), paragraph("Mid"), table(["Risk", "Owner"]),
+    paragraph("After"),
+  ]).body);
+}
+
+/** A row queued for the first table of `twoTables()`, and one for the second. */
+const queueFirst = (facet: string) =>
+  edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+const queueSecond = (facet: string) =>
+  edit(facet, "insertTableRows", { table: 1, cells: [["c", "d"]] });
+
+/** The runs of a paragraph whose text is bold. */
+const bold = (text: string) => [{ text, style: { bold: true } }, "\n"];
+
+/**
+ * A heading in bold, a table whose rows each hold a bulleted item in bold and a heading, and a
+ * paragraph: every cell a new row or column is added beside starts with a list item or a
+ * heading, and a table added after the first line splits a heading.
+ */
+function styledBody(): GoogleDocsTab["body"] {
+  return buildTab([
+    { runs: bold("Results"), namedStyleType: "HEADING_2" },
+    { table: ["one", "two"].map(name => [
+      { paragraphs: [{ runs: bold(`Item ${name}`), bullet: { listId: "L1" } }] },
+      { paragraphs: [heading(`Head ${name}`)] },
+    ]) },
+    { runs: ["After\n"] },
+  ], BULLET_LIST).body;
+}
+
+/** The two cell lines of one row of `styledBody()`'s table, as `getContent()` writes them. */
+const STYLED_ROW = (name: string) => [
+  '    <td><ul style="list-style-type: none">' +
+    `<li>● <strong>Item ${name}</strong></li></ul></td>\n`,
+  `    <td><h2>Head ${name}</h2></td>\n`,
+];
+/** A table from the cell lines of each of its rows. */
+const STYLED_TABLE = (rows: string[][]) =>
+  `<table>\n${rows.map(cells => `  <tr>\n${cells.join("")}  </tr>\n`).join("")}</table>`;
+/** The line of a cell that holds one plain paragraph. */
+const PLAIN = (text: string) => `    <td><p>${text}</p></td>\n`;
+
+/** Two tables that read the same, of two rows so that a row or a column can be deleted. */
+const PAIR_ROWS = [["Task", "Owner"], ["Fix login", "Ana"]];
+function pairBody(): GoogleDocsTab["body"] {
+  return buildTab([
+    paragraph("Before"), table(...PAIR_ROWS), paragraph("Mid"), table(...PAIR_ROWS),
+    paragraph("After"),
+  ]).body;
+}
+/** The replacement that sets the first table of `pairBody()` apart, quoted from the text above. */
+const FIRST_OF_PAIR = ["Before\n\n<table>\n  <tr>\n    <td><p>Task</p></td>",
+  "Before\n\n<table>\n  <tr>\n    <td><p>Task (A)</p></td>"] as const;
+
+/** A header-only table, rows queued for it, a new table that reads as it did, and rows for that. */
+async function queueBehindTwin(facet: string) {
+  let docs = docsWithBody(
+    buildTab([paragraph("Before"), table(["Task", "Owner"]), paragraph("After")]).body);
+  let first = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+  let added = await edit(
+    facet, "insertTable", { rows: 1, columns: 2, cells: [["Task", "Owner"]], after: "After" });
+  expect(added.returned).toBe(1);
+  let second = await edit(facet, "insertTableRows", { table: 1, cells: [["c", "d"]] });
+  return { docs, first, added, second };
+}
+
+/** Apply a queued edit and return the read before it, which the read after it must equal. */
+async function appliesAsRead(
+  docs: DocsModel, facet: string, { actionId }: { actionId: number },
+): Promise<string> {
+  let preview = await hooks().readContent(facet);
+  let batches = docs.contentBatches;
+  expect(await hooks().applyAction(facet, actionId)).toBeNull();
+  expect(docs.contentBatches).toBe(batches + 1);
+  passSnapshotTtl();
+  expect(await hooks().readContent(facet)).toBe(preview);
+  return preview;
+}
+
+/** Queue one edit and apply it: the read before it applied, which the read after it equals. */
+async function editApplies(
+  docs: DocsModel, facet: string, method: WriteMethod, ...args: unknown[]
+): Promise<string> {
+  return appliesAsRead(docs, facet, await edit(facet, method, ...args));
+}
+
+/** The table of `tableBody()` with its first row pinned as a header row. */
+function pinnedTable(): DocsModel {
+  return docsWithBody(buildTab([
+    paragraph("Before"),
+    { table: [["Task\n", "Status\n"], ["Fix login\n", "Open\n"]], headerRows: 1 },
+    paragraph("After"),
+  ]).body);
+}
+
+/** The header row counts the last batch pinned, one for each request that pinned any. */
+function headerPins(docs: DocsModel): number[] {
+  return docs.lastContentRequests.flatMap(request =>
+    "pinTableHeaderRows" in request ? [request.pinTableHeaderRows.pinnedHeaderRowsCount] : []);
+}
+
+/** A table between two typed captions that start `1. ` and `2. `, and a paragraph. */
+function captioned(): DocsModel {
+  return docsWithBody(buildTab([
+    paragraph("1. Revenue by region"), table(["Cell"]), paragraph("2. Revenue by product"),
+    paragraph("Notes"),
+  ]).body);
+}
+
+/** A tab whose one table holds 4,990 cells: 499 rows of 10. */
+function fullTab(...more: Parameters<typeof buildTab>[0]): GoogleDocsTab["body"] {
+  let rows = Array.from({ length: 499 }, (_, row) =>
+    Array.from({ length: 10 }, (__, column) => `${row}.${column}\n`));
+  return buildTab([paragraph("Before"), { table: rows }, paragraph("After"), ...more]).body;
+}
+
+/** A heading, a table and a paragraph: the heading is the tab's first paragraph. */
+const titledTable = () => docsWithBody(buildTab([
+  { runs: ["Title\n"], namedStyleType: "HEADING_1" }, table(["Cell"]), paragraph("After"),
+]).body);
+const missingParagraph = (side: string) =>
+  `replaceText: the paragraph ${side} this table is missing from the tab as it reads with ` +
+  "the earlier changes that are still waiting, so nothing can be added there yet. Retry once " +
+  "the earlier changes to this tab have been approved or rejected.";
+
+/** A pending record for the main tab, as storage holds one under the current rendering. */
+const storedAction = (id: number, action: Record<string, unknown>) => ({
+  kind: "put" as const,
+  key: `pending:action:${id}`,
+  value: {
+    tabId: MAIN_TAB, submittedAt: 0, markdownVersion: MARKDOWN_RENDERING_VERSION, ...action,
+  },
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -896,9 +1179,13 @@ afterEach(() => {
 describe("Google Doc auto-approval", () => {
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  it("reports document edits and Doc comments as its auto-approvable kinds", async () => {
+  const ADD_TABLES = { tag: "add-document-tables", label: "Adding tables, rows and columns" };
+  const DELETE_TABLES =
+    { tag: "delete-document-tables", label: "Deleting tables, rows and columns" };
+
+  it("reports text edits, adding tables and Doc comments as its auto-approvable kinds", async () => {
     expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
-      EDIT_DOCUMENT, { tag: "docComments", label: "Google Doc comments" },
+      EDIT_DOCUMENT, ADD_TABLES, { tag: "docComments", label: "Google Doc comments" },
     ]);
   });
 
@@ -913,6 +1200,42 @@ describe("Google Doc auto-approval", () => {
     await hooks().submitReplace("verdict-edit", "Draft", "Final");
     expect(await hooks().lastActionVerdict)
       .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
+  });
+
+  it("lets a cell's text be replaced as a document edit", async () => {
+    docsWithBody(tableBody());
+
+    await edit("verdict-cell", "replaceText", "<td><p>Open</p></td>", "<td><p>Done</p></td>");
+    expect(await hooks().lastActionVerdict)
+      .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
+  });
+
+  it("lets tables, rows and columns be added without asking", async () => {
+    docsWithBody(tableBody());
+
+    for (let [method, argument] of [
+      ["insertTable", { rows: 1, columns: 1 }],
+      ["insertTableRows", { table: 0 }],
+      ["insertTableColumns", { table: 0 }],
+    ] as const) {
+      await edit("verdict-add", method, argument);
+      expect(await hooks().lastActionVerdict)
+        .toEqual({ actionKind: ADD_TABLES, autoApprovable: true });
+    }
+  });
+
+  it("always asks before deleting rows, columns or a table", async () => {
+    docsWithBody(tableBody());
+
+    for (let [method, argument] of [
+      ["deleteTableRows", { table: 0, at: 1 }],
+      ["deleteTableColumns", { table: 0, at: 1 }],
+      ["deleteTable", 0],
+    ] as const) {
+      await edit("verdict-delete", method, argument);
+      expect(await hooks().lastActionVerdict)
+        .toEqual({ actionKind: DELETE_TABLES, autoApprovable: false });
+    }
   });
 });
 
@@ -1013,9 +1336,1456 @@ describe("Google Doc tables", () => {
 
     await expect(Promise.resolve(
       hooks().submitReplace("table-edit", content.trimEnd(), "Updated"),
-    )).rejects.toThrow("replaceText: structured content cannot be edited");
+    )).rejects.toThrow(
+      "replaceText: one replacement cannot change a table together with what is around it");
     expect(await hooks().lastActionDescription).toBe("");
     expect(docs.contentBatches).toBe(0);
+  });
+
+  // Every table change is simulated and applied through the shared model, so each case reads the
+  // tab before applying and again from the document Google then holds.
+  it.each<[string, WriteMethod, unknown[], string]>([
+    ["a cell's text replaced", "replaceText",
+      ["<td><p>Open</p></td>", "<td><p><strong>Done</strong> today</p></td>"],
+      TABLE_CONTENT.replace("<p>Open</p>", "<p><strong>Done</strong> today</p>")],
+    ["a table inserted after a paragraph", "insertTable",
+      [{ rows: 2, columns: 2, cells: [["a", "b"], ["c"]], after: "Before" }],
+      `Before\n\n${tableOf([["a", "b"], ["c", ""]])}\n\n\n\n${tableOf(TABLE_ROWS)}\n\nAfter\n`],
+    ["a table inserted after a table", "insertTable",
+      [{ rows: 1, columns: 1, cells: [["x"]], after: "<td><p>Open</p></td>" }],
+      `Before\n\n${tableOf(TABLE_ROWS)}\n\n\n\n${tableOf([["x"]])}\n\nAfter\n`],
+    ["a table inserted at the end of the tab", "insertTable",
+      [{ rows: 1, columns: 2 }],
+      `${TABLE_CONTENT}\n${tableOf([["", ""]])}\n\n\n`],
+    ["rows inserted with text", "insertTableRows",
+      [{ table: 0, at: 1, cells: [["Write docs", "Open"], ["Ship"]] }],
+      `Before\n\n${tableOf([
+        ["Task", "Status"], ["Write docs", "Open"], ["Ship", ""], ["Fix login", "Open"],
+      ])}\n\nAfter\n`],
+    ["columns inserted with text", "insertTableColumns",
+      [{ table: 0, cells: [["Owner"], ["Ana"]] }],
+      `Before\n\n${tableOf([
+        ["Task", "Status", "Owner"], ["Fix login", "Open", "Ana"],
+      ])}\n\nAfter\n`],
+    ["rows deleted", "deleteTableRows", [{ table: 0, at: 1 }],
+      `Before\n\n${tableOf([["Task", "Status"]])}\n\nAfter\n`],
+    ["columns deleted", "deleteTableColumns", [{ table: 0, at: 0 }],
+      `Before\n\n${tableOf([["Status"], ["Open"]])}\n\nAfter\n`],
+    ["a table deleted", "deleteTable", [0], "Before\n\nAfter\n"],
+  ])("applies %s as the read before it showed", async (name, method, args, expected) => {
+    let docs = docsWithBody(tableBody());
+    let facet = `table-change-${name}`;
+    let { actionId } = await edit(facet, method, ...args);
+
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.markers.size).toBe(0);
+  });
+
+  // With nothing to copy that the Markdown shows, a fill that reset nothing would pass above. Here
+  // Google copies a heading or a list item's indent into every new cell, and a heading's style
+  // onto the paragraph a new table comes with, so only a fill that resets them reads plain.
+  it.each<[string, WriteMethod, unknown[], string]>([
+    ["a row before a row", "insertTableRows", [{ table: 0, at: 1, cells: [["Filled"]] }],
+      `## **Results**\n\n${STYLED_TABLE([
+        STYLED_ROW("one"), [PLAIN("Filled"), PLAIN("")], STYLED_ROW("two"),
+      ])}\n\nAfter\n`],
+    ["a row at the end", "insertTableRows", [{ table: 0, cells: [["", "Filled"]] }],
+      `## **Results**\n\n${STYLED_TABLE([
+        STYLED_ROW("one"), STYLED_ROW("two"), [PLAIN(""), PLAIN("Filled")],
+      ])}\n\nAfter\n`],
+    ["a column before a column", "insertTableColumns", [{ table: 0, at: 1, cells: [["Filled"]] }],
+      `## **Results**\n\n${STYLED_TABLE([
+        [STYLED_ROW("one")[0], PLAIN("Filled"), STYLED_ROW("one")[1]],
+        [STYLED_ROW("two")[0], PLAIN(""), STYLED_ROW("two")[1]],
+      ])}\n\nAfter\n`],
+    ["a column at the end", "insertTableColumns", [{ table: 0, cells: [[], ["Filled"]] }],
+      `## **Results**\n\n${STYLED_TABLE([
+        [...STYLED_ROW("one"), PLAIN("")], [...STYLED_ROW("two"), PLAIN("Filled")],
+      ])}\n\nAfter\n`],
+    ["a table after a heading", "insertTable",
+      [{ rows: 1, columns: 2, cells: [["Filled"]], after: "## **Results**" }],
+      `## **Results**\n\n${tableOf([["Filled", ""]])}\n\n\n\n` +
+      `${STYLED_TABLE([STYLED_ROW("one"), STYLED_ROW("two")])}\n\nAfter\n`],
+    ["a table at the end of the tab", "insertTable",
+      [{ rows: 1, columns: 2, cells: [["", "Filled"]] }],
+      `## **Results**\n\n${STYLED_TABLE([STYLED_ROW("one"), STYLED_ROW("two")])}\n\nAfter\n\n` +
+      `${tableOf([["", "Filled"]])}\n\n\n`],
+  ])("resets what Google copies into %s", async (name, method, args, expected) => {
+    let docs = docsWithBody(styledBody(), BULLET_LIST);
+    docs.copyStyles = true;
+    let facet = `table-styled-${name}`;
+    let { actionId } = await edit(facet, method, ...args);
+
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(indentedParagraphs(docs.bodyTab())).toEqual([]);
+  });
+
+  it("keeps the look of the cell beside a new row", async () => {
+    let look: ModelTextStyle = { bold: true, fontSize: { magnitude: 18, unit: "PT" } };
+    let tab = buildTab([
+      { runs: ["Before\n"] },
+      { table: [
+        ["Region\n", "Total\n"],
+        [{ paragraphs: [{ runs: [{ text: "North", style: look }, "\n"] }] }, "12\n"],
+      ] },
+      { runs: ["After\n"] },
+    ]);
+    let docs = docsWithBody(tab.body);
+    docs.copyStyles = true;
+    let [north] = docs.cellParagraphs(0, 1, 0);
+    let centred: ModelParagraphStyle = { namedStyleType: "NORMAL_TEXT", alignment: "CENTER" };
+    for (let element of docs.tables()[0].rows[1].tableCells?.[0].content ?? []) {
+      if (element.paragraph) element.paragraph.paragraphStyle = centred;
+    }
+    expect(alignmentAt(docs.bodyTab(), north)).toBe("CENTER");
+    let facet = "table-look";
+
+    let { actionId } = await edit(
+      facet, "insertTableRows", { table: 0, cells: [["South", "7"]] });
+    let preview = await hooks().readContent(facet);
+    expect(preview).toContain(
+      `${rowOf("<strong>North</strong>", "12")}\n${rowOf("South", "7")}\n</table>`);
+
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+    // The row, then the text of each new cell and its four fields cleared, last cell first: a
+    // cell beside normal text keeps its paragraph as Google made it.
+    expect(docs.lastContentRequests.map(request => Object.keys(request))).toEqual([
+      ["insertTableRow"], ["insertText"], ["updateTextStyle"], ["insertText"], ["updateTextStyle"],
+    ]);
+    expect(docs.lastContentRequests.flatMap(request =>
+      "insertText" in request ? [request.insertText.text] : [])).toEqual(["7", "South"]);
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+
+    let [south] = docs.cellParagraphs(0, 2, 0);
+    expect(docs.cellText(0, 2, 0)).toBe("South");
+    expect(alignmentAt(docs.bodyTab(), south)).toBe("CENTER");
+    expect(fontSizeAt(docs.bodyTab(), south)).toBe(18);
+    let [text] = docs.cellRuns(0, 2, 0);
+    expect(text).toMatchObject({ content: "South" });
+    expect(text.textStyle.bold).toBeUndefined();
+  });
+
+  it("shows the approval card of a row insert", async () => {
+    docsWithBody(tableBody());
+    let cells = [["Ship docs", "Open"]];
+
+    await edit("table-row-card", "insertTableRows", { table: 0, cells });
+
+    expect(await hooks().lastActionTitle).toBe("Insert table rows in Google Doc");
+    expect(await hooks().lastActionDescription).toBe(
+      'Insert 1 row in a table of tab "Main" (tab-1), after its last row. ' +
+      "It was table 1 of the tab when this change was requested.");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Text before the table", "Before"),
+      htmlField("First row of the table", rowOf("Task", "Status")),
+      htmlField("Row above the new rows", rowOf("Fix login", "Open")),
+      { label: "New rows", kind: "json", value: JSON.stringify(cells, null, 2) },
+    ]);
+  });
+
+  it("shows a cell replacement's card as table HTML", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-cell-card";
+
+    let { actionId } = await edit(
+      facet, "replaceText", "<td><p>Open</p></td>", "<td><p>**Done**</p></td>");
+
+    expect(await hooks().lastActionTitle).toBe("Edit Google Doc");
+    expect(await hooks().lastActionDescription).toBe(
+      'Replace text in a table of tab "Main" (tab-1). The values below are the table\'s HTML: ' +
+      "Markdown syntax in them is written to the cells as typed.");
+    expect(await hooks().lastActionFields).toEqual([
+      htmlField("Old", "<td><p>Open</p></td>"),
+      htmlField("New", "<td><p>**Done**</p></td>"),
+    ]);
+    expect(await hooks().readContent(facet)).toContain("<td><p>**Done**</p></td>");
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.cellText(0, 1, 1)).toBe("**Done**");
+
+    // The same strings outside a table are Markdown, and the card says so.
+    await edit(facet, "replaceText", "After", "**Later**");
+    expect(await hooks().lastActionDescription).toBe('Replace text in tab "Main" (tab-1).');
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "After"),
+      markdownField("New", "**Later**"),
+    ]);
+  });
+
+  it("returns where a new table is", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-position";
+
+    let first = await edit(
+      facet, "insertTable", { rows: 1, columns: 1, cells: [["First"]], after: "Before" });
+    expect(first.returned).toBe(0);
+    let last = await edit(facet, "insertTable", { rows: 1, columns: 1, cells: [["Last"]] });
+    expect(last.returned).toBe(2);
+
+    await edit(facet, "insertTableRows", { table: last.returned, cells: [["Row"]] });
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${tableOf([["First"]])}\n\n\n\n${tableOf(TABLE_ROWS)}\n\nAfter\n\n` +
+      `${tableOf([["Last"], ["Row"]])}\n\n\n`);
+  });
+
+  it("replays changes queued one after another on one table", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-chain";
+
+    let added = await edit(
+      facet, "insertTable", { rows: 1, columns: 2, cells: [["Name", "Total"]] });
+    let rows = await edit(
+      facet, "insertTableRows", { table: added.returned, cells: [["Ana", "3"]] });
+    let cell = await edit(
+      facet, "replaceText", "<td><p>Ana</p></td>", "<td><p><em>Ana</em></p></td>");
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe(
+      `${TABLE_CONTENT}\n${tableOf([["Name", "Total"], ["<em>Ana</em>", "3"]])}\n\n\n`);
+
+    for (let { actionId } of [added, rows, cell]) {
+      expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    }
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(3);
+  });
+
+  it("drops changes built on a rejected one", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-reject-chain";
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", "Open"]] });
+    let cell = await edit(
+      facet, "replaceText", "<td><p>Ship docs</p></td>", "<td><p>Ship the docs</p></td>");
+
+    await hooks().rejectAction(facet, rows.actionId);
+
+    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
+    expect(await hooks().applyAction(facet, cell.actionId))
+      .toContain("replaceText: oldMarkdown was not found in the current simulated tab");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("follows a table past a rejected insertion above it", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-reject-above";
+    let above = await edit(
+      facet, "insertTable", { rows: 1, columns: 1, cells: [["New"]], after: "Before" });
+    let rows = await edit(facet, "insertTableRows", { table: 1, cells: [["Ship docs", "Open"]] });
+
+    // The number is the one thing on the card the rejection makes stale, so it is worded as past;
+    // the text before the table and its first row are what name the table.
+    expect(await hooks().lastActionDescription).toBe(
+      'Insert 1 row in a table of tab "Main" (tab-1), after its last row. ' +
+      "It was table 2 of the tab when this change was requested.");
+    expect((await hooks().lastActionFields).slice(0, 2)).toEqual([
+      markdownField("Text before the table", "Before"),
+      htmlField("First row of the table", rowOf("Task", "Status")),
+    ]);
+
+    await hooks().rejectAction(facet, above.actionId);
+
+    let preview = `Before\n\n${tableOf([...TABLE_ROWS, ["Ship docs", "Open"]])}\n\nAfter\n`;
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(await hooks().applyAction(facet, rows.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(1);
+  });
+
+  it("refuses a row, column or delete change while another table reads the same", async () => {
+    let docs = docsWithBody(pairBody());
+    let facet = "table-twin-refused";
+
+    for (let [method, argument, target, other] of [
+      ["insertTableRows", { table: 0, cells: [["a", "b"]] }, 0, 1],
+      ["deleteTable", 1, 1, 0],
+      ["insertTableColumns", { table: 0 }, 0, 1],
+      ["deleteTableRows", { table: 0, at: 1 }, 0, 1],
+      ["deleteTableColumns", { table: 0, at: 1 }, 0, 1],
+    ] as const) {
+      await expect(edit(facet, method, argument)).rejects.toThrow(twin(method, target, other));
+      expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+      expect(await hooks().lastActionDescription).toBe("");
+    }
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("takes the change once a cell sets the two tables apart", async () => {
+    let docs = docsWithBody(pairBody());
+    let facet = "table-twin-apart";
+
+    let cell = await edit(facet, "replaceText", ...FIRST_OF_PAIR);
+    expect(await hooks().lastActionVerdict).toMatchObject({ actionKind: { tag: "editDocument" } });
+    let first = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+    let second = await edit(facet, "insertTableRows", { table: 1, cells: [["c", "d"]] });
+
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe(
+      `Before\n\n${tableOf([["Task (A)", "Owner"], ["Fix login", "Ana"], ["a", "b"]])}\n\n` +
+      `Mid\n\n${tableOf([...PAIR_ROWS, ["c", "d"]])}\n\nAfter\n`);
+    for (let { actionId } of [cell, first, second]) {
+      expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    }
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(3);
+  });
+
+  it("adds a second table that reads like the first", async () => {
+    docsWithBody(buildTab([paragraph("Before"), paragraph("After")]).body);
+    let facet = "table-twin-added";
+    let header = { rows: 1, columns: 2, cells: [["Task", "Owner"]] };
+
+    expect((await edit(facet, "insertTable", { ...header, after: "Before" })).returned).toBe(0);
+    expect((await edit(facet, "insertTable", { ...header, after: "After" })).returned).toBe(1);
+    let headerTable = tableOf([["Task", "Owner"]]);
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${headerTable}\n\n\n\nAfter\n\n${headerTable}\n\n\n`);
+
+    let rows = { table: 0, cells: [["a", "b"]] };
+    await expect(edit(facet, "insertTableRows", rows))
+      .rejects.toThrow(twin("insertTableRows", 0, 1));
+    await edit(facet, "replaceText", ...FIRST_OF_PAIR);
+    await edit(facet, "insertTableRows", rows);
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${tableOf([["Task (A)", "Owner"], ["a", "b"]])}\n\n\n\nAfter\n\n` +
+      `${headerTable}\n\n\n`);
+  });
+
+  // Compared as they read, the two tables differ and the row is queued for the first. A text edit
+  // that takes `Checklist` out of the list, approved before it, then leaves the second table as
+  // the one that starts at 2: the row would go there with nothing rejected and nobody else editing.
+  it("refuses a row for one of two tables that differ only in a list number", async () => {
+    let item = numberedItem;
+    let step = { table: [[{ paragraphs: [item("Step")] }, "Notes\n"]] };
+    let docs = docsWithBody(buildTab([
+      item("Checklist"), heading("Team A"), step, heading("Team B"), step, paragraph("End"),
+    ], NUMBERED_LIST).body, NUMBERED_LIST);
+    let facet = "table-twin-list-number";
+
+    let content = await hooks().readContent(facet);
+    let firstCell = "<table>\n  <tr>\n    <td><ol";
+    expect(content).toContain(`## Team A\n\n${firstCell} start="2"><li>Step</li></ol></td>`);
+    expect(content).toContain(`## Team B\n\n${firstCell} start="3"><li>Step</li></ol></td>`);
+
+    await expect(edit(facet, "insertTableRows", { table: 0, cells: [["x", "y"]] }))
+      .rejects.toThrow(twin("insertTableRows", 0, 1));
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("refuses a row for one of two tables that differ only in a footnote number", async () => {
+    docsWithBody(buildTab([
+      paragraph("Intro"), heading("Q1"), { table: [[footnoteCell("f1", "1")]] },
+      heading("Q2"), { table: [[footnoteCell("f2", "2")]] }, paragraph("End"),
+    ]).body);
+    let facet = "table-twin-footnote";
+
+    let content = await hooks().readContent(facet);
+    expect(content).toContain("<td><p>Revenue[1]</p></td>");
+    expect(content).toContain("<td><p>Revenue[2]</p></td>");
+
+    await expect(edit(facet, "insertTableRows", { table: 1, cells: [["x"]] }))
+      .rejects.toThrow(twin("insertTableRows", 1, 0));
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("invalidates a change when a collaborator makes another table read the same", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-collaborator-twin";
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+
+    docs.externalBody(MAIN_TAB, buildTab([
+      paragraph("Before"), table(...TABLE_ROWS), paragraph("After"), table(...TABLE_ROWS),
+      paragraph(""),
+    ]).body);
+    passSnapshotTtl();
+
+    expect(await hooks().readContent(facet)).toBe(`${TABLE_CONTENT}\n${tableOf(TABLE_ROWS)}\n\n\n`);
+    expect(await hooks().applyAction(facet, rows.actionId)).toContain(same("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("invalidates a change when a rejection leaves another table reading the same", async () => {
+    let facet = "table-rejection-twin";
+    let { docs, first, second } = await queueBehindTwin(facet);
+
+    await hooks().rejectAction(facet, first.actionId);
+
+    let headerTable = tableOf([["Task", "Owner"]]);
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${headerTable}\n\nAfter\n\n${headerTable}\n\n\n`);
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(same("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // Left to one replay, the two rejections cancel out: one table reads as the rows recorded, the
+  // one that was there all along, and the rows meant for the new table go to it.
+  it("settles each rejection before the next", async () => {
+    let facet = "table-rejections-in-turn";
+    let { docs, first, added, second } = await queueBehindTwin(facet);
+
+    await hooks().rejectAction(facet, first.actionId);
+    await hooks().rejectAction(facet, added.actionId);
+
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(same("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The second rejection is replayed over the snapshot the first one kept.
+  it("follows a table past two rejected insertions", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-two-rejections";
+    let one = await edit(
+      facet, "insertTable", { rows: 1, columns: 1, cells: [["One"]], after: "Before" });
+    let two = await edit(
+      facet, "insertTable", { rows: 1, columns: 1, cells: [["Two"]], after: "Before" });
+    let rows = await edit(facet, "insertTableRows", { table: 2, cells: [["a", "b"]] });
+
+    await hooks().rejectAction(facet, one.actionId);
+    await hooks().rejectAction(facet, two.actionId);
+
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${tableOf([...TABLE_ROWS, ["a", "b"]])}\n\nAfter\n`);
+    expect(await hooks().applyAction(facet, rows.actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+  });
+
+  it("drops the table changes behind one that a collaborator's edit stops", async () => {
+    let docs = twoTables();
+    let facet = "table-gate-read";
+    let first = await queueFirst(facet);
+    let second = await queueSecond(facet);
+
+    docs.externalCellEdit(0, 0, 0, "Chore");
+    passSnapshotTtl();
+
+    expect(await hooks().readContent(facet)).toBe(TWO_CONTENT.replace("Task", "Chore"));
+    expect(await hooks().applyAction(facet, first.actionId)).toContain(gone("insertTableRows"));
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    await hooks().rejectAction(facet, first.actionId);
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("drops the table changes behind one that fails when it is approved", async () => {
+    let docs = twoTables();
+    let facet = "table-gate-apply";
+    let first = await queueFirst(facet);
+    let second = await queueSecond(facet);
+
+    docs.externalCellEdit(0, 0, 0, "Chore");
+
+    // Its requests are built against the document as it reads when the change is approved.
+    expect(await hooks().applyAction(facet, first.actionId)).toBe(gone("insertTableRows"));
+    await hooks().rejectAction(facet, first.actionId);
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // Without the gate the fourth edit is the next pending one, finds exactly one table reading as
+  // it recorded, the one under `## X`, and adds the row meant for the other.
+  it("keeps a row off the other of two tables when the edit that set them apart is rejected", async () => {
+    let docs = docsWithBody(buildTab([
+      heading("X"), table(["Task", "Owner"]), heading("Y"), table(["Task", "Owner"]),
+      paragraph("End"),
+    ]).body);
+    let facet = "table-gate-example";
+    let task = "\n\n<table>\n  <tr>\n    <td><p>Task</p></td>";
+    let done = task.replace("Task", "Task (done)");
+
+    let cellOfY = await edit(facet, "replaceText", `## Y${task}`, `## Y${done}`);
+    let rowsOfX = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+    let cellOfX = await edit(facet, "replaceText", `## X${task}`, `## X${done}`);
+    let rowsOfY = await edit(facet, "insertTableRows", { table: 1, cells: [["c", "d"]] });
+    expect(await hooks().readContent(facet)).toBe(
+      `## X\n\n${tableOf([["Task (done)", "Owner"], ["a", "b"]])}\n\n` +
+      `## Y\n\n${tableOf([["Task (done)", "Owner"], ["c", "d"]])}\n\nEnd\n`);
+
+    await hooks().rejectAction(facet, cellOfY.actionId);
+
+    expect(await hooks().applyAction(facet, rowsOfX.actionId)).toContain(same("insertTableRows"));
+    expect(await hooks().applyAction(facet, cellOfX.actionId)).toBeNull();
+    expect(await hooks().applyAction(facet, rowsOfY.actionId)).toContain(gate("insertTableRows"));
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.cellText(0, 0, 0)).toBe("Task (done)");
+    expect(docs.tables()[0].rows).toHaveLength(1);
+  });
+
+  // The held snapshot is not always one the queue was replayed over: listing the tabs, or naming
+  // a tab the document lacks, stores a newer read and replays nothing. With one replay after the
+  // removal, over that read, exactly one table reads as `rows` recorded, the first, and approving
+  // `rows` would write the row there.
+  it.each<[string, (facet: string) => Promise<unknown>]>([
+    ["listing the tabs", facet => Promise.resolve(hooks().listTabs(facet))],
+    ["naming a tab the document lacks",
+      facet => Promise.resolve(hooks().readContent(facet, "no-such-tab")).catch(() => {})],
+  ])("settles what a read by %s brought before it settles a rejection", async (name, refresh) => {
+    let docs = docsWithBody(pairBody());
+    let facet = `table-reject-held-${name}`;
+    let cell = await edit(facet, "replaceText", ...FIRST_OF_PAIR);
+    let rows = await edit(facet, "insertTableRows", { table: 1, cells: [["c", "d"]] });
+    let rowsKey = `pending:action:${rows.actionId}`;
+    expect(await hooks().readContent(facet)).toContain(
+      `Mid\n\n${tableOf([...PAIR_ROWS, ["c", "d"]])}`);
+    let stored = await hooks().storedValueJsonLength(facet, rowsKey);
+
+    docs.externalCellEdit(1, 0, 0, "Chore");
+    passSnapshotTtl();
+    await refresh(facet);
+    // The edited document is the held snapshot, and nothing was replayed over it.
+    expect(docs.documentFetches).toBe(2);
+    expect(await hooks().storedValueJsonLength(facet, rowsKey)).toBe(stored);
+
+    await hooks().rejectAction(facet, cell.actionId);
+
+    expect(await hooks().applyAction(facet, rows.actionId)).toContain(gone("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+    expect(docs.tables()[0].rows).toHaveLength(2);
+  });
+
+  const storedRows =
+    { type: "insertTableRows", at: 2, cells: [["a", "b"]], expected: tableOf(TABLE_ROWS) };
+
+  it("drops later table changes when a rejection has no read to replay over", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-reject-unread";
+    await hooks().applyStorage(facet, [
+      storedAction(1, { type: "replaceText", oldMarkdown: "Before", newMarkdown: "Earlier" }),
+      storedAction(2, storedRows),
+      storedAction(3, { type: "insertTable", rows: 1, columns: 1, cells: [[""]] }),
+      storedAction(4, { type: "replaceText", oldMarkdown: "After", newMarkdown: "Later" }),
+    ]);
+    let lengths = async () => [
+      await hooks().storedValueJsonLength(facet, "pending:action:3"),
+      await hooks().storedValueJsonLength(facet, "pending:action:4"),
+    ];
+    let before = await lengths();
+
+    await hooks().rejectAction(facet, 1);
+
+    expect(await hooks().applyAction(facet, 2)).toContain(gate("insertTableRows"));
+    // Neither a new table nor a text edit names a table by how it read: neither carries a reason.
+    expect(await lengths()).toEqual(before);
+  });
+
+  it("replays nothing when no later change names a table", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-reject-text-only";
+    let first = await edit(facet, "replaceText", "After", "Later");
+    let second = await edit(facet, "replaceText", "Later", "Latest");
+    await edit(facet, "insertTable", { rows: 1, columns: 1 });
+    let key = `pending:action:${second.actionId}`;
+    let length = await hooks().storedValueJsonLength(facet, key);
+
+    await hooks().rejectAction(facet, first.actionId);
+
+    // No reason was stored: the rejection replayed nothing. The next read's replay does.
+    expect(await hooks().storedValueJsonLength(facet, key)).toBe(length);
+    await hooks().readContent(facet);
+    expect(await hooks().storedValueJsonLength(facet, key)).toBeGreaterThan(length ?? 0);
+  });
+
+  it("checks the revision after a rejection", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let facet = "reject-revision-check";
+    let actionId = await hooks().submitAppend(facet, "added");
+    expect(await hooks().readContent(facet)).toBe("base\n\nadded\n");
+    expect(docs.documentFetches).toBe(1);
+    let snapshot = await hooks().storedTimes(facet, "docSnapshot");
+
+    await hooks().rejectAction(facet, actionId);
+
+    // The rejection wrote the mark, not the snapshot.
+    expect(snapshot).toEqual({ fetchedAt: expect.any(Number) });
+    expect(await hooks().storedTimes(facet, "docSnapshot")).toEqual(snapshot);
+    expect(await hooks().storedTimes(facet, "docSnapshotCheck"))
+      .toEqual({ fetchedAt: snapshot?.fetchedAt, checkedAt: 0 });
+    expect(await hooks().readContent(facet)).toBe("base\n");
+    expect(docs.revisionProbes).toBe(1);
+    expect(docs.documentFetches).toBe(1);
+
+    // With a collaborator's edit since, the same read fetches the document again.
+    let edited = "reject-revision-moved";
+    let editedId = await hooks().submitAppend(edited, "added");
+    await hooks().rejectAction(edited, editedId);
+    docs.externalEdit(MAIN_TAB, "collaborator edit");
+    expect(await hooks().readContent(edited)).toBe("collaborator edit\n");
+    expect(docs.revisionProbes).toBe(2);
+    expect(docs.documentFetches).toBe(3);
+  });
+
+  // Stored again after the check, the snapshot would carry a new `fetchedAt`; a value read back
+  // from storage is written larger than it first was, so that rewrite doubles a stored table map.
+  it("keeps the stored snapshot as it was fetched when the revision is unchanged", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "snapshot-stored-once";
+    await hooks().readContent(facet);
+    expect(docs.documentFetches).toBe(1);
+    let snapshot = await hooks().storedTimes(facet, "docSnapshot");
+    let length = await hooks().storedValueJsonLength(facet, "docSnapshot");
+    expect(snapshot).toEqual({ fetchedAt: expect.any(Number) });
+    expect(await hooks().storedTimes(facet, "docSnapshotCheck")).toBeUndefined();
+
+    passSnapshotTtl();
+    await hooks().readContent(facet);
+
+    expect(docs.revisionProbes).toBe(1);
+    expect(docs.documentFetches).toBe(1);
+    expect(await hooks().storedTimes(facet, "docSnapshot")).toEqual(snapshot);
+    expect(await hooks().storedValueJsonLength(facet, "docSnapshot")).toBe(length);
+    let mark = await hooks().storedTimes(facet, "docSnapshotCheck");
+    expect(mark).toEqual({ fetchedAt: snapshot?.fetchedAt, checkedAt: expect.any(Number) });
+    expect(mark?.checkedAt).toBeGreaterThan(snapshot?.fetchedAt ?? Infinity);
+
+    // The mark is what made the snapshot current: a read at once asks Google nothing.
+    await hooks().readContent(facet);
+    expect(docs.revisionProbes).toBe(1);
+  });
+
+  it("ignores a mark left by another snapshot", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "snapshot-foreign-mark";
+    await hooks().readContent(facet);
+    await hooks().applyStorage(facet, [{
+      kind: "put", key: "docSnapshotCheck",
+      value: { fetchedAt: 1, checkedAt: Date.now() + 3_600_000 },
+    }]);
+
+    passSnapshotTtl();
+    await hooks().readContent(facet);
+
+    // The mark names no stored snapshot, so the snapshot's own `fetchedAt` decides.
+    expect(docs.revisionProbes).toBe(1);
+  });
+
+  // Were the record removed before a later step threw, the overseer would still hold an action
+  // that this gatekeeper answers `Unknown pending Google Doc action` for, at every retry.
+  it("leaves the record in place when a rejection cannot be settled", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-reject-unsettled";
+    await hooks().applyStorage(facet, [
+      storedAction(1, { type: "deleteTableRows", at: 1, count: 1, expected: tableOf(TABLE_ROWS) }),
+      storedAction(2, storedRows),
+      // A snapshot that passes for one and cannot be replayed over: its tab has no source map.
+      {
+        kind: "put", key: "docSnapshot",
+        value: {
+          formatVersion: MARKDOWN_RENDERING_VERSION, title: "Test document", tabs: [{}],
+          fetchedAt: Date.now(),
+        },
+      },
+    ]);
+    let lengths = async () => [
+      await hooks().storedValueJsonLength(facet, "pending:action:1"),
+      await hooks().storedValueJsonLength(facet, "pending:action:2"),
+    ];
+    let before = await lengths();
+
+    await expect(Promise.resolve(hooks().rejectAction(facet, 1))).rejects.toThrow();
+    expect(await lengths()).toEqual(before);
+
+    // With no snapshot at all, the same rejection settles.
+    await hooks().applyStorage(facet, [{ kind: "put", key: "docSnapshot", value: 0 }]);
+    await hooks().rejectAction(facet, 1);
+    expect(await hooks().storedValueJsonLength(facet, "pending:action:1")).toBeUndefined();
+    expect(await hooks().applyAction(facet, 2)).toContain(gate("insertTableRows"));
+  });
+
+  it("invalidates a change whose table a collaborator edited", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-collaborator-edit";
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+
+    docs.externalCellEdit(0, 1, 1, "Closed");
+    passSnapshotTtl();
+
+    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT.replace("Open", "Closed"));
+    expect(await hooks().applyAction(facet, rows.actionId)).toContain(gone("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The text edit takes the item out of the list, so the cell's item becomes the list's first.
+  // What the read showed for the table until then was the old number, and the change recorded
+  // against it is dropped, not applied to a table that reads differently from its card.
+  it("invalidates a table change when an earlier text edit moves a list number its table shows", async () => {
+    let item = numberedItem;
+    let docs = docsWithBody(buildTab([
+      item("one"), { table: [[{ paragraphs: [item("two")] }, "Notes\n"]] }, paragraph("After"),
+    ], NUMBERED_LIST).body, NUMBERED_LIST);
+    let facet = "table-list-number-moved";
+    // The table's one row, as it reads while its cell's item is the list's second.
+    let second = "<table>\n  <tr>\n" +
+      '    <td><ol start="2"><li>two</li></ol></td>\n    <td><p>Notes</p></td>\n  </tr>\n';
+    expect(await hooks().readContent(facet)).toBe(`1. one\n\n${second}</table>\n\nAfter\n`);
+
+    let text = await edit(facet, "replaceText", "1. one", "one");
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["x", "y"]] });
+    expect(await hooks().readContent(facet)).toBe(
+      `one\n\n${second}${rowOf("x", "y")}\n</table>\n\nAfter\n`);
+
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(
+      `one\n\n${second.replace(' start="2"', "")}</table>\n\nAfter\n`);
+    expect(await hooks().applyAction(facet, rows.actionId)).toContain(gone("insertTableRows"));
+    expect(docs.contentBatches).toBe(1);
+  });
+
+  it("replaces text beside a character Google would strip", async () => {
+    // A private-use bullet, as a Word import leaves one: Google strips it from inserted text.
+    let bullet = "\uF0B7";
+    let docs = docsWithBody(
+      buildTab([paragraph("Before"), table([`${bullet} Item one`]), paragraph("After")]).body);
+    let facet = "table-kept-stripped-character";
+
+    let { actionId } = await edit(facet, "replaceText",
+      `<td><p>${bullet} Item one</p></td>`, `<td><p>${bullet} Item two</p></td>`);
+
+    expect(await hooks().readContent(facet)).toContain(`<td><p>${bullet} Item two</p></td>`);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.cellText(0, 0, 0)).toBe(`${bullet} Item two`);
+  });
+
+  // The shared model refuses a deletion that starts between the halves of a surrogate pair, as
+  // Google does, so a trim that kept the shared half of the two emoji fails here.
+  it("replaces one status emoji with another that shares its high surrogate", async () => {
+    let docs = docsWithBody(
+      buildTab([paragraph("Before"), table(["🟢 On track"]), paragraph("After")]).body);
+    let facet = "table-emoji";
+
+    let { actionId } = await edit(facet, "replaceText",
+      "<td><p>🟢 On track</p></td>", "<td><p>🔴 Blocked</p></td>");
+
+    expect(await hooks().readContent(facet)).toContain("<td><p>🔴 Blocked</p></td>");
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.cellText(0, 0, 0)).toBe("🔴 Blocked");
+  });
+
+  const MERGED = "this table has merged cells, so its rows and columns cannot be changed.";
+  const BETWEEN_ITEMS = "insertTable: a table cannot be added between two items of a list. " +
+    "Name the list's last item instead.";
+  const POSITIONED_IMAGE = "insertTable: a table cannot be added beside a paragraph that holds " +
+    "a positioned image. Name other text for the table to follow.";
+
+  // Each is refused when it is called, with nothing queued. The last two are seen only in the
+  // document, which is asked because nothing is queued before them.
+  it.each<[string, () => GoogleDocsTab, [WriteMethod, unknown[], string][]]>([
+    ["refuses row and column changes on a table with merged cells",
+      () => buildTab([paragraph("Before"), { table: [
+        [{ paragraphs: [paragraph("Head")], tableCellStyle: { columnSpan: 2 } }, "\n"],
+        ["a\n", "b\n"],
+      ] }, paragraph("After")]),
+      [
+        ["insertTableRows", [{ table: 0 }], `insertTableRows: ${MERGED}`],
+        ["insertTableColumns", [{ table: 0 }], `insertTableColumns: ${MERGED}`],
+        ["deleteTableRows", [{ table: 0, at: 1 }], `deleteTableRows: ${MERGED}`],
+        ["deleteTableColumns", [{ table: 0, at: 1 }], `deleteTableColumns: ${MERGED}`],
+      ]],
+    ["refuses a replacement in a merged cell",
+      () => buildTab([paragraph("Before"), { table: [
+        [{ paragraphs: [paragraph("Head")], tableCellStyle: { columnSpan: 2 } }, "\n"],
+        ["a\n", "b\n"],
+      ] }, paragraph("After")]),
+      [["replaceText", ["<p>Head</p>", "<p>Top</p>"],
+        "replaceText: a merged cell, or a cell one covers, cannot be edited."]]],
+    ["refuses a replacement in a cell holding a table",
+      () => buildTab([paragraph("Before"), { table: [[
+        { paragraphs: [paragraph("Outer"), table(["Inner"]), paragraph("")] },
+      ]] }, paragraph("After")]),
+      [["replaceText", ["<p>Outer</p>", "<p>Changed</p>"],
+        "replaceText: a cell that holds another table cannot be edited."]]],
+    ["refuses a table between two list items",
+      () => buildTab([
+        { runs: ["one\n"], bullet: { listId: "L1" } },
+        { runs: ["two\n"], bullet: { listId: "L1" } },
+      ], BULLET_LIST),
+      [["insertTable", [{ rows: 1, columns: 1, after: "- one" }], BETWEEN_ITEMS]]],
+    ["refuses deleting a row of numbered items while the numbered list goes on",
+      () => buildTab([
+        paragraph("Before"),
+        { table: [[{ paragraphs: [numberedItem("Step")] }, "x\n"], ["y\n", "z\n"]] },
+        numberedItem("Next"), paragraph("After"),
+      ], NUMBERED_LIST),
+      [["deleteTableRows", [{ table: 0, at: 0 }],
+        "deleteTableRows: what would be deleted holds items of a numbered list, and a numbered " +
+        "list follows it in the tab, which the deletion could renumber. That is not supported."]]],
+    ["refuses deleting a row that holds a footnote",
+      () => buildTab([
+        paragraph("Before"), { table: [[footnoteCell("f1", "1")], ["x\n"]] }, paragraph("After"),
+      ]),
+      [["deleteTableRows", [{ table: 0, at: 0 }],
+        "deleteTableRows: what would be deleted holds a footnote. Deleting a footnote renumbers " +
+        "those after it, which is not supported."]]],
+    ["refuses a table after an empty paragraph holding a positioned image",
+      () => anchorImage(buildTab([paragraph("Before"), paragraph(""), paragraph("After")]), 2),
+      [["insertTable", [{ rows: 1, columns: 1, after: "[Image]" }], POSITIONED_IMAGE]]],
+    ["refuses a table after a table that a paragraph holding a positioned image follows",
+      () => anchorImage(buildTab([paragraph("Before"), table(["Cell"]), paragraph("Caption")]), 3),
+      [["insertTable", [{ rows: 1, columns: 1, after: "<td><p>Cell</p></td>" }],
+        POSITIONED_IMAGE]]],
+    ["refuses deleting a table between two items of a list with no marker",
+      () => buildTab([unmarkedItem("A"), table(["Cell"]), unmarkedItem("B")], UNMARKED_LIST),
+      [["deleteTable", [0],
+        "deleteTable: this table sits between two items of one list, which deleting it would " +
+        "join. That is not supported."]]],
+    ["refuses a table after an item of a list with no marker whose next item is empty",
+      () => buildTab([unmarkedItem("A"), unmarkedItem(""), paragraph("End")], UNMARKED_LIST),
+      [["insertTable", [{ rows: 1, columns: 1, after: "A" }], BETWEEN_ITEMS]]],
+  ])("%s", async (name, build, calls) => {
+    let tab = build();
+    let docs = docsWithBody(tab.body, tab.lists);
+    let facet = `table-${name}`;
+
+    for (let [method, args, message] of calls) {
+      await expect(edit(facet, method, ...args)).rejects.toThrow(message);
+      expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+      expect(await hooks().lastActionDescription).toBe("");
+    }
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The paragraph is protected because it holds a chip, and its own text reads as the mark of a
+  // positioned image. The document says which it is.
+  it("adds a table beside a paragraph that only reads as holding a positioned image", async () => {
+    let docs = docsWithBody(buildTab([
+      { runs: ["[Image] ", { date: "Sep 16, 2026" }, "\n"] }, paragraph("After"),
+    ]).body);
+
+    let preview = await editApplies(docs, "table-typed-image-mark", "insertTable",
+      { rows: 1, columns: 1, after: "[Image] Sep 16, 2026" });
+
+    expect(preview).toBe(`[Image] Sep 16, 2026\n\n${tableOf([[""]])}\n\n\n\nAfter\n`);
+  });
+
+  // Cut at its line break, a paragraph keeps its positioned image on its text, before the table.
+  it("adds a table after a paragraph whose text wraps a positioned image", async () => {
+    let docs = docsWithBody(anchorImage(buildTab([paragraph("Figure one")]), 1).body);
+
+    let preview = await editApplies(docs, "table-wrapped-image", "insertTable",
+      { rows: 1, columns: 1, after: "[Image] Figure one" });
+
+    expect(preview).toBe(`[Image] Figure one\n\n${tableOf([[""]])}\n\n\n`);
+  });
+
+  it("refuses a row beside a row whose cell holds only a dropdown", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"),
+      { table: [
+        ["Task\n", "Status\n"],
+        ["Fix login\n", { paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] }],
+      ] },
+      paragraph("After"),
+    ]).body);
+    let facet = "table-lone-dropdown";
+    // A lone dropdown shows nothing: the cell reads as an empty one.
+    expect(await hooks().readContent(facet)).toContain(rowOf("Fix login", ""));
+
+    await expect(edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", ""]] }))
+      .rejects.toThrow(
+        "insertTableRows: row 1 of this table, counting from 0, has a cell that holds a " +
+        "dropdown or other smart chips and no text, and Google Docs may copy those into a row " +
+        "added beside it. That is not supported: add the row in Google Docs.");
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(docs.contentBatches).toBe(0);
+
+    // A row beside the other row copies no chip, and a new column never copies one.
+    await editApplies(docs, facet, "insertTableRows", { table: 0, at: 0, cells: [["a", "b"]] });
+    let preview = await editApplies(
+      docs, facet, "insertTableColumns", { table: 0, cells: [["x"], ["Owner"], ["Ana"]] });
+    expect(preview).toContain(
+      `${rowOf("a", "b", "x")}\n${rowOf("Task", "Status", "Owner")}\n` +
+      rowOf("Fix login", "", "Ana"));
+  });
+
+  // The fields of a deletion show its cells as the content reads, where a dropdown shows nothing.
+  it("says on a deletion's card that what is deleted holds a dropdown", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"),
+      { table: [
+        ["Task\n", "Status\n"],
+        ["Fix login\n", { paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] }],
+      ] },
+      paragraph("After"),
+    ]).body);
+    let facet = "table-deleted-dropdown";
+
+    let { actionId } = await edit(facet, "deleteTableColumns", { table: 0, at: 1 });
+    expect(await hooks().lastActionDescription).toBe(
+      'Delete column 2 of a table of tab "Main" (tab-1), with everything in it. What is deleted ' +
+      "holds a dropdown or other smart chips that are not shown below: a cell that holds " +
+      "nothing else reads as empty. It was table 1 of the tab when this change was requested.");
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.tables()[0].rows.map(row => row.tableCells?.length)).toEqual([1, 1]);
+
+    // What is left holds no chip, and the card of its deletion says nothing of one.
+    await edit(facet, "deleteTable", 0);
+    expect(await hooks().lastActionDescription).toBe(
+      'Delete a table of tab "Main" (tab-1), with everything in it. It was table 1 of the tab ' +
+      "when this change was requested.");
+  });
+
+  // A dropdown put into a cell changes nothing a read shows, so the table still reads as the
+  // deletion recorded it, and the deletion's card said nothing of a chip.
+  it("invalidates a queued deletion when what it removes comes to hold a dropdown", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"), table(["Task", "Status"], ["Fix login", ""]), paragraph("After"),
+    ]).body);
+    let facet = "table-dropdown-since";
+    let rows = await edit(facet, "deleteTableRows", { table: 0, at: 1 });
+    expect(await hooks().lastActionDescription).not.toContain("chips");
+    let queued = await hooks().readContent(facet);
+    expect(queued).not.toContain("Fix login");
+
+    docs.externalBody(MAIN_TAB, buildTab([
+      paragraph("Before"),
+      { table: [
+        ["Task\n", "Status\n"],
+        ["Fix login\n", { paragraphs: [{ runs: [{ dropdown: "Blocked" }, "\n"] }] }],
+      ] },
+      paragraph("After"),
+    ]).body);
+
+    expect(await hooks().applyAction(facet, rows.actionId)).toContain(
+      "deleteTableRows: what would be deleted has come to hold a dropdown or other smart " +
+      "chips, which getContent() does not show, since this change was queued.");
+    expect(docs.contentBatches).toBe(0);
+    expect(docs.tables()[0].rows).toHaveLength(2);
+    expect(await hooks().readContent(facet)).toContain(rowOf("Fix login", ""));
+
+    // Requested again, the card says what goes with the row, and the row is deleted.
+    let again = await edit(facet, "deleteTableRows", { table: 0, at: 1 });
+    expect(await hooks().lastActionDescription).toContain("chips that are not shown below");
+    expect(await hooks().applyAction(facet, again.actionId)).toBeNull();
+    expect(docs.tables()[0].rows).toHaveLength(1);
+  });
+
+  it("refuses row and column changes on a table that holds a suggested row", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"),
+      {
+        table: [["Task\n", "Status\n"], ["Fix login\n", "Open\n"]],
+        suggestedRows: { 1: "insertion" },
+      },
+      paragraph("After"),
+    ]).body);
+    let facet = "table-suggested-row";
+
+    for (let [method, argument] of [
+      ["insertTableRows", { table: 0 }],
+      ["insertTableColumns", { table: 0 }],
+      ["deleteTableRows", { table: 0, at: 0 }],
+      ["deleteTableColumns", { table: 0, at: 0 }],
+    ] as const) {
+      await expect(edit(facet, method, argument)).rejects.toThrow(
+        `${method}: this table holds suggested changes to its rows, columns or cells, so its ` +
+        "rows and columns cannot be changed until they are accepted or rejected.");
+      expect(await hooks().lastActionDescription).toBe("");
+    }
+    expect(docs.contentBatches).toBe(0);
+
+    // The text of its cells is replaced as anywhere else, and the table can be deleted whole.
+    await editApplies(docs, facet, "replaceText", "<p>Open</p>", "<p>Done</p>");
+    expect(docs.cellText(0, 1, 1)).toBe("Done");
+    let { actionId } = await edit(facet, "deleteTable", 0);
+    expect(await hooks().lastActionDescription).toBe(
+      'Delete a table of tab "Main" (tab-1), with everything in it. It holds suggested changes ' +
+      "to its rows, columns or cells, which are deleted with it. It was table 1 of the tab " +
+      "when this change was requested.");
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.tables()).toEqual([]);
+  });
+
+  // A row added with a pinned row as its reference row is pinned too, so the batch pins the
+  // header again at the count it read.
+  it("keeps a table's pinned header rows at their count", async () => {
+    let docs = pinnedTable();
+    await editApplies(
+      docs, "table-pinned-above", "insertTableRows", { table: 0, at: 0, cells: [["a", "b"]] });
+    expect(Object.keys(docs.lastContentRequests.at(-1) ?? {})).toEqual(["pinTableHeaderRows"]);
+    expect(headerPins(docs)).toEqual([1]);
+    expect(pinnedHeaderRows(docs.bodyTab(), docs.tables()[0].start)).toBe(1);
+
+    // Below the header, the reference row is not pinned and nothing is pinned again.
+    docs = pinnedTable();
+    await editApplies(
+      docs, "table-pinned-below", "insertTableRows", { table: 0, at: 1, cells: [["a", "b"]] });
+    expect(headerPins(docs)).toEqual([]);
+    expect(pinnedHeaderRows(docs.bodyTab(), docs.tables()[0].start)).toBe(1);
+  });
+
+  it("refuses rows once the tab's tables would hold more than 5,000 cells", async () => {
+    let docs = docsWithBody(fullTab());
+    let facet = "table-full";
+
+    await expect(edit(facet, "insertTableRows", { table: 0, count: 2 }))
+      .rejects.toThrow(room("insertTableRows", 5010));
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+
+    // One more row fills the tab, and the queued row counts against the next.
+    await edit(facet, "insertTableRows", { table: 0 });
+    await expect(edit(facet, "insertTableRows", { table: 0 }))
+      .rejects.toThrow(room("insertTableRows", 5010));
+    await expect(edit(facet, "insertTable", { rows: 1, columns: 1 }))
+      .rejects.toThrow(room("insertTable", 5001));
+    // The generic read alone: the new table's position was never read.
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    await edit(facet, "deleteTableRows", { table: 0, at: 0 });
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("invalidates a queued row when a collaborator has filled the tab", async () => {
+    let docs = docsWithBody(fullTab());
+    let facet = "table-filled-since";
+    let rows = await edit(facet, "insertTableRows", { table: 0 });
+    let before = await hooks().readContent(facet);
+
+    docs.externalBody(MAIN_TAB, fullTab(table(["More"]), paragraph("")));
+
+    expect(await hooks().applyAction(facet, rows.actionId))
+      .toContain(room("insertTableRows", 5001));
+    expect(docs.contentBatches).toBe(0);
+    let after = await hooks().readContent(facet);
+    expect(after.endsWith(`\n\nAfter\n\n${tableOf([["More"]])}\n\n\n`)).toBe(true);
+    // The queued row is gone from the read: the big table has the rows it had.
+    let emptyRow = rowOf(...Array.from({ length: 10 }, () => ""));
+    expect(before).toContain(emptyRow);
+    expect(after).not.toContain(emptyRow);
+  });
+
+  // Cells that hold only bullets of a list that numbers nothing can move no number.
+  it("deletes a row of bulleted cells though a numbered list follows", async () => {
+    let lists = { ...BULLET_LIST, ...NUMBERED_LIST };
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"),
+      { table: [
+        [{ paragraphs: [{ runs: ["Point\n"], bullet: { listId: "L1" } }] }, "x\n"],
+        ["y\n", "z\n"],
+      ] },
+      numberedItem("First"), numberedItem("Second"),
+    ], lists).body, lists);
+
+    let preview = await editApplies(
+      docs, "table-bulleted-row", "deleteTableRows", { table: 0, at: 0 });
+
+    expect(preview).toBe(`Before\n\n${tableOf([["y", "z"]])}\n\n1. First\n1. Second\n`);
+  });
+
+  // A replacement that drops a tab's last line break leaves the simulated Markdown without it,
+  // while the tab keeps the paragraph: the new table still follows that paragraph.
+  it("adds a table at the end after a replacement dropped the last line break", async () => {
+    let docs = docsWithBody(buildTab([paragraph("Before"), paragraph("After")]).body);
+    let facet = "table-after-dropped-break";
+    let text = await edit(facet, "replaceText", "After\n", "Later");
+    let added = await edit(facet, "insertTable", { rows: 1, columns: 1 });
+
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe(`Before\n\nLater\n\n${tableOf([[""]])}\n\n\n`);
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    expect(await hooks().applyAction(facet, added.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  it("deletes a table after a replacement removed the tab's first line", async () => {
+    let docs = titledTable();
+    let facet = "table-delete-after-removed-line";
+    let text = await edit(facet, "replaceText", "# Title\n", "");
+    let deleted = await edit(facet, "deleteTable", 0);
+
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe("\n\nAfter\n");
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    expect(await hooks().applyAction(facet, deleted.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  it("says to retry when a waiting edit removed the paragraph beside a table", async () => {
+    let docs = titledTable();
+    let facet = "table-edge-missing-paragraph";
+    let text = await edit(facet, "replaceText", "# Title\n", "");
+    let intro = ["<table>", "Intro\n\n<table>"] as const;
+
+    await expect(edit(facet, "replaceText", ...intro)).rejects.toThrow(missingParagraph("before"));
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+
+    // Once the first edit has applied, the tab shows its first paragraph, emptied.
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    let preview = await editApplies(docs, facet, "replaceText", ...intro);
+    expect(preview.startsWith("\n\nIntro\n\n<table>")).toBe(true);
+  });
+
+  it("says to retry, not that a paragraph is read-only, between two tables whose paragraph a waiting edit removed", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"), table(["a"]), paragraph("Mid"), table(["b"]), paragraph("After"),
+    ]).body);
+    let facet = "table-edge-between-tables";
+    let text = await edit(facet, "replaceText", "Mid\n", "");
+    expect(await hooks().readContent(facet)).toContain("</table>\n\n\n<table>");
+    // The second table, quoted with its cell so that the match is unique.
+    let intro = ["<table>\n  <tr>\n    <td><p>b</p></td>",
+      "Intro\n\n<table>\n  <tr>\n    <td><p>b</p></td>"] as const;
+
+    let refusal = await edit(facet, "replaceText", ...intro).then(
+      () => "queued", (error: unknown) => String(error));
+    expect(refusal).toContain(missingParagraph("before"));
+    expect(refusal).not.toContain("read-only");
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+
+    // Once the first edit has applied, the paragraph between the tables is there, emptied.
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    let preview = await editApplies(docs, facet, "replaceText", ...intro);
+    expect(preview).toContain("</table>\n\n\n\nIntro\n\n<table>");
+  });
+
+  const EDIT_KIND =
+    { actionKind: { tag: "editDocument", label: "Document edits" }, autoApprovable: true };
+  const PARAGRAPH_PROSE = 'Replace text in tab "Main" (tab-1).';
+
+  it("adds a paragraph above a table from the table's first line", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-edge-above";
+
+    let queued = await edit(facet, "replaceText", "<table>", "Intro\n\n<table>");
+    expect(await hooks().lastActionVerdict).toEqual(EDIT_KIND);
+    expect(await hooks().lastActionDescription).toBe(PARAGRAPH_PROSE);
+    // The card shows one range of the tab: the match and the line the text is added to.
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "Before\n\n<table>"),
+      markdownField("New", "Before\n\nIntro\n\n<table>"),
+    ]);
+    let preview = await appliesAsRead(docs, facet, queued);
+    expect(preview).toBe(TABLE_CONTENT.replace("Before\n\n", "Before\n\nIntro\n\n"));
+
+    // Text with no blank line between it and the table is no paragraph of its own.
+    await expect(edit(facet, "replaceText", "<table>", "Intro <table>")).rejects.toThrow(
+      "replaceText: text added directly above or below a table must be whole paragraphs, with " +
+      "a blank line between them and the table.");
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("adds a paragraph below a table from its last line", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-edge-below";
+
+    let queued = await edit(facet, "replaceText", "</table>", "</table>\n\nCaption");
+    expect(await hooks().lastActionVerdict).toEqual(EDIT_KIND);
+    let preview = await appliesAsRead(docs, facet, queued);
+    expect(preview).toBe(TABLE_CONTENT.replace("\n\nAfter", "\n\nCaption\n\nAfter"));
+  });
+
+  // The strings share their first character with `<table>`, so compared character by character
+  // the text reads as typed after the table's first character, one character into the table.
+  it.each<[string, string, string, string]>([
+    ["a placeholder", "<TODO: describe the figures>", "<table>", "<table>"],
+    ["a comparison", "<50 employees only", "Before\n\n<table>", "Before\n\n<table>"],
+  ])("adds a line that starts with < above a table: %s", async (name, line, quoted, kept) => {
+    let docs = docsWithBody(tableBody());
+    let facet = `table-edge-angle-${name}`;
+    // The line goes in front of the table's first line, however much is quoted before it.
+    let { actionId } = await edit(
+      facet, "replaceText", quoted, kept.replace("<table>", `${line}\n\n<table>`));
+
+    expect(await hooks().lastActionVerdict).toEqual(EDIT_KIND);
+    expect(await hooks().lastActionDescription).toBe(PARAGRAPH_PROSE);
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "Before\n\n<table>"),
+      markdownField("New", `Before\n\n${line}\n\n<table>`),
+    ]);
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe(TABLE_CONTENT.replace("Before\n\n", `Before\n\n${line}\n\n`));
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    // The line is a paragraph of the body before the table, whose cells are as they were.
+    expect(docs.text()).toBe(`Before\n${line}\nAfter`);
+    expect(docs.cellText(0, 0, 0)).toBe("Task");
+    expect(docs.cellText(0, 1, 1)).toBe("Open");
+  });
+
+  const BLANK_LINE = "replaceText: the replacement changes the blank line between a table and " +
+    "the paragraph beside it, which has to stay.";
+  const OTHER_SIDE = `${BLANK_LINE} To remove or rewrite that paragraph, take the blank line ` +
+    "on its other side instead: end oldMarkdown at the last character of the paragraph before " +
+    "the table, or start it at the first character of the paragraph after the table. If that " +
+    "is refused too, empty the paragraph: it cannot be removed.";
+
+  it("names the phrasing that removes a paragraph starting with < above a table", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("A"), paragraph("<TODO>"), table(["Cell"]), paragraph("After"),
+    ]).body);
+    let facet = "table-blank-line-angle";
+
+    let refusal = await edit(facet, "replaceText", "<TODO>\n\n<table>", "<table>").then(
+      () => "queued", (error: unknown) => String(error));
+    expect(refusal).toContain(OTHER_SIDE);
+    expect(refusal).not.toContain("one replacement cannot change a table together");
+
+    let preview = await editApplies(docs, facet, "replaceText", "\n\n<TODO>", "");
+    expect(preview).toBe(`A\n\n${tableOf([["Cell"]])}\n\nAfter\n`);
+  });
+
+  // The canonical replacement restores the blank line beside the changed line, so only the
+  // paragraph changes, as it does without tables.
+  it.each<[string, string, string]>([
+    ["a changed paragraph", "</table>\nAfter!", "After!"],
+    ["an added paragraph", "</table>\nCaption\n\nAfter", "Caption\n\nAfter"],
+  ])("replaces text after a table quoted with one line break: %s", async (name, requested, after) => {
+    let docs = docsWithBody(tableBody());
+    let facet = `table-one-line-break-${name}`;
+
+    let queued = await edit(facet, "replaceText", "</table>\n\nAfter", requested);
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "</table>\n\nAfter"),
+      markdownField("Requested New", requested),
+      markdownField("New", `</table>\n\n${after}`),
+    ]);
+    let preview = await appliesAsRead(docs, facet, queued);
+    expect(preview).toBe(TABLE_CONTENT.replace("After\n", `${after}\n`));
+  });
+
+  it("refuses removing the paragraph above a table together with the table's blank line", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("A"), paragraph("B"), table(["Cell"]), paragraph("After"),
+    ]).body);
+    let facet = "table-blank-line-above";
+
+    await expect(edit(facet, "replaceText", "B\n\n", "")).rejects.toThrow(OTHER_SIDE);
+    expect(await hooks().lastActionDescription).toBe("");
+
+    let preview = await editApplies(docs, facet, "replaceText", "\n\nB", "");
+    expect(preview).toBe(`A\n\n${tableOf([["Cell"]])}\n\nAfter\n`);
+  });
+
+  it("says that the paragraph Google Docs keeps beside a table can only be emptied", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-blank-line-kept-paragraph";
+
+    // `Before` is the tab's first paragraph: nothing stands on its other side.
+    await expect(edit(facet, "replaceText", "Before\n\n<table>", "<table>")).rejects.toThrow(
+      `${BLANK_LINE} Google Docs keeps a paragraph on each side of a table, so that paragraph ` +
+      "can be emptied but not removed.");
+    expect(await hooks().lastActionDescription).toBe("");
+
+    let preview = await editApplies(docs, facet, "replaceText", "Before", "");
+    expect(preview).toBe(TABLE_CONTENT.replace("Before", ""));
+  });
+
+  it("says that nothing can be added beside a read-only paragraph", async () => {
+    let docs = docsWithBody(buildTab([
+      { runs: ["Owner: ", { person: { name: "Ana", email: "ana@example.com" } }, "\n"] },
+      table(["Cell"]), paragraph("After"),
+    ]).body);
+    let facet = "table-read-only-neighbour";
+    let content = await hooks().readContent(facet);
+    let owner = content.slice(0, content.indexOf("\n"));
+    expect(owner).toContain("Ana");
+
+    for (let [oldMarkdown, newMarkdown] of [
+      ["<table>", "Intro\n\n<table>"],
+      [`${owner}\n\n<table>`, "<table>"],
+    ]) {
+      await expect(edit(facet, "replaceText", oldMarkdown, newMarkdown)).rejects.toThrow(
+        "replaceText: a paragraph before the table holds an image, smart chip or other element " +
+        "and is read-only: it cannot be changed or removed, and nothing can be added between " +
+        "it and the table.");
+      expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+      expect(await hooks().lastActionDescription).toBe("");
+    }
+
+    let preview = await editApplies(
+      docs, facet, "replaceText", "</table>", "</table>\n\nCaption");
+    expect(preview).toBe(`${owner}\n\n${tableOf([["Cell"]])}\n\nCaption\n\nAfter\n`);
+  });
+
+  // Replayed as a replacement of the whole tab, the asterisk in the cell would pair with the one
+  // in the appended text: every table line from there on would read with a blank line after it,
+  // and the row insert would be refused for a table that is not laid out as one.
+  it("keeps a table as it reads when text with an asterisk is appended", async () => {
+    let docs = docsWithBody(buildTab([
+      paragraph("Before"), table(["Field", "Required*"], ["Name", "yes"]), paragraph("After"),
+    ]).body);
+    let facet = "table-append-asterisk";
+    let append = await hooks().submitAppend(facet, "*Source: finance.*");
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["Email", "no"]] });
+
+    let preview = await hooks().readContent(facet);
+    expect(preview).toBe(
+      `Before\n\n${tableOf([["Field", "Required*"], ["Name", "yes"], ["Email", "no"]])}\n\n` +
+      "After\n\n*Source: finance.*\n");
+    expect(await hooks().applyAction(facet, append)).toBeNull();
+    expect(await hooks().applyAction(facet, rows.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  // Typed captions that start `1. ` and `2. ` read exactly like items of one list. With nothing
+  // queued before the deletion the document says they are not; behind another edit only the
+  // view can be asked.
+  it("deletes a table between two paragraphs that only read as list items", async () => {
+    let preview = await editApplies(captioned(), "table-captions", "deleteTable", 0);
+    expect(preview).toBe("1. Revenue by region\n\n2. Revenue by product\n\nNotes\n");
+
+    let docs = captioned();
+    let facet = "table-captions-behind-edit";
+    let text = await edit(facet, "replaceText", "Notes", "Sources");
+    await expect(edit(facet, "deleteTable", 0)).rejects.toThrow(
+      "deleteTable: the lines before and after this table read as list items, which deleting " +
+      "it could join into one list. Retry once the earlier changes to this tab have been " +
+      "approved or rejected: the document then shows whether they are items of one list.");
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(await hooks().applyAction(facet, text.actionId)).toBeNull();
+    await editApplies(docs, facet, "deleteTable", 0);
+  });
+
+  it("stops queueing table changes once their recorded tables pass the limit", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-queue-room";
+    // Four waiting changes that record just under 4 MiB of tables between them.
+    let recorded = "x".repeat(1024 * 1024 - 10);
+    await hooks().applyStorage(facet, [1, 2, 3, 4].map(id =>
+      storedAction(id, { type: "deleteTable", expected: recorded })));
+    await hooks().applyStorage(facet, [{ kind: "put", key: "pending:nextActionId", value: 5 }]);
+    let rows = { table: 0, cells: [["a", "b"]] };
+
+    await expect(edit(facet, "insertTableRows", rows)).rejects.toThrow(
+      "insertTableRows: the table changes already waiting on this document hold too much " +
+      "table content for another. Retry once some of them have been approved or rejected.");
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+
+    await hooks().rejectAction(facet, 1);
+    expect((await edit(facet, "insertTableRows", rows)).actionId).toBe(5);
+  });
+
+  it("authorizes nothing for a table change it queues", async () => {
+    docsWithBody(tableBody());
+    let facet = "table-observations-none";
+
+    for (let [method, argument] of [
+      ["insertTableRows", { table: 0 }],
+      ["insertTableColumns", { table: 0 }],
+      ["deleteTableRows", { table: 0, at: 0 }],
+      ["deleteTableColumns", { table: 0, at: 0 }],
+      ["deleteTable", 0],
+    ] as const) {
+      await edit(facet, method, argument);
+      expect(await hooks().lastObservations).toEqual([]);
+    }
+  });
+
+  const POSITION_READ =
+    'Read the position of a new table among the tables of tab "Main" (tab-1).';
+
+  it("authorizes the position insertTable returns", async () => {
+    docsWithBody(tableBody());
+
+    await edit("table-observations-position", "insertTable", { rows: 1, columns: 1 });
+
+    expect(await hooks().lastObservations).toEqual([POSITION_READ]);
+  });
+
+  // The position is read from the document, so the read is authorized before anything is stored:
+  // where reads are refused, insertTable() queues nothing, and the other writes still queue.
+  it("queues nothing when the read of a new table's position is refused", async () => {
+    docsWithBody(buildTab([paragraph("Before")]).body);
+    let facet = "table-position-refused";
+
+    await expect(Promise.resolve(hooks().submitEdit(
+      facet, "insertTable", [{ rows: 1, columns: 1 }], { refuseRead: true },
+    ))).rejects.toThrow("Reads of this document are refused.");
+    expect(await hooks().lastObservations).toEqual([POSITION_READ]);
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(await hooks().readContent(facet)).toBe("Before\n");
+    expect(await hooks().storedValueJsonLength(facet, "pending:action:1")).toBeUndefined();
+
+    docsWithBody(tableBody());
+    for (let [method, ...args] of [
+      ["insertTableRows", { table: 0 }],
+      ["insertTableColumns", { table: 0 }],
+      ["deleteTableRows", { table: 0, at: 0 }],
+      ["deleteTableColumns", { table: 0, at: 0 }],
+      ["deleteTable", 0],
+      ["appendText", "added"],
+    ] as const) {
+      let unread = `table-unread-${method}`;
+      let queued = await hooks().submitEdit(unread, method, args, { refuseRead: true });
+      expect(queued.actionId).toBe(1);
+      expect(await hooks().lastObservations).toEqual([]);
+    }
+  });
+
+  // Without the queue the append is stored while the table waits for its authorization: it is
+  // received first, `added` reads above the table, and the read shows the append and no table.
+  // With the writes queued and the reads not waiting, the read shows neither, and the metadata
+  // lists no pending edit.
+  it("takes calls in the order they were made while a table's position is authorized", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-call-order";
+    // Every call replays the cached snapshot.
+    await hooks().readContent(facet);
+    let baseline = await hooks().readMetadata(facet);
+    await scheduler.wait(2);
+
+    let { received, returned, read, modified } = await hooks().callsDuringTableRead(
+      facet, { rows: 1, columns: 1 }, "added");
+
+    expect(received.map(action => action.title))
+      .toEqual(["Insert a table in Google Doc", "Append to Google Doc"]);
+    expect(received[0].actionId).toBeLessThan(received[1].actionId);
+    expect(returned).toBe(1);
+    // The append was checked against content that held the table, and the read waited for both.
+    expect(read).toBe(`${TABLE_CONTENT}\n${tableOf([[""]])}\n\n\n\nadded\n`);
+    // The metadata read waited too: its time counts the two changes stored meanwhile.
+    expect(modified).toBeGreaterThan(baseline);
+
+    for (let { actionId } of received) {
+      expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    }
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(read);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  it("authorizes a read when a table change is refused for what the tab holds", async () => {
+    docsWithBody(tableBody());
+
+    await expect(edit("table-observations-refused", "insertTableRows", { table: 3 }))
+      .rejects.toThrow(
+        'insertTableRows: tab "tab-1" has no table 3. It has 1 table, numbered from 0 in the ' +
+        'order getContent("tab-1") shows them.');
+
+    expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
+  });
+
+  it("reads nothing when a table change's arguments are wrong", async () => {
+    let docs = docsWithBody(tableBody());
+
+    await expect(edit("table-arguments", "insertTable", { rows: 1, columns: 0 }))
+      .rejects.toThrow("insertTable: columns must be a whole number from 1 to 20.");
+
+    expect(docs.documentFetches).toBe(0);
+    expect(await hooks().lastObservations).toEqual([]);
+    expect(await hooks().lastActionDescription).toBe("");
   });
 });
 
@@ -1893,6 +3663,271 @@ describe("Google Doc write receipts", () => {
 
     expect(content.match(/first/g)).toHaveLength(1);
   });
+
+  it("reconciles a row insert whose response is lost", async () => {
+    let docs = docsWithBody(tableBody());
+    docs.ambiguousContentResponses = 1;
+    let facet = "table-ambiguous";
+    let { actionId } = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+
+    expect(await hooks().applyAction(facet, actionId)).toMatch(/content response lost/);
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.markers.size).toBe(1);
+    expect(docs.tables()[0].rows).toHaveLength(3);
+
+    // The marker proves the write landed: the retry sends nothing but its cleanup.
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.markers.size).toBe(0);
+    expect(docs.tables()[0].rows).toHaveLength(3);
+    expect(await hooks().applyAction(facet, actionId)).toMatch(/Unknown pending/);
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${tableOf([...TABLE_ROWS, ["a", "b"]])}\n\nAfter\n`);
+  });
+
+  it("reads a lost-response table change once", async () => {
+    let docs = docsWithBody(tableBody());
+    docs.ambiguousContentResponses = 1;
+    let facet = "table-lost-response";
+    let { actionId } = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
+    expect(await hooks().applyAction(facet, actionId)).toMatch(/content response lost/);
+
+    // Past the snapshot TTL the read fetches the document, which holds the row while its
+    // action is still pending.
+    passSnapshotTtl();
+
+    expect(await hooks().readContent(facet)).toBe(
+      `Before\n\n${tableOf([...TABLE_ROWS, ["a", "b"]])}\n\nAfter\n`);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+  });
+});
+
+// An approval lists the pending edits and then awaits Google, and a write can be stored during
+// any of those waits. These tests hold a provider request open to store one there. They stand
+// after the restart test above: the runtime does not survive a restart of the Durable Objects
+// that follows a held request.
+describe("Google Doc table changes stored during an approval", () => {
+  // An edit stored while the approval waits for the document was recorded behind the one being
+  // approved, like any other, though the approval listed the pending edits before it.
+  it("drops a table change stored while the one before it was failing at approval", async () => {
+    let docs = twoTables();
+    let facet = "table-gate-apply-late";
+    let first = await queueFirst(facet);
+    // The snapshot is fresh, so the next write asks Google nothing.
+    expect(await hooks().readContent(facet)).toBe(
+      TWO_CONTENT.replace("</table>", `${rowOf("a", "b")}\n</table>`));
+    docs.externalCellEdit(0, 0, 0, "Chore");
+    let read = docs.hold("read");
+
+    let applying = hooks().applyAction(facet, first.actionId);
+    await read.reached;
+    let second = await queueSecond(facet);
+    read.release();
+
+    expect(await applying).toBe(gone("insertTableRows"));
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    await hooks().rejectAction(facet, first.actionId);
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The replay after a write runs over the refreshed document, where `first` fails. `second` was
+  // stored after the approval listed its edits, so it is dropped with `first` only if they are
+  // listed again for that replay.
+  it("replays a table change stored while the one before it was being written", async () => {
+    let docs = twoTables();
+    let facet = "table-gate-write-late";
+    let append = await hooks().submitAppend(facet, "note");
+    let first = await queueFirst(facet);
+    await hooks().readContent(facet);
+    let content = docs.hold("content");
+    let cleanup = docs.hold("cleanup");
+
+    let applying = hooks().applyAction(facet, append);
+    await content.reached;
+    let second = await queueSecond(facet);
+    content.release();
+    // The append is written, its marker not yet removed.
+    await cleanup.reached;
+    docs.externalCellEdit(0, 0, 0, "Chore");
+    cleanup.release();
+
+    expect(await applying).toBeNull();
+    expect(await hooks().applyAction(facet, first.actionId)).toContain(gone("insertTableRows"));
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    await hooks().rejectAction(facet, first.actionId);
+    expect(await hooks().applyAction(facet, second.actionId)).toContain(gate("insertTableRows"));
+    expect(docs.contentBatches).toBe(1);
+  });
+});
+
+// The write queue belongs to the document, not to a session: a call takes its turn behind the
+// calls made before it, from whichever session it comes. The test holds a provider request, so it
+// stands after the restart test like the ones above.
+describe("Google Doc writes from several sessions", () => {
+  // Every call below is a session of its own. With a queue for each session the replacement is
+  // checked while the append it quotes still waits for Google, and is refused for text the tab
+  // does not hold; the second append is stored first, and the read shows only that one.
+  it("takes the calls of different sessions in the order they were made", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Start");
+    docs.install();
+    let facet = "write-order-sessions";
+    await hooks().readContent(facet);
+    // Past the snapshot's time to live a write asks Google for the revision: the first one's
+    // request is held, inside its turn.
+    passSnapshotTtl();
+    let probe = docs.hold("read");
+
+    let first = edit(facet, "appendText", "one");
+    await probe.reached;
+    let second = edit(facet, "replaceText", "one", "two");
+    let third = edit(facet, "appendText", "three");
+    let reading = Promise.resolve(hooks().readContent(facet));
+    let settled: string[] = [];
+    for (let [name, call] of Object.entries({ second, third, reading })) {
+      let note = () => { settled.push(name); };
+      call.then(note, note);
+    }
+    // Listing the tabs takes no turn, so it answers while the first write is held. The pause
+    // after it gives the three calls sent before it the time to settle, if nothing held them.
+    expect(await hooks().listTabs(facet)).toHaveLength(1);
+    await scheduler.wait(20);
+    expect(settled).toEqual([]);
+    expect(await hooks().storedValueJsonLength(facet, "pending:action:1")).toBeUndefined();
+    probe.release();
+
+    let queued = await Promise.all([first, second, third]);
+    expect(queued.map(({ actionId }) => actionId)).toEqual([1, 2, 3]);
+    // The replacement found the text of the append before it, and the read waited for all three.
+    let read = await reading;
+    expect(read).toBe("Start\n\ntwo\n\nthree\n");
+
+    for (let { actionId } of queued) {
+      expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    }
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(read);
+    expect(docs.contentBatches).toBe(3);
+  });
+});
+
+// The rendering before the current one differs from it only inside tables, where it could queue
+// nothing, so the text edits it previewed still apply as previewed.
+describe("Google Doc edits stored under an earlier rendering", () => {
+  const PREVIOUS_RENDERING = 6;
+  const STRUCTURED = "replaceText: structured content cannot be edited";
+  const previous = (action: Record<string, unknown>) =>
+    [storedAction(1, { ...action, markdownVersion: PREVIOUS_RENDERING })];
+
+  it("applies a text replacement stored under the previous rendering", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let facet = "previous-rendering-replace";
+    await hooks().applyStorage(
+      facet, previous({ type: "replaceText", oldMarkdown: "base", newMarkdown: "changed" }));
+
+    expect(await hooks().readContent(facet)).toBe("changed\n");
+    expect(await hooks().applyAction(facet, 1)).toBeNull();
+    expect(docs.text()).toBe("changed");
+  });
+
+  it("applies an append stored under the previous rendering", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let facet = "previous-rendering-append";
+    await hooks().applyStorage(facet, previous({ type: "appendText", markdown: "added" }));
+
+    expect(await hooks().readContent(facet)).toBe("base\n\nadded\n");
+    expect(await hooks().applyAction(facet, 1)).toBeNull();
+    expect(docs.text()).toBe("base\nadded");
+  });
+
+  it("keeps a previous-rendering replacement out of tables", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "previous-rendering-cell";
+    await hooks().applyStorage(
+      facet, previous({ type: "replaceText", oldMarkdown: "Open", newMarkdown: "Done" }));
+
+    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
+    expect(await hooks().applyAction(facet, 1)).toContain(STRUCTURED);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // Its card showed Markdown, so it is never applied as the HTML of a cell.
+  it("keeps a replacement queued for a paragraph out of tables", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "paragraph-replacement-cell";
+    await hooks().applyStorage(facet, [
+      storedAction(1, { type: "replaceText", oldMarkdown: "Open", newMarkdown: "**Done**" }),
+    ]);
+
+    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
+    expect(await hooks().applyAction(facet, 1)).toContain(STRUCTURED);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The previous rendering could queue no table change, so nothing vouches for one stored under it.
+  it("refuses a table change stored under the previous rendering", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "previous-rendering-table";
+    await hooks().applyStorage(facet, previous({
+      type: "insertTableRows", at: 2, cells: [["a", "b"]], expected: tableOf(TABLE_ROWS),
+    }));
+
+    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
+    expect(await hooks().applyAction(facet, 1))
+      .toContain("was queued under an earlier Markdown format");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("drops a table replacement whose text left the table", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-replacement-moved";
+    let { actionId } = await edit(facet, "replaceText", "Fix login", "Fix logout");
+    expect(await hooks().readContent(facet)).toContain("<td><p>Fix logout</p></td>");
+
+    docs.externalBody(MAIN_TAB, buildTab([
+      paragraph("Fix login"), table(["Task", "Status"], ["Other", "Open"]), paragraph("After"),
+    ]).body);
+    passSnapshotTtl();
+
+    expect(await hooks().readContent(facet)).toBe(
+      `Fix login\n\n${tableOf([["Task", "Status"], ["Other", "Open"]])}\n\nAfter\n`);
+    expect(await hooks().applyAction(facet, actionId)).toContain(
+      "replaceText: this change was queued for text in a table, and that text is no longer " +
+      "in one.");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  // The seed is one a read would serve but for its version: fresh, at the document's revision,
+  // and reading text the document does not hold. A stale seed would be refetched either way.
+  it("discards a snapshot cached under the previous rendering", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let seed = (formatVersion: number) => [{
+      kind: "put" as const,
+      key: "docSnapshot",
+      value: {
+        formatVersion, title: "Test document", revisionId: "revision-1",
+        tabs: [tabSnapshot(MAIN_TAB, "Main")], fetchedAt: Date.now(),
+      },
+    }];
+
+    await hooks().applyStorage("previous-rendering-snapshot", seed(PREVIOUS_RENDERING));
+    expect(await hooks().readContent("previous-rendering-snapshot")).toBe("base\n");
+    expect(docs.documentFetches).toBe(1);
+    expect(docs.revisionProbes).toBe(0);
+
+    // The same value under the current rendering is served, so the fetch above was the version's.
+    await hooks().applyStorage("current-rendering-snapshot", seed(MARKDOWN_RENDERING_VERSION));
+    expect(await hooks().readContent("current-rendering-snapshot")).toBe("shared\n");
+    expect(docs.documentFetches).toBe(1);
+  });
 });
 
 describe("Google Doc metadata", () => {
@@ -2058,8 +4093,6 @@ describe("Google Doc tab isolation", () => {
 
   // A failed edit still tells the caller whether a tab, or the text in it, exists. Leaving the
   // write paths ungated would let a caller ask through appendText what getContent refuses.
-  const GENERIC_READ = "Read the content of one tab of the document.";
-
   it.each([
     ["an omitted tab", () => hooks().submitAppend("tabs-write-oracle", "added"),
       /tabId is required for documents with multiple tabs/],
@@ -2175,7 +4208,7 @@ describe("Google Doc tab isolation", () => {
 function tabSnapshot(tabId: string, title: string) {
   return {
     tabId, title, index: 0, nestingLevel: 0,
-    markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
+    markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [], tables: [] }, bodyEndIndex: 8,
     committedWriteIds: [],
   };
 }
@@ -2350,6 +4383,35 @@ describe("creating a Google Doc", () => {
     await hooks().readContent("create-doc-approvers");
 
     expect(new Set(docs.authorizations)).toEqual(new Set([tokenOf("user-a")]));
+  });
+
+  it("applies a table queued against a document not created yet", async () => {
+    // What a new document holds: one empty paragraph.
+    let docs = docsWithBody(buildTab([paragraph("")]).body);
+    let facet = "create-doc-table";
+    await hooks().createResource(facet, DOC_PATTERN, "Plan");
+
+    let added = await edit(
+      facet, "insertTable", { rows: 1, columns: 2, cells: [["Name", "Total"]] });
+    expect(added.returned).toBe(0);
+    expect(await hooks().lastObservations).toEqual(
+      ['Read the position of a new table among the tables of tab "Tab 1" (t.0).']);
+    let rows = await edit(
+      facet, "insertTableRows", { table: added.returned, cells: [["Ana", "3"]] });
+    let preview = `\n\n${tableOf([["Name", "Total"], ["Ana", "3"]])}\n\n\n`;
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.fetches).toBe(0);
+
+    expect(await hooks().applyCreation(facet)).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated(facet);
+
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(await hooks().applyAction(facet, added.actionId)).toBeNull();
+    expect(await hooks().applyAction(facet, rows.actionId)).toBeNull();
+    expect(docs.tables().map(({ rows: tableRows }) => tableRows.length)).toEqual([2]);
+    expect([docs.cellText(0, 0, 0), docs.cellText(0, 1, 1)]).toEqual(["Name", "3"]);
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
   });
 });
 

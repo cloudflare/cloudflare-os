@@ -80,27 +80,77 @@ export type StructuralElement = {
 // The collections in the table types below are optional: the API omits an empty one from its
 // JSON rather than sending `[]`.
 
-/** A table embedded in a document body or table cell. */
+/**
+ * A table embedded in a document body or table cell.
+ *
+ * A table sits between two paragraphs of its container: it is never the container's first or
+ * last element, and never directly beside another table. Its position is the `startIndex` of
+ * the structural element that holds it, which is the exact value a `TableCellLocation` must
+ * name. A table takes one index for its start, before its first row, and one for its end, after
+ * its last row.
+ */
 export type Table = {
   tableRows?: TableRow[];
+  /** IDs of the suggestions that would insert this table; empty or absent for a table that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this table. */
+  suggestedDeletionIds?: string[];
 }
 
-/** One row in a Google Docs table. */
+/**
+ * One row in a Google Docs table.
+ *
+ * A row takes one index for its start, before its first cell, and `endIndex` is the end of its
+ * last cell. A row that is only suggested, or suggested for deletion, is listed and indexed like
+ * any other, marked by its suggestion IDs.
+ */
 export type TableRow = {
   startIndex: number;
   endIndex: number;
   tableCells?: TableCell[];
+  /**
+   * The row's style: `tableHeader` is true on a row pinned as a header row that repeats on
+   * every page.
+   */
+  tableRowStyle?: { tableHeader?: boolean };
+  /** IDs of the suggestions that would insert this row; empty or absent for a row that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this row. */
+  suggestedDeletionIds?: string[];
 }
 
-/** One table cell, whose contents use the same recursive structure as the document body. */
+/**
+ * One table cell, whose contents use the same recursive structure as the document body.
+ *
+ * A cell takes one index for its start and then holds its content, which is never empty: a cell
+ * holds at least one paragraph, so an empty cell spans two indexes. Text goes into a paragraph
+ * of the cell, never at the cell's own index. A cell that is only suggested, or suggested for
+ * deletion, is listed and indexed like any other, marked by its suggestion IDs.
+ */
 export type TableCell = {
   startIndex: number;
   endIndex: number;
   content?: StructuralElement[];
+  /**
+   * The cell's row and column spans. A merged cell is the top-left of the cells it merges: it
+   * carries a `rowSpan` or `columnSpan` above 1 and the content of every cell it covers. The
+   * covered cells stay in their rows' `tableCells`, empty and with spans of 1 like a cell that is
+   * not merged, so every row lists as many cells as the table has columns.
+   */
   tableCellStyle?: {
     rowSpan?: number;
     columnSpan?: number;
   };
+  /**
+   * IDs of the suggestions that would insert this cell; empty or absent for a cell that exists.
+   * A suggested column marks its cells, not the rows that hold them.
+   */
+  suggestedInsertionIds?: string[];
+  /**
+   * IDs of the suggestions that would delete this cell. A row suggested for deletion marks its
+   * cells as well as the row.
+   */
+  suggestedDeletionIds?: string[];
 }
 
 /** A paragraph (including headings, list items, etc.). */
@@ -150,6 +200,16 @@ export type ParagraphElement = {
   dateElement?: {
     textStyle?: TextStyle;
     dateElementProperties?: { displayText?: string };
+  };
+  /** A dropdown chip, which takes one index. */
+  dropdown?: {
+    dropdownId?: string;
+    textStyle?: TextStyle;
+    dropdownProperties?: {
+      dropdownDefinitionId?: string;
+      selectedOptionId?: string;
+      displayValue?: string;
+    };
   };
 }
 
@@ -249,11 +309,49 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
 }
 
 // ---------------------------------------------------------------------------
+// Types modeling the `documents.batchUpdate` requests the gatekeeper sends.
+// ---------------------------------------------------------------------------
+
+/** A position in one tab. Every write coordinate names its tab: tab bodies index independently. */
+export type DocsLocation = { index: number; tabId: string };
+
+/** A half-open range in one tab. */
+export type DocsRange = { startIndex: number; endIndex: number; tabId: string };
+
+/** One cell of a table, named by the table's start index and the cell's row and column. */
+export type TableCellLocation = {
+  tableStartLocation: DocsLocation;
+  rowIndex: number;
+  columnIndex: number;
+};
+
+/** The `documents.batchUpdate` requests the Docs gatekeeper sends. */
+export type GoogleDocsRequest =
+  | { insertText: { location: DocsLocation; text: string } }
+  | { deleteContentRange: { range: DocsRange } }
+  | { updateTextStyle: { range: DocsRange; textStyle: TextStyle; fields: string } }
+  | {
+    updateParagraphStyle: {
+      range: DocsRange; paragraphStyle: Record<string, unknown>; fields: string;
+    };
+  }
+  | { createParagraphBullets: { range: DocsRange; bulletPreset: string } }
+  | { deleteParagraphBullets: { range: DocsRange } }
+  | { insertTable: { rows: number; columns: number; location: DocsLocation } }
+  | { insertTableRow: { tableCellLocation: TableCellLocation; insertBelow: boolean } }
+  | { insertTableColumn: { tableCellLocation: TableCellLocation; insertRight: boolean } }
+  | { deleteTableRow: { tableCellLocation: TableCellLocation } }
+  | { deleteTableColumn: { tableCellLocation: TableCellLocation } }
+  | { pinTableHeaderRows: { tableStartLocation: DocsLocation; pinnedHeaderRowsCount: number } };
+
+// ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
 
 const DOCS_API_BASE = "https://docs.googleapis.com/v1/documents";
-// A native Doc is limited to roughly one million characters; 10 MiB bounds its expanded JSON form.
+// A document is read whole, and its JSON, asked for without indentation, is mostly structure: a
+// paragraph or a table cell takes far more bytes than its text. 10 MiB bounds that answer, which
+// is parsed in memory.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -302,10 +400,16 @@ export class GoogleDocsApi {
     return documentId;
   }
 
-  /** Fetch a document and flatten its tab tree. */
+  /**
+   * Fetch a document and flatten its tab tree.
+   *
+   * The answer is requested as compact JSON. Google indents it otherwise, and since the answer
+   * is mostly structure, the indentation would bring a document with tables to
+   * `MAX_RESPONSE_BYTES` far sooner.
+   */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
     let { documentId: id, title, revisionId, tabs } = await this.#request<GoogleDocsResponse>(
-      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true`,
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&prettyPrint=false`,
       {},
       "get document",
     );
@@ -355,7 +459,7 @@ export class GoogleDocsApi {
   /** Send document updates, revision-locking marked writes. */
   async batchUpdate(
     documentId: string,
-    requests: unknown[],
+    requests: readonly GoogleDocsRequest[],
     revisionId?: string,
     writeMarker?: GoogleDocsWriteMarker,
   ): Promise<{ revisionId: string; writeMarkerId?: string }> {
@@ -372,7 +476,7 @@ export class GoogleDocsApi {
         }, ...requests]
       : requests;
     let body: {
-      requests: unknown[];
+      requests: readonly unknown[];
       writeControl?: { requiredRevisionId: string } | { targetRevisionId: string };
     } = { requests: markedRequests };
     if (revisionId) {
@@ -592,9 +696,6 @@ export function docsFileInvisible(error: unknown): boolean {
 export function docsWriteInvalid(error: unknown): boolean {
   return error instanceof GoogleApiError && error.providerStatus === "INVALID_ARGUMENT";
 }
-
-/** A range of one tab's body, in UTF-16 code units. */
-export type DocsRange = { startIndex: number; endIndex: number; tabId: string };
 
 /** One post of a suggestion thread, as `documents.get` shows it to the caller. */
 export type DocsPostRecord = {

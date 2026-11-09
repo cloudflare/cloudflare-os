@@ -1,11 +1,21 @@
+/// <reference types="node" />
+import { serialize } from "node:v8";
 import { describe, expect, it } from "vitest";
-import type { TextStyle } from "../src/docs-api";
+import type {
+  GoogleDocsRequest, GoogleDocsTab, Paragraph, Table, TableCell, TextStyle,
+} from "../src/docs-api";
 import {
-  applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
-  computeReplaceOperations,
-  docTabToMarkdown, markdownToDocRequests,
+  applyMarkdownEdit, assertMarkdownRangeEditable, canonicalizeMarkdownAppend,
+  canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement, canonicalLinkDestination,
+  cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
+  docTabToMarkdown, MARKDOWN_RENDERING_VERSION, markdownToDocRequests, packTableRow,
+  plainTextToDocRequests, REPLAYABLE_TEXT_EDIT_VERSIONS, StructuredContentError,
+  stripUnwritableCharacters, tableRowCells, tableRowIndexes,
 } from "../src/markdown-converter";
-import type { Segment } from "../src/markdown-converter";
+import type {
+  CellInlineRun, DocTabSnapshot, EditableMarkdown, MarkdownRange, Segment, TableCellEntry,
+  TableMapping,
+} from "../src/markdown-converter";
 import { BULLET_LIST, buildTab, cellTab, CHECK_LIST } from "./doc-fixture";
 
 /** A segment with a document counterpart, as opposed to a Markdown-syntax-only one. */
@@ -458,7 +468,11 @@ describe("Markdown write canonicalization", () => {
     let snapshot = docTabToMarkdown(buildTab([{ runs: [{ text, style }, "\n"] }]));
     let start = snapshot.markdown.indexOf(old);
     return applyMarkdownEdit(
-      { markdown: snapshot.markdown, protectedRanges: snapshot.sourceMap.protectedRanges },
+      {
+        markdown: snapshot.markdown,
+        protectedRanges: snapshot.sourceMap.protectedRanges,
+        tables: snapshot.sourceMap.tables,
+      },
       start, start + old.length, canonicalizeMarkdownReplacement(old, next),
     ).markdown;
   }
@@ -478,6 +492,74 @@ describe("Markdown write canonicalization", () => {
 
   it("leaves formatting spanning inserted breaks as the write parses it", () => {
     expect(splitEdit("Old", {}, "Old", "**a\nb**")).toBe("**a\n\nb**\n");
+  });
+});
+
+/** How a replacement of the whole tab by itself and the appended text writes the same append. */
+function wholeTabReplacement(markdown: string, appended: string): string {
+  return canonicalizeMarkdownReplacement(
+    markdown, markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + appended + "\n");
+}
+
+/** The rendering of a paragraph, a table of four cells and another paragraph. */
+function tableBetweenParagraphs(before: string, cell: string): string {
+  return docTabToMarkdown(buildTab([
+    { runs: [`${before}\n`] },
+    { table: [["Field\n", `${cell}\n`], ["Name\n", "yes\n"]] },
+    { runs: ["After\n"] },
+  ])).markdown;
+}
+
+describe("canonicalizeMarkdownAppend", () => {
+  it.each([
+    ["an asterisk in a cell", tableBetweenParagraphs("Before", "Required*"), "*Source: finance.*"],
+    [
+      "an asterisk before the table",
+      tableBetweenParagraphs("Before *", "Required"), "*Source: finance.*",
+    ],
+    [
+      "an unmatched strikethrough marker in a cell",
+      tableBetweenParagraphs("Before", "a ~~ b"), "x ~~ y",
+    ],
+    [
+      "an unmatched bracket in a cell",
+      tableBetweenParagraphs("Before", "see [1"), "x](https://y.example)",
+    ],
+  ])("appends without rewriting what is there: %s", (_name, markdown, appended) => {
+    expect(canonicalizeMarkdownForWrite(appended)).toBe(appended);
+    expect(markdown).toContain("  </tr>\n  <tr>\n    <td><p>Name</p></td>\n");
+
+    expect(canonicalizeMarkdownAppend(markdown, appended)).toBe(`${markdown}\n${appended}\n`);
+    // The replacement pairs the tab's unmatched token with the appended one and writes
+    // everything from that token on again, as paragraphs.
+    expect(wholeTabReplacement(markdown, appended))
+      .toContain("  </tr>\n\n  <tr>\n\n    <td><p>Name</p></td>\n\n");
+  });
+
+  const TAILS = ["base\n", "base\n\n\n", "base", "base\n\n", "- one\n", "1. one\n", "\n"];
+  const APPENDED = [
+    "added", "- two", "1. two", "# H", "a\n\nb", "x\n\n\n\ny", "   ", "", "\n\nlead", "trail\n\n",
+  ];
+
+  it("separates an append as a replacement of the whole tab does", () => {
+    for (let tail of TAILS) {
+      for (let text of APPENDED) {
+        let appended = canonicalizeMarkdownForWrite(text);
+        let result = canonicalizeMarkdownAppend(tail, appended);
+
+        expect([tail, text, result]).toEqual([tail, text, wholeTabReplacement(tail, appended)]);
+        expect(result.startsWith(tail)).toBe(true);
+      }
+    }
+    expect(canonicalizeMarkdownAppend("- one\n", "- two")).toBe("- one\n- two\n");
+    expect(canonicalizeMarkdownAppend("1. one\n", "- two")).toBe("1. one\n\n- two\n");
+    expect(canonicalizeMarkdownAppend("base\n\n", "added")).toBe("base\n\n\n\nadded\n");
+  });
+
+  it("keeps a last line the tab left unterminated", () => {
+    expect(canonicalizeMarkdownAppend("a]\nPlain", "")).toBe("a]\nPlain\n\n\n");
+    // The replacement of the whole tab would double the line break between the two lines.
+    expect(wholeTabReplacement("a]\nPlain", "")).not.toBe("a]\nPlain\n\n\n");
   });
 });
 
@@ -930,6 +1012,934 @@ describe("Google Docs tables", () => {
   });
 });
 
+/** A table of a fixture's body, by its position among the body's elements. */
+function fixtureTable(tab: GoogleDocsTab, element: number): Table {
+  let table = tab.body.content[element]?.table;
+  if (!table) throw new Error(`Element ${element} of the fixture is not a table`);
+  return table;
+}
+
+function fixtureCell(tab: GoogleDocsTab, element: number, row: number, column: number): TableCell {
+  let cell = fixtureTable(tab, element).tableRows?.[row]?.tableCells?.[column];
+  if (!cell) throw new Error(`The fixture's table has no cell ${row}, ${column}`);
+  return cell;
+}
+
+function fixtureParagraph(cell: TableCell, index = 0): Paragraph {
+  let paragraph = cell.content?.[index]?.paragraph;
+  if (!paragraph) throw new Error(`Element ${index} of the fixture's cell is not a paragraph`);
+  return paragraph;
+}
+
+/** Turn one element of a paragraph into an inline image, which the fixture has no part for. */
+function makeInlineImage(paragraph: Paragraph, element: number): void {
+  let part = paragraph.elements[element];
+  delete part.richLink;
+  part.inlineObjectElement = { inlineObjectId: "image-1" };
+}
+
+/**
+ * The lines of every top-level cell of a table in the Markdown, row by row. A cell's own lines are
+ * indented four spaces and a nested table's further, so the indentation tells them apart.
+ */
+function cellBlocks(markdown: string, table: MarkdownRange): MarkdownRange[][] {
+  let rows: MarkdownRange[][] = [];
+  let open: MarkdownRange | undefined;
+  let offset = table.mdStart;
+  for (let line of markdown.slice(table.mdStart, table.mdEnd).split("\n")) {
+    if (line.startsWith("    <td") || line === "  </tr>") {
+      if (open) open.mdEnd = offset;
+      open = undefined;
+    }
+    if (line === "  <tr>") rows.push([]);
+    if (line.startsWith("    <td")) {
+      open = { mdStart: offset, mdEnd: offset };
+      rows[rows.length - 1].push(open);
+    }
+    offset += line.length + 1;
+  }
+  return rows;
+}
+
+type MappedText = {
+  row: number;
+  column: number;
+  /** Where the text starts in the Markdown. */
+  mdStart: number;
+  /** The Markdown the text's range names. */
+  html: string;
+  /** The start index the map gives for the text's paragraph. */
+  paragraph: number;
+};
+
+/** Every editable text the map lists for a table, read through the map's accessors. */
+function mappedTexts(snapshot: DocTabSnapshot, index = 0): MappedText[] {
+  let table = snapshot.sourceMap.tables[index];
+  let blocks = cellBlocks(snapshot.markdown, table);
+  let texts: MappedText[] = [];
+  table.rows.forEach((_, row) => {
+    let indexes = tableRowIndexes(table, row);
+    tableRowCells(table, row).forEach((cell, column) => {
+      let cellStart = blocks[row][column].mdStart;
+      cell.texts.forEach(([start, end], text) => texts.push({
+        row, column,
+        mdStart: cellStart + start,
+        html: snapshot.markdown.slice(cellStart + start, cellStart + end),
+        paragraph: indexes.cells[column].paragraphs[text],
+      }));
+    });
+  });
+  return texts;
+}
+
+/** The start index of every paragraph in a fixture table's cells, in document order. */
+function fixtureParagraphStarts(table: Table): number[] {
+  return (table.tableRows ?? []).flatMap(row => (row.tableCells ?? []).flatMap(cell =>
+    (cell.content ?? []).flatMap(element => element.paragraph ? [element.startIndex] : [])));
+}
+
+/** The map of a tab's first table. */
+function firstTableMap(tab: GoogleDocsTab): TableMapping {
+  return docTabToMarkdown(tab).sourceMap.tables[0];
+}
+
+/** What the map says of the cells of the first row of a tab's first table. */
+function firstRowCells(tab: GoogleDocsTab): TableCellEntry[] {
+  return tableRowCells(firstTableMap(tab), 0);
+}
+
+/** A cell holding one item of list `listId`. */
+function listItemCell(listId: string) {
+  return { paragraphs: [{ runs: ["Item\n"], bullet: { listId } }] };
+}
+
+/** A cell holding one paragraph of the given named style. */
+function styledCell(namedStyleType: string) {
+  return { paragraphs: [{ runs: ["Text\n"], namedStyleType }] };
+}
+
+/** The HTML each table's range names in a rendering. */
+function tableHtmls({ markdown, tables }: EditableMarkdown): string[] {
+  return tables.map(table => markdown.slice(table.mdStart, table.mdEnd));
+}
+
+/** One of `INLINE_STYLES` as the run `cellInlineHtml` takes for `text`. */
+function inlineRun([, style]: (typeof INLINE_STYLES)[number], text: string): CellInlineRun {
+  return {
+    text,
+    bold: style.bold,
+    italic: style.italic,
+    strikethrough: style.strikethrough,
+    link: style.link && "url" in style.link ? style.link.url : undefined,
+  };
+}
+
+/** A range of tab `t`, which the request tests write into. */
+function tabRange(startIndex: number, endIndex: number) {
+  return { startIndex, endIndex, tabId: "t" };
+}
+
+/** The requests `plainTextToDocRequests` adds for `text` at index 12 of tab `t`. */
+function plainTextRequests(text: string, keepParagraphStyle?: boolean): GoogleDocsRequest[] {
+  let requests: GoogleDocsRequest[] = [];
+  plainTextToDocRequests(text, 12, "t", requests, keepParagraphStyle);
+  return requests;
+}
+
+/** The one cell of a `cellTab` rendering, without the indentation of its first line. */
+function singleCellHtml(tab: GoogleDocsTab): string {
+  let snapshot = docTabToMarkdown(tab);
+  let [[cell]] = cellBlocks(snapshot.markdown, snapshot.sourceMap.tables[0]);
+  return snapshot.markdown.slice(cell.mdStart, cell.mdEnd).trim();
+}
+
+function thrownBy(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+describe("Google Docs table map", () => {
+  const PERSON = { person: { email: "owner@example.com" } };
+  const RICH_LINK = { richLink: { title: "Plan", uri: "https://example.com/plan" } };
+  const NUMBERED_LIST = { listProperties: { nestingLevels: [
+    { glyphType: "DECIMAL" }, { glyphType: "DECIMAL" },
+  ] } };
+  const THREE_LEVEL_LIST = { listProperties: { nestingLevels: [
+    { glyphType: "DECIMAL" }, { glyphType: "DECIMAL" }, { glyphType: "DECIMAL" },
+  ] } };
+  // What a cell's list writes for each level its first item skips: an item with no marker.
+  const SKIPPED_LEVEL = '<ul style="list-style-type: none"><li>';
+
+  it("maps each top-level table to its HTML and its indexes", () => {
+    let tab = buildTab([
+      { runs: ["Before\n"] },
+      { runs: ["\n"] },
+      { table: [["r0c0\n", "r0c1\n"], ["r1c0\n", "r1c1\n"]] },
+      { runs: ["After\n"] },
+    ]);
+    let snapshot = docTabToMarkdown(tab);
+    let element = tab.body.content[3];
+    let { tables } = snapshot.sourceMap;
+    let table = tables[0];
+    let html = snapshot.markdown.slice(table.mdStart, table.mdEnd);
+
+    expect(tables).toHaveLength(1);
+    expect(html.startsWith("<table>\n  <tr>\n")).toBe(true);
+    expect(html.endsWith("  </tr>\n</table>")).toBe(true);
+    expect(snapshot.markdown.slice(table.mdStart - 2, table.mdEnd + 2)).toBe(`\n\n${html}\n\n`);
+    expect([table.docStart, table.docEnd]).toEqual([9, 37]);
+    expect([table.docStart, table.docEnd]).toEqual([element.startIndex, element.endIndex]);
+    expect(table.rows).toEqual([[32, 11, 15, 32, 11, 15], [32, 11, 15, 32, 11, 15]]);
+    expect(table.docRows).toEqual([[10, 6, 1, 6, 1], [23, 6, 1, 6, 1]]);
+    expect("suggested" in table).toBe(false);
+    expect("pinnedRows" in table).toBe(false);
+
+    let rows = fixtureTable(tab, 3).tableRows ?? [];
+    expect(rows).toHaveLength(2);
+    rows.forEach((row, index) => {
+      expect(tableRowIndexes(table, index)).toEqual({
+        docStart: row.startIndex,
+        docEnd: row.endIndex,
+        cells: (row.tableCells ?? []).map(cell => ({
+          docStart: cell.startIndex,
+          docEnd: cell.endIndex,
+          paragraphs: (cell.content ?? []).map(paragraph => paragraph.startIndex),
+        })),
+      });
+    });
+    expect(tableRowIndexes(table, 0)).toEqual({
+      docStart: 10,
+      docEnd: 23,
+      cells: [
+        { docStart: 11, docEnd: 17, paragraphs: [12] },
+        { docStart: 17, docEnd: 23, paragraphs: [18] },
+      ],
+    });
+  });
+
+  it("maps a cell's text to the paragraph it came from", () => {
+    let tab = buildTab([{ runs: ["Before\n"] }, { table: [
+      [
+        "One\n",
+        { paragraphs: [
+          { runs: ["First\n"] }, { runs: ["\n"] }, { runs: ["R&D <ops>\u000bnext\n"] },
+        ] },
+      ],
+      [
+        { paragraphs: [{ runs: ["Heading\n"], namedStyleType: "HEADING_2" }] },
+        { paragraphs: [{ runs: ["Dot\n"], bullet: { listId: "L1" } }] },
+      ],
+      [
+        { paragraphs: [
+          { runs: ["Step\n"], bullet: { listId: "numbered" } },
+          { runs: ["Sub\n"], bullet: { listId: "numbered", nestingLevel: 1 } },
+          { runs: ["Next\n"], bullet: { listId: "numbered" } },
+        ] },
+        { paragraphs: [{
+          runs: ["Section\n"], namedStyleType: "HEADING_3", bullet: { listId: "L1" },
+        }] },
+      ],
+      [
+        // A list whose first item starts below the top level, in a cell of one line and in a
+        // cell of several: markerless items wrap it, one for each level it skips.
+        { paragraphs: [{ runs: ["Deep\n"], bullet: { listId: "deep", nestingLevel: 2 } }] },
+        { paragraphs: [
+          { runs: ["Intro\n"] },
+          { runs: ["Inner\n"], bullet: { listId: "inner", nestingLevel: 1 } },
+        ] },
+      ],
+      [
+        // An item two levels below its parent, and one that starts with its bullet character
+        // one level down.
+        { paragraphs: [
+          { runs: ["Top\n"], bullet: { listId: "skipping" } },
+          { runs: ["Low\n"], bullet: { listId: "skipping", nestingLevel: 2 } },
+        ] },
+        { paragraphs: [{ runs: ["Mark\n"], bullet: { listId: "marked", nestingLevel: 1 } }] },
+      ],
+    ] }, { runs: ["After\n"] }], {
+      ...BULLET_LIST,
+      numbered: NUMBERED_LIST,
+      deep: THREE_LEVEL_LIST,
+      inner: THREE_LEVEL_LIST,
+      skipping: THREE_LEVEL_LIST,
+      marked: { listProperties: { nestingLevels: [
+        { glyphSymbol: "●" }, { glyphSymbol: "○" },
+      ] } },
+    });
+    let snapshot = docTabToMarkdown(tab);
+    let texts = mappedTexts(snapshot);
+    let around = (text: MappedText, before: number, after: number) =>
+      snapshot.markdown.slice(text.mdStart - before, text.mdStart + text.html.length + after);
+    // The line of the Markdown a text stands in: what comes before the text, the text, the rest.
+    let inLine = (text: MappedText) => {
+      let start = snapshot.markdown.lastIndexOf("\n", text.mdStart - 1) + 1;
+      let end = text.mdStart + text.html.length;
+      return [
+        snapshot.markdown.slice(start, text.mdStart), text.html,
+        snapshot.markdown.slice(end, snapshot.markdown.indexOf("\n", end)),
+      ];
+    };
+
+    expect(snapshot.markdown).toContain(
+      "    <td>\n" +
+      "      <p>First</p>\n" +
+      "      <p></p>\n" +
+      "      <p>R&amp;D &lt;ops&gt;<br>next</p>\n" +
+      "    </td>\n");
+    expect(texts.map(text => [text.row, text.column, text.html])).toEqual([
+      [0, 0, "One"],
+      [0, 1, "First"],
+      [0, 1, ""],
+      [0, 1, "R&amp;D &lt;ops&gt;<br>next"],
+      [1, 0, "Heading"],
+      [1, 1, "Dot"],
+      [2, 0, "Step"],
+      [2, 0, "Sub"],
+      [2, 0, "Next"],
+      [2, 1, "Section"],
+      [3, 0, "Deep"],
+      [3, 1, "Intro"],
+      [3, 1, "Inner"],
+      [4, 0, "Top"],
+      [4, 0, "Low"],
+      [4, 1, "Mark"],
+    ]);
+    expect(texts.map(text => text.paragraph)).toEqual(fixtureParagraphStarts(fixtureTable(tab, 2)));
+    expect(around(texts[0], 3, 4)).toBe("<p>One</p>");
+    expect(around(texts[2], 3, 4)).toBe("<p></p>");
+    expect(around(texts[4], 4, 5)).toBe("<h2>Heading</h2>");
+    expect(around(texts[5], 6, 5)).toBe("<li>● Dot</li>");
+    expect(around(texts[6], 8, 4)).toBe("<ol><li>Step<ol>");
+    expect(around(texts[7], 8, 10)).toBe("<ol><li>Sub</li></ol>");
+    expect(around(texts[8], 9, 10)).toBe("</li><li>Next</li></ol>");
+    expect(around(texts[9], 10, 10)).toBe("<li><h3>● Section</h3></li>");
+
+    expect(inLine(texts[10])).toEqual([
+      `    <td>${SKIPPED_LEVEL}${SKIPPED_LEVEL}<ol><li>`, "Deep",
+      "</li></ol></li></ul></li></ul></td>",
+    ]);
+    expect(inLine(texts[11])).toEqual(["      <p>", "Intro", "</p>"]);
+    expect(inLine(texts[12])).toEqual([
+      `      ${SKIPPED_LEVEL}<ol><li>`, "Inner", "</li></ol></li></ul>",
+    ]);
+    expect(inLine(texts[13])).toEqual([
+      "    <td><ol><li>", "Top", `${SKIPPED_LEVEL}<ol><li>Low</li></ol></li></ul></li></ol></td>`,
+    ]);
+    expect(inLine(texts[14])).toEqual([
+      `    <td><ol><li>Top${SKIPPED_LEVEL}<ol><li>`, "Low", "</li></ol></li></ul></li></ol></td>",
+    ]);
+    expect(inLine(texts[15])).toEqual([
+      `    <td>${SKIPPED_LEVEL}<ul style="list-style-type: none"><li>○ `, "Mark",
+      "</li></ul></li></ul></td>",
+    ]);
+  });
+
+  it("counts every line of a cell, also those a chip's text breaks", () => {
+    let snapshot = docTabToMarkdown(cellTab([
+      { runs: [{ person: { name: "Ada\nLovelace", email: "ada@example.com" } }, "\n"] },
+      { runs: ["Plain\n"] },
+      { runs: ["Last\n"] },
+    ]));
+
+    expect(snapshot.markdown).toContain(
+      "    <td>\n" +
+      "      <p>Ada\n" +
+      "      Lovelace</p>\n" +
+      "      <p>Plain</p>\n" +
+      "      <p>Last</p>\n" +
+      "    </td>\n");
+    expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["Plain", "Last"]);
+  });
+
+  it("lists no text for cells it cannot edit", () => {
+    let tab = buildTab([{ table: [
+      [
+        { paragraphs: [{ runs: ["Merged\n"] }], tableCellStyle: { rowSpan: 2, columnSpan: 2 } },
+        "covered beside\n",
+        "free\n",
+      ],
+      ["covered below\n", "covered across\n", "free too\n"],
+      [
+        { paragraphs: [{ runs: ["Outer\n"] }, { table: [["inner\n"]] }, { runs: ["\n"] }] },
+        "contents\n",
+        { paragraphs: [{ runs: ["Owner: ", PERSON, "\n"] }] },
+      ],
+      [
+        { paragraphs: [{ runs: ["Figure ", RICH_LINK, "\n"] }] },
+        "positioned\n",
+        { paragraphs: [{ runs: ["Above ", { horizontalRule: true }, " below\n"] }] },
+      ],
+      [
+        "A\uE907B\n",
+        { paragraphs: [{ runs: ["Summary\n"], namedStyleType: "SUBTITLE" }] },
+        { paragraphs: [{ runs: [PERSON, "\n"] }, { runs: ["Plain\n"] }] },
+      ],
+    ] }]);
+    let contents = fixtureCell(tab, 1, 2, 1);
+    contents.content = [{
+      startIndex: contents.startIndex + 1, endIndex: contents.endIndex, tableOfContents: {},
+    }];
+    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 3, 0)), 1);
+    fixtureParagraph(fixtureCell(tab, 1, 3, 1)).positionedObjectIds = ["image-1"];
+    let snapshot = docTabToMarkdown(tab);
+    let table = snapshot.sourceMap.tables[0];
+
+    expect(snapshot.markdown).toContain('<td rowspan="2" colspan="2"><p>Merged</p></td>');
+    expect(snapshot.markdown).toContain("<td>[Table of contents]</td>");
+    expect(snapshot.markdown).toContain("<td><p>Figure [Image]</p></td>");
+    expect(snapshot.markdown).toContain("<td><p>[Image] positioned</p></td>");
+    expect(snapshot.markdown).toContain("<td><p><em>Summary</em></p></td>");
+    expect(table.rows.map((_, row) => tableRowCells(table, row).map(cell => cell.texts.length)))
+      .toEqual([[0, 0, 1], [0, 0, 1], [0, 0, 0], [0, 0, 0], [0, 0, 1]]);
+    expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["free", "free too", "Plain"]);
+    expect(mappedTexts(snapshot).map(text => text.paragraph)).toEqual([
+      fixtureCell(tab, 1, 0, 2).startIndex + 1,
+      fixtureCell(tab, 1, 1, 2).startIndex + 1,
+      fixtureCell(tab, 1, 4, 2).endIndex - "Plain\n".length,
+    ]);
+  });
+
+  it("reads a missing span as one, and a merged cell's reach from its spans", () => {
+    let tab = buildTab([{ table: [
+      [{ paragraphs: [{ runs: ["wide\n"] }], tableCellStyle: { columnSpan: 2 } }, "\n", "a\n"],
+      [{ paragraphs: [{ runs: ["tall\n"] }], tableCellStyle: { rowSpan: 2 } }, "b\n", "c\n"],
+      ["\n", "d\n", "e\n"],
+      ["f\n", "g\n", "h\n"],
+    ] }]);
+
+    expect(mappedTexts(docTabToMarkdown(tab)).map(text => text.html))
+      .toEqual(["a", "b", "c", "d", "e", "f", "g", "h"]);
+  });
+
+  it("keeps a paragraph editable whose text Google would strip from an insert", () => {
+    let snapshot = docTabToMarkdown(buildTab([{ table: [["\uF0B7 item\n", "a\u0001b\n"]] }]));
+
+    expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["\uF0B7 item", "a\u0001b"]);
+  });
+
+  it("maps only top-level tables", () => {
+    let snapshot = docTabToMarkdown(buildTab([
+      { runs: ["Before\n"] },
+      { table: [[{ paragraphs: [
+        { runs: ["\n"] }, { table: [["inner\n"]] }, { runs: ["\n"] },
+      ] }, "first\n"]] },
+      { runs: ["Between\n"] },
+      { table: [["second\n"]] },
+      { runs: ["After\n"] },
+    ]));
+    let { tables } = snapshot.sourceMap;
+
+    expect(snapshot.markdown).toContain("      <table>\n        <tr>\n          <td><p>inner</p></td>");
+    expect(tables).toHaveLength(2);
+    expect(tables[0].mdEnd).toBeLessThan(tables[1].mdStart);
+    expect(mappedTexts(snapshot, 0).map(text => text.html)).toEqual(["first"]);
+    expect(mappedTexts(snapshot, 1).map(text => text.html)).toEqual(["second"]);
+    expect(snapshot.markdown.slice(tables[1].mdStart, tables[1].mdEnd)).toBe(
+      "<table>\n  <tr>\n    <td><p>second</p></td>\n  </tr>\n</table>");
+  });
+
+  it("maps a table at either end of a tab, and one with no rows or no cells", () => {
+    let ends = docTabToMarkdown(buildTab([{ table: [["first\n"]] }, { table: [["last\n"]] }]));
+    let empty = buildTab([{ runs: ["Before\n"] }, { table: [["gone\n"]] }, { table: [["a\n"]] }]);
+    delete fixtureTable(empty, 2).tableRows;
+    delete (fixtureTable(empty, 3).tableRows ?? [])[0].tableCells;
+    let emptied = docTabToMarkdown(empty).sourceMap.tables;
+
+    expect(ends.markdown.startsWith("<table>\n")).toBe(true);
+    expect(ends.markdown.endsWith("</table>\n")).toBe(true);
+    expect(ends.sourceMap.tables.map(table => table.mdStart)).toEqual([
+      0, ends.markdown.lastIndexOf("<table>"),
+    ]);
+    expect(mappedTexts(ends, 0).concat(mappedTexts(ends, 1)).map(text => text.html))
+      .toEqual(["first", "last"]);
+    expect([emptied[0].rows, emptied[0].docRows]).toEqual([[], []]);
+    expect([emptied[1].rows, emptied[1].docRows]).toEqual([[[]], [[18]]]);
+    expect(tableRowCells(emptied[1], 0)).toEqual([]);
+    expect(tableRowIndexes(emptied[1], 0)).toEqual({ docStart: 18, docEnd: 19, cells: [] });
+  });
+
+  it("shares one element between adjacent runs formatted alike", () => {
+    let bold = { bold: true };
+    let struck = { strikethrough: true };
+    let link = { link: { url: "https://e.com" } };
+
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "Hello ", style: bold }, { text: "World", style: bold }, "\n",
+    ] }]))).toBe("<td><p><strong>Hello World</strong></p></td>");
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "Hello ", style: bold }, { text: "World", style: { bold: true, italic: true } }, "\n",
+    ] }]))).toBe("<td><p><strong>Hello </strong><strong><em>World</em></strong></p></td>");
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "Read ", style: link }, { text: "this", style: link }, "\n",
+    ] }]))).toBe('<td><p><a href="https://e.com">Read this</a></p></td>');
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "old", style: struck }, " new ", { text: "gone", style: struck },
+      { text: " too", style: struck }, "\n",
+    ] }]))).toBe("<td><p><s>old</s> new <s>gone too</s></p></td>");
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "Run", style: { link: { url: "javascript:alert(1)" } } }, " now\n",
+    ] }]))).toBe("<td><p>Run now</p></td>");
+    expect(singleCellHtml(cellTab([{ runs: [
+      { text: "a", style: bold }, { horizontalRule: true }, { text: "b", style: bold }, "\n",
+    ] }]))).toBe("<td><p><strong>a</strong><hr><strong>b</strong></p></td>");
+    expect(singleCellHtml(cellTab([{
+      runs: ["Release ", "summary ", { text: "notes", style: { italic: true } }, "\n"],
+      namedStyleType: "SUBTITLE",
+    }]))).toBe("<td><p><em>Release summary notes</em></p></td>");
+    expect(singleCellHtml(cellTab([{ runs: [PERSON, " and ", { date: "Sep 16, 2026" }, "\n"] }])))
+      .toBe("<td><p>owner@example.com and Sep 16, 2026</p></td>");
+  });
+
+  it("writes a text-only cell paragraph as cellInlineHtml writes its runs", () => {
+    for (let first of INLINE_STYLES) {
+      for (let second of INLINE_STYLES) {
+        let snapshot = docTabToMarkdown(cellTab([{ runs: [
+          { text: "A<", style: first[1] }, { text: "&\u000bB", style: second[1] },
+          { text: "C", style: second[1] }, "\n",
+        ] }]));
+
+        expect([first[0], second[0], mappedTexts(snapshot).map(text => text.html)]).toEqual([
+          first[0], second[0],
+          [cellInlineHtml([
+            inlineRun(first, "A<"), inlineRun(second, "&\u000bB"), inlineRun(second, "C"),
+          ])],
+        ]);
+      }
+    }
+    expect(cellInlineHtml([
+      { text: "", bold: true }, { text: "a", bold: true }, { text: "", italic: true },
+      { text: "b<", bold: true, italic: false }, { text: "c", link: "https://e.com/?a=1&b=\"2\"" },
+      { text: "d\u000be", strikethrough: true, italic: true, bold: true, link: "?tab=t.1" },
+    ])).toBe(
+      "<strong>ab&lt;</strong>" +
+      '<a href="https://e.com/?a=1&amp;b=&quot;2&quot;">c</a>' +
+      '<a href="?tab=t.1"><strong><em><s>d<br>e</s></em></strong></a>');
+    expect(cellInlineHtml([
+      { text: "old", strikethrough: true }, { text: " new " },
+      { text: "kept", strikethrough: false },
+      { text: " gone", strikethrough: true }, { text: " too", strikethrough: true },
+    ])).toBe("<s>old</s> new kept<s> gone too</s>");
+    expect(cellInlineHtml([])).toBe("");
+  });
+
+  it("packs and unpacks a row", () => {
+    let plain = {
+      numbered: false, footnote: false, styled: false, loneChip: false, unshown: false,
+    };
+    let cells: TableCellEntry[] = [
+      { ...plain, texts: [[11, 15]] },
+      { ...plain, texts: [], numbered: true },
+      { ...plain, texts: [[9, 12], [20, 20]] },
+      { ...plain, texts: [], footnote: true },
+      { ...plain, texts: [[11, 15]], numbered: true, footnote: true },
+      { ...plain, texts: [], styled: true, loneChip: true },
+      { ...plain, texts: [], styled: true },
+      { ...plain, texts: [], loneChip: true },
+      { ...plain, texts: [[11, 15]], unshown: true },
+      { ...plain, texts: [], loneChip: true, unshown: true },
+    ];
+    let row = packTableRow(cells);
+
+    expect(row).toEqual(
+      [32, 11, 15, 1, 64, 9, 12, 20, 20, 2, 35, 11, 15, 12, 4, 8, 48, 11, 15, 24]);
+    expect(tableRowCells({ mdStart: 0, mdEnd: 0, rows: [row] }, 0)).toEqual(cells);
+  });
+
+  it("marks the cells that hold an item of a list that numbers a level", () => {
+    let cells = firstRowCells(buildTab([{ table: [[
+      listItemCell("numbered"),
+      listItemCell("mixed"),
+      { paragraphs: [
+        { runs: ["\n"] }, { table: [[listItemCell("numbered")]] }, { runs: ["\n"] },
+      ] },
+      listItemCell("L1"),
+      listItemCell("missing"),
+      listItemCell("markerless"),
+      "Plain\n",
+    ]] }], {
+      ...BULLET_LIST,
+      numbered: NUMBERED_LIST,
+      mixed: { listProperties: { nestingLevels: [{ glyphSymbol: "●" }, { glyphType: "ALPHA" }] } },
+      markerless: { listProperties: { nestingLevels: [
+        { glyphType: "NONE" }, { glyphType: "GLYPH_TYPE_UNSPECIFIED" },
+      ] } },
+    }));
+
+    expect(cells.map(cell => cell.numbered))
+      .toEqual([true, true, true, false, false, false, false]);
+  });
+
+  it("marks the cells that hold a footnote", () => {
+    let footnote = { footnote: { id: "fn-1", number: "1" } };
+    let snapshot = docTabToMarkdown(buildTab([{ table: [[
+      { paragraphs: [{ runs: ["See ", footnote, "\n"] }] },
+      { paragraphs: [{ runs: ["Plain\n"] }, { runs: [footnote, "\n"] }] },
+      { paragraphs: [
+        { runs: ["\n"] }, { table: [[{ paragraphs: [{ runs: [footnote, "\n"] }] }]] }, { runs: ["\n"] },
+      ] },
+      "See [1]\n",
+      "\n",
+    ]] }]));
+    let cells = tableRowCells(snapshot.sourceMap.tables[0], 0);
+
+    expect(cells.map(cell => cell.footnote)).toEqual([true, true, true, false, false]);
+    expect(mappedTexts(snapshot).map(text => [text.column, text.html])).toEqual([
+      [1, "Plain"], [3, "See [1]"], [4, ""],
+    ]);
+  });
+
+  it("marks the cells a new neighbour is reset beside", () => {
+    let tab = buildTab([{ table: [[
+      styledCell("HEADING_2"),
+      styledCell("TITLE"),
+      styledCell("SUBTITLE"),
+      listItemCell("L1"),
+      "contents\n",
+      "no content\n",
+      "Plain\n",
+      "\n",
+      { paragraphs: [{ runs: ["Plain\n"] }, { runs: ["Heading\n"], namedStyleType: "HEADING_1" }] },
+      { paragraphs: [
+        { runs: ["Plain\n"] }, { table: [[styledCell("HEADING_1")]] }, { runs: ["\n"] },
+      ] },
+    ]] }], BULLET_LIST);
+    let contents = fixtureCell(tab, 1, 0, 4);
+    contents.content = [{
+      startIndex: contents.startIndex + 1, endIndex: contents.endIndex, tableOfContents: {},
+    }];
+    delete fixtureCell(tab, 1, 0, 5).content;
+
+    expect(firstRowCells(tab).map(cell => cell.styled))
+      .toEqual([true, true, true, true, true, true, false, false, false, false]);
+  });
+
+  it("marks the cells that hold a chip alone", () => {
+    let tab = buildTab([{ table: [[
+      { paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, "\n"] }] },
+      { paragraphs: [{ runs: [{ date: "Sep 16, 2026" }, "\n"] }] },
+      { paragraphs: [{ runs: [RICH_LINK, "\n"] }] },
+      "\uE907\n",
+      { paragraphs: [{ runs: ["Owner: ", PERSON, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, " owns it\n"] }] },
+      { paragraphs: [{ runs: ["Owner\n"] }, { runs: [PERSON, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, "\n"] }, { runs: ["\n"] }] },
+      { paragraphs: [{ runs: [RICH_LINK, "\n"] }] },
+      "\n",
+      "Plain\n",
+    ]] }]);
+    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 9)), 0);
+
+    expect(firstRowCells(tab).map(cell => cell.loneChip)).toEqual([
+      true, true, true, true, true, false, false, false, false, false, false, false,
+    ]);
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      "  <tr>\n    <td><p></p></td>\n    <td><p>owner@example.com</p></td>\n");
+    expect(docTabToMarkdown(tab).markdown).toContain("    <td><p>[Image]</p></td>\n");
+  });
+
+  it("marks the cells of chips nobody has seen copied", () => {
+    let tab = buildTab([{ table: [[
+      { paragraphs: [{ runs: [PERSON, PERSON, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, " \n"] }] },
+      { paragraphs: [{ runs: [PERSON, "\uE907\n"] }] },
+      "\uE907\uE907\n",
+      { paragraphs: [{ runs: [{ dropdown: "Open" }, RICH_LINK, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, ", ", PERSON, "\n"] }] },
+      { paragraphs: [{ runs: [RICH_LINK, " caption\n"] }] },
+    ]] }]);
+    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 4)), 1);
+    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 6)), 0);
+
+    expect(firstRowCells(tab).map(cell => cell.loneChip))
+      .toEqual([true, true, true, true, true, false, false]);
+  });
+
+  it("marks the cells that hold an element the rendering shows nothing for", () => {
+    let unnamed = { person: { email: "" } };
+    let tab = buildTab([{ table: [[
+      { paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] },
+      { paragraphs: [{ runs: ["Status: ", { dropdown: "Open" }, "\n"] }] },
+      { paragraphs: [{ runs: ["Notes\n"] }, { runs: [{ dropdown: "Open" }, "\n"] }] },
+      { paragraphs: [
+        { runs: ["\n"] },
+        { table: [[{ paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] }]] },
+        { runs: ["\n"] },
+      ] },
+      { paragraphs: [{ runs: [unnamed, "\n"] }] },
+      { paragraphs: [{ runs: [PERSON, " and ", { date: "Sep 16, 2026" }, "\n"] }] },
+      { paragraphs: [{ runs: [RICH_LINK, { horizontalRule: true }, "\n"] }] },
+      "\uE907\n",
+      "\n",
+      { paragraphs: [{ runs: [RICH_LINK, "\n"] }] },
+    ]] }]);
+    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 9)), 0);
+
+    expect(firstRowCells(tab).map(cell => cell.unshown))
+      .toEqual([true, true, true, true, true, false, false, false, false, false]);
+    // What such a cell reads as: nothing where the element stands.
+    let { markdown } = docTabToMarkdown(tab);
+    expect(markdown).toContain(
+      "  <tr>\n    <td><p></p></td>\n    <td><p>Status: </p></td>\n    <td>\n" +
+      "      <p>Notes</p>\n      <p></p>\n    </td>\n");
+  });
+
+  it("marks a table that holds suggestions and counts its pinned rows", () => {
+    let rows = [["a\n", "b\n"], ["c\n", "d\n"], ["e\n", "f\n"]];
+    let plain = firstTableMap(buildTab([{ table: rows }]));
+    let ownFields = (["suggestedInsertionIds", "suggestedDeletionIds"] as const).map(field => {
+      let tab = buildTab([{ table: rows }]);
+      fixtureTable(tab, 1)[field] = ["s1"];
+      return firstTableMap(tab);
+    });
+    let emptyIds = buildTab([{ table: rows }]);
+    Object.assign(fixtureTable(emptyIds, 1), { suggestedInsertionIds: [], suggestedDeletionIds: [] });
+    Object.assign(fixtureCell(emptyIds, 1, 0, 0), { suggestedInsertionIds: [] });
+    let nested = buildTab([{ table: [[{ paragraphs: [
+      { runs: ["\n"] }, { table: rows, suggestedRows: { 0: "deletion" } }, { runs: ["\n"] },
+    ] }]] }]);
+    let secondRowPinned = buildTab([{ table: rows }]);
+    (fixtureTable(secondRowPinned, 1).tableRows ?? [])[1].tableRowStyle = { tableHeader: true };
+
+    expect(firstTableMap(buildTab([{ table: rows, suggestedRows: { 1: "insertion" } }])).suggested)
+      .toBe(true);
+    expect(firstTableMap(buildTab([{ table: [
+      ["a\n", { paragraphs: [{ runs: ["b\n"] }], suggested: "deletion" }],
+    ] }])).suggested).toBe(true);
+    expect(ownFields.map(table => table.suggested)).toEqual([true, true]);
+    for (let table of [plain, firstTableMap(emptyIds), firstTableMap(nested)]) {
+      expect("suggested" in table).toBe(false);
+    }
+
+    expect(firstTableMap(buildTab([{ table: rows, headerRows: 2 }])).pinnedRows).toBe(2);
+    expect(firstTableMap(buildTab([{ table: rows, headerRows: 3 }])).pinnedRows).toBe(3);
+    for (let table of [plain, firstTableMap(secondRowPinned)]) {
+      expect("pinnedRows" in table).toBe(false);
+    }
+  });
+
+  it("moves tables with an edit before them and leaves earlier ones", () => {
+    let snapshot = docTabToMarkdown(buildTab([
+      { runs: ["Before\n"] },
+      { table: [["one\n"]] },
+      { runs: ["Middle\n"] },
+      { table: [["two\n"]] },
+      { runs: ["After\n"] },
+    ]));
+    let content: EditableMarkdown = {
+      markdown: snapshot.markdown,
+      protectedRanges: snapshot.sourceMap.protectedRanges,
+      tables: snapshot.sourceMap.tables,
+    };
+    let [first, second] = content.tables;
+    let edit = (old: string, replacement: string) => {
+      let start = content.markdown.indexOf(old);
+      return applyMarkdownEdit(content, start, start + old.length, replacement);
+    };
+
+    let before = edit("Before", "Before and more");
+    expect(before.tables).toEqual([
+      { ...first, mdStart: first.mdStart + 9, mdEnd: first.mdEnd + 9 },
+      { ...second, mdStart: second.mdStart + 9, mdEnd: second.mdEnd + 9 },
+    ]);
+    expect(before.tables[0].rows).toBe(first.rows);
+    expect(tableHtmls(before)).toEqual(tableHtmls(content));
+
+    let between = edit("Middle", "Mid");
+    expect(between.tables[0]).toBe(first);
+    expect(between.tables[1]).toEqual({
+      ...second, mdStart: second.mdStart - 3, mdEnd: second.mdEnd - 3,
+    });
+    expect(tableHtmls(between)).toEqual(tableHtmls(content));
+
+    let after = edit("After", "Afterwards");
+    expect(after.tables[0]).toBe(first);
+    expect(after.tables[1]).toBe(second);
+    expect(tableHtmls(after)).toEqual(tableHtmls(content));
+
+    expect(edit("Before", "Behind").tables).toBe(content.tables);
+  });
+
+  describe("plainTextToDocRequests", () => {
+    let insertText = { insertText: { location: { index: 12, tabId: "t" }, text: "ab\ncd" } };
+    let clearTextStyle = {
+      updateTextStyle: { range: tabRange(12, 17), textStyle: {}, fields: "bold,italic,strikethrough,link" },
+    };
+    let resetParagraphs = (endIndex: number) => [
+      { deleteParagraphBullets: { range: tabRange(12, endIndex) } },
+      {
+        updateParagraphStyle: {
+          range: tabRange(12, endIndex),
+          paragraphStyle: {
+            namedStyleType: "NORMAL_TEXT",
+            indentStart: { magnitude: 0, unit: "PT" },
+            indentFirstLine: { magnitude: 0, unit: "PT" },
+          },
+          fields: "namedStyleType,indentStart,indentFirstLine",
+        },
+      },
+    ];
+
+    it("fills a paragraph with plain text", () => {
+      expect(plainTextRequests("ab\ncd")).toEqual([insertText, ...resetParagraphs(18), clearTextStyle]);
+      expect(plainTextRequests("")).toEqual(resetParagraphs(13));
+    });
+
+    it("fills a paragraph and leaves its style", () => {
+      expect(plainTextRequests("ab\ncd", true)).toEqual([insertText, clearTextStyle]);
+      expect(plainTextRequests("", true)).toEqual([]);
+    });
+
+    it("appends to the requests it is given, and reads no Markdown in the text", () => {
+      let requests: GoogleDocsRequest[] = [{ deleteContentRange: { range: tabRange(30, 31) } }];
+      plainTextToDocRequests("**a** - [b](https://e.com)", 12, "t", requests, true);
+
+      expect(requests).toEqual([
+        { deleteContentRange: { range: tabRange(30, 31) } },
+        { insertText: { location: { index: 12, tabId: "t" }, text: "**a** - [b](https://e.com)" } },
+        {
+          updateTextStyle: {
+            range: tabRange(12, 38), textStyle: {}, fields: "bold,italic,strikethrough,link",
+          },
+        },
+      ]);
+    });
+
+    it("sends no indent reset when appending", () => {
+      let requests = markdownToDocRequests("x", 12, "t", { resetParagraphs: true });
+
+      expect(requests.flatMap(request => request.updateParagraphStyle ?? [])).toEqual([{
+        range: tabRange(12, 14),
+        paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
+        fields: "namedStyleType",
+      }]);
+    });
+  });
+
+  it("strips what Google strips", () => {
+    let stripped = [
+      ...Array.from({ length: 9 }, (_, code) => code),
+      ...Array.from({ length: 20 }, (_, index) => 0x0c + index),
+      0xe000, 0xe907, 0xf0b7, 0xf8ff,
+    ].map(code => String.fromCharCode(code));
+
+    for (let character of stripped) {
+      expect([character.charCodeAt(0), stripUnwritableCharacters(`a${character}b`)])
+        .toEqual([character.charCodeAt(0), "ab"]);
+    }
+    expect(stripUnwritableCharacters(`${stripped.join("")}x${stripped.join("y")}`))
+      .toBe(`x${"y".repeat(stripped.length - 1)}`);
+    expect(stripUnwritableCharacters("tab\there\nline\u000bbreak \u00a0\ud7ff\uf900 \u{1F600}"))
+      .toBe("tab\there\nline\u000bbreak \u00a0\ud7ff\uf900 \u{1F600}");
+    expect(stripUnwritableCharacters("")).toBe("");
+  });
+
+  it("reads a heading or bookmark link without a tab as one of the edited tab", () => {
+    expect(cellLinkDestination("#heading=h.x", "t.1")).toBe("?tab=t.1#heading=h.x");
+    expect(cellLinkDestination("#bookmark=b", "t.1")).toBe("?tab=t.1#bookmark=b");
+    expect(cellLinkDestination("#heading=h.x", "t 1/2")).toBe("?tab=t%201%2F2#heading=h.x");
+    expect(docTabToMarkdown(cellTab([{ runs: [
+      { text: "x", style: { link: { heading: { id: "h.x", tabId: "t 1/2" } } } }, "\n",
+    ] }])).markdown).toContain(`<a href="${cellLinkDestination("#heading=h.x", "t 1/2")}">x</a>`);
+
+    for (let destination of [
+      "?tab=t.2#heading=h.x", "?tab=t.2#bookmark=b", "?tab=t.2", "?tab=%74.2#heading=h%2Ex",
+      "https://x.example/#heading=h.x", "mailto:a@b.example",
+    ]) {
+      expect([destination, cellLinkDestination(destination, "t.1")])
+        .toEqual([destination, canonicalLinkDestination(destination)]);
+    }
+    expect(cellLinkDestination("?tab=%74.2#heading=h%2Ex", "t.1")).toBe("?tab=t.2#heading=h.x");
+    expect(cellLinkDestination("https://x.example/#heading=h.x", "t.1"))
+      .toBe("https://x.example/#heading=h.x");
+  });
+
+  it("gives the link a destination stands for", () => {
+    expect(docsLinkForDestination("https://e.com/#heading=h.x"))
+      .toEqual({ url: "https://e.com/#heading=h.x" });
+    expect(docsLinkForDestination("?tab=t.1#heading=h.x"))
+      .toEqual({ heading: { id: "h.x", tabId: "t.1" } });
+    expect(docsLinkForDestination("#bookmark=b")).toEqual({ bookmarkId: "b" });
+    expect(docsLinkForDestination("?tab=t.1")).toEqual({ tabId: "t.1" });
+  });
+
+  it("pins the rendering version with the earlier versions it still replays", () => {
+    expect([MARKDOWN_RENDERING_VERSION, REPLAYABLE_TEXT_EDIT_VERSIONS]).toEqual([7, [6]]);
+  });
+
+  it("keeps a large table's map small", () => {
+    let rows = Array.from({ length: 200 }, (_row, row) =>
+      Array.from({ length: 20 }, (_cell, column) => `c${row}.${column}\n`));
+    let snapshot = docTabToMarkdown(buildTab([
+      { runs: ["Before\n"] }, { table: rows }, { runs: ["After\n"] },
+    ]));
+    let unmapped = { ...snapshot, sourceMap: { ...snapshot.sourceMap, tables: [] } };
+    let bytesPerCell = (serialize(snapshot).length - serialize(unmapped).length) / (200 * 20);
+
+    expect(mappedTexts(snapshot)).toHaveLength(200 * 20);
+    expect(bytesPerCell).toBeGreaterThan(0);
+    expect(bytesPerCell).toBeLessThanOrEqual(14);
+  });
+
+  it("marks the paragraphs a positioned object is anchored to", () => {
+    let tab = buildTab([
+      { runs: ["Anchored\n"] },
+      { runs: ["Figure ", RICH_LINK, "\n"] },
+      { runs: ["[Image] typed ", PERSON, "\n"] },
+      { runs: ["Plain\n"] },
+    ]);
+    let positioned = tab.body.content[1].paragraph;
+    let image = tab.body.content[2].paragraph;
+    if (!positioned || !image) throw new Error("The fixture's first elements are paragraphs");
+    positioned.positionedObjectIds = ["image-1"];
+    makeInlineImage(image, 1);
+    let snapshot = docTabToMarkdown(tab);
+    let [anchored, ...others] = snapshot.sourceMap.blocks;
+
+    expect(snapshot.markdown).toBe(
+      "[Image] Anchored\n\nFigure \\[Image\\]\n\n[Image] typed owner@example\\.com\n\nPlain\n");
+    expect(anchored.positioned).toBe(true);
+    expect(others.map(block => "positioned" in block)).toEqual([false, false, false]);
+  });
+
+  it("refuses a protected range with its own error class", () => {
+    let snapshot = docTabToMarkdown(buildTab([
+      { runs: ["Before \\* star\n"] },
+      { table: [["Owner\n"]] },
+      { runs: ["After\n"] },
+    ]));
+    let { markdown, sourceMap } = snapshot;
+    let content = { markdown, protectedRanges: sourceMap.protectedRanges, tables: sourceMap.tables };
+    let owner = markdown.indexOf("Owner");
+    let message = "replaceText: structured content cannot be edited. Narrow the match to plain text.";
+    let refusals = [
+      thrownBy(() => assertMarkdownRangeEditable(sourceMap.protectedRanges, owner, owner + 5)),
+      thrownBy(() => applyMarkdownEdit(content, owner, owner + 5, "Lead")),
+      thrownBy(() => computeReplaceOperations(sourceMap, markdown, owner, owner + 5, "Lead", TAB_ID)),
+      thrownBy(() => applyMarkdownEdit(content, 0, markdown.length, "Rewritten\n")),
+    ];
+    let escape = markdown.indexOf("\\*");
+    let splitEscape = thrownBy(() => applyMarkdownEdit(content, escape + 1, escape + 2, "+"));
+
+    for (let refusal of refusals) {
+      expect(refusal).toBeInstanceOf(StructuredContentError);
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal instanceof Error && refusal.message).toBe(message);
+    }
+    expect(new StructuredContentError().name).toBe("Error");
+    expect(splitEscape).toBeInstanceOf(Error);
+    expect(splitEscape).not.toBeInstanceOf(StructuredContentError);
+    expect(splitEscape instanceof Error && splitEscape.message)
+      .toContain("Markdown escape syntax cannot be edited partially");
+    expect(() => assertMarkdownRangeEditable(sourceMap.protectedRanges, 0, 6)).not.toThrow();
+  });
+});
+
 // These are what keeps an edit from landing on the wrong characters. A content segment claims a
 // 1:1 mapping between Markdown and document indices, and computeReplaceOperations trusts it.
 describe("source map invariants", () => {
@@ -983,6 +1993,64 @@ describe("source map invariants", () => {
         expect(seg.docStart).toBeGreaterThanOrEqual(block.docStart);
         expect(seg.docEnd).toBeLessThanOrEqual(block.docEnd);
       }
+    }
+  });
+
+  it("keeps a table's rows, cells and texts ordered and inside the table in both spaces", () => {
+    let mapped = docTabToMarkdown(buildTab([
+      { runs: ["Before\n"] },
+      { table: [
+        ["a\n", { paragraphs: [{ runs: ["first\n"] }, { runs: ["\n"] }, { runs: ["third\n"] }] }],
+        [{ paragraphs: [
+          { runs: ["one\n"], bullet: { listId: "L1" } },
+          { runs: ["two\n"], bullet: { listId: "L1" } },
+        ] }, "\n"],
+      ] },
+      { runs: ["Between\n"] },
+      { table: [["b\n"]] },
+      { runs: ["After\n"] },
+    ], BULLET_LIST));
+    let { tables, protectedRanges } = mapped.sourceMap;
+    let mdCursor = 0;
+    let docCursor = 0;
+
+    expect(tables).toHaveLength(2);
+    for (let table of tables) {
+      let blocks = cellBlocks(mapped.markdown, table);
+      expect(table.mdStart).toBeGreaterThanOrEqual(mdCursor);
+      expect(table.docStart).toBeGreaterThanOrEqual(docCursor);
+      expect(protectedRanges.filter(range =>
+        range.mdStart <= table.mdStart && table.mdEnd <= range.mdEnd)).toHaveLength(1);
+
+      let rowStart = table.docStart + 1;
+      table.rows.forEach((_, row) => {
+        let indexes = tableRowIndexes(table, row);
+        let cellStart = indexes.docStart + 1;
+        expect(indexes.docStart).toBe(rowStart);
+        tableRowCells(table, row).forEach((cell, column) => {
+          let { docStart, docEnd, paragraphs } = indexes.cells[column];
+          let block = blocks[row][column];
+          let textCursor = 0;
+          let paragraphCursor = docStart + 1;
+          expect(docStart).toBe(cellStart);
+          expect(paragraphs).toHaveLength(cell.texts.length);
+          cell.texts.forEach(([start, end], index) => {
+            expect(start).toBeGreaterThan(textCursor);
+            expect(end).toBeGreaterThanOrEqual(start);
+            expect(block.mdStart + end).toBeLessThan(block.mdEnd);
+            expect(paragraphs[index]).toBeGreaterThanOrEqual(paragraphCursor);
+            expect(paragraphs[index]).toBeLessThan(docEnd);
+            textCursor = end;
+            paragraphCursor = paragraphs[index] + 1;
+          });
+          cellStart = docEnd;
+        });
+        expect(indexes.docEnd).toBe(cellStart);
+        rowStart = indexes.docEnd;
+      });
+      expect(table.docEnd).toBe(rowStart + 1);
+      mdCursor = table.mdEnd;
+      docCursor = table.docEnd;
     }
   });
 });
