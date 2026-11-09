@@ -14,11 +14,19 @@ export type GoogleObservabilityFields = {
   /** Whether a converted PDF had a text layer. */
   hasText: boolean;
   httpStatus: number;
+  /** Size of a PDF page image sent for transcription, in bytes as stored in the PDF. */
+  imageBytes: number;
+  /** How a PDF page image is encoded, in the gatekeeper's own names. */
+  imageEncoding: string;
   messageId: string;
   method: string;
+  /** How many page images a scanned PDF has to transcribe. */
+  ocrPages: number;
   operation: string;
   /** How an operation ended, as a class rather than a message. */
   outcome: string;
+  /** Which page image of a PDF, from 1, in the order the file stores them. */
+  page: number;
   /** Size of a PDF sent for conversion, in bytes. */
   pdfBytes: number;
   provider: string;
