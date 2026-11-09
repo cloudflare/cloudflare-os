@@ -616,7 +616,8 @@ export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
 
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and of
- * AdminWorkspaceView calls.
+ * AdminWorkspaceView calls. The write-request and passkey methods refuse with its `notAdmin` and
+ * `workspaceNotFound` too (see ADMIN_WRITE_ERROR_CODES).
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -640,7 +641,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "describe() reports this view's level, and getSettings() the deployment's.",
   [ADMIN_ACCESS_ERROR_CODES.viewExpired]:
       "This admin view has expired. Inspect the workspace again.",
-  [ADMIN_ACCESS_ERROR_CODES.notAdmin]: "Only a deployment admin can inspect a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
+      "Only a deployment admin can inspect or change a workspace.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -648,6 +650,57 @@ export const createAdminAccessError = adminAccessErrors.create;
 
 /** Reads the machine-readable code from an expected admin-access refusal. */
 export const getAdminAccessErrorCode = adminAccessErrors.getCode;
+
+/**
+ * Stable error codes attached to expected refusals of the AdminApi write-request and passkey
+ * methods. A caller who is no longer a deployment admin, and a workspace id that names no
+ * workspace, are refused with ADMIN_ACCESS_ERROR_CODES' `notAdmin` and `workspaceNotFound`.
+ */
+export const ADMIN_WRITE_ERROR_CODES = {
+  writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
+  originUnset: "ADMIN_WRITE_ORIGIN_UNSET",
+  workspaceUnlisted: "ADMIN_WRITE_WORKSPACE_UNLISTED",
+  workspaceChanged: "ADMIN_WRITE_WORKSPACE_CHANGED",
+  requestNotFound: "ADMIN_WRITE_REQUEST_NOT_FOUND",
+  requestNotPending: "ADMIN_WRITE_REQUEST_NOT_PENDING",
+  tooManyRequests: "ADMIN_WRITE_TOO_MANY_REQUESTS",
+  passkeyRequired: "ADMIN_WRITE_PASSKEY_REQUIRED",
+  passkeyRefused: "ADMIN_WRITE_PASSKEY_REFUSED",
+} as const;
+
+/** An expected refusal code from ADMIN_WRITE_ERROR_CODES. */
+export type AdminWriteErrorCode =
+    typeof ADMIN_WRITE_ERROR_CODES[keyof typeof ADMIN_WRITE_ERROR_CODES];
+
+const adminWriteErrors = codedErrorFamily<AdminWriteErrorCode>({
+  [ADMIN_WRITE_ERROR_CODES.writesOff]:
+      "Admin writes to workspaces are turned off on this deployment. Only its " +
+      "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
+  [ADMIN_WRITE_ERROR_CODES.originUnset]:
+      "This deployment's PUBLIC_BASE_URL is not set, so a write cannot be approved.",
+  [ADMIN_WRITE_ERROR_CODES.workspaceUnlisted]:
+      "The deployment directory lists no such workspace, so a write to it cannot be requested: " +
+      "its approval must show the workspace's owner. A workspace is listed once one of its " +
+      "members has opened it.",
+  [ADMIN_WRITE_ERROR_CODES.workspaceChanged]:
+      "This workspace no longer belongs to the owner the request named, so the write was not " +
+      "run. Request it again.",
+  [ADMIN_WRITE_ERROR_CODES.requestNotFound]: "No such write request.",
+  [ADMIN_WRITE_ERROR_CODES.requestNotPending]:
+      "This write request is no longer pending: it was approved, denied or has expired.",
+  [ADMIN_WRITE_ERROR_CODES.tooManyRequests]:
+      "Too many write requests are pending. Deny some, or wait for them to expire.",
+  [ADMIN_WRITE_ERROR_CODES.passkeyRequired]:
+      "This needs a passkey of your own. Enrol one in the admin panel first.",
+  [ADMIN_WRITE_ERROR_CODES.passkeyRefused]:
+      "The passkey confirmation was not accepted. Start again.",
+});
+
+/** Creates an expected admin-write refusal with a machine-readable code. */
+export const createAdminWriteError = adminWriteErrors.create;
+
+/** Reads the machine-readable code from an expected admin-write refusal. */
+export const getAdminWriteErrorCode = adminWriteErrors.getCode;
 
 /**
  * The most characters of a display name or a workspace title the deployment directory keeps (see
@@ -1854,8 +1907,9 @@ export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
  * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord. The rest
  * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
- * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
- * tests, and checkForUpdates.
+ * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats,
+ * listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
+ * beginAdminPasskeyRemoval), the gateway tests, and checkForUpdates.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -1867,7 +1921,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder",
+  "setGatewayModelOrder", "addAdminPasskey", "removeAdminPasskey",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -1875,7 +1929,8 @@ export type AdminSettingMethod = typeof ADMIN_SETTING_METHODS[number];
 
 /** The longest string an audit record keeps as a call's argument, a workspace's title or a
  * setting entry's key, in characters: a longer one is cut to this, its last character replaced
- * with "…". */
+ * with "…". A passkey's credential id is the one key not cut that way (see
+ * AdminSettingChange.key). */
 export const MAX_ADMIN_AUDIT_ARG_LENGTH = 256;
 
 /** The longest value an AdminSettingChange keeps whole, in characters: more than any bounded
@@ -1978,9 +2033,9 @@ export type AdminAccessRecord = {
 
 /**
  * One setting an AdminSettingRecord changed, with its value before and after. `setting` names a
- * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the two kept
- * apart from them, "siteLogo" and "featured". The names are those the settings are stored under: a
- * diagnostic vocabulary, not a schema clients may depend on.
+ * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the three
+ * kept apart from them, "siteLogo", "featured" and "adminPasskeys". The names are those the
+ * settings are stored under: a diagnostic vocabulary, not a schema clients may depend on.
  *
  * A setting holding a map (an object keyed by id or name, such as "modelModes" or "banner") or a
  * list of entries with ids ("formats", by blueprint id; "addedModels", by model id) is recorded
@@ -1990,16 +2045,20 @@ export type AdminAccessRecord = {
  *
  * A string is recorded as itself, any other value as JSON with object keys sorted. A value is kept
  * whole up to MAX_ADMIN_AUDIT_VALUE_LENGTH characters, more than any bounded setting holds; past
- * that both values are excerpts (see `excerpt`). A key is cut like an argument (see
- * MAX_ADMIN_AUDIT_ARG_LENGTH). No credential is a setting (provider keys and tokens live in the
- * environment), but a free-text setting such as the agent instructions is recorded as an admin
- * entered it. A logo is recorded as its size and SHA-256, never its bytes.
+ * that both values are excerpts (see `excerpt`). A key is bounded like an argument (see `key`). No
+ * credential is a setting (provider keys and tokens live in the environment), but a free-text
+ * setting such as the agent instructions is recorded as an admin entered it. A logo is recorded as
+ * its size and SHA-256, never its bytes. A passkey is recorded under its credential id as the
+ * admin it belongs to, its name and its algorithm, never its public key.
  */
 export type AdminSettingChange = {
   /** The setting. */
   setting: string;
-  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name;
-   * cut past MAX_ADMIN_AUDIT_ARG_LENGTH characters, a length no real entry's id reaches. */
+  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name, a
+   * passkey's credential id. At most MAX_ADMIN_AUDIT_ARG_LENGTH characters. Of real entries only
+   * a credential id can be longer, and it is an identity, so it is kept as
+   * AdminAccessRecord.workspaceOwner keeps a long owner id: as its start, "…#" and a digest of
+   * the whole id, which keeps two passkeys apart. Any other key that long is cut. */
   key?: string;
   /** The value before; absent when there was none. */
   before?: string;
@@ -2208,9 +2267,19 @@ export type AdminWriteArgs = {
   note?: string;
 };
 
+/** How long a passkey challenge can be answered, in seconds: five minutes, and never past the
+ * expiry of the request it approves. */
+export const ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS = 300;
+
 /** The most pending actions one "rejectPendingActions" request rejects one by one. A creation
  * among them takes everything queued on its connection with it, however much that is. */
 export const MAX_ADMIN_REJECTED_ACTIONS = 500;
+
+/** The longest name an admin may give a passkey, in characters, once trimmed. */
+export const MAX_ADMIN_PASSKEY_NAME_LENGTH = 64;
+
+/** The most passkeys one admin may have enrolled at once. */
+export const MAX_ADMIN_PASSKEYS = 10;
 
 /**
  * Why a passkey answer was refused. Its caller is told only `passkeyRefused`
@@ -2312,6 +2381,22 @@ export type AdminWriteRecord = {
   error?: string;
 };
 
+/** One passkey an admin enrolled to approve writes with, as AdminApi.listAdminPasskeys() lists it.
+ * Its public key never leaves the server. */
+export type AdminPasskey = {
+  /** Its WebAuthn credential id, as unpadded base64url. */
+  id: string;
+  /** The admin it belongs to, by canonical user id. Only they can confirm anything with it, only
+   * they can remove it, and it confirms nothing while they are not a deployment admin. */
+  admin: string;
+  /** The name they gave it. */
+  name: string;
+  /** When it was enrolled. */
+  created: Date;
+  /** When it last approved a write or confirmed a passkey's removal. Absent until it has. */
+  lastUsed?: Date;
+};
+
 /**
  * What a browser needs for one WebAuthn ceremony on the Workshop's own origin: creating a passkey
  * (AdminApi.beginAdminPasskeyEnrolment()), or confirming with one the removal of a passkey
@@ -2368,13 +2453,15 @@ export type AdminPasskeyAssertion = {
 /**
  * Capability for managing and investigating the deployment, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
- * capability is minted, so these methods don't re-check, with one exception: inspectWorkspace()
- * re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is the one
- * thing an admin holds that reads users' data. Covers branding, agent instructions, which
+ * capability is minted, so these methods don't re-check, with two exceptions. inspectWorkspace()
+ * re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is what an
+ * admin holds that reads users' data. The write-request and passkey methods re-check too, since
+ * they lead to a change in a user's workspace. Covers branding, agent instructions, which
  * gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, the
- * user and workspace directory, and admin access to workspaces — NOT authentication config (that's
- * env-var driven). Each setter throws on invalid input, and records the change it makes in the
- * deployment's audit log before making it (see AdminSettingRecord).
+ * user and workspace directory, admin access to workspaces, and writes to them approved with a
+ * passkey — NOT authentication config (that's env-var driven). Each setter throws on invalid
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -2774,6 +2861,53 @@ export interface AdminApi {
    * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
    */
   setAdminAuditRetentionDays(days: number): Promise<void>;
+
+  // --- Writes to workspaces, approved with a passkey ---
+  //
+  // Off unless the deployment's ADMIN_WORKSPACE_WRITES environment variable is "on": the methods
+  // below are then refused `writesOff`, all but listAdminPasskeys(), beginAdminPasskeyRemoval()
+  // and removeAdminPasskey(), so that a passkey can still be seen, and removed by its own admin,
+  // while it can approve nothing. Each also refuses a caller who is no longer a deployment admin
+  // (`notAdmin`).
+  // Enrolling a passkey needs only an admin's session, an admin removes only their own, and every
+  // enrolment and removal is recorded.
+
+  /** Every passkey enrolled on the deployment, by admin and then by enrolment time, those of
+   * accounts that are no longer deployment admins included: they stay stored, and approve
+   * nothing. Answers while writes are off too. */
+  listAdminPasskeys(): Promise<AdminPasskey[]>;
+
+  /** Start enrolling a passkey for the caller: the challenge navigator.credentials.create() is
+   * given. Refused `originUnset`. */
+  beginAdminPasskeyEnrolment(): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Enrol the passkey `registration` describes for the caller, named `name` (non-blank, at most
+   * MAX_ADMIN_PASSKEY_NAME_LENGTH characters once trimmed). It must answer the challenge
+   * beginAdminPasskeyEnrolment() last gave this caller, with user verification, and use ES256 or
+   * RS256; anything else is refused `passkeyRefused`. No attestation is asked for or checked, so
+   * the passkey is whatever key the caller's session presents. Recorded as a setting change before
+   * it is stored. Throws once the caller has MAX_ADMIN_PASSKEYS enrolled.
+   */
+  addAdminPasskey(name: string, registration: AdminPasskeyRegistration): Promise<AdminPasskey>;
+
+  /**
+   * Start removing one of the caller's own passkeys, by credential id: the challenge one of the
+   * caller's passkeys, which may be the one removed, must sign. An admin removes only their own:
+   * throws for an id that names no passkey of the caller's, another admin's included. Refused
+   * `originUnset`. Works while writes are off, as removeAdminPasskey() does.
+   */
+  beginAdminPasskeyRemoval(id: string): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Remove the caller's own passkey `id`. The assertion must answer the challenge
+   * beginAdminPasskeyRemoval() last gave this caller for this passkey, with user verification, by
+   * one of the caller's own passkeys, which may be the one removed; anything else is refused
+   * `passkeyRefused`. Recorded as a setting change before the passkey is removed. Throws for an
+   * id that names no passkey of the caller's. Nobody removes another admin's passkey: one whose
+   * admin is no longer a deployment admin stays stored, and approves nothing.
+   */
+  removeAdminPasskey(id: string, assertion: AdminPasskeyAssertion): Promise<void>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
