@@ -2047,6 +2047,46 @@ describe("Drive sharing changes at approval", () => {
     expect(await first.apply(id)).toBe("That access comes from a parent folder, and access " +
       "given on the file cannot be set below it. [http=403 reason=cannotModifyInheritedPermission]");
     expect(first.api.deletePermission).not.toHaveBeenCalled();
+
+    // A folder binding reaches the file by where it sits, and the update took a request of its
+    // own: a file that left the folder meanwhile is not sent the delete.
+    let nodes = (parents: string[]) => async (ids: readonly string[]) =>
+      ids.map((nodeId): DriveScopeNode => nodeId === "R"
+        ? {
+          id: "R", mimeType: "application/vnd.google-apps.folder", parents: ["above"],
+          trashed: false, canListChildren: true,
+        }
+        : { id: nodeId, parents, trashed: false, canShare: true });
+    let moved = harness();
+    moved.bind({ kind: "folder", folderId: "R" });
+    moved.api.getScopeNodes.mockImplementation(nodes(["R"]));
+    moved.api.updatePermission.mockImplementationOnce(async (fileId, permissionId, role) => {
+      let lowered = person(DANA_ID, "Dana", [given(role)]);
+      moved.drive.set(fileId, moved.drive.get(fileId).map(
+        listed => listed.id === permissionId ? lowered : listed));
+      moved.api.getScopeNodes.mockImplementation(nodes(["elsewhere"]));
+      return lowered;
+    });
+    id = await moved.submit("deletePermission",
+      { ...removalOf(fixtures(), DANA_ID), folderIds: ["R"] });
+    expect(await moved.apply(id)).toBe(UNCONFIRMED);
+    expect(moved.api.updatePermission).toHaveBeenCalledTimes(1);
+    expect(moved.api.deletePermission).not.toHaveBeenCalled();
+    // Before the permissions are read, after them, and before the second request.
+    expect(moved.api.getScopeNodes).toHaveBeenCalledTimes(3);
+    // The role was lowered, so the outcome stays open and the marker stays.
+    expect(moved.journal.get(id)?.state).toBe("pending");
+    expect(moved.attempts.get(id)).toStrictEqual({ at: expect.any(Number) });
+
+    // Still in the folder, the delete is sent after the third proof.
+    let stayed = stale();
+    stayed.bind({ kind: "folder", folderId: "R" });
+    stayed.api.getScopeNodes.mockImplementation(nodes(["R"]));
+    id = await stayed.submit("deletePermission",
+      { ...removalOf(fixtures(), DANA_ID), folderIds: ["R"] });
+    expect(await stayed.apply(id)).toBeNull();
+    expect(stayed.api.getScopeNodes).toHaveBeenCalledTimes(3);
+    expect(stayed.api.deletePermission.mock.calls).toEqual([[FILE, DANA_ID]]);
   });
 
   type Refused = {

@@ -932,14 +932,15 @@ function accessNow(
 /**
  * Removes what a permission gives on the file itself. With a parent's access at a lower role that
  * can be given, Drive drops the direct part only when the role is set to exactly the parent's, so
- * that update is sent first, and the answer decides whether a delete must follow.
+ * that update is sent first, and the answer decides whether a delete must follow. `stillInScope`
+ * is asked before that delete, and one that answers no leaves the delete unsent.
  *
  * In every other case the delete is sent and Google answers it: an update to a role at or above
  * the one on the file would leave the grant as it is or raise it.
  */
 async function dropDirect(
   api: Pick<DriveApi, "updatePermission" | "deletePermission">, fileId: string,
-  permission: DrivePermissionRecord,
+  permission: DrivePermissionRecord, stillInScope: () => Promise<boolean>,
 ): Promise<void> {
   let { direct, inherited } = accessOf(permission);
   let below = direct !== undefined && inherited !== undefined && isShareRole(inherited) &&
@@ -953,11 +954,15 @@ async function dropDirect(
   // The list can show a parent's grant that is already gone, and the update then only lowered
   // what is given on the file.
   try {
+    // A folder binding reaches a file by where it sits, and the update took a request of its own:
+    // the file's place is proved again before a second request is sent to it.
+    if (!await stillInScope()) throw new Error(NO_LONGER_IN_SCOPE);
     await api.deletePermission(fileId, permission.id);
   } catch (error) {
-    // The update has changed the role, so no answer to this request means nothing changed: the
-    // outcome is open whatever its status, and the next approval's look decides.
-    throw new Error("The request that follows a lowered role was not confirmed.", {
+    // The update has changed the role, so a delete that was not sent, or not answered, does not
+    // mean nothing changed: the outcome is open whatever the reason, and the next approval's look
+    // decides.
+    throw new Error("The request that follows a lowered role was not sent or not confirmed.", {
       cause: error,
     });
   }
@@ -1193,7 +1198,11 @@ async function applyRemoval(
     // What a parent gives is read here, when the removal is applied, so a folder shared or
     // unshared since it was queued is followed. The requests go to the ID the approval showed.
     let listed = { ...current, id: payload.permissionId };
-    return { described: true, send: () => dropDirect(host.api, payload.fileId, listed) };
+    return {
+      described: true,
+      send: () => dropDirect(host.api, payload.fileId, listed,
+        async () => host.scope().kind !== "folder" || !!await proveTarget(host, payload)),
+    };
   });
 }
 
