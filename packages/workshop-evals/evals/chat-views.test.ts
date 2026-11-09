@@ -254,6 +254,12 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
       expect(await Promise.all(charts.map(chart => failed(verifyChart, chart)))).toEqual(charts.map(() => []));
     });
 
+    it("reads a line at its own chart's labels, not at a month named in text above it", async ({ expect }) => {
+      const summary = "<p>Peak: August, 610 kWh.</p>";
+      expect(await failed(verifyChart, summary + LINE_CHART)).toEqual([]);
+      expect(await failed(verifyChart, summary + SEGMENTS)).toEqual([]);
+    });
+
     it("places an SVG label at its x and y, a <tspan> taking its <text>'s y, and not at its dx or dy", async ({ expect }) => {
       const rows = (label: (month: string, y: number) => string) => ACROSS_LINE.replaceAll(
         /<text x="10" y="(\d+)" font-size="8" dominant-baseline="central">(\w+)<\/text>/g,
@@ -357,6 +363,20 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
     it("fails a price that is only a number beside the plan, such as its data", async ({ expect }) => {
       expect(await failed(verifyPlanPicker, PICKER.replace("$15/mo", "$15/mo, 5 GB"))).toEqual([]);
       expect(await failed(verifyPlanPicker, PICKER.replace("$15/mo", "$5/mo, 15 GB"))).toEqual(["compares-every-plan"]);
+    });
+
+    it("picks the plan in a select when clicking its name asks nothing", async ({ expect }) => {
+      const select = `
+        <p>Basic $15/mo · Everyday $30/mo · Streamer $45/mo · Family $80/mo</p>
+        <label>Plan <select><option>Choose one</option>${PLANS.map(([name]) => `<option>${name}</option>`).join("")}</select></label>
+        <script type="module">
+          document.querySelector("select").addEventListener("change", event => agent.send("Tell me more about " + event.target.value));
+        </script>`;
+      expect(await failed(verifyPlanPicker, select)).toEqual([]);
+    });
+
+    it("checks the picker when a note follows it in its own view", async ({ expect }) => {
+      expect(await failed(verifyPlanPicker, PICKER, "<p>You can change your plan any time.</p>")).toEqual([]);
     });
 
     it("fails a choice whose last message, the one offered, is about another plan", async ({ expect }) => {
@@ -538,6 +558,27 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
       const shown = (view: string) => failedThrough(new EvalVerifier(withOwn, [LOG], answer(view)), verifySpendingView);
       expect(await shown(spending({ ...TOTALS, Utilities: 73 }))).toEqual([]);
       expect(await shown(spending(TOTALS))).toEqual(["shows-each-category-total"]);
+    });
+
+    it("reads a category whose name holds another's, as Food delivery holds Food", async ({ expect }) => {
+      const withDelivery = { ...TOTALS, "Food delivery": 73 };
+      const log = connectingTo(() => new ExpenseLog(withDelivery));
+      expect(await failedThrough(new EvalVerifier(log, [LOG], answer(spending(withDelivery))), verifySpendingView)).toEqual([]);
+    });
+
+    it("clicks a bar when the chart's <svg> handles every bar's click", async ({ expect }) => {
+      const bars = Object.entries(TOTALS).map(([category, total], index) => `
+        <rect data-category="${category}" x="${20 + index * 60}" y="${150 - total / 4}" width="40" height="${total / 4}" fill="#f60"></rect>
+        <text x="${40 + index * 60}" y="168" font-size="10" text-anchor="middle">${category}</text>
+        <text x="${40 + index * 60}" y="${144 - total / 4}" font-size="10" text-anchor="middle">$${total}</text>`).join("");
+      expect(await failed(verifySpendingView, `
+        <svg width="220" height="180">${bars}</svg>
+        <script type="module">
+          document.querySelector("svg").addEventListener("click", event => {
+            const bar = event.target.closest("rect[data-category]");
+            if (bar) agent.send("Tell me about my " + bar.dataset.category + " spending");
+          });
+        </script>`)).toEqual([]);
     });
 
     it("fails a message sent as the view loads, from a button that does nothing", async ({ expect }) => {

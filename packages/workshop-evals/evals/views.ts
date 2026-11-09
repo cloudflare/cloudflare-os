@@ -43,14 +43,20 @@ function createdGadgets(messages: readonly AiChatMessage[]) {
     call.toolName === "createGadget" && call.error === undefined ? [call.input] : []);
 }
 
-/** The turn answers with a view and closes every view it opens. Returns its last view. */
-export async function checkAnswersWithView(verifier: EvalVerifier): Promise<TurnView | undefined> {
+/**
+ * The turn answers with a view and closes every view it opens. Returns the view the turn's own
+ * checks read: the last one whose HTML names each of `items`, so that a note or a summary view after
+ * it does not stand in for it, or else the last view.
+ */
+export async function checkAnswersWithView(
+    verifier: EvalVerifier, items: readonly string[] = []): Promise<TurnView | undefined> {
   const { views, open } = turnViews(verifier);
   await verifier.check("answers-with-a-view", async () => ({
     pass: views.length > 0 && open.length === 0,
     evidence: asEvidence({ views: views.length, open, reply: lastReply(verifier) }),
   }));
-  return views.at(-1);
+  const naming = views.filter(view => items.every(item => view.html.toLowerCase().includes(item.toLowerCase())));
+  return naming.at(-1) ?? views.at(-1);
 }
 
 /** The turn answers in plain text: a reply, and no view. */

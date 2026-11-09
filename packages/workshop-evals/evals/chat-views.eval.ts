@@ -96,7 +96,7 @@ export async function verifyChart(verifier: EvalVerifier): Promise<void> {
 }
 
 export async function verifyPlanPicker(verifier: EvalVerifier): Promise<void> {
-  const view = await checkAnswersWithView(verifier);
+  const view = await checkAnswersWithView(verifier, PLANS.map(plan => plan.name));
   await checkMakesNoGadget(verifier);
   if (view === undefined) return;
   await checkView(verifier, view, async rendered => {
@@ -177,7 +177,7 @@ export async function verifyExpenseLogKept(verifier: EvalVerifier): Promise<void
 }
 
 export async function verifySpendingView(verifier: EvalVerifier): Promise<void> {
-  const view = await checkAnswersWithView(verifier);
+  const view = await checkAnswersWithView(verifier, CATEGORIES);
   await checkMakesNoGadget(verifier, "makes-no-new-gadget");
   if (view === undefined) return;
   await checkView(verifier, view, async rendered => {

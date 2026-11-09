@@ -184,7 +184,8 @@ const FRAME_SCRIPT = String.raw`(() => {
 
   // The element that names the item, then what a user would reach for beside it: the controls
   // and handlers in its row (the largest box around it that names no other item), then, for a
-  // chart, the nearest element with a handler in line with it.
+  // chart, the nearest element with a handler in line with it, or the nearest mark it draws under
+  // a handler on the whole chart, as when the chart's <svg> handles every bar's click.
   const targets = (text, others) => {
     const elements = [...document.body.querySelectorAll("*")].filter(el =>
       !SKIPPED.has(el.tagName) && shown(el) && named(el, text));
@@ -202,7 +203,10 @@ const FRAME_SCRIPT = String.raw`(() => {
     inRow.sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
     for (const el of inRow) add(el, "row");
     const at = center(first.getBoundingClientRect());
-    const near = [...listening].filter(el => el.isConnected && shown(el) && !el.contains(first) && !namesOther(el))
+    const delegated = [...listening].filter(el => el.isConnected && el.contains(first))
+      .flatMap(el => [...el.querySelectorAll(GRAPHIC)].filter(inks));
+    const near = [...[...listening].filter(el => el.isConnected && !el.contains(first)), ...delegated]
+      .filter(el => shown(el) && !namesOther(el))
       .map(el => ({ el, box: el.getBoundingClientRect() }))
       .filter(({ box }) => (box.left <= at.x && at.x <= box.right) || (box.top <= at.y && at.y <= box.bottom))
       .sort((a, b) => Math.hypot(center(a.box).x - at.x, center(a.box).y - at.y) - Math.hypot(center(b.box).x - at.x, center(b.box).y - at.y));
@@ -252,7 +256,15 @@ const FRAME_SCRIPT = String.raw`(() => {
   const series = labels => {
     const matchers = labels.map(text => new RegExp("(?<![\\p{L}\\p{N}])" +
       text.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"), "iu"));
-    const namesIn = text => matchers.flatMap((matcher, index) => matcher.test(text) ? [index] : []);
+    // Where text names each label, in order. A label inside a longer one's text, as "Food" in "Food
+    // delivery", names only the longer one.
+    const matchesIn = text => {
+      const all = matchers.flatMap((matcher, index) => [...text.matchAll(new RegExp(matcher.source, "giu"))]
+        .map(match => ({ index, at: match.index, end: match.index + match[0].length })));
+      return all.filter(match => !all.some(other => other.at <= match.at && match.end <= other.end &&
+        other.end - other.at > match.end - match.at)).sort((a, b) => a.at - b.at);
+    };
+    const namesIn = text => [...new Set(matchesIn(text).map(match => match.index))].sort((a, b) => a - b);
     const boxAround = parts => {
       const boxes = parts.map(({ node }) => node instanceof Element ? node.getBoundingClientRect() : textBox(node));
       const left = Math.min(...boxes.map(box => box.left)), top = Math.min(...boxes.map(box => box.top));
@@ -277,9 +289,7 @@ const FRAME_SCRIPT = String.raw`(() => {
     const segments = pieces.flatMap(piece => piece.names.length < 2 ? [] : piece.text.split(/\s*[·•|;]\s*|,\s+/).flatMap(entry => {
       const names = namesIn(entry);
       if (names.length < 2) return names.length === 1 ? [segment(piece, entry, names)] : [];
-      const starts = matchers.flatMap((matcher, index) =>
-        [...entry.matchAll(new RegExp(matcher.source, "giu"))].map(match => ({ index, at: match.index })))
-        .sort((a, b) => a.at - b.at);
+      const starts = matchesIn(entry);
       return starts.map(({ index, at }, order) => segment(piece, entry.slice(at, starts[order + 1]?.at), [index]));
     }));
     const own = labels.map((_, index) => [...pieces, ...segments].filter(piece => piece.names.length === 1 && piece.names[0] === index));
@@ -303,11 +313,15 @@ const FRAME_SCRIPT = String.raw`(() => {
       }
       return new DOMPoint(x ?? 0, y ?? 0).matrixTransform(ctm);
     };
-    const anchors = matchers.map(matcher => runs.flatMap(({ text, parts }) => [...text.matchAll(new RegExp(matcher.source, "giu"))].flatMap(match => {
-      const spanned = parts.filter(({ start, end }) => start < match.index + match[0].length && end > match.index);
-      if (namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end))).length !== 1) return [];
+    // Each label's anchors, with the <svg> that draws it, if one does.
+    const anchors = labels.map((_, index) => runs.flatMap(({ text, parts }) => matchesIn(text).filter(match => match.index === index).flatMap(match => {
+      const spanned = parts.filter(({ start, end }) => start < match.end && end > match.at);
+      const names = namesIn(norm(text.slice(spanned[0].start, spanned[spanned.length - 1].end)));
+      if (names.length !== 1 || names[0] !== index) return [];
       const box = boxAround(spanned);
-      return [{ box, at: markedAt(spanned, box) }];
+      const node = spanned[0].node;
+      const svg = (node instanceof Element ? node : node.parentElement)?.closest("svg") ?? null;
+      return [{ box, at: markedAt(spanned, box), svg }];
     })));
     // The label whose text is nearest box in its column or row, if no other label is as near, as
     // when a line runs under every label.
@@ -342,11 +356,13 @@ const FRAME_SCRIPT = String.raw`(() => {
     // a bar painted another color, does not mix with the bars.
     const shapes = [...document.body.querySelectorAll("*")].filter(el => el instanceof SVGElement ? el.matches(GRAPHIC) && inks(el) : paints(el));
     // A line or an area: where it crosses each label's column, at its top, and each label's row,
-    // at its right end.
-    const plot = (kind, points) => {
+    // at its right end. A label the line's own <svg> draws marks it, before the same word in text
+    // around the chart, such as a summary above it.
+    const plot = (kind, points, svg) => {
       for (const [index, found] of anchors.entries()) {
-        if (found[0] === undefined) continue;
-        const at = found[0].at;
+        const anchor = found.find(each => each.svg === svg) ?? found[0];
+        if (anchor === undefined) continue;
+        const at = anchor.at;
         const ys = points.flatMap(line => crossings(line, "x", at.x));
         if (ys.length > 0) add(index, kind, "y", Math.min(...ys));
         const xs = points.flatMap(line => crossings(line, "y", at.y));
@@ -359,13 +375,13 @@ const FRAME_SCRIPT = String.raw`(() => {
     for (const [order, el] of shapes.entries()) {
       if (!drawn(el)) continue;
       if (el instanceof SVGLineElement) {
-        if (el.getScreenCTM() !== null) segmentsDrawn.push([onScreen(el, el.getPointAtLength(0)), onScreen(el, el.getPointAtLength(el.getTotalLength()))]);
+        if (el.getScreenCTM() !== null) segmentsDrawn.push({ svg: el.ownerSVGElement, points: [onScreen(el, el.getPointAtLength(0)), onScreen(el, el.getPointAtLength(el.getTotalLength()))] });
         continue;
       }
       if (el instanceof SVGGeometryElement && el.matches("polygon, polyline, path")) {
         const length = el.getTotalLength();
         if (el.getScreenCTM() === null || !(length > 0)) continue;
-        plot("path " + order, [Array.from({ length: 401 }, (_, step) => onScreen(el, el.getPointAtLength(length * step / 400)))]);
+        plot("path " + order, [Array.from({ length: 401 }, (_, step) => onScreen(el, el.getPointAtLength(length * step / 400)))], el.ownerSVGElement);
         continue;
       }
       const box = el.getBoundingClientRect();
@@ -378,12 +394,12 @@ const FRAME_SCRIPT = String.raw`(() => {
     }
     const meets = (a, b) => a.some(p => b.some(q => Math.hypot(p.x - q.x, p.y - q.y) < 1));
     const lines = [];
-    for (const drawnSegment of segmentsDrawn) {
-      const joined = lines.filter(line => line.some(other => meets(other, drawnSegment)));
-      const merged = [drawnSegment, ...joined.flat()];
+    for (const segment of segmentsDrawn) {
+      const joined = lines.filter(line => line.svg === segment.svg && line.segments.some(other => meets(other, segment.points)));
+      const merged = { svg: segment.svg, segments: [segment.points, ...joined.flatMap(line => line.segments)] };
       lines.splice(0, lines.length, ...lines.filter(line => !joined.includes(line)), merged);
     }
-    for (const [order, line] of lines.entries()) plot("lines " + order, line);
+    for (const [order, line] of lines.entries()) plot("lines " + order, line.segments, line.svg);
     return { beside, marks };
   };
 
@@ -434,6 +450,15 @@ const FRAME_SCRIPT = String.raw`(() => {
       if (!(control instanceof HTMLSelectElement)) return { id: register(control, "control").id, option: null };
       const option = [...control.options].find(option => !option.disabled && (sameValue(option.value, to) || sameValue(option.text, to)));
       return option === undefined ? null : { id: register(control, "control").id, option: option.value };
+    },
+    // The first select a user can see and use with an option that names "text", and that option.
+    optionNamed: text => {
+      const wanted = new RegExp("(?<![\\p{L}\\p{N}])" + text.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&") + "(?![\\p{L}\\p{N}])", "iu");
+      for (const control of document.body.querySelectorAll("select")) {
+        const option = usable(control) ? [...control.options].find(option => !option.disabled && wanted.test(option.text)) : undefined;
+        if (option !== undefined) return { id: register(control, "control").id, option: option.value };
+      }
+      return null;
     },
     element: id => registry[id],
     // The button beside an element showing "from" alone that moves it toward "to".
@@ -691,14 +716,21 @@ export class RenderedView implements AsyncDisposable {
   }
 
   /**
-   * Clicks the item `label` names, as a user would: the element that names it first, then the
-   * controls beside it, until a click makes the view call `agent.send`. A control only gets a click
-   * at a point where nothing covers it. `others` names the other items, so "beside it" stops short
-   * of them. Returns what it tried.
+   * Picks the item `label` names, as a user would: clicks the element that names it first, then the
+   * controls beside it, and then picks its option in a select, until the view calls `agent.send`. A
+   * control only gets a click at a point where nothing covers it. `others` names the other items,
+   * so "beside it" stops short of them. Returns what it tried.
    */
   click(label: string, others: readonly string[]): Promise<string[]> {
     return this.#guard(async () => {
       const tried: string[] = [];
+      const sends = async (act: () => Promise<unknown>) => {
+        const before = await this.#state();
+        await act();
+        const sent = await this.#waitFor(() => this.#state(), state => state.started > before.started, CLICK_SEND_MS);
+        if (sent.pass) await this.#settle();
+        return sent.pass;
+      };
       for (const target of TargetsSchema.parse(await this.#frameCall("targets", label, [...others]))) {
         const aim = AimSchema.parse(await this.#frameCall("aim", target.id));
         // A click on the label lands wherever a user's would, even on something over it.
@@ -706,14 +738,13 @@ export class RenderedView implements AsyncDisposable {
           tried.push(`found nothing to click on ${target.description}`);
           continue;
         }
-        const before = await this.#state();
-        await this.#mouseClick(aim.x, aim.y);
         tried.push(`clicked ${target.description}`);
-        const sent = await this.#waitFor(() => this.#state(), state => state.started > before.started, CLICK_SEND_MS);
-        if (sent.pass) {
-          await this.#settle();
-          return tried;
-        }
+        if (await sends(() => this.#mouseClick(aim.x, aim.y))) return tried;
+      }
+      const select = EditableSchema.parse(await this.#frameCall("optionNamed", label));
+      if (select !== null) {
+        tried.push(`picked ${label} in a select`);
+        await sends(() => this.#edit(select, label));
       }
       return tried;
     });
