@@ -1,0 +1,311 @@
+/* Every duration and delay below is scaled by --menu-time, set from the
+   component's `duration`, so the whole choreography speeds up or slows down
+   in proportion. */
+@property --menu-open {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+.dropdown-menu-trigger[data-menu-morphing] {
+  /* The opaque popup surface replaces the trigger until the closing morph ends.
+     It stays clickable throughout, so repeated clicks keep toggling the menu. */
+  opacity: 0;
+  transition: opacity calc(100ms * var(--menu-time, 1)) ease-out;
+}
+
+/* The close button is the last to arrive, once the menu has opened, and the
+   first to leave: it fades out before the content or the surface move. */
+.dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open] {
+  opacity: 1;
+  animation: dropdown-menu-close-in calc(300ms * var(--menu-time, 1)) ease-out calc(280ms * var(--menu-time, 1)) backwards;
+}
+
+@keyframes dropdown-menu-close-in {
+  from { opacity: 0; }
+}
+
+/* A ghost close button: no surface or hover fill, and the trigger's own content
+   hidden behind a subtle × that strengthens on hover. Unlayered, so it beats the
+   Button's utilities. */
+.dropdown-menu-trigger:not([data-in-place])[data-menu-morphing] {
+  background-color: transparent;
+  box-shadow: none;
+  color: transparent;
+}
+
+/* While open only the × circle is hit-testable; the rest of the trigger's box
+   counts as outside the menu. Clicks on the × bubble to the trigger. */
+.dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open] {
+  pointer-events: none;
+}
+
+.dropdown-menu-close {
+  display: none;
+  place-items: center;
+  border-radius: 9999px;
+  pointer-events: auto;
+  color: var(--text-color-kumo-inactive);
+}
+
+.dropdown-menu-trigger:not([data-in-place])[data-menu-morphing] .dropdown-menu-close {
+  display: grid;
+}
+
+.dropdown-menu-close:hover {
+  color: var(--text-color-kumo-default);
+}
+
+/* Keep Kumo's collision box at its final size. The surface and content frame
+   travel together; blur and uniform scaling happen inside that frame. */
+.dropdown-menu {
+  --menu-open: 1;
+  /* One clock drives everything. Position follows it unclamped, so when a spring
+     overshoots, the surface carries on along its curve and comes back. Size
+     follows it too, but past the trigger it eases into a squash of a few pixels
+     (--menu-squash, measured per menu) instead of crushing the surface. Both move
+     at the same speed as they reach the trigger, so the motion stays continuous. */
+  --menu-pos: var(--menu-open);
+  /* Past the trigger the curve continues along its tangent: the second-order
+     terms use this instead, so the recoil carries straight on in the direction the
+     surface arrived from rather than bending back on itself. */
+  --menu-pos-ahead: max(0, var(--menu-pos));
+  --menu-under: min(0, var(--menu-open));
+  --menu-size: calc(max(0, var(--menu-open)) + var(--menu-under) / (1 - var(--menu-under) / var(--menu-squash, 0.03)));
+  --menu-closed: calc(1 - var(--menu-size));
+  --menu-closed-x: var(--menu-closed);
+  --menu-closed-y: var(--menu-closed);
+  --menu-shift-x: calc(1 - var(--menu-pos));
+  --menu-shift-y: calc(1 - var(--menu-pos));
+  /* One quadratic curve: the surface leads along the trigger's edge (sideways
+     for a menu above or below), then travels outward. The outward term pulls the
+     edge nearest the trigger back, keeping the surface within the trigger-to-popup
+     span. Each side below swaps which axis is which. */
+  --menu-bend: calc(var(--menu-pos) * (1 - var(--menu-pos-ahead)));
+  --menu-center-dx: calc((var(--menu-from-right, 0px) - var(--menu-from-left, 0px)) / 2);
+  --menu-center-dy: calc((var(--menu-from-bottom, 0px) - var(--menu-from-top, 0px)) / 2);
+  --menu-curve-x: var(--menu-center-dx);
+  --menu-curve-y: calc(-1 * var(--menu-from-bottom, 0px));
+  --menu-arc-x: calc(var(--menu-curve-x) * var(--menu-bend));
+  --menu-arc-y: calc(var(--menu-curve-y) * var(--menu-bend));
+  /* Each edge is where the surface's centre is (shift) plus how big it is (closed).
+     With the two equal, an edge is simply closed * its inset. */
+  --menu-span-x: calc(var(--menu-from-left, 0px) + var(--menu-from-right, 0px));
+  --menu-span-y: calc(var(--menu-from-top, 0px) + var(--menu-from-bottom, 0px));
+  --menu-offset-x: calc(var(--menu-shift-x) * (var(--menu-from-left, 0px) - var(--menu-from-right, 0px)) / 2 + var(--menu-arc-x));
+  --menu-offset-y: calc(var(--menu-shift-y) * (var(--menu-from-top, 0px) - var(--menu-from-bottom, 0px)) / 2 + var(--menu-arc-y));
+  --menu-top: calc(var(--menu-closed-y) * var(--menu-span-y) / 2 + var(--menu-offset-y));
+  --menu-right: calc(var(--menu-closed-x) * var(--menu-span-x) / 2 - var(--menu-offset-x));
+  --menu-bottom: calc(var(--menu-closed-y) * var(--menu-span-y) / 2 - var(--menu-offset-y));
+  --menu-left: calc(var(--menu-closed-x) * var(--menu-span-x) / 2 + var(--menu-offset-x));
+  /* Everything below is pinned to the anchored corner, bottom-left by default. */
+  --menu-content-x: var(--menu-left);
+  --menu-content-y: calc(-1 * var(--menu-bottom));
+  /* The content zooms around the centre of the trigger's anchored copy. */
+  --menu-origin-x: calc(var(--menu-trigger-width, 0px) / 2);
+  --menu-origin-y: calc(100% - var(--menu-trigger-height, 0px) / 2);
+  --menu-radius: calc(var(--menu-trigger-radius, 0px) * var(--menu-closed) + 21px * var(--menu-size));
+  transition: --menu-open calc(420ms * var(--menu-time, 1)) linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1);
+}
+
+.dropdown-menu[data-side='bottom'] {
+  --menu-curve-y: var(--menu-from-top, 0px);
+}
+
+.dropdown-menu[data-side='left'] {
+  --menu-curve-x: calc(-1 * var(--menu-from-right, 0px));
+  --menu-curve-y: var(--menu-center-dy);
+}
+
+.dropdown-menu[data-side='right'] {
+  --menu-curve-x: var(--menu-from-left, 0px);
+  --menu-curve-y: var(--menu-center-dy);
+}
+
+/* In place the anchored corner starts and ends on the trigger, so the curve is
+   carried by the growing edges: the edge along the trigger leads, the outward
+   edge lags, and the far corner sweeps out on an arc. A small measured lift
+   toward the opening direction gives the surface travel of its own, which the
+   springs carry on past the trigger and back. */
+.dropdown-menu[data-in-place] {
+  --menu-curve-x: var(--menu-drift-x, 0px);
+  --menu-curve-y: var(--menu-drift-y, 0px);
+  --menu-closed-x: calc(1 - var(--menu-size) * (2 - var(--menu-size)));
+  --menu-closed-y: calc(1 - var(--menu-size) * var(--menu-size));
+  --menu-shift-x: calc(1 - var(--menu-pos) * (2 - var(--menu-pos-ahead)));
+  --menu-shift-y: calc(1 - var(--menu-pos) * var(--menu-pos-ahead));
+}
+
+.dropdown-menu[data-in-place]:is([data-side='left'], [data-side='right']) {
+  --menu-closed-x: calc(1 - var(--menu-size) * var(--menu-size));
+  --menu-closed-y: calc(1 - var(--menu-size) * (2 - var(--menu-size)));
+  --menu-shift-x: calc(1 - var(--menu-pos) * var(--menu-pos-ahead));
+  --menu-shift-y: calc(1 - var(--menu-pos) * (2 - var(--menu-pos-ahead)));
+}
+
+.dropdown-menu[data-morph-y='top'] {
+  --menu-content-y: var(--menu-top);
+  --menu-origin-y: calc(var(--menu-trigger-height, 0px) / 2);
+}
+
+.dropdown-menu[data-morph-x='right'] {
+  --menu-content-x: calc(-1 * var(--menu-right));
+  --menu-origin-x: calc(100% - var(--menu-trigger-width, 0px) / 2);
+}
+
+/* A centred menu keeps its content and trigger copy on the surface's centre. */
+.dropdown-menu[data-morph-x='center'] {
+  --menu-content-x: calc((var(--menu-left) - var(--menu-right)) / 2);
+  --menu-origin-x: 50%;
+}
+
+.dropdown-menu[data-morph-y='center'] {
+  --menu-content-y: calc((var(--menu-top) - var(--menu-bottom)) / 2);
+  --menu-origin-y: 50%;
+}
+
+.dropdown-menu[data-starting-style],
+.dropdown-menu[data-ending-style] {
+  --menu-open: 0;
+}
+
+.dropdown-menu[data-ending-style] {
+  pointer-events: none;
+  /* A spring measured per placement, so the trigger copy carries on a fixed few
+     pixels past the trigger along its own curve and settles back. */
+  transition: --menu-open calc(360ms * var(--menu-time, 1)) var(--menu-close-easing, linear(0, 0.25 14%, 0.62 30%, 0.9 46%, 1.018 66%, 1.008 82%, 1));
+}
+
+.dropdown-menu-surface {
+  inset: var(--menu-top) var(--menu-right) var(--menu-bottom) var(--menu-left);
+  border-radius: var(--menu-radius);
+}
+
+.dropdown-menu-shadow {
+  /* Share the morph's clock so both handoffs match the shadowless trigger. */
+  opacity: clamp(0, var(--menu-size), 1);
+}
+
+/* Pinned to the surface's anchored corner, at the trigger's size. It shares the
+   morph's clock: fully shown while the surface is at (or recoiling past) the
+   trigger, so it travels with the closing spring, and gone once it has left. */
+.dropdown-menu-ghost {
+  --menu-ghost: clamp(0, (0.45 - var(--menu-open)) / 0.4, 1);
+  left: var(--menu-left);
+  bottom: var(--menu-bottom);
+  width: var(--menu-trigger-width);
+  height: var(--menu-trigger-height);
+  opacity: var(--menu-ghost);
+  filter: blur(calc(2px * (1 - var(--menu-ghost))));
+  scale: calc(0.5 + 0.5 * var(--menu-ghost));
+}
+
+.dropdown-menu[data-morph-y='top'] .dropdown-menu-ghost {
+  top: var(--menu-top);
+  bottom: auto;
+}
+
+.dropdown-menu[data-morph-x='right'] .dropdown-menu-ghost {
+  right: var(--menu-right);
+  left: auto;
+}
+
+.dropdown-menu[data-morph-x='center'] .dropdown-menu-ghost {
+  left: calc(50% + (var(--menu-left) - var(--menu-right) - var(--menu-trigger-width)) / 2);
+}
+
+.dropdown-menu[data-morph-y='center'] .dropdown-menu-ghost {
+  top: calc(50% + (var(--menu-top) - var(--menu-bottom) - var(--menu-trigger-height)) / 2);
+  bottom: auto;
+}
+
+/* The surface beneath supplies the trigger's fill and ring. */
+.dropdown-menu-ghost > * {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.dropdown-menu-content {
+  /* Attach to the corner nearest the trigger (bottom-left when growing up/right).
+     Subtract that translation from the mask to keep it in local coordinates. */
+  --menu-clip-top: calc(var(--menu-top) - var(--menu-content-y));
+  --menu-clip-right: calc(var(--menu-right) + var(--menu-content-x));
+  --menu-clip-bottom: calc(var(--menu-bottom) + var(--menu-content-y));
+  --menu-clip-left: calc(var(--menu-left) - var(--menu-content-x));
+  --menu-feather: clamp(0px, calc(20px * var(--menu-closed)), 12px);
+  translate: var(--menu-content-x) var(--menu-content-y);
+  border-radius: var(--menu-radius);
+  clip-path: inset(
+    var(--menu-clip-top) var(--menu-clip-right)
+    var(--menu-clip-bottom) var(--menu-clip-left)
+    round var(--menu-radius)
+  );
+  /* Feather only the contents at the moving edges; the surface stays opaque.
+     The fade reaches zero at full size, leaving settled text fully visible. */
+  mask-image:
+    linear-gradient(to right,
+      transparent var(--menu-clip-left),
+      black calc(var(--menu-clip-left) + var(--menu-feather)),
+      black calc(100% - var(--menu-clip-right) - var(--menu-feather)),
+      transparent calc(100% - var(--menu-clip-right))),
+    linear-gradient(to bottom,
+      transparent var(--menu-clip-top),
+      black calc(var(--menu-clip-top) + var(--menu-feather)),
+      black calc(100% - var(--menu-clip-bottom) - var(--menu-feather)),
+      transparent calc(100% - var(--menu-clip-bottom)));
+  mask-composite: intersect;
+  /* Early in the morph the contents sit over the trigger. Let clicks pass through
+     to it until they have moved away, so rapid clicks still toggle the menu. */
+  animation: dropdown-menu-arm calc(220ms * var(--menu-time, 1));
+}
+
+@keyframes dropdown-menu-arm {
+  from, to { pointer-events: none; }
+}
+
+.dropdown-menu-items {
+  /* Scale the scroll viewport, not its scrolled contents, so a long list cannot
+     move the pivot beyond the visible frame. */
+  filter: blur(0px);
+  /* Share the surface's clock, settling the text just ahead of its full size. */
+  scale: calc(0.5 + 0.5 * clamp(0, calc(var(--menu-size) / 0.94), 1));
+  transform-origin: var(--menu-origin-x) var(--menu-origin-y);
+  transition:
+    opacity calc(160ms * var(--menu-time, 1)) calc(70ms * var(--menu-time, 1)) ease-out,
+    filter calc(200ms * var(--menu-time, 1)) calc(50ms * var(--menu-time, 1)) ease-out;
+}
+
+.dropdown-menu[data-starting-style] .dropdown-menu-items {
+  opacity: 0;
+  filter: blur(3px);
+}
+
+/* Closing, the contents share the morph's clock: they shrink and travel with the
+   surface, then hand over to the trigger copy, fading out over the same stretch
+   of the curve it fades in over. */
+.dropdown-menu[data-ending-style] .dropdown-menu-items {
+  --menu-items: clamp(0, (var(--menu-open) - 0.05) / 0.4, 1);
+  opacity: var(--menu-items);
+  /* Soften from the moment the menu starts closing, well before it fades. */
+  filter: blur(calc(3px * clamp(0, (0.95 - var(--menu-open)) / 0.6, 1)));
+  transition: none;
+}
+
+/* Likewise feather the moving edges straight away rather than as the size drops. */
+.dropdown-menu[data-ending-style] .dropdown-menu-content {
+  --menu-feather: clamp(0px, calc(60px * var(--menu-closed)), 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open],
+  .dropdown-menu-content {
+    animation: none;
+  }
+
+  .dropdown-menu-trigger[data-menu-morphing],
+  .dropdown-menu,
+  .dropdown-menu[data-ending-style],
+  .dropdown-menu-items {
+    transition: none;
+  }
+}
