@@ -2984,6 +2984,11 @@ export interface Overseer extends RpcTarget {
    * Fetch one page of messages in the chat history for the given chat thread. If `beforeSequence`
    * is absent, fetch the current tail. Otherwise, fetch messages before that sequence.
    *
+   * With `limit` (an integer from 1 to 200), return at most that many messages, newest first when
+   * selecting the page but ascending in the response, independently of compaction boundaries.
+   * Use the response's `nextBeforeSequence` to page backwards. Without `limit`, pages retain the
+   * checkpoint-delimited behavior and include their compaction summary.
+   *
    * Note that if you plan to subscribe to updates, you should initiate the subscription first,
    * before fetching history. Otherwise, you could theoretically miss a message that is sent
    * between when you fetch the history and when you subscribe.
@@ -2991,7 +2996,7 @@ export interface Overseer extends RpcTarget {
    * In typical usage, the client subscribes to all chat activity upfront, but only fetches
    * histories if and when the user opens a specific.
    */
-  getChatHistory(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage>;
+  getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage>;
 
   /** Fetch a single message from a chat thread. */
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
@@ -3658,14 +3663,18 @@ export type MergeChangesResult = {
 };
 
 /**
- * One page of a chat's history, bounded below by a compaction checkpoint. Compaction doesn't delete
- * messages, so a long thread is read one checkpoint-delimited page at a time.
+ * One page of a chat's history. By default it is bounded below by a compaction checkpoint;
+ * `getChatHistory`'s optional limit instead selects a bounded number of messages. Compaction
+ * doesn't delete messages, so either mode can page all the way back to the thread's start.
  */
 export type AiChatHistoryPage = {
   /** The page's messages, ascending by sequence. */
   messages: AiChatMessage[];
 
-  /** The checkpoint bounding this page below, absent once the page reaches the thread's start. */
+  /** In bounded mode, the exclusive cursor for the next older page; absent when no history remains. */
+  nextBeforeSequence?: number;
+
+  /** In checkpoint mode, the checkpoint below this page; absent once it reaches the thread's start. */
   compacted?: {
     /** First sequence in this page. Pass as `getChatHistory`'s `beforeSequence` for the page before. */
     to: number;

@@ -12020,10 +12020,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return await this.impl.getChatAttachmentData(chatId, id);
   }
 
-  // Compaction boundaries delimit the pages: the newest page is the tail replay still scans, and each
-  // earlier page is the span one checkpoint summarized. A thread that was never compacted has a
-  // single page.
-  async getChatHistory(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
+  // Existing clients page by compaction checkpoint. Bounded UI reads can cross those boundaries:
+  // compaction summarizes the model's context but never deletes the underlying messages.
+  async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {
+    if (limit !== undefined) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        throw new Error("Chat history limit must be an integer from 1 to 200");
+      }
+      if (beforeSequence !== undefined && beforeSequence <= 0) return {messages: []};
+      let result = [...this.impl.storage.chats.list({
+        prefix: chatKeyPrefix(chatId),
+        end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
+        reverse: true,
+        limit: limit + 1,
+      })];
+      let hasMore = result.length > limit;
+      if (hasMore) result.pop();
+      result.reverse();
+      return {
+        messages: result.map((msg) => this.#getChatMessageForClient(msg)),
+        nextBeforeSequence: hasMore ? result[0].sequence : undefined,
+      };
+    }
     let checkpoint = beforeSequence === undefined
         ? this.impl.getActiveChatCompaction(chatId)
         : this.impl.getChatCompactionBelow(chatId, beforeSequence);
@@ -12829,7 +12847,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async listChats(): Promise<AiChatMetadata[]> { this.#deny(); }
   async listModels(): Promise<AiChatAuthorInfo[]> { this.#deny(); }
-  async getChatHistory(_chatId: number, _beforeSequence?: number): Promise<AiChatHistoryPage> {
+  async getChatHistory(_chatId: number, _beforeSequence?: number, _limit?: number): Promise<AiChatHistoryPage> {
     this.#deny();
   }
   async getChatMessage(_chatId: number, _sequence: number): Promise<AiChatMessage | undefined> { this.#deny(); }

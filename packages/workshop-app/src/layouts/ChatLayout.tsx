@@ -1,10 +1,9 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 
 export type ChatLayoutProps = {
   header?: ReactNode
   composer: ReactNode
-  /** The messages; this area scrolls. */
+  /** The message list, which owns its scrolling. */
   children?: ReactNode
 }
 
@@ -28,11 +27,9 @@ const publishHeight = (element: HTMLElement | null, target: HTMLElement, name: s
  */
 export const ChatLayout = ({ header, composer, children }: ChatLayoutProps) => {
   const rootRef = useRef<HTMLDivElement>(null)
-  const scrollerRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
   const hasHeader = Boolean(header)
-  useScrollFadeFallback(scrollerRef)
 
   // The bars are out of flow, so their heights are measured to keep the messages clear of them.
   // Variables on the root, not React state, so an animating composer does not re-render the chat.
@@ -48,20 +45,9 @@ export const ChatLayout = ({ header, composer, children }: ChatLayoutProps) => {
 
   return (
     <div ref={rootRef} className="relative min-h-0 flex-1">
-      {/* The scroller ends halfway down the composer, so messages vanish there instead of showing
-          again below it. A reversed column scrolls from its bottom, so the newest message is in view
-          on open and stays there as messages arrive, without scroll code; `mb-auto` keeps a short
-          conversation at the top. */}
-      {/* Once scrolled, the top edge fades messages to a third of their strength, never to nothing,
-          across the header's height plus a little more, so they read as passing beneath it; the
-          bottom edge fades them out toward the composer (`chat-fade`, in styles.css). */}
-      <div
-        ref={scrollerRef}
-        className="absolute inset-x-0 top-0 bottom-[var(--composer-half,0px)] flex flex-col-reverse overflow-y-auto chat-fade"
-      >
-        <div className="mx-auto mb-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]">
-          {children}
-        </div>
+      {/* End halfway down the composer so faded messages cannot reappear below it. */}
+      <div className="absolute inset-x-0 top-0 bottom-[var(--composer-half,0px)]">
+        {children}
       </div>
       {/* Only the bars' own content takes the pointer; the gaps around it let it through. */}
       {header && (

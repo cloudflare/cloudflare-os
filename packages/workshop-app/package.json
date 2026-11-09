@@ -23,6 +23,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.3.3",
+    "use-stick-to-bottom": "^1.1.6",
     "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {

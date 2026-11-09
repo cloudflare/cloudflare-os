@@ -17,6 +17,10 @@ export type ChatSnapshot =
       thinking: boolean
       /** Why the last send failed, until the next send. */
       sendError: string | undefined
+      /** Older history is fetched separately from the live tail. */
+      hasEarlier: boolean
+      loadingEarlier: boolean
+      historyError: string | undefined
     }
   | { status: 'failed'; message: string }
 
@@ -38,6 +42,7 @@ export type ChatSessionOptions = {
 }
 
 const LOADING: ChatSnapshot = { status: 'loading' }
+const HISTORY_PAGE_SIZE = 50
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -70,6 +75,9 @@ export class ChatSession {
   #streaming = ''
   #generation: number | undefined
   #sendError: string | undefined
+  #nextBeforeSequence: number | undefined
+  #loadingEarlier = false
+  #historyError: string | undefined
   // Set when the subscription fails, for the rest of the run: a conversation that is no longer
   // live must not go back to looking ready because the initial load finished.
   #failure: string | undefined
@@ -133,6 +141,42 @@ export class ChatSession {
     if (run === this.#run) this.#publishReady()
   }
 
+  /** Fetches one older page. Concurrent calls are ignored; failures are retryable. */
+  loadEarlier = async () => {
+    const overseer = this.#overseer
+    const before = this.#nextBeforeSequence
+    const chatId = this.#chatId
+    if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined || chatId === undefined) return
+    const run = this.#run
+    this.#loadingEarlier = true
+    this.#historyError = undefined
+    this.#publishReady()
+    try {
+      const page = await overseer.getChatHistory(chatId, before, HISTORY_PAGE_SIZE)
+      if (run !== this.#run) return
+      // Live updates (e.g. an approval resolved during the read) take precedence over the page.
+      for (const message of page.messages) {
+        if (!this.#messages.has(message.sequence)) this.#messages.set(message.sequence, message)
+      }
+      this.#nextBeforeSequence = page.nextBeforeSequence
+      this.#rebuildItems()
+    } catch (error) {
+      if (run !== this.#run) return
+      this.#historyError = messageOf(error)
+    }
+    if (run !== this.#run) return
+    this.#loadingEarlier = false
+    this.#publishReady()
+  }
+
+  #rebuildItems() {
+    // An update to an older, unloaded card must not expose a disconnected fragment of history.
+    // Retain its newer value until paging reaches it, then prefer it over the fetched snapshot.
+    this.#items = toChatItems([...this.#messages.values()]
+      .filter((message) => this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)
+      .toSorted((a, b) => a.sequence - b.sequence))
+  }
+
   #reset() {
     this.#loaded = false
     this.#early = []
@@ -144,6 +188,9 @@ export class ChatSession {
     this.#streaming = ''
     this.#generation = undefined
     this.#sendError = undefined
+    this.#nextBeforeSequence = undefined
+    this.#loadingEarlier = false
+    this.#historyError = undefined
     this.#failure = undefined
   }
 
@@ -166,6 +213,9 @@ export class ChatSession {
       streamingText: this.#streaming,
       thinking: this.#agentActive && this.#streaming === '',
       sendError: this.#sendError,
+      hasEarlier: this.#nextBeforeSequence !== undefined,
+      loadingEarlier: this.#loadingEarlier,
+      historyError: this.#historyError,
     })
   }
 
@@ -181,8 +231,9 @@ export class ChatSession {
       })
 
       const chats = await overseer.listChats()
+      if (run !== this.#run) return
       const latest = chats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())[0]
-      const history = latest ? await overseer.getChatHistory(latest.id) : undefined
+      const history = latest ? await overseer.getChatHistory(latest.id, undefined, HISTORY_PAGE_SIZE) : undefined
       if (run !== this.#run) return
 
       const messages = history?.messages ?? []
@@ -191,6 +242,7 @@ export class ChatSession {
       this.#agentActive = latest?.activeAgent !== undefined
       this.#messages = new Map(messages.map((message) => [message.sequence, message]))
       this.#items = toChatItems(messages)
+      this.#nextBeforeSequence = history?.nextBeforeSequence
       this.#loaded = true
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
@@ -246,9 +298,10 @@ export class ChatSession {
     if (!this.#accepts(message.chatId)) return
     // Replayed and live delivery can overlap, so a sequence number is stored once.
     this.#messages.set(message.sequence, message)
-    this.#items = toChatItems([...this.#messages.values()].toSorted((a, b) => a.sequence - b.sequence))
-    // The finished message replaces what was streaming.
-    if (message.author.type === 'agent') this.#streaming = ''
+    this.#rebuildItems()
+    // A finished reply replaces the stream; updates to an agent's approval/tool cards do not.
+    if (message.type === 'message' && message.author.type === 'agent' &&
+      (this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)) this.#streaming = ''
     this.#publishReady()
   }
 
