@@ -142,6 +142,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
     materializeChatChanges: impl.materializeChatChanges.bind(impl),
     addChatMessages: impl.addChatMessages.bind(impl),
     startAgent: impl.startAgent.bind(impl),
+    retryAgent: impl.retryAgent.bind(impl),
     drainAutoApprovals: impl.drainAutoApprovals.bind(impl),
     ...overrides,
   }});

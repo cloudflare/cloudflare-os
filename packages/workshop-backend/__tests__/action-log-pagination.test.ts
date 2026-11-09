@@ -1,13 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
 import type { ActionLogEntry, ActionsSubscriber } from "@gadgets/workshop-shared/api";
-import { ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE } from "../src/overseer.js";
+import {
+  ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE, type OverseerDurableObject,
+} from "../src/overseer.js";
 import { makeMockStorage } from "./mock-storage.js";
 import {
   FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, openFakeOverseer, putAction,
 } from "./fixtures.js";
 
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
+declare module "cloudflare:workers" {
+  interface ProvidedEnv {
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+  }
+}
+
+vi.mock("capnweb-validate", () => ({
+  validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined,
+}));
 
 // Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
 // assert both content and ordering of the delivered stream.
@@ -104,13 +116,18 @@ describe("subscribeToActions", () => {
       id: 7, actionId: 0, gatekeeperId: 1, enabled: true,
       controller: { disable: async () => {} },
     };
+    // The forged impl runs the real impl's disableHook, read off an instance since its class is
+    // not exported, over the storage above.
+    let disableHook = await runInDurableObject(
+        env.TEST_OVERSEER.getByName("action-log-pagination"),
+        (instance: OverseerDurableObject) => instance["impl"].disableHook);
     let client = await openFakeOverseer({
       ...storage,
       boundHooks: {
         get: (id: number) => (id === hook.id ? hook : undefined),
         put: (record: typeof hook) => Object.assign(hook, record),
       },
-    });
+    }, { impl: { disableHook } });
     await client.disableHook(hook.id);  // stamps appliedAt = now on the bindHook action record
 
     let entries: ActionLogEntry[] = [];

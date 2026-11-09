@@ -783,7 +783,8 @@ describe("hooks widen the scope of the gadget they wake", () => {
     expect(disabled).toBe(1);
   }));
 
-  it("a hook deleted while its disable was in flight is not resurrected as a zombie", async () => {
+  it("a hook deleted while its disable was in flight is not resurrected as a zombie",
+      () => withImpl(async (impl) => {
     let releaseDisable!: () => void;
     let record = {
       id: 5, actionId: 999, gatekeeperId: 1, vendorId: "testvendor",
@@ -793,6 +794,8 @@ describe("hooks widen the scope of the gadget they wake", () => {
       enabled: true,
     };
     let hooks = new Map<number, object>([[5, record]]);
+    // The forged impl runs the real impl's disableHook over the collection below, so the re-read
+    // after its await is the real one.
     let client = await openFakeOverseer({
       boundHooks: {
         get: (id: number) => hooks.get(id),
@@ -801,7 +804,7 @@ describe("hooks widen the scope of the gadget they wake", () => {
         list: () => [...hooks.values()],
       },
       actions: { get: () => undefined, put: () => {} },
-    });
+    }, { impl: { disableHook: impl.disableHook } });
 
     let pending = client.disableHook(5);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -812,7 +815,7 @@ describe("hooks widen the scope of the gadget they wake", () => {
     await pending;
 
     expect(hooks.size).toBe(0);
-  });
+  }));
 
   it("removing a connection synchronously deletes its hooks",
       () => withImpl(async (impl, restarts, instance) => {

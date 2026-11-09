@@ -347,7 +347,10 @@ async function startHookFiring(world: World, gadgetId?: number) {
   // The firing wrapper preserves the stored callback's deliver method across its RPC type.
   let deliveryCallback = firing.callback as unknown as { deliver(payload: string): Promise<void> };
   let client = await openFakeOverseer({ boundHooks: hooks, actions: impl.storage.actions }, {
-    impl: { deleteHook: (id: number) => impl.deleteHook(id) },
+    impl: {
+      disableHook: (id: number) => impl.disableHook(id),
+      deleteHook: (id: number) => impl.deleteHook(id),
+    },
   });
   return {
     approvalQueue: firing.approvalQueue,

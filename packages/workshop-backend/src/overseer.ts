@@ -1324,6 +1324,40 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
+  // Deletes the workspace (see Overseer.deleteSelf()), up to the restart that ends its sessions,
+  // which the caller schedules. `actorUserId` is the user deleting it. Resolves false when the
+  // workspace was already deleted.
+  async deleteWorkspace(actorUserId: string): Promise<boolean> {
+    if (!this.ownerId) return false;
+
+    this.destroyAllLiveChats();
+    // TODO: Revoke user sessions.
+
+    // Disable all enabled hooks so that the gatekeepers stop delivering events to this gadget.
+    // We do this before deleting storage so that we still have access to the hook controllers.
+    // TODO: If any disablement fails, deletion will be blocked. We could ignore failures, but that
+    //   would leave gatekeepers pointing at gadgets that don't exist anymore, which is also bad.
+    //   What do we really want here?
+    for (let record of Array.from(this.storage.boundHooks.list())) {
+      if (record.enabled) {
+        await this.disableHook(record.id);
+      }
+    }
+
+    let sharing = await this.getSharingManager();
+    if (!this.ownerId) return false; // Another deletion may have committed while hooks were disabled.
+    let readers = new Set([this.ownerId, ...sharing.listCollaborators()
+      .map(reader => this.users.idFromName(reader.profile.id).toString())]);
+    this.beginDeletion(readers);
+    await this.removeFromDirectory();
+    this.recordGadgetAnalytics({
+      event_name: "gadget_deleted",
+      user_id: actorUserId,
+    });
+    await this.deliverUserUpdates();
+    return true;
+  }
+
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
   markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number): void {
     if (!this.ownerId) return;
@@ -2360,6 +2394,25 @@ class OverseerImpl implements AgentHooks {
       }
     }
     this.#deleteBindingEdges(edge => edge.pending?.chatId === chatId);
+  }
+
+  // Disables a hook (see Overseer.disableHook()).
+  async disableHook(id: number): Promise<void> {
+    let record = this.storage.boundHooks.get(id);
+    if (!record) throw new Error("Invalid hook ID.");
+
+    if (record.enabled) {
+      await record.controller.disable();
+
+      // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
+      // flight already reached the goal state (no hook), and putting the captured record back
+      // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
+      let current = this.storage.boundHooks.get(id);
+      if (!current) return;
+      current.enabled = false;
+      this.storage.boundHooks.put(current);
+      stampBindHookAction(this.storage, current.actionId, false);
+    }
   }
 
   // Disable (if needed) and delete a bound hook, updating its action-log record to match.
@@ -5563,6 +5616,72 @@ class OverseerImpl implements AgentHooks {
     this.traceAgentActionApproval(record, "approved");
   }
 
+  // Rejects one pending action (see Overseer.rejectAction()). `resolver` reads the profile of
+  // whoever rejects it, and is called only once the action is known to be one that can be
+  // rejected. Resolves the connection whose auto-approvals the caller may now drain, or undefined
+  // for a creation, whose connection is removed.
+  async rejectAction(id: number, resolver: () => Promise<AiChatAuthorInfo>)
+      : Promise<WorkpieceId | undefined> {
+    let action = this.storage.actions.get(id);
+    if (!action) {
+      throw new Error(`No such action: ${id}`);
+    }
+
+    if (action.state !== "pending") {
+      throw new Error(`Action is not pending: ${id}`);
+    }
+
+    if (action.type !== "action") {
+      throw new Error(`Can't reject an observation: ${id}`);
+    }
+
+    if (action.action === "create") {
+      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
+      // pushes' marks), and rejects every action queued against the simulated resource: none can
+      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
+      // is called.
+      let profile = await resolver();
+      let queued = Array.from(
+          this.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
+      this.removeGatekeeper(action.gatekeeperId);
+      for (let record of queued) {
+        if (record.type !== "action") continue;
+        record.state = "rejected";
+        record.appliedAt = new Date();
+        record.resolvedBy = profile;
+        this.storage.actions.put(record);
+        this.traceAgentActionApproval(record, "denied");
+        if (record.caller.from === "agent") {
+          this.resumeAgentAfterDecision(record.caller.chatId, record.id);
+        }
+      }
+      return undefined;
+    }
+
+    let gatekeeper = await this.getGatekeeperFacet(action.gatekeeperId);
+
+    // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
+    // can't leave the action rejected with the gatekeeper but still "pending" in storage.
+    let profile = await resolver();
+
+    await gatekeeper.rejectAction(action.action);
+
+    action.state = "rejected";
+    action.appliedAt = new Date();
+    action.resolvedBy = profile;
+    // A rejected push's pending-push marks are removed in the same durable step as the state
+    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
+    this.storage.transaction(() => {
+      this.gitCache.clearPushMarks(action.id);
+      this.storage.actions.put(action);
+    });
+    this.traceAgentActionApproval(action, "denied");
+    if (action.caller.from === "agent") {
+      this.resumeAgentAfterDecision(action.caller.chatId, action.id);
+    }
+    return action.gatekeeperId;
+  }
+
   // Traces an approval step for an action an agent turn submitted.
   traceAgentActionApproval(record: ActionRecord, state: "requested" | "approved" | "denied") {
     if (record.caller.from !== "agent") return;
@@ -7768,6 +7887,87 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
+  // Deletes a chat (see Overseer.deleteChat()).
+  async deleteChat(chatId: number): Promise<void> {
+    let startedAt = Date.now();
+    let response = this.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
+    if (response?.status === "waiting") {
+      this.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
+    }
+
+    // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
+    // and provisional binding edges.
+    await this.removeChatWorkpieces(chatId);
+    this.storage.chatMeta.delete(chatId);
+    this.storage.chatContext.delete(chatId);
+    for (let event of Array.from(this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatNotifications.deleteRecord(event);
+    }
+    // Buffer the checkpoints first: deleting invalidates the list cursor.
+    for (let checkpoint of Array.from(
+        this.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatCompactions.deleteRecord(checkpoint);
+    }
+
+    // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
+    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
+    this.deleteAllChatChanges(chatId);
+    for (let record of Array.from(this.storage.chatChangeClients.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatChangeClients.deleteRecord(record);
+    }
+
+    // Any pre-conversion legacy drafts (see ChatDraftUpdateRecord).
+    for (let draft of Array.from(this.storage.chatDraftUpdates.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatDraftUpdates.deleteRecord(draft);
+    }
+
+    // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
+    // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
+    this.ctx.storage.transactionSync(() => {
+      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
+        if (msg.type === "message") {
+          for (let attachment of msg.attachments ?? []) {
+            let content = this.storage.chatAttachmentContent.get(attachment.id);
+            if (content?.state.type === "committed" && content.state.chatId === chatId) {
+              this.storage.chatAttachmentContent.delete(attachment.id);
+            }
+          }
+        }
+        this.storage.chats.deleteRecord(msg);
+      }
+    });
+
+    // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
+    for (let entry of this.storage.agentCallbackArgs.list(
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.storage.agentCallbackArgs.deleteRecord(entry);
+    }
+    for (let entry of Array.from(this.storage.pendingAgentCalls.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.pendingAgentCalls.deleteRecord(entry);
+    }
+
+    // Clean up the chat's model-facing snapshots.
+    for (let entry of this.storage.chatModelData.list(
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.storage.chatModelData.deleteRecord(entry);
+    }
+
+    // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent
+    // below also clears this via the tracked promise's finally, but the chat may have no live
+    // agent in memory, e.g. after a restart before resumption ran.)
+    this.storage.activeAgents.delete(chatId);
+
+    // Clean up all in-memory live state for this chat.
+    this.destroyLiveChat(chatId);
+
+    this.logger.info("deleted chat", {
+      event: "chat.delete.completed", chatId, durationMs: Date.now() - startedAt,
+    });
+  }
+
   // Stops the chat's running agent. Its queued steers are dropped: the client that stops puts them
   // in its draft (see Overseer.stopAgent).
   cancelAgent(chatId: number) {
@@ -7800,6 +8000,39 @@ class OverseerImpl implements AgentHooks {
       this.#updateAlarm();
       this.#finishAgentTurn(chatId);
     }
+  }
+
+  // Retries the chat's last request as a new turn (see Overseer.retryAgent()). `userMeta` is the
+  // context of the user whose model and account the turn runs on, `initiatorUserId` that user's
+  // id, and `author` who the retry's message is from: the user of `userMeta` unless given.
+  retryAgent(chatId: number, userMeta: UserChatContext, initiatorUserId: string,
+             author: AiChatAuthorInfo = userMeta.profile): void {
+    let meta = this.assertChatNotActive(chatId);
+    if (!userMeta.aiModel) {
+      throw new Error("No AI model available.");
+    }
+
+    let result = this.materializeChatChanges(chatId, meta);
+    if (result) meta = result.meta;
+
+    // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
+    // if this execution is interrupted before it can commit its first response.
+    this.addChatMessages(chatId, author,
+        [{type: "agentNudge", text: "Retry the previous request."}]);
+    meta.activeAgent = userMeta.aiModel.profile;
+    meta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(meta);
+
+    this.startAgent(chatId, userMeta.aiModel, userMeta.profile, initiatorUserId);
+  }
+
+  // The model of the chat's most recent agent message, by id, or null when it has none: what a
+  // message from outside the Workshop continues a chat with.
+  lastAgentModelId(chatId: number): string | null {
+    for (let msg of this.storage.chats.list({ prefix: chatKeyPrefix(chatId), reverse: true })) {
+      if (msg.author.type === "agent") return msg.author.id;
+    }
+    return null;
   }
 
   // AgentHooks.takeSteers: logs each queued steer at the step boundary where the agent reads it,
@@ -11745,16 +11978,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Find the external conversation's chat if it exists.
     let externalChat = this.#getExternalChat(input.externalChatKey);
-    let modelId = null;
-    if (externalChat) {
-      // Continue existing chats with the most recent agent model used in that chat.
-      for (let msg of this.impl.storage.chats.list({ prefix: chatKeyPrefix(externalChat.chatId), reverse: true })) {
-        if (msg.author.type === "agent") {
-          modelId = msg.author.id;
-          break;
-        }
-      }
-    }
+    // Continue existing chats with the most recent agent model used in that chat.
+    let modelId = externalChat ? this.impl.lastAgentModelId(externalChat.chatId) : null;
 
     // Resolve the caller's profile and model.
     let userContext = await caller.getExternalMessageChatContext(modelId);
@@ -12610,34 +12835,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can delete it.");
     }
-    if (!this.impl.ownerId) return;
     let startedAt = Date.now();
-
-    this.impl.destroyAllLiveChats();
-    // TODO: Revoke user sessions.
-
-    // Disable all enabled hooks so that the gatekeepers stop delivering events to this gadget.
-    // We do this before deleting storage so that we still have access to the hook controllers.
-    // TODO: If any disablement fails, deletion will be blocked. We could ignore failures, but that
-    //   would leave gatekeepers pointing at gadgets that don't exist anymore, which is also bad.
-    //   What do we really want here?
-    for (let record of Array.from(this.impl.storage.boundHooks.list())) {
-      if (record.enabled) {
-        await this.disableHook(record.id);
-      }
-    }
-
-    let sharing = await this.impl.getSharingManager();
-    if (!this.impl.ownerId) return; // Another deletion may have committed while hooks were disabled.
-    let readers = new Set([this.impl.ownerId, ...sharing.listCollaborators()
-      .map(reader => this.impl.users.idFromName(reader.profile.id).toString())]);
-    this.impl.beginDeletion(readers);
-    await this.impl.removeFromDirectory();
-    this.impl.recordGadgetAnalytics({
-      event_name: "gadget_deleted",
-      user_id: this.#clientUser.id.toString(),
-    });
-    await this.impl.deliverUserUpdates();
+    if (!await this.impl.deleteWorkspace(this.#clientUser.id.toString())) return;
     this.impl.ctx.waitUntil(this.notifyClosed().catch(() => {}));
     this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
 
@@ -12891,21 +13090,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async disableHook(id: number): Promise<void> {
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
-
-    if (record.enabled) {
-      await record.controller.disable();
-
-      // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
-      // flight already reached the goal state (no hook), and putting the captured record back
-      // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
-      let current = this.impl.storage.boundHooks.get(id);
-      if (!current) return;
-      current.enabled = false;
-      this.impl.storage.boundHooks.put(current);
-      stampBindHookAction(this.impl.storage, current.actionId, false);
-    }
+    return this.impl.disableHook(id);
   }
 
   async deleteHook(id: number): Promise<void> {
@@ -12914,68 +13099,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
 
   async rejectAction(id: number): Promise<void> {
-    let action = this.impl.storage.actions.get(id);
-    if (!action) {
-      throw new Error(`No such action: ${id}`);
-    }
-
-    if (action.state !== "pending") {
-      throw new Error(`Action is not pending: ${id}`);
-    }
-
-    if (action.type !== "action") {
-      throw new Error(`Can't reject an observation: ${id}`);
-    }
-
-    if (action.action === "create") {
-      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
-      // pushes' marks), and rejects every action queued against the simulated resource: none can
-      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
-      // is called.
-      let profile = await this.#getClientProfile();
-      let queued = Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
-      this.impl.removeGatekeeper(action.gatekeeperId);
-      for (let record of queued) {
-        if (record.type !== "action") continue;
-        record.state = "rejected";
-        record.appliedAt = new Date();
-        record.resolvedBy = profile;
-        this.impl.storage.actions.put(record);
-        this.impl.traceAgentActionApproval(record, "denied");
-        if (record.caller.from === "agent") {
-          this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
-        }
-      }
-      return;
-    }
-
-    let gatekeeper = await this.impl.getGatekeeperFacet(action.gatekeeperId);
-
-    // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
-    // can't leave the action rejected with the gatekeeper but still "pending" in storage.
-    let profile = await this.#getClientProfile();
-
-    await gatekeeper.rejectAction(action.action);
-
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    // A rejected push's pending-push marks are removed in the same durable step as the state
-    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-    this.impl.storage.transaction(() => {
-      this.impl.gitCache.clearPushMarks(action.id);
-      this.impl.storage.actions.put(action);
-    });
-    this.impl.traceAgentActionApproval(action, "denied");
-    if (action.caller.from === "agent") {
-      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
-    }
+    let gatekeeperId = await this.impl.rejectAction(id, () => this.#getClientProfile());
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
     // may unblock later auto-eligible pending actions, whose turns do resume.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
+    if (gatekeeperId !== undefined) {
+      this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId));
+    }
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
@@ -13432,83 +13563,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async deleteChat(chatId: number): Promise<void> {
-    let startedAt = Date.now();
-    let response = this.impl.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
-    if (response?.status === "waiting") {
-      this.impl.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
-    }
-
-    // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
-    // and provisional binding edges.
-    await this.impl.removeChatWorkpieces(chatId);
-    this.impl.storage.chatMeta.delete(chatId);
-    this.impl.storage.chatContext.delete(chatId);
-    for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatNotifications.deleteRecord(event);
-    }
-    // Buffer the checkpoints first: deleting invalidates the list cursor.
-    for (let checkpoint of Array.from(
-        this.impl.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatCompactions.deleteRecord(checkpoint);
-    }
-
-    // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
-    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
-    this.impl.deleteAllChatChanges(chatId);
-    for (let record of Array.from(this.impl.storage.chatChangeClients.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatChangeClients.deleteRecord(record);
-    }
-
-    // Any pre-conversion legacy drafts (see ChatDraftUpdateRecord).
-    for (let draft of Array.from(this.impl.storage.chatDraftUpdates.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatDraftUpdates.deleteRecord(draft);
-    }
-
-    // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
-    // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
-    this.impl.ctx.storage.transactionSync(() => {
-      for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-        if (msg.type === "message") {
-          for (let attachment of msg.attachments ?? []) {
-            let content = this.impl.storage.chatAttachmentContent.get(attachment.id);
-            if (content?.state.type === "committed" && content.state.chatId === chatId) {
-              this.impl.storage.chatAttachmentContent.delete(attachment.id);
-            }
-          }
-        }
-        this.impl.storage.chats.deleteRecord(msg);
-      }
-    });
-
-    // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
-    for (let entry of this.impl.storage.agentCallbackArgs.list(
-        {prefix: chatKeyPrefix(chatId)})) {
-      this.impl.storage.agentCallbackArgs.deleteRecord(entry);
-    }
-    for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.pendingAgentCalls.deleteRecord(entry);
-    }
-
-    // Clean up the chat's model-facing snapshots.
-    for (let entry of this.impl.storage.chatModelData.list(
-        {prefix: chatKeyPrefix(chatId)})) {
-      this.impl.storage.chatModelData.deleteRecord(entry);
-    }
-
-    // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent
-    // below also clears this via the tracked promise's finally, but the chat may have no live
-    // agent in memory, e.g. after a restart before resumption ran.)
-    this.impl.storage.activeAgents.delete(chatId);
-
-    // Clean up all in-memory live state for this chat.
-    this.impl.destroyLiveChat(chatId);
-
-    this.impl.logger.info("deleted chat", {
-      event: "chat.delete.completed", chatId, durationMs: Date.now() - startedAt,
-    });
+    return this.impl.deleteChat(chatId);
   }
 
   async stopAgent(chatId: number): Promise<void> {
@@ -13519,25 +13574,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     using _starting = this.#startingTurn(chatId);
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
-
-    let meta = this.impl.assertChatNotActive(chatId);
-    if (!userMeta.aiModel) {
-      throw new Error("No AI model available.");
-    }
-
-    let result = this.impl.materializeChatChanges(chatId, meta);
-    if (result) meta = result.meta;
-
-    // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
-    // if this execution is interrupted before it can commit its first response.
-    this.impl.addChatMessages(chatId, userMeta.profile,
-        [{type: "agentNudge", text: "Retry the previous request."}]);
-    meta.activeAgent = userMeta.aiModel.profile;
-    meta.lastActive = this.impl.getChatTimestamp();
-    this.impl.storage.chatMeta.put(meta);
-
-    this.impl.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                         this.#clientUser.id.toString());
+    this.impl.retryAgent(chatId, userMeta, this.#clientUser.id.toString());
   }
 
   async waitForAgent(chatId: number): Promise<AiChatMessage | null> {
