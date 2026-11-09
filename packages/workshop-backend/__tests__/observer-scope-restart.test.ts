@@ -1639,10 +1639,7 @@ async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
         case "enableHook": case "disableHook": case "deleteHook": {
           let id = pick([...model.hooks.keys()], step.hook);
           if (id === undefined) break;
-          // (enableHook's loopback entrypoint is not among the test Worker's exports either; this
-          // is the record flip its gatekeeper round trip ends on.)
-          if (step.kind === "enableHook") impl.enableHookRecord(hookRecords.get(id));
-          else await owner[step.kind](id);
+          await owner[step.kind](id);
           if (step.kind === "deleteHook") model.hooks.delete(id);
           else model.hooks.get(id)!.enabled = step.kind === "enableHook";
           break;
