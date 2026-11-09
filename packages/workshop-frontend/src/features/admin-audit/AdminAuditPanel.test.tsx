@@ -962,6 +962,14 @@ describe('AdminAuditPanel', () => {
           'content.')
     })
 
+    it('says what Metadata only withholds of a user’s account', async () => {
+      await render()
+
+      expect(card('Inspection access').textContent).toContain(
+        'Of a user’s account, Metadata only withholds what each connected account is named and ' +
+          'described as, and blueprint ids.')
+    })
+
     it('disables the levels above the deployment’s maximum, naming it', async () => {
       await render(settingsWith({ access: { max: 'metadata' } }))
 
