@@ -1485,10 +1485,10 @@ describe("Google Doc tables", () => {
       'Insert 1 row in a table of tab "Main" (tab-1), after its last row. ' +
       "It was table 1 of the tab when this change was requested.");
     expect(await hooks().lastActionFields).toEqual([
+      { label: "New rows", kind: "json", value: JSON.stringify(cells, null, 2) },
       markdownField("Text before the table", "Before"),
       htmlField("First row of the table", rowOf("Task", "Status")),
       htmlField("Row above the new rows", rowOf("Fix login", "Open")),
-      { label: "New rows", kind: "json", value: JSON.stringify(cells, null, 2) },
     ]);
   });
 
@@ -1585,7 +1585,7 @@ describe("Google Doc tables", () => {
     expect(await hooks().lastActionDescription).toBe(
       'Insert 1 row in a table of tab "Main" (tab-1), after its last row. ' +
       "It was table 2 of the tab when this change was requested.");
-    expect((await hooks().lastActionFields).slice(0, 2)).toEqual([
+    expect((await hooks().lastActionFields).slice(1, 3)).toEqual([
       markdownField("Text before the table", "Before"),
       htmlField("First row of the table", rowOf("Task", "Status")),
     ]);

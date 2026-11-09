@@ -865,8 +865,8 @@ describe("cards", () => {
       title: "Insert table rows in Google Doc",
       description: `Insert 1 row in a table of tab "Main" (tab-1), after its last row.${was(1)}`,
       fields: [
-        BEFORE, FIRST, html("Row above the new rows", rowHtml("Ship docs", "Done")),
         json("New rows", [["Ship", "Open"]]),
+        BEFORE, FIRST, html("Row above the new rows", rowHtml("Ship docs", "Done")),
       ],
       descriptionIsComplete: true,
     });
@@ -893,7 +893,7 @@ describe("cards", () => {
       title: "Insert table columns in Google Doc",
       description: "Insert 1 column in a table of tab \"Main\" (tab-1), after its last " +
         `column.${was(1)}`,
-      fields: [BEFORE, FIRST, json("New cells, row by row", [["Owner"], ["Ana"], [""]])],
+      fields: [json("New cells, row by row", [["Owner"], ["Ana"], [""]]), BEFORE, FIRST],
       descriptionIsComplete: true,
     });
     expect(card(addColumns({ table: 0, at: 1, count: 2 }))).toEqual({
@@ -910,7 +910,7 @@ describe("cards", () => {
       title: "Delete table rows in Google Doc",
       description: "Delete row 2 of a table of tab \"Main\" (tab-1), with everything in " +
         `it.${was(1)}`,
-      fields: [BEFORE, FIRST, html("Deleted rows", rowHtml("Fix login", "Open"))],
+      fields: [html("Deleted rows", rowHtml("Fix login", "Open")), BEFORE, FIRST],
       descriptionIsComplete: true,
     });
     expect(card(dropRows({ table: 0, at: 1, count: 2 }))).toEqual({
@@ -918,8 +918,8 @@ describe("cards", () => {
       description: "Delete rows 2 to 3 of a table of tab \"Main\" (tab-1), with everything in " +
         `them.${was(1)}`,
       fields: [
-        BEFORE, FIRST,
         html("Deleted rows", `${rowHtml("Fix login", "Open")}\n${rowHtml("Ship docs", "Done")}`),
+        BEFORE, FIRST,
       ],
       descriptionIsComplete: true,
     });
@@ -931,10 +931,10 @@ describe("cards", () => {
       description: "Delete column 2 of a table of tab \"Main\" (tab-1), with everything in " +
         `it.${was(1)}`,
       fields: [
-        BEFORE, FIRST,
         json("Deleted cells, row by row", [
           ["<td><p>Status</p></td>"], ["<td><p>Open</p></td>"], ["<td><p>Done</p></td>"],
         ]),
+        BEFORE, FIRST,
       ],
       descriptionIsComplete: true,
     });
@@ -947,11 +947,11 @@ describe("cards", () => {
       description: "Delete columns 2 to 3 of a table of tab \"Main\" (tab-1), with everything " +
         `in them.${was(1)}`,
       fields: [
-        BEFORE, html("First row of the table", expect.stringContaining("<td><p>a</p></td>")),
         json("Deleted cells, row by row", [
           ["<td><p>b</p></td>", "<td>\n  <p>First</p>\n  <p>Second</p>\n</td>"],
           ["<td><p>e</p></td>", "<td><p>f</p></td>"],
         ]),
+        BEFORE, html("First row of the table", expect.stringContaining("<td><p>a</p></td>")),
       ],
     });
   });
@@ -960,7 +960,7 @@ describe("cards", () => {
     expect(card(dropTable(0))).toEqual({
       title: "Delete a table in Google Doc",
       description: `Delete a table of tab "Main" (tab-1), with everything in it.${was(1)}`,
-      fields: [BEFORE, html("Table", tableAt(from.content, 0))],
+      fields: [html("Table", tableAt(from.content, 0)), BEFORE],
       descriptionIsComplete: true,
     });
   });
@@ -998,17 +998,17 @@ describe("cards", () => {
       description: "Delete column 2 of a table of tab \"Main\" (tab-1), with everything in " +
         `it.${UNSHOWN}${was(1)}`,
       fields: [
-        BEFORE, FIRST,
         json("Deleted cells, row by row", [
           ["<td><p>Status</p></td>"], ["<td><p></p></td>"], ["<td><p>Now: </p></td>"],
           ["<td><p>owner@example.com</p></td>"],
         ]),
+        BEFORE, FIRST,
       ],
       descriptionIsComplete: true,
     });
     expect(card(dropRows({ table: 0, at: 1 }), roadmap)).toMatchObject({
       description: `Delete row 2 of a table of tab "Main" (tab-1), with everything in it.${UNSHOWN}${was(1)}`,
-      fields: [BEFORE, FIRST, html("Deleted rows", rowHtml("Ship docs", ""))],
+      fields: [html("Deleted rows", rowHtml("Ship docs", "")), BEFORE, FIRST],
     });
     expect(card(dropRows({ table: 0, at: 2, count: 2 }), roadmap).description).toBe(
       `Delete rows 3 to 4 of a table of tab "Main" (tab-1), with everything in them.${UNSHOWN}${was(1)}`);
@@ -1086,7 +1086,7 @@ describe("cards", () => {
     ]) {
       let shown = card(call, pair);
       expect(shown.description.endsWith(was(2))).toBe(true);
-      expect(shown.fields?.[0]).toEqual(markdownField("Text before the table", "Mid"));
+      expect(shown.fields).toContainEqual(markdownField("Text before the table", "Mid"));
     }
   });
 
@@ -1099,7 +1099,7 @@ describe("cards", () => {
         .toEqual(markdownField("Text before the table", "## Budget"));
     }
     let listed = read(buildTab([item("Totals"), grid(["a", "b"]), para("After")], LISTS));
-    expect(card(dropTable(0), listed).fields?.[0])
+    expect(card(dropTable(0), listed).fields?.[1])
       .toEqual(markdownField("Text before the table", "- Totals"));
     let bare = read(buildTab([para(""), grid(["a", "b"]), para("After")]));
     expect(card(addRows({ table: 0 }), bare).fields)
@@ -1133,7 +1133,7 @@ describe("cards", () => {
     let hostile = "**bold** <script>alert(1)</script> [x](y)";
     let rows = card(addRows({ table: 0, cells: [[hostile, "ok"]] }));
     expect(rows.description).not.toContain("bold");
-    expect(rows.fields?.at(-1)).toEqual(json("New rows", [[hostile, "ok"]]));
+    expect(rows.fields?.[0]).toEqual(json("New rows", [[hostile, "ok"]]));
     let table = card(addTable({ rows: 1, columns: 1, cells: [[hostile]], after: "Bef" }));
     expect(table.description).not.toContain("bold");
     expect(table.description).not.toContain("Bef");
@@ -1144,9 +1144,9 @@ describe("cards", () => {
     expect(deleted.description)
       .toBe(`Delete row 1 of a table of tab "Main" (tab-1), with everything in it.${was(1)}`);
     expect(deleted.fields?.[0])
-      .toEqual(markdownField("Text before the table", "# Not *a* heading"));
-    expect(deleted.fields?.[2])
       .toEqual(html("Deleted rows", rowHtml("**x** &amp; &lt;b&gt;", "y")));
+    expect(deleted.fields?.[1])
+      .toEqual(markdownField("Text before the table", "# Not *a* heading"));
   });
 
   it("marks a description that could not show everything as incomplete", () => {
@@ -1154,7 +1154,7 @@ describe("cards", () => {
       [para("Before"), grid(["a", "b"], ["x".repeat(100_000), "d"]), para("After")]));
     let shown = card(dropTable(0), large);
     expect("descriptionIsComplete" in shown).toBe(false);
-    expect(shown.fields?.[1]).toMatchObject({ label: "Table", truncated: expect.anything() });
+    expect(shown.fields?.[0]).toMatchObject({ label: "Table", truncated: expect.anything() });
     // The same table on a card that shows its first row alone.
     expect(card(addRows({ table: 0, at: 0 }), large).descriptionIsComplete).toBe(true);
   });
@@ -1204,7 +1204,7 @@ describe("the stored size", () => {
       [para("x".repeat(MIB + 1)), grid(["a", "b"], ["c", "d"]), para("After")]));
     let prepared = prepare(from, addRows({ table: 0, cells: [["e", "f"]] }));
     expect(JSON.stringify(prepared.change).length).toBeLessThan(1_000);
-    expect(prepared.description.fields?.[0])
+    expect(prepared.description.fields?.[1])
       .toMatchObject({ label: "Text before the table", truncated: expect.anything() });
     expect("descriptionIsComplete" in prepared.description).toBe(false);
   });

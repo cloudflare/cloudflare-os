@@ -465,17 +465,23 @@ function existingTableCard(
   // The table's place then: the change follows its table if that place changes before approval.
   let was = ` It was table ${table + 1} of the tab when this change was requested.`;
   let before = textBefore(content, target);
-  let describe = (prose: string) => {
-    let description = buildDescription(prose + was);
+  let describe = (prose: string) => buildDescription(prose + was);
+  // What a change adds or deletes comes first, since the Workshop cuts a long card short. The
+  // fields that tell which table it is follow.
+  let located = (
+    description: ReturnType<typeof buildDescription>, firstRow?: string, rowAbove?: string,
+  ) => {
     if (before !== undefined) description.verbatim("Text before the table", before, "markdown");
-    return description;
+    if (firstRow !== undefined) description.verbatim("First row of the table", firstRow, "html");
+    if (rowAbove !== undefined) description.verbatim("Row above the new rows", rowAbove, "html");
+    return description.finish();
   };
 
   if (change.type === "deleteTable") {
     let description = describe(
       `Delete a table of tab ${label}, with everything in it.${hiddenNotes(change)}`);
     description.verbatim("Table", change.expected, "html");
-    return { title: "Delete a table in Google Doc", description: description.finish() };
+    return { title: "Delete a table in Google Doc", description: located(description) };
   }
 
   let { rows } = tableLines(markdown, target);
@@ -492,11 +498,13 @@ function existingTableCard(
         `Insert ${plural(cells.length, "row")} in a table of tab ${label}, ` +
         (at < rows.length ? `before its row ${at + 1}.` : "after its last row.") +
         (empty ? " They are empty." : ""));
-      description.verbatim("First row of the table", firstRow, "html");
-      // Below the first row, the field before this one already shows the row above.
-      if (at >= 2) description.verbatim("Row above the new rows", rowsHtml(at - 1, at - 1), "html");
       if (!empty) description.json("New rows", cells);
-      return { title: "Insert table rows in Google Doc", description: description.finish() };
+      // Below the first row, the first row's field already shows the row above.
+      let rowAbove = at >= 2 ? rowsHtml(at - 1, at - 1) : undefined;
+      return {
+        title: "Insert table rows in Google Doc",
+        description: located(description, firstRow, rowAbove),
+      };
     }
     case "insertTableColumns": {
       let { cells } = change;
@@ -505,9 +513,11 @@ function existingTableCard(
         `Insert ${plural(cells[0].length, "column")} in a table of tab ${label}, ` +
         (at < rows[0].cells.length ? `before its column ${at + 1}.` : "after its last column.") +
         (empty ? " They are empty." : ""));
-      description.verbatim("First row of the table", firstRow, "html");
       if (!empty) description.json("New cells, row by row", cells);
-      return { title: "Insert table columns in Google Doc", description: description.finish() };
+      return {
+        title: "Insert table columns in Google Doc",
+        description: located(description, firstRow),
+      };
     }
     case "deleteTableRows": {
       let { count } = change;
@@ -516,9 +526,11 @@ function existingTableCard(
         : `Delete rows ${at + 1} to ${at + count} of a table of tab ${label}, with everything ` +
           "in them.") +
         hiddenNotes(change));
-      description.verbatim("First row of the table", firstRow, "html");
       description.verbatim("Deleted rows", rowsHtml(at, at + count - 1), "html");
-      return { title: "Delete table rows in Google Doc", description: description.finish() };
+      return {
+        title: "Delete table rows in Google Doc",
+        description: located(description, firstRow),
+      };
     }
     case "deleteTableColumns": {
       let { count } = change;
@@ -527,11 +539,13 @@ function existingTableCard(
         : `Delete columns ${at + 1} to ${at + count} of a table of tab ${label}, with ` +
           "everything in them.") +
         hiddenNotes(change));
-      description.verbatim("First row of the table", firstRow, "html");
       description.json("Deleted cells, row by row", rows.map(row =>
         row.cells.slice(at, at + count).map(cell =>
           cellHtml(markdown.slice(cell.mdStart, cell.mdEnd)))));
-      return { title: "Delete table columns in Google Doc", description: description.finish() };
+      return {
+        title: "Delete table columns in Google Doc",
+        description: located(description, firstRow),
+      };
     }
   }
 }
