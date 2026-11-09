@@ -10,8 +10,9 @@
 // - a runner that defines its own `runTask` shadows this one, so nothing is marked;
 // - a test that retries or repeats: the mark of an earlier attempt would outlive a later attempt
 //   that failed in a hook;
-// - a file that defines fixtures (`test.extend`): vitest resolves them inside the function
-//   `runTask` calls, so a failing fixture would read as a failing body.
+// - a file that defines or overrides fixtures (`test.extend`, `test.override`, `test.scoped`):
+//   vitest resolves them inside the function `runTask` calls, so a failing fixture would read as a
+//   failing body.
 // A mark preset through a test's `meta` option is cleared before any test in the file runs.
 // `test.fails` and `expect.soft` invert or defer the outcome, so their marks do not match their
 // results and they read as unattributed too.
@@ -25,12 +26,20 @@ const MARK = "automergeBody";
 const FIXTURES = Symbol.for("automerge.fixturesDefined");
 const testBody = TestRunner.getTestFn;
 
+// Every derived collector (`test.runIf(…)`, `test.concurrent`, `test.skip`, …) is a new function
+// that copies its methods from the original collector, `test.fn`, when it is made. So the flag is
+// set on `test.fn` as well as on `test` itself, which was made before this file ran.
 for (const api of new Set([test, it])) {
-  const extend = api.extend;
-  api.extend = function (...args) {
-    globalThis[FIXTURES] = true;
-    return extend.apply(this, args);
-  };
+  for (const target of new Set([api, api.fn])) {
+    for (const name of ["extend", "override", "scoped"]) {
+      const original = target[name];
+      if (typeof original !== "function") continue;
+      target[name] = function (...args) {
+        globalThis[FIXTURES] = true;
+        return original.apply(this, args);
+      };
+    }
+  }
 }
 
 function clearMarks(task) {

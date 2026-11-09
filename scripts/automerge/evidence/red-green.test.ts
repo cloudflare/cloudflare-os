@@ -14,8 +14,9 @@ import { fileResults, listedFiles, type FileResult, type TestRun } from "./vites
 // (024caa73b, typed-storage distinct keys) at head (63 pass) and with src/index.ts put back to its
 // parent (4 test bodies fail); a file with one test whose `beforeEach` throws, one whose body
 // fails and one that passes; and a file whose only test uses a `test.extend` fixture that throws.
-// Also #932's base report recorded on 2026-11-03 without the body mark, and a file that failed in
-// a hook before any of its ten tests ran, recorded 2026-11-02.
+// Also #932's base report recorded on 2026-11-03 without the body mark, a file that failed in a
+// hook before any of its ten tests ran, recorded 2026-11-02, and a typed-storage file whose only
+// test uses a failing fixture made through `test.runIf(true).extend`, recorded 2026-11-09.
 const DIR = new URL("./testdata/red-green/", import.meta.url);
 const diff = (commit: string) => parseDiff(readFileSync(new URL(`diff-${commit}.diff`, DIR), "utf8"));
 const TEST = "packages/typed-storage/__tests__/index.test.ts";
@@ -126,6 +127,13 @@ describe("evaluateRedGreen", () => {
 
   it("errors when the base's only failure is a fixture, which vitest resolves inside the test function", () => {
     const outcome = evaluateRedGreen(tests, [run("head")], [relabelled("fixture-failure.json")]);
+    assert.equal(outcome.status, "error");
+  });
+
+  // Bonk on #988: a fixture made through a derived collector (`test.runIf(…)`, `test.concurrent`)
+  // must not read as a failing body either.
+  it("errors when the base's only failure is a fixture made through a chained collector", () => {
+    const outcome = evaluateRedGreen(tests, [run("head")], [relabelled("chained-fixture-failure.json")]);
     assert.equal(outcome.status, "error");
   });
 
