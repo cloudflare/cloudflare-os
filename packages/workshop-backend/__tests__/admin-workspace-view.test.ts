@@ -2012,6 +2012,13 @@ function serverLog(text: string, level: ConsoleLogEvent["level"] = "log"): Conso
   return { timestamp: new Date(), level, message: [text] };
 }
 
+// Delivers `logs` as the tail of a gadget Worker that the workspace loaded does: with the name of
+// the workspace's log object.
+function deliver(ws: { impl: any; gadgetId: number }, chatId: number | null,
+                 logs: ConsoleLogEvent[], gadgetId = ws.gadgetId): Promise<void> {
+  return ws.impl.deliverGadgetLogs(chatId, logs, gadgetId, ws.impl.consoleLogName());
+}
+
 // A console call of a gadget's UI, as a browser reports it.
 function clientLog(text: string, level: ReportedGadgetConsoleLog["level"] = "log")
     : ReportedGadgetConsoleLog {
@@ -2045,7 +2052,7 @@ async function consoleLogRecords(ws: Workspace): Promise<AdminAccessRecord[]> {
 describe("console log reads", () => {
   it("are refused below full, recorded, without asking the log object",
       () => withWorkspace(async ws => {
-    await ws.impl.deliverGadgetLogs(null, [serverLog("server line")], ws.gadgetId);
+    await deliver(ws, null, [serverLog("server line")]);
     let view = await open(ws);
     let asked = 0;
     ws.impl.workspaceLogs = {
@@ -2070,7 +2077,7 @@ describe("console log reads", () => {
       () => withWorkspace(async ws => {
     let server = serverLog("server line", "info");
     let client = clientLog("client line", "warn");
-    await ws.impl.deliverGadgetLogs(null, [server], ws.gadgetId);
+    await deliver(ws, null, [server]);
     await ws.impl.reportGadgetConsoleLogs(ws.gadgetId, null, BOB.id, [client]);
     let view = await openFull(ws);
 
@@ -2098,7 +2105,7 @@ describe("console log reads", () => {
       () => withWorkspace(async ws => {
     let impl = ws.impl;
     let gone: number = impl.createGadget("Scratch", "SCRATCH", undefined, undefined, ws.commitId).id;
-    await impl.deliverGadgetLogs(null, [serverLog("logged before removal")], gone);
+    await deliver(ws, null, [serverLog("logged before removal")], gone);
     await impl.reportGadgetConsoleLogs(gone, null, BOB.id, [clientLog("reported before removal")]);
     await impl.removeWorkpiece(gone);
     expect(impl.storage.gadgets.get(gone)).toBeUndefined();
@@ -2113,8 +2120,7 @@ describe("console log reads", () => {
   }));
 
   it("leave the log object's entries and its alarm as they were", () => withWorkspace(async ws => {
-    await ws.impl.deliverGadgetLogs(
-        null, [serverLog("expired"), serverLog("fresh")], ws.gadgetId);
+    await deliver(ws, null, [serverLog("expired"), serverLog("fresh")]);
     // One entry is past its retention and not deleted yet: a read hides it and deletes nothing.
     await runInDurableObject(logObject(ws), (_log, state) => {
       state.storage.sql.exec("UPDATE console_logs SET kept_at = ? WHERE text = 'expired'",
@@ -2144,8 +2150,8 @@ describe("console log reads", () => {
     // entry under no chat.
     let drafts = Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE + 1 },
         (_, index) => serverLog(`draft ${index}`, "warn"));
-    await ws.impl.deliverGadgetLogs(DRAFT_CHAT_ID, drafts, ws.gadgetId);
-    await ws.impl.deliverGadgetLogs(null, [serverLog("mainline line")], ws.gadgetId);
+    await deliver(ws, DRAFT_CHAT_ID, drafts);
+    await deliver(ws, null, [serverLog("mainline line")]);
     let view = await openFull(ws);
     let since = new Date(Date.now() - 60_000);
     let until = new Date(Date.now() + 60_000);
@@ -2191,7 +2197,7 @@ describe("console log reads", () => {
       () => withWorkspace(async ws => {
     let logs = Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE + 1 },
         (_, index) => serverLog(`line ${index}`));
-    await ws.impl.deliverGadgetLogs(null, logs, ws.gadgetId);
+    await deliver(ws, null, logs);
     let view = await openFull(ws);
     let cursor = (await view.listConsoleLogs()).nextCursor!;
 
@@ -2212,7 +2218,7 @@ describe("console log reads", () => {
 
   it("record a read the log object fails as an attempt that exposed nothing",
       () => withWorkspace(async ws => {
-    await ws.impl.deliverGadgetLogs(null, [serverLog("line")], ws.gadgetId);
+    await deliver(ws, null, [serverLog("line")]);
     let view = await openFull(ws);
     ws.impl.workspaceLogs = {
       getByName: () => ({ list: async () => { throw new Error("log store down"); } }),
@@ -2228,7 +2234,7 @@ describe("console log reads", () => {
 
   it("return nothing when the deployment-wide record cannot be written",
       () => withWorkspace(async ws => {
-    await ws.impl.deliverGadgetLogs(null, [serverLog("line")], ws.gadgetId);
+    await deliver(ws, null, [serverLog("line")]);
     let view = await openFull(ws);
     ws.impl.adminAudits = {
       getByName: () => ({ append: async () => { throw new Error("audit store down"); } }),

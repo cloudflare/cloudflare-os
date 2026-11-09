@@ -1451,9 +1451,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       promptCacheSalt: <string | undefined>undefined,
 
       // The name of the Durable Object that keeps this workspace's gadget console logs
-      // (workspace-log.ts): random, made when the first entry is kept. It goes with the rest of this
-      // storage when the workspace is deleted, so a workspace initialised again under the same id
-      // starts with no log, and nothing written late to the old one is ever read from the new.
+      // (workspace-log.ts): random, made when the workspace first loads a gadget Worker or keeps an
+      // entry. It goes with the rest of this storage when the workspace is deleted, so a workspace
+      // initialised again under the same id starts with no log, nothing written late to the old
+      // one is ever read from the new, and nothing a Worker that the old one loaded logs is kept in
+      // the new (OverseerImpl.deliverGadgetLogs()).
       consoleLogId: <string | undefined>undefined,
 
       // When the workspace was initialised; unset for one initialised before this was recorded,

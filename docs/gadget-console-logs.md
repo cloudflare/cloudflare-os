@@ -41,7 +41,8 @@ A `"client"` entry is whatever a browser sent, so nothing verifies its `time`, `
 ## The paths in
 
 Every entry is written by the workspace's Overseer, through `#appendConsoleLogs()`. Nothing else
-holds the log object's name.
+reaches the log object: the one other holder of its name is the tail of a gadget Worker, which
+hands the name back to the Overseer with each trace.
 
 ### A gadget's server
 
@@ -51,8 +52,9 @@ holds the log object's name.
   runtime reports for it, and hands it to `OverseerImpl.deliverGadgetLogs()`, which sends the batch
   to live subscribers and then keeps it as `"server"` entries. A trace is delivered when the
   gadget's request ends, so an entry's `time` is the call's own and the entry is kept later.
-  Nothing is kept of a trace that holds a log from before the workspace was initialised: it is a
-  request of an earlier workspace under the same id (see [Deletion](#deletion)).
+  The tail carries the name of the log object of the workspace that loaded the Worker, and nothing
+  is kept of a trace that names another than the workspace's own: it is a request of an earlier
+  workspace under the same id (see [Deletion](#deletion)).
 - **An exception caught on a facet call.** `getGadgetFacet()` wraps the facet so that a method that
   throws is delivered live as an `"error"` naming the method called, and
   `#recordGadgetException()` keeps the same event. Most of these exceptions never reach the tail.
@@ -60,10 +62,10 @@ holds the log object's name.
   throw), is kept by both, as live subscribers are sent both. A gadget is held to 30 of these a
   minute (see [The limit on caught exceptions](#the-limit-on-caught-exceptions)).
 
-`deliverGadgetLogs()` takes the gadget last, after the chat and the logs, and as an optional
-argument. The tail loopback and the Overseer can run different versions of the Worker while a
-deployment is under way, so a call may name no gadget: its logs are then delivered live as any
-other's, and are not kept.
+`deliverGadgetLogs()` takes the gadget and the log object's name last, after the chat and the
+logs, and as optional arguments. The tail loopback and the Overseer can run different versions of
+the Worker while a deployment is under way, so a call may name no gadget or no log object: its logs
+are then delivered live as any other's, and are not kept.
 
 A trace the runtime hands over with anything but one request in it is dropped by
 `GadgetTailLoopback.tail()` before it is delivered or kept, with an error in the server log (event
@@ -332,9 +334,11 @@ view lost, and can be far short of it.
 ## The log object
 
 A workspace's entries are kept in one `WorkspaceLogDurableObject` (SQLite), one per life of the
-workspace. The Overseer names it with a random string when the first entry is kept, stores that
-name in its own storage (`consoleLogId`), and is the only caller that knows it. A workspace that
-has kept nothing has no log object at all, and a read never makes one.
+workspace. The Overseer names it with a random string the first time it loads a gadget Worker or
+keeps an entry (`consoleLogName()`), stores that name in its own storage (`consoleLogId`), and
+gives it to nothing but the tails of the gadget Workers it loads. A workspace that has kept nothing
+has a name at most: the object holds nothing before its first `append()`, and a read never makes
+it hold anything.
 
 ### Schema
 
@@ -558,19 +562,26 @@ the append settled can land after the deletion. It lands in an object whose name
 workspace's storage, so nothing reads it again, and the object deletes itself when those entries
 expire. That holds for the next life of a workspace named by key too. An external message can
 initialise a deleted workspace's id again, for whoever posts next, with gadget ids that start
-again at the same numbers; that life makes a name of its own with its first entry, and starts
-with no log.
+again at the same numbers; that life makes a name of its own, and starts with no log.
 
-A trace of the earlier life can reach the next one as well. A gadget call still open at the
-deletion ends when the workspace's instance restarts, a tenth of a second later, and its trace is
-delivered to whatever holds the id by then. Two things keep it out of the next life's log:
+What the earlier life's gadgets log can reach the next one as well. A trace is delivered when its
+request ends, to whatever holds the id by then. A gadget call still open at the deletion ends when
+the workspace's instance restarts, a tenth of a second later. A task that an export handler or a
+hook left running (`ctx.waitUntil()`) is not ended by the restart: it runs, and can log, for as
+long as the runtime lets it. Two things keep all of it out of the next life's log:
 
+- The tail of a gadget Worker carries the name of the log object of the workspace that loaded the
+  Worker (`GadgetTailLoopbackProps.consoleLogId`), and `deliverGadgetLogs()` keeps nothing of a
+  trace unless that name is the workspace's own. The next life's log object has another name, so
+  it keeps nothing a Worker of the earlier life logs, whenever the Worker logs and whenever its
+  trace is delivered. A Worker that was loaded while its workspace was being deleted carries no
+  name, and nothing of its trace is kept by anyone.
 - The instance that deleted the workspace initialises nothing. An external message that reaches
   it before the restart is answered `Workspace was deleted.`, as one is while the deletion is
-  under way, so the id's next life begins after the restart, and with it after every log of such
-  a call.
-- `deliverGadgetLogs()` keeps nothing of a batch that holds a log from before the workspace was
-  initialised (its `createdAt`).
+  under way, and so is one that was still resolving its caller when the deletion began. The
+  sessions of the deleted workspace last until the restart, and the exception of a gadget call of
+  theirs that fails is kept by the Overseer itself, with no tail in between: an instance that
+  initialised the id again would keep it for the next owner.
 
 Live subscribers are sent a late trace as they are sent any other.
 
@@ -614,12 +625,13 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   `destroy()`.
 - `gadget-console-history.test.ts`: the Overseer's side. A trace, a caught exception and a report
   kept redacted, under the right chat; a trace's entries passing no rate limit, and caught
-  exceptions held to theirs with a marker; a batch that names no gadget; a trace from before the
-  workspace was initialised;
+  exceptions held to theirs with a marker; a batch that names no gadget or no log object; a trace
+  of a Worker that another workspace loaded;
   failed appends logged with nothing of an entry, and a report that could not be kept refused
   with the Overseer's own error; the report's cap, rate limit and markers; the listing for a build
   and a use session; a deleted gadget and a deleted chat; and the workspace's deletion, with an
-  append in flight, a reset, a failing log object and an id initialised again.
+  append in flight, a reset, a failing log object, an id initialised again, and an external message
+  that arrives after the deletion or was resolving its caller when it began.
 - `use-gadget-access.test.ts`: what a `use` session may report, and for which gadgets.
 - `admin-workspace-view.test.ts` and `admin-access.test.ts`: the admin read, refused below `"full"`
   and recorded, its query in the record, a malformed query or another spelling of a cursor
@@ -640,6 +652,8 @@ gadget's server console call and a reported client batch both kept and read back
 session; a use session reading nothing while what it reports is kept; the admin read refused at
 `"metadata"` and recorded as a content read at `"full"`; a report over the cap of a call; a use
 session's failing calls held to 30 kept errors a minute; a deleted gadget's entries listed by its
-id; and the workspace's deletion deleting its log.
+id; the workspace's deletion deleting its log; and a deleted workspace's gadgets, in calls still
+open and in a task an export left running, logging after its key names another workspace, which
+keeps none of it.
 `workshop-use-role.test.ts` holds the methods a use session may call, the report among them, and
 `packages/api-cli/src/run.test.ts` the search ranks.

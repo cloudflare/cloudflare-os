@@ -1284,9 +1284,10 @@ class OverseerImpl implements AgentHooks {
   #userUpdateDrain?: Promise<void>;
 
   // Whether this instance began the workspace's deletion. The tombstone goes with the storage,
-  // while the gadgets this instance loaded run on until the restart that follows (deleteSelf()).
-  // An id initialised again in between would be given what such a gadget logs from then on
-  // (deliverGadgetLogs()), so this instance initialises nothing (receiveExternalMessage()).
+  // while this instance's sessions last until the restart that follows (deleteSelf()). An id
+  // initialised again in between would keep, for its next owner, the exception of every gadget
+  // call of theirs that fails from then on (#recordGadgetException), so this instance initialises
+  // nothing (receiveExternalMessage()).
   deletionBegun = false;
 
   // The tombstone fences every new open before callbacks cross an async boundary. Content is
@@ -5110,6 +5111,7 @@ class OverseerImpl implements AgentHooks {
         chatId,
         gadgetId,
         overseerId: this.ctx.id.toString(),
+        consoleLogId: this.consoleLogName(),
       };
 
       return {
@@ -10520,18 +10522,24 @@ class OverseerImpl implements AgentHooks {
   // workspace waits for (#deleteConsoleLogs).
   #consoleLogAppends = new Set<Promise<void>>();
 
+  // The name of this workspace's log object, made the first time it is asked for: a random string
+  // of the object's own, and not the workspace's id (see `consoleLogId` in overseer-storage.ts).
+  // Undefined for a workspace that is uninitialised or being deleted, which keeps nothing, so that
+  // no name is stored once a deletion has wiped the storage, for the id's next life to find.
+  consoleLogName(): string | undefined {
+    if (!this.ownerId) return undefined;
+    let name = this.storage.consoleLogId.get();
+    if (name === undefined) this.storage.consoleLogId.put(name = crypto.randomUUID());
+    return name;
+  }
+
   // Keeps `entries` in this workspace's log object, and rejects when that fails: each caller
   // decides what a failure means. A workspace that is uninitialised or being deleted keeps
-  // nothing.
-  //
-  // The object is named by a random string of its own, made with the first entry, and not by the
-  // workspace's id (see `consoleLogId` in overseer-storage.ts). The check, the name and the
-  // tracking are one synchronous step, so that a deletion that begins afterwards finds the append.
+  // nothing. The check, the name and the tracking are one synchronous step, so that a deletion
+  // that begins afterwards finds the append.
   #appendConsoleLogs(entries: GadgetConsoleLogEntry[]): Promise<void> {
-    if (!this.ownerId || entries.length === 0) return Promise.resolve();
-    let stored = this.storage.consoleLogId.get();
-    let name = stored ?? crypto.randomUUID();
-    if (stored === undefined) this.storage.consoleLogId.put(name);
+    let name = entries.length > 0 ? this.consoleLogName() : undefined;
+    if (name === undefined) return Promise.resolve();
 
     // An async function, so that a lookup that throws rejects the promise as a failed append does.
     let append = (async () => { await this.workspaceLogs.getByName(name).append(entries); })();
@@ -10541,8 +10549,8 @@ class OverseerImpl implements AgentHooks {
     return append;
   }
 
-  // Destroys this workspace's log object, for the workspace's deletion. Nothing to do while no
-  // entry was ever kept. Rejects when the object was not destroyed inside the bound.
+  // Destroys this workspace's log object, for the workspace's deletion. Nothing to do while the
+  // workspace has named none. Rejects when the object was not destroyed inside the bound.
   //
   // The appends still in flight are awaited first, since one landing after destroy() would bring
   // entries back; none joins them meanwhile, because #appendConsoleLogs keeps nothing once the
@@ -10567,17 +10575,18 @@ class OverseerImpl implements AgentHooks {
   // `chatId`, the chat the gadget's tail carries. Never throws: a failed append is logged, and its
   // entries are lost.
   //
-  // A trace is delivered when its gadget's request ends, which can be after the workspace was
-  // deleted and its id initialised again for another owner (receiveExternalMessage), with gadget
-  // ids that start again at the same numbers. A batch holding a log from before this workspace
-  // was initialised is a request of that earlier workspace, and nothing of it is kept. The
-  // earlier workspace's requests end with the restart that follows its deletion, and the instance
-  // that deleted it initialises nothing before then (`deletionBegun`), so they hold no later log.
+  // `consoleLogId` names the log object of the workspace that loaded the gadget's Worker, which
+  // the Worker's tail carries, and nothing is kept unless it is this workspace's. A deleted
+  // workspace's gadget request can run on, and log, after the id was initialised again for
+  // another owner (receiveExternalMessage), with gadget ids that start again at the same numbers.
+  // That workspace's log object has another name, so it keeps nothing of the earlier one's,
+  // whenever the request logs and whenever its trace is delivered.
   //
   // The tail loopback and this object can run different versions of the Worker while a deployment
-  // is under way, so a call may name no gadget: its logs are delivered live as any other's, and
-  // nothing is kept.
-  async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[], gadgetId?: WorkpieceId) {
+  // is under way, so a call may name no gadget or no log object: its logs are delivered live as
+  // any other's, and nothing is kept.
+  async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[], gadgetId?: WorkpieceId,
+                          consoleLogId?: string) {
     for (let sub of this.#tailSubscribers) {
       sub.event(chatId, logs).catch(() => {
         sub[Symbol.dispose]();
@@ -10586,8 +10595,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (gadgetId === undefined || logs.length === 0) return;
-    let created = this.storage.createdAt.get()?.getTime();
-    if (created !== undefined && logs.some(log => log.timestamp.getTime() < created)) return;
+    if (consoleLogId === undefined || consoleLogId !== this.storage.consoleLogId.get()) return;
     try {
       await this.#appendConsoleLogs(
           logs.map(log => serverGadgetConsoleLogEntry(gadgetId, chatId, log)));
@@ -10635,7 +10643,7 @@ class OverseerImpl implements AgentHooks {
 
   // One page of the workspace's kept console logs (see Overseer.listConsoleLogs()). The query is
   // checked here, so a malformed one throws whether or not anything was kept, and a workspace that
-  // has kept nothing has no log object to ask.
+  // has named no log object has none to ask.
   async listConsoleLogs(query: GadgetConsoleLogQuery = {}): Promise<GadgetConsoleLogPage> {
     validateGadgetConsoleLogQuery(query);
     let name = this.storage.consoleLogId.get();
@@ -11839,9 +11847,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       };
     }
 
-    // Create the Gadget if it doesn't exist yet.
+    // Create the Gadget if it doesn't exist yet, unless it was deleted while the caller was being
+    // resolved: the fence above was passed before that wait.
     let ownerId = this.impl.ownerId;
     if (!ownerId) {
+      if (this.impl.deletionBegun) return {accepted: false, message: "Workspace was deleted."};
       this.impl.ownerId = callerId;
       this.impl.ownerProfileId = callerProfile.id;
       this.impl.storage.ownerId.put(callerId);
@@ -12099,8 +12109,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     };
   }
 
-  async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[], gadgetId?: WorkpieceId) {
-    return this.impl.deliverGadgetLogs(chatId, logs, gadgetId);
+  async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[], gadgetId?: WorkpieceId,
+                          consoleLogId?: string) {
+    return this.impl.deliverGadgetLogs(chatId, logs, gadgetId, consoleLogId);
   }
 
   async deliverCodeModeTrace(executionId: string, trace: TraceItem) {
@@ -12284,6 +12295,10 @@ type GadgetTailLoopbackProps = {
   gadgetId: WorkpieceId;
 
   overseerId: string;
+
+  // The log object of the workspace that loaded the worker (OverseerImpl.consoleLogName()), by
+  // which the workspace that is delivered the logs tells whether they are its own.
+  consoleLogId?: string;
 };
 
 export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetTailLoopbackProps> {
@@ -12291,7 +12306,8 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
     let ns = this.ctx.exports.OverseerDurableObject;
     let stub: DurableObjectStub<OverseerDurableObject> =
         ns.get(ns.idFromString(this.ctx.props.overseerId));
-    await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs, this.ctx.props.gadgetId);
+    let {chatId, gadgetId, consoleLogId} = this.ctx.props;
+    await stub.deliverGadgetLogs(chatId ?? null, logs, gadgetId, consoleLogId);
   }
 
   /**

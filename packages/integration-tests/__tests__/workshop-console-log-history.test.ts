@@ -24,6 +24,9 @@ import {
 const REASON = "Support ticket 123";
 // The time the reports of this file say their console calls were made at.
 const REPORTED_AT = new Date("2026-03-04T05:06:07.890Z");
+// How long after an export the task it leaves running logs, where a test asks for one: long enough
+// for a workspace to be deleted, its key to name another, and that one's owner to open it.
+const LATE_EXPORT_MS = 5_000;
 // The one format the gadget's export handler offers.
 const CSV = {
   id: "csv", label: "CSV", mode: "server", contentType: "text/csv", fileExtension: ".csv",
@@ -62,8 +65,9 @@ afterAll(async () => {
 });
 
 // A gadget server whose `greet()` prints under `label`, whose `greetAfter()` waits before it does
-// and whose `fail()` throws, with an export handler that prints too.
-const server = (label: string, level: "log" | "warn") =>
+// and whose `fail()` throws, with an export handler that prints too. Given `lateMs`, an export
+// leaves a task running that prints after that long, and prints nothing before.
+const server = (label: string, level: "log" | "warn", lateMs?: number) =>
   `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 export class Gadget extends DurableObject {
   greet(name) { console.${level}("${label}", name); return name; }
@@ -75,7 +79,11 @@ export class ExportHandler extends WorkerEntrypoint {
     console.log("formats asked");
     return [${JSON.stringify(CSV)}];
   }
-  async export(gadget, _id) { return new Response(await gadget.greet("export")).body; }
+  async export(gadget, _id) {${lateMs === undefined ? "" : `
+    this.ctx.waitUntil(
+        scheduler.wait(${lateMs}).then(() => console.log("${label}", "after export")));`}
+    return new Response(await gadget.greet("export")).body;
+  }
 }
 `;
 const MAINLINE = server("mainline", "log");
@@ -113,10 +121,10 @@ type LoggingGadget = {
   seed: number;
 };
 
-/** A gadget of `ws` with the `MAINLINE` server merged, through a chat no model answers. */
+/** A gadget of `ws` with `text` merged as its server, through a chat no model answers. */
 async function loggingGadget(
-    stack: DisposableStack, { ws, workpieces }: Workspace, title = "App", bindingName = "APP")
-    : Promise<LoggingGadget> {
+    stack: DisposableStack, { ws, workpieces }: Workspace, title = "App", bindingName = "APP",
+    text = MAINLINE): Promise<LoggingGadget> {
   const gadget = stack.use(await ws.createGadget(title, undefined, bindingName));
   const gadgetId = await gadget.getId();
   const headOf = (after?: string) => waitFor(`a new head for gadget ${gadgetId}`, async () => {
@@ -128,7 +136,7 @@ async function loggingGadget(
   const seed = await ws.newChat(`Seed ${title}`, null);
   await ws.submitCodeChange(seed, {
     generation: 0, revision: 0, clientId: "seed", seq: 1, pins: [{ gadgetId, baseCommit: empty }],
-    change: diffFiles(files(gadgetId), files(gadgetId, MAINLINE)),
+    change: diffFiles(files(gadgetId), files(gadgetId, text)),
   });
   expect(await ws.mergeChanges(seed)).toEqual({ outcome: "merged" });
   return { gadget, gadgetId, head: await headOf(empty), seed };
@@ -527,9 +535,15 @@ it("keeps nothing a deleted workspace's gadget logs once its key names a workspa
   stack.use(await ws.subscribeToWorkpieces(stack.use(stubFor(workpieces))));
   await workpieces.loaded;
   const workspace = { api: apiFirst, ws, id, userId: (await apiFirst.whoami()).id, workpieces };
-  const { gadget, gadgetId } = await loggingGadget(stack, workspace);
+  const { gadget, gadgetId } = await loggingGadget(
+      stack, workspace, "App", "APP", server("mainline", "log", LATE_EXPORT_MS));
   await greet(gadget, "first life");
   await keptCall(ws, gadgetId, "mainline first life");
+
+  // An export, whose handler is no part of the gadget's object: the restart that follows the
+  // deletion does not end the task it leaves running, which logs long after the key names a
+  // workspace again, in a request that logged nothing before.
+  expect(await new Response(await gadget.export("csv")).text()).toBe("export");
 
   // Calls still open when the owner deletes the workspace, which log at moments spread over the
   // tenth of a second its gadgets run on for, until the restart that follows the deletion.
@@ -554,7 +568,15 @@ it("keeps nothing a deleted workspace's gadget logs once its key names a workspa
   await settleRestart();
   const apiNext = stack.use(await logIn(stack.use(connect(harness.url)), next!));
   const nextWs = stack.use(await apiNext.openWorkspace(id));
+  const live = new LiveRecorder();
+  stack.use(await nextWs.subscribeToConsoleLogs(stack.use(stubFor(live))));
   expect((await nextWs.getMetadata()).role).toBe("build");
+  expect(await kept(nextWs)).toEqual([]);
+
+  // The export's task logs, and its trace is delivered to the workspace the id names by then,
+  // whose live subscribers are told: nothing of it is kept.
+  await waitFor("the first life's export to log", async () =>
+    live.logs.some(log => log.message[1] === "after export") ? true : null);
   expect(await kept(nextWs)).toEqual([]);
 });
 

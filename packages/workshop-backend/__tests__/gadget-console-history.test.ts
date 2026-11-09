@@ -188,6 +188,13 @@ function consoleLogId(ws: Workspace): string | undefined {
   return ws.impl.storage.consoleLogId.get();
 }
 
+// Delivers `logs` as the tail of a gadget Worker that the workspace loaded does: with the name of
+// the workspace's log object, which the workspace gives the tail when it loads the Worker.
+function deliver(ws: Workspace, chatId: number | null, logs: ConsoleLogEvent[],
+                 gadgetId = GADGET_ID): Promise<void> {
+  return ws.impl.deliverGadgetLogs(chatId, logs, gadgetId, ws.impl.consoleLogName());
+}
+
 // The keys of everything the workspace stores: none once its deletion has run to its end.
 function storageKeys(ws: Workspace): string[] {
   return [...ws.state.storage.kv.list()].map(([key]) => key);
@@ -272,8 +279,8 @@ describe("a gadget's server console output", () => {
         message: ["key sk-live0123456789abcdefghij"] },
       { timestamp: new Date(1700000003_000), level: "info", message: [long] },
     ];
-    await ws.impl.deliverGadgetLogs(7, logs, GADGET_ID);
-    await ws.impl.deliverGadgetLogs(null, [logs[0]], GADGET_ID);
+    await deliver(ws, 7, logs);
+    await deliver(ws, null, [logs[0]]);
 
     // The subscriber gets the events whole: only what is kept is redacted and cut.
     expect(events).toStrictEqual([{ chatId: 7, logs }, { chatId: null, logs: [logs[0]] }]);
@@ -296,7 +303,7 @@ describe("a gadget's server console output", () => {
     initialise(ws);
     let events = await subscribe(ws);
     let logs = Array.from({ length: 700 }, (_, i) => logEvent("log", "line", i));
-    await ws.impl.deliverGadgetLogs(null, logs, GADGET_ID);
+    await deliver(ws, null, logs);
 
     let entries = await kept(ws);
     expect(entries).toHaveLength(700);
@@ -307,20 +314,21 @@ describe("a gadget's server console output", () => {
     expect(events[0].logs).toHaveLength(700);
   }));
 
-  it("names the log object with the first kept entry, and each workspace names its own",
+  it("names the log object the first time it is asked for, and each workspace names its own",
       async () => {
     let names: string[] = [];
     for (let i = 0; i < 2; i++) {
       await withWorkspace(async ws => {
         initialise(ws);
         expect(consoleLogId(ws)).toBeUndefined();
-        await ws.impl.deliverGadgetLogs(null, [logEvent("log", "first")], GADGET_ID);
+        await deliver(ws, null, [logEvent("log", "first")]);
         let name = consoleLogId(ws)!;
         expect(name).toMatch(/^[0-9a-f-]{36}$/);
         expect(name).not.toBe(ws.state.id.toString());
 
-        await ws.impl.deliverGadgetLogs(null, [logEvent("log", "second")], GADGET_ID);
+        await deliver(ws, null, [logEvent("log", "second")]);
         expect(consoleLogId(ws)).toBe(name);
+        expect(ws.impl.consoleLogName()).toBe(name);
         expect(texts({ entries: await keptIn(name) })).toStrictEqual(["second", "first"]);
         names.push(name);
       });
@@ -335,17 +343,20 @@ describe("a gadget's server console output", () => {
     let logs = unreachableLogs();
 
     ws.impl.workspaceLogs = logs;
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "too early")], GADGET_ID);
+    expect(ws.impl.consoleLogName()).toBeUndefined();
+    await deliver(ws, null, [logEvent("log", "too early")]);
     expect(consoleLogId(ws)).toBeUndefined();
 
     ws.impl.workspaceLogs = real;
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
     let name = consoleLogId(ws)!;
 
+    // A Worker loaded before the deletion began: its tail names the workspace's log object.
     ws.impl.beginDeletion(new Set());
     ws.impl.workspaceLogs = logs;
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "too late")], GADGET_ID);
+    expect(ws.impl.consoleLogName()).toBeUndefined();
+    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "too late")], GADGET_ID, name);
     expect(logs.getByName).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
     expect(texts({ entries: await keptIn(name) })).toStrictEqual(["kept"]);
@@ -356,46 +367,56 @@ describe("a gadget's server console output", () => {
     expect(storageKeys(ws)).toStrictEqual([]);
   }));
 
-  it("delivers a batch that names no gadget live, under its chat, and keeps nothing of it",
-      () => withWorkspace(async ws => {
+  it("delivers a batch that names no gadget or no log object live, under its chat, and keeps " +
+      "nothing of it", () => withWorkspace(async ws => {
     initialise(ws);
     let events = await subscribe(ws);
     let event = logEvent("log", "from a tail of another version");
+    let name = ws.impl.consoleLogName();
+    let logs = unreachableLogs();
+    ws.impl.workspaceLogs = logs;
 
-    // What a tail running a version of the Worker that passes no gadget id calls.
+    // What a tail running a version of the Worker that passes no gadget id calls, and one that
+    // passes no log object's name.
     await ws.instance.deliverGadgetLogs(null, [event]);
     await ws.instance.deliverGadgetLogs(7, [event]);
+    await ws.instance.deliverGadgetLogs(7, [event], GADGET_ID);
 
-    expect(events).toStrictEqual([{ chatId: null, logs: [event] }, { chatId: 7, logs: [event] }]);
-    expect(consoleLogId(ws)).toBeUndefined();
+    expect(events).toStrictEqual([
+      { chatId: null, logs: [event] }, { chatId: 7, logs: [event] }, { chatId: 7, logs: [event] },
+    ]);
+    expect(logs.getByName).not.toHaveBeenCalled();
+    expect(consoleLogId(ws)).toBe(name);
   }));
 
-  it("keeps nothing of a trace that logged before the workspace was initialised, and delivers it",
+  it("keeps nothing of a trace whose Worker another workspace loaded, and delivers it",
       () => withWorkspace(async ws => {
     initialise(ws);
-    let created = new Date(1700000100_000);
-    ws.impl.storage.createdAt.put(created);
     let events = await subscribe(ws);
-    let at = (ms: number, text: string): ConsoleLogEvent =>
-        ({ timestamp: new Date(created.getTime() + ms), level: "log", message: [text] });
+    let name = ws.impl.consoleLogName();
+    let real = ws.impl.workspaceLogs;
+    let logs = unreachableLogs();
+    ws.impl.workspaceLogs = logs;
 
-    // A request of an earlier workspace under this id, and one that was still logging when the
-    // id was initialised again: nothing of either is kept, and no log object is named.
-    let before = [at(-60_000, "a minute before")];
-    let straddling = [at(-1, "just before"), at(0, "at"), at(1, "after")];
-    await ws.impl.deliverGadgetLogs(null, before, GADGET_ID);
-    await ws.impl.deliverGadgetLogs(null, straddling, GADGET_ID);
-    expect(consoleLogId(ws)).toBeUndefined();
+    // A request of an earlier workspace under this id, whose Worker's tail names that workspace's
+    // log object, or none if the workspace was being deleted when it loaded the Worker. It logs
+    // after this workspace was initialised, under a gadget id this workspace has too.
+    let stale = [logEvent("log", "logged by an earlier workspace's gadget")];
+    await ws.impl.deliverGadgetLogs(null, stale, GADGET_ID, crypto.randomUUID());
+    await ws.impl.deliverGadgetLogs(null, stale, GADGET_ID, undefined);
+    expect(logs.getByName).not.toHaveBeenCalled();
 
-    // A request that logged from the initialisation on is this workspace's.
-    let own = [at(0, "at"), at(1, "after")];
-    await ws.impl.deliverGadgetLogs(null, own, GADGET_ID);
-    expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["after", "at"]);
+    // A request of a Worker this workspace loaded.
+    ws.impl.workspaceLogs = real;
+    let own = [logEvent("log", "its own")];
+    await ws.impl.deliverGadgetLogs(null, own, GADGET_ID, name);
+    expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["its own"]);
+    expect(consoleLogId(ws)).toBe(name);
 
-    expect(events.map(event => event.logs)).toStrictEqual([before, straddling, own]);
+    expect(events.map(event => event.logs)).toStrictEqual([stale, stale, own]);
   }));
 
-  it("keeps nothing of a batch with no logs: no log object is named, and none is asked",
+  it("keeps nothing of a batch with no logs: no log object is asked",
       () => withWorkspace(async ws => {
     initialise(ws);
     let events = await subscribe(ws);
@@ -404,11 +425,10 @@ describe("a gadget's server console output", () => {
     ws.impl.workspaceLogs = logs;
 
     // What the tail delivers for a gadget call that logged nothing: one batch per trace.
-    await ws.impl.deliverGadgetLogs(null, [], GADGET_ID);
-    await ws.impl.deliverGadgetLogs(7, [], GADGET_ID);
+    await deliver(ws, null, []);
+    await deliver(ws, 7, []);
 
     expect(events).toStrictEqual([{ chatId: null, logs: [] }, { chatId: 7, logs: [] }]);
-    expect(consoleLogId(ws)).toBeUndefined();
     expect(logs.getByName).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   }));
@@ -422,7 +442,7 @@ describe("a gadget's server console output", () => {
     ws.impl.workspaceLogs = { getByName: () => ({ append: async () => { throw failure; } }) };
 
     let logs = [logEvent("log", `${MARKER} in a line`), logEvent("warn", `${MARKER} again`)];
-    await expect(ws.impl.deliverGadgetLogs(null, logs, GADGET_ID)).resolves.toBeUndefined();
+    await expect(deliver(ws, null, logs)).resolves.toBeUndefined();
 
     expect(events).toStrictEqual([{ chatId: null, logs }]);
     expect(warn.mock.calls).toStrictEqual([[
@@ -438,7 +458,7 @@ describe("a gadget's server console output", () => {
     let logs = unreachableLogs();
     ws.impl.workspaceLogs = logs;
 
-    await expect(ws.impl.deliverGadgetLogs(null, [logEvent("log", "x")], GADGET_ID))
+    await expect(deliver(ws, null, [logEvent("log", "x")]))
         .resolves.toBeUndefined();
     expect(logs.getByName).toHaveBeenCalledTimes(1);
     expect(warnings(warn, "gadget.console.record.failed")).toHaveLength(1);
@@ -447,8 +467,7 @@ describe("a gadget's server console output", () => {
   it("outlives its gadget's deletion", () => withWorkspace(async ws => {
     initialise(ws);
     await addGadget(ws);
-    await ws.impl.deliverGadgetLogs(
-        null, [logEvent("log", "one"), logEvent("warn", "two")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "one"), logEvent("warn", "two")]);
 
     await ws.impl.removeWorkpiece(GADGET_ID);
     expect(ws.impl.storage.gadgets.get(GADGET_ID)).toBeUndefined();
@@ -616,7 +635,7 @@ describe("an exception a gadget's method did not catch", () => {
       () => withWorkspace(async ws => {
     initialise(ws);
     await addGadget(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "the server's own")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "the server's own")]);
     let events = await subscribe(ws);
     let start = Date.now();
     let now = vi.spyOn(Date, "now").mockReturnValue(start);
@@ -717,6 +736,32 @@ describe("a gadget Worker's trace", () => {
     expect(events.filter(event => event.logs.some(log => log.message[0] === "formats asked"))
         .map(event => event.chatId)).toStrictEqual([1]);
   }), GADGET_TEST_MS);
+
+  it("is not kept by the workspace its id names once the one that loaded its Worker is deleted",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    // An export handler is a stateless entrypoint of the gadget's Worker, which the restart that
+    // follows a deletion does not end, and which can log for as long as a task of it runs.
+    let handler = ws.impl.loadGadgetWorker(GADGET_ID).getEntrypoint("ExportHandler");
+    await handler.getExportFormats(null);
+    await vi.waitFor(async () => expect(texts({ entries: await kept(ws) }))
+        .toStrictEqual(["formats asked"]), KEPT_SOON);
+
+    beginDeletion(ws);
+    await ws.impl.deliverUserUpdates();
+    expect(storageKeys(ws)).toStrictEqual([]);
+
+    // The id's next life, which has a log object of its own. The earlier life's Worker logs after
+    // it began, and its trace reaches the workspace, whose subscribers are told.
+    initialise(ws);
+    await deliver(ws, null, [logEvent("log", "second life")]);
+    let events = await subscribe(ws);
+    await handler.getExportFormats(null);
+    await vi.waitFor(() => expect(events.map(event => event.logs.map(log => log.message)))
+        .toStrictEqual([[["formats asked"]]]), KEPT_SOON);
+    expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["second life"]);
+  }), GADGET_TEST_MS);
 });
 
 // The owner's session, opened as a client opens one, which initialises the workspace. The close
@@ -734,8 +779,8 @@ describe("listConsoleLogs", () => {
   it("gives a build session the page its query asks for", () => withWorkspace(async ws => {
     let client = await openOwner(ws);
     let lines = Array.from({ length: 150 }, (_, i) => logEvent("log", "line", i));
-    await ws.impl.deliverGadgetLogs(null, lines, GADGET_ID);
-    await ws.impl.deliverGadgetLogs(7, [logEvent("warn", "careful")], 2);
+    await deliver(ws, null, lines);
+    await deliver(ws, 7, [logEvent("warn", "careful")], 2);
 
     let first = await client.listConsoleLogs();
     expect(first.entries).toHaveLength(100);
@@ -774,7 +819,7 @@ describe("listConsoleLogs", () => {
   it("checks the query before it asks the log object that holds entries",
       () => withWorkspace(async ws => {
     let client = await openOwner(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
     let logs = unreachableLogs();
     ws.impl.workspaceLogs = logs;
 
@@ -785,7 +830,7 @@ describe("listConsoleLogs", () => {
   it("gives a use session an empty page, whatever the query, and reaches nothing",
       () => withWorkspace(async ws => {
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
 
     // A "use" session over a forged impl that holds only what such a session may reach: the
     // listing and the log namespace are counted, and neither may be asked.
@@ -829,7 +874,7 @@ function beginDeletion(ws: Workspace): void {
 describe("deleting the workspace", () => {
   it("deletes its log object, through the owner's deleteSelf()", () => withWorkspace(async ws => {
     let client = await openOwner(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
     let name = consoleLogId(ws)!;
     expect(await hasLogTable(name)).toBe(true);
     expect(await logAlarm(name)).not.toBeNull();
@@ -856,7 +901,7 @@ describe("deleting the workspace", () => {
       }),
     };
 
-    let delivered = ws.impl.deliverGadgetLogs(null, [logEvent("log", "in flight")], GADGET_ID);
+    let delivered = deliver(ws, null, [logEvent("log", "in flight")]);
     beginDeletion(ws);
     let drained = ws.impl.deliverUserUpdates();
     await scheduler.wait(100);
@@ -887,7 +932,7 @@ describe("deleting the workspace", () => {
     ["an append that never settles is in flight", (ws, real) => {
       let release = Promise.withResolvers<void>();
       ws.impl.workspaceLogs = faultyLogs(real, { append: () => release.promise });
-      void ws.impl.deliverGadgetLogs(null, [logEvent("log", "held")], GADGET_ID);
+      void deliver(ws, null, [logEvent("log", "held")]);
       return { error: "Console log deletion timed out.", unblock: () => release.resolve() };
     }],
     ["destroy() never settles", (ws, real) => {
@@ -910,7 +955,7 @@ describe("deleting the workspace", () => {
   it.for(blocks)("is deferred, and never rejects the drain, while %s",
       ([, block]) => withWorkspace(async ws => {
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", MARKER)], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", MARKER)]);
     let name = consoleLogId(ws)!;
     let warn = vi.spyOn(ws.impl.logger, "warn");
     let { error, unblock } = block(ws, ws.impl.workspaceLogs);
@@ -944,7 +989,7 @@ describe("deleting the workspace", () => {
 
   it("tries destroy() again after the log object was reset", () => withWorkspace(async ws => {
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
     let name = consoleLogId(ws)!;
     let warn = vi.spyOn(ws.impl.logger, "warn");
     // The shape a reset arrives in on a deployment; the test pool's own aborts carry no flag.
@@ -971,7 +1016,7 @@ describe("deleting the workspace", () => {
     let client = await openOwner(ws);
     let reasons: string[] = [];
     ws.impl.scheduleAccessRestart = async (reason: string) => { reasons.push(reason); };
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "kept")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "kept")]);
     let name = consoleLogId(ws)!;
     let real = ws.impl.workspaceLogs;
     let warn = vi.spyOn(ws.impl.logger, "warn");
@@ -999,10 +1044,8 @@ describe("deleting the workspace", () => {
   it("leaves a workspace initialised again under the same id with no log of its earlier life",
       () => withWorkspace(async ws => {
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "first life")], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "first life")]);
     let earlier = consoleLogId(ws)!;
-    // What a gadget call still open at the deletion logged: its trace is delivered when it ends.
-    let open = logEvent("log", "first life, delivered late");
 
     beginDeletion(ws);
     await ws.impl.deliverUserUpdates();
@@ -1014,28 +1057,37 @@ describe("deleting the workspace", () => {
       text: "late",
     }]);
 
-    // The id is initialised again, as an external message does it, and the open call's trace
-    // arrives: the same gadget id, under the next life's owner.
+    // The id is initialised again, as an external message does it, and a gadget of the earlier
+    // life logs: the same gadget id, under the next life's owner, from a Worker whose tail names
+    // the earlier life's log object.
     initialise(ws);
-    ws.impl.storage.createdAt.put(new Date(open.timestamp.getTime() + 1));
-    await ws.impl.deliverGadgetLogs(null, [open], GADGET_ID);
+    let late = () => ws.impl.deliverGadgetLogs(
+        null, [logEvent("log", "first life, logged late")], GADGET_ID, earlier);
+    await late();
     expect(consoleLogId(ws)).toBeUndefined();
 
-    await ws.impl.deliverGadgetLogs(null, [{ ...logEvent("log", "second life"),
-        timestamp: new Date(open.timestamp.getTime() + 2) }], GADGET_ID);
+    await deliver(ws, null, [logEvent("log", "second life")]);
     expect(consoleLogId(ws)).not.toBe(earlier);
+    await late();
     expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["second life"]);
   }));
+
+  // What whoever posts next to the workspace's key sends. They have an account, so only the
+  // deletion can turn their message away.
+  const NEXT_MESSAGE: Parameters<OverseerDurableObject["receiveExternalMessage"]>[0] = {
+    callerEmail: "next@example.test", externalChatKey: "k", idempotencyKey: "i",
+    prompt: "hello", chatGatewayRpcTarget: {} as never, title: "Next life",
+  };
+  const NEXT_PROFILE: AiChatAuthorInfo = { type: "user", id: "next@example.test", name: "Next" };
+  const DELETED = { accepted: false, message: "Workspace was deleted." };
 
   it("initialises nothing for an external message on the instance that deleted the workspace",
       () => withWorkspace(async ws => {
     initialise(ws);
-    // Whoever posts next has an account, so only the deletion can turn their message away.
     ws.impl.users = {
       ...fakeUsers(ws),
       getByName: () => ({
-        id: { toString: () => "next-owner-do" },
-        whoamiIfExists: async () => ({ type: "user", id: "next@example.test", name: "Next" }),
+        id: { toString: () => "next-owner-do" }, whoamiIfExists: async () => NEXT_PROFILE,
       }),
     };
 
@@ -1043,14 +1095,45 @@ describe("deleting the workspace", () => {
     await ws.impl.deliverUserUpdates();
     expect(storageKeys(ws)).toStrictEqual([]);
 
-    // The tombstone went with the storage, and this instance's gadgets run until its restart: a
-    // workspace initialised here would be given what they log from then on.
-    let message: Parameters<OverseerDurableObject["receiveExternalMessage"]>[0] = {
-      callerEmail: "next@example.test", externalChatKey: "k", idempotencyKey: "i",
-      prompt: "hello", chatGatewayRpcTarget: {} as never, title: "Next life",
+    // The tombstone went with the storage, and this instance's sessions last until its restart: a
+    // workspace initialised here would keep the exceptions of the gadget calls they make.
+    expect(await ws.instance.receiveExternalMessage(NEXT_MESSAGE)).toStrictEqual(DELETED);
+    expect(ws.impl.ownerId).toBeUndefined();
+    expect(storageKeys(ws)).toStrictEqual([]);
+  }));
+
+  it.for([
+    ["while its storage was still to be wiped", false],
+    ["once its storage was wiped", true],
+  ] as const)("initialises nothing for an external message that was resolving its caller when " +
+      "the workspace was deleted, and resolved them %s", ([, wiped]) => withWorkspace(async ws => {
+    initialise(ws);
+    let profile = Promise.withResolvers<AiChatAuthorInfo>();
+    let whoamiIfExists = vi.fn(() => profile.promise);
+    let removed = Promise.withResolvers<void>();
+    let users = fakeUsers(ws);
+    ws.impl.users = {
+      ...users,
+      get: () => ({ ...users.get(), workspaceRemoved: () => removed.promise }),
+      getByName: () => ({ id: { toString: () => "next-owner-do" }, whoamiIfExists }),
     };
-    expect(await ws.instance.receiveExternalMessage(message))
-        .toStrictEqual({ accepted: false, message: "Workspace was deleted." });
+
+    // The message finds a workspace that is not being deleted, and waits for its caller's
+    // profile. The owner deletes the workspace meanwhile.
+    let answer = ws.instance.receiveExternalMessage(NEXT_MESSAGE);
+    await vi.waitFor(() => expect(whoamiIfExists).toHaveBeenCalled());
+    beginDeletion(ws);
+    let drained = ws.impl.deliverUserUpdates();
+    if (wiped) {
+      removed.resolve();
+      await drained;
+      expect(storageKeys(ws)).toStrictEqual([]);
+    }
+
+    profile.resolve(NEXT_PROFILE);
+    expect(await answer).toStrictEqual(DELETED);
+    removed.resolve();
+    await drained;
     expect(ws.impl.ownerId).toBeUndefined();
     expect(storageKeys(ws)).toStrictEqual([]);
   }));
