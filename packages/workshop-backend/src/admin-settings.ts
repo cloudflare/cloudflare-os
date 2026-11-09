@@ -564,6 +564,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       restrictedWebFetchHosts: config.restrictedWebFetchHosts,
       restrictedWebFetchApprovals: config.restrictedWebFetchApprovals,
+      chatGptSignInEnabled: config.chatGptSignInEnabled,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -1065,6 +1066,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     await this.updateAdminConfig({ modelsDevSuggestions: enabled }, actor);
   }
 
+  /** Set whether users may sign in with ChatGPT and run models on their own subscription. */
+  async setChatGptSignInEnabled(enabled: boolean, actor: AdminSettingActor): Promise<void> {
+    await this.updateAdminConfig({ chatGptSignInEnabled: enabled }, actor);
+  }
+
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
   async setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean,
                            actor: AdminSettingActor): Promise<void> {
@@ -1389,6 +1395,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setModelsDevSuggestions(enabled: boolean): Promise<void> {
     return this.admin.setModelsDevSuggestions(enabled, this.#actor("setModelsDevSuggestions"));
+  }
+
+  setChatGptSignInEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setChatGptSignInEnabled(enabled, this.#actor("setChatGptSignInEnabled"));
   }
 
   setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {

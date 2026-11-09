@@ -148,6 +148,12 @@ export type AdminConfig = {
   /** How many days admins chose to keep admin audit records. Held at or above
    * ADMIN_AUDIT_RETENTION_MIN_DAYS wherever it is enforced. */
   adminAuditRetentionDays: number;
+  /**
+   * Whether users may sign in with ChatGPT and run OpenAI models on their own subscription
+   * (default true). On an AI Gateway deployment it also takes `userModelsEnabled` (see
+   * isChatGptSignInAvailable() in admin-config.ts).
+   */
+  chatGptSignInEnabled: boolean;
 };
 
 /**
@@ -203,6 +209,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   adminAuditRetentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  chatGptSignInEnabled: true,
 };
 
 /**
