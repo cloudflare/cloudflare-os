@@ -509,6 +509,19 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     const rank = rankOf(realTable, task, wanted);
     assert.ok(rank >= 1 && rank <= top, `"${task}" ranks ${wanted} ${rank || "nowhere"}, wanted ${top === 1 ? "first" : `in the first ${top}`}`);
   }
+  // Approving a write, and enrolling or removing a passkey, is a browser's ceremony: no command.
+  const approving = searchCommands(realTable, "approve a workspace write", Infinity).map((match) => match.command);
+  assert.ok(approving.some((command) => / request-workspace-write </.test(command)));
+  for (const ceremony of ["approve-workspace-write", "begin-workspace-write-approval", "add-admin-passkey", "remove-admin-passkey"]) {
+    assert.deepEqual(approving.filter((command) => command.includes(ceremony)), [], ceremony);
+  }
+  // Every ceremony method is told in the word "passkey": a search for it finds the passkey listing and none of the six.
+  const passkeys = searchCommands(realTable, "passkey", Infinity).map((match) => match.command);
+  assert.ok(passkeys.includes("cf-os api get-admin-api list-admin-passkeys"));
+  for (const ceremony of ["begin-admin-passkey-enrolment", "add-admin-passkey", "begin-admin-passkey-removal", "remove-admin-passkey",
+    "begin-workspace-write-approval", "approve-workspace-write"]) {
+    assert.deepEqual(passkeys.filter((command) => command.includes(ceremony)), [], ceremony);
+  }
   // A share link's key says where it is redeemed.
   assert.match(flat(commandHelp(realTable, "Overseer", "create-share-link", ["open-workspace", "w", "create-share-link"])),
     /redeems the key by passing it as `shareKey` to `open-workspace` \(on AuthenticatedApi\)/);

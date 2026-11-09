@@ -15,7 +15,8 @@ import { typeText } from "../src/type-text.ts";
 import type { ApiCapabilityProperty } from "../src/table.ts";
 import {
   AGENT_TYPES_PATH, type AgentTypes, type AppApi, buildTable, cliDoc, COMMANDS_PATH, CREDENTIAL_METHODS, generate, kebab,
-  ROOT_CREDENTIAL_METHODS, type Schema, SCHEMA_FORMAT, type SchemaMethod, type SchemaService,
+  PASSKEY_METHODS, PASSKEY_SERVICE, ROOT_CREDENTIAL_METHODS, type Schema, SCHEMA_FORMAT, type SchemaMethod,
+  type SchemaService,
 } from "./emit.ts";
 import { table as real } from "../generated/commands.ts";
 
@@ -163,6 +164,30 @@ test("roots the table at authenticate()'s result, with the entry as public, less
   }));
   assert.deepEqual(ROOT_CREDENTIAL_METHODS, ["changePassword"]);
   assert.equal(withPassword.nodes.FixtureAuthedApi!.commands["change-password"], undefined);
+});
+
+test("AdminApi's passkey ceremony methods are not commands; requesting, reading and denying a write, and listing passkeys, are", () => {
+  assert.equal(PASSKEY_SERVICE, "AdminApi");
+  assert.deepEqual(PASSKEY_METHODS, ["beginAdminPasskeyEnrolment", "addAdminPasskey", "beginAdminPasskeyRemoval",
+    "removeAdminPasskey", "beginWorkspaceWriteApproval", "approveWorkspaceWrite"]);
+
+  // Left out of the service of that name alone: another service's method of the same name stays.
+  const table = buildTable(edited((schema) => {
+    const methods = [...PASSKEY_METHODS, "listAdminPasskeys"]
+      .map((name): SchemaMethod => ({ name, doc: "", params: [], returns: { kind: "void" } }));
+    schema.services.AdminApi = { doc: "", direction: "server", methods };
+    schema.services.FixtureAuthedApi!.methods
+      .push({ name: "getAdminApi", doc: "", params: [], returns: { kind: "stub", service: "AdminApi" } });
+    schema.services.Notebook!.methods.push({ name: "approveWorkspaceWrite", doc: "", params: [], returns: { kind: "void" } });
+  }));
+  assert.deepEqual(Object.keys(table.nodes.AdminApi!.commands), ["list-admin-passkeys"]);
+  assert.ok(table.nodes.Notebook!.commands["approve-workspace-write"]);
+
+  const commands = Object.keys(real.nodes.AdminApi!.commands);
+  for (const name of PASSKEY_METHODS) assert.ok(!commands.includes(kebab(name)), name);
+  // Every command named for a passkey or a write request: a ceremony method renamed or added would join them.
+  assert.deepEqual(commands.filter((command) => /passkey|workspace-write/.test(command)),
+    ["deny-workspace-write", "get-workspace-write", "list-admin-passkeys", "request-workspace-write"]);
 });
 
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {

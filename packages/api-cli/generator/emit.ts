@@ -97,6 +97,17 @@ export const CREDENTIAL_METHODS = ["authenticate", "authenticateFromCfAccess", "
  */
 export const ROOT_CREDENTIAL_METHODS = ["changePassword"];
 
+/** The service whose {@link PASSKEY_METHODS} are not commands. */
+export const PASSKEY_SERVICE = "AdminApi";
+
+/**
+ * `AdminApi`'s passkey ceremony methods: each is half of a WebAuthn exchange a browser
+ * finishes on the Workshop's own origin, so none is a command.
+ */
+export const PASSKEY_METHODS = ["beginAdminPasskeyEnrolment", "addAdminPasskey",
+  "beginAdminPasskeyRemoval", "removeAdminPasskey", "beginWorkspaceWriteApproval",
+  "approveWorkspaceWrite"];
+
 /**
  * The JSDoc tag, on an object property or a named type in api.ts, that marks its value secret:
  * recorded in the table as {@link ApiArg.secrets}, so `--dry-run` prints it redacted.
@@ -182,7 +193,8 @@ export function buildTable(schema: Schema, apps: AppApi[] = []): ApiTable {
     appNodes[app.vendor] = prefixedName(app.vendor, app.schema.entry);
   }
   const api = buildGraph(schema, [root.service, schema.entry], (name) =>
-    name === schema.entry ? CREDENTIAL_METHODS : name === root.service ? ROOT_CREDENTIAL_METHODS : [], appNodes);
+    name === schema.entry ? CREDENTIAL_METHODS : name === root.service ? ROOT_CREDENTIAL_METHODS
+      : name === PASSKEY_SERVICE ? PASSKEY_METHODS : [], appNodes);
   for (const reserved of RESERVED_COMMANDS) {
     if (api.nodes[root.service]!.commands[reserved]) {
       throw new Error(`${root.service} has a method named "${reserved}", a word the CLI reserves`);
@@ -924,7 +936,7 @@ export function renderAgentTypes(agent: AgentTypes): string {
   return [
     AGENT_TYPES_HEADER,
     "",
-    "/** What a holder of an `AuthenticatedApi` stub can call, as TypeScript declarations, without the credential methods. */",
+    "/** What a holder of an `AuthenticatedApi` stub can call, as TypeScript declarations, without the credential methods and the passkey ceremonies' methods. */",
     `export const declarations: string = ${linesLiteral(agent.declarations, "")};`,
     "",
     "/** The same declarations per service, each readable on its own, other services referred to by name. */",
