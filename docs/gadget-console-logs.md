@@ -51,6 +51,8 @@ It is a variable of the backend Worker (`workshop-backend`):
   deployment starter's `cf-os deploy`, both linked from the [README](../README.md#get-started)):
   they replace the Worker's variables on every deploy, so such a tool must carry the variable, or
   its deployments record nothing.
+- **Pull request previews** (`scripts/preview/staging-config.ts`): on, so that a change to recording
+  can be tried there.
 
 `cf-os api public get-server-config` shows whether it took (`gadgetConsoleLogsRecorded`). That
 answer is also what tells the Workshop whether to send anything: where it is false, a browser

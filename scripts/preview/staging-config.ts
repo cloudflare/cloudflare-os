@@ -353,6 +353,8 @@ function applyBackend(
   config.vars = {
     ...config.vars,
     PUBLIC_BASE_URL: baseUrl,
+    // On, so that gadget console recording can be tried on a preview (docs/gadget-console-logs.md).
+    RECORD_GADGET_CONSOLE_LOGS: "true",
   };
   config.previews = {
     observability: previewObservability(config),
