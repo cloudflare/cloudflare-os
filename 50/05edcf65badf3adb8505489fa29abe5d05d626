@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.test.tsx
+  s_351616a23717ae::t_6c182c3d23c836 132-144
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.ts
+  s_351616a23717ae::t_4f07c6b905644b 66,68-70,76-79,149-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5005edcf65badf3adb8505489fa29abe5d05d626",
+  "prompts": {},
+  "sessions": {
+    "s_351616a23717ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d776dc67-24ab-4cbe-9900-ce747bbf939a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
