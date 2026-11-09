@@ -1,11 +1,13 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
+import { useNavigate } from '@tanstack/react-router'
 import { Checkbox, Dialog, DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
-import { CaretDown, CaretLeft, CaretRight, Check, Copy, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
+import { CaretDown, CaretLeft, CaretRight, Check, Copy, Eye, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
   AuthenticatedApi,
+  CollaboratorAccess,
   CollaboratorInfo,
   AffectedCollaborator,
   ShareLinkInfo,
@@ -25,6 +27,9 @@ import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { useVendorBranding, type VendorBranding } from './useVendorBranding'
+import { ShareSnapshotPreview } from './ShareSnapshotPreview'
+import { getStoredSelectedModel } from './modelSelection'
+import { logRpcFailure } from './rpcErrors'
 
 /**
  * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
@@ -34,8 +39,21 @@ export type ShareTarget =
   | { kind: 'workspace' }
   | { kind: 'gadget'; gadgetId: WorkpieceId; title: string }
 
-function grantFor(gadgetId: WorkpieceId | undefined): CollaboratorGrant {
-  return gadgetId === undefined ? 'workspace' : { gadgetId }
+// What a gadget's dialog hands out: the gadget itself ("use"), which recipients open live once they
+// verify their own access to its connections, or only a view of its static snapshot ("view"; see
+// CollaboratorGrant), which verifies nothing. The workspace's dialog hands out only the workspace.
+type GadgetAccess = 'use' | 'view'
+const ACCESS_LABELS: Record<GadgetAccess, string> = { use: 'Can use', view: 'Can view' }
+
+function grantFor(gadgetId: WorkpieceId | undefined, access: GadgetAccess): CollaboratorGrant {
+  if (gadgetId === undefined) return 'workspace'
+  return access === 'view' ? { gadgetId, mode: 'view' } : { gadgetId }
+}
+
+// Whether someone may only view `gadgetId`. False for a build collaborator, who holds every gadget
+// in full.
+function holdsOnlyView(access: CollaboratorAccess, gadgetId: WorkpieceId): boolean {
+  return access.role === 'use' && access.viewOnly?.includes(gadgetId) === true
 }
 
 // Where a recipient lands: the workspace, opened on the shared gadget if there is one. A share
@@ -53,6 +71,20 @@ type StagedRecipient = { id: string; name: string; error?: string }
 const NO_IDS: ReadonlySet<string> = new Set()
 const NAME_LIST = new Intl.ListFormat('en', { type: 'conjunction' })
 
+// The first message of the chat the snapshot page's "Ask agent to fix" starts, for Gadget `title`.
+// Its terms follow the agent's system prompt (packages/workshop-backend/src/agent.ts), which
+// explains Gadgets, server.js, client.js, storage and bindings; it says nothing of snapshots.
+const snapshotFixPrompt = (title: string) => `The Gadget ${JSON.stringify(title)} doesn't work well as a snapshot. Adapt it so that it does.
+
+A snapshot is how people the user shares a Gadget with can view it without access to its bindings. It runs the Gadget's current server.js and client.js, but as a separate copy of the Gadget's Durable Object:
+
+* The copy starts with a copy of everything the Gadget has saved in its private storage (the Durable Objects KV and SQLite storage APIs), read through those same APIs.
+* The copy has no bindings: its \`this.env\` is empty and it cannot make network requests. RPC stubs the Gadget stored, including persistent stubs, fail to load.
+* So the snapshot shows only what the Gadget saved. Anything the Gadget fetches through a binding when the UI asks for it is missing from the snapshot. Save data read through bindings to storage when it is read, so the snapshot can show it.
+* The copy may write to its storage, but those writes are discarded when the snapshot is refreshed with a new copy of the Gadget's storage. A snapshot is refreshed every time the viewer opens it, and whenever they choose to refresh it. Never rely on a snapshot keeping anything it writes.
+
+When running as a snapshot, the Gadget should present a read-only version of its UI, so viewers do not make changes that are silently lost on refresh. server.js can tell it is running as a snapshot from a binding it normally has being missing from \`this.env\`; let client.js ask server.js which it is. Make sure that every method client.js calls still works, or fails with a clear message, when the bindings are missing.`
+
 function withRecipient(list: StagedRecipient[], recipient: StagedRecipient): StagedRecipient[] {
   return list.some(entry => entry.id === recipient.id) ? list : [...list, recipient]
 }
@@ -62,9 +94,11 @@ function recipientLabel({ id, name }: StagedRecipient): string {
   return name === id ? name : `${name} (${id})`
 }
 
+// A revocation with `replaceWith` set switches "Anyone with your link" to that access: the new
+// default link is created, then the old one revoked.
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
-  | { kind: 'revoke'; linkId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
+  | { kind: 'revoke'; linkId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string>; replaceWith?: GadgetAccess }
 
 type Props = {
   open: boolean
@@ -290,19 +324,24 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const canInvite = !ownerInvitesOnly || isOwner
   const canUseShareLinks = !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
+  // What the composer and the custom-link composer give, in a gadget's dialog.
+  const [inviteAccess, setInviteAccess] = useState<GadgetAccess>('use')
+  const [newLinkAccess, setNewLinkAccess] = useState<GadgetAccess>('use')
   // Everyone who already holds what this dialog grants -- the caller, the owner (absent from
   // listCollaborators() when the caller is a collaborator), and collaborators with the workspace or
   // with this gadget -- plus everyone already staged. Anyone else can still be given it, such as a
-  // gadget's recipient being invited to the whole workspace.
+  // gadget's recipient being invited to the whole workspace, or someone who can only view a gadget
+  // being given its full use.
   const directoryExcludeIds = useMemo(() => [
     ...(currentUser ? [currentUser.id] : []),
     ...(metadata.owner ? [metadata.owner.id] : []),
     ...collaborators
       .filter(({ access }) => access.role === 'build' ||
-        (gadgetId !== undefined && access.gadgetIds.includes(gadgetId)))
+        (gadgetId !== undefined && access.gadgetIds.includes(gadgetId) &&
+          !(inviteAccess === 'use' && holdsOnlyView(access, gadgetId))))
       .map(({ profile }) => profile.id),
     ...staged.map(recipient => recipient.id),
-  ], [collaborators, currentUser, gadgetId, metadata.owner, staged])
+  ], [collaborators, currentUser, gadgetId, inviteAccess, metadata.owner, staged])
   const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
   const membershipReady = membershipSettled && membershipStatus === 'ready'
   const directorySearching = userSearchEnabled && membershipReady && directoryQuery !== ''
@@ -346,7 +385,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
   const [requirementsFailed, setRequirementsFailed] = useState(false)
   // A page of the dialog that stands in for the sharing view until its back button.
-  const [subpage, setSubpage] = useState<'resources' | 'advanced' | null>(null)
+  const [subpage, setSubpage] = useState<'resources' | 'advanced' | 'snapshot' | null>(null)
+  const [previewFullscreenRequested, setPreviewFullscreen] = useState(false)
+  const [askingAgent, setAskingAgent] = useState(false)
+  const navigate = useNavigate()
   const vendorBranding = useVendorBranding(authenticatedApi)
   const [creatingLink, setCreatingLink] = useState(false)
   const [creatingDefaultLink, setCreatingDefaultLink] = useState(false)
@@ -369,12 +411,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const backButtonRef = useRef<HTMLButtonElement>(null)
   const advancedButtonRef = useRef<HTMLButtonElement>(null)
   const resourcesButtonRef = useRef<HTMLButtonElement>(null)
-  const openSubpage = (page: 'resources' | 'advanced') => {
+  const snapshotButtonRef = useRef<HTMLButtonElement>(null)
+  const openSubpage = (page: NonNullable<typeof subpage>) => {
     flushSync(() => setSubpage(page))
     backButtonRef.current?.focus()
   }
   const closeSubpage = () => {
-    const opener = subpage === 'resources' ? resourcesButtonRef : advancedButtonRef
+    const opener = subpage === 'resources' ? resourcesButtonRef
+      : subpage === 'snapshot' ? snapshotButtonRef
+      : advancedButtonRef
     flushSync(() => setSubpage(null))
     opener.current?.focus()
   }
@@ -502,7 +547,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     const refresh = () => {
       const thisRequest = ++requestId
       setRequirementsFailed(false)
-      overseer.listObserverRequirements(grantFor(gadgetId))
+      overseer.listObserverRequirements(grantFor(gadgetId, 'use'))
         .then(next => {
           if (!cancelled && thisRequest === requestId) setRequirements(next)
         })
@@ -531,8 +576,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         const inFlight = addingRef.current
         setStaged(current => inFlight ? current : current.filter(recipient => recipient.error))
         setNewLinkNote('')
+        setNewLinkAccess('use')
+        setInviteAccess('use')
         setShowLinkComposer(false)
         setSubpage(null)
+        setPreviewFullscreen(false)
         setConfirmationTarget(null)
         setEditingShareLinkId(null)
         setEditingShareLinkNote('')
@@ -581,14 +629,25 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   // aren't listed to a collaborator; they still explain how people joined.
   const advancedShareLinks = visibleShareLinks.filter(link => link !== myDefaultLink &&
     (isOwner || link.createdBy.id === currentUser?.id))
-  const linkAccessLabel = gadgetId === undefined ? 'Can join' : 'Can use'
+  const myLinkAccess: GadgetAccess | undefined = myDefaultLink && (myDefaultLink.mode ?? 'use')
+  const myLinkLabel = myLinkAccess === undefined ? 'Requires invite'
+    : gadgetId === undefined ? 'Can join' : ACCESS_LABELS[myLinkAccess]
   // Someone who can't invite has no recipient to verify. While loading, show nothing rather than
   // reserve space for an answer we don't have yet.
   const showResourcesPill = canInvite && (requirementsFailed || (requirements?.length ?? 0) > 0)
   const showAdvancedButton = canUseShareLinks || advancedShareLinks.length > 0
+  // A gadget's snapshot matters once anyone may open it: only people who can view the gadget do,
+  // since people who can use it open it live or not at all.
+  const showSnapshotCard = gadgetId !== undefined && open && (inviteAccess === 'view' ||
+    members.some(({ access }) => holdsOnlyView(access, gadgetId)) ||
+    visibleShareLinks.some(link => link.mode === 'view'))
   const shownSubpage = subpage === 'resources' && showResourcesPill ? 'resources'
     : subpage === 'advanced' && showAdvancedButton ? 'advanced'
+    : subpage === 'snapshot' && showSnapshotCard ? 'snapshot'
     : null
+  // Derived, so leaving the snapshot page can't leave the dialog set up for full screen.
+  const previewFullscreen = previewFullscreenRequested && shownSubpage === 'snapshot'
+  const ownerData = isOwner ? 'your' : `${metadata.owner?.name ?? 'the owner'}’s`
   const removeTarget = confirmationTarget?.kind === 'remove' ? confirmationTarget : null
   const revokeTarget = confirmationTarget?.kind === 'revoke' ? confirmationTarget : null
   const defaultLinkRevoke = myDefaultLink && revokeTarget?.linkId === myDefaultLink.linkId
@@ -626,9 +685,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         if (ownerInvitesOnly ? edge.sharer !== ownerProfile?.id : !sourceConfers(edge.sharer)) return []
         return [`Invited by ${sharerName(edge.sharer)}`]
       }
-      const creator = shareLinks.find(item => item.linkId === edge.keyId)?.createdBy
-      if (!creator || ownerInvitesOnly || !sourceConfers(creator.id)) return []
-      return [creator.id === currentUser?.id ? 'Joined with your link' : `Joined with ${creator.name}’s link`]
+      const link = shareLinks.find(item => item.linkId === edge.keyId)
+      const creator = link?.createdBy
+      if (!link || !creator || ownerInvitesOnly || !sourceConfers(creator.id)) return []
+      if (creator.id !== currentUser?.id) return [`Joined with ${creator.name}’s link`]
+      return [link.default ? 'Joined with your link' : 'Joined with your custom share link']
     })
     return reasons.length > 0 ? [...new Set(reasons)].join(' · ') : undefined
   }
@@ -731,8 +792,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     setAdding(true)
     try {
       const settled = await Promise.allSettled(
-        recipients.map(recipient => overseer.addCollaborator(recipient.id, grantFor(gadgetId), undefined)))
+        recipients.map(recipient => overseer.addCollaborator(recipient.id, grantFor(gadgetId, inviteAccess), undefined)))
       const added: AiChatAuthorInfo[] = []
+      // Given the snapshot but already holding the full gadget, which a share never narrows.
+      const keptFull: string[] = []
       const failed: StagedRecipient[] = []
       settled.forEach((outcome, index) => {
         const recipient = recipients[index]
@@ -746,6 +809,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           failed.push({ ...recipient, error: 'No account found for that username or email.' })
         } else {
           added.push(outcome.value.profile)
+          if (gadgetId !== undefined && inviteAccess === 'view' &&
+              !holdsOnlyView(outcome.value.access, gadgetId)) {
+            keptFull.push(outcome.value.profile.name)
+          }
         }
       })
       // Touch only the chips this batch sent: drop the added, keep the failed with their reason,
@@ -765,6 +832,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           title: `Added ${NAME_LIST.format(names)} as ${names.length === 1 ? 'a collaborator' : 'collaborators'}.`,
           variant: 'success',
         })
+        if (keptFull.length > 0) {
+          toasts.add({
+            title: `${NAME_LIST.format(keptFull)} can still use this gadget: a share never reduces anyone’s access.`,
+            variant: 'info',
+          })
+        }
       }
     } finally {
       addingRef.current = false
@@ -778,7 +851,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     setCreatingLink(true)
     try {
       const { key, linkId } = await overseer.createShareLink(
-        grantFor(gadgetId), newLinkNote.trim() || undefined)
+        grantFor(gadgetId, newLinkAccess), newLinkNote.trim() || undefined)
       const url = destinationUrl(metadata.id, gadgetId, key)
       setNewLinkNote('')
       setShowLinkComposer(false)
@@ -795,14 +868,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     }
   }
 
-  // Turning "Anyone with your link" on. Turning it off is a revocation, confirmed in place.
-  const handleEnableDefaultLink = async () => {
+  // Creates the viewer's default link for what this dialog grants, giving `access` in a gadget's.
+  const createDefaultLink = async (access: GadgetAccess) => {
+    const { key, linkId } = await overseer.createShareLink(
+      grantFor(gadgetId, access), undefined, { default: true })
+    // Kept so the first Copy needs no round trip and lands within the click's user activation.
+    copiedUrlsRef.current.set(linkId, destinationUrl(metadata.id, gadgetId, key))
+  }
+
+  // Turning "Anyone with your link" on. Turning it off, or changing what it gives, is a revocation,
+  // confirmed in place.
+  const handleEnableDefaultLink = async (access: GadgetAccess) => {
     setCreatingDefaultLink(true)
     try {
-      const { key, linkId } = await overseer.createShareLink(
-        grantFor(gadgetId), undefined, { default: true })
-      // Kept so the first Copy needs no round trip and lands within the click's user activation.
-      copiedUrlsRef.current.set(linkId, destinationUrl(metadata.id, gadgetId, key))
+      await createDefaultLink(access)
       await loadData()
     } catch (err: unknown) {
       toasts.add({
@@ -884,6 +963,38 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     }
   }
 
+  // Changes what someone holds of this gadget. A share never narrows anyone's access, so going down
+  // to the snapshot removes the viewer's grants of the gadget and shares the snapshot in one call,
+  // which the restart that narrowing schedules can't split: they keep the full gadget if someone
+  // else gave it to them. Nobody given a gadget can share it on, so the removal never strands
+  // anyone downstream.
+  const handleChangeAccess = async (profile: AiChatAuthorInfo, access: GadgetAccess) => {
+    if (gadgetId === undefined || confirmationBusy) return
+    setConfirmationBusy(true)
+    try {
+      let held: GadgetAccess
+      if (access === 'view') {
+        const narrowed = await overseer.removeCollaborator(profile.id, [], gadgetId, true)
+        held = narrowed.some(entry => entry.profile.id === profile.id) ? 'view' : 'use'
+      } else {
+        const info = await overseer.addCollaborator(profile.id, grantFor(gadgetId, access), undefined)
+        held = info && holdsOnlyView(info.access, gadgetId) ? 'view' : 'use'
+      }
+      toasts.add(held === access
+        ? { title: `${profile.name} ${ACCESS_LABELS[access].toLowerCase()} this gadget.`, variant: 'success' }
+        : { title: `${profile.name} can still use this gadget through someone else’s share.`, variant: 'info' })
+      showLandedRow('person', [profile.id])
+    } catch (err: unknown) {
+      toasts.add({
+        title: err instanceof Error && err.message ? err.message : 'Failed to change their access.',
+        variant: 'error',
+      })
+    } finally {
+      await loadData()
+      setConfirmationBusy(false)
+    }
+  }
+
   const startRenameShareLink = (link: ShareLinkInfo) => {
     // Renaming and the destructive confirm are mutually exclusive in-place editors on the same row.
     setConfirmationTarget(null)
@@ -920,32 +1031,68 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     }
   }
 
-  const handleStartRevokeShareLink = async (linkId: string) => {
+  const handleStartRevokeShareLink = async (linkId: string, replaceWith?: GadgetAccess) => {
     cancelRenameShareLink()
-    setConfirmationTarget({ kind: 'revoke', linkId, dependents: [], previewing: true, keepSet: new Set() })
+    setConfirmationTarget({ kind: 'revoke', linkId, dependents: [], previewing: true, keepSet: new Set(), replaceWith })
     try {
       const dependents = await overseer.previewRevokeShareLink(linkId)
-      setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId
-        ? { ...current, dependents, previewing: false }
-        : current)
-    } catch (err: any) {
+      const previewed = { kind: 'revoke', linkId, dependents, previewing: false, keepSet: new Set<string>(), replaceWith } as const
+      setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId ? previewed : current)
+      // Changing what the link gives asks first only if that costs someone their access.
+      if (replaceWith && dependents.length === 0) await revokeShareLink(previewed)
+    } catch (err: unknown) {
       setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId ? null : current)
-      toasts.add({ title: err.message || 'Failed to preview share-link revocation.', variant: 'error' })
+      toasts.add({
+        title: err instanceof Error && err.message ? err.message : 'Failed to preview share-link revocation.',
+        variant: 'error',
+      })
+    }
+  }
+
+  const revokeShareLink = async (target: Extract<ConfirmationTarget, { kind: 'revoke' }>) => {
+    setConfirmationBusy(true)
+    try {
+      // The new link first, so a failure can leave two links but never none.
+      if (target.replaceWith) await createDefaultLink(target.replaceWith)
+      await overseer.revokeShareLink(target.linkId, [...target.keepSet])
+      setConfirmationTarget(null)
+      toasts.add({ title: target.replaceWith ? 'Link access changed.' : 'Share link revoked.', variant: 'success' })
+    } catch (err: unknown) {
+      toasts.add({
+        title: err instanceof Error && err.message ? err.message : 'Failed to revoke share link.',
+        variant: 'error',
+      })
+    } finally {
+      await loadData()
+      setConfirmationBusy(false)
     }
   }
 
   const handleConfirmRevokeShareLink = async () => {
     if (!revokeTarget || revokeTarget.previewing || confirmationBusy) return
-    setConfirmationBusy(true)
+    await revokeShareLink(revokeTarget)
+  }
+
+  // Starts a chat whose first message asks the agent to make the gadget work for people who have
+  // none of its connections, as its snapshot does, then opens that chat.
+  const askAgentToFix = async () => {
+    if (target.kind !== 'gadget') return
+    setAskingAgent(true)
     try {
-      await overseer.revokeShareLink(revokeTarget.linkId, [...revokeTarget.keepSet])
-      setConfirmationTarget(null)
-      toasts.add({ title: 'Share link revoked.', variant: 'success' })
-      await loadData()
-    } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to revoke share link.', variant: 'error' })
+      const models = await overseer.listModels()
+      const chatId = await overseer.newChat(
+        snapshotFixPrompt(target.title), getStoredSelectedModel(currentUser?.id, models))
+      onClose()
+      navigate({
+        to: '/workspace/$id',
+        params: { id: metadata.id },
+        search: { chat: chatId, showChat: true, w: target.gadgetId },
+      })
+    } catch (err) {
+      logRpcFailure('Failed to start a chat to fix the gadget:', err)
+      toasts.add({ title: 'Couldn’t start a chat with the agent.', variant: 'error' })
     } finally {
-      setConfirmationBusy(false)
+      setAskingAgent(false)
     }
   }
 
@@ -957,8 +1104,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     const downstreamDependents = removing
       ? removing.dependents.filter(dep => dep.profile.id !== profile.id)
       : []
-    // A gadget dialog lists only the people given that gadget, who use it rather than belong.
-    const accessLabel = gadgetId === undefined ? 'Member' : 'Can use'
+    // A gadget dialog lists only the people given that gadget, who use or view it rather than belong.
+    const held: GadgetAccess | undefined = gadgetId === undefined ? undefined
+      : holdsOnlyView(info.access, gadgetId) ? 'view' : 'use'
+    const accessLabel = held === undefined ? 'Member' : ACCESS_LABELS[held]
+    const removable = canRemove(info)
+    // Anyone who can share can give the full gadget, but narrowing removes their grant first.
+    const changeable = held !== undefined && canInvite && (removable || held === 'view')
     let trailing: ReactNode = <span className={ACCESS_LABEL}>{accessLabel}</span>
     if (removing) {
       trailing = (
@@ -970,7 +1122,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           onCancel={() => setConfirmationTarget(null)}
         />
       )
-    } else if (canRemove(info)) {
+    } else if (removable || changeable) {
       trailing = (
         <DropdownMenu>
           <DropdownMenu.Trigger
@@ -981,14 +1133,32 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
             )}
           />
           <DropdownMenu.Content container={menuPortalContainer} align="end">
-            <DropdownMenu.Item
-              variant="danger"
-              icon={<Trash size={14} />}
-              aria-label={`Remove ${profile.name}`}
-              onClick={() => handleStartRemoveCollaborator(profile.id)}
-            >
-              Remove
-            </DropdownMenu.Item>
+            {changeable && (
+              <DropdownMenu.RadioGroup
+                value={held}
+                onValueChange={(value: GadgetAccess) => {
+                  if (value !== held) void handleChangeAccess(profile, value)
+                }}
+              >
+                {(['use', 'view'] as const).map(access => (
+                  <DropdownMenu.RadioItem key={access} value={access} disabled={access === 'view' && !removable} closeOnClick>
+                    {ACCESS_LABELS[access]}
+                    <DropdownMenu.RadioItemIndicator />
+                  </DropdownMenu.RadioItem>
+                ))}
+              </DropdownMenu.RadioGroup>
+            )}
+            {changeable && removable && <DropdownMenu.Separator />}
+            {removable && (
+              <DropdownMenu.Item
+                variant="danger"
+                icon={<Trash size={14} />}
+                aria-label={`Remove ${profile.name}`}
+                onClick={() => handleStartRemoveCollaborator(profile.id)}
+              >
+                Remove
+              </DropdownMenu.Item>
+            )}
           </DropdownMenu.Content>
         </DropdownMenu>
       )
@@ -1025,7 +1195,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog
-        className="responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none"
+        className={`responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none ${previewFullscreen ? 'dialog-hosts-fullscreen' : ''}`}
         size="lg"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
@@ -1035,12 +1205,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 <CaretLeft size={16} />
               </WorkshopIconButton>
               <Dialog.Title className="truncate text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
-                {shownSubpage === 'resources' ? 'Protected resources' : 'Advanced'}
+                {shownSubpage === 'resources' ? 'Protected resources' : shownSubpage === 'snapshot' ? 'Snapshot' : 'Advanced'}
               </Dialog.Title>
               <Dialog.Description className="sr-only">
                 {shownSubpage === 'resources'
                   ? 'What recipients must verify before they can open what you share.'
-                  : 'Manage share links.'}
+                  : shownSubpage === 'snapshot'
+                    ? 'What people who can only view this gadget see.'
+                    : 'Manage share links.'}
               </Dialog.Description>
             </div>
           ) : (
@@ -1051,7 +1223,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.15px] text-kumo-subtle">
               {target.kind === 'gadget'
-                ? 'People you add can use this gadget without seeing anything else in the workspace.'
+                ? 'People you add can use or view this gadget without seeing anything else in the workspace.'
                 : ownerInvitesOnly
                   ? 'People you add can create chats and edit gadgets.'
                   : 'People you add can create chats, edit gadgets, and invite other users.'}
@@ -1070,7 +1242,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         {shownSubpage === 'resources' && (
           <div className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6">
             <p className="mb-4 text-[14px] leading-5 tracking-[-0.2px] text-kumo-subtle">
-              A recipient must have their own access to these resources before they can open
+              People you add must verify access to these resources before they can use
               this {gadgetId === undefined ? 'workspace' : 'gadget'}.
             </p>
             <ProtectedResourceList
@@ -1078,6 +1250,36 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
               failed={requirementsFailed}
               vendorBranding={vendorBranding}
             />
+          </div>
+        )}
+        {shownSubpage === 'snapshot' && gadgetId !== undefined && (
+          <div className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6">
+            <p className="mb-4 text-[14px] leading-5 tracking-[-0.2px] text-kumo-subtle">
+              Viewers open a read-only snapshot of this gadget with {ownerData} stored data. Snapshots come
+              with no connections and any writes stay in the viewer’s own copy.
+            </p>
+            <div className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
+              <ShareSnapshotPreview
+                overseer={overseer}
+                gadgetId={gadgetId}
+                gadgetTitle={target.kind === 'gadget' ? target.title : metadata.title}
+                workspaceTitle={metadata.title}
+                ownerName={ownerProfile?.name}
+                fullscreen={previewFullscreen}
+                onFullscreenChange={setPreviewFullscreen}
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-3 px-1">
+              <p className="text-[13px] leading-[18px] tracking-[-0.15px] text-kumo-subtle">Snapshot broken?</p>
+              <WorkshopButton
+                tone="primary"
+                className="!h-8 !rounded-xl"
+                disabled={askingAgent}
+                onClick={() => void askAgentToFix()}
+              >
+                Ask agent to fix
+              </WorkshopButton>
+            </div>
           </div>
         )}
         <div
@@ -1160,6 +1362,27 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 className="h-9 min-w-0 grow basis-32 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
+            {gadgetId !== undefined && (
+              <DropdownMenu>
+                <DropdownMenu.Trigger
+                  render={(
+                    <button type="button" aria-label={`Invite access: ${ACCESS_LABELS[inviteAccess]}`} className={ACCESS_MENU_TRIGGER} disabled={adding}>
+                      {ACCESS_LABELS[inviteAccess]} <CaretDown size={13} />
+                    </button>
+                  )}
+                />
+                <DropdownMenu.Content container={menuPortalContainer} align="end">
+                  <DropdownMenu.RadioGroup value={inviteAccess} onValueChange={(value: GadgetAccess) => setInviteAccess(value)}>
+                    {(['use', 'view'] as const).map(access => (
+                      <DropdownMenu.RadioItem key={access} value={access} closeOnClick>
+                        {ACCESS_LABELS[access]}
+                        <DropdownMenu.RadioItemIndicator />
+                      </DropdownMenu.RadioItem>
+                    ))}
+                  </DropdownMenu.RadioGroup>
+                </DropdownMenu.Content>
+              </DropdownMenu>
+            )}
             <WorkshopButton
               className="col-span-2 w-full !h-9 !rounded-xl !bg-kumo-base shadow-xs sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onMouseDown={(event) => {
@@ -1286,7 +1509,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 title="Anyone with your link"
                 trailing={defaultLinkRevoke ? (
                   <InlineConfirm
-                    label="Turn off"
+                    label={defaultLinkRevoke.replaceWith ? 'Change' : 'Turn off'}
                     busy={defaultLinkRevoke.previewing || confirmationBusy}
                     busyLabel={defaultLinkRevoke.previewing ? 'Checking…' : undefined}
                     onConfirm={handleConfirmRevokeShareLink}
@@ -1298,26 +1521,34 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                       render={(
                         <button
                           type="button"
-                          aria-label={`Anyone with your link: ${myDefaultLink ? linkAccessLabel : 'Requires invite'}`}
+                          aria-label={`Anyone with your link: ${myLinkLabel}`}
                           className={ACCESS_MENU_TRIGGER}
                           disabled={creatingDefaultLink || confirmationBusy}
                         >
-                          {myDefaultLink ? linkAccessLabel : 'Requires invite'} <CaretDown size={13} />
+                          {myLinkLabel} <CaretDown size={13} />
                         </button>
                       )}
                     />
-                    <DropdownMenu.Content container={menuPortalContainer} align="end">
+                    <DropdownMenu.Content container={menuPortalContainer} align="end" className="whitespace-nowrap">
                       <DropdownMenu.RadioGroup
-                        value={myDefaultLink ? 'access' : 'none'}
-                        onValueChange={(value: 'access' | 'none') => {
-                          if (value === 'access' && !myDefaultLink) void handleEnableDefaultLink()
-                          if (value === 'none' && myDefaultLink) void handleStartRevokeShareLink(myDefaultLink.linkId)
+                        value={myLinkAccess ?? 'none'}
+                        onValueChange={(value: GadgetAccess | 'none') => {
+                          if (value === myLinkAccess || (value === 'none' && !myDefaultLink)) return
+                          if (!myDefaultLink) void handleEnableDefaultLink(value as GadgetAccess)
+                          else void handleStartRevokeShareLink(myDefaultLink.linkId, value === 'none' ? undefined : value)
                         }}
                       >
-                        <DropdownMenu.RadioItem value="access" closeOnClick>
-                          {linkAccessLabel}
-                          <DropdownMenu.RadioItemIndicator />
-                        </DropdownMenu.RadioItem>
+                        {gadgetId === undefined ? (
+                          <DropdownMenu.RadioItem value="use" closeOnClick>
+                            Can join
+                            <DropdownMenu.RadioItemIndicator />
+                          </DropdownMenu.RadioItem>
+                        ) : (['use', 'view'] as const).map(access => (
+                          <DropdownMenu.RadioItem key={access} value={access} closeOnClick>
+                            {ACCESS_LABELS[access]}
+                            <DropdownMenu.RadioItemIndicator />
+                          </DropdownMenu.RadioItem>
+                        ))}
                         <DropdownMenu.RadioItem value="none" closeOnClick>
                           Requires invite
                           <DropdownMenu.RadioItemIndicator />
@@ -1378,6 +1609,24 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
             )}
             {otherMembers.map(renderCollaborator)}
           </section>
+
+          {showSnapshotCard && (
+            <button
+              ref={snapshotButtonRef}
+              type="button"
+              onClick={() => openSubpage('snapshot')}
+              className="mt-3 flex w-full cursor-pointer items-center gap-3 rounded-2xl border border-kumo-line/80 bg-kumo-base px-2 py-2 text-left transition-colors duration-150 hover:bg-kumo-elevated/50"
+            >
+              <div className={ROW_ICON}><Eye size={15} /></div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] leading-5 tracking-[-0.25px] text-kumo-default">Viewers can see a snapshot</p>
+                <p className="text-[12px] leading-4 tracking-[-0.15px] text-kumo-subtle">
+                  A read-only copy with no connections that does not require verification
+                </p>
+              </div>
+              <CaretRight size={12} weight="bold" className="mr-1 shrink-0 text-kumo-subtle" />
+            </button>
+          )}
         </div>
 
         {shownSubpage === 'advanced' && (
@@ -1399,6 +1648,27 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                       disabled={creatingLink}
                     />
+                    {gadgetId !== undefined && (
+                      <DropdownMenu>
+                        <DropdownMenu.Trigger
+                          render={(
+                            <button type="button" aria-label={`Link access: ${ACCESS_LABELS[newLinkAccess]}`} className={ACCESS_MENU_TRIGGER} disabled={creatingLink}>
+                              {ACCESS_LABELS[newLinkAccess]} <CaretDown size={13} />
+                            </button>
+                          )}
+                        />
+                        <DropdownMenu.Content container={menuPortalContainer} align="end">
+                          <DropdownMenu.RadioGroup value={newLinkAccess} onValueChange={(value: GadgetAccess) => setNewLinkAccess(value)}>
+                            {(['use', 'view'] as const).map(access => (
+                              <DropdownMenu.RadioItem key={access} value={access} closeOnClick>
+                                {ACCESS_LABELS[access]}
+                                <DropdownMenu.RadioItemIndicator />
+                              </DropdownMenu.RadioItem>
+                            ))}
+                          </DropdownMenu.RadioGroup>
+                        </DropdownMenu.Content>
+                      </DropdownMenu>
+                    )}
                     <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
@@ -1429,9 +1699,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 {advancedShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
-                  // Default links are named for who made them, not by a note.
-                  const name = !sk.default ? sk.note
-                    : sk.createdBy.id === currentUser?.id ? 'Your link' : `${sk.createdBy.name}’s link`
+                  // A named link by its note, the viewer's own default link as theirs, and any
+                  // other link -- an unnamed one, or someone else's default -- by who made it.
+                  const name = !sk.default && sk.note ? sk.note
+                    : sk.default && sk.createdBy.id === currentUser?.id ? 'Your link' : `${sk.createdBy.name}’s link`
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
                       <div className="flex items-center gap-3">
@@ -1455,9 +1726,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                               disabled={savingShareLinkNote}
                             />
                           ) : (
-                            <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">{name || 'Untitled link'}</p>
+                            <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">{name}</p>
                           )}
-                          <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">Created by {sk.createdBy.name} · {formatRelativeTime(sk.created)}</p>
+                          <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">Created by {sk.createdBy.name} · {formatRelativeTime(sk.created)}{sk.gadgetId !== undefined ? ` · ${ACCESS_LABELS[sk.mode ?? 'use']}` : ''}</p>
                         </div>
                         {isRenaming ? (
                           <InlineConfirm
@@ -1514,7 +1785,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                               <WorkshopIconButton
                                 className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                                 onClick={() => startRenameShareLink(sk)}
-                                aria-label={`Rename ${name || 'share link'}`}
+                                aria-label={`Rename ${name}`}
                                 disabled={confirmationBusy}
                               >
                                 <PencilSimple size={13} />
@@ -1524,7 +1795,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                               <WorkshopIconButton
                                 className="!h-7 !w-7"
                                 onClick={() => handleCopyShareLink(sk)}
-                                aria-label={`Copy ${name || 'share link'}`}
+                                aria-label={`Copy ${name}`}
                                 disabled={confirmationBusy || copyingLinkId === sk.linkId}
                               >
                                 {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
@@ -1534,7 +1805,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                               danger
                               className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                               onClick={() => handleStartRevokeShareLink(sk.linkId)}
-                              aria-label={`Revoke ${name || 'share link'}`}
+                              aria-label={`Revoke ${name}`}
                               disabled={confirmationBusy}
                             >
                               <Trash size={13} />

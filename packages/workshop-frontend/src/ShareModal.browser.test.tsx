@@ -14,7 +14,7 @@ import type {
   AiChatAuthorInfo, AuthenticatedApi, CollaboratorInfo, ObserverBindingNeed, Overseer, ShareLinkInfo,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import ShareModal from './ShareModal'
+import ShareModal, { type ShareTarget } from './ShareModal'
 import './styles.css'
 
 const OWNER: AiChatAuthorInfo = { type: 'user', id: 'dan@cloudflare.com', name: 'Dan' }
@@ -66,11 +66,15 @@ afterEach(async () => {
 
 const renderModal = (
   link = FROZEN_LINK, initiallyOpen = true, metadata = {}, requirements: ObserverBindingNeed[] = [],
+  target: ShareTarget = { kind: 'workspace' },
 ) => {
   const overseer = {
     listCollaborators: async () => [BEA],
     listShareLinks: async () => [link],
     listObserverRequirements: async () => requirements,
+    // The snapshot page's preview, which these tests leave taking its snapshot.
+    getGadgetSnapshot: () =>
+      Object.assign(Promise.withResolvers<never>().promise, { [Symbol.dispose]: () => {} }),
   } as unknown as RpcStub<Overseer>
   const Harness = () => {
     const [open, setOpen] = useState(initiallyOpen)
@@ -81,7 +85,7 @@ const renderModal = (
         onClose={() => setOpen(false)}
         overseer={overseer}
         metadata={{ id: 'trip-planner', title: 'Trip planner', ...metadata } as WorkspaceMetadata}
-        target={{ kind: 'workspace' }}
+        target={target}
         currentUser={OWNER}
         authenticatedApi={{ getAvatar: async () => null } as unknown as RpcStub<AuthenticatedApi>}
       />
@@ -137,6 +141,20 @@ it('moves focus into a dialog page and back to the button that opened it', async
     await userEvent.keyboard('{Enter}')
     await expect.element(opener).toHaveFocus()
   }
+})
+
+it('moves focus into the snapshot page and back to its card', async () => {
+  const viewLink: ShareLinkInfo = {
+    linkId: 'link-view', created: new Date(), createdBy: OWNER, role: 'use', gadgetId: 0, mode: 'view',
+  }
+  renderModal(viewLink, true, {}, [], { kind: 'gadget', gadgetId: 0, title: 'Packing list' })
+  const card = page.getByRole('button', { name: /Viewers can see a snapshot/ })
+  await expect.element(card).toBeVisible()
+  ;(card.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await expect.element(page.getByRole('button', { name: 'Back to sharing' })).toHaveFocus()
+  await userEvent.keyboard('{Enter}')
+  await expect.element(card).toHaveFocus()
 })
 
 const isOnTop = (element: Element) => {

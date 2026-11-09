@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { GadgetClient } from '@gadgets/workshop-shared/api'
+import type { GadgetClient, GadgetSnapshotClient } from '@gadgets/workshop-shared/api'
 import { getResourceTypeId } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { CreationAccountDialog } from '../../components/CreationAccountDialog'
@@ -18,7 +18,8 @@ import { writeSavedFile } from './savedFiles'
 export const GadgetSaveDialog = ({
   gadget, gadgetTitle, chatId, request: { target, storageKey, saved }, onClose,
 }: {
-  gadget: RpcStub<GadgetClient>
+  /** Only its export() is called, which a snapshot has too. */
+  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
   gadgetTitle: string
   chatId?: number
   request: SaveRequest

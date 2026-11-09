@@ -4418,9 +4418,30 @@ export interface Overseer extends RpcTarget {
    * rather than when opening the workspace, so `configureObservers` is invoked as described for
    * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others that
    * collaborator holds untouched. Ignored for everyone else, whom opening the workspace verified.
+   * Throws, revealing nothing more, for a gadget the caller may only view (see isViewOnly()).
    */
   getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<RpcStub<GadgetClient>>;
+
+  /**
+   * Open a static snapshot of a gadget: for the owner and "build" collaborators, and for a "use"
+   * collaborator only when they may only view it (see isViewOnly()). One who holds the gadget live
+   * is refused, and opens it with getGadget(). A snapshot is a private copy of the gadget's stored
+   * state, taken now, served by the gadget's mainline code as of now, with no bindings and no
+   * network access. Because it can reach nothing the gadget can, opening one verifies nobody as an
+   * observer. Writes stay in the copy, and the copy is discarded when the returned capability is
+   * disposed (or the workspace restarts, or the gadget is deleted). Throws, like getGadget(), for a
+   * gadget the caller may not open.
+   */
+  getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>>;
+
+  /**
+   * Whether the caller may only view the gadget, as a static snapshot (see getGadgetSnapshot()):
+   * true when the caller is a "use" collaborator none of whose grants of it is a live one (see
+   * CollaboratorGrant), in which case getGadget() refuses it. False for the owner and "build"
+   * collaborators. Throws for a gadget the caller may not open.
+   */
+  isViewOnly(id: WorkpieceId): Promise<boolean>;
 
   /**
    * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
@@ -5085,8 +5106,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * List the connections a recipient of `grant` must verify before opening what it grants, in
-   * the order the connections were created. Reports what sharing will cost the recipient; it
-   * grants nothing and mints no capability.
+   * the order the connections were created: none for a view grant, which verifies nothing.
+   * Reports what sharing will cost the recipient; it grants nothing and mints no capability.
    */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
@@ -5100,8 +5121,9 @@ export interface Overseer extends RpcTarget {
    * Share this workspace, or one of its gadgets (see CollaboratorGrant), with another user: invite
    * them as a collaborator by username/email, or grant an existing one more access. The caller must
    * be the owner or a "build" collaborator, since only their grants confer anything.
-   * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
-   * the note; one that covers the caller's earlier grants to them replaces those. Returns the
+   * A grant the caller already gave them covers (e.g. a gadget, after "build", or a view of a
+   * gadget, after the live gadget) changes nothing but the note, so sharing never narrows
+   * anyone; one that covers the caller's earlier grants to them replaces those. Returns the
    * collaborator's info, or null if the username doesn't correspond to an existing account.
    */
   addCollaborator(username: string, grant: CollaboratorGrant,
@@ -5119,12 +5141,16 @@ export interface Overseer extends RpcTarget {
    * retained: each is given fresh edges from the caller restoring the access they lost. Users
    * reachable only through the removed grants who are NOT in `keepUsers` lose that access too.
    *
+   * With `gadgetId` and `keepView`, the target is left a view of that gadget instead, as if then
+   * given `{gadgetId, mode: "view"}` by addCollaborator(), in the same mutation, so the
+   * restart that narrowing their access schedules cannot fall between the two.
+   *
    * Returns the list of users whose access actually narrowed, including the primary target. An
    * empty array means no one's effective access changed (the target retained it through other
    * edges).
    */
-  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]>;
+  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId,
+                     keepView?: boolean): Promise<AffectedCollaborator[]>;
 
   /**
    * Preview what removeCollaborator() would do with the same arguments: the users whose access
@@ -7621,6 +7647,24 @@ export interface GadgetClient extends WorkpieceClient {
 }
 
 /**
+ * A static snapshot of one gadget (see Overseer.getGadgetSnapshot()). It permits rendering,
+ * interacting with and exporting the snapshot, mainline-only (`chatId` must be omitted), and has
+ * none of GadgetClient's other methods.
+ */
+export interface GadgetSnapshotClient extends RpcTarget, Pick<GadgetClient,
+    "getId" | "getTitle" | "getUiBundle" | "connectToGadget" | "getExportFormats" | "export"> {
+  /** When the snapshot's state and code were copied from the gadget. */
+  getRefreshedAt(): Promise<Date>;
+
+  /**
+   * Replace the snapshot with a new copy of the gadget's current state and code, discarding
+   * anything written to the old copy, and return when the new copy was taken. Stubs returned by
+   * earlier connectToGadget() calls stop working; connect again.
+   */
+  refresh(): Promise<Date>;
+}
+
+/**
  * Capability representing one gatekeeper (connection) workpiece. Note that binding-edge
  * operations -- binding names and blueprint annotations -- live on GadgetClient, since a
  * gatekeeper may be bound by several gadgets under different names.
@@ -7648,24 +7692,29 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
  *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
- *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
+ *   metadata. Which gadgets is part of the grant, as is whether each may be opened live or only
+ *   viewed as a static snapshot (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
 
 /**
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
- * gadget's deployed UI.
+ * gadget's deployed UI. A gadget grant opens the live gadget, verifying its recipient as an observer
+ * of what it reaches, and never its snapshot; with `mode: "view"`, it opens only a static snapshot
+ * (see Overseer.getGadgetSnapshot()), verifying nothing.
  */
-export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
+export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId, mode?: "view"};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.
  * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
- * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open.
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, and
+ * `viewOnly` (absent when empty) those of them they may only view, as a static snapshot,
+ * since none of their grants of it is a live one.
  */
 export type CollaboratorAccess =
   | {role: "build"}
-  | {role: "use", gadgetIds: WorkpieceId[]};
+  | {role: "use", gadgetIds: WorkpieceId[], viewOnly?: WorkpieceId[]};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -7700,6 +7749,9 @@ export type PermissionEdge = {
    * a share link to several gadgets gives its recipient, one per gadget.
    */
   gadgetId?: WorkpieceId;
+
+  /** Set on a "use" edge that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
 } & ({
   /** Granted directly by another user. */
   type: "user";
@@ -7759,6 +7811,9 @@ export type ShareLinkInfo = {
 
   /** The one gadget a "use" link grants, unless it grants several (see `gadgets`). */
   gadgetId?: WorkpieceId;
+
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
 
   /**
    * The gadgets a "use" link to several gadgets grants, those of them that can still be shared,

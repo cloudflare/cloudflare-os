@@ -7,9 +7,10 @@
 // resolved values (or, where laziness matters, a callback) into this module.
 //
 // ACCESS: A collaborator holds "build" access to the whole workspace, or "use" access to some of
-// its gadgets (see CollaboratorAccess). Each permission edge or share link confers its own grant
-// only while its sharer (a link's creator) holds "build". A collaborator holds the union over all
-// their valid edges; "use" access supports no grants.
+// its gadgets, each live or only as a static snapshot ("view"; see CollaboratorAccess). Each
+// permission edge or share link confers its own grant only while its sharer (a link's creator)
+// holds "build". A collaborator holds the union over all their valid edges, in which a live grant
+// of a gadget covers a view of it; "use" access supports no grants.
 //
 // LAZY REVOCATION MODEL: Access is determined by reachability from the owner in the permission
 // graph, recomputed live at every open() (see `getEffectiveAccess`). Revocation is therefore lazy:
@@ -37,65 +38,86 @@ import type { CollaboratorRecord, ShareKeyRecord, ShareLinkRecord }
 const BUILD: CollaboratorAccess = {role: "build"};
 
 /**
- * Whether `access` lets its holder open gadget `gadgetId`. Says nothing about whether that gadget
- * exists: a grant naming a gadget that doesn't confers nothing (see SharingManager), but "build"
- * includes every id.
+ * Whether `access` lets its holder open gadget `gadgetId`, live or only as a snapshot. Says
+ * nothing about whether that gadget exists: a grant naming a gadget that doesn't confers nothing
+ * (see SharingManager), but "build" includes every id.
  */
 export function accessIncludesGadget(access: CollaboratorAccess, gadgetId: WorkpieceId): boolean {
   return access.role === "build" || access.gadgetIds.includes(gadgetId);
 }
 
-// Whether `a` grants everything `b` does.
+/** Whether `access` lets its holder open gadget `gadgetId` live (see accessIncludesGadget). */
+export function accessIncludesLiveGadget(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : boolean {
+  return access.role === "build" ||
+      (access.gadgetIds.includes(gadgetId) && !access.viewOnly?.includes(gadgetId));
+}
+
+// "use" of `gadgetIds`, those of them in `viewOnly` only as snapshots, omitting the field when
+// there are none.
+function useAccess(gadgetIds: WorkpieceId[], viewOnly: WorkpieceId[] = []): CollaboratorAccess {
+  return viewOnly.length > 0 ? {role: "use", gadgetIds, viewOnly} : {role: "use", gadgetIds};
+}
+
+// Whether `a` grants everything `b` does. A live grant of a gadget covers a view of it.
 function accessCovers(a: CollaboratorAccess, b: CollaboratorAccess): boolean {
   if (a.role === "build") return true;
   if (b.role === "build") return false;
-  let held = a.gadgetIds;
-  return b.gadgetIds.every(id => held.includes(id));
+  return b.gadgetIds.every(id => accessIncludesGadget(a, id) &&
+      (!accessIncludesLiveGadget(b, id) || accessIncludesLiveGadget(a, id)));
 }
 
 // What either `a` or `b` grants.
 function unionAccess(a: CollaboratorAccess, b: CollaboratorAccess): CollaboratorAccess {
   if (a.role === "build" || b.role === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y),
-  };
+  let gadgetIds = [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y);
+  return useAccess(gadgetIds, gadgetIds.filter(
+      id => !accessIncludesLiveGadget(a, id) && !accessIncludesLiveGadget(b, id)));
 }
 
 // What `prior` grants that `now` does not cover (see accessCovers), as access to restore.
 function lostAccess(prior: CollaboratorAccess, now: CollaboratorAccess | undefined)
     : CollaboratorAccess {
   if (!now || now.role === "build" || prior.role === "build") return prior;
-  let kept = now.gadgetIds;
-  return {role: "use", gadgetIds: prior.gadgetIds.filter(id => !kept.includes(id))};
+  let lost = prior.gadgetIds.filter(id => !accessCovers(now, narrowAccess(prior, id)!));
+  return useAccess(lost, lost.filter(id => !accessIncludesLiveGadget(prior, id)));
+}
+
+// What `access` grants of gadget `gadgetId` alone, if anything.
+function narrowAccess(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : CollaboratorAccess | undefined {
+  if (!accessIncludesGadget(access, gadgetId)) return undefined;
+  return useAccess([gadgetId], accessIncludesLiveGadget(access, gadgetId) ? [] : [gadgetId]);
 }
 
 // The fields of a permission edge or share link that say what it grants. Only a link names
 // several gadgets.
-type GrantFields = {role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]};
+type GrantFields = {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]; mode?: "view";
+};
 
 type UserEdge = Extract<PermissionEdge, {type: "user"}>;
 
 // What `record` confers at most: its role (absent on records from before roles, meaning "build"),
-// narrowed to the gadgets it names. A "use" grant naming none confers nothing.
+// narrowed to the gadgets it names, as snapshots only for a view grant. A "use" grant naming
+// none confers nothing.
 function ceilingOf(record: GrantFields): CollaboratorAccess {
   if ((record.role ?? "build") === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]),
-  };
+  let gadgetIds = record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]);
+  return useAccess(gadgetIds, record.mode === "view" ? gadgetIds : []);
 }
 
 // The edges conferring `access`: one per gadget, since an edge names at most one.
 function grantFieldsFor(access: CollaboratorAccess): GrantFields[] {
   if (access.role === "build") return [{role: "build"}];
-  return access.gadgetIds.map(gadgetId => ({role: "use", gadgetId}));
+  return access.gadgetIds.map(gadgetId => accessIncludesLiveGadget(access, gadgetId)
+      ? {role: "use", gadgetId} : {role: "use", gadgetId, mode: "view"});
 }
 
 // Identifies what an edge or link grants, so what each grant confers is computed once.
 function grantKey(record: GrantFields): string {
   if ((record.role ?? "build") === "build") return "build";
-  return `use:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
+  return `${record.mode ?? "use"}:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
 }
 
 // Fixed 256-bit key used to domain-separate share key hashes from other hashes in the system.
@@ -196,11 +218,11 @@ export class SharingManager {
 
   // What `record` confers now (see ceilingOf): only the gadgets it names that can still be shared,
   // and nothing if none can.
-  #liveCeiling(record: GrantFields): CollaboratorAccess | undefined {
+  #existingCeiling(record: GrantFields): CollaboratorAccess | undefined {
     let ceiling = ceilingOf(record);
     if (ceiling.role === "build") return ceiling;
     let gadgetIds = ceiling.gadgetIds.filter(id => this.gadgetExists(id));
-    return gadgetIds.length > 0 ? {role: "use", gadgetIds} : undefined;
+    return gadgetIds.length > 0 ? ceilingOf({...record, gadgetIds}) : undefined;
   }
 
   // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
@@ -209,7 +231,8 @@ export class SharingManager {
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
-    return {role: "use", gadgetId: grant.gadgetId};
+    let {gadgetId, mode} = grant;
+    return mode ? {role: "use", gadgetId, mode} : {role: "use", gadgetId};
   }
 
   // Throw unless `caller` holds "build": only then do the grants they make confer anything (see
@@ -219,6 +242,19 @@ export class SharingManager {
         this.computeEffectiveAccess().get(caller.profileId)?.role !== "build") {
       throw new Error("You do not have permission to share this workspace.");
     }
+  }
+
+  // The edge fields recording `grant` from `caller`, as addCollaborator() shares it: refused once
+  // `ownerInvitesOnly` is set unless the caller is the owner, for a gadget that can't be shared,
+  // and unless the caller holds "build" (see #requireCanShare).
+  #sharedGrantFields(caller: SharingCaller, grant: CollaboratorGrant): GrantFields {
+    if (this.ownerInvitesOnly() && !caller.isOwner) {
+      throw new Error(
+          "Only the workspace owner can add people to a workspace that contains sensitive data.");
+    }
+    let fields = this.#grantFields(grant);
+    this.#requireCanShare(caller);
+    return fields;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -290,7 +326,7 @@ export class SharingManager {
       return;
     }
 
-    let ceiling = this.#liveCeiling(link);
+    let ceiling = this.#existingCeiling(link);
     if (!ceiling) return;
 
     // One edge per gadget, as direct grants have, so that removing the recipient from one gadget
@@ -358,13 +394,7 @@ export class SharingManager {
       throw new Error("Cannot add the workspace owner as a collaborator.");
     }
 
-    if (this.ownerInvitesOnly() && !opts.caller.isOwner) {
-      throw new Error(
-          "Only the workspace owner can add people to a workspace that contains sensitive data.");
-    }
-
-    let fields = this.#grantFields(opts.grant);
-    this.#requireCanShare(opts.caller);
+    let fields = this.#sharedGrantFields(opts.caller, opts.grant);
 
     let record = this.storage.collaborators.get(opts.profile.id) ??
         {profile: opts.profile, addedBy: []};
@@ -400,6 +430,8 @@ export class SharingManager {
     kept.role = fields.role;
     if (fields.gadgetId === undefined) delete kept.gadgetId;
     else kept.gadgetId = fields.gadgetId;
+    if (fields.mode === undefined) delete kept.mode;
+    else kept.mode = fields.mode;
     if (note !== undefined) kept.note = note;
     let droppedEdges = new Set<PermissionEdge>(dropped);
     record.addedBy = record.addedBy.filter(edge => !droppedEdges.has(edge));
@@ -436,10 +468,12 @@ export class SharingManager {
    *
    * `keepUsers` is optional re-root sugar: any listed dependent whose access would otherwise narrow
    * is granted fresh edges from the caller restoring what they lost (see `#reRootKeptUsers`).
+   * `keepView`, with `gadgetId`, then gives the target a view of that gadget from the caller, as
+   * addCollaborator() would, in this same synchronous step.
    * Returns the collaborators whose access actually narrowed, excluding kept users.
    */
   removeCollaborator(caller: SharingCaller, profileId: string, keepUsers: string[],
-                     gadgetId?: WorkpieceId): AffectedCollaborator[] {
+                     gadgetId?: WorkpieceId, keepView = false): AffectedCollaborator[] {
     let target = this.storage.collaborators.get(profileId);
     if (!target) {
       throw new Error("User is not a collaborator.");
@@ -452,11 +486,20 @@ export class SharingManager {
       throw new Error("You can only remove users that you added.");
     }
 
+    // The view is shared as addCollaborator() shares it, so it is refused as that would be, before
+    // anything is severed.
+    let view: GrantFields | undefined;
+    if (keepView) {
+      if (gadgetId === undefined) throw new Error("Only a gadget's grants can keep its view.");
+      view = this.#sharedGrantFields(caller, {gadgetId, mode: "view"});
+    }
+
     let baseline = this.computeEffectiveAccess();
 
     // Sever the edges that grant the target access. The record is retained even if it becomes
     // empty, so the target's own outgoing grants survive and the removal can be undone.
     target.addedBy = target.addedBy.filter(edge => !severed(profileId, edge));
+    if (view) this.#grantEdge(target, caller.profileId, view);
     this.storage.collaborators.put(target);
 
     this.#reRootKeptUsers(caller, baseline, new Set(keepUsers));
@@ -532,7 +575,7 @@ export class SharingManager {
   /** Mints another key for an existing link. */
   async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
-    let ceiling = this.#liveCeiling(link);
+    let ceiling = this.#existingCeiling(link);
     if (link.revoked || !ceiling) {
       throw new Error("Share link not found.");
     }
@@ -657,7 +700,7 @@ export class SharingManager {
     let ceilings = new Map<string, CollaboratorAccess | undefined>();
     let ceiling = (record: GrantFields): CollaboratorAccess | undefined => {
       let key = grantKey(record);
-      if (!ceilings.has(key)) ceilings.set(key, this.#liveCeiling(record));
+      if (!ceilings.has(key)) ceilings.set(key, this.#existingCeiling(record));
       return ceilings.get(key);
     };
 
@@ -691,8 +734,7 @@ export class SharingManager {
             source = info.creator;
             // A link to several gadgets gives one edge per gadget, each conferring its own.
             conferred = edge.gadgetId === undefined ? info.ceiling
-                : accessIncludesGadget(info.ceiling, edge.gadgetId)
-                ? {role: "use", gadgetIds: [edge.gadgetId]} : undefined;
+                : narrowAccess(info.ceiling, edge.gadgetId);
           } else {
             if (ownerGrantsOnly && edge.sharer !== this.ownerProfileId) continue;
             source = edge.sharer;

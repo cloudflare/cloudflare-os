@@ -2,23 +2,26 @@ import { useEffect, useRef, useState } from 'react'
 import { DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { GadgetClient } from '@gadgets/workshop-shared/api'
+import type { GadgetClient, GadgetSnapshotClient } from '@gadgets/workshop-shared/api'
 import type { GadgetExportFormat } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from './components/WorkshopControls'
 import { makeExportFilename, saveStreamToFile } from './fileTransfers'
 import { GadgetSaveDialog } from './features/gadget-save/GadgetSaveDialog'
 import { GadgetSaveMenuItems, useSaveVendors, type SaveRequest } from './features/gadget-save/GadgetSaveMenuItems'
 import type { SaveScope } from './features/gadget-save/savedFiles'
+import { MENU_POSITIONER_STYLE } from './components/menuStyles'
 
 type Props = {
-  gadget: RpcStub<GadgetClient> | null
+  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient> | null
   gadgetTitle: string
   chatId?: number
   /** Offers saving the Gadget, identified by this, to a connected account. */
   saveScope?: SaveScope
+  // The trigger's name; a snapshot's menu exports the snapshot, not the live gadget.
+  label?: string
 }
 
-export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScope }: Props) {
+export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScope, label = 'Export gadget' }: Props) {
   const [formats, setFormats] = useState<GadgetExportFormat[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -93,7 +96,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
   if (!gadget) return null
 
   const exportingFormat = formats?.find(format => format.id === exportingId)
-  const tooltip = exportingFormat ? `Exporting to ${exportingFormat.label}` : 'Export Gadget'
+  const tooltip = exportingFormat ? `Exporting to ${exportingFormat.label}` : label
 
   return (
     <Tooltip content={tooltip} asChild>
@@ -102,14 +105,14 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
           <DropdownMenu.Trigger
             render={(
               <WorkshopIconButton
-                aria-label="Export Gadget"
+                aria-label={label}
                 disabled={exportingId !== null}
               >
                 <DownloadSimple size={17} />
               </WorkshopIconButton>
             )}
           />
-          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
+          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1" style={MENU_POSITIONER_STYLE}>
             {loading || !saveVendors ? (
               <div role="status" aria-label="Loading export formats" className="space-y-1 py-0.5">
                 {['w-20', 'w-14'].map(width => (

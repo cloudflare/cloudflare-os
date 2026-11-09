@@ -1171,6 +1171,9 @@ export type ShareLinkRecord = {
    */
   gadgetIds?: WorkpieceId[];
 
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
+
   /**
    * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
    * creator has at most one non-revoked default link per grant; links created before default
@@ -1599,6 +1602,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
             return record.bindingName ?? null;
           }
         }
+      }),
+
+      // Facets holding static gadget snapshots (see Overseer.getGadgetSnapshot), recorded before
+      // each is cloned. A snapshot lives no longer than the instance that made it, whose sessions
+      // are its only users, so the next instance deletes every one still recorded.
+      gadgetSnapshots: collection<{facetName: string; gadgetId: WorkpieceId}>()({
+        primaryKey: "facetName",
       }),
 
       gatekeepers: collection<GatekeeperRecord>()({
