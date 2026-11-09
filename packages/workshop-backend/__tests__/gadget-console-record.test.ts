@@ -46,6 +46,10 @@ export class Gadget extends DurableObject {
   failWithObject() {
     throw { code: 42 };
   }
+
+  failWithBytes() {
+    throw new Uint8Array(1_000_000);
+  }
 }
 `;
 
@@ -214,8 +218,7 @@ describe("recording an exception a gadget method throws at its caller", () => {
   }));
 
   // A thrown value that is no Error reaches the proxy as the value, with members the runtime adds
-  // after its own. It is handed on as it is and printed by the writer as any console argument
-  // is: as JSON.
+  // after its own. It is recorded as any console argument is: as JSON.
   it("records a thrown value that is no Error as JSON", () =>
       withGadget(async (impl, received) => {
     setRecording(impl, "true");
@@ -228,6 +231,32 @@ describe("recording an exception a gadget method throws at its caller", () => {
     await vi.waitFor(() => expect(received).toHaveLength(1));
     expect(received).toStrictEqual(
         [{ chatId: null, level: "error", message: [expect.objectContaining({ code: 42 })] }]);
+  }));
+
+  // The gadget decides how large a value it throws, and the JSON of one is many times its size:
+  // some eleven characters for each of these bytes. The writer is handed the text that is read of
+  // the value, and neither the value nor the whole of its JSON.
+  it("hands its writer no more of a thrown value that is no Error than is read", () =>
+      withGadget(async (impl, received) => {
+    setRecording(impl, "true");
+    let handed: unknown[][] = [];
+    replaceGadgetConsoleLogLoopback(
+        impl, () => ({ server: async (...args: unknown[]) => { handed.push(args); } }));
+
+    using gadget = await impl.getGadgetFacet(GADGET_ID);
+    await expect(() => gadget.failWithBytes()).rejects.toHaveLength(1_000_000);
+
+    await vi.waitFor(() => expect(handed).toHaveLength(1));
+    let [event] = handed[0][2] as ConsoleLogEvent[];
+    expect(event.message).toStrictEqual([
+      JSON.stringify(new Uint8Array(MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH))
+          .slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH),
+    ]);
+
+    // A live subscriber is sent the value whole.
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received[0].message).toHaveLength(1);
+    expect(received[0].message[0]).toHaveLength(1_000_000);
   }));
 
   // "false" stands beside the unset variable because the Overseer has to ask

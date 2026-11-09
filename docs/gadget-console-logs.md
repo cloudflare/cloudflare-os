@@ -208,13 +208,20 @@ few seconds, and a batch that failed to send counts as dropped. That marker is a
 entry of level `warn` with the same wording ("37 entries dropped"), not a `gadget.console.dropped`
 line.
 
-Every count is an estimate, never a bound. It can be short: drops after a gadget's last marker of
-a minute are counted only by its next marker, which is written only if the gadget is reported for
-again. And a browser's count can be over: a browser counts a batch as dropped when its send fails,
-or is given up after `GADGET_CONSOLE_LOG_SEND_TIMEOUT_MS` (30 seconds), though the server may have
-recorded it. A gadget's marker can be over too, after a report that could not be written: it
-counts what that report's marker held, which can include entries of the report itself, and the
-browser has counted those as well.
+Every count is an estimate, never a bound. It can be short in two ways. Drops after a gadget's
+last marker of a minute are counted only by its next marker, which is written only if the gadget is
+reported for again. And a browser's marker is itself an entry, the first of its batch, so the
+server's limits drop it like any other: with a report the rate limit refuses whole, and before
+every other entry, as the oldest, when the bytes bound cuts a report. The count it carried is then
+lost, and the server's marker counts it as one entry. A view that keeps logging faster than the
+per-gadget minute allows loses the marker of every report refused in that minute, so the drops
+recorded for it can be far below what it dropped.
+
+A count can be over as well. A browser counts a batch as dropped when its send fails, or is given
+up after `GADGET_CONSOLE_LOG_SEND_TIMEOUT_MS` (30 seconds), though the server may have recorded it.
+A gadget's marker can be over too, after a report that could not be written: it counts what that
+report's marker held, which can include entries of the report itself, and the browser has counted
+those as well.
 
 ### When recording fails
 
@@ -224,9 +231,11 @@ workspace's own logger, component `workshop.overseer`, as a warn with event
 report is rejected, and it counts that batch as dropped. A marker that report was to bring is not
 lost with it: the gadget's next marker counts what it held.
 
-The length of an error's text never causes this, since no more of a text is handed to the writer
-than is read. A value a gadget throws that is not an Error is handed over as it is, for the writer
-to print, so one larger than a call between Workers can carry (32 MiB) is not recorded.
+Neither the length of an error's text nor the size of a value a gadget throws that is not an Error
+causes this. The writer is handed the text that is read of either, which is at most
+`MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH` characters, and writing a value as JSON stops at that
+length too: an array's holes and a typed array's bytes would otherwise be written as many times
+the memory they take.
 
 ### What the capture loses without a marker
 
@@ -311,6 +320,11 @@ updates both.
   `Bearer+...`), or that an escaped line break or tab separates from its scheme word, as when a
   gadget prints an object whose string holds the scheme word, a line break and the credential.
   The same string printed as an argument of its own is caught.
+- The rest of a bearer or basic credential after a character in it that is no letter, digit, `_`,
+  `.`, `~`, `+`, `/`, `=` or `-`: only the part before is replaced, and nothing where that part is
+  shorter than 16 characters. So a token made of an id, a `|` or a `:`, and a secret
+  (`Bearer 17|...`) is recorded whole. The same credential as the value of an `authorization`
+  member of JSON is replaced.
 - A bearer or basic credential, an `sk-` key or a JSON Web Token that directly follows a letter
   or a digit, as after an ANSI colour code, which ends in a letter, or after a separator that was
   percent-encoded twice (`%253D`). One after a single percent-escape or a JSON escape is still

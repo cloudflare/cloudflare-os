@@ -114,19 +114,101 @@ export function redactGadgetConsoleLogText(text: string): string {
 // `sk-` key, a JSON Web Token.
 const TOKEN_CHARACTER = /[\w.~+/=-]/;
 
-// One console argument as text: a string as it is, anything else as JSON. A value JSON has no
-// form for (undefined, a symbol, a BigInt, an object that holds itself) is what String() makes of
-// it, and "[unprintable]" when that throws too.
-function printed(part: unknown): string {
-  if (typeof part === "string") return part;
-  try {
-    let json = JSON.stringify(part);
-    if (typeof json === "string") return json;
-  } catch {
-    // No JSON form: String() below.
+// What Object.prototype.toString() makes of a String, Number, Boolean or BigInt object.
+const BOXED_PRIMITIVE = /^\[object (?:String|Number|Boolean|BigInt)\]$/;
+
+// What JSON.stringify(root) starts with: all of it, or enough to fill what is read of one console
+// argument. JSON.stringify() itself writes a value whole, which can be many times the memory the
+// value takes: every hole of an array and every byte of a view is several characters, and one
+// object may be held many times over. Here the work is bounded by the length that is read, and
+// by the members of the largest object, whose names are listed once. Returns undefined, or
+// throws, where JSON.stringify() does, and throws for a value more of whose members have no JSON
+// form than that length has characters.
+function jsonStart(root: unknown): string | undefined {
+  let json = "";
+  let skipped = 0;
+  let open = new Set<object>();
+  let full = () => json.length >= MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH;
+
+  // Appends `before` and the JSON of `value`, which its holder has under `key`, and says whether
+  // it did: a value with no JSON form (undefined, a function, a symbol) appends nothing.
+  let append = (value: unknown, key: string, before: string): boolean => {
+    if (typeof value === "bigint" || (typeof value === "object" && value !== null)) {
+      let toJSON: unknown = (value as { toJSON?: unknown }).toJSON;
+      if (typeof toJSON === "function") value = toJSON.call(value, key);
+    }
+    // A primitive held in an object is written as the primitive.
+    if (typeof value === "object" && value !== null &&
+        BOXED_PRIMITIVE.test(Object.prototype.toString.call(value))) {
+      value = value.valueOf();
+    }
+    if (typeof value !== "object" || value === null) {
+      let text = JSON.stringify(typeof value === "string"
+          ? value.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH) : value);
+      if (text === undefined) return false;
+      json += before + text;
+      return true;
+    }
+
+    if (open.has(value)) throw new TypeError("a value that holds itself has no JSON form");
+    open.add(value);
+    if (Array.isArray(value)) {
+      json += `${before}[`;
+      for (let i = 0; i < value.length && !full(); i++) {
+        let comma = i > 0 ? "," : "";
+        if (!append(value[i], String(i), comma)) json += `${comma}null`;
+      }
+      json += "]";
+    } else {
+      // A view's members are its elements, and no more of them are written than the text has
+      // characters, so only that many of their names are listed.
+      let listed = ArrayBuffer.isView(value) && !(value instanceof DataView)
+          ? (value as Uint8Array).subarray(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH) : value;
+      json += `${before}{`;
+      let wrote = false;
+      for (let name of Object.keys(listed)) {
+        if (full()) break;
+        let member = `${wrote ? "," : ""}${
+            JSON.stringify(name.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH))}:`;
+        if (append((value as Record<string, unknown>)[name], name, member)) {
+          wrote = true;
+        } else if (++skipped > MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH) {
+          throw new RangeError("too many members with no JSON form");
+        }
+      }
+      json += "}";
+    }
+    open.delete(value);
+    return true;
+  };
+
+  return append(root, "", "") ? json : undefined;
+}
+
+/**
+ * What gadgetConsoleLogText() reads of one console argument: the first
+ * MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH characters of a string, or of the JSON of anything
+ * else. A value JSON has no form for is named instead: undefined, a symbol and a BigInt as
+ * String() writes them, an object (one that holds itself, say) by its kind, as "[object Object]",
+ * and "[unprintable]" when that throws too. The work is bounded by that length and by how many
+ * members the value's largest object has, whatever the JSON of the whole value would hold. Never
+ * throws.
+ */
+export function gadgetConsoleLogPartText(part: unknown): string {
+  if (typeof part === "string") {
+    return part.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH);
   }
   try {
-    return String(part);
+    let json = jsonStart(part);
+    if (json !== undefined) return json.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH);
+  } catch {
+    // No JSON form: named below.
+  }
+  try {
+    // An object is not written by String(): an array's string is as long as its JSON.
+    let name = typeof part === "object" && part !== null
+        ? Object.prototype.toString.call(part) : String(part);
+    return name.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH);
   } catch {
     return "[unprintable]";
   }
@@ -145,7 +227,7 @@ export function gadgetConsoleLogText(parts: readonly unknown[]): string {
   let read = "";
   for (let i = 0;
        i < list.length && read.length < MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH; i++) {
-    read += (i > 0 ? " " : "") + printed(list[i]);
+    read += (i > 0 ? " " : "") + gadgetConsoleLogPartText(list[i]);
   }
 
   // Text that reaches the bound may stop inside a credential before a pattern can know it: a

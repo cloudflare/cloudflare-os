@@ -96,7 +96,8 @@ import {
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
 import {
-  GadgetConsoleLogLimiter, isGadgetConsoleLogRecordingEnabled, writeServerGadgetConsoleLogs,
+  GadgetConsoleLogLimiter, gadgetConsoleLogPartText, isGadgetConsoleLogRecordingEnabled,
+  writeServerGadgetConsoleLogs,
 } from "./gadget-console-log";
 import {
   defaultExportFormats,
@@ -10202,11 +10203,10 @@ class OverseerImpl implements AgentHooks {
     if (!isGadgetConsoleLogRecordingEnabled(this.env)) return;
     this.ctx.waitUntil((async () => {
       try {
-        // No more of a text is handed on than is read: the gadget and its caller decide how long
-        // an error's text is, and one longer than a call can carry would not be recorded at all.
-        // A thrown value that is no Error goes on as it is: printing it is the writer's work.
-        let message = event.message.map((part: unknown) => typeof part === "string"
-            ? part.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH) : part);
+        // The writer is handed the text it would read of the exception, and no more. The gadget
+        // and its caller decide how long an error's text is, and how large a thrown value that
+        // is no Error: one larger than a call can carry would not be recorded at all.
+        let message = event.message.map(gadgetConsoleLogPartText);
         await this.#gadgetConsoleLog.server(
             gadgetId, this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [{...event, message}]);
       } catch (error) {

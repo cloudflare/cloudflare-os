@@ -6,7 +6,8 @@ import {
 } from "@gadgets/workshop-shared/api";
 import {
   GADGET_CONSOLE_LOG_BYTES_PER_REQUEST, GADGET_CONSOLE_LOGS_PER_MINUTE, GadgetConsoleLogLimiter,
-  clientGadgetConsoleLogEntry, gadgetConsoleLogText, isGadgetConsoleLogRecordingEnabled,
+  clientGadgetConsoleLogEntry, gadgetConsoleLogPartText, gadgetConsoleLogText,
+  isGadgetConsoleLogRecordingEnabled,
   redactGadgetConsoleLogText, serverGadgetConsoleLogEntry, writeClientGadgetConsoleLogs,
   writeServerGadgetConsoleLogs,
 } from "../src/gadget-console-log.js";
@@ -22,6 +23,8 @@ const pemEdge = (edge: "BEGIN" | "END", label = "PRIVATE KEY") => assemble("----
 const credential = "AbCdEf0123456789AbCdEf";
 const bearer = "Bearer " + credential;
 const basicCredential = "dXNlcjpwYXNzd29yZDEyMzQ=";
+// What follows the id and the "|" of a token made of the two.
+const sanctumSecret = "Zq9Xw8Cv7Bn6Mk5Lj4Hg3Fd2Sa1Po0Iu9Yt8Re7Wq6Lk5Jh4";
 const sk = assemble("sk", "-proj-", "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0Lz");
 const jwtHeader = "eyJhbGciOiJIUzI1NiJ9";
 const jwt = assemble(
@@ -427,6 +430,14 @@ const NOT_CAUGHT: (string | Case)[] = [
   assemble("Authorization: bearer ", "abcdefghijklmnopqrstuvwxyz"),
   "Bearer%20" + credential,
   "Authorization=Bearer+" + credential,
+  // The rest of a bearer or basic credential after a character that is none of a credential's,
+  // such as the "|" or the ":" between a token's id and its secret, and all of it when fewer
+  // than 16 characters come before.
+  assemble("Authorization: Bearer 17|", sanctumSecret),
+  assemble('[["authorization","Bearer 17|', sanctumSecret, '"]]'),
+  assemble("Authorization: Bearer client-1:", sanctumSecret),
+  [assemble("Authorization: Bearer ", credential, "|", sanctumSecret),
+    assemble("Authorization: Bearer [redacted]|", sanctumSecret)],
   // A token directly after a letter or a digit.
   "Token" + jwtHeader + ".eyJzdWIi",
   "v2" + jwtHeader + ".eyJzdWIi",
@@ -874,11 +885,14 @@ describe("gadgetConsoleLogText", () => {
     cyclic.self = cyclic;
     let bare = Object.create(null);
     bare.self = bare;
+    let revoked = Proxy.revocable({}, {});
+    revoked.revoke();
 
     expect(gadgetConsoleLogText([cyclic])).toBe("[object Object]");
     expect(gadgetConsoleLogText([10n])).toBe("10");
     expect(gadgetConsoleLogText([Symbol("s")])).toBe("Symbol(s)");
-    expect(gadgetConsoleLogText([bare])).toBe("[unprintable]");
+    expect(gadgetConsoleLogText([bare])).toBe("[object Object]");
+    expect(gadgetConsoleLogText([revoked.proxy])).toBe("[unprintable]");
 
     // Not an array: one part.
     let notArrays: [parts: unknown, text: string][] =
@@ -886,6 +900,140 @@ describe("gadgetConsoleLogText", () => {
     for (let [parts, text] of notArrays) {
       expect(gadgetConsoleLogText(parts as unknown[])).toBe(text);
     }
+  });
+});
+
+// A member that counts how often it is written.
+const counted = () => {
+  let member = { written: 0, toJSON() { member.written++; return 0; } };
+  return member;
+};
+
+// An array of `n` holes, which takes no memory for them.
+const holes = (n: number) => {
+  let array: unknown[] = [];
+  array.length = n;
+  return array;
+};
+
+// An object of `n` members that have no JSON form.
+const hollow = (n: number) =>
+  Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, undefined]));
+
+describe("gadgetConsoleLogPartText", () => {
+  const MAX = MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH;
+
+  it("reads no more of a string than is read of a call", () => {
+    expect(gadgetConsoleLogPartText("text")).toBe("text");
+    expect(gadgetConsoleLogPartText("x".repeat(MAX + 1))).toBe("x".repeat(MAX));
+  });
+
+  it("writes any other value as JSON.stringify() starts it", () => {
+    let shared = { s: "x" };
+    let nested: unknown = "leaf";
+    for (let i = 0; i < 200; i++) nested = i % 2 ? [nested] : { nested };
+    let values: unknown[] = [
+      null, true, 0, -1.5, NaN, Infinity, [], {}, [[]], [{}], { a: [] }, [""],
+      { a: 1, b: "two", c: [1, "2", null, true], d: { e: {} } },
+      // Members with no JSON form: null in an array, left out of an object.
+      [undefined, () => {}, Symbol("s")], { a: undefined, b: () => {}, c: Symbol("s"), d: 1 },
+      { a: undefined }, holes(3), Object.assign(holes(4), { 1: 1, 3: 2 }),
+      new Date(0), new Date(NaN), { at: new Date(0) },
+      new String("boxed"), new Number(7), new Boolean(false), [new String("in"), Object(1)],
+      new Uint8Array([1, 2, 3]), new Float64Array([0.5, NaN]), new Uint8Array(0),
+      new DataView(new ArrayBuffer(4)), new ArrayBuffer(4), new Map([[1, 2]]), new Set([1]), /re/g,
+      new Error("e"), Object.assign([1, 2], { extra: 3 }), Object.create(null),
+      Object.create({ inherited: 1 }, { own: { value: 2, enumerable: true }, hidden: { value: 3 } }),
+      { 'quote"d': "line\nbreak   \ud800", "": 0, 1: "numeric" },
+      { toJSON: () => ({ replaced: true }) }, [{ toJSON: () => undefined }],
+      [{ toJSON: (key: string) => key }], { under: { toJSON: (key: string) => key } },
+      [shared, shared, { shared }], nested,
+      // Longer than is read.
+      ["x".repeat(MAX + 500), "after"], { k: "y".repeat(2 * MAX) }, { ["k".repeat(2 * MAX)]: 1 },
+      ["a" + "😀".repeat(MAX)], Array.from({ length: 3000 }, (_, i) => i),
+      Array.from({ length: 3000 }, (_, i) => ({ i, name: `n${i}` })),
+      holes(5000), new Uint8Array(5000), new Float32Array(3000).fill(1.5),
+      Object.fromEntries(Array.from({ length: 3000 }, (_, i) => [`k${i}`, i])),
+    ];
+    for (let value of values) {
+      expect(gadgetConsoleLogPartText(value)).toBe(JSON.stringify(value).slice(0, MAX));
+    }
+  });
+
+  it("names a value JSON has no form for", () => {
+    let cyclic: unknown[] = [];
+    cyclic.push([cyclic]);
+    let named: [value: unknown, name: string][] = [
+      [undefined, "undefined"], [Symbol("s"), "Symbol(s)"], [10n, "10"],
+      [cyclic, "[object Array]"], [[1n], "[object Array]"], [{ n: 1n }, "[object Object]"],
+      [new BigInt64Array(3), "[object BigInt64Array]"],
+      [{ get member() { throw new Error("no"); } }, "[object Object]"],
+      [{ toJSON() { throw new Error("no"); } }, "[object Object]"],
+      [{ toJSON: () => undefined }, "[object Object]"],
+    ];
+    for (let [value, name] of named) expect(gadgetConsoleLogPartText(value)).toBe(name);
+
+    expect(gadgetConsoleLogPartText(words)).toBe(String(words));
+    expect(gadgetConsoleLogPartText(2n ** 20_000n)).toHaveLength(MAX);
+    // An array is not named by its own string, which is as long as its elements are many.
+    expect(gadgetConsoleLogPartText(new BigInt64Array(1_000_000))).toBe("[object BigInt64Array]");
+  });
+
+  // What JSON.stringify() writes of each of these is many times the value: hundreds of megabytes
+  // for the first three, and more than any string holds for the last.
+  it("writes no more of a value than is read, however much its JSON holds", () => {
+    expect(gadgetConsoleLogPartText(holes(50_000_000)))
+        .toBe(("[null" + ",null".repeat(MAX)).slice(0, MAX));
+    expect(gadgetConsoleLogPartText(new Uint8Array(32 * 1024 * 1024)))
+        .toBe(JSON.stringify(new Uint8Array(MAX)).slice(0, MAX));
+    expect(gadgetConsoleLogPartText(new String("s".repeat(10_000_000))))
+        .toBe(('"' + "s".repeat(MAX)).slice(0, MAX));
+
+    // One object held many times over: two to the power of forty times here.
+    let member = counted();
+    let held: unknown = [member, "x".repeat(100)];
+    for (let i = 0; i < 40; i++) held = [held, held];
+    expect(gadgetConsoleLogPartText(held)).toHaveLength(MAX);
+    expect(member.written).toBeLessThanOrEqual(MAX);
+    expect(member.written).toBeGreaterThan(0);
+  });
+
+  it("writes no more members than the text it reads has characters", () => {
+    let member = counted();
+    expect(gadgetConsoleLogPartText(Array.from({ length: 100_000 }, () => member)))
+        .toBe(("[0" + ",0".repeat(MAX)).slice(0, MAX));
+    expect(member.written).toBeLessThanOrEqual(MAX);
+
+    // The same through a call's text, which is what an entry keeps.
+    member = counted();
+    expect(gadgetConsoleLogText([Array.from({ length: 100_000 }, () => member)]))
+        .toHaveLength(2000);
+    expect(member.written).toBeLessThanOrEqual(MAX);
+  });
+
+  // A member with no JSON form writes nothing, so the length written does not bound how many of
+  // them are passed over: their count does.
+  it("names a value with more members that have no JSON form than is read", () => {
+    expect(gadgetConsoleLogPartText({ ...hollow(MAX), last: 1 })).toBe('{"last":1}');
+    expect(gadgetConsoleLogPartText({ ...hollow(MAX + 1), last: 1 })).toBe("[object Object]");
+
+    // Held many times over, such an object has no more of its members read than that either.
+    let read = 0;
+    let member = {};
+    for (let i = 0; i < 10; i++) {
+      Object.defineProperty(
+          member, `k${i}`, { enumerable: true, get() { read++; return undefined; } });
+    }
+    expect(gadgetConsoleLogPartText(Array.from({ length: 100_000 }, () => member)))
+        .toBe("[object Array]");
+    expect(read).toBe(MAX + 1);
+  });
+
+  it("never throws for a value nested deeper than the stack is", () => {
+    let deep: unknown = [];
+    for (let i = 0; i < 100_000; i++) deep = [deep];
+    let text = gadgetConsoleLogPartText(deep);
+    expect(["[".repeat(MAX), "[object Array]"]).toContain(text);
   });
 });
 
