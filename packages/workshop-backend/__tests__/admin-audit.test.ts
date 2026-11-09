@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminAccessRecord, type AdminAuditRecord, type AdminSettingRecord,
+  type AdminUserAccessRecord,
 } from "@gadgets/workshop-shared/api";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { utcDayKey } from "../src/ai-gateway-billing/limits/config.js";
@@ -34,6 +35,14 @@ function access(overrides: Partial<AdminAccessRecord> = {}): AdminAccessRecord {
     kind: "workspace", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
     workspaceId: "w1", workspaceOwner: "owner-1", workspaceTitle: "Plans", method: "describe",
     args: {}, reason: "ticket 1",
+    requested: "metadata", access: "metadata", exposed: "metadata", ...overrides,
+  };
+}
+
+function userAccess(overrides: Partial<AdminUserAccessRecord> = {}): AdminUserAccessRecord {
+  return {
+    kind: "user", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
+    userId: "grace", method: "describe", args: {}, reason: "ticket 1",
     requested: "metadata", access: "metadata", exposed: "metadata", ...overrides,
   };
 }
@@ -78,31 +87,44 @@ describe("AdminAuditDurableObject.list", () => {
     let first = access({ at: daysAgo(2), args: { chatId: 4 }, refused: "ADMIN_CONTENT_WITHHELD" });
     let second = setting({ at: daysAgo(1) });
     let third = access({ workspaceId: "w2", method: "inspectWorkspace" });
-    let fourth = access({
+    let fourth = userAccess({
+      method: "inspectUser", args: { expiresAt: "2030-01-01T00:00:00.000Z" }, access: "off",
+      refused: "ADMIN_WORKSPACE_ACCESS_OFF",
+    });
+    let fifth = access({
       method: "getChat", args: { chatId: 4 }, requested: "full", access: "full", exposed: "content",
     });
-    for (let record of [first, second, third, fourth]) await log.append(record, RETENTION);
+    let sixth = userAccess({
+      method: "listConnectedAccounts", requested: "full", access: "full", exposed: "content",
+    });
+    for (let record of [first, second, third, fourth, fifth, sixth]) {
+      await log.append(record, RETENTION);
+    }
 
     let page = await log.list({ limit: 10 }, RETENTION);
-    expect(page.records).toEqual([fourth, third, second, first]);
+    expect(page.records).toEqual([sixth, fifth, fourth, third, second, first]);
     expect(page.nextCursor).toBeUndefined();
   });
 
   it("stores each field once", async () => {
     let log = auditLog();
     await log.append(access(), RETENTION);
+    await log.append(userAccess(), RETENTION);
     await log.append(setting(), RETENTION);
     let rows = await sql<
         { kind: string; workspace_id: string | null; exposed: string | null; record: string }>(log,
         "SELECT kind, workspace_id, exposed, record FROM admin_audit ORDER BY seq");
-    expect(rows.map(row => [row.kind, row.workspace_id, row.exposed]))
-        .toEqual([["workspace", "w1", "metadata"], ["setting", null, null]]);
+    expect(rows.map(row => [row.kind, row.workspace_id, row.exposed])).toEqual(
+        [["workspace", "w1", "metadata"], ["user", null, "metadata"], ["setting", null, null]]);
     for (let row of rows) {
       let json = JSON.parse(row.record);
       for (let field of ["kind", "at", "admin", "workspaceId", "workspaceTitle", "exposed"]) {
         expect(json, field).not.toHaveProperty(field);
       }
     }
+    // The ids a record is found by stay in the JSON, where the target index reads them.
+    expect(JSON.parse(rows[0].record).workspaceOwner).toBe("owner-1");
+    expect(JSON.parse(rows[1].record).userId).toBe("grace");
   });
 
   it("combines the kind, admin, workspace and since filters", async () => {
@@ -197,24 +219,64 @@ describe("AdminAuditDurableObject.list", () => {
     expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_method");
   });
 
-  it("filters by workspace owner through its index", async () => {
+  it("filters by the user a record's target belongs to, through its index", async () => {
     let log = auditLog();
-    let adas = access({ workspaceOwner: "ada" });
-    let graces = [access({ workspaceOwner: "grace", workspaceId: "w2" }),
-      access({ workspaceOwner: "grace", workspaceId: "w3", exposed: "content" })];
-    for (let record of [adas, ...graces, setting()]) await log.append(record, RETENTION);
+    let records: AdminAuditRecord[] = [
+      access({ workspaceOwner: "ada" }),
+      access({ workspaceOwner: "grace", workspaceId: "w2" }),
+      userAccess({ userId: "grace", admin: "linus" }),
+      userAccess({ userId: "ada" }),
+      access({ workspaceOwner: "grace", workspaceId: "w3", exposed: "content" }),
+      userAccess({
+        userId: "grace", method: "listBlueprints", requested: "full", access: "full",
+        exposed: "content",
+      }),
+      setting(),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
 
-    expect((await log.list({ limit: 50, owner: "grace" }, RETENTION)).records)
-        .toEqual([graces[1], graces[0]]);
-    expect((await log.list({ limit: 50, owner: "grace", exposed: "content" }, RETENTION)).records)
-        .toEqual([graces[1]]);
-    expect((await log.list({ limit: 50, owner: "linus" }, RETENTION)).records).toEqual([]);
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    // Grace's account and the workspaces she owns, newest first.
+    expect(await list({ owner: "grace" }))
+        .toEqual([records[5], records[4], records[2], records[1]]);
+    expect(await list({ owner: "grace", kind: "user" })).toEqual([records[5], records[2]]);
+    expect(await list({ owner: "grace", kind: "workspace" })).toEqual([records[4], records[1]]);
+    expect(await list({ owner: "grace", kind: "setting" })).toEqual([]);
+    expect(await list({ owner: "grace", exposed: "content" })).toEqual([records[5], records[4]]);
+    expect(await list({ owner: "grace", admin: "linus" })).toEqual([records[2]]);
+    expect(await list({ owner: "linus" })).toEqual([]);
     await expectRejection(log.list({ limit: 2, owner: "a".repeat(1001) }, RETENTION),
         "Audit filters must be at most 1000 characters.");
 
     let plan = await sql<{ detail: string }>(log, `EXPLAIN QUERY PLAN SELECT seq FROM admin_audit
-        WHERE json_extract(record, '$.workspaceOwner') = 'grace' ORDER BY seq DESC`);
-    expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_owner");
+        WHERE coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner'))
+            = 'grace' ORDER BY seq DESC`);
+    expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_target");
+  });
+
+  it("lists access to users' accounts by kind, and by a method name both views share", async () => {
+    let log = auditLog();
+    let records: AdminAuditRecord[] = [
+      access({ method: "describe" }),
+      userAccess({ method: "describe" }),
+      userAccess({ method: "listSessions" }),
+      access({ method: "listFiles", args: { path: "src" } }),
+      setting(),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    expect(await list({ kind: "user" })).toEqual([records[2], records[1]]);
+    expect(await list({ method: "describe" })).toEqual([records[1], records[0]]);
+    expect(await list({ method: "describe", kind: "user" })).toEqual([records[1]]);
+    expect(await list({ method: "describe", kind: "workspace" })).toEqual([records[0]]);
+    expect(await list({ method: "listSessions" })).toEqual([records[2]]);
+    // A user record names no workspace, so the workspace filter never matches one.
+    expect(await list({ workspace: "w1" })).toEqual([records[3], records[0]]);
+    expect(await list({ workspace: "w1", kind: "user" })).toEqual([]);
+    expect(await list({ workspace: "grace" })).toEqual([]);
   });
 });
 
@@ -264,33 +326,71 @@ describe("AdminAuditDurableObject schema", () => {
     await expectRejection(log.append(bogus, RETENTION), "CHECK constraint failed");
   });
 
-  it("ties the workspace columns to access records", async () => {
+  it("ties the workspace columns to records of access to a workspace", async () => {
     let log = auditLog();
     // Each row carries the `exposed` its kind needs, so that it breaks only the CHECK it targets.
     await expectRejection(insertRow(log, "workspace", null, "t", "metadata"),
         "CHECK constraint failed");
     await expectRejection(insertRow(log, "workspace", "w1", null, "metadata"),
         "CHECK constraint failed");
+    await expectRejection(insertRow(log, "user", "w1", "t", "metadata"),
+        "CHECK constraint failed");
     await expectRejection(insertRow(log, "setting", "w1", "t", null), "CHECK constraint failed");
     await expectRejection(
         sql(log, `INSERT INTO admin_audit (at, kind, admin, record) VALUES (0, 'setting', 'a', '{')`),
         "CHECK constraint failed");
     await insertRow(log, "workspace", "w1", "t", "metadata");
+    await insertRow(log, "user", null, null, "metadata");
     await insertRow(log, "setting", null, null, null);
-    expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(2);
+    expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(3);
   });
 
-  it("ties exposed to access records", async () => {
+  it("ties exposed to access records, of a workspace and of a user's account", async () => {
     let log = auditLog();
     await expectRejection(insertRow(log, "workspace", "w1", "t", null), "CHECK constraint failed");
+    await expectRejection(insertRow(log, "user", null, null, null), "CHECK constraint failed");
     await expectRejection(insertRow(log, "setting", null, null, "metadata"),
         "CHECK constraint failed");
     await expectRejection(insertRow(log, "workspace", "w1", "t", "bogus"),
         "CHECK constraint failed");
+    await expectRejection(insertRow(log, "user", null, null, "bogus"), "CHECK constraint failed");
     let { exposed: _exposed, ...unexposed } = access();
     await expectRejection(log.append(unexposed as AdminAccessRecord, RETENTION),
         "CHECK constraint failed");
+    let { exposed: _userExposed, ...unexposedUser } = userAccess();
+    await expectRejection(log.append(unexposedUser as AdminUserAccessRecord, RETENTION),
+        "CHECK constraint failed");
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(0);
+  });
+
+  it("keeps a long user id as a long owner is kept, and finds its account and workspaces by it",
+      async () => {
+    let log = auditLog();
+    let ada = `${"u".repeat(600)}a`;
+    let grace = `${"u".repeat(600)}g`;
+    for (let userId of [ada, grace]) await log.append(userAccess({ userId }), RETENTION);
+    // A workspace this long id owns is found with the account, by either form of the id.
+    await log.append(access({ workspaceOwner: grace }), RETENTION);
+
+    let kept = (await log.list({ limit: 50, kind: "user" }, RETENTION)).records
+        .map(r => (r as AdminUserAccessRecord).userId);
+    expect(kept.every(userId => userId.length === MAX_ADMIN_AUDIT_ARG_LENGTH)).toBe(true);
+    expect(new Set(kept).size).toBe(2);
+    expect(kept[0]).toMatch(/^u+…#[0-9a-f]{20}$/);
+    for (let [userId, stored, kinds] of
+        [[ada, kept[1], ["user"]], [grace, kept[0], ["workspace", "user"]]] as const) {
+      let byWhole = (await log.list({ limit: 50, owner: userId }, RETENTION)).records;
+      expect(byWhole.map(r => r.kind)).toEqual(kinds);
+      for (let record of byWhole) {
+        let target = record.kind === "user" ? record.userId
+            : (record as AdminAccessRecord).workspaceOwner;
+        expect(target).toBe(stored);
+      }
+      expect((await log.list({ limit: 50, owner: stored }, RETENTION)).records).toEqual(byWhole);
+    }
+    let [{ size }] = await sql<{ size: number }>(log,
+        "SELECT max(length(record)) AS size FROM admin_audit");
+    expect(size).toBeLessThan(10_000);
   });
 
   it("keeps a long owner short, apart from another sharing its start, and finds it by its whole id",
@@ -468,5 +568,252 @@ describe("AdminAuditDurableObject.stats", () => {
     expect(workspaces.topAdmins).toEqual([
       { admin: "ada", count: 1, contentReads: 1 }, { admin: "grace", count: 1, contentReads: 0 },
     ]);
+  });
+
+  it("counts access to users' accounts, its content reads included, and filters by its kind",
+      async () => {
+    let log = auditLog();
+    let records: AdminAuditRecord[] = [
+      userAccess({ admin: "ada" }),
+      userAccess({
+        admin: "ada", method: "listConnectedAccounts", requested: "full", access: "full",
+        exposed: "content",
+      }),
+      userAccess({ admin: "grace", at: daysAgo(2) }),
+      access({ admin: "grace", exposed: "content" }),
+      setting({ admin: "linus" }),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let all = await log.stats({ days: 7 }, RETENTION);
+    expect(all.totalEvents).toBe(5);
+    expect(all.contentReads).toBe(2);
+    expect(all.topAdmins).toEqual([
+      { admin: "ada", count: 2, contentReads: 1 }, { admin: "grace", count: 2, contentReads: 1 },
+      { admin: "linus", count: 1, contentReads: 0 },
+    ]);
+    let expected = new Map<string, number>();
+    for (let { at } of records) expected.set(utcDayKey(at), (expected.get(utcDayKey(at)) ?? 0) + 1);
+    for (let { day, count } of all.byDay) expect(count, day).toBe(expected.get(day) ?? 0);
+
+    let users = await log.stats({ days: 7, kind: "user" }, RETENTION);
+    expect(users.totalEvents).toBe(3);
+    expect(users.contentReads).toBe(1);
+    expect(users.topAdmins).toEqual([
+      { admin: "ada", count: 2, contentReads: 1 }, { admin: "grace", count: 1, contentReads: 0 },
+    ]);
+    expect(users.byDay.reduce((sum, { count }) => sum + count, 0)).toBe(3);
+
+    let workspaces = await log.stats({ days: 7, kind: "workspace" }, RETENTION);
+    expect([workspaces.totalEvents, workspaces.contentReads]).toEqual([1, 1]);
+    let settings = await log.stats({ days: 7, kind: "setting" }, RETENTION);
+    expect([settings.totalEvents, settings.contentReads]).toEqual([1, 0]);
+  });
+});
+
+// The table and indexes of a build whose log knows only workspace and setting records, statement
+// for statement, and the index a build that filters by workspace owner alone adds beside them.
+const TWO_KIND_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS admin_audit (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('workspace', 'setting')),
+      admin TEXT NOT NULL,
+      workspace_id TEXT,
+      workspace_title TEXT,
+      exposed TEXT CHECK (exposed IN ('metadata', 'content')),
+      record TEXT NOT NULL CHECK (json_valid(record)),
+      CHECK ((kind = 'workspace') = (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
+      CHECK ((kind = 'workspace') = (exposed IS NOT NULL))
+    ) STRICT`,
+  "CREATE INDEX IF NOT EXISTS admin_audit_at ON admin_audit (at)",
+  "CREATE INDEX IF NOT EXISTS admin_audit_admin ON admin_audit (admin, seq)",
+  "CREATE INDEX IF NOT EXISTS admin_audit_workspace ON admin_audit (workspace_id, seq)",
+  "CREATE INDEX IF NOT EXISTS admin_audit_kind ON admin_audit (kind, seq)",
+  "CREATE INDEX IF NOT EXISTS admin_audit_exposed ON admin_audit (exposed, seq)",
+  `CREATE INDEX IF NOT EXISTS admin_audit_method
+      ON admin_audit (json_extract(record, '$.method'), seq)`,
+];
+const OWNER_INDEX = `CREATE INDEX IF NOT EXISTS admin_audit_owner
+    ON admin_audit (json_extract(record, '$.workspaceOwner'), seq)`;
+const USER_ROW = `INSERT INTO admin_audit (at, kind, admin, exposed, record)
+    VALUES (0, 'user', 'ada', 'metadata', '{"userId":"grace"}')`;
+
+type StoredRow = Record<string, SqlStorageValue> & { seq: number };
+type SchemaRow = { type: string; name: string; sql: string | null };
+
+function storedRows(db: SqlStorage): StoredRow[] {
+  return db.exec<StoredRow>("SELECT * FROM admin_audit ORDER BY seq").toArray();
+}
+
+// What a run of the constructor can change: the log's rows, what sqlite_master holds of it (its
+// table, its indexes and anything a rebuild left behind), and the count of rows written so far,
+// which a rebuild's copy moves and a statement that finds nothing to do leaves alone.
+function snapshot(db: SqlStorage) {
+  return {
+    rows: storedRows(db),
+    schema: db.exec<SchemaRow>(
+        "SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'admin#_audit%' ESCAPE '#' " +
+            "ORDER BY name").toArray(),
+    changes: db.exec<{ n: number }>("SELECT total_changes() AS n").one().n,
+  };
+}
+
+function schemaNames(schema: SchemaRow[]): string[] {
+  return schema.map(row => row.name);
+}
+
+// The stored table's definition from its opening parenthesis, the part a rename leaves alone.
+function tableDefinition(schema: SchemaRow[]): string {
+  let text = schema.find(row => row.name === "admin_audit")!.sql!;
+  return text.slice(text.indexOf("("));
+}
+
+// Drops the table and makes it again with `statements`, holding the same rows under the same seqs.
+function replant(db: SqlStorage, statements: string[]): void {
+  let rows = storedRows(db);
+  db.exec("DROP TABLE admin_audit");
+  for (let statement of statements) db.exec(statement);
+  for (let row of rows) {
+    db.exec(`INSERT INTO admin_audit
+        (seq, at, kind, admin, workspace_id, workspace_title, exposed, record)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.seq, row.at, row.kind, row.admin, row.workspace_id, row.workspace_title, row.exposed,
+        row.record);
+  }
+}
+
+// Runs the object's constructor again over its stored state, as the next start does.
+function construct(instance: AdminAuditDurableObject, state: DurableObjectState)
+    : AdminAuditDurableObject {
+  let Log = instance.constructor as
+      new (ctx: DurableObjectState, env: Cloudflare.Env) => AdminAuditDurableObject;
+  return new Log(state, env);
+}
+
+// A log of workspace and setting records with a gap in their seqs, so that a copy renumbering
+// them shows, and what it lists.
+async function seededLog(): Promise<{ log: Stub; listed: AdminAuditRecord[] }> {
+  let log = auditLog();
+  let records = [
+    access({ at: daysAgo(3) }), setting({ at: daysAgo(2) }), setting({ at: daysAgo(2) }),
+    access({
+      method: "getChat", args: { chatId: 4 }, requested: "full", access: "full", exposed: "content",
+    }),
+    setting(),
+  ];
+  for (let record of records) await log.append(record, RETENTION);
+  await sql(log, "DELETE FROM admin_audit WHERE seq = 2");
+  return { log, listed: (await log.list({ limit: 50 }, RETENTION)).records };
+}
+
+// Plants `statements`' table under a seeded log's rows, constructs the object again, and checks
+// that the log holds the same rows in a table of the current definition, which takes a user record
+// and which the start after that one leaves alone.
+async function expectRebuilt(statements: string[]): Promise<void> {
+  let { log, listed } = await seededLog();
+  let [seeded, rebuilt, restarted] = await runInDurableObject(log, (instance, state) => {
+    let db = state.storage.sql;
+    let start = snapshot(db);
+    replant(db, statements);
+    expect(storedRows(db)).toEqual(start.rows);
+    expect(() => db.exec(USER_ROW)).toThrow("CHECK constraint failed");
+    construct(instance, state);
+    let afterRebuild = snapshot(db);
+    construct(instance, state);
+    return [start, afterRebuild, snapshot(db)];
+  });
+
+  expect(seeded.rows.map(row => row.seq)).toEqual([1, 3, 4, 5]);
+  expect(rebuilt.rows).toEqual(seeded.rows);
+  // The rename stores the table's name quoted, which a start must still read as the current
+  // definition: one that did not would copy the whole log again, moving the count of rows written.
+  expect(restarted).toEqual(rebuilt);
+  // The stored definition is a fresh log's from its parenthesis on, under the same indexes.
+  expect(schemaNames(rebuilt.schema)).toEqual(schemaNames(seeded.schema));
+  expect(schemaNames(rebuilt.schema)).toContain("admin_audit_target");
+  expect(schemaNames(rebuilt.schema)).not.toContain("admin_audit_owner");
+  expect(schemaNames(rebuilt.schema)).not.toContain("admin_audit_next");
+  expect(tableDefinition(rebuilt.schema)).toBe(tableDefinition(seeded.schema));
+  expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
+
+  let added = userAccess();
+  await log.append(added, RETENTION);
+  expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual([added, ...listed]);
+  let [{ seq }] = await sql<{ seq: number }>(log,
+      "SELECT seq FROM admin_audit WHERE kind = 'user'");
+  expect(seq).toBeGreaterThan(5);
+}
+
+describe("AdminAuditDurableObject's table rebuild", () => {
+  it("rebuilds a table that knows no user records, keeping every row under its seq", async () => {
+    await expectRebuilt(TWO_KIND_SCHEMA);
+  });
+
+  it("rebuilds one that indexes the workspace owner alone, dropping that index", async () => {
+    await expectRebuilt([...TWO_KIND_SCHEMA, OWNER_INDEX]);
+  });
+
+  it("leaves a table of the current definition alone", async () => {
+    let { log, listed } = await seededLog();
+    let [seeded, constructed] = await runInDurableObject(log, (instance, state) => {
+      let start = snapshot(state.storage.sql);
+      construct(instance, state);
+      return [start, snapshot(state.storage.sql)];
+    });
+    expect(seeded.rows).toHaveLength(4);
+    expect(constructed).toEqual(seeded);
+    expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
+  });
+
+  it("drops the workspace-owner index from a table of the current definition without rebuilding it",
+      async () => {
+    let { log, listed } = await seededLog();
+    let [seeded, indexed, constructed] = await runInDurableObject(log, (instance, state) => {
+      let db = state.storage.sql;
+      let start = snapshot(db);
+      db.exec(OWNER_INDEX);
+      let withIndex = snapshot(db);
+      construct(instance, state);
+      return [start, withIndex, snapshot(db)];
+    });
+    expect(schemaNames(indexed.schema)).toContain("admin_audit_owner");
+    expect(constructed).toEqual({ ...seeded, changes: indexed.changes });
+    expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
+  });
+
+  it("keeps a table of a later definition, whose rows it cannot copy, logs that, and still appends",
+      async () => {
+    let log = auditLog();
+    let { planted, constructed, events } = await runInDurableObject(log, (instance, state) => {
+      let db = state.storage.sql;
+      let current = tableDefinition(snapshot(db).schema);
+      let later = current.replace("'user', 'setting')", "'user', 'setting', 'later')");
+      expect(later).not.toBe(current);
+      db.exec("DROP TABLE admin_audit");
+      db.exec(`CREATE TABLE admin_audit ${later}`);
+      db.exec(`INSERT INTO admin_audit (at, kind, admin, exposed, record)
+          VALUES (?1, 'setting', 'ada', NULL, '{}'), (?1, 'later', 'ada', 'metadata', '{}')`,
+          Date.now());
+      let planted = snapshot(db);
+      // The log is the only sign that this table refuses what the build's own would take.
+      let logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        construct(instance, state);
+        let events = logged.mock.calls.map(([entry]) => (entry as { event?: unknown })?.event);
+        return { planted, constructed: snapshot(db), events };
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+    expect(events).toEqual(["admin.audit.table.rebuild.failed"]);
+    expect(planted.rows.map(row => [row.seq, row.kind])).toEqual([[1, "setting"], [2, "later"]]);
+    expect(constructed.rows).toEqual(planted.rows);
+    expect(schemaNames(constructed.schema)).not.toContain("admin_audit_next");
+    expect(tableDefinition(constructed.schema)).toBe(tableDefinition(planted.schema));
+    for (let record of [access(), userAccess(), setting()]) await log.append(record, RETENTION);
+    expect(await sql(log, "SELECT kind FROM admin_audit ORDER BY seq")).toEqual(
+        ["setting", "later", "workspace", "user", "setting"].map(kind => ({ kind })));
   });
 });

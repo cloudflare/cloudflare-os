@@ -1839,6 +1839,16 @@ export const ADMIN_WORKSPACE_METHODS = [
 /** One of ADMIN_WORKSPACE_METHODS. */
 export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
 
+/** The calls into a user's account that the audit log records: the open (AdminApi.inspectUser())
+ * and each AdminUserView method. */
+export const ADMIN_USER_METHODS = [
+  "inspectUser", "describe", "listWorkspaces", "listConnectedAccounts", "listModels",
+  "listSessions", "listBlueprints", "getDiagnostics",
+] as const;
+
+/** One of ADMIN_USER_METHODS. */
+export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
+
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
  * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord. The rest
@@ -1874,9 +1884,10 @@ export const MAX_ADMIN_AUDIT_ARG_LENGTH = 256;
 export const MAX_ADMIN_AUDIT_VALUE_LENGTH = 10_000;
 
 /**
- * What one admin call into a workspace answered with (see AdminAccessRecord.exposed): "content"
- * when its answer held something the "metadata" access level withholds (see
- * ADMIN_WORKSPACE_ACCESS_LEVELS), "metadata" when it held none of it.
+ * What one admin call into a workspace or a user's account answered with (see
+ * AdminAccessRecord.exposed and AdminUserAccessRecord.exposed): "content" when its answer held
+ * something the "metadata" access level withholds (see ADMIN_WORKSPACE_ACCESS_LEVELS), "metadata"
+ * when it held none of it.
  */
 export type AdminAccessExposure = "metadata" | "content";
 
@@ -1893,7 +1904,7 @@ export type AdminAccessExposure = "metadata" | "content";
  * level is "off".
  */
 export type AdminAccessRecord = {
-  /** Distinguishes this from an AdminSettingRecord. */
+  /** Distinguishes this from an AdminUserAccessRecord and an AdminSettingRecord. */
   kind: "workspace";
   /** When the call was recorded: once it had read its answer (or failed to), or as it was
    * refused. */
@@ -1925,7 +1936,7 @@ export type AdminAccessRecord = {
    * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`. No
    * view method takes content, so none is recorded. */
   args: Record<string, string | number>;
-  /** The reason the admin gave inspectWorkspace() for the view. */
+  /** The reason the admin gave when opening the view. */
   reason: string;
   /** The level the view's open asked for (AdminInspectOptions.access; "metadata" when it named
    * none). It is the same on every record of one view, so the log shows when an investigation asked
@@ -1933,7 +1944,8 @@ export type AdminAccessRecord = {
   requested: AdminViewAccess;
   /** The level the call ran at: the view's own level (the lower of `requested` and the
    * deployment's level when the view was opened), lowered to the deployment's setting at the time
-   * (see AdminWorkspaceView); "off" when the call was refused for that. Never above `requested`. */
+   * (see AdminWorkspaceView and AdminUserView); "off" when the call was refused for that. Never
+   * above `requested`. */
   access: AdminWorkspaceAccess;
   /**
    * What the call's answer exposed. Only a call at "full" can record "content", and only when its
@@ -1963,6 +1975,42 @@ export type AdminAccessRecord = {
    * refused with. */
   refused?: typeof ADMIN_ACCESS_ERROR_CODES.accessOff
       | typeof ADMIN_ACCESS_ERROR_CODES.contentWithheld;
+};
+
+/**
+ * One admin call into a user's account: the open that minted an AdminUserView, or a call made
+ * through one. Recorded as an AdminAccessRecord is: once the call has read what it answers with and
+ * before any of that leaves the server, in the deployment-wide log behind AdminApi.listAdminAudit()
+ * and never in the account, so nothing the user can read ever shows it. A call the view itself
+ * stops (expired, its admin no longer one, the account gone) is not recorded; a call the access
+ * level refuses is, with `refused` set, as is a call whose read fails, and an open refused before
+ * it reaches the account because the deployment's access level is "off".
+ */
+export type AdminUserAccessRecord = Pick<AdminAccessRecord,
+    "at" | "admin" | "sessionId" | "via" | "reason" | "requested" | "access" | "refused"> & {
+  /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
+  kind: "user";
+  /** The user whose account the call was made into, by canonical user id, kept as
+   * AdminAccessRecord.workspaceOwner keeps an owner: whole while at most
+   * MAX_ADMIN_AUDIT_ARG_LENGTH characters, else its start, "…#" and a digest of the whole id. For
+   * an open refused before it reached the account, the id the admin gave, kept the same way. */
+  userId: string;
+  /** "inspectUser" for the open, else the view method called. */
+  method: AdminUserMethod;
+  /** The call's arguments by name. Only the open records one, `expiresAt` (ISO 8601): no
+   * AdminUserView method takes an argument, so every other record's is empty. */
+  args: Record<string, string | number>;
+  /**
+   * What the call's answer exposed. Only a call at "full" can record "content", and only when its
+   * answer held something the "metadata" level withholds:
+   *   - listConnectedAccounts(): a connected account's description;
+   *   - listBlueprints(): a blueprint's id.
+   * Otherwise "metadata": always for the open and the other methods, for a call that was refused or
+   * whose read failed, and for a call at "full" whose answer held neither. It is set from the
+   * answer itself, never from the level, and an answer leaves the server only once its record
+   * exists.
+   */
+  exposed: AdminAccessExposure;
 };
 
 /**
@@ -2036,10 +2084,10 @@ export type AdminSettingRecord = {
 
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
-export type AdminAuditRecord = AdminAccessRecord | AdminSettingRecord;
+export type AdminAuditRecord = AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord;
 
-/** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "setting" for a change to
- * the deployment's settings. */
+/** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "user" for access to a
+ * user's account, "setting" for a change to the deployment's settings. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -2048,16 +2096,18 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
-  /** Only records of calls to this method. */
+  /** Only records of calls to this method. AdminWorkspaceView and AdminUserView share three method
+   * names, describe, listBlueprints and getDiagnostics: `kind` tells their records apart. */
   method?: AdminAuditRecord["method"];
   /** Only records of access to this workspace. At most 1000 characters. */
   workspace?: string;
-  /** Only records of access to workspaces this user owns (see AdminAccessRecord.workspaceOwner), by
+  /** Only records of access to this user's data: to workspaces they own
+   * (AdminAccessRecord.workspaceOwner) and to their account (AdminUserAccessRecord.userId), by
    * canonical user id, whole or as the records keep it. At most 1000 characters. */
   owner?: string;
-  /** Only records of calls into a workspace whose answer exposed this (see
-   * AdminAccessRecord.exposed): "content" lists the content reads. Only access records carry it,
-   * so no setting record matches. */
+  /** Only records of calls whose answer exposed this (see AdminAccessRecord.exposed and
+   * AdminUserAccessRecord.exposed): "content" lists the content reads. Only access records carry
+   * it, so no setting record matches. */
   exposed?: AdminAccessExposure;
   /** Only records made at or after this time. */
   since?: Date;
@@ -2084,15 +2134,16 @@ export type AdminAuditStatsQuery = {
   /** The window: the last `days` UTC days, today included. A whole number from 1 to
    * MAX_ADMIN_AUDIT_STATS_DAYS, 7 when absent. */
   days?: number;
-  /** Only records of this kind; both kinds when absent. */
+  /** Only records of this kind; every kind when absent. */
   kind?: AdminAuditKind;
 };
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (both kinds when none is given). Only AdminAccessRecords
- * can be content reads, so those are zero for the "setting" kind. A record older than the retention
- * is gone, so a window reaching past it counts nothing there.
+ * covers the records of the queried kind (every kind when none is given). Only access records
+ * (AdminAccessRecord, AdminUserAccessRecord) can be content reads, so those are zero for the
+ * "setting" kind. A record older than the retention is gone, so a window reaching past it counts
+ * nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2106,8 +2157,8 @@ export type AdminAuditStats = {
    * with how many of those records are content reads. Every content read is listed by
    * listAdminAudit({ exposed: "content" }), an admin's who is not among these included. */
   topAdmins: { admin: string; count: number; contentReads: number }[];
-  /** The calls into a workspace in the window whose answer exposed content
-   * (AdminAccessRecord.exposed is "content"). */
+  /** The calls into a workspace or a user's account in the window whose answer exposed content
+   * (their record's `exposed` is "content"). */
   contentReads: number;
 };
 
@@ -2492,8 +2543,9 @@ export interface AdminApi {
 
   /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
-   * holds access to workspaces and changes to settings. Rejects a `limit` that is not a whole
-   * number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.
+   * holds access to workspaces and to users' accounts, and changes to settings. Rejects a `limit`
+   * that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a
+   * malformed `cursor`.
    */
   listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
 
