@@ -1301,7 +1301,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
-    let firstAdmission = !record || record.role !== "build";
+    // An invite listing is not an admission: the first open after one still seeds the chats.
+    let firstAdmission = !record || record.invited === true || record.role !== "build";
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
