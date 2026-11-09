@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -255,5 +255,90 @@ describe('Activity hook toggles', () => {
     expect(enableHook).toHaveBeenCalledTimes(2)
     await server.emit(bound(true))
     expect(isOn()).toBe(true)
+  })
+})
+
+/** The history log holding `record` alone, and its row. */
+async function renderHistory(record: ActionLogEntry) {
+  const server = makeOverseer()
+  await view.render(<Activity overseer={server.overseer} view="history" onViewChange={() => {}} />)
+  await server.resolveSubscription()
+  await server.resolvePage({ entries: [record] })
+  flushFrames()
+  const row = [...document.querySelectorAll('button[aria-expanded]')]
+    .find(button => button.textContent?.includes(record.description.title))
+  if (!(row instanceof HTMLElement)) throw new Error('No history row rendered')
+  return row
+}
+
+/** What a row's Status column says: its third, after Time and Event. */
+const statusOf = (row: HTMLElement) => row.children[2]?.textContent
+
+/**
+ * The entry a workspace's log keeps of an admin write that Ada approved, with the account it
+ * names, if any, ahead of the reason and the request.
+ */
+const adminWrite = ({ title = 'Delete chat 3', state = 'approved', user }: {
+  title?: string, state?: string, user?: string,
+} = {}) => entry(1, {
+  byAdmin: true, state, resourceTitle: 'Deployment admin',
+  resolvedBy: { type: 'user', id: 'admin@example.test', name: 'Ada Admin' },
+  description: {
+    title, implementsRevert: false, autoApprovable: false,
+    description: "A deployment admin's change to this workspace, through an approved write request.",
+    fields: [
+      ...(user === undefined ? [] : [{ label: 'User', kind: 'inline', value: user }]),
+      { label: 'Reason', kind: 'text', value: 'Ticket 7' },
+      { label: 'Request', kind: 'inline', value: 'r-1' },
+    ],
+  },
+})
+
+describe("Activity history of a deployment admin's writes", () => {
+  beforeEach(() => {
+    // The badge naming who resolved an entry looks up their avatar; none of these has one.
+    auth.authenticatedApi = { getAvatar: async () => null }
+  })
+
+  it('marks the write as an admin’s, and names the admin, the reason and the request', async () => {
+    const row = await renderHistory(adminWrite())
+    expect(statusOf(row)).toBe('Admin')
+
+    await act(async () => row.click())
+    expect(document.body.textContent).toContain('By deployment admin Ada Admin')
+    expect(document.body.textContent).toContain('Ticket 7')
+    expect(document.body.textContent).toContain('r-1')
+  })
+
+  it('says the write failed when the workspace could not run it', async () => {
+    const row = await renderHistory(adminWrite({ state: 'rejected' }))
+    expect(statusOf(row)).toBe('Admin, failed')
+  })
+
+  it('shows the account an admin added exactly as it was written, never as Markdown', async () => {
+    const row = await renderHistory(adminWrite({ title: 'Add a collaborator', user: '**bob**' }))
+    await act(async () => row.click())
+
+    const values = [...document.querySelectorAll('code')].map(code => code.textContent)
+    expect(values).toContain('**bob**')
+    expect(document.querySelector('strong')).toBeNull()
+  })
+
+  it('leaves an action a member approved reading as theirs', async () => {
+    const row = await renderHistory(entry(1, {
+      state: 'approved', resolvedBy: { type: 'user', id: 'olive@example.test', name: 'Olive Owner' },
+    }))
+    expect(statusOf(row)).toBe('Approved')
+
+    await act(async () => row.click())
+    expect(document.body.textContent).toContain('By Olive Owner')
+    expect(document.body.textContent).not.toContain('deployment admin')
+  })
+
+  it('leaves an action a member denied reading as denied, not as an admin’s failed write', async () => {
+    const row = await renderHistory(entry(1, {
+      state: 'rejected', resolvedBy: { type: 'user', id: 'olive@example.test', name: 'Olive Owner' },
+    }))
+    expect(statusOf(row)).toBe('Denied')
   })
 })

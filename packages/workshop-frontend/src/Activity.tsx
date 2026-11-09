@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
-import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
+import { CaretRight, Check, Eye, Lightning, ShieldCheck, ShieldWarning } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
@@ -101,6 +101,14 @@ function activityStatus(
       ? { label: 'Enabled', dotClass: 'bg-kumo-success', textClass: 'text-kumo-subtle' }
       : { label: 'Disabled', dotClass: 'bg-kumo-inactive', textClass: 'text-kumo-subtle' }
   }
+  // A deployment admin's write is entered before it runs (ActionLogEntry.byAdmin): "approved"
+  // says the workspace set about it, not that it finished, and "rejected" that it could not run.
+  if (record.byAdmin && record.state === 'approved') {
+    return { label: 'Admin', dotClass: 'bg-kumo-warning', textClass: 'text-kumo-default' }
+  }
+  if (record.byAdmin && record.state === 'rejected') {
+    return { label: 'Admin, failed', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
+  }
   if (record.state === 'pending') {
     return { label: 'Pending', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
   }
@@ -114,6 +122,7 @@ function TypeIcon({ record, className }: { record: ActionLogEntry; className?: s
   const props = { size: 13, weight: 'bold' as const, className }
   if (record.type === 'observation') return <Eye {...props} />
   if (record.type === 'bindHook') return <Lightning {...props} />
+  if (record.byAdmin) return <ShieldWarning {...props} />
   return <ShieldCheck {...props} />
 }
 
@@ -744,6 +753,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
+  const byAdmin = record.type === 'action' && record.byAdmin === true
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -790,7 +800,9 @@ function HistoryRow({
             <span className="text-kumo-subtle">{record.resourceTitle}</span>
             {resolvedBy && (
               <ResolverBadge profileId={resolvedBy.id}>
-                {autoApproved ? `Auto-approved (${resolvedBy.name}'s rule)` : `By ${resolvedBy.name}`}
+                {autoApproved
+                  ? `Auto-approved (${resolvedBy.name}'s rule)`
+                  : `By ${byAdmin ? 'deployment admin ' : ''}${resolvedBy.name}`}
               </ResolverBadge>
             )}
             {resourceUrl && (
