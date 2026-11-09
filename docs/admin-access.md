@@ -817,6 +817,9 @@ All three are variables of the backend Worker (`workshop-backend`):
   lasts only until the next deploy, and until such a tool carries these variables its
   deployments run with the defaults. Any redeploy that writes its own variables must carry all
   three.
+- **Pull request previews** (`scripts/preview/staging-config.ts`): `ADMIN_WORKSPACE_WRITES` is `on`,
+  so that writes and their passkeys can be tried there. A preview's passkeys are bound to that
+  preview's host. The other two keep their defaults.
 
 ### When a variable is dropped
 

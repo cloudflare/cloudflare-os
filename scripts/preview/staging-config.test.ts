@@ -256,15 +256,16 @@ test("no config names a resource belonging to another deployment", () => {
   }
 });
 
-test("the backend is told the router's origin, and nothing else", () => {
+test("the backend is told the router's origin and that admin writes are on, and no more", () => {
   const { configs } = buildAll();
   const vars = previewsOf(configs, "workshop-backend").vars;
   assert.ok(vars, "the backend preview declares no vars");
 
-  // The origin is the only value the backend needs that is safe to write into a config Wrangler
+  // These are the only values the backend needs that are safe to write into a config Wrangler
   // will print; its admins and Access pair are uploaded as secrets instead (below).
-  assert.deepEqual(Object.keys(vars), ["PUBLIC_BASE_URL"]);
+  assert.deepEqual(Object.keys(vars), ["PUBLIC_BASE_URL", "ADMIN_WORKSPACE_WRITES"]);
   assert.equal(vars.PUBLIC_BASE_URL, BASE_URL);
+  assert.equal(vars.ADMIN_WORKSPACE_WRITES, "on");
   // Setting CF_ACCESS_AUD closes the password path on its own — login() and createAccount() both
   // throw once it is set — so this stays unset.
   assert.equal(vars.DISABLE_PASSWORD_AUTH, undefined);
