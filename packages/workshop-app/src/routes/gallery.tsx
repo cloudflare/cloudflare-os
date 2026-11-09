@@ -6,6 +6,7 @@ import { Composer } from '@/blocks/Composer'
 import type { ComposerAddActions, ComposerSkill } from '@/blocks/ComposerAddMenu'
 import { ConversationListItem } from '@/blocks/ConversationListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
+import { Sidebar, type SidebarConversation } from '@/blocks/Sidebar'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
@@ -29,6 +30,14 @@ const previewSkills: ComposerSkill[] = [
   { id: 'review', name: 'Review writing', description: 'Polish a draft and make it clearer.', source: 'Writing tools' },
   { id: 'summarize', name: 'Summarize', description: 'Turn a long document into the key takeaways.', source: 'Documents' },
   { id: 'compact', name: 'Compact chat', description: 'Make room while keeping the important context.', source: 'Gadgets' },
+]
+
+const previewConversations: SidebarConversation[] = [
+  { id: 'greeting', workspaceLabel: 'CG', title: 'Casual Greeting', subtitle: '4 hours ago' },
+  { id: 'assistant', workspaceLabel: 'AA', title: 'Assistant Availability Check', subtitle: 'Oct 28' },
+  { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
+  { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
+  { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
 ]
 
 const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
@@ -104,6 +113,7 @@ const DropdownMenuPlayground = () => {
 }
 
 function Gallery() {
+  const [selectedConversation, setSelectedConversation] = useState('greeting')
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const addActions: ComposerAddActions = {
     onUpload: () => setMenuAction('Preview: upload files or photos selected.'),
@@ -164,6 +174,16 @@ function Gallery() {
             onSelect={() => {}}
           />
           <ConversationListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
+        </div>
+      </Section>
+      <Section title="Sidebar (approach a neighbour from the active row or a distant row)">
+        <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
+          <Sidebar
+            user={{ name: 'Ada Lovelace' }}
+            conversations={previewConversations}
+            selectedConversationId={selectedConversation}
+            onSelectConversation={setSelectedConversation}
+          />
         </div>
       </Section>
       <Section title="MessageBubble, ThinkingIndicator">
