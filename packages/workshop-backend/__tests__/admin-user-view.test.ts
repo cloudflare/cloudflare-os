@@ -651,7 +651,7 @@ describe("a full view", () => {
         id: "ws-owned-3", title: "Owned 3", created: createdOf("ws-owned-3"),
         lastActive: LAST_ACTIVE,
       },
-      // One whose creation has not finished.
+      // A provisional one: it has had no activity, so it has no lastActive.
       { id: "ws-owned-4", title: "Owned 4", created: createdOf("ws-owned-4") },
       {
         id: "ws-shared", title: "Shared notes", created: createdOf("ws-shared"),
@@ -659,6 +659,10 @@ describe("a full view", () => {
       },
     ]);
     for (let workspace of answers.listWorkspaces) expect(workspace.created).toBeInstanceOf(Date);
+    // The user's own listing leaves the provisional one out: the view lists it, and describe()
+    // counts it among the four owned.
+    expect((await user.instance.listWorkspaces()).map(workspace => workspace.id))
+        .toStrictEqual(["ws-owned-1", "ws-owned-2", "ws-owned-3", "ws-shared"]);
 
     expect(answers.listConnectedAccounts).toStrictEqual([
       {

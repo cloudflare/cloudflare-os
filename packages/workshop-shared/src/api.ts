@@ -2994,7 +2994,8 @@ export type AdminUserDescription = {
   onboardingCompleted: boolean;
   /** How many of each thing the account holds; the view's list methods give the things. */
   counts: {
-    /** Workspaces the user owns. */
+    /** Workspaces the user owns, the provisional ones included (see
+     * AdminUserView.listWorkspaces()). */
     ownedWorkspaces: number;
     /** Workspaces shared with the user that they have opened. */
     sharedWorkspaces: number;
@@ -3028,7 +3029,9 @@ export type AdminUserWorkspace = Pick<WorkspaceMetadata,
    * user's first open of it for one shared with them. */
   created: Date;
   /** When it was last active or, for one shared with the user, when they last opened it. Absent
-   * for a workspace whose creation has not finished. */
+   * for a provisional workspace (see AuthenticatedApi.newWorkspace()): one the user owns that has
+   * had no activity yet, which the user's own listing, AuthenticatedApi.listWorkspaces(), leaves
+   * out. */
   lastActive?: Date;
 };
 
@@ -3204,7 +3207,9 @@ export interface AdminUserView extends RpcTarget {
   describe(): Promise<AdminUserDescription>;
 
   /** The workspaces the account lists, in id order: those the user owns, and those of other users
-   * that they have opened as a collaborator. */
+   * that they have opened as a collaborator. The user's provisional workspaces are among them,
+   * each with no `lastActive`: the user's own listing, AuthenticatedApi.listWorkspaces(), leaves
+   * those out, so this lists more than their home page shows. */
   listWorkspaces(): Promise<AdminUserWorkspace[]>;
 
   /** The user's connected accounts, in id order; below "full", without each one's `description`.

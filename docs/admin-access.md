@@ -391,7 +391,7 @@ column names and returns the rest.
 | Method | Returns | Withheld below `"full"` |
 | --- | --- | --- |
 | `describe()` | The user's profile, when the account was created, the last login it told the directory of (to within an hour), whether the user is a deployment admin, whether the account has a password and has finished onboarding, how many of each thing it holds, the level the call ran at and the view's expiry | Nothing |
-| `listWorkspaces()` | The workspaces the account lists, in id order: those the user owns, and those of other users that they have opened as a collaborator, each with its title, cost, notification mute and times, and a shared one with its owner and the user's role in it | Nothing |
+| `listWorkspaces()` | The workspaces the account lists, in id order: those the user owns, provisional ones included, and those of other users that they have opened as a collaborator, each with its title, cost, notification mute and times, and a shared one with its owner and the user's role in it | Nothing |
 | `listConnectedAccounts()` | Each connected account, in id order: its id, its vendor, whether it was auto-provisioned, when its credentials are expected to expire, whether its gatekeeper has reported them expired, and its description | Each account's `description`: its names, avatar, granted resource types and what it provides |
 | `listModels()` | The models the user added (id, display name, provider, model name, and whether it overrides the provider's API URL), and the ids of the models they chose as preferred and for quick tasks | Nothing |
 | `listSessions()` | How many sign-in sessions the account holds, and the latest `ADMIN_LIST_MAX_LIMIT` (200) of them, latest first: when each was created and when it expires, and for a device session staged for a handoff, when that handoff lapses | Nothing |
@@ -415,6 +415,12 @@ description is withheld.
 
 `getDiagnostics()` reports the billing account's id, the credit balance and the day's model-call
 count at every level: none of it is content.
+
+`listWorkspaces()` lists more than the user's home page shows. A workspace is provisional until it
+has some activity, such as a chat message or a code edit: the home page creates one ahead of the
+user's first message, and nothing deletes one left unused. The user's own
+`AuthenticatedApi.listWorkspaces()` leaves the provisional ones out. The view lists them, each
+with no `lastActive`, and `describe()` counts them among the workspaces the user owns.
 
 A connected account whose gatekeeper is no longer bound is left out, of the listing and of
 `describe()`'s count, as the user's own listing leaves it out. A restart of the account's Durable
