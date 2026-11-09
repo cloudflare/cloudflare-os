@@ -14,6 +14,8 @@ catalog:
   # simulated PR/MR diff's hunks, used by the git-host gatekeepers). One catalog entry so the two
   # can't drift apart.
   diff: ^9.0.0
+  # The property suites' generator (workshop-backend, integration-tests, gatekeeper-kit).
+  fast-check: ^4.10.2
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.

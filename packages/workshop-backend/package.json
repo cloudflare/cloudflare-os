@@ -36,6 +36,7 @@
     "@gadgets/scripts": "workspace:*",
     "dompurify": "^3.4.17",
     "esbuild": "^0.28.2",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

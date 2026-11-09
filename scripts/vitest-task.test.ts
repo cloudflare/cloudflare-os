@@ -140,6 +140,13 @@ describe("the watchdog environment policy", () => {
     }
   });
 
+  // What `property-runs.ts` reads. A suite whose task dropped it would run a fresh seed in CI.
+  it("is joined by the property suites' seed on every generated test task", () => {
+    for (const task of [vitestTask("vitest run"), vitestTaskWithExclusions("vitest run", [])]) {
+      assert.ok(task.cache.env.includes("FAST_CHECK_SEED"));
+    }
+  });
+
   it("reaches every hand-declared cached task that wraps the watchdog", async () => {
     let seen = 0;
     for (const config of HAND_DECLARED_CONFIGS) {

@@ -254,6 +254,18 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`apply-attempts:${label}`) ?? 0;
   }
 
+  recordApplySettled(label: string): void {
+    this.ctx.storage.kv.put(`apply-settled:${label}`, this.getApplySettled(label) + 1);
+  }
+
+  /**
+   * applyAction() calls that have finished, applied or failed. Below getApplyAttempts(), an attempt
+   * is still in flight, and its outcome (a one-shot failure included) is not yet decided.
+   */
+  getApplySettled(label: string): number {
+    return this.ctx.storage.kv.get<number>(`apply-settled:${label}`) ?? 0;
+  }
+
   /** Parks the next applyAction() for `label` until releaseApply(), so a test can race another. */
   holdNextApply(label: string): void {
     this.ctx.storage.kv.put(`hold-next-apply:${label}`, true);
@@ -903,10 +915,14 @@ export class TestGatekeeper
     const { label } = this.ctx.props;
     const held = await state.takeNextApplyHold(label);
     await state.recordApplyAttempt(label);
-    if (held) await waitForApplyRelease(state, label);
-    const failure = await state.takeApplyFailure(label);
-    if (failure !== null) throw new Error(failure);
-    await state.applyAction(label, action);
+    try {
+      if (held) await waitForApplyRelease(state, label);
+      const failure = await state.takeApplyFailure(label);
+      if (failure !== null) throw new Error(failure);
+      await state.applyAction(label, action);
+    } finally {
+      await state.recordApplySettled(label);
+    }
   }
 
   async rejectAction(action: number): Promise<void> {
@@ -1124,11 +1140,13 @@ export default {
       return Response.json({ configurations: await control(ctx.exports).getCreations(label) });
     }
 
-    // Body: {"label": "..."} -> {"attempts": number}
+    // Body: {"label": "..."} -> {"attempts": number, "settled": number}
+    // `settled` is read first, so equal counts mean nothing was in flight in between.
     if (url.pathname === "/control/apply-attempts" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
-      return Response.json({ attempts: await control(ctx.exports).getApplyAttempts(label) });
+      const settled = await control(ctx.exports).getApplySettled(label);
+      return Response.json({ attempts: await control(ctx.exports).getApplyAttempts(label), settled });
     }
 
     // One-shot: the next applyAction() for `label` waits for /control/release-apply.
