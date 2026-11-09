@@ -4382,12 +4382,17 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
  * * pending: Action has not been applied yet. It is waiting for approval.
  * * approved: Action was approved and applied.
  * * rejected: Action was rejected by the user.
+ *
+ * For a deployment admin's write (see ActionLogEntry.byAdmin), which is never pending, "approved"
+ * means the write was approved and the workspace set about running it, and "rejected" that the
+ * workspace could not run it: no user rejected it.
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
 /**
  * One entry in a workspace's action log, discriminated by `type`: an action a gadget asked a
- * gatekeeper to take, an observation it made, or a hook it bound.
+ * gatekeeper to take, an observation it made, or a hook it bound. An "action" entry marked
+ * `byAdmin` is none of these: it is a change a deployment admin made to the workspace itself.
  */
 export type ActionLogEntry = {
   /** Sequential ID number for the action. Counts up from when the workspace was created. */
@@ -4429,6 +4434,21 @@ export type ActionLogEntry = {
    * which the resource is created.
    */
   creation?: true;
+
+  /**
+   * True when the entry is a deployment admin's write to the workspace, made through an approved
+   * write request (see AdminApi.requestWorkspaceWrite()), rather than a gatekeeper's action on a
+   * gadget's or an agent's behalf. Such an entry has no `gatekeeperId`; `resolvedBy` is the admin
+   * who approved it, `description.title` names the write, and its fields give the admin's reason
+   * and the request, after the account named when the write adds a collaborator. It is written
+   * before the workspace changes, so that no admin write is missing from the log: its `state` is
+   * "approved" from then on, and becomes "rejected" if the workspace then could not run the
+   * write. An entry still "approved" can therefore stand for a write that was cut short and done
+   * only in part. Like the rest of the action log it reaches the workspace's owner and its
+   * "build" collaborators only: a collaborator who only uses a gadget is given no action log,
+   * and no other notice of the write.
+   */
+  byAdmin?: true;
 } | {
   type: "observation";
   description: ObservationDescription;

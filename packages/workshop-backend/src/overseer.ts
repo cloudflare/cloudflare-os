@@ -3,13 +3,14 @@ import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_REJECTED_ACTIONS, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  createAdminWriteError,
   type AdminAccessExposure, type AdminAccessRecord, type AdminAutoApproval,
   type AdminChatAttachment, type AdminChatState, type AdminGatekeeperInfo, type AdminObserver,
   type AdminPendingChange, type AdminViewAccess, type AdminWorkspaceAccess,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -64,7 +65,8 @@ import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   actionHoldsContent, adminAccessPolicy, adminCommitLogDepth, adminViewCallAccess,
-  assertAdminViewLive, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
+  adminWorkspaceWritesEnabled,
+  assertAdminViewLive, auditOwnerId, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
   chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
   hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
   withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
@@ -72,6 +74,10 @@ import {
   type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import {
+  adminWriteArgs, adminWriteAuditArgs, adminWriteTitle, type AdminWriteGrant,
+} from "./admin-writes";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -487,11 +493,11 @@ function validateChatAttachmentId(id: string): string {
   return id;
 }
 
-// Sentinel gatekeeperId used on ActionRecords that originated from built-in agent tools
-// (e.g. webFetch) rather than from a real gatekeeper. Real gatekeeper IDs are assigned
-// starting at 1, so -1 is a safe out-of-band marker. Only "observation" records ever carry
-// this value; observations never go through the approve/reject paths that would dereference
-// the gatekeeper, so no lookup is ever attempted.
+// Sentinel gatekeeperId used on ActionRecords that no gatekeeper made: an observation by a
+// built-in agent tool (e.g. webFetch), or the entry of a deployment admin's write (see
+// OverseerImpl.recordAdminWrite()). Real gatekeeper IDs are assigned starting at 1, so -1 is a
+// safe out-of-band marker. Neither kind of record is ever pending, so neither goes through the
+// approve/reject paths that would dereference the gatekeeper, and no lookup is ever attempted.
 const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 
 type ExternalMessageResponseTargetRegistration = {
@@ -631,7 +637,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // the two match more -- just `action` needs to be different.
 
   // ActionLogEntry omits the gatekeeperId for records that didn't come from a real gatekeeper
-  // (built-in agent tools use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
+  // (built-in agent tools and admin writes use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
   let gatekeeperId = record.gatekeeperId >= 0 ? record.gatekeeperId : undefined;
 
   switch (record.type) {
@@ -666,6 +672,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        byAdmin: record.byAdmin,
       };
     case "bindHook":
       return {
@@ -6661,6 +6668,60 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  // Puts the entry the action log keeps of a deployment admin's approved write (see
+  // ActionLogEntry.byAdmin) and returns its id. It is put "approved" before the write runs, so it
+  // names the write and never reports it done (see failAdminWrite()). No gatekeeper made it, so it
+  // carries the BUILTIN_TOOL_GATEKEEPER_ID sentinel. The reason and, for "addCollaborator", the
+  // account named are text the requester wrote: each is a field, shown exactly as written, and
+  // never part of the title. Every open "build" session is delivered the put (see
+  // Overseer.subscribeToActions()), and Overseer.listActions() pages it for them.
+  recordAdminWrite(action: AdminWriteAction, args: AdminWriteArgs, reason: string,
+                   requestId: string, admin: AiChatAuthorInfo): number {
+    let id = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(id + 1);
+
+    let now = new Date();
+    this.storage.actions.put({
+      id,
+      gatekeeperId: BUILTIN_TOOL_GATEKEEPER_ID,
+      caller: {from: "user"},
+      resourceTitle: "Deployment admin",
+      createdAt: now,
+      appliedAt: now,
+      state: "approved",
+      type: "action",
+      action: 0,
+      byAdmin: true,
+      resolvedBy: admin,
+      description: {
+        title: adminWriteTitle(action, args),
+        description:
+            "A deployment admin's change to this workspace, through an approved write request.",
+        fields: [
+          ...(args.username === undefined ? []
+              : [{label: "User", kind: "inline" as const, value: args.username}]),
+          {label: "Reason", kind: "text", value: reason},
+          {label: "Request", kind: "inline", value: requestId},
+        ],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+        autoApprovable: false,
+      },
+    });
+    return id;
+  }
+
+  // Marks an admin write's entry (see recordAdminWrite()) "rejected": the workspace could not
+  // run the write. Writes nothing once the entry is gone, as after a deletion that got as far as
+  // deleting the action log.
+  failAdminWrite(id: number): void {
+    let record = this.storage.actions.get(id);
+    if (!record) return;
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    this.storage.actions.put(record);
+  }
+
   async submitAction(gatekeeperId: number, action: number | "create",
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
@@ -8008,7 +8069,9 @@ class OverseerImpl implements AgentHooks {
 
   // Retries the chat's last request as a new turn (see Overseer.retryAgent()). `userMeta` is the
   // context of the user whose model and account the turn runs on, `initiatorUserId` that user's
-  // id, and `author` who the retry's message is from: the user of `userMeta` unless given.
+  // id, and `author` who the retry's message is from: the user of `userMeta` unless given. An
+  // approved admin write retries as the workspace's owner, with the admin as `author` (see
+  // runAdminWrite()).
   retryAgent(chatId: number, userMeta: UserChatContext, initiatorUserId: string,
              author: AiChatAuthorInfo = userMeta.profile): void {
     let meta = this.assertChatNotActive(chatId);
@@ -8031,7 +8094,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The model of the chat's most recent agent message, by id, or null when it has none: what a
-  // message from outside the Workshop continues a chat with.
+  // message from outside the Workshop continues a chat with, and what an admin's retry defaults to.
   lastAgentModelId(chatId: number): string | null {
     for (let msg of this.storage.chats.list({ prefix: chatKeyPrefix(chatId), reverse: true })) {
       if (msg.author.type === "agent") return msg.author.id;
@@ -11878,6 +11941,153 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return view;
   }
 
+  /**
+   * Run an approved admin write (AdminApiImpl.approveWorkspaceWrite()). Reachable only over the
+   * Workshop's Durable Object binding, never through a capability a user holds. Reads its
+   * environment only through the OverseerImpl.
+   *
+   * As for openForAdmin(), by explicit policy the admin is not checked by authorizeCollaborator()
+   * or observer verification and joins no session, presence or outputs fan-out. Unlike
+   * openForAdmin(), a write does to the workspace what its operation does for a member, gatekeeper
+   * calls and agent turns included: a rejected action is reported to its connection's gatekeeper, a
+   * hook is disabled at its gatekeeper when its gadget, its connection or the workspace is removed,
+   * and "retryAgent" starts an agent turn as the owner.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once its owner and the approver have been read;
+   *   - a malformed grant (TypeError): a blank or over-long reason, a `via` that is not "api" or
+   *     "cli", arguments that are not the action's, a `workspaceOwner` that is not a non-empty
+   *     string, a `passkey` that is not one of 1 to MAX_ADMIN_AUDIT_ARG_LENGTH characters, or an
+   *     `expiresAt` that is not a valid Date;
+   *   - a request that expired more than a minute ago, the allowance for clock skew
+   *     (`requestNotPending`);
+   *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and writes
+   *     turned off (`writesOff`);
+   *   - a grant whose `workspaceOwner` is not this workspace's owner (`workspaceChanged`): the
+   *     approver confirmed a write to that owner's workspace, and a deleted workspace's id can be
+   *     initialised again for someone else. Not `workspaceNotFound`, on which the caller drops the
+   *     workspace from the directory: this workspace is alive.
+   *
+   * Then, in this order:
+   *   1. The "approved" AdminWriteRecord is appended to the deployment-wide log. A write whose
+   *      record cannot be written does not happen. Nor does one whose workspace was deleted while
+   *      the record was appended (`workspaceNotFound`): the record is kept, and nothing follows it.
+   *   2. The write's entry is put in the workspace's action log (see ActionLogEntry.byAdmin), for
+   *      every action, so that no admin write can exist that its workspace's action log lacks.
+   *      The log is read by the workspace's owner and its "build" collaborators only.
+   *   3. The operation runs (see runAdminWrite()). If it throws, the entry is turned "rejected"
+   *      and the error is rethrown.
+   * The entry is "approved" before the operation runs, so an object that dies midway leaves an
+   * "approved" entry for a write done in part. "deleteWorkspace" has an entry too: a deletion that
+   * completes deletes it with the rest of the log, and one that fails partway leaves a live
+   * workspace an admin has changed (its live chats ended, some of its hooks disabled), which must
+   * show it.
+   *
+   * Resolves what the write reports (`outcome`), which only "rejectPendingActions" does.
+   */
+  async applyAdminWrite(grant: AdminWriteGrant): Promise<{ outcome?: string }> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let reason = validateAdminAccessReason(grant.reason);
+    if (grant.via !== "api" && grant.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    let args = adminWriteArgs(grant.action, grant.args);
+    // A request is never stored without an owner, so a grant without one is malformed, not a
+    // reason to skip the comparison below.
+    if (typeof grant.workspaceOwner !== "string" || !grant.workspaceOwner) {
+      throw new TypeError("An admin write must name the workspace's owner.");
+    }
+    // An approval always names the passkey that signed, in the form the record keeps.
+    if (typeof grant.passkey !== "string" || !grant.passkey ||
+        grant.passkey.length > MAX_ADMIN_AUDIT_ARG_LENGTH) {
+      throw new TypeError("An admin write must name the passkey that approved it.");
+    }
+    let expiresAt = grant.expiresAt instanceof Date ? grant.expiresAt.getTime() : NaN;
+    if (Number.isNaN(expiresAt)) {
+      throw new TypeError("An admin write's expiry must be a valid time.");
+    }
+    if (expiresAt < Date.now() - 60 * 1000) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+    }
+
+    // Neither the approver nor the requester may have stopped being an admin. Read from the
+    // OverseerImpl's environment, so that the checks hold for this workspace's isolate even if
+    // the Worker that approved ran an older config.
+    if (!isDeploymentAdmin(impl.env, grant.admin) ||
+        !isDeploymentAdmin(impl.env, grant.requestedBy)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(impl.env)) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    let admin: AiChatAuthorInfo = await retryOnDoReset(
+        () => impl.users.getByName(grant.admin).whoamiIfExists(), impl.logger) ??
+        {type: "user", id: grant.admin, name: grant.admin};
+    // Deleted during those reads: a deleted workspace gets no record, as for a view's call.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    if (grant.workspaceOwner !== auditOwnerId(ownerId)) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.workspaceChanged);
+    }
+
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: grant.admin,
+      sessionId: grant.sessionId,
+      via: grant.via,
+      requestId: grant.requestId,
+      event: "approved",
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: grant.action,
+      args: adminWriteAuditArgs(args),
+      reason,
+      requestedBy: grant.requestedBy,
+      passkey: grant.passkey,
+    };
+    try {
+      // No retention, as for a view's call (see AdminWorkspaceViewImpl).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: grant.action, error: err,
+      });
+      throw err;
+    }
+    // Deleted while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    // Synchronously after that check and before the effect.
+    let entryId = impl.recordAdminWrite(grant.action, args, reason, grant.requestId, admin);
+    let outcome: string | undefined;
+    try {
+      outcome = await runAdminWrite(impl, grant.action, args, reason, admin);
+    } catch (err) {
+      impl.failAdminWrite(entryId);
+      throw err;
+    }
+    // Never the reason or the arguments.
+    impl.logger.info("admin write applied", {
+      event: "admin.write.applied", operation: grant.action,
+    });
+    return {outcome};
+  }
+
   #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
     let externalChat = this.impl.storage.externalChats.get(externalChatKey);
     if (externalChat && !this.impl.storage.chatMeta.get(externalChat.chatId)) {
@@ -14610,6 +14820,169 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       };
     });
   }
+}
+
+// Runs the operation of an approved admin write (see OverseerDurableObject.applyAdminWrite()):
+// for each action, the one a member's session runs for it (see ADMIN_WRITE_ACTIONS). `args` are
+// as adminWriteArgs() kept them, `reason` is the request's, and `admin` is the profile of the
+// admin who approved it. Resolves what the write reports, which only "rejectPendingActions" does.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs,
+    reason: string, admin: AiChatAuthorInfo): Promise<string | undefined> {
+  // adminWriteArgs() checked that every argument the action needs was given.
+  let {chatId, revertFrom, gadgetId, commitId, gatekeeperId, username, grant} =
+      args as Required<AdminWriteArgs>;
+  // The admin's user object, by id: who analytics says did it.
+  let adminUserId = () => impl.users.idFromName(admin.id).toString();
+
+  switch (action) {
+    case "stopAgent":
+      impl.getChatMetaOrThrow(chatId);
+      impl.cancelAgent(chatId);
+      return undefined;
+
+    case "retryAgent": {
+      impl.getChatMetaOrThrow(chatId);
+      let modelId = args.modelId ?? impl.lastAgentModelId(chatId);
+      if (modelId === null) {
+        throw new Error(
+            "This chat has no agent message to take a model from. Name one with modelId.");
+      }
+      // The turn runs as the owner, whoever started the one it retries: on the owner's model, keys
+      // and account, so the owner is billed as if they had retried it, and a model the owner
+      // cannot run fails with the owner's own error. Only the retry's message is the admin's.
+      let userMeta = await retryOnDoReset(
+          () => impl.ownerUserDo().getChatContext(modelId), impl.logger);
+      // Deleted while the owner's account was read.
+      if (!impl.ownerId) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      }
+      impl.retryAgent(chatId, userMeta, impl.ownerId, admin);
+      return undefined;
+    }
+
+    case "restartWorkspace":
+      // Not awaited: the restart ends every call on the workspace, and this one is answered
+      // first.
+      impl.scheduleAccessRestart("Gadget restarted by a deployment admin.");
+      return undefined;
+
+    case "addCollaborator": {
+      let profile = await impl.users.getByName(username).whoamiIfExists();
+      if (!profile) throw new Error(`No account named "${username}".`);
+      // Granted as the owner: only a grant from someone who holds "build" confers access, and the
+      // admin holds none. So it passes where only the owner may add people, and replaces the note
+      // of a grant the owner had already made. The person added is still verified as an observer
+      // when they open the workspace.
+      (await impl.getSharingManager()).addCollaborator({
+        caller: {profileId: await impl.getOwnerProfileId(), isOwner: true},
+        profile,
+        grant,
+        note: `Added by deployment admin ${admin.id}: ${reason}` +
+            (args.note === undefined ? "" : ` (${args.note})`),
+      });
+      return undefined;
+    }
+
+    case "deleteChat":
+      impl.getChatMetaOrThrow(chatId);
+      await impl.deleteChat(chatId);
+      return undefined;
+
+    case "revertChat":
+      await impl.withChatLock(chatId, () => impl.revertChanges(chatId, revertFrom, admin));
+      return undefined;
+
+    case "revertGadget":
+      await impl.restoreGadgetVersion(gadgetId, validateOid(commitId), admin);
+      return undefined;
+
+    case "deleteGadget":
+      impl.getGadgetRecord(gadgetId);
+      await impl.removeWorkpiece(gadgetId);
+      return undefined;
+
+    case "deleteWorkspace":
+      if (await impl.deleteWorkspace(adminUserId())) {
+        // Not awaited, as for a restart.
+        impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
+      }
+      return undefined;
+
+    case "rejectPendingActions": {
+      // The pending actions of one connection, or of the whole workspace, oldest first.
+      let pendingActions = function* (connection: WorkpieceId | undefined) {
+        for (let record of connection === undefined
+            ? impl.storage.actions.byHistoryFilter.get("pending")
+            : impl.storage.actions.pendingByGatekeeper.get(connection)) {
+          if (record.type === "action") yield record;
+        }
+      };
+      let countPending = (connection: WorkpieceId | undefined) => {
+        let count = 0;
+        for (let _record of pendingActions(connection)) count++;
+        return count;
+      };
+
+      // Buffered, so that no storage cursor stays open across an await.
+      let queue: number[] = [];
+      for (let {id} of pendingActions(args.gatekeeperId)) {
+        if (queue.push(id) === MAX_ADMIN_REJECTED_ACTIONS) break;
+      }
+
+      let rejected = 0;
+      let connectionsRemoved = 0;
+      let failed = 0;
+      let firstError: string | undefined;
+      for (let id of queue) {
+        // An earlier creation may have taken this action along.
+        let record = impl.storage.actions.get(id);
+        if (record?.type !== "action" || record.state !== "pending") continue;
+        // Rejecting a creation removes its connection, which was never created, and rejects
+        // everything queued on it, as a member's rejection of it does: all of it is counted.
+        let creation = record.action === "create";
+        let taken = creation ? countPending(record.gatekeeperId) : 1;
+        try {
+          // No auto-approval drain follows, as one follows a session's rejection: a drain applies
+          // actions and resumes turns for whoever cleared the gate, and an admin applies nothing.
+          await impl.rejectAction(id, async () => admin);
+        } catch (err) {
+          // Left pending, and the run goes on: the queue is read oldest first, so one action a
+          // gatekeeper refuses to reject would otherwise stop every later request at the same
+          // place.
+          failed++;
+          firstError ??= cutAdminAuditText(
+              err instanceof Error ? err.message : String(err), MAX_ADMIN_AUDIT_ARG_LENGTH);
+          continue;
+        }
+        rejected += taken;
+        if (creation) connectionsRemoved++;
+      }
+      if (rejected === 0 && failed > 0) {
+        throw new Error(`No pending action could be rejected: ${firstError}`);
+      }
+      return `Rejected ${rejected} pending actions; ${countPending(args.gatekeeperId)} remain.` +
+          (connectionsRemoved > 0
+              ? ` Connections removed with a rejected creation: ${connectionsRemoved}.` : "") +
+          (failed > 0 ? ` ${failed} could not be rejected: ${firstError}.` : "");
+    }
+
+    case "removeConnection": {
+      let record = impl.storage.gatekeepers.get(gatekeeperId);
+      if (!record) throw new Error(`No such connection: ${gatekeeperId}`);
+      impl.removeGatekeeper(gatekeeperId);
+      impl.recordGadgetAnalytics({
+        event_name: "connection_removed",
+        user_id: adminUserId(),
+        gatekeeper_id: gatekeeperId,
+        connection_type: connectionTypeFromCreationSpec(record.creationSpec?.type),
+        vendor_id:
+            record.creationSpec?.type === "gatekeeper" ? record.creationSpec.vendorId : undefined,
+      });
+      return undefined;
+    }
+  }
+  // Reached by no action: one without an operation above does not compile.
+  return action satisfies never;
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

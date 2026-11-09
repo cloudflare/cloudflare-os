@@ -5,7 +5,9 @@ import {
   MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminWriteAction, type AdminWriteArgs, type AdminWriteRequest, type CollaboratorGrant,
 } from "@gadgets/workshop-shared/api";
-import { adminAuditValue, cutAdminAuditText, redactAdminAuditArgs } from "./admin-access.js";
+import {
+  adminAuditValue, cutAdminAuditText, redactAdminAuditArgs, type AdminWriteActor,
+} from "./admin-access.js";
 
 /** A write request as AdminSettings stores it: the API's, without the URL (derived from the
  * environment when read), with what only the server needs to record its later steps. */
@@ -13,6 +15,20 @@ export type StoredAdminWrite = Omit<AdminWriteRequest, "approvalUrl"> & {
   /** The requester's audit session, for the "expired" record. */
   sessionId: string;
 };
+
+/** Who approved a write request, and with which passkey: its credential id as
+ * AdminWriteRecord.passkey keeps it (auditOwnerId() of the id). */
+export type AdminWriteApprover = AdminWriteActor & { passkey: string };
+
+/** What OverseerDurableObject.applyAdminWrite() is given: an approved request, and who approved
+ * it, through which session and with which passkey, for the "approved" record the workspace
+ * writes. `workspaceOwner` is the owner the approval page showed: the workspace refuses
+ * (`workspaceChanged`) a grant naming another owner than its own, since a deleted workspace's id
+ * can be initialised again for someone else. */
+export type AdminWriteGrant =
+    Pick<StoredAdminWrite,
+        "action" | "args" | "reason" | "requestedBy" | "expiresAt" | "workspaceOwner"> &
+    AdminWriteApprover & { requestId: string };
 
 /** A fresh challenge: 32 random bytes, then `binding` (the digest of what the ceremony confirms:
  * an approval's request, a removal's credential id), as unpadded base64url. */
