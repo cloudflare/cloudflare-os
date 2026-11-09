@@ -1865,7 +1865,22 @@ describe("Drive sharing changes at approval", () => {
         : { id: nodeId, parents: ["R"], trashed: false, canShare: true }));
     id = await inFolder.submit("createPermission", { ...shareOf(ZOE, "writer"), folderIds: ["R"] });
     expect(await inFolder.apply(id)).toBeNull();
-    expect(inFolder.api.getScopeNodes.mock.calls).toEqual([[["R", FILE]]]);
+    // Once before the permissions are read, and once after: reading them takes requests.
+    expect(inFolder.api.getScopeNodes.mock.calls).toEqual([[["R", FILE]], [["R", FILE]]]);
+    // A file that left the folder while its permissions were read is not changed, and nothing of
+    // the list it then answered with is said.
+    id = await inFolder.submit("createPermission", { ...shareOf(ZOE, "reader"), folderIds: ["R"] });
+    inFolder.api.listPermissions.mockImplementationOnce(async fileId => {
+      inFolder.api.getScopeNodes.mockImplementationOnce(async ids => ids.map((nodeId): DriveScopeNode =>
+        nodeId === "R"
+          ? { id: "R", mimeType: folderMime, parents: ["above"], trashed: false, canListChildren: true }
+          : { id: nodeId, parents: ["elsewhere"], trashed: false, canShare: true }));
+      return { permissions: inFolder.drive.get(fileId) };
+    });
+    let before = inFolder.sends();
+    expect(await inFolder.apply(id)).toBe(OUT_OF_SCOPE);
+    expect(inFolder.sends()).toBe(before);
+    expect(failure(inFolder.journal, id)).toEqual({ error: OUT_OF_SCOPE });
     id = await inFolder.submit("createPermission",
       { ...shareOf(ZOE, "reader"), fileId: "R", folderIds: ["R"], self: true, isFolder: true });
     // The folder itself was not made shareable by the fake above.
@@ -2290,6 +2305,9 @@ describe("Drive sharing changes at approval", () => {
     // described, nor what a send of it makes.
     await approveAgain([owner()], share, [owner(), zoe(given("reader"))]);
     await approveAgain([owner()], share, [owner(), zoe(inherited("writer"))]);
+    // A higher role than the card's is someone else's: a create only raises to the role it names.
+    let lower: DriveSharingAction = { kind: "createPermission", payload: shareOf(ZOE, "reader", undefined, [owner()]) };
+    await approveAgain([owner()], lower, [owner(), zoe(given("writer"))]);
 
     // A share with anyone approved as link-only, whose look finds the link found by searching.
     let linkShare: DriveSharingAction =
@@ -2459,6 +2477,68 @@ describe("Drive sharing changes at approval", () => {
     expect(await narrowed.apply(id)).toBe(cannot);
     expect(failure(narrowed.journal, id)).toEqual({ error: cannot, outcome: "unknown" });
     expect(narrowed.attempts.has(id)).toBe(true);
+  });
+
+  it("holds a share to the role the card said", async () => {
+    // Zoe is given more between the checks and the create, which only raises: nothing changed.
+    let raised = harness([owner()]);
+    let id = await raised.submit("createPermission", shareOf(ZOE, "reader", undefined, [owner()]));
+    raised.api.createPermission.mockImplementationOnce(async (fileId, grant) => {
+      raised.drive.set(FILE, [owner(), zoe(given("writer"))]);
+      return raised.drive.create(fileId, grant);
+    });
+    expect(await raised.apply(id)).toBe(GRANTEE_CHANGED);
+    expect(failure(raised.journal, id)).toEqual({ error: GRANTEE_CHANGED });
+    expect(raised.attempts.has(id)).toBe(false);
+    expect(raised.drive.get(FILE)).toEqual([owner(), zoe(given("writer"))]);
+
+    // The same of access a parent came to give: the create leaves nothing on the file.
+    let inherits = harness([owner()]);
+    id = await inherits.submit("createPermission", shareOf(ZOE, "reader", undefined, [owner()]));
+    inherits.api.createPermission.mockImplementationOnce(async () => zoe(inherited("writer")));
+    expect(await inherits.apply(id)).toBe(GRANTEE_CHANGED);
+    expect(inherits.attempts.has(id)).toBe(false);
+
+    // A domain to be found by searching, answered at another role: the create may have made it
+    // found by searching all the same, so nothing is said to be unchanged.
+    let another = "Google left this access at another role than the approval said. Check who has " +
+      "access to the file on Google Drive, then reject this to clear it.";
+    let searchable = harness([owner()]);
+    id = await searchable.submit("createPermission",
+      shareOf(PARTNER, "reader", { discoverable: true }, [owner()]));
+    searchable.api.createPermission.mockImplementationOnce(
+      async () => ({ ...wholeDomain("partner.example", true), role: "writer", details: [given("writer")] }));
+    expect(await searchable.apply(id)).toBe(another);
+    expect(failure(searchable.journal, id)).toEqual({ error: another, outcome: "unknown" });
+    expect(searchable.attempts.has(id)).toBe(true);
+  });
+
+  it("holds a role change's answer to the role and the reach the card said", async () => {
+    let otherwise = "Google changed this access otherwise than the approval said: its role, or " +
+      "whether it can be found by searching, is not what was approved. Check who has access to " +
+      "the file on Google Drive, then reject this to clear it.";
+    // The link is made searchable between the checks and the update, which still reaches it.
+    let linkOnly = [owner(), link()];
+    let widened = harness(linkOnly);
+    let id = await widened.submit("updatePermission",
+      roleChangeOf(linkOnly, "anyoneWithLink", "writer"));
+    widened.api.updatePermission.mockImplementationOnce(async () => link("writer", true));
+    expect(await widened.apply(id)).toBe(otherwise);
+    expect(failure(widened.journal, id)).toEqual({ error: otherwise, outcome: "unknown" });
+    expect(widened.attempts.has(id)).toBe(true);
+
+    // An answer at another role than the one set.
+    let odd = harness();
+    id = await odd.submit("updatePermission", roleChangeOf(fixtures(), BOB_ID, "writer"));
+    odd.api.updatePermission.mockImplementationOnce(async () => bob(given("commenter")));
+    expect(await odd.apply(id)).toBe(otherwise);
+
+    // A parent that came to give the new role: Drive leaves nothing on the file of a role set to
+    // exactly that, and answers with the parent's access alone.
+    let merged = harness();
+    id = await merged.submit("updatePermission", roleChangeOf(fixtures(), BOB_ID, "writer"));
+    merged.api.updatePermission.mockImplementationOnce(async () => bob(inherited("writer")));
+    expect(await merged.apply(id)).toBeNull();
   });
 
   it("logs IDs and outcomes only", async () => {

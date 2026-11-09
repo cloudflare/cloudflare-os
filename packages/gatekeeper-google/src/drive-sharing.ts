@@ -786,6 +786,20 @@ const CHANGED_AGAIN =
   "This was changed again on Google Drive after it was first sent, so it was left as it is. " +
   "Check the file, then reject this to clear it.";
 
+/**
+ * Said when a share that was to be found by searching met access at another role: Google's create
+ * left the role, and may have made the access found by searching all the same.
+ */
+const SHARED_AT_ANOTHER_ROLE =
+  "Google left this access at another role than the approval said. Check who has access to the " +
+  "file on Google Drive, then reject this to clear it.";
+
+/** Said when a role change's own answer shows another role or reach than the approval described. */
+const ROLE_SET_OTHERWISE =
+  "Google changed this access otherwise than the approval said: its role, or whether it can be " +
+  "found by searching, is not what was approved. Check who has access to the file on Google " +
+  "Drive, then reject this to clear it.";
+
 /** Said when a look is refused the file's permissions, or cannot read them all. */
 const SHARING_NOT_SHOWN =
   "Google Drive no longer shows this file's sharing to the connected account, so whether this " +
@@ -1014,6 +1028,11 @@ function change<Sent>(
         if (error instanceof PermissionListTooLong) throw new ActionApplyError(error.message);
         throw error;
       }
+      // A folder binding reaches a file by where it sits, and reading its permissions took
+      // requests of its own: its place is proved again before anything of the list is said or sent.
+      if (host.scope().kind === "folder" && !await proveTarget(host, payload)) {
+        throw new ActionApplyError(NO_LONGER_IN_SCOPE);
+      }
       // With no send of this change on record, a file already in the state it was to produce is
       // someone else's doing, and the approver is told this approval changed nothing.
       let stands = standing(permissions);
@@ -1072,10 +1091,10 @@ async function applyShare(
         }),
       };
     }
-    // The grantee had nothing on the file before a send, or its check would have refused, so a
-    // role there at least as high, in the form the approval said, is what a send made.
-    let made = given.find(({ listed, direct }) =>
-      direct !== undefined && ROLE_RANK[direct] >= ROLE_RANK[role] && sameReach(listed, payload));
+    // The grantee had nothing on the file before a send, or its check would have refused, so the
+    // approval's role there, in the form the approval said, is what a send made. A higher one was
+    // given by someone else: Google's create only raises a role.
+    let made = given.find(({ listed, direct }) => direct === role && sameReach(listed, payload));
     return {
       described: false, refusal: GRANTEE_CHANGED,
       ...(made ? { made: { sent: made.listed } } : {}),
@@ -1101,13 +1120,29 @@ async function applyShare(
       `where the approval said it ${found ? "could not" : "could"}. Check who has access to ` +
       "the file on Google Drive, then reject this to clear it.");
   }
+  // Google's create only raises a role. Access given since the checks read the file, at a higher
+  // role or by a parent, is left as it was and answers in place of what the approval said.
+  if (accessOf(permission).direct !== role) {
+    // A link or a domain asked to be found by searching may have been made so all the same.
+    if (!emailed && payload.discoverable === true) {
+      throw new ActionOutcomeUnknownError(SHARED_AT_ANOTHER_ROLE);
+    }
+    // Nothing was changed, so no send is in doubt.
+    host.attempts.delete(id);
+    throw new ActionApplyError(GRANTEE_CHANGED);
+  }
 }
 
-/** Sets the role a role change's approval described. */
+/**
+ * Sets the role a role change's approval described, and holds Google's answer to the role and the
+ * reach the approval said.
+ */
 async function applyRoleChange(
   host: DriveWritesHost, id: number, payload: DriveSharingActions["updatePermission"],
 ): Promise<void> {
-  await change<void>(host, id, { kind: "updatePermission", payload }, permissions => {
+  let answered = await change<DrivePermissionRecord | undefined>(host, id, {
+    kind: "updatePermission", payload,
+  }, permissions => {
     let current = accessNow(permissions, payload);
     let { direct, inherited } = current ? accessOf(current) : {};
     if (current === undefined || direct === undefined) {
@@ -1123,9 +1158,8 @@ async function applyRoleChange(
     if (direct === payload.fromRole && reach) {
       return {
         described: true,
-        send: async () => {
-          await host.api.updatePermission(payload.fileId, payload.permissionId, payload.toRole);
-        },
+        send: () =>
+          host.api.updatePermission(payload.fileId, payload.permissionId, payload.toRole),
       };
     }
     return {
@@ -1133,6 +1167,15 @@ async function applyRoleChange(
       ...(direct === payload.toRole && reach ? { made: { sent: undefined } } : {}),
     };
   });
+  // What a look found was judged there. A send's own answer is held outside the step, as a
+  // share's is: the role was set, on access other than the approval described.
+  if (answered === undefined) return;
+  let { direct, inherited } = accessOf(answered);
+  // Drive leaves nothing on the file of a role set to exactly what a parent gives.
+  let set = direct === payload.toRole || (direct === undefined && inherited === payload.toRole);
+  if (!set || !sameReach(answered, payload)) {
+    throw new ActionOutcomeUnknownError(ROLE_SET_OTHERWISE);
+  }
 }
 
 /** Removes the access a removal's approval described. */
