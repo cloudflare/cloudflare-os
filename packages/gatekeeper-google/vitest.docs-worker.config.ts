@@ -1,9 +1,31 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import capnwebValidate from "capnweb-validate/vite";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import deployed from "./cloudflare.config.ts";
 
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
+
+// Wrangler ships `*.txt` imports as Text modules, but this pool is driven from inline miniflare
+// settings, where Vite would resolve an agent type `.txt`, a symlink to its `.d.ts`, to that file
+// and send it through the TypeScript pipeline, leaving the import `undefined`. Resolving by the
+// import path, as wrangler does, keeps Vite from following the link.
+const textModules: Plugin = {
+  name: "text-modules",
+  enforce: "pre",
+  resolveId(source, importer) {
+    if (source.endsWith(".txt") && importer !== undefined) {
+      return path.resolve(path.dirname(importer), source);
+    }
+  },
+  load(id) {
+    if (id.endsWith(".txt")) {
+      return `export default ${JSON.stringify(readFileSync(id, "utf-8"))};`;
+    }
+  },
+};
 
 /**
  * Workerd coverage for nested Drive sessions, Sheets and Slides sessions, the Google Doc and
@@ -11,6 +33,7 @@ const { compatibilityDate, compatibilityFlags } = deployed.worker;
  */
 export default defineConfig({
   plugins: [
+    textModules,
     capnwebValidate(),
     cloudflareTest({
       main: "./__tests__/worker.ts",
@@ -44,5 +67,8 @@ export default defineConfig({
       "__tests__/workerd/slides-session.test.ts",
     ],
     setupFiles: ["@gadgets/scripts/assert-workerd"],
+    // Vitest's module cache hands `.txt` modules back under ids `textModules` cannot read, so
+    // every run after the first would fail.
+    fsModuleCache: false,
   },
 });

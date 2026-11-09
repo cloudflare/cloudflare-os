@@ -1,280 +1,90 @@
-import type { GoogleDocReadSession } from "./docs-read-types";
-import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
-import type { GooglePresentationReadSession } from "./slides-read-types";
+import type {
+  DriveComment, DriveCommentReply, GoogleDriveFolderReadSession, GoogleDriveReadSession,
+} from "./drive-read-types";
+export type * from "./drive-read-types";
+
+/** Options for {@link DriveCommentWrites.comment}. */
+export type DriveCommentOptions = {
+  /**
+   * Text of the file this comment is about, within one paragraph and at most 500 characters, which
+   * must occur exactly once in the tab: the tab's text as `getContent()` shows it, without Markdown
+   * formatting (no `**`, list markers or escapes) and, in a table, without HTML (`&` rather than
+   * `&amp;`, no tags). It is shown in quotes at the top of the comment, with a link to the nearest
+   * heading above it when a heading precedes it. Google Docs only.
+   */
+  quote?: string;
+  /** The Doc tab `quote` is in. Defaults to the first tab. */
+  tabId?: string;
+};
+
+/** Options for {@link DriveCommentWrites.suggestEdit}. */
+export type DriveSuggestEditOptions = {
+  /** Why, added below the suggestion. */
+  note?: string;
+  /** The Doc tab `oldText` is in. Defaults to the first tab. */
+  tabId?: string;
+};
 
 /**
- * A pagination cursor.
+ * Comment writes, which every Google Drive binding with read and write access offers.
  *
- * Call `next()` repeatedly on the same RPC object and dispose it when finished. Drain it until
- * `next()` returns `null`; an empty array means only that this call made no visible progress.
+ * Comments are plain text, never anchored to text in the file. Each write is queued for the
+ * user's approval and returns the pending item, which `listComments()` shows until it is decided.
+ * A write needs the connected account to be able to comment on the file, and a new comment makes
+ * Google email the file's owner. An email address written after `@` or `+` in the text mentions
+ * that person: Google emails them the text, whether or not they can open the file. `fileId` names
+ * an in-scope file, as it does for `listComments()`. A comment or reply holds at most 4096 bytes
+ * of UTF-8, counting what `quote` or `suggestEdit()` adds to it. A write also fails, saying what
+ * to ask the user for, when the Google account does not allow changes to Drive files, and on a
+ * read-only binding, whose `getScope()` reports `access: "read"`.
  */
-export interface Cursor<T> {
-  /** The next batch, `[]` when more work remains, or `null` once exhausted. */
-  next(): Promise<T[] | null>;
+export interface DriveCommentWrites {
+  /** Queue a plain-text comment on an in-scope file. `quote` works only on native Google Docs. */
+  comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;
+
+  /**
+   * Queue a comment suggesting `oldText`, which must occur exactly once in the tab (matched and
+   * limited as `quote` is), be replaced with `newText` (empty to delete it). The suggestion is a
+   * comment, not an edit the owner can accept. Native Google Docs only.
+   */
+  suggestEdit(
+    fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,
+  ): Promise<DriveComment>;
+
+  /**
+   * Queue a reply to a comment on an in-scope file. Replying to a resolved comment reopens it. A
+   * comment that is itself still `pending` takes replies once it is posted, under its Drive ID.
+   */
+  reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;
+
+  /**
+   * Queue resolving a comment on an in-scope file, with an optional closing reply. Fails for a
+   * comment that is already resolved or that is itself still `pending`.
+   */
+  resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;
 }
 
-/** The immutable resource scope of a Google Drive binding or positioned folder capability. */
-export type DriveScope =
-  | { kind: "account" }
-  | { kind: "folder"; folderId: string; rootFolderId: string; name: string }
-  | { kind: "file"; fileId: string; name: string };
-
-/** Owner metadata for a Drive entry. Absent for items in shared drives. */
-export type DriveOwner = {
-  /** The owner's current display name, when available. */
-  displayName?: string;
-  /** The owner's email address, when available. */
-  emailAddress?: string;
-};
-
-/** Metadata about a Drive shortcut's target. The shortcut is not followed. */
-export type DriveShortcut = {
-  /** Stable ID recorded for the shortcut target. */
-  targetId: string;
-  /** Drive's creation-time MIME type snapshot, not current authority for the target. */
-  targetMimeType?: string;
-};
+/**
+ * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
+ * anywhere the connected account can reach in Google Drive, plus comment writes.
+ */
+export interface GoogleDriveSession extends GoogleDriveReadSession, DriveCommentWrites {}
 
 /**
- * Read-only metadata for one entry within the immutable binding scope.
- *
- * `list()` and `search()` never return trashed items, including the bound file of an exact-file
- * binding. `getEntry()` can, and this type does not say whether an entry is trashed — there is no
- * `trashed` field.
+ * An exact-file binding with read and write access: everything {@link GoogleDriveReadSession}
+ * reads of its one Drive file, the only file its methods accept, plus comment writes on it.
  */
-export type DriveEntry = {
-  /** Stable Drive file ID. */
-  id: string;
-  /** Current display name. */
-  name: string;
-  /** Current Drive MIME type. */
-  mimeType: string;
-  /** Whether this entry is a folder. */
-  isFolder: boolean;
-  /** Time the entry was last modified. */
-  modifiedTime: Date;
-  /** Size in bytes. Absent for folders and shortcuts. */
-  size?: number;
-  /** Owner metadata. Absent for items in shared drives. */
-  owner?: DriveOwner;
-  /** Direct parent ID. Absent when the entry is at a root. */
-  parentId?: string;
-  /** Shared-drive ID. Absent for entries outside shared drives. */
-  driveId?: string;
-  /** Browser URL for viewing the entry, when Drive provides one. */
-  webViewLink?: string;
-  /** Shortcut target metadata, present only for shortcuts. */
-  shortcut?: DriveShortcut;
-};
-
-/** Supported ordering for Drive listing and structured search. */
-export type DriveOrder =
-  | "modifiedTimeDesc"
-  | "modifiedTimeAsc"
-  | "nameAsc"
-  | "nameDesc";
-
-/** Options for listing entries within an account or exact-file binding. */
-export type DriveListOptions = {
-  /** Limit an account listing to one folder's direct children. */
-  directParentId?: string;
-  /** Result order. Defaults to most recently modified first. */
-  order?: DriveOrder;
-};
-
-/** Structured, AND-combined values for searching Drive metadata. */
-export type DriveSearchQuery = {
-  /** Match entries whose name starts with this value. */
-  namePrefix?: string;
-  /** Match entries whose indexed body text, description, or OCR text contains this value. */
-  fullTextContains?: string;
-  /** Match entries having any one of these MIME types. */
-  mimeTypes?: string[];
-  /** Match entries modified after this RFC 3339 timestamp. */
-  modifiedAfter?: string;
-  /** Match entries modified before this RFC 3339 timestamp. */
-  modifiedBefore?: string;
-  /** Limit account matches to one folder's direct children. */
-  directParentId?: string;
-  /** Result order. Cannot be combined with `fullTextContains`. */
-  order?: DriveOrder;
-};
-
-/** Listing options for the positioned folder's direct children. */
-export type DriveFolderListOptions = Pick<DriveListOptions, "order">;
-
-/** Provider search filters for the positioned folder's direct children. */
-export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & {
-  /**
-   * Search inside these direct child folders instead of the positioned folder. Each must be a
-   * listable direct child, and one request covers them all, so polling many sibling folders does
-   * not cost a request each. At most 50 per search; search larger sets in batches.
-   *
-   * Every named folder is recorded as an observation, so one that later stops being listable
-   * fails collaborator admission for the whole set. Open folders individually to keep each
-   * folder's disclosure independent.
-   */
-  childFolderIds?: string[];
-};
+export interface GoogleDriveFileSession extends GoogleDriveReadSession, DriveCommentWrites {}
 
 /**
- * Every field either Drive search shape accepts.
- *
- * One class serves both session interfaces, so this is what the RPC boundary validates; each core
- * refuses the field it does not serve rather than ignoring it.
+ * A folder binding with read and write access: navigation within the originally selected folder as
+ * {@link GoogleDriveFolderReadSession} offers it, plus comment writes on the positioned folder's
+ * direct children.
  */
-export type DriveSessionSearchQuery =
-  DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
-
-/** A Drive PDF's text, streamed. */
-export type DrivePdfText = {
+export interface GoogleDriveFolderSession extends GoogleDriveFolderReadSession, DriveCommentWrites {
   /**
-   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
-   * headings, and pages before the first with text left out. Read it with
-   * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
-   * `hasText` is false. A failure partway through errors the stream.
+   * Open a live direct child folder as an independently disposable capability, with the same
+   * access.
    */
-  text: ReadableStream<Uint8Array>;
-  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
-  hasText: boolean;
-};
-
-/** Which bytes of a Drive file `readFile()` reads. */
-export type DriveFileReadOptions = {
-  /** Where to start, in bytes from the start of the file. Defaults to 0. */
-  offset?: number;
-  /** How many bytes to read, at least 1. Defaults to the rest of the file. */
-  length?: number;
-};
-
-/** A Drive file's content, or one range of it, streamed. */
-export type DriveFileBytes = {
-  /** The file's MIME type, as `DriveEntry.mimeType` gives it. */
-  mimeType: string;
-  /** The whole file's size in bytes. */
-  size: number;
-  /** When the file was last modified. Reads reporting different times read different versions of it. */
-  modifiedTime: Date;
-  /** Where `content` starts, in bytes from the start of the file. */
-  offset: number;
-  /** How many bytes `content` carries: those asked for, fewer where the file ends, and none from its end. */
-  length: number;
-  /**
-   * The bytes, read from Google as you read them, so a file of any size never has to be held in
-   * memory. Pass it to a worktree's `writeBytes()` to save the file, read it whole with
-   * `await new Response(content).arrayBuffer()` (or `.text()`, for UTF-8 text), or use a reader
-   * to stop early. A range can end partway through a multi-byte character, so decode text read in
-   * several ranges with one `TextDecoder`, calling `decoder.decode(bytes, { stream: true })` for
-   * each range and `decoder.decode()` at the end; decoding each range on its own corrupts the
-   * characters split between them.
-   * Read it straight away, and cancel it if you will not: a stream left unread for a minute is
-   * ended. A stream that fails partway, whatever its error says, did not deliver the file: it was
-   * left unread, or Google stopped sending it or sent less of it than the file had, so read the
-   * file again.
-   */
-  content: ReadableStream<Uint8Array>;
-};
-
-/**
- * Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, PDF text, and the
- * bytes of any other file.
- */
-export interface GoogleDriveReadSession {
-  /** Return this capability's immutable scope with current display metadata. */
-  getScope(): Promise<DriveScope>;
-
-  /**
-   * List entries in an account binding, or the one exact-file entry unless it is trashed.
-   *
-   * `directParentId` throws unless it names a folder whose children this account can list.
-   */
-  list(options?: DriveListOptions): Promise<Cursor<DriveEntry>>;
-
-  /**
-   * Search the connected account with structured values. At least one filter other than `order`
-   * is required, and omitting `order` for a full-text search preserves Drive's relevance order.
-   * Exact-file bindings cannot be searched.
-   */
-  search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>>;
-
-  /**
-   * Return one entry. An account binding accepts any accessible ID; an exact-file binding accepts
-   * only its bound ID. Either may return trash.
-   */
-  getEntry(fileId: string): Promise<DriveEntry>;
-
-  /** Open an in-scope native Google Doc as an independently disposable read capability. */
-  openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
-
-  /** Open an in-scope native Google Sheet as an independently disposable read capability. */
-  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
-
-  /**
-   * Open an in-scope native Google Slides presentation as an independently disposable read
-   * capability.
-   */
-  openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
-
-  /**
-   * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
-   * when the Google account was connected before Drive bindings could read file content.
-   */
-  readPdf(fileId: string): Promise<DrivePdfText>;
-
-  /**
-   * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
-   * other uploaded file, whatever its type or size. `options` selects part of it; omitted, the
-   * whole file. Google Docs, Sheets and Slides are refused naming the method that opens them, as
-   * are folders, shortcuts and other Google-native files (MIME types starting
-   * `application/vnd.google-apps.`), which have no content to download. Fails when Google does not
-   * let the account download the file, and asks to reconnect when the account was connected before
-   * Drive bindings could read file content.
-   */
-  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
-}
-
-/** Read-only navigation within the originally selected folder. */
-export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "getScope"> {
-  /** List only the positioned folder's direct children. */
-  list(options?: DriveFolderListOptions): Promise<Cursor<DriveEntry>>;
-
-  /**
-   * Search the positioned folder's direct children, or those of the folders named by
-   * `childFolderIds`, using provider-side filters. At least one filter other than `order` is
-   * required, and omitting `order` for a full-text search preserves Drive's relevance order.
-   */
-  search(query: DriveFolderSearchQuery): Promise<Cursor<DriveEntry>>;
-
-  /** Return one live direct child. A nested descendant or a trashed entry is rejected. */
-  getEntry(fileId: string): Promise<DriveEntry>;
-
-  /** Open a live direct-child native Google Doc as an independently disposable capability. */
-  openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
-
-  /** Open a live direct-child native Google Sheet as an independently disposable capability. */
-  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
-
-  /**
-   * Open a live direct-child native Google Slides presentation as an independently disposable
-   * capability.
-   */
-  openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
-
-  /**
-   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
-   * reconnect when the Google account was connected before Drive bindings could read file content.
-   */
-  readPdf(fileId: string): Promise<DrivePdfText>;
-
-  /**
-   * Read a live direct child's own content as a stream of bytes, as
-   * `GoogleDriveReadSession.readFile()` does.
-   */
-  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
-
-  /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;
 }
-
-/** The established account and exact-file Drive read capability. */
-export type GoogleDriveSession = GoogleDriveReadSession;

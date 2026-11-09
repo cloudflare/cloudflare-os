@@ -28,6 +28,28 @@ export function isDriveFileId(id: string): boolean {
   return DRIVE_FILE_ID_PATTERN.test(id);
 }
 
+function requireDriveFileId(id: string): void {
+  if (!isDriveFileId(id)) throw new Error("Not a Google Drive file ID.");
+}
+
+/**
+ * Loose on purpose: Docs and Sheets name comments `doco.…` and Slides an 11-character token. At
+ * least one letter or digit, so a `.` or `..` segment cannot climb the request path.
+ */
+const DRIVE_COMMENT_ID_PATTERN = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._-]{1,256}$/;
+
+/**
+ * Whether `id` has the shape of a Drive comment ID, checked before it reaches a Drive request path.
+ * Reply IDs share the shape.
+ */
+export function isDriveCommentId(id: string): boolean {
+  return DRIVE_COMMENT_ID_PATTERN.test(id);
+}
+
+function requireDriveCommentId(id: string): void {
+  if (!isDriveCommentId(id)) throw new Error("Not a Google Drive comment ID.");
+}
+
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -55,7 +77,8 @@ export type DriveFile = {
  * The minimal per-file facts a folder-scope descendant proof rests on.
  *
  * Deliberately narrower than {@link DriveFile}: an ancestry walk touches folders the caller never
- * asked about and must never see, so it fetches only what membership is decided from.
+ * asked about and must never see, so it fetches only what membership is decided from, plus whether
+ * this account may comment, which an approved comment write is checked against in the same read.
  */
 export type DriveScopeNode = {
   id: string;
@@ -66,11 +89,12 @@ export type DriveScopeNode = {
   canListChildren?: boolean;
   /** Present only when asked for, as observer checks do; a scope proof never needs it. */
   canDownload?: boolean;
+  canComment?: boolean;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS =
-  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)";
+  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canComment)";
 
 /** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
 const DRIVE_OBSERVATION_FIELDS =
@@ -383,6 +407,12 @@ function optionalCapabilities(value: unknown): DriveFile["capabilities"] {
   };
 }
 
+function optionalCapability(value: unknown, capability: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
+  return optionalBoolean(value[capability], `file capabilities.${capability}`);
+}
+
 function parseDriveFile(value: unknown): DriveFile {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string") {
     throw new Error("Invalid Google Drive file response");
@@ -544,6 +574,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   let capabilities = optionalCapabilities(value.capabilities);
   let canListChildren = capabilities?.canListChildren;
   let canDownload = capabilities?.canDownload;
+  let canComment = optionalCapability(value.capabilities, "canComment");
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
@@ -551,6 +582,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
     ...(canDownload === undefined ? {} : { canDownload }),
+    ...(canComment === undefined ? {} : { canComment }),
   };
 }
 
@@ -681,6 +713,218 @@ function batchPartAllowed(part: BatchAccessPart): boolean {
   }
   if (part.status === 403 || part.status === 404) return false;
   throw new Error(`Google Drive batch subrequest failed: ${part.status}`);
+}
+
+/** As {@link isInsufficientScope}, for a batch subrequest: the token lacks a scope it needs. */
+function batchPartLacksScope(part: BatchAccessPart): boolean {
+  return part.status === 403 && googleErrorReasonFromText(part.body) === "insufficientPermissions";
+}
+
+/** Google's limit on a comment's or reply's content, in bytes of UTF-8. */
+export const MAX_COMMENT_BYTES = 4096;
+
+/** Our own limit on the text a comment quotes or a suggested edit replaces, in characters. */
+export const MAX_QUOTE_CHARS = 500;
+
+/** Bytes `text` takes in UTF-8, which is what {@link MAX_COMMENT_BYTES} counts. */
+export function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Refuses content Google would refuse, and content it would wrongly accept: an empty or
+ * whitespace-only comment is created as an empty one. `what` names the content in the error.
+ */
+export function checkCommentContent(content: string, what: "comment" | "reply" = "comment"): void {
+  if (!content.trim()) throw new Error(`The ${what} is empty.`);
+  let bytes = utf8ByteLength(content);
+  if (bytes > MAX_COMMENT_BYTES) {
+    throw new Error(
+      `The ${what} is ${bytes} bytes of UTF-8; Google Drive allows at most ${MAX_COMMENT_BYTES}.`);
+  }
+}
+
+/**
+ * Per-attempt budget for a comment write. A write makes at most three attempts (the first, one
+ * after an auth refresh, one after a reconnect changed the stored token).
+ */
+const COMMENT_WRITE_TIMEOUT_MS = 20_000;
+
+/**
+ * The longest a comment write's requests can take before it settles or is abandoned, so a write
+ * not found this long after it began was not left in flight by that attempt.
+ */
+export const COMMENT_WRITE_MAX_MS = 3 * COMMENT_WRITE_TIMEOUT_MS;
+
+/** A comment's or reply's author, as Drive describes them to the connected account. */
+export type DriveCommentAuthorRecord = {
+  displayName: string;
+  /** Whether the author is the connected account. */
+  me: boolean;
+};
+
+/** One reply to a comment. A resolve with no text has content `""`. */
+export type DriveReplyRecord = {
+  id: string;
+  content: string;
+  author: DriveCommentAuthorRecord;
+  createdTime: string;
+  modifiedTime?: string;
+  deleted: boolean;
+  /** Set only on a reply that resolved or reopened its comment. */
+  action?: "resolve" | "reopen";
+};
+
+/** One comment and its replies, as plain text: Drive derives `htmlContent`, which is never read. */
+export type DriveCommentRecord = {
+  id: string;
+  content: string;
+  /** The text of the file the comment is attached to, when Drive reports one. */
+  quotedText?: string;
+  author: DriveCommentAuthorRecord;
+  createdTime: string;
+  /** Bumped by every reply, so a later `startModifiedTime` lists the comment again. */
+  modifiedTime?: string;
+  /** Drive sends this only once a comment has been resolved; absent reads as unresolved. */
+  resolved: boolean;
+  deleted: boolean;
+  replies: DriveReplyRecord[];
+};
+
+/** One page of comments. */
+export type DriveCommentList = { comments: DriveCommentRecord[]; nextPageToken?: string };
+
+/** One page of a comment's replies. */
+export type DriveReplyList = { replies: DriveReplyRecord[]; nextPageToken?: string };
+
+/**
+ * Field masks for replies and comments. Each is the one mask its writes and its reads send: Drive
+ * applies a write before it checks the mask, so an invalid one answers 400 having posted anyway.
+ */
+const REPLY_FIELDS = "id,content,author(displayName,me),createdTime,modifiedTime,deleted,action";
+const COMMENT_FIELDS = "id,content,quotedFileContent,author(displayName,me),createdTime," +
+  `modifiedTime,resolved,deleted,replies(${REPLY_FIELDS})`;
+
+function parseCommentAuthor(value: unknown): DriveCommentAuthorRecord {
+  if (!isRecord(value)) throw new Error("Invalid Google Drive comment author");
+  return {
+    displayName: optionalString(value.displayName, "comment author displayName") ?? "",
+    me: optionalBoolean(value.me, "comment author me") ?? false,
+  };
+}
+
+/** The fields comments and replies share. A deleted one comes without its content. */
+function parseCommentCore(value: unknown, kind: string) {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
+      typeof value.createdTime !== "string") {
+    throw new Error(`Invalid Google Drive ${kind} response`);
+  }
+  let modifiedTime = optionalString(value.modifiedTime, `${kind} modifiedTime`);
+  return {
+    value,
+    core: {
+      id: value.id,
+      content: optionalString(value.content, `${kind} content`) ?? "",
+      author: parseCommentAuthor(value.author),
+      createdTime: value.createdTime,
+      ...(modifiedTime === undefined ? {} : { modifiedTime }),
+      deleted: optionalBoolean(value.deleted, `${kind} deleted`) ?? false,
+    },
+  };
+}
+
+function parseReply(raw: unknown): DriveReplyRecord {
+  let { value, core } = parseCommentCore(raw, "reply");
+  let action = value.action;
+  if (action !== undefined && action !== "resolve" && action !== "reopen") {
+    throw new Error("Invalid Google Drive reply action");
+  }
+  return { ...core, ...(action === undefined ? {} : { action }) };
+}
+
+/** The characters Drive's HTML names; every other one it escapes is written by number. */
+const HTML_NAMED_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&", quot: "\"", lt: "<", gt: ">",
+};
+
+/**
+ * Text Drive escaped as HTML, each character reference turned back into its character. One pass,
+ * so text that itself spelled a reference comes back as it was written.
+ */
+function decodeHtmlText(html: string): string {
+  return html.replace(/&(?:(amp|quot|lt|gt)|#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6}));/g,
+    (reference: string, name?: string, decimal?: string, hex?: string) => {
+      if (name !== undefined) return HTML_NAMED_REFERENCES[name] ?? reference;
+      let code = decimal !== undefined ? Number.parseInt(decimal, 10)
+        : Number.parseInt(hex ?? "", 16);
+      // A reference to no character stays as written.
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+        ? String.fromCodePoint(code) : reference;
+    });
+}
+
+/**
+ * The passage a comment is attached to, as text: Drive's `quotedFileContent.value`, unless it is
+ * empty. Drive gives a selection's text escaped as HTML, and says so in `mimeType`.
+ */
+function quotedText(value: unknown): string | undefined {
+  // Optional, and nothing a listing stands on: any other shape reads as no passage.
+  if (!isRecord(value) || typeof value.value !== "string" || !value.value) return undefined;
+  return value.mimeType === "text/html" ? decodeHtmlText(value.value) : value.value;
+}
+
+function parseComment(raw: unknown): DriveCommentRecord {
+  let { value, core } = parseCommentCore(raw, "comment");
+  if (value.replies !== undefined && !Array.isArray(value.replies)) {
+    throw new Error("Invalid Google Drive comment replies");
+  }
+  let quoted = quotedText(value.quotedFileContent);
+  return {
+    ...core,
+    ...(quoted === undefined ? {} : { quotedText: quoted }),
+    resolved: optionalBoolean(value.resolved, "comment resolved") ?? false,
+    replies: (value.replies ?? []).map(parseReply),
+  };
+}
+
+/** A list response's `key` array, parsed item by item, and its continuation token. */
+function parseListPage<K extends string, T>(
+  body: unknown, key: K, parse: (value: unknown) => T,
+): Record<K, T[]> & { nextPageToken?: string } {
+  let raw = isRecord(body) ? body[key] ?? [] : undefined;
+  if (!isRecord(body) || !Array.isArray(raw)) {
+    throw new Error(`Invalid Google Drive ${key} list response`);
+  }
+  let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
+  return {
+    [key]: raw.map(parse), ...(nextPageToken ? { nextPageToken } : {}),
+  } as Record<K, T[]> & { nextPageToken?: string };
+}
+
+/**
+ * What a failed comment write proves about whether it was posted.
+ *
+ * - `absent`: Drive refused it before posting anything (an invisible file or comment, a missing
+ *   permission or scope, content over Google's limit), so it is safe to give up.
+ * - `rateLimited`: nothing was posted, and the same write may succeed later.
+ * - `unknown`: anything else. Drive can post a comment and still answer 400, and a 5xx, a network
+ *   failure or an unreadable success leaves the outcome open too, so the write must be looked for
+ *   before it is sent again.
+ */
+export type CommentWriteFailure = "absent" | "rateLimited" | "unknown";
+
+/** Classifies an error thrown by {@link DriveApi.createComment} or {@link DriveApi.createReply}. */
+export function commentWriteFailure(error: unknown): CommentWriteFailure {
+  if (error instanceof DriveApiDisabledError) return "absent";
+  if (!(error instanceof DriveApiRequestError)) return "unknown";
+  let { status, reason } = error;
+  let rateLimited = status === 403 && reason !== undefined && RATE_LIMIT_REASONS.has(reason);
+  if (status === 429 || rateLimited) return "rateLimited";
+  // Google authenticates and authorizes before it acts. A 403 here is a refused permission or
+  // scope, an invisible file, a domain policy, or `commentLengthLimitExceeded`; a 404 an absent
+  // file or comment.
+  if (status === 401 || status === 403 || status === 404) return "absent";
+  return "unknown";
 }
 
 export class DriveApi {
@@ -847,7 +1091,7 @@ export class DriveApi {
    * `timeoutMs`, the whole answer is timed, its body included.
    */
   async #fetchMedia(fileId: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
-    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    requireDriveFileId(fileId);
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
@@ -1007,6 +1251,101 @@ export class DriveApi {
     return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
   }
 
+  /** Whether the connected account may comment on a file, as Drive reports it. */
+  async canComment(fileId: string): Promise<boolean> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({
+      fields: "capabilities(canComment)", supportsAllDrives: "true",
+    });
+    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
+    if (!isRecord(body)) throw new Error("Invalid Google Drive file response");
+    return optionalCapability(body.capabilities, "canComment") === true;
+  }
+
+  /**
+   * One page of a file's comments, deleted ones left out. `startModifiedTime` (RFC 3339) keeps
+   * only comments modified at or after it, a reply counting as a modification of its comment.
+   */
+  async listComments(
+    fileId: string, options: { pageToken?: string; startModifiedTime?: string } = {},
+  ): Promise<DriveCommentList> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({
+      pageSize: "100", fields: `nextPageToken,comments(${COMMENT_FIELDS})`,
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    if (options.startModifiedTime) params.set("startModifiedTime", options.startModifiedTime);
+    return parseListPage(
+      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/comments`, params),
+      "comments", parseComment);
+  }
+
+  /** One comment and its replies. */
+  async getComment(fileId: string, commentId: string): Promise<DriveCommentRecord> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    let params = new URLSearchParams({ fields: COMMENT_FIELDS });
+    let comment = parseComment(await this.#getUnknown(
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}`, params));
+    if (comment.id !== commentId) throw new Error("Google Drive returned a different comment");
+    return comment;
+  }
+
+  /** One page of a comment's replies, deleted ones left out. */
+  async listReplies(fileId: string, commentId: string, options: { pageToken?: string } = {})
+      : Promise<DriveReplyList> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    let params = new URLSearchParams({
+      pageSize: "100", fields: `nextPageToken,replies(${REPLY_FIELDS})`,
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    return parseListPage(
+      await this.#getUnknown(
+        `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
+        params),
+      "replies", parseReply);
+  }
+
+  /**
+   * Posts a plain comment on a file, with no anchor and no quoted file content: Docs lists a
+   * comment made through the API under "Original content deleted", with or without them.
+   *
+   * Sent again only by the auth retry, after Google refused the token: any other error does not
+   * prove nothing was posted (see {@link commentWriteFailure}).
+   */
+  async createComment(fileId: string, content: string): Promise<DriveCommentRecord> {
+    requireDriveFileId(fileId);
+    checkCommentContent(content);
+    return parseComment(await this.#postJson(
+      `/files/${encodeURIComponent(fileId)}/comments`, COMMENT_FIELDS, { content }));
+  }
+
+  /**
+   * Posts a reply to a comment, or resolves it with `action: "resolve"`, in which case `content`
+   * may be left out and Drive stores `""`. A plain reply to a resolved comment reopens it.
+   *
+   * Sent again only by the auth retry, after Google refused the token: any other error does not
+   * prove nothing was posted (see {@link commentWriteFailure}).
+   */
+  async createReply(
+    fileId: string, commentId: string, reply: { content?: string; action?: "resolve" },
+  ): Promise<DriveReplyRecord> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    // Only a resolve may go without content.
+    if (reply.content !== undefined || reply.action !== "resolve") {
+      checkCommentContent(reply.content ?? "", "reply");
+    }
+    return parseReply(await this.#postJson(
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
+      REPLY_FIELDS,
+      {
+        ...(reply.content === undefined ? {} : { content: reply.content }),
+        ...(reply.action === undefined ? {} : { action: reply.action }),
+      }));
+  }
+
   /**
    * Fresh access checks for typed disclosure units. Content needs leave to download it, which Drive
    * withholds from viewers when downloading is restricted; an omitted answer counts as no leave.
@@ -1079,6 +1418,7 @@ export class DriveApi {
     };
 
     let replayed = false;
+    let reloaded = false;
     for (;;) {
       let response = await fetchWithAuthRetry(DRIVE_BATCH_URL, {
         method: "POST",
@@ -1103,8 +1443,35 @@ export class DriveApi {
         continue;
       }
 
+      if (!reloaded && placed.some(batchPartLacksScope)) {
+        // Likewise a subrequest refused for a missing scope: fetchWithAuthRetry's reload of the
+        // token a reconnect stored never sees it, so a memoized token from before the reconnect
+        // would deny every file until it expires. Replays only on a token that really changed.
+        reloaded = true;
+        if (await this.getAccessToken({ reloadStored: true }) !== lastToken) continue;
+      }
+
       return placed;
     }
+  }
+
+  /**
+   * A write, with its own timeout on each attempt and read back through `fields`. Only the auth
+   * retry sends it again, after Google refused the token.
+   */
+  async #postJson(path: string, fields: string, body: Record<string, unknown>): Promise<unknown> {
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}${path}?${new URLSearchParams({ fields })}`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      this.getAccessToken, { timeoutMs: COMMENT_WRITE_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    let text = await readBoundedText(
+      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+    return parseDriveJson(text, "response");
   }
 
   async #getUnknown(path: string, params: URLSearchParams): Promise<unknown> {

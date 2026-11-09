@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
-  GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
-  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
+  BIGQUERY_RESOURCE, DRIVE_WRITES_GRANT, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
   LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
   SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, SUPPORTED_RESOURCES, creatableKind,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  driveResourceUrl, grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
 } from "../src/resources";
+import type { DriveResourceTarget } from "../src/resources";
 
 /** The message `parseResourceUrl` rejects `url` with. Fails the test if it accepts it. */
 function messageFor(url: string): string {
@@ -56,6 +57,45 @@ describe("resource declarations", () => {
       "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
       "rows, columns, and formatting, with your approval.",
     );
+  });
+
+  // Workshop shows each description in full to people, who have no URL to add a parameter to, and
+  // prints it to the agent, which learns the parameter nowhere else before it holds a Drive
+  // binding. So each says the choice in a person's words first, and the parameter once, as what a
+  // connection request adds.
+  it("describes Drive's access levels to the user and the agent", () => {
+    expect(GOOGLE_DRIVE_RESOURCE.description).toBe(
+      "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
+      "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
+      "folder or file, as read only or as read and write, which also lets agents comment on " +
+      "files with your approval; a Doc, spreadsheet or presentation connected on its own can be " +
+      "edited, with your approval, but not commented on. A connection request asks for read and " +
+      "write by adding ?access=write to the URL.",
+    );
+    expect(GOOGLE_DRIVE_FOLDER_RESOURCE.description).toBe(
+      "Browse a selected folder or shared drive, search its direct children, and read native " +
+      "Google Docs, Sheets and Slides, PDFs as text, any other file's content as bytes, and " +
+      "comments. A read and write connection also lets agents comment on its files, with your " +
+      "approval; a connection request asks for one by adding ?access=write to the URL.",
+    );
+    expect(GOOGLE_DRIVE_FILE_RESOURCE.description).toBe(
+      "Read metadata, comments and, for a native Google Doc, Sheet or Slides presentation, " +
+      "content from one Drive file, its text when it is a PDF, or otherwise its content as " +
+      "bytes. A read and write connection also lets agents comment on the file, with your " +
+      "approval; a connection request asks for one by adding ?access=write to the URL.",
+    );
+
+    for (let { description } of [
+      GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
+    ]) {
+      expect(description.split("?access=write")).toHaveLength(2);
+      let request = description.indexOf("connection request");
+      expect(request).toBeGreaterThan(-1);
+      expect(description.indexOf("?access=write")).toBeGreaterThan(request);
+      let inAPersonsWords = description.slice(0, request);
+      expect(inAPersonsWords).toContain("read and write");
+      expect(inAPersonsWords).not.toContain("?");
+    }
   });
 
   it("has a distinct pattern per resource", () => {
@@ -958,5 +998,191 @@ describe("Drive resources' file content access", () => {
     // A reconnect asks for them again.
     expect(recordedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes }))
       .toEqual(DRIVE_RESOURCES);
+  });
+});
+
+describe("Drive writes grant", () => {
+  const DRIVE = "https://www.googleapis.com/auth/drive";
+  const DRIVE_RESOURCES = [
+    GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
+  ].map(resource => resource.urlPattern);
+  const FILE_AND_WRITES = [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
+
+  it("is a private grant, not a resource anything can list, offer or bind", () => {
+    expect(DRIVE_WRITES_GRANT).toBe("https://drive.google.com/drive/writes");
+    expect(isPrivateGrant(DRIVE_WRITES_GRANT)).toBe(true);
+    expect(SUPPORTED_RESOURCES.map(resource => resource.urlPattern))
+      .not.toContain(DRIVE_WRITES_GRANT);
+    expect(RESOURCE_SCOPES.map(entry => entry.resource.urlPattern))
+      .not.toContain(DRIVE_WRITES_GRANT);
+    expect(Object.values(RESOURCE_BY_KIND).map(resource => resource.urlPattern))
+      .not.toContain(DRIVE_WRITES_GRANT);
+    expect(() => parseResourceUrl(DRIVE_WRITES_GRANT))
+      .toThrow("Unsupported Google Drive resource URL: drive.google.com/drive/writes");
+  });
+
+  it("stays out of the frozen inference lists", () => {
+    expect(SCOPE_DERIVED_RESOURCE_URL_PATTERNS).not.toContain(DRIVE_WRITES_GRANT);
+    expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).not.toContain(DRIVE_WRITES_GRANT);
+  });
+
+  it("asks for full drive and nothing else beyond identity", () => {
+    expect(() => validateResourceUrlPatterns([DRIVE_WRITES_GRANT])).not.toThrow();
+    expect(resourceUrlPatternsToOAuthScopes([DRIVE_WRITES_GRANT]))
+      .toEqual([...IDENTITY_SCOPES, DRIVE]);
+  });
+
+  // connectAccount requests every supported resource when the caller names none; full drive comes
+  // only from this grant, so a first connection is never asked for it.
+  it("is not part of a first connection's request-everything default", () => {
+    let everything = resourceUrlPatternsToOAuthScopes(
+      SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
+    expect(everything).not.toContain(DRIVE);
+  });
+
+  it("is covered only by full drive", () => {
+    expect(resourcesCoveredByScopes([DRIVE_WRITES_GRANT], [DRIVE])).toEqual([DRIVE_WRITES_GRANT]);
+    expect(resourcesCoveredByScopes(
+      [DRIVE_WRITES_GRANT], resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES),
+    )).toEqual([]);
+    expect(resourcesCoveredByScopes([DRIVE_WRITES_GRANT], [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+    ])).toEqual([]);
+  });
+
+  // An account description lists grants that are not private; getGrantedResourceUrlPatterns keeps
+  // every held grant, which is how the session and the configurator learn it is held.
+  it("is reported held once recorded, and implies no Drive resource", () => {
+    let grant = {
+      resourceUrlPatterns: FILE_AND_WRITES,
+      oauthScopes: resourceUrlPatternsToOAuthScopes(FILE_AND_WRITES),
+    };
+    let granted = grantedResourceUrlPatterns(grant);
+    expect(granted).toEqual(FILE_AND_WRITES);
+    expect(granted.filter(pattern => !isPrivateGrant(pattern)))
+      .toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+
+    let alone = {
+      resourceUrlPatterns: [DRIVE_WRITES_GRANT],
+      oauthScopes: [...IDENTITY_SCOPES, DRIVE],
+    };
+    expect(grantedResourceUrlPatterns(alone)).toEqual([DRIVE_WRITES_GRANT]);
+    expect(hasDriveResourceGrant(grantedResourceUrlPatterns(alone))).toBe(false);
+  });
+
+  it("is retracted when full drive is declined, but asked for again on reconnect", () => {
+    let declined = {
+      resourceUrlPatterns: FILE_AND_WRITES,
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]),
+    };
+    expect(grantedResourceUrlPatterns(declined)).toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+    expect(recordedResourceUrlPatterns(declined)).toContain(DRIVE_WRITES_GRANT);
+  });
+
+  // Existing Drive connections must not be re-prompted: their resources' scopes are unchanged and
+  // never include full drive.
+  it("leaves every Drive resource's scopes as they were", () => {
+    for (let pattern of DRIVE_RESOURCES) {
+      expect(resourceUrlPatternsToOAuthScopes([pattern])).toEqual([
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/presentations.readonly",
+      ]);
+    }
+    let existing = {
+      resourceUrlPatterns: DRIVE_RESOURCES,
+      oauthScopes: resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES),
+    };
+    expect(grantedResourceUrlPatterns(existing)).toEqual(DRIVE_RESOURCES);
+  });
+
+  // Only this grant requests `drive`, so only an account holding it exercises the rows that take
+  // `drive` to cover another scope. A grant the account never recorded does not start to count.
+  it("makes a recorded Sheets, Office import or shared-drives grant count, and not a Docs or " +
+     "Slides one", () => {
+    let resourceUrlPatterns = [
+      GOOGLE_SHEETS_RESOURCE.urlPattern, GOOGLE_DOC_RESOURCE.urlPattern,
+      GOOGLE_SLIDES_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT, SHARED_DRIVES_GRANT,
+      DRIVE_WRITES_GRANT,
+    ];
+    expect(grantedResourceUrlPatterns({
+      resourceUrlPatterns, oauthScopes: [...IDENTITY_SCOPES, DRIVE],
+    })).toEqual([
+      GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT, SHARED_DRIVES_GRANT,
+      DRIVE_WRITES_GRANT,
+    ]);
+    expect(grantedResourceUrlPatterns({ resourceUrlPatterns, oauthScopes: IDENTITY_SCOPES }))
+      .toEqual([]);
+    expect(grantedResourceUrlPatterns({
+      resourceUrlPatterns: [DRIVE_WRITES_GRANT], oauthScopes: [...IDENTITY_SCOPES, DRIVE],
+    })).toEqual([DRIVE_WRITES_GRANT]);
+  });
+});
+
+describe("Drive access level", () => {
+  const FORMS: [url: string, readOnly: DriveResourceTarget][] = [
+    ["https://drive.google.com/drive/my-drive", { kind: "driveAccount" }],
+    ["https://drive.google.com/drive/folders/F1", { kind: "driveFolder", folderId: "F1" }],
+    ["https://drive.google.com/file/d/F1/view", { kind: "driveFile", fileId: "F1" }],
+  ];
+
+  // Strict equality tells an absent key from one holding `undefined`, which `toEqual` does not: a
+  // read-only URL's target has no `access` key at all, so nothing copies one into binding props.
+  it("reads exactly ?access=write as read and write, on every Drive form", () => {
+    for (let [url, readOnly] of FORMS) {
+      for (let query of [
+        "", "?access=read", "?access=WRITE", "?access=", "?access=true", "?usp=sharing",
+        "?access=read&access=write",
+      ]) {
+        expect(parseResourceUrl(url + query), url + query).toStrictEqual(readOnly);
+      }
+      for (let query of [
+        "?access=write", "?usp=sharing&access=write", "?access=write&access=read",
+      ]) {
+        expect(parseResourceUrl(url + query), url + query)
+          .toStrictEqual({ ...readOnly, access: "write" });
+      }
+    }
+    expect(parseResourceUrl("https://drive.google.com/drive/folders/F1/?access=write"))
+      .toStrictEqual({ kind: "driveFolder", folderId: "F1", access: "write" });
+  });
+
+  // The level is a property of a connection, not another resource type: admin disable-sets,
+  // blueprint typeUrlPatterns and recorded grants keep their keys at either level.
+  it("never changes which resource a URL names", () => {
+    for (let [url, readOnly] of FORMS) {
+      let resource = RESOURCE_BY_KIND[readOnly.kind];
+      expect(RESOURCE_BY_KIND[parseResourceUrl(url).kind]).toBe(resource);
+      expect(RESOURCE_BY_KIND[parseResourceUrl(`${url}?access=write`).kind]).toBe(resource);
+    }
+    expect(parseResourceUrl("https://docs.google.com/document/d/D1/edit?access=write"))
+      .toEqual({ kind: "doc", documentId: "D1" });
+  });
+
+  it("mints each target's URL, which reads back as the same target", () => {
+    let targets: DriveResourceTarget[] = [
+      { kind: "driveAccount" },
+      { kind: "driveAccount", access: "write" },
+      { kind: "driveFolder", folderId: "a/b c" },
+      { kind: "driveFolder", folderId: "a/b c", access: "write" },
+      { kind: "driveFile", fileId: "a b" },
+      { kind: "driveFile", fileId: "a b", access: "write" },
+    ];
+    for (let target of targets) {
+      let url = driveResourceUrl(target);
+      expect(parseResourceUrl(url), url).toStrictEqual(target);
+      expect(new URLPattern(RESOURCE_BY_KIND[target.kind].urlPattern).test(url), url).toBe(true);
+    }
+    expect(driveResourceUrl({ kind: "driveAccount" }))
+      .toBe("https://drive.google.com/drive/my-drive");
+    expect(driveResourceUrl({ kind: "driveAccount", access: "write" }))
+      .toBe("https://drive.google.com/drive/my-drive?access=write");
+    expect(driveResourceUrl({ kind: "driveFolder", folderId: "a/b c", access: "write" }))
+      .toBe("https://drive.google.com/drive/folders/a%2Fb%20c?access=write");
+    expect(driveResourceUrl({ kind: "driveFile", fileId: "a b" }))
+      .toBe("https://drive.google.com/file/d/a%20b/view");
   });
 });

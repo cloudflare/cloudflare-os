@@ -316,6 +316,54 @@ describe("Drive configurator URLs", () => {
     expect(() => configurableUrl(driveConfigurator, { target: "shared-with-me" })).toThrow();
   });
 
+  // Reading a read and write URL back asks whether the account allows changes, which `noUi` refuses.
+  const allowed = { getWriteAccess: async () => ({ grant: "g", held: true }) } as never;
+  const writeValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: allowed,
+  });
+
+  it.for([
+    ["the whole account", "drive", { kind: "driveAccount" }, GOOGLE_DRIVE_RESOURCE],
+    [
+      "a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" },
+      GOOGLE_DRIVE_FOLDER_RESOURCE,
+    ],
+    [
+      "a file", "file:file/id with spaces", { kind: "driveFile", fileId: "file/id with spaces" },
+      GOOGLE_DRIVE_FILE_RESOURCE,
+    ],
+  ] as const)("mints Read and write as ?access=write for %s, and reads the URL back into the same choice", async ([, target, parsed, resource]) => {
+    let url = configurableUrl(driveConfigurator, { target, access: "write" });
+    expect(url).toMatch(/\?access=write$/);
+    expect(parseResourceUrl(url)).toEqual({ ...parsed, access: "write" });
+    expect(new URLPattern(resource.urlPattern).test(url), url).toBe(true);
+    await expect(writeValues(url)).resolves.toEqual({ target, access: "write" });
+  });
+
+  it("mints no parameter for Read only", () => {
+    for (let access of [undefined, null, "read", "WRITE"]) {
+      let url = configurableUrl(driveConfigurator, { target: "folder:F1", ...(access === undefined ? {} : { access }) });
+      expect(url, String(access)).toBe("https://drive.google.com/drive/folders/F1");
+      expect("access" in parseResourceUrl(url), String(access)).toBe(false);
+    }
+  });
+
+  it("reads the parameter exactly as the server does", async () => {
+    for (let query of [
+      "?access=write", "?access=WRITE", "?access=", "?access=read&access=write", "?access=write&access=read",
+      "?usp=sharing&access=write",
+    ]) {
+      let url = `https://drive.google.com/drive/folders/F1${query}`;
+      let parsed = parseResourceUrl(url);
+      expect("access" in await writeValues(url), query).toBe("access" in parsed && parsed.access === "write");
+    }
+  });
+
+  it("never puts the parameter on an editable type's URL", () => {
+    expect(configurableUrl(driveConfigurator, { target: "doc:D1", checked: "doc:D1", access: "write" }))
+      .toBe("https://docs.google.com/document/d/D1/edit");
+  });
+
   // The picker offers the whole account, folders and files, but the Workshop may ask for only one of
   // them, as a blueprint's folder binding does. The configurator copies each pattern, so each is
   // checked against its resource.

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, conversionError,
-  escapeDriveQueryLiteral, isInsufficientScope, lacksFileContentAccess,
-  type DriveConversionSource,
+  COMMENT_WRITE_MAX_MS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError,
+  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_COMMENT_BYTES, MAX_QUERY_PARENTS, buildDriveQuery, commentWriteFailure,
+  conversionError, escapeDriveQueryLiteral, isDriveCommentId, isFileInvisible, isInsufficientScope,
+  lacksFileContentAccess, type DriveConversionSource,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -13,6 +13,11 @@ const API_DISABLED_BODY = JSON.stringify({
     message: "Google Drive API has not been used in project 1234 before or it is disabled.",
     errors: [{ domain: "usageLimits", reason: "accessNotConfigured" }],
   },
+});
+
+/** Google's error envelope for a token that lacks a scope the request needs. */
+const MISSING_SCOPE_BODY = JSON.stringify({
+  error: { code: 403, errors: [{ domain: "global", reason: "insufficientPermissions" }] },
 });
 
 /** Installs a fetch stub and returns the requests it was called with. */
@@ -566,6 +571,61 @@ describe("bulk access verification", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // The batch POST answers 200 around a part refused for a missing scope, so the 403 reload of the
+  // token a reconnect stored never runs on its own, and a token memoized before the reconnect would
+  // read as every file being denied.
+  it("reloads the stored token once when a batch subrequest lacks a scope and does not treat it as denial", async () => {
+    let token = "narrow";
+    let requests: unknown[] = [];
+    let drive = new DriveApi(async opts => {
+      requests.push(opts);
+      if (opts?.reloadStored) token = "widened";
+      return token;
+    });
+    let calls = stubFetch([
+      batchResponse([{ status: 403, body: MISSING_SCOPE_BODY }]),
+      batchResponse([{ status: 200 }]),
+    ]);
+    await expect(drive.checkObservations([{ kind: "file", fileId: "one" }])).resolves.toEqual([true]);
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer narrow", "Bearer widened"]);
+    expect(requests).toEqual([undefined, { reloadStored: true }, undefined]);
+  });
+
+  it("keeps a missing scope a denial, replaying nothing, when the stored token is unchanged", async () => {
+    let requests: unknown[] = [];
+    let drive = new DriveApi(async opts => {
+      requests.push(opts);
+      return "tok";
+    });
+    let calls = stubFetch([batchResponse([{ status: 403, body: MISSING_SCOPE_BODY }])]);
+    await expect(drive.checkObservations([{ kind: "file", fileId: "one" }])).resolves.toEqual([false]);
+    // One reload asked for, and no mint: the same token would be refused again.
+    expect(requests).toEqual([undefined, { reloadStored: true }]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reloads the stored token once only, and for no other denial", async () => {
+    let token = "narrow";
+    let requests: unknown[] = [];
+    let drive = new DriveApi(async opts => {
+      requests.push(opts);
+      if (opts?.reloadStored) token = "widened";
+      return token;
+    });
+    let calls = stubFetch([
+      batchResponse([{ status: 403, body: MISSING_SCOPE_BODY }]),
+      batchResponse([{ status: 403, body: MISSING_SCOPE_BODY }]),
+      batchResponse([{ status: 403 }, { status: 404 }]),
+    ]);
+    await expect(drive.checkObservations([{ kind: "file", fileId: "one" }])).resolves.toEqual([false]);
+    expect(calls).toHaveLength(2);
+    requests.length = 0;
+    await expect(drive.checkObservations(
+      ["one", "two"].map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([false, false]);
+    expect(requests).toEqual([undefined]);
+  });
+
   it("places batch parts by Content-ID rather than positional order", async () => {
     stubFetch([batchResponse([
       { status: 403, contentId: "response-item-1" },
@@ -641,7 +701,7 @@ describe("folder scope nodes", () => {
       driveId: "drive-1", canListChildren: true,
     }]);
     expect(calls[0].body).toContain(`fields=${encodeURIComponent(
-      "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)")}`);
+      "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canComment)")}`);
     expect(calls[0].body).not.toContain("name");
   });
 
@@ -1480,5 +1540,480 @@ describe("lacksFileContentAccess", () => {
     expect(lacksFileContentAccess(new DriveApiRequestError(403))).toBe(false);
     expect(lacksFileContentAccess(new DriveApiRequestError(401, "appNotAuthorizedToFile"))).toBe(false);
     expect(lacksFileContentAccess(new Error("appNotAuthorizedToFile"))).toBe(false);
+  });
+});
+
+/** Google's error envelope, shaped as Drive answers comment requests. */
+const googleError = (status: number, reason: string, message: string, location?: string) =>
+  jsonResponse({
+    error: {
+      code: status, message,
+      errors: [{ message, domain: "global", reason, ...(location ? { location, locationType: "parameter" } : {}) }],
+    },
+  }, status);
+
+const REPLY_MASK = "id,content,author(displayName,me),createdTime,modifiedTime,deleted,action";
+const COMMENT_MASK =
+  `id,content,quotedFileContent,author(displayName,me),createdTime,modifiedTime,resolved,deleted,replies(${REPLY_MASK})`;
+
+/** A comment as Drive returns it, `htmlContent` included; `resolved` is absent until resolved once. */
+const apiComment = (overrides: Record<string, unknown> = {}) => ({
+  id: "doco.AbCdEfGhIjKlMnOpQrStUv",
+  content: "Is this final?",
+  htmlContent: "Is this final?",
+  author: { displayName: "Ada", me: true },
+  createdTime: "2026-10-20T10:00:00.000Z",
+  modifiedTime: "2026-10-20T10:00:00.000Z",
+  deleted: false,
+  replies: [],
+  ...overrides,
+});
+
+const apiReply = (overrides: Record<string, unknown> = {}) => ({
+  id: "doco.ZyXwVuTsRqPoNmLkJiHgFe",
+  content: "Yes.",
+  htmlContent: "Yes.",
+  author: { displayName: "Ada", me: true },
+  createdTime: "2026-10-20T10:05:00.000Z",
+  modifiedTime: "2026-10-20T10:05:00.000Z",
+  deleted: false,
+  ...overrides,
+});
+
+describe("comment IDs", () => {
+  it("accepts Docs, Sheets and Slides comment IDs and refuses anything that could reshape a path", () => {
+    expect(isDriveCommentId("doco.AbCdEfGhIjKlMnOpQrStUv")).toBe(true);
+    expect(isDriveCommentId("AAACJHl12Cw")).toBe(true);
+    for (let id of ["", "a/b", "a?b", "a#b", "pending:1", "x".repeat(257), "a b", "..", "."]) {
+      expect(isDriveCommentId(id)).toBe(false);
+    }
+  });
+});
+
+describe("canComment", () => {
+  it("asks for the comment capability alone, across shared drives", async () => {
+    let calls = stubFetch([jsonResponse({ capabilities: { canComment: true } })]);
+    await expect(api().canComment("doc-1")).resolves.toBe(true);
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/doc-1");
+    expect(calls[0].url.searchParams.get("fields")).toBe("capabilities(canComment)");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+  });
+
+  it("reads a missing or false capability as no", async () => {
+    stubFetch([jsonResponse({ capabilities: { canComment: false } }), jsonResponse({})]);
+    await expect(api().canComment("doc-1")).resolves.toBe(false);
+    await expect(api().canComment("doc-1")).resolves.toBe(false);
+  });
+
+  it("rejects a non-boolean capability", async () => {
+    stubFetch([jsonResponse({ capabilities: { canComment: "yes" } })]);
+    await expect(api().canComment("doc-1")).rejects.toThrow("canComment");
+  });
+
+  it("makes no request for an ID that is not a Drive file ID", async () => {
+    let calls = stubFetch([]);
+    await expect(api().canComment("../x")).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("listComments", () => {
+  it("lists a page of comments with the comment mask, parsing Drive's shape", async () => {
+    let calls = stubFetch([jsonResponse({
+      comments: [
+        apiComment({ replies: [apiReply({ action: "resolve", content: "", htmlContent: "" })], resolved: true }),
+        apiComment({ id: "AAACJHl12Cw", author: { displayName: "Bob", me: false } }),
+      ],
+      nextPageToken: "next",
+    })]);
+
+    let page = await api().listComments("doc-1");
+
+    expect(calls[0].method).toBeUndefined();
+    expect(calls[0].url.origin + calls[0].url.pathname)
+      .toBe("https://www.googleapis.com/drive/v3/files/doc-1/comments");
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({
+      pageSize: "100", fields: `nextPageToken,comments(${COMMENT_MASK})`,
+    });
+    expect(page).toEqual({
+      comments: [
+        {
+          id: "doco.AbCdEfGhIjKlMnOpQrStUv", content: "Is this final?",
+          author: { displayName: "Ada", me: true },
+          createdTime: "2026-10-20T10:00:00.000Z", modifiedTime: "2026-10-20T10:00:00.000Z",
+          resolved: true, deleted: false,
+          replies: [{
+            id: "doco.ZyXwVuTsRqPoNmLkJiHgFe", content: "", author: { displayName: "Ada", me: true },
+            createdTime: "2026-10-20T10:05:00.000Z", modifiedTime: "2026-10-20T10:05:00.000Z",
+            deleted: false, action: "resolve",
+          }],
+        },
+        {
+          id: "AAACJHl12Cw", content: "Is this final?", author: { displayName: "Bob", me: false },
+          createdTime: "2026-10-20T10:00:00.000Z", modifiedTime: "2026-10-20T10:00:00.000Z",
+          resolved: false, deleted: false, replies: [],
+        },
+      ],
+      nextPageToken: "next",
+    });
+  });
+
+  it("reads the passage a comment is attached to as text, and none from any other shape", async () => {
+    stubFetch([jsonResponse({
+      comments: [
+        // A selection as Drive returns it: named references for `& " < >`, numeric for the rest.
+        apiComment({
+          quotedFileContent: {
+            mimeType: "text/html",
+            value: "Tom &amp; Jerry said &quot;&lt;hello&gt;&quot; to Andr&#233;&#39;s caf&#233;.",
+          },
+        }),
+        apiComment({
+          quotedFileContent: { mimeType: "text/html", value: "&amp;lt; &#x1F600; &nbsp; &#0; &#55357;" },
+        }),
+        apiComment({ quotedFileContent: { mimeType: "text/plain", value: "R&amp;D" } }),
+        apiComment({ quotedFileContent: { mimeType: "text/html", value: "" } }),
+        apiComment({ quotedFileContent: "May" }),
+        apiComment({ quotedFileContent: { value: 7 } }),
+        apiComment(),
+      ],
+    })]);
+
+    let { comments } = await api().listComments("doc-1");
+
+    expect(comments).toHaveLength(7);
+    expect(comments[0].quotedText).toBe("Tom & Jerry said \"<hello>\" to André's café.");
+    // One pass, the hexadecimal form read, and a name outside the four, a zero and a surrogate
+    // left as written.
+    expect(comments[1].quotedText).toBe("&lt; \u{1F600} &nbsp; &#0; &#55357;");
+    expect(comments[2].quotedText).toBe("R&amp;D");
+    for (let comment of comments.slice(3)) expect(comment).not.toHaveProperty("quotedText");
+  });
+
+  // A number past U+10FFFF names no character, and turning one into a string throws.
+  it("leaves a reference past the last code point as written, rather than failing the page", async () => {
+    let value = "&#1114112; &#9999999; &#x110000; &#xFFFFFF;";
+    stubFetch([jsonResponse({
+      comments: [apiComment({ quotedFileContent: { mimeType: "text/html", value } })],
+    })]);
+
+    let { comments } = await api().listComments("doc-1");
+
+    expect(comments[0].quotedText).toBe(value);
+  });
+
+  it("forwards the page token and the inclusive start time", async () => {
+    let calls = stubFetch([jsonResponse({ comments: [] })]);
+    await expect(api().listComments("doc-1", {
+      pageToken: "p2", startModifiedTime: "2026-10-20T09:59:58.000Z",
+    })).resolves.toEqual({ comments: [] });
+    expect(calls[0].url.searchParams.get("pageToken")).toBe("p2");
+    expect(calls[0].url.searchParams.get("startModifiedTime")).toBe("2026-10-20T09:59:58.000Z");
+  });
+
+  it("treats a response with no comments as an empty page", async () => {
+    stubFetch([jsonResponse({})]);
+    await expect(api().listComments("doc-1")).resolves.toEqual({ comments: [] });
+  });
+
+  it("keeps a deleted comment's missing content as empty text", async () => {
+    stubFetch([jsonResponse({ comments: [apiComment({ content: undefined, deleted: true })] })]);
+    let { comments } = await api().listComments("doc-1");
+    expect(comments[0]).toMatchObject({ content: "", deleted: true });
+  });
+
+  it.each([
+    ["a comments field that is not an array", { comments: {} }],
+    ["a comment without an ID", { comments: [apiComment({ id: undefined })] }],
+    ["a comment without a creation time", { comments: [apiComment({ createdTime: undefined })] }],
+    ["non-string content", { comments: [apiComment({ content: 7 })] }],
+    ["a non-boolean resolved", { comments: [apiComment({ resolved: "true" })] }],
+    ["an author that is not an object", { comments: [apiComment({ author: "Ada" })] }],
+    ["a non-boolean author.me", { comments: [apiComment({ author: { displayName: "Ada", me: 1 } })] }],
+    ["replies that are not an array", { comments: [apiComment({ replies: {} })] }],
+    ["a reply with an unknown action", { comments: [apiComment({ replies: [apiReply({ action: "delete" })] })] }],
+    ["a non-string page token", { comments: [], nextPageToken: 3 }],
+  ])("rejects %s", async (_case, body) => {
+    stubFetch([jsonResponse(body)]);
+    await expect(api().listComments("doc-1")).rejects.toThrow(/^Invalid Google Drive/);
+  });
+
+  it("surfaces an unknown file as Drive's 404", async () => {
+    stubFetch([googleError(404, "notFound", "File not found: nope.", "fileId")]);
+    let error = await api().listComments("nope").catch(caught => caught);
+    expect(error).toMatchObject({ status: 404, reason: "notFound" });
+    expect(isFileInvisible(error)).toBe(true);
+  });
+
+  it("makes no request for an ID that is not a Drive file ID", async () => {
+    let calls = stubFetch([]);
+    await expect(api().listComments("a/b")).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("getComment", () => {
+  it("reads one comment with the comment mask", async () => {
+    let calls = stubFetch([jsonResponse(apiComment({ resolved: true }))]);
+    await expect(api().getComment("doc-1", "doco.AbCdEfGhIjKlMnOpQrStUv"))
+      .resolves.toMatchObject({ id: "doco.AbCdEfGhIjKlMnOpQrStUv", resolved: true, replies: [] });
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/doc-1/comments/doco.AbCdEfGhIjKlMnOpQrStUv");
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({ fields: COMMENT_MASK });
+  });
+
+  it("refuses a body answering for another comment", async () => {
+    stubFetch([jsonResponse(apiComment({ id: "other" }))]);
+    await expect(api().getComment("doc-1", "doco.AbCdEfGhIjKlMnOpQrStUv"))
+      .rejects.toThrow("Google Drive returned a different comment");
+  });
+
+  it("surfaces an unknown comment as Drive's 404", async () => {
+    stubFetch([googleError(404, "notFound", "Comment not found: missing.", "commentId")]);
+    await expect(api().getComment("doc-1", "missing")).rejects.toMatchObject({ status: 404, reason: "notFound" });
+  });
+
+  it("makes no request for a comment ID that could reshape the path", async () => {
+    let calls = stubFetch([]);
+    await expect(api().getComment("doc-1", "x/replies")).rejects.toThrow("Not a Google Drive comment ID.");
+    await expect(api().getComment("doc-1", "pending:abc")).rejects.toThrow("Not a Google Drive comment ID.");
+    await expect(api().getComment("a?b", "c1")).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("listReplies", () => {
+  it("lists a page of replies with the reply mask", async () => {
+    let calls = stubFetch([jsonResponse({
+      replies: [apiReply(), apiReply({ id: "r2", action: "reopen", content: "Not yet." })],
+      nextPageToken: "more",
+    })]);
+
+    let page = await api().listReplies("doc-1", "c1", { pageToken: "p2" });
+
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/doc-1/comments/c1/replies");
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({
+      pageSize: "100", fields: `nextPageToken,replies(${REPLY_MASK})`, pageToken: "p2",
+    });
+    expect(page.nextPageToken).toBe("more");
+    expect(page.replies.map(reply => [reply.id, reply.action, reply.content]))
+      .toEqual([["doco.ZyXwVuTsRqPoNmLkJiHgFe", undefined, "Yes."], ["r2", "reopen", "Not yet."]]);
+    expect(page.replies[0]).not.toHaveProperty("action");
+  });
+
+  it("rejects a malformed reply", async () => {
+    stubFetch([jsonResponse({ replies: [apiReply({ deleted: "no" })] })]);
+    await expect(api().listReplies("doc-1", "c1")).rejects.toThrow("Invalid Google Drive reply deleted");
+  });
+
+  it("makes no request for an invalid comment ID", async () => {
+    let calls = stubFetch([]);
+    await expect(api().listReplies("doc-1", "")).rejects.toThrow("Not a Google Drive comment ID.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createComment", () => {
+  it("POSTs the content alone, never an anchor or quoted file content, with the comment mask", async () => {
+    let content = "\"the budget\"\n\nIs this final?\n\nhttps://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.x";
+    let calls = stubFetch([jsonResponse(apiComment({ content }))]);
+
+    let made = await api().createComment("doc-1", content);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url.origin + calls[0].url.pathname)
+      .toBe("https://www.googleapis.com/drive/v3/files/doc-1/comments");
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({ fields: COMMENT_MASK });
+    expect(calls[0].headers.get("Content-Type")).toBe("application/json");
+    expect(calls[0].headers.get("Authorization")).toBe("Bearer tok");
+    expect(JSON.parse(calls[0].body!)).toEqual({ content });
+    expect(calls[0].body).not.toMatch(/anchor|quotedFileContent/);
+    expect(made).toMatchObject({ id: "doco.AbCdEfGhIjKlMnOpQrStUv", content, resolved: false });
+  });
+
+  it("sends the content byte for byte", async () => {
+    let content = "line1\r\nline2 with trailing spaces   \n\ttabbed\nnfd e\u0301 nfc \u00e9 " +
+      "emoji \u{1F600} zwj \u200d nbsp\u00a0end  \n\n\n";
+    let calls = stubFetch([jsonResponse(apiComment({ content }))]);
+    await api().createComment("doc-1", content);
+    expect(JSON.parse(calls[0].body!).content).toBe(content);
+  });
+
+  it("refuses empty or whitespace-only content, which Drive would post as an empty comment", async () => {
+    let calls = stubFetch([]);
+    await expect(api().createComment("doc-1", "")).rejects.toThrow("The comment is empty.");
+    await expect(api().createComment("doc-1", " \n")).rejects.toThrow("The comment is empty.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses content over Google's UTF-8 byte limit without a request", async () => {
+    let calls = stubFetch([jsonResponse(apiComment()), jsonResponse(apiComment())]);
+    await api().createComment("doc-1", "a".repeat(MAX_COMMENT_BYTES));
+    await api().createComment("doc-1", "\u00e9".repeat(2048));
+    await expect(api().createComment("doc-1", "\u00e9".repeat(2049)))
+      .rejects.toThrow("The comment is 4098 bytes of UTF-8; Google Drive allows at most 4096.");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("makes no request for an ID that is not a Drive file ID", async () => {
+    let calls = stubFetch([]);
+    await expect(api().createComment("x/y", "Hi")).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("never replays a write answered with a 5xx, or lost to the network", async () => {
+    let calls = stubFetch(() => new Response("{}", { status: 503 }));
+    await expect(api().createComment("doc-1", "Hi")).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+
+    let attempts = 0;
+    vi.stubGlobal("fetch", async () => {
+      attempts++;
+      throw new TypeError("network connection lost");
+    });
+    await expect(api().createComment("doc-1", "Hi")).rejects.toThrow("network connection lost");
+    expect(attempts).toBe(1);
+  });
+
+  it("refuses an unreadable success body after the write went through", async () => {
+    stubFetch([new Response("not json", { status: 200 })]);
+    let error = await api().createComment("doc-1", "Hi").catch(caught => caught);
+    expect(error.message).toMatch(/not valid JSON/);
+    expect(commentWriteFailure(error)).toBe("unknown");
+  });
+});
+
+describe("the time a comment write may take", () => {
+  // A 401 buys one attempt on a refreshed token and a 403 one on the stored token, once each.
+  it.each([
+    ["a comment", (drive: DriveApi) => drive.createComment("doc-1", "Hi")],
+    ["a reply", (drive: DriveApi) => drive.createReply("doc-1", "c1", { content: "Yes." })],
+  ] as const)("gives %s three attempts at most, each with a timeout, COMMENT_WRITE_MAX_MS in all", async (_what, write) => {
+    let timeout = vi.spyOn(AbortSignal, "timeout");
+    let calls = stubFetch([401, 403, 401].map(status => new Response("{}", { status })));
+    let drive = new DriveApi(async opts =>
+      opts?.forceRefresh ? "refreshed" : opts?.reloadStored ? "stored" : "tok");
+
+    await expect(write(drive)).rejects.toMatchObject({ status: 401 });
+
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer tok", "Bearer refreshed", "Bearer stored"]);
+    let budgets = timeout.mock.calls.map(([ms]) => ms);
+    expect(budgets).toHaveLength(3);
+    expect(budgets.reduce((total, ms) => total + ms, 0)).toBe(COMMENT_WRITE_MAX_MS);
+  });
+});
+
+describe("createReply", () => {
+  it("POSTs a plain reply's content with the reply mask", async () => {
+    let calls = stubFetch([jsonResponse(apiReply())]);
+    let reply = await api().createReply("doc-1", "doco.AbCdEfGhIjKlMnOpQrStUv", { content: "Yes." });
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/doc-1/comments/doco.AbCdEfGhIjKlMnOpQrStUv/replies");
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({ fields: REPLY_MASK });
+    expect(JSON.parse(calls[0].body!)).toEqual({ content: "Yes." });
+    expect(reply).toEqual({
+      id: "doco.ZyXwVuTsRqPoNmLkJiHgFe", content: "Yes.", author: { displayName: "Ada", me: true },
+      createdTime: "2026-10-20T10:05:00.000Z", modifiedTime: "2026-10-20T10:05:00.000Z", deleted: false,
+    });
+  });
+
+  it("reports the reopen Drive adds to a reply on a resolved comment", async () => {
+    stubFetch([jsonResponse(apiReply({ action: "reopen" }))]);
+    await expect(api().createReply("doc-1", "c1", { content: "Yes." }))
+      .resolves.toMatchObject({ action: "reopen" });
+  });
+
+  it("resolves with no content field at all, and Drive stores empty content", async () => {
+    let calls = stubFetch([jsonResponse(apiReply({ action: "resolve", content: "", htmlContent: "" }))]);
+    let reply = await api().createReply("doc-1", "c1", { action: "resolve" });
+    expect(JSON.parse(calls[0].body!)).toEqual({ action: "resolve" });
+    expect(reply).toMatchObject({ action: "resolve", content: "" });
+  });
+
+  it("resolves with content when given", async () => {
+    let calls = stubFetch([jsonResponse(apiReply({ action: "resolve", content: "Fixed." }))]);
+    await api().createReply("doc-1", "c1", { content: "Fixed.", action: "resolve" });
+    expect(JSON.parse(calls[0].body!)).toEqual({ content: "Fixed.", action: "resolve" });
+  });
+
+  it("refuses a plain reply without content, a blank one, or an oversized one, without a request", async () => {
+    let calls = stubFetch([]);
+    await expect(api().createReply("doc-1", "c1", {})).rejects.toThrow("The reply is empty.");
+    await expect(api().createReply("doc-1", "c1", { content: "  " })).rejects.toThrow("The reply is empty.");
+    await expect(api().createReply("doc-1", "c1", { content: " ", action: "resolve" }))
+      .rejects.toThrow("The reply is empty.");
+    await expect(api().createReply("doc-1", "c1", { content: "a".repeat(MAX_COMMENT_BYTES + 1) }))
+      .rejects.toThrow("The reply is 4097 bytes");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("makes no request for an invalid file or comment ID", async () => {
+    let calls = stubFetch([]);
+    await expect(api().createReply("doc-1", "pending:1", { content: "Yes." }))
+      .rejects.toThrow("Not a Google Drive comment ID.");
+    await expect(api().createReply("", "c1", { content: "Yes." }))
+      .rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+/** The error a comment Drive answers with `response` fails with. */
+async function failedComment(response: Response): Promise<unknown> {
+  stubFetch([response]);
+  return api().createComment("doc-1", "Hi").catch(error => error);
+}
+
+describe("commentWriteFailure", () => {
+  it.each([
+    ["an unknown file", googleError(404, "notFound", "File not found: doc-1.", "fileId")],
+    ["an unknown comment", googleError(404, "notFound", "Comment not found: c1.", "commentId")],
+    ["a view-only user", googleError(403, "insufficientFilePermissions",
+      "The user does not have sufficient permissions for file doc-1.")],
+    ["content over the limit", googleError(403, "commentLengthLimitExceeded",
+      "Comment content is limited to 4096 bytes in UTF-8 encoding.")],
+    ["a token without the scope", googleError(403, "insufficientPermissions", "Insufficient Permission")],
+    ["a domain policy", googleError(403, "domainPolicy", "The domain administrators have disabled Drive apps.")],
+    ["a disabled API", jsonResponse(JSON.parse(API_DISABLED_BODY), 403)],
+  ])("knows %s posted nothing", async (_case, response) => {
+    expect(commentWriteFailure(await failedComment(response))).toBe("absent");
+  });
+
+  it.each([
+    ["a per-user rate limit", googleError(403, "userRateLimitExceeded", "User Rate Limit Exceeded")],
+    ["a project rate limit", googleError(403, "rateLimitExceeded", "Rate Limit Exceeded")],
+    ["a 429", googleError(429, "rateLimitExceeded", "Too Many Requests")],
+  ])("reads %s as retryable", async (_case, response) => {
+    expect(commentWriteFailure(await failedComment(response))).toBe("rateLimited");
+  });
+
+  it.each([
+    // Drive answered this 400 having created the comment.
+    ["a 400 for an invalid fields mask", googleError(400, "invalidParameter", "Invalid field selection notAField", "fields")],
+    ["a 400 bad request", googleError(400, "badRequest", "Bad Request")],
+    ["a 500", new Response("{}", { status: 500 })],
+    ["a 503 with an unreadable body", new Response("<html>", { status: 503 })],
+  ])("proves nothing from %s", async (_case, response) => {
+    expect(commentWriteFailure(await failedComment(response))).toBe("unknown");
+  });
+
+  it("proves nothing from a network failure or a timeout", () => {
+    expect(commentWriteFailure(new TypeError("network connection lost"))).toBe("unknown");
+    expect(commentWriteFailure(new DOMException("The operation timed out.", "TimeoutError"))).toBe("unknown");
+  });
+
+  it("reads a 401 that survived the token refresh as posting nothing", () => {
+    expect(commentWriteFailure(new DriveApiRequestError(401))).toBe("absent");
+  });
+});
+
+describe("the comment capability on a scope node", () => {
+  it("carries canComment on a scope node", async () => {
+    stubFetch([batchResponse([
+      { status: 200, body: JSON.stringify({ id: "doc-1", parents: ["p"], capabilities: { canComment: true } }) },
+    ])]);
+    await expect(api().getScopeNodes(["doc-1"])).resolves.toEqual([
+      { id: "doc-1", parents: ["p"], canComment: true },
+    ]);
   });
 });

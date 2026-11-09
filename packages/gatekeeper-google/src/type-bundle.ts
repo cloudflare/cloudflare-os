@@ -3,11 +3,18 @@ export const DOCS_TYPES_MODULE_PREFIX =
   'import type { GoogleDocReadSession } from "./docs-read-types";\n' +
   'export type { DocMetadata, GoogleDocReadSession, GoogleDocTab } from "./docs-read-types";\n\n';
 
-/** Module-only prefix of the Google Drive declaration. */
-export const DRIVE_TYPES_MODULE_PREFIX =
+/** Module-only prefix of the read-only Google Drive declaration. */
+export const DRIVE_READ_TYPES_MODULE_PREFIX =
   'import type { GoogleDocReadSession } from "./docs-read-types";\n' +
   'import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";\n' +
   'import type { GooglePresentationReadSession } from "./slides-read-types";\n\n';
+
+/** Module-only prefix of the read and write Google Drive declaration. */
+export const DRIVE_TYPES_MODULE_PREFIX =
+  "import type {\n" +
+  "  DriveComment, DriveCommentReply, GoogleDriveFolderReadSession, GoogleDriveReadSession,\n" +
+  '} from "./drive-read-types";\n' +
+  'export type * from "./drive-read-types";\n\n';
 
 /** Module-only prefix of the Gmail declaration; the flat vendor bundle gets RpcStub from chat-types instead. */
 export const GMAIL_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudflare:workers";\n\n';

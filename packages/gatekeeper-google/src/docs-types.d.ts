@@ -5,7 +5,12 @@ export type { DocMetadata, GoogleDocReadSession, GoogleDocTab } from "./docs-rea
  * Read/write access to one directly bound native Google Doc.
  *
  * Metadata covers the whole document; reads and edits each target exactly one tab, so call
- * `listTabs()` first and pass the ID of the tab to act on.
+ * `listTabs()` first and pass the ID of the tab to act on. The document's comments are not part of
+ * this binding: a Google Drive binding that reaches the same file reads them, and writes them when
+ * it has read and write access. For this file alone, request the resource URL
+ * `https://drive.google.com/file/d/<documentId>/view`, where `<documentId>` is the ID in the
+ * document's own URL: as it is to read the comments, or with `?access=write` added to write them
+ * too.
  */
 export interface GoogleDocSession extends GoogleDocReadSession {
 

@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX,
-  SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
+  GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
+  stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -19,6 +20,9 @@ function sourcePath(name: string): string {
 function source(name: string): string {
   return readFileSync(sourcePath(name), "utf8");
 }
+
+/** A file's JSDoc as running text, so a phrase can be matched across a line break. */
+const prose = (name: string) => source(name).replace(/\s*\n\s*\*\s?/g, " ");
 
 function compileAgentTypes(sourceText: string): string[] {
   const fileName = "/agent-types.ts";
@@ -93,11 +97,20 @@ function docBundle(): string {
   ].join("\n");
 }
 
-function driveBundle(): string {
+/** What a read-only Drive binding receives. */
+function driveReadBundle(): string {
   return [
     source("docs-read-types.txt"),
     source("sheets-read-types.txt"),
     source("slides-read-types.txt"),
+    stripTypeModulePrefix(source("drive-read-types.txt"), DRIVE_READ_TYPES_MODULE_PREFIX),
+  ].join("\n");
+}
+
+/** What a read and write Drive binding receives. */
+function driveWriteBundle(): string {
+  return [
+    driveReadBundle(),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -121,6 +134,7 @@ function vendorBundle(): string {
   return [
     stripTypeModulePrefix(source("types.txt"), GMAIL_TYPES_MODULE_PREFIX), docBundle(),
     sheetsBundle(), slidesBundle(), source("calendar-types.txt"), source("bigquery-types.txt"),
+    stripTypeModulePrefix(source("drive-read-types.txt"), DRIVE_READ_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
     source("chat-types.txt"),
   ].join("\n");
@@ -159,7 +173,8 @@ message.addAttachment(file);
   });
 
   it("compiles the exact Google Drive agent declaration bundle without module dependencies", () => {
-    expect(compileAgentTypes(driveBundle())).toEqual([]);
+    expect(compileAgentTypes(driveReadBundle())).toEqual([]);
+    expect(compileAgentTypes(driveWriteBundle())).toEqual([]);
   });
 
   it("compiles the exact Google Slides agent declaration bundle without module dependencies", () => {
@@ -172,7 +187,8 @@ message.addAttachment(file);
 
   it.each([
     ["vendor", vendorBundle, sheetsBundle],
-    ["Drive", driveBundle, () => source("sheets-read-types.txt")],
+    ["Drive", driveReadBundle, () => source("sheets-read-types.txt")],
+    ["Drive read and write", driveWriteBundle, () => source("sheets-read-types.txt")],
   ] as const)(
     "declares each Google Sheets name once in the flat %s bundle",
     (_name, bundle, sheets) => {
@@ -190,7 +206,7 @@ message.addAttachment(file);
     expect(readTypes).toContain("getContent(tabId?: string): Promise<string>;");
   });
 
-  it.each([["Doc", docBundle], ["Drive", driveBundle]] as const)(
+  it.each([["Doc", docBundle], ["Drive", driveReadBundle]] as const)(
     "carries the exact tab shape and its selection guidance into the %s bundle",
     (_name, bundle) => {
       const types = bundle();
@@ -247,10 +263,14 @@ sheet.updateSpreadsheet([{ op: "addSheet" }]);
     expect(compileAgentTypes(sheetsBundle() +
       "\nconst readable: GoogleSpreadsheetReadSession = null! as GoogleSpreadsheetSession;\n"))
       .toEqual([]);
-    const driveNames = topLevelNames(driveBundle());
-    expect(driveNames).toContain("GoogleSpreadsheetReadSession");
-    expect(driveNames).not.toContain("GoogleSpreadsheetSession");
-    expect(driveNames).not.toContain("SheetChange");
+    // Neither Drive bundle carries a spreadsheet write type: a read and write Drive binding edits
+    // no spreadsheet.
+    for (const bundle of [driveReadBundle, driveWriteBundle]) {
+      const driveNames = topLevelNames(bundle());
+      expect(driveNames).toContain("GoogleSpreadsheetReadSession");
+      expect(driveNames).not.toContain("GoogleSpreadsheetSession");
+      expect(driveNames).not.toContain("SheetChange");
+    }
     expect(source("sheets-types.d.ts")).toContain(
       "export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession",
     );
@@ -258,7 +278,8 @@ sheet.updateSpreadsheet([{ op: "addSheet" }]);
 
   it.each([
     ["vendor", vendorBundle],
-    ["Drive", driveBundle],
+    ["Drive", driveReadBundle],
+    ["Drive read and write", driveWriteBundle],
   ] as const)("declares the format read types once in the flat %s bundle", (_name, bundle) => {
     const names = topLevelNames(bundle());
     const formatNames = [
@@ -285,29 +306,214 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
   });
 
   it("hands out only read-only native sessions from Drive", () => {
-    const driveTypes = source("drive-types.d.ts");
-    expect(driveTypes).toContain(
+    const readTypes = source("drive-read-types.d.ts");
+    expect(readTypes).toContain(
       "openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>",
     );
-    expect(driveTypes).toContain(
+    expect(readTypes).toContain(
       "openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>",
     );
-    expect(driveTypes).toContain(
+    expect(readTypes).toContain(
       "openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>",
     );
-    expect(driveTypes).not.toContain("GoogleDocSession>");
-    expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
-    expect(driveTypes).not.toContain("GooglePresentationSession>");
-    expect(driveTypes).toContain("export interface GoogleDriveReadSession");
+    expect(readTypes).toContain("export interface GoogleDriveReadSession");
+    for (const driveTypes of [readTypes, source("drive-types.d.ts")]) {
+      expect(driveTypes).not.toContain("GoogleDocSession>");
+      expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
+      expect(driveTypes).not.toContain("GooglePresentationSession>");
+    }
+  });
+
+  it("declares comment reads on both read-only Drive sessions, and no write", () => {
+    const readTypes = source("drive-read-types.d.ts");
+    expect(readTypes.split("listComments(fileId: string): Promise<Cursor<DriveComment>>;"))
+      .toHaveLength(3);
+    const readProse = prose("drive-read-types.d.ts");
+    for (const phrase of [
+      "A read-only binding changes nothing.",
+      "request one with `?access=write` added to the resource URL, the narrowest that covers the " +
+        "files to comment on",
+      "https://drive.google.com/drive/my-drive?access=write",
+      "https://drive.google.com/drive/folders/<folderId>?access=write",
+      "https://drive.google.com/file/d/<fileId>/view?access=write",
+      "Fails for a file the connected account can only view and not comment on",
+      "Google shows a file's comments only to accounts that can comment on it.",
+      "The cursor's `next()` fails asking to reconnect when the Google account was connected " +
+        "before Drive bindings could read file content.",
+      "The text of the file this comment is attached to, when Drive reports one",
+      "Absent for a comment not attached to text, as every comment made through this binding is.",
+      "Time the comment was made or, while it is `pending`, queued.",
+      "Time the reply was made or, while it is `pending`, queued.",
+      "A pending ID cannot be replied to or resolved, and names nothing once the comment is decided",
+      "A pending ID names nothing once the reply is decided",
+      "Whether the comment is resolved, as Drive has it.",
+      "or `You` on an item that is still `pending`",
+      "Tell the connected account's items by `me`, not by name.",
+      "`\"read\"` for a read-only binding, which changes nothing",
+      "Its `access` says whether the binding is read-only",
+    ]) {
+      expect(readProse, phrase).toContain(phrase);
+    }
+    // A comment's and a reply's times are dates; only a comment carries the text it is attached to.
+    expect(readTypes.split("createdTime: Date;")).toHaveLength(3);
+    expect(readTypes.split("modifiedTime?: Date;")).toHaveLength(3);
+    expect(readTypes.split("quotedText?: string;")).toHaveLength(2);
+    const names = topLevelNames(driveReadBundle());
+    for (const name of [
+      "DriveBindingAccess", "DriveComment", "DriveCommentReply", "GoogleDriveReadSession",
+      "GoogleDriveFolderReadSession",
+    ]) {
+      expect(names).toContain(name);
+    }
+    for (const name of [
+      "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions", "GoogleDriveSession",
+      "GoogleDriveFileSession", "GoogleDriveFolderSession",
+    ]) {
+      expect(names).not.toContain(name);
+    }
+    expect(readTypes).not.toMatch(/^\s+(comment|suggestEdit|reply|resolve)\(/m);
+    // An unused `@ts-expect-error` is itself a diagnostic, so a write method on a read shape, or a
+    // comment time typed as a string, fails this.
+    expect(compileAgentTypes(driveReadBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderReadSession;
+async function use(): Promise<void> {
+  const cursor = await drive.listComments("file-1");
+  const page: DriveComment[] | null = await cursor.next();
+  const resolved: boolean | undefined = page?.[0]?.resolved;
+  const quoted: string | undefined = page?.[0]?.quotedText;
+  const created: Date | undefined = page?.[0]?.createdTime;
+  const modified: Date | undefined = page?.[0]?.replies[0]?.modifiedTime;
+  const pending: true | undefined = page?.[0]?.replies[0]?.pending;
+  const action: "resolve" | "reopen" | undefined = page?.[0]?.replies[0]?.action;
+  await (await folder.listComments("file-2")).next();
+  const child: GoogleDriveFolderReadSession = await folder.openFolder("folder-1");
+  const scope: DriveScope = await drive.getScope();
+  const access: "read" | "write" = scope.access;
+  const folderAccess: DriveBindingAccess = (await folder.getScope()).access;
+}
+// @ts-expect-error A scope always says its binding's access.
+const bare: DriveScope = { kind: "account" };
+// @ts-expect-error A read-only binding has no comment().
+drive.comment("file-1", "Why?");
+// @ts-expect-error A read-only binding has no suggestEdit().
+drive.suggestEdit("file-1", "May", "June");
+// @ts-expect-error A read-only binding has no reply().
+drive.reply("file-1", "doco.x", "Agreed.");
+// @ts-expect-error A read-only binding has no resolve().
+drive.resolve("file-1", "doco.x");
+// @ts-expect-error A read-only folder binding has no comment().
+folder.comment("file-1", "Why?");
+// @ts-expect-error A read-only folder binding has no resolve().
+folder.resolve("file-1", "doco.x");
+// @ts-expect-error Drive marks a reply as resolving or reopening, nothing else.
+const deleting: DriveCommentReply = { id: "r", author: { displayName: "A", me: false }, text: "", createdTime: new Date(0), action: "delete" };
+// @ts-expect-error A comment's times are dates, not strings.
+const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: false }, text: "", createdTime: "2026-10-20T10:00:00Z" };
+`)).toEqual([]);
+  });
+
+  it("declares the comment writes once, for every read and write Drive session", () => {
+    const writeTypes = source("drive-types.d.ts");
+    for (const signature of [
+      "comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;",
+      "fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,\n  ): Promise<DriveComment>;",
+      "reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;",
+      "resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;",
+    ]) {
+      expect(writeTypes.split(signature), signature).toHaveLength(2);
+    }
+    const writeProse = prose("drive-types.d.ts");
+    for (const phrase of [
+      "Comments are plain text, never anchored to text in the file.",
+      "a new comment makes Google email the file's owner",
+      "An email address written after `@` or `+` in the text mentions that person: Google emails " +
+        "them the text, whether or not they can open the file.",
+      "Each write is queued for the user's approval and returns the pending item",
+      "A comment or reply holds at most 4096 bytes of UTF-8",
+      "when the Google account does not allow changes to Drive files",
+      "and on a read-only binding, whose `getScope()` reports `access: \"read\"`",
+      "`quote` works only on native Google Docs.",
+      "Native Google Docs only.",
+      "within one paragraph and at most 500 characters, which must occur exactly once in the tab",
+      "when a heading precedes it",
+      "Defaults to the first tab.",
+      "Replying to a resolved comment reopens it.",
+      "A comment that is itself still `pending` takes replies once it is posted, under its Drive ID.",
+      "Fails for a comment that is already resolved or that is itself still `pending`.",
+      "anywhere the connected account can reach in Google Drive, plus comment writes.",
+      "the only file its methods accept, plus comment writes on it.",
+      "plus comment writes on the positioned folder's direct children.",
+    ]) {
+      expect(writeProse, phrase).toContain(phrase);
+    }
+    // Each session's summary says what it reads and names its writes: none claims write access to
+    // files, which no Drive binding has.
+    expect(writeProse).not.toContain("Read and write access to");
+    expect(topLevelNames(stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX)))
+      .toEqual([
+        "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites", "GoogleDriveSession",
+        "GoogleDriveFileSession", "GoogleDriveFolderSession",
+      ]);
+    expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
+    expect(compileAgentTypes(driveWriteBundle() + `
+declare const drive: GoogleDriveSession;
+declare const file: GoogleDriveFileSession;
+declare const folder: GoogleDriveFolderSession;
+async function use(): Promise<void> {
+  const queued: DriveComment = await drive.comment("file-1", "Why?", { quote: "May", tabId: "t.0" });
+  await file.suggestEdit("file-1", "May", "June", { note: "It moved." });
+  const reply: DriveCommentReply = await folder.reply("file-1", "doco.x", "Agreed.");
+  await file.resolve("file-1", "doco.x");
+  await drive.resolve("file-1", "doco.x", "Fixed.");
+  await (await file.listComments("file-1")).next();
+  const child: GoogleDriveFolderSession = await folder.openFolder("folder-1");
+  await child.comment("file-2", "Here too.");
+  const readable: GoogleDriveReadSession = drive;
+  const readableFile: GoogleDriveReadSession = file;
+  const readableFolder: GoogleDriveFolderReadSession = folder;
+  if ((await folder.getScope()).access === "write") await folder.comment("file-1", "Why?");
+}
+// @ts-expect-error A comment is never anchored.
+drive.comment("file-1", "Why?", { anchor: "kix.1" });
+declare const readOnly: GoogleDriveReadSession;
+// @ts-expect-error A read-only session is not a read and write one.
+const widened: GoogleDriveSession = readOnly;
+`)).toEqual([]);
+  });
+
+  it("points each Doc, Sheets and Slides session at the Drive binding that has its comments", () => {
+    for (const [name, owner, url, bundle] of [
+      ["docs-types.d.ts", "The document's", "https://drive.google.com/file/d/<documentId>/view", docBundle],
+      ["sheets-types.d.ts", "The spreadsheet's", "https://drive.google.com/file/d/<id>/view", sheetsBundle],
+      ["slides-types.d.ts", "The presentation's", "https://drive.google.com/file/d/<id>/view", slidesBundle],
+    ] as const) {
+      const text = prose(name);
+      expect(text, name).toContain(
+        `${owner} comments are not part of this binding: a Google Drive binding that reaches the ` +
+          "same file reads them, and writes them when it has read and write access.",
+      );
+      expect(text, name).toContain(`request the resource URL \`${url}\``);
+      expect(text, name).toContain(
+        "as it is to read the comments, or with `?access=write` added to write them too",
+      );
+      // The URL an agent is given to read with asks for no more than read-only access.
+      expect(source(name), name).not.toContain("/view?access=write");
+      expect(compileAgentTypes(bundle()), name).toEqual([]);
+    }
   });
 
   it("streams PDF text from both Drive sessions", () => {
-    const driveTypes = source("drive-types.d.ts");
-    expect(driveTypes).toContain("export type DrivePdfText = {");
-    expect(driveTypes.split("readPdf(fileId: string): Promise<DrivePdfText>;")).toHaveLength(3);
-    expect(compileAgentTypes(driveBundle() + `
-declare const drive: GoogleDriveReadSession;
-declare const folder: GoogleDriveFolderSession;
+    const readTypes = source("drive-read-types.d.ts");
+    expect(readTypes).toContain("export type DrivePdfText = {");
+    expect(readTypes.split("readPdf(fileId: string): Promise<DrivePdfText>;")).toHaveLength(3);
+    for (const [bundle, account, folder] of [
+      [driveReadBundle, "GoogleDriveReadSession", "GoogleDriveFolderReadSession"],
+      [driveWriteBundle, "GoogleDriveSession", "GoogleDriveFolderSession"],
+    ] as const) {
+      expect(compileAgentTypes(bundle() + `
+declare const drive: ${account};
+declare const folder: ${folder};
 async function read(): Promise<string> {
   const { text, hasText } = await drive.readPdf("file-1");
   const flag: boolean = hasText;
@@ -320,13 +526,18 @@ async function read(): Promise<string> {
 const whole: DrivePdfText = { text: "", hasText: true };
 // @ts-expect-error Nothing is cut, so there is no truncation flag.
 const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
-`)).toEqual([]);
+`), account).toEqual([]);
+    }
   });
 
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {
-    expect(compileAgentTypes(driveBundle() + `
-declare const drive: GoogleDriveReadSession;
-declare const folder: GoogleDriveFolderSession;
+    for (const [bundle, account, folder] of [
+      [driveReadBundle, "GoogleDriveReadSession", "GoogleDriveFolderReadSession"],
+      [driveWriteBundle, "GoogleDriveSession", "GoogleDriveFolderSession"],
+    ] as const) {
+      expect(compileAgentTypes(bundle() + `
+declare const drive: ${account};
+declare const folder: ${folder};
 declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
 async function readCsv(): Promise<string> {
   const whole = await drive.readFile("file-1");
@@ -339,6 +550,7 @@ async function readCsv(): Promise<string> {
 }
 // @ts-expect-error The content is a stream, not the bytes themselves.
 const held: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new Date(), offset: 0, length: 1, content: new Uint8Array(1) };
-`)).toEqual([]);
+`), account).toEqual([]);
+    }
   });
 });
