@@ -8,7 +8,11 @@ import { ChatSession, type ChatSnapshot } from './ChatSession'
  * `workspaceId` it is created with, so give the calling component a `key` of the id to switch
  * workspaces.
  */
-export const useChatSession = (workspaceId: string): { chat: ChatSnapshot; send: ChatSession['send'] } => {
+export const useChatSession = (workspaceId: string): {
+  chat: ChatSnapshot
+  send: ChatSession['send']
+  loadEarlier: ChatSession['loadEarlier']
+} => {
   const { api } = useApi()
   const refreshWorkspaces = useRefreshWorkspaces()
   // Creating a session is free; it connects only when started, in the effect below. When a turn
@@ -23,5 +27,5 @@ export const useChatSession = (workspaceId: string): { chat: ChatSnapshot; send:
   }, [session])
 
   const chat = useSyncExternalStore(session.subscribe, session.getSnapshot)
-  return { chat, send: session.send }
+  return { chat, send: session.send, loadEarlier: session.loadEarlier }
 }

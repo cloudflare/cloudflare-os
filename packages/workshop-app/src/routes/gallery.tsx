@@ -15,10 +15,14 @@ import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import { ChatLayout } from '@/layouts/ChatLayout'
+import { MessageListPreview } from '@/gallery/MessageListPreview'
 
 export const Route = createFileRoute('/gallery')({
-  component: Gallery,
+  component: () => (
+    <div className="h-full overflow-y-auto">
+      <Gallery />
+    </div>
+  ),
 })
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -142,7 +146,7 @@ function Gallery() {
   )
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-8 overflow-y-auto p-8">
+    <div className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
       <h1 className="text-xl font-medium">Components</h1>
       <Section title="Button">
         <Button>Refactor conditional rendering logic</Button>
@@ -242,16 +246,8 @@ function Gallery() {
           <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
         </div>
       </Section>
-      <Section title="ChatLayout (header and composer float over the scrolling messages)">
-        <div className="flex h-96 w-full flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
-          <ChatLayout header={<Button>Refactor conditional rendering logic</Button>} composer={<Composer onSend={() => {}} addActions={addActions} />}>
-            {Array.from({ length: 12 }, (_, i) => (
-              <MessageBubble key={i} role={i % 2 ? 'assistant' : 'user'}>
-                {i % 2 ? 'I’ll build a personal Jira dashboard with your stats.' : 'Create a dashboard showcasing my jira stats'}
-              </MessageBubble>
-            ))}
-          </ChatLayout>
-        </div>
+      <Section title="ChatLayout + MessageList (virtual pages, streaming, slow history, and expandable cards)">
+        <MessageListPreview />
       </Section>
       <Section title="Borders: line (input) and hairline (checkbox)">
         <Input aria-label="Text input" placeholder="Input" />

@@ -683,6 +683,50 @@ describe("client delivery of worktree content", () => {
         .toEqual({ [id]: [["secret.txt", { set: "worktree content\n" }]] });
   }));
 
+  it("bounded history crosses checkpoints, stays within its chat, and pages sparse sequences without gaps",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    addChat(impl, 2);
+    for (let chatId of [1, 2]) {
+      for (let sequence of [0, 2, 5, 9, 10]) {
+        impl.storage.chats.put({chatId, sequence, type: "message", message: `message ${sequence}`,
+          author: USER, timestamp: new Date(chatId * 100 + sequence)});
+      }
+    }
+    let messages = chatMessages(impl, 1);
+    impl.storage.chatCompactions.put({
+      chatId: 1, compactedTo: 5, summary: "summary",
+      ...buildCompactionState(messages, 5, [], undefined),
+    });
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, compactedTo: 5});
+
+    let latest = await client.getChatHistory(1, undefined, 2);
+    expect(latest.messages.map(m => [m.chatId, m.sequence])).toEqual([[1, 9], [1, 10]]);
+    expect(latest.nextBeforeSequence).toBe(9);
+    expect(latest.compacted).toBeUndefined();
+    let earlier = await client.getChatHistory(1, latest.nextBeforeSequence, 2);
+    expect(earlier.messages.map(m => m.sequence)).toEqual([2, 5]);
+    expect(earlier.nextBeforeSequence).toBe(2);
+    let first = await client.getChatHistory(1, earlier.nextBeforeSequence, 2);
+    expect(first.messages.map(m => m.sequence)).toEqual([0]);
+    expect(first.nextBeforeSequence).toBeUndefined();
+
+    // Existing consumers still get the checkpoint and its complete tail.
+    let legacy = await client.getChatHistory(1);
+    expect(legacy.messages.map(m => m.sequence)).toEqual([5, 9, 10]);
+    expect(legacy.compacted?.to).toBe(5);
+    expect((await client.getChatHistory(1, 5)).messages.map(m => m.sequence)).toEqual([0, 2]);
+    expect((await client.getChatHistory(1, 5, 2)).nextBeforeSequence).toBeUndefined();
+    expect((await client.getChatHistory(1, 0, 2)).messages).toEqual([]);
+    expect((await client.getChatHistory(999, undefined, 2)).messages).toEqual([]);
+  }));
+
+  it("rejects invalid bounded history sizes", () => withClient(async (_impl, client) => {
+    for (let limit of [0, -1, 1.5, 201]) {
+      await expect(client.getChatHistory(1, undefined, limit)).rejects.toThrow("limit");
+    }
+  }));
+
   it("a worktree is a proposed change once edited or committed, not merely created; not after accept",
       () => withImpl(async impl => {
     addChat(impl, 1);

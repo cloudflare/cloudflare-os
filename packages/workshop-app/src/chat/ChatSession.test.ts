@@ -53,7 +53,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
   const lease = { [Symbol.dispose]: leaseDispose } as unknown as RpcStub<{}>
 
   const listChats = vi.fn<() => Promise<AiChatMetadata[]>>(() => chats)
-  const getChatHistory = vi.fn<(chatId: number) => Promise<AiChatHistoryPage>>(
+  const getChatHistory = vi.fn<Overseer['getChatHistory']>(
     async (chatId) => histories[chatId] ?? page(),
   )
   const subscribeToChat = vi.fn<ChatOverseer['subscribeToChat']>((given) => {
@@ -116,7 +116,7 @@ describe('ChatSession', () => {
       )
       const session = await started(fake)
 
-      expect(fake.getChatHistory).toHaveBeenCalledExactlyOnceWith(1)
+      expect(fake.getChatHistory).toHaveBeenCalledExactlyOnceWith(1, undefined, 50)
       expect(ready(session)).toMatchObject({ title: 'Newest chat', items: [{ kind: 'user', text: 'hello' }] })
     })
 
@@ -177,6 +177,81 @@ describe('ChatSession', () => {
     })
   })
 
+  describe('older history', () => {
+    it('uses bounded pages and the server cursor, preserving live updates during a fetch', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), {
+        0: { messages: [userMessage(50, 'recent')], nextBeforeSequence: 50 },
+      })
+      const session = await started(fake)
+      const older = deferred<AiChatHistoryPage>()
+      fake.getChatHistory.mockReturnValueOnce(older.promise)
+      const loading = session.loadEarlier()
+      await session.loadEarlier()
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+      expect(fake.getChatHistory).toHaveBeenLastCalledWith(0, 50, 50)
+      expect(ready(session).loadingEarlier).toBe(true)
+
+      fake.server().message(userMessage(12, 'updated while reading'))
+      fake.server().message(userMessage(51, 'new live message'))
+      expect(ready(session).items.map(({ id }) => id)).toEqual([50, 51])
+      older.resolve(page(userMessage(0, 'oldest'), userMessage(12, 'stale snapshot')))
+      await loading
+      expect(ready(session)).toMatchObject({ hasEarlier: false, loadingEarlier: false, items: [
+        { id: 0, text: 'oldest' },
+        { id: 12, text: 'updated while reading' },
+        { id: 50, text: 'recent' },
+        { id: 51, text: 'new live message' },
+      ] })
+      await session.loadEarlier()
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+    })
+
+    it('retains the cursor through a failed read and allows retry without losing streaming text', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), {
+        0: { messages: [userMessage(10, 'recent')], nextBeforeSequence: 10 },
+      })
+      const session = await started(fake)
+      fake.server().stream(0, { type: 'textDelta', delta: 'reply in progress' })
+      fake.getChatHistory.mockRejectedValueOnce(new Error('temporarily unavailable'))
+      await session.loadEarlier()
+      expect(ready(session)).toMatchObject({ hasEarlier: true, loadingEarlier: false, historyError: 'temporarily unavailable' })
+      fake.getChatHistory.mockResolvedValueOnce(page(userMessage(0, 'oldest')))
+      await session.loadEarlier()
+      expect(fake.getChatHistory).toHaveBeenLastCalledWith(0, 10, 50)
+      expect(ready(session)).toMatchObject({ hasEarlier: false, historyError: undefined, streamingText: 'reply in progress' })
+    })
+
+    it('pages through history that contains no renderable items', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), {
+        0: { messages: [agentMessage(20, '')], nextBeforeSequence: 20 },
+      })
+      const session = await started(fake)
+      expect(ready(session)).toMatchObject({ items: [], hasEarlier: true })
+      fake.getChatHistory.mockResolvedValueOnce({ messages: [agentMessage(10, '')], nextBeforeSequence: 10 })
+      await session.loadEarlier()
+      fake.getChatHistory.mockResolvedValueOnce(page(userMessage(0, 'visible')))
+      await session.loadEarlier()
+      expect(fake.getChatHistory).toHaveBeenLastCalledWith(0, 10, 50)
+      expect(ready(session)).toMatchObject({ hasEarlier: false, items: [{ text: 'visible' }] })
+    })
+
+    it('discards an older page that completes after the session restarts', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), {
+        0: { messages: [userMessage(50, 'recent')], nextBeforeSequence: 50 },
+      })
+      const session = await started(fake)
+      const older = deferred<AiChatHistoryPage>()
+      fake.getChatHistory.mockReturnValueOnce(older.promise)
+      const loading = session.loadEarlier()
+      session.stop()
+      session.start()
+      await settled(session)
+      older.resolve(page(userMessage(0, 'stale page')))
+      await loading
+      expect(ready(session)).toMatchObject({ hasEarlier: true, loadingEarlier: false, items: [{ id: 50 }] })
+    })
+  })
+
   describe('live activity', () => {
     it('appends new messages after the history, and stores a replayed sequence once', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'first')) })
@@ -225,6 +300,15 @@ describe('ChatSession', () => {
       fake.server().stream(0, { type: 'textDelta', delta: 'b' })
 
       expect(ready(session).items).toBe(before)
+    })
+
+    it('keeps streaming text when an older agent card changes', async () => {
+      const action: AiChatMessage = { chatId: 0, sequence: 0, timestamp: new Date(0), author: agentAuthor, type: 'action', actionId: 1 }
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(action, userMessage(1, 'continue')) })
+      const session = await started(fake)
+      fake.server().stream(0, { type: 'textDelta', delta: 'still writing' })
+      fake.server().message(action)
+      expect(ready(session).streamingText).toBe('still writing')
     })
 
     it('discards streamed text on a reset, and ignores stream events it does not show', async () => {

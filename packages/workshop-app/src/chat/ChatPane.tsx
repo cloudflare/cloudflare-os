@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
+import { MessageList } from '@/blocks/MessageList'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Button } from '@/components/Button'
 import { Markdown } from '@/components/Markdown'
@@ -12,7 +13,7 @@ import { useChatSession } from './useChatSession'
 
 /** One workspace's conversation, live: its chat's title, the messages as they arrive, and the composer. */
 export const ChatPane = ({ workspaceId }: { workspaceId: string }) => {
-  const { chat, send } = useChatSession(workspaceId)
+  const { chat, send, loadEarlier } = useChatSession(workspaceId)
   const model = useDefaultModel()
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
@@ -21,6 +22,8 @@ export const ChatPane = ({ workspaceId }: { workspaceId: string }) => {
     workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
   // The chat's own title once known; until then (or with no chat yet) the workspace's.
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? workspaceTitle
+  const items = chat.status === 'ready' ? chat.items : undefined
+  const messages = useMemo(() => items?.map((item) => ({ id: item.id, content: <ChatItemView item={item} /> })) ?? [], [items])
 
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
@@ -32,10 +35,11 @@ export const ChatPane = ({ workspaceId }: { workspaceId: string }) => {
   return (
     <ChatLayout header={title && <Button>{title}</Button>} composer={<Composer onSend={sendMessage} />}>
       {chat.status === 'ready' && (
-        <>
-          {chat.items.map((item) => (
-            <ChatItemView key={item.id} item={item} />
-          ))}
+        <MessageList
+          messages={messages}
+          streaming={chat.thinking || Boolean(chat.streamingText)}
+          history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: loadEarlier }}
+        >
           {chat.streamingText && (
             <MessageBubble role="assistant">
               <Markdown>{chat.streamingText}</Markdown>
@@ -43,10 +47,17 @@ export const ChatPane = ({ workspaceId }: { workspaceId: string }) => {
           )}
           {chat.thinking && <ThinkingIndicator />}
           {chat.sendError && <MessageBubble role="error">{chat.sendError}</MessageBubble>}
-        </>
+          {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+        </MessageList>
       )}
-      {chat.status === 'failed' && <MessageBubble role="error">{chat.message}</MessageBubble>}
-      {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+      {chat.status !== 'ready' && (
+        <MessageList messages={[]}>
+          {chat.status === 'failed'
+            ? <MessageBubble role="error">{chat.message}</MessageBubble>
+            : <span role="status" className="text-sm text-kumo-subtle">Loading conversation…</span>}
+          {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+        </MessageList>
+      )}
     </ChatLayout>
   )
 }

@@ -3,7 +3,7 @@ import { useEffect, type RefObject } from 'react'
 const clamp = (value: number) => Math.min(Math.max(value, 0), 1)
 
 /**
- * Sets `--chat-fade-top` and `--chat-fade-bottom` (see `.chat-fade` in styles.css) from a reversed
+ * Sets `--chat-fade-top` and `--chat-fade-bottom` (see `.chat-fade` in styles.css) from a
  * scroller's position, for browsers that cannot drive them with a scroll-driven animation. Where
  * they can, this does nothing and the animation owns both.
  */
@@ -16,9 +16,8 @@ export const useScrollFadeFallback = (scroller: RefObject<HTMLElement | null>) =
 
     const update = () => {
       const max = element.scrollHeight - element.clientHeight
-      // A reversed column scrolls from 0 (newest message) down to -max (first message).
-      const fromFirst = max + element.scrollTop
-      const fromNewest = -element.scrollTop
+      const fromFirst = element.scrollTop
+      const fromNewest = max - element.scrollTop
       element.style.setProperty('--chat-fade-top', String(max > 0 ? clamp(fromFirst / range) : 0))
       element.style.setProperty('--chat-fade-bottom', String(max > 0 ? clamp(fromNewest / range) : 0))
     }

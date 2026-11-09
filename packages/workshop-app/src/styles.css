@@ -16,8 +16,8 @@
 /* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while
    the conversation rests at that end (nothing is under the header at the first message; the newest
    message sits clear of the composer), eased in over the first pixels scrolled away from it. The
-   column is reversed, so the timeline starts at the newest message and ends at the first: the top
-   amount holds until the last stretch, where it runs out, and the bottom one runs in at once.
+   timeline runs from the first message to the newest: the top fade runs in at once and the bottom
+   fade runs out over the last stretch.
    Browsers without scroll-driven animations get the same two numbers from useScrollFadeFallback.
 
    The gradients are eased, not linear: a straight ramp shows a hard line where it starts and stops
@@ -40,18 +40,18 @@
 }
 @keyframes chat-fade-top {
   from {
-    --chat-fade-top: 1;
+    --chat-fade-top: 0;
   }
   to {
-    --chat-fade-top: 0;
+    --chat-fade-top: 1;
   }
 }
 @keyframes chat-fade-bottom {
   from {
-    --chat-fade-bottom: 0;
+    --chat-fade-bottom: 1;
   }
   to {
-    --chat-fade-bottom: 1;
+    --chat-fade-bottom: 0;
   }
 }
 .chat-fade {
@@ -102,7 +102,7 @@
       chat-fade-bottom linear both;
     animation-timeline: scroll(self block), scroll(self block);
     animation-range:
-      calc(100% - 3rem) 100%,
-      0 3rem;
+      0 3rem,
+      calc(100% - 3rem) 100%;
   }
 }
