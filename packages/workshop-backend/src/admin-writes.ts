@@ -14,6 +14,12 @@ import {
 export type StoredAdminWrite = Omit<AdminWriteRequest, "approvalUrl"> & {
   /** The requester's audit session, for the "expired" record. */
   sessionId: string;
+  /** Who approved it, through which session and with which passkey: what its grant carries to
+   * the workspace, and the actor of its "applied" or "failed" record. */
+  approver?: AdminWriteApprover;
+  /** Set while its "applied" or "failed" record is still to be written. The workspace has run by
+   * then, so its answer is stored first and recorded until that succeeds. */
+  unrecorded?: true;
 };
 
 /** Who approved a write request, and with which passkey: its credential id as
