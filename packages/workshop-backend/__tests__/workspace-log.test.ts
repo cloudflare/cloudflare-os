@@ -152,6 +152,30 @@ async function counted(entries: GadgetConsoleLogEntry[]): Promise<number[]> {
   return rows.map(row => row.bytes);
 }
 
+// What 2,000 entries take in a fresh database, and what they count: `shapes` in turn, over five
+// gadgets, so that no bound is reached and nothing is pruned. Of a fresh fill only: once entries
+// are pruned, pages that still hold other gadgets' rows stay part-empty, and the database can
+// take more.
+async function freshFill(shapes: GadgetConsoleLogEntry[])
+    : Promise<{ grown: number; count: number }> {
+  let log = workspaceLog();
+  let databaseSize = () =>
+      runInDurableObject(log, (_instance, state) => state.storage.sql.databaseSize);
+  // The first entry creates the schema, whose pages are not the entries'.
+  await log.append([shapes[0]!]);
+  let before = await databaseSize();
+  let [{ bytes: first }] = await sql<{ bytes: number }>(log, "SELECT bytes FROM console_logs");
+
+  for (let batch = 0; batch < 20; batch++) {
+    await log.append(Array.from({ length: 100 },
+        (_, i) => ({ ...shapes[i % shapes.length]!, gadgetId: 1 + i % 5 })));
+  }
+  expect(await rowCount(log)).toBe(2001);
+  let [{ total }] = await sql<{ total: number }>(log,
+      "SELECT SUM(bytes) AS total FROM console_logs");
+  return { grown: await databaseSize() - before, count: total - first };
+}
+
 // Backdates the rows matching `where` to `hours` before now.
 function backdate(stub: Stub, where: string, hours: number): Promise<unknown[]> {
   return sql(stub, `UPDATE console_logs SET kept_at = ? WHERE ${where}`,
@@ -521,33 +545,31 @@ describe("what an entry counts toward the bounds", () => {
     expect(await counted([server({ text: "x".repeat(5000) })])).toEqual([4151]);
   });
 
-  // Of a fresh fill only: once entries are pruned, pages that still hold other gadgets' rows stay
-  // part-empty, and the database can take more than the count.
   it.each([
     ["no text", server({ text: "" })],
     ["300 characters", server({ text: "x".repeat(300) })],
     ["1,000 characters", server({ text: "x".repeat(1000) })],
     ["1,400 characters", server({ text: "x".repeat(1400) })],
     ["2,000 characters and a user id", client({ text: "x".repeat(2000), userId: "u".repeat(40) })],
-  ])("covers what a freshly filled database takes: %s", async (_shape, entry) => {
-    let log = workspaceLog();
-    let databaseSize = () =>
-        runInDurableObject(log, (_instance, state) => state.storage.sql.databaseSize);
-    // The first entry creates the schema, whose pages are not the entries'.
-    await log.append([entry]);
-    let before = await databaseSize();
-    let [{ bytes: first }] = await sql<{ bytes: number }>(log, "SELECT bytes FROM console_logs");
-
-    // Five gadgets in turn, so that no bound is reached and nothing is pruned.
-    for (let batch = 0; batch < 20; batch++) {
-      await log.append(Array.from({ length: 100 }, (_, i) => ({ ...entry, gadgetId: 1 + i % 5 })));
-    }
-    expect(await rowCount(log)).toBe(2001);
-    let [{ total }] = await sql<{ total: number }>(log,
-        "SELECT SUM(bytes) AS total FROM console_logs");
-    let grown = await databaseSize() - before;
+  ])("covers what a database freshly filled with like entries takes: %s", async (_shape, entry) => {
+    let { grown, count } = await freshFill([entry]);
     expect(grown).toBeGreaterThan(0);
-    expect(grown).toBeLessThanOrEqual(1.02 * (total - first));
+    expect(grown).toBeLessThanOrEqual(1.02 * count);
+  });
+
+  // An entry counts as its share of a page of rows like it, and rows are stored in the order they
+  // are kept: a row that leaves the next one no room on its page gives it a page of its own. Two
+  // pages next to each other still hold more than a page of rows between them.
+  it.each([
+    ["a line that fills a page and an empty one",
+        [server({ text: "あ".repeat(1338) }), server({ text: "" })], 1.9],
+    ["a line that fills half a page and an empty one",
+        [server({ text: "x".repeat(1990) }), server({ text: "" })], 1.85],
+  ])("covers over half of what a database freshly filled with unlike entries in turn takes: %s",
+      async (_mix, shapes, least) => {
+    let { grown, count } = await freshFill(shapes);
+    expect(grown).toBeGreaterThan(least * count);
+    expect(grown).toBeLessThan(2 * count);
   });
 });
 

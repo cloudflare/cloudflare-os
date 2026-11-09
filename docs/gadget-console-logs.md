@@ -310,7 +310,9 @@ and the reporter (`createGadgetConsoleLogReporter()`) batches them:
 - **A flush when the page is hidden, and a last send when the view goes away.** Both are best
   effort. A closed tab sends only what it got out as the page was hidden, and a view that goes
   away while the connection is lost, or as its user moves straight to another workspace, loses
-  what it had queued with nothing to mark it.
+  what it had queued with nothing to mark it. A queue is never sent to another workspace, where
+  the same gadget id can name another gadget: the editor takes every gadget view down between two
+  workspaces, whatever the one being left still answers.
 - **A wait that doubles, up to five minutes** (`GADGET_CONSOLE_LOG_MAX_BACKOFF_MS`), each time a
   report is refused for a reason neither a retry nor a reconnect would cure. A report that
   succeeds sets the wait back to five seconds. A reporter slows down only when its report is
@@ -402,18 +404,28 @@ storage. The count is computed inside the object and never taken from its caller
 
 Measured against the database's own size:
 
-- A freshly filled database takes at most about 1.02 times the counted bytes, for entries with no
-  text up to cut ones (`workspace-log.test.ts` pins this).
+- A database freshly filled with entries of one shape takes at most about 1.02 times the counted
+  bytes, for entries with no text up to cut ones (`workspace-log.test.ts` pins this).
+- Entries of unlike sizes kept in turn take more. The count gives a row its share of a page of
+  rows like it, while rows are stored in the order they were kept, so a row that leaves the next
+  one no room on its page gives it a page of its own. A line of 4,014 bytes (1,338 three-byte
+  characters) kept in turn with an empty one takes 1.95 times what the two count, and a line of
+  1,990 characters in turn with an empty one 1.9 times (pinned there as well). A freshly filled
+  database stays under about twice the count whatever the mix, because two pages next to each
+  other always hold more than a page of rows between them.
 - A line cut to 2,000 characters counts a whole page, 4,151 bytes, so a gadget's 2,000,000 bytes
   of reported entries hold 481 of them. A server entry of 300 characters counts 428 bytes, and one
   with no text 112.
 
-The bounds are on the counted bytes, not on the file. Once entries are pruned the database can
-take more than the count: new rows go to the end of the table, and a page that lost one gadget's
-old rows stays part-empty while it still holds newer rows of other gadgets. In the worst mix
-measured (one gadget logging four times as much as each of four others, all at their bound) the
-database settled at about 1.4 times the count, and between 0.94 and 1.05 times in the other mixes
-tried.
+The bounds are on the counted bytes, not on the file. With such a mix, a workspace whose entries
+count 50 MB takes close to 100 MB of storage and a gadget's 10 MB close to 20 MB, and a session
+that only reports can do the same to the `"client"` part of each bound.
+
+Once entries are pruned the database can take more than the count as well: new rows go to the end
+of the table, and a page that lost one gadget's old rows stays part-empty while it still holds
+newer rows of other gadgets. In the worst mix of gadgets measured (one logging four times as much
+as each of four others, all at their bound) the database settled at about 1.4 times the count,
+and between 0.94 and 1.05 times in the other mixes tried.
 
 ### Writing and pruning
 
@@ -550,12 +562,17 @@ again at the same numbers; that life makes a name of its own with its first entr
 with no log.
 
 A trace of the earlier life can reach the next one as well. A gadget call still open at the
-deletion ends when the workspace's instance restarts, a moment later, and its trace is delivered
-to whatever holds the id by then. `deliverGadgetLogs()` keeps nothing of a batch that holds a log
-from before the workspace was initialised (its `createdAt`), so what such a call logged is not
-kept in the next life's log. What is not told apart is a request of the earlier life that logged
-nothing until the id was initialised again, in the tenth of a second before that restart. Live
-subscribers are sent a late trace as they are sent any other.
+deletion ends when the workspace's instance restarts, a tenth of a second later, and its trace is
+delivered to whatever holds the id by then. Two things keep it out of the next life's log:
+
+- The instance that deleted the workspace initialises nothing. An external message that reaches
+  it before the restart is answered `Workspace was deleted.`, as one is while the deletion is
+  under way, so the id's next life begins after the restart, and with it after every log of such
+  a call.
+- `deliverGadgetLogs()` keeps nothing of a batch that holds a log from before the workspace was
+  initialised (its `createdAt`).
+
+Live subscribers are sent a late trace as they are sent any other.
 
 **A gadget.** Deleting a gadget keeps its entries. They stay listable by its id, through
 `listConsoleLogs()` and the admin view, until they expire. A report for a deleted gadget is

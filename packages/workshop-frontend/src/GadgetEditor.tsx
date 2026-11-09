@@ -482,6 +482,8 @@ export default function GadgetEditor() {
   // subscribeToWorkpieces(). `workpiecesReady` flips once the initial listing has arrived.
   const [workpieces, setWorkpieces] = useState<Map<WorkpieceId, WorkpieceSummary>>(new Map())
   const [workpiecesReady, setWorkpiecesReady] = useState(false)
+  // The subscriber that list is being read through, for the reset on a move to another workspace.
+  const workpiecesSubscriberRef = useRef<WorkpiecesSubscriberImpl | null>(null)
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
@@ -1165,6 +1167,11 @@ export default function GadgetEditor() {
     setWorkspaceTransitionEnabled(false)
     setWorkpieces(new Map())
     setWorkpiecesReady(false)
+    // The list is subscribed to through the workspace being left until the next one's stub
+    // arrives, one commit after this reset. An answer in between would bring that list back, and
+    // with it keep its gadget views mounted, under the next workspace's stub, where a view
+    // reports the console output it holds (useGadgetConsoleLogReporter).
+    workpiecesSubscriberRef.current?.cancel()
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
@@ -1305,6 +1312,7 @@ export default function GadgetEditor() {
         setWorkpiecesReady(true)
       },
     )
+    workpiecesSubscriberRef.current = subscriber
     overseer.stub
       .subscribeToWorkpieces(subscriber)
       .then(s => {

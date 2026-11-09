@@ -70,9 +70,14 @@ const utf8Length = (value: string) => encoder.encode(value).length;
 // text's bytes would let entries of 2,000 characters, each on a page of its own, take twice the
 // bound in storage.
 //
-// The bounds are on this count, not on the database. Once entries are pruned, a page that lost one
-// gadget's old rows stays part-empty while it still holds newer rows of other gadgets, so the
-// database can take more than the count.
+// The bounds are on this count, not on the database, which can take more:
+// - The share is exact only among like rows. Rows are stored in the order they are kept, and a row
+//   that leaves the next one no room on its page gives it a page of its own, so a line that fills
+//   half a page or all of one, kept in turn with empty lines, takes nearly twice what the two
+//   count. A freshly filled database stays under about twice the count whatever the mix: two
+//   pages next to each other hold more than a page of rows between them.
+// - Once entries are pruned, a page that lost one gadget's old rows stays part-empty while it
+//   still holds newer rows of other gadgets.
 function entryBytes(text: string, userId?: string): number {
   let row = utf8Length(text) + utf8Length(userId ?? "") + ROW_OVERHEAD_BYTES;
   let pages = row > PAGE_BYTES ? Math.ceil(row / PAGE_BYTES) : 1 / Math.floor(PAGE_BYTES / row);

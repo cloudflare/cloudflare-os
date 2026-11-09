@@ -9,13 +9,16 @@ import {
   type ReportedGadgetConsoleLog, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
+import type {
+  SubmitExternalMessageResult,
+} from "@gadgets/workshop-shared/external-message-gateway";
 import {
   ADMIN_USERNAME, settleRestart, startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR,
-  type Harness,
+  testControl, type Harness,
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, nextUsernames, RpcTarget, signUp, stubFor, waitFor, WorkpieceRecorder,
+  connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 const REASON = "Support ticket 123";
@@ -58,12 +61,13 @@ afterAll(async () => {
   }
 });
 
-// A gadget server whose `greet()` prints under `label` and whose `fail()` throws, with an export
-// handler that prints too.
+// A gadget server whose `greet()` prints under `label`, whose `greetAfter()` waits before it does
+// and whose `fail()` throws, with an export handler that prints too.
 const server = (label: string, level: "log" | "warn") =>
   `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 export class Gadget extends DurableObject {
   greet(name) { console.${level}("${label}", name); return name; }
+  async greetAfter(ms, name) { await scheduler.wait(ms); return this.greet(name); }
   fail() { throw new Error("boom"); }
 }
 export class ExportHandler extends WorkerEntrypoint {
@@ -499,6 +503,59 @@ it("deletes a workspace's log with the workspace", async () => {
   expect(getOpenWorkspaceErrorCode(openError)).toBe(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
   expect(await tables()).not.toContain("console_logs");
   expect(await logObjectIds()).toEqual([...before, ...created].toSorted());
+});
+
+it("keeps nothing a deleted workspace's gadget logs once its key names a workspace again",
+    async () => {
+  using stack = new DisposableStack();
+  const [first, next] = nextUsernames("logfirstlife", "lognextlife");
+  const apiFirst = stack.use(await signUp(stack.use(connect(harness.url)), first!));
+  stack.use(await signUp(stack.use(connect(harness.url)), next!));
+
+  // A workspace named by key belongs to whoever posts to the key while it names none.
+  const gadgetKey = `log-lives-${first}`;
+  const post = (callerEmail: string) =>
+    testControl<SubmitExternalMessageResult>(harness, "submit-external-message", {
+      callerEmail, gadgetKey, chatKey: `${gadgetKey}-chat`, messageKey: crypto.randomUUID(),
+      gadgetTitle: gadgetKey, prompt: "hello",
+    });
+  await post(first!);
+  const { gadgetId: id } = await testControl<{ gadgetId: string }>(
+      harness, "external-gadget-id", { gadgetKey });
+  const ws = stack.use(await apiFirst.openWorkspace(id));
+  const workpieces = new WorkpieceRecorder();
+  stack.use(await ws.subscribeToWorkpieces(stack.use(stubFor(workpieces))));
+  await workpieces.loaded;
+  const workspace = { api: apiFirst, ws, id, userId: (await apiFirst.whoami()).id, workpieces };
+  const { gadget, gadgetId } = await loggingGadget(stack, workspace);
+  await greet(gadget, "first life");
+  await keptCall(ws, gadgetId, "mainline first life");
+
+  // Calls still open when the owner deletes the workspace, which log at moments spread over the
+  // tenth of a second its gadgets run on for, until the restart that follows the deletion.
+  const facet = stack.use(await gadget.connectToGadget() as
+      RpcStub<{ greetAfter(ms: number, name: string): string }>);
+  const open = [30, 50, 70, 90, 110, 130].map(ms =>
+    facet.greetAfter(ms, `late ${ms}`).then(() => {}, () => {}));
+  await ws.deleteSelf();
+
+  // The next poster's workspace: the same id, with gadget ids that start again at the same
+  // numbers. A post is turned away until the deleted workspace's instance is gone, and one that
+  // meets the restart itself fails.
+  await waitFor("the key to name a workspace again", async () => {
+    const answer = await post(next!).catch(() => null);
+    const refused = answer !== null && !answer.accepted &&
+        answer.message === "Workspace was deleted.";
+    return answer === null || refused ? null : answer;
+  });
+  await Promise.all(open);
+  // A trace is delivered when its call ends, which the restart sees to. The restart closes the
+  // connections of the sessions it finds, so the next owner reads on one made after it.
+  await settleRestart();
+  const apiNext = stack.use(await logIn(stack.use(connect(harness.url)), next!));
+  const nextWs = stack.use(await apiNext.openWorkspace(id));
+  expect((await nextWs.getMetadata()).role).toBe("build");
+  expect(await kept(nextWs)).toEqual([]);
 });
 
 it("keeps the first entries of a report over the cap of a call, and says how many it dropped",

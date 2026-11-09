@@ -1283,6 +1283,12 @@ class OverseerImpl implements AgentHooks {
   #userUpdatesRetryAt = 0;
   #userUpdateDrain?: Promise<void>;
 
+  // Whether this instance began the workspace's deletion. The tombstone goes with the storage,
+  // while the gadgets this instance loaded run on until the restart that follows (deleteSelf()).
+  // An id initialised again in between would be given what such a gadget logs from then on
+  // (deliverGadgetLogs()), so this instance initialises nothing (receiveExternalMessage()).
+  deletionBegun = false;
+
   // The tombstone fences every new open before callbacks cross an async boundary. Content is
   // retained only until all user listings/accepted notifications have been removed durably.
   beginDeletion(userIds: Set<string>): void {
@@ -1291,6 +1297,7 @@ class OverseerImpl implements AgentHooks {
       for (let pending of this.storage.pendingUserUpdates.list()) userIds.add(pending.userId);
       for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
     });
+    this.deletionBegun = true;
     this.ownerId = undefined;
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
@@ -10563,7 +10570,9 @@ class OverseerImpl implements AgentHooks {
   // A trace is delivered when its gadget's request ends, which can be after the workspace was
   // deleted and its id initialised again for another owner (receiveExternalMessage), with gadget
   // ids that start again at the same numbers. A batch holding a log from before this workspace
-  // was initialised is a request of that earlier workspace, and nothing of it is kept.
+  // was initialised is a request of that earlier workspace, and nothing of it is kept. The
+  // earlier workspace's requests end with the restart that follows its deletion, and the instance
+  // that deleted it initialises nothing before then (`deletionBegun`), so they hold no later log.
   //
   // The tail loopback and this object can run different versions of the Worker while a deployment
   // is under way, so a call may name no gadget: its logs are delivered live as any other's, and
@@ -11811,7 +11820,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async receiveExternalMessage(
     input: ExternalMessageSubmitInput,
   ): Promise<SubmitExternalMessageResult> {
-    if (this.impl.storage.deleting.get()) return {accepted: false, message: "Workspace was deleted."};
+    if (this.impl.storage.deleting.get() || this.impl.deletionBegun) {
+      return {accepted: false, message: "Workspace was deleted."};
+    }
     if (!input.prompt.trim()) {
       return { accepted: false, message: "Please include a prompt." };
     }

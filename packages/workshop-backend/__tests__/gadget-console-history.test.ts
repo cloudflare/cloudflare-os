@@ -1026,6 +1026,34 @@ describe("deleting the workspace", () => {
     expect(consoleLogId(ws)).not.toBe(earlier);
     expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["second life"]);
   }));
+
+  it("initialises nothing for an external message on the instance that deleted the workspace",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    // Whoever posts next has an account, so only the deletion can turn their message away.
+    ws.impl.users = {
+      ...fakeUsers(ws),
+      getByName: () => ({
+        id: { toString: () => "next-owner-do" },
+        whoamiIfExists: async () => ({ type: "user", id: "next@example.test", name: "Next" }),
+      }),
+    };
+
+    beginDeletion(ws);
+    await ws.impl.deliverUserUpdates();
+    expect(storageKeys(ws)).toStrictEqual([]);
+
+    // The tombstone went with the storage, and this instance's gadgets run until its restart: a
+    // workspace initialised here would be given what they log from then on.
+    let message: Parameters<OverseerDurableObject["receiveExternalMessage"]>[0] = {
+      callerEmail: "next@example.test", externalChatKey: "k", idempotencyKey: "i",
+      prompt: "hello", chatGatewayRpcTarget: {} as never, title: "Next life",
+    };
+    expect(await ws.instance.receiveExternalMessage(message))
+        .toStrictEqual({ accepted: false, message: "Workspace was deleted." });
+    expect(ws.impl.ownerId).toBeUndefined();
+    expect(storageKeys(ws)).toStrictEqual([]);
+  }));
 });
 
 // A second gadget of the workspace, and a worktree.
