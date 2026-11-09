@@ -3,11 +3,17 @@ import {openGitPull} from "@gadgets/gatekeeper-kit/git-transport";
 import type {GitObjectType} from "@gadgets/workshop-shared/gatekeeper";
 
 interface Fixture {
-  heads: string[]; boundary: string | null;
+  heads: string[];
+  /** The history's boundary commits, which the upstream repository has. */
+  boundary: string[];
   objects: Record<string, {type: GitObjectType; bytes: number[]}>;
-  upstreamPack: number[];
   forbiddenBlobs: string[];
+  /** Trees fetchable by ID, as snapshot trees are. */
+  trees: string[];
+  /** Trees the cache lacks until a blob-less pull of each brings it. */
+  unstoredTrees: string[];
 }
+const pulledTrees = new Set<string>();
 export default {
   // `/repo<n>/...` serves the worktree with `heads[n]` as its head, as it moves.
   async fetch(request: Request, env: {FIXTURE: Fixture; UPSTREAM: Fetcher}) {
@@ -17,20 +23,20 @@ export default {
     url.pathname = url.pathname.replace(/^\/repo\d*/, "");
     return worktreeGitPull({ensureObject: async oid => {
       if (fixture.forbiddenBlobs.includes(oid)) throw new Error("Remote blob faulted into DO cache.");
+      if (fixture.unstoredTrees.includes(oid) && !pulledTrees.has(oid)) throw new Error("Boundary tree faulted in alone.");
       const object = fixture.objects[oid];
       if (!object) throw new Error(`Unknown fixture object ${oid}`);
       return {oid, type: object.type, payload: Uint8Array.from(object.bytes)};
-    }}, {head, shallowCommit: fixture.boundary, check() {}, trees: new Set(),
-      remotes: fixture.boundary ? [{haves: [fixture.boundary], pull: async (oids, hints) => {
+    }, ensureGitObjects: async (oids, hints) => {
+      if (hints.filterBlobSize === 0) for (const oid of oids) pulledTrees.add(oid);
+    }}, {head, check() {}, trees: new Set(fixture.trees),
+      remotes: fixture.boundary.length ? [{haves: fixture.boundary, pull: async (oids, hints) => {
         const {pack, shallowInfo} = await openGitPull(body => env.UPSTREAM.fetch("https://upstream.invalid/", {
           method: "POST", body}), oids, hints);
-        return {shallow: await shallowInfo(), pack};
-      }}] : [],
-      upstream: async () => new ReadableStream({start(controller) {
-        // Fragment the original pack header, entries, and trailer across network chunks.
-        const bytes = Uint8Array.from(fixture.upstreamPack);
-        for (let offset = 0; offset < bytes.length; offset += 7) controller.enqueue(bytes.slice(offset, offset + 7));
-        controller.close();
-      }})}, new Request(url, request));
+        // Fragment the pack header, entries, and trailer across network chunks.
+        return {shallow: await shallowInfo(), pack: pack.pipeThrough(new TransformStream({transform(chunk, controller) {
+          for (let offset = 0; offset < chunk.length; offset += 7) controller.enqueue(chunk.slice(offset, offset + 7));
+        }}))};
+      }}] : []}, new Request(url, request));
   },
 };

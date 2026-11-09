@@ -35,8 +35,7 @@ export default {
       if (url.pathname.startsWith("/repo/")) {
         url.pathname = url.pathname.slice("/repo".length);
         return await worktreeGitPull(worktree.gitCache, {head: worktree.getWorktreeRecord().headCommit,
-          shallowCommit: null, check() {}, trees: replicas.fetchableTrees(0), remotes: [],
-          upstream: () => { throw new Error("No upstream."); }}, new Request(url, request));
+          check() {}, trees: replicas.fetchableTrees(0), remotes: []}, new Request(url, request));
       }
       switch (url.pathname) {
         case "/snapshot": {

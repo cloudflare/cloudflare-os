@@ -2,7 +2,7 @@ import {test, expect} from "vitest";
 import {build, buildSync} from "esbuild";
 import {Miniflare} from "miniflare";
 import {execFileSync, spawn} from "node:child_process";
-import {mkdtempSync, writeFileSync, rmSync} from "node:fs";
+import {mkdirSync, mkdtempSync, writeFileSync, rmSync} from "node:fs";
 import {join, resolve} from "node:path";
 import {tmpdir} from "node:os";
 import {createServer} from "node:http";
@@ -21,71 +21,106 @@ const spawnGit = async (cwd: string, args: string[], succeeds = true) => {
   if (succeeds) expect(code, stderr).toBe(0); else expect(code, stderr).not.toBe(0);
 };
 
-test.each([false, true])("native Git clones a %s upstream/local worktree with correct shallow ancestry", async remote => {
-  const dir = mkdtempSync(join(tmpdir(), "worktree-git-"));
-  let runtime: Miniflare | undefined;
+// A repository standing in for both the worktree's history and the connected repository's:
+//   ancestor -- base -- DO child (head) -- DO grandchild (next)
+//          \                  \
+//           side ------------- DO merge
+// plus an unrelated commit on another branch, outside every head's history.
+function makeRepository(dir: string) {
+  run(dir, "init", "-q");
+  run(dir, "config", "user.name", "Test"); run(dir, "config", "user.email", "test@example.com");
+  run(dir, "commit", "--allow-empty", "-qm", "ancestor");
+  const ancestor = run(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "unchanged.bin"), Buffer.from([0, 255, 1, 0]));
+  writeFileSync(join(dir, "changed.txt"), "base\n");
+  run(dir, "add", "."); run(dir, "commit", "-qm", "base");
+  const base = run(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "changed.txt"), "DO local child\n");
+  run(dir, "mv", "unchanged.bin", "renamed.bin");
+  run(dir, "commit", "-qam", "DO child");
+  const head = run(dir, "rev-parse", "HEAD");
+  // The worktree's next head, once the agent commits again.
+  run(dir, "checkout", "-qb", "next");
+  writeFileSync(join(dir, "changed.txt"), "DO grandchild\n");
+  run(dir, "commit", "-qam", "DO grandchild");
+  const next = run(dir, "rev-parse", "HEAD");
+  // A commit merged in from the connected repository, sharing a file with the base.
+  run(dir, "checkout", "-qb", "side", ancestor);
+  writeFileSync(join(dir, "unchanged.bin"), Buffer.from([0, 255, 1, 0]));
+  mkdirSync(join(dir, "side"));
+  writeFileSync(join(dir, "side", "side.txt"), "side\n");
+  run(dir, "add", "."); run(dir, "commit", "-qm", "side");
+  const side = run(dir, "rev-parse", "HEAD");
+  run(dir, "checkout", "-qb", "merge", head);
+  run(dir, "merge", "-q", "--no-edit", "-m", "DO merge", side);
+  run(dir, "rm", "-q", "unchanged.bin"); run(dir, "commit", "-q", "--amend", "--no-edit");
+  const merge = run(dir, "rev-parse", "HEAD");
+  run(dir, "checkout", "-q", head);
+  // A commit the upstream has on another branch, outside the worktree head's history.
+  const unrelated = run(dir, "commit-tree", `${ancestor}^{tree}`, "-p", ancestor, "-m", "unrelated");
+  run(dir, "update-ref", "refs/heads/unrelated", unrelated);
+  // A snapshot tree: the head's files with an uncommitted edit.
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {cwd: dir, input: "snapshot\n", encoding: "utf8"}).trim();
+  const snapshot = execFileSync("git", ["mktree"], {cwd: dir, encoding: "utf8", input: run(dir, "ls-tree", head)
+    .replace(/blob [0-9a-f]{40}\tchanged.txt/, `blob ${blob}\tchanged.txt`) + "\n"}).trim();
+  const objects: Record<string, {type: string; bytes: number[]}> = {};
+  const ids = run(dir, "rev-list", "--objects", "--all").split("\n").map(line => line.split(" ")[0]);
+  for (const oid of [...ids, blob, snapshot]) {
+    const type = run(dir, "cat-file", "-t", oid);
+    objects[oid] = {type, bytes: [...execFileSync("git", ["cat-file", type, oid], {cwd: dir})]};
+  }
+  return {ancestor, base, head, next, side, merge, unrelated, snapshot, objects,
+    blob: (commit: string, path: string) => run(dir, "rev-parse", `${commit}:${path}`)};
+}
+
+// Serve the worktree in `dir`'s repository with git-fixture.ts, with `dir` as its connected
+// repository (a real `git upload-pack`).
+async function serve(dir: string, fixture: {heads: string[]; boundary: string[]; objects: unknown;
+    forbiddenBlobs?: string[]; trees?: string[]; unstoredTrees?: string[]}) {
   // The number of objects in the last pack served.
-  let served: number | undefined;
+  const state: {served?: number} = {};
+  const runtime = new Miniflare({workers: [{config: {
+    name: "worktree-git", compatibilityDate: "2026-10-01", compatibilityFlags: ["nodejs_compat"],
+    manifest: {mainModule: "worker.js", modules: {"worker.js": {type: "esm", contents: worker}}},
+    env: {
+      FIXTURE: {type: "json", value: {forbiddenBlobs: [], trees: [], unstoredTrees: [], ...fixture}},
+      // Like GitHub and GitLab, allow the partial-clone filter the history check uses.
+      UPSTREAM: {type: "fetcher", handler: async request => new Response(execFileSync("git",
+        ["-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", dir], {input: Buffer.from(await request.arrayBuffer()),
+          env: {...process.env, GIT_PROTOCOL: "version=2"}}),
+        {headers: {"content-type": "application/x-git-upload-pack-result"}})},
+    },
+  }}]});
   const server = createServer(async (req, res) => {
     try {
-      const response = await runtime!.dispatchFetch(`http://git.invalid${req.url}`, {
+      const response = await runtime.dispatchFetch(`http://git.invalid${req.url}`, {
         method: req.method, headers: req.headers as Record<string, string>,
         ...(req.method === "POST" ? {body: Readable.toWeb(req) as ReadableStream<Uint8Array>, duplex: "half"} : {}),
       });
       res.writeHead(response.status, Object.fromEntries(response.headers));
       const body = Buffer.from(await response.arrayBuffer());
       const pack = body.indexOf("PACK");
-      if (pack >= 0) served = body.readUInt32BE(pack + 8);
+      if (pack >= 0) state.served = body.readUInt32BE(pack + 8);
       res.end(body);
     } catch (error) { res.writeHead(500); res.end(String(error)); }
   });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No test HTTP port");
+  return {url: `http://127.0.0.1:${address.port}/repo`, state, async [Symbol.asyncDispose]() {
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    await runtime.dispose();
+  }};
+}
+
+test.each([false, true])("native Git clones a %s upstream/local worktree with correct shallow ancestry", async remote => {
+  const dir = mkdtempSync(join(tmpdir(), "worktree-git-"));
   try {
-    run(dir, "init", "-q");
-    run(dir, "config", "user.name", "Test"); run(dir, "config", "user.email", "test@example.com");
-    run(dir, "commit", "--allow-empty", "-qm", "ancestor");
-    const ancestor = run(dir, "rev-parse", "HEAD");
-    writeFileSync(join(dir, "unchanged.bin"), Buffer.from([0, 255, 1, 0]));
-    writeFileSync(join(dir, "changed.txt"), "base\n");
-    run(dir, "add", "."); run(dir, "commit", "-qm", "base");
-    const boundary = run(dir, "rev-parse", "HEAD");
-    const forbiddenBlob = run(dir, "rev-parse", "HEAD:unchanged.bin");
-    const upstreamPack = execFileSync("git", ["pack-objects", "--stdout", "--revs"], {cwd: dir, input: `${boundary}\n^${ancestor}\n`});
-    writeFileSync(join(dir, "changed.txt"), "DO local child\n");
-    run(dir, "mv", "unchanged.bin", "renamed.bin");
-    run(dir, "commit", "-qam", "DO child");
-    const head = run(dir, "rev-parse", "HEAD");
-    // The worktree's next head, once the agent commits again.
-    run(dir, "checkout", "-qb", "next");
-    writeFileSync(join(dir, "changed.txt"), "DO grandchild\n");
-    run(dir, "commit", "-qam", "DO grandchild");
-    const next = run(dir, "rev-parse", "HEAD");
-    run(dir, "checkout", "-q", "-");
-    // A commit the upstream has on another branch, outside the worktree head's history.
-    const unrelated = run(dir, "commit-tree", `${ancestor}^{tree}`, "-p", ancestor, "-m", "unrelated");
-    run(dir, "update-ref", "refs/heads/unrelated", unrelated);
-    const objects: Record<string, {type: string; bytes: number[]}> = {};
-    const ids = run(dir, "rev-list", "--objects", "--all").split("\n").map(line => line.split(" ")[0]);
-    for (const oid of ids) {
-      const type = run(dir, "cat-file", "-t", oid);
-      objects[oid] = {type, bytes: [...execFileSync("git", ["cat-file", type, oid], {cwd: dir})]};
-    }
-    runtime = new Miniflare({workers: [{config: {
-      name: "worktree-git", compatibilityDate: "2026-10-01", compatibilityFlags: ["nodejs_compat"],
-      manifest: {mainModule: "worker.js", modules: {"worker.js": {type: "esm", contents: worker}}},
-      env: {
-        FIXTURE: {type: "json", value: {heads: [head, next], boundary: remote ? boundary : null,
-          objects, upstreamPack: [...upstreamPack], forbiddenBlobs: remote ? [forbiddenBlob] : []}},
-        // Like GitHub and GitLab, allow the partial-clone filter the history check uses.
-        UPSTREAM: {type: "fetcher", handler: async request => new Response(execFileSync("git",
-          ["-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", dir], {input: Buffer.from(await request.arrayBuffer()),
-            env: {...process.env, GIT_PROTOCOL: "version=2"}}),
-          {headers: {"content-type": "application/x-git-upload-pack-result"}})},
-      },
-    }}]});
-    server.listen(0, "127.0.0.1"); await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("No test HTTP port");
-    const url = `http://127.0.0.1:${address.port}/repo`;
+    const repo = makeRepository(dir);
+    const {ancestor, base, head, next, unrelated} = repo;
+    await using server = await serve(dir, {heads: [head, next], boundary: remote ? [base] : [], objects: repo.objects,
+      forbiddenBlobs: remote ? [repo.blob(base, "unchanged.bin")] : [], trees: [repo.snapshot]});
+    const {url} = server;
     await spawnGit(dir, ["clone", url, "clone"]);
     const clone = join(dir, "clone");
     expect(run(clone, "rev-parse", "HEAD")).toBe(head);
@@ -94,6 +129,12 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
     expect(execFileSync("git", ["show", "HEAD:renamed.bin"], {cwd: clone})).toEqual(Buffer.from([0, 255, 1, 0]));
     expect(run(clone, "rev-parse", "--is-shallow-repository")).toBe(String(remote));
     run(clone, "fsck", "--no-reflogs");
+
+    // A snapshot tree: only the new root tree and blob are sent.
+    await spawnGit(clone, ["fetch", "-q", "origin", repo.snapshot]);
+    expect(server.state.served).toBe(2);
+    expect(run(clone, "show", `${repo.snapshot}:changed.txt`)).toBe("snapshot");
+
     if (remote) {
       // The integration harness discovers UPGRADE_BASE only after mounting the repository.
       // Fetch an ancestor absent from the shallow worktree using the same origin URL.
@@ -113,27 +154,87 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
         run(deepened, "fsck", "--no-reflogs");
       }
 
+      // A clone deeper than the boundary is given less history.
+      const deep = join(dir, "deep");
+      await spawnGit(dir, ["clone", "--depth=5", url, deep]);
+      expect(run(deep, "log", "--format=%s")).toBe("DO child\nbase");
+      run(deep, "fsck", "--no-reflogs");
+
       // Commits can be fetched by ID, several in one fetch: check out the boundary, change a
       // file, and reset to the head, so that Git shows the changes relative to the head.
       const fresh = join(dir, "fresh");
       run(dir, "init", "-q", fresh);
-      await spawnGit(fresh, ["fetch", "-q", url, boundary, head]);
-      run(fresh, "checkout", "-q", boundary);
+      // A snapshot tree needs a commit to leave out what it shares with.
+      await spawnGit(fresh, ["fetch", "-q", url, repo.snapshot], false);
+      await spawnGit(fresh, ["fetch", "-q", url, base, head]);
+      run(fresh, "checkout", "-q", base);
       writeFileSync(join(fresh, "changed.txt"), "pending\n");
       run(fresh, "reset", "-q", "--mixed", head);
       expect(run(fresh, "status", "--porcelain")).toBe("M changed.txt\n D renamed.bin\n?? unchanged.bin");
     }
 
-    // The head moves: fetching it sends only the new commit's objects.
+    // The head moves: a fetch that would need both its new commit and older history is refused,
+    // and fetching it sends only the new commit's objects.
     run(clone, "remote", "set-url", "origin", `${url}1`);
     if (remote) await spawnGit(clone, ["fetch", "--deepen=1"], false);
     await spawnGit(clone, ["fetch", "origin"]);
     expect(run(clone, "rev-parse", "origin/HEAD")).toBe(next);
-    expect(served).toBe(3);
+    expect(server.state.served).toBe(3);
     run(clone, "fsck", "--no-reflogs");
   } finally {
-    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
-    await runtime?.dispose(); rmSync(dir, {recursive: true, force: true});
+    rmSync(dir, {recursive: true, force: true});
+  }
+}, 30_000);
+
+test("native Git clones a worktree shallow at its pushed commit, and deepens it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worktree-git-"));
+  try {
+    const repo = makeRepository(dir);
+    // The agent pushed "DO child", which is now the boundary, and committed again on top.
+    await using server = await serve(dir, {heads: [repo.next, repo.head], boundary: [repo.head], objects: repo.objects,
+      forbiddenBlobs: [repo.blob(repo.head, "renamed.bin"), repo.blob(repo.head, "changed.txt")]});
+    // Before committing again, the head is the boundary.
+    await spawnGit(dir, ["clone", `${server.url}1`, "pushed"]);
+    expect(run(join(dir, "pushed"), "log", "--format=%s")).toBe("DO child");
+    expect(run(join(dir, "pushed"), "rev-parse", "--is-shallow-repository")).toBe("true");
+    await spawnGit(dir, ["clone", server.url, "clone"]);
+    const clone = join(dir, "clone");
+    expect(run(clone, "log", "--format=%s")).toBe("DO grandchild\nDO child");
+    expect(run(clone, "cat-file", "-p", "HEAD~:changed.txt")).toBe("DO local child");
+    run(clone, "fsck", "--no-reflogs");
+    // Proxied whole, from the pushed commit.
+    await spawnGit(clone, ["fetch", "--deepen=1"]);
+    expect(run(clone, "log", "--format=%s")).toBe("DO grandchild\nDO child\nbase");
+    await spawnGit(clone, ["fetch", "--unshallow"]);
+    expect(run(clone, "log", "--format=%s")).toBe("DO grandchild\nDO child\nbase\nancestor");
+    run(clone, "fsck", "--no-reflogs");
+  } finally {
+    rmSync(dir, {recursive: true, force: true});
+  }
+}, 30_000);
+
+test("native Git clones a worktree with a merged-in commit as a second boundary", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worktree-git-"));
+  try {
+    const repo = makeRepository(dir);
+    await using server = await serve(dir, {heads: [repo.merge], boundary: [repo.base, repo.side], objects: repo.objects,
+      // Both boundary commits hold this blob; the pack must hold it once.
+      forbiddenBlobs: [repo.blob(repo.base, "unchanged.bin"), repo.blob(repo.side, "side/side.txt")],
+      // The cache lacks the merged commit's trees, its root's subtree included.
+      unstoredTrees: [repo.blob(repo.side, ""), repo.blob(repo.side, "side")]});
+    await spawnGit(dir, ["clone", server.url, "clone"]);
+    const clone = join(dir, "clone");
+    expect(run(clone, "log", "--format=%s", "--topo-order")).toBe("DO merge\nside\nDO child\nbase");
+    expect(run(clone, "show", "HEAD:side/side.txt")).toBe("side");
+    expect(run(clone, "cat-file", "-p", "HEAD:renamed.bin").length).toBeGreaterThan(0);
+    expect(execFileSync("cat", [join(clone, ".git", "shallow")], {encoding: "utf8"}).split("\n").filter(Boolean).toSorted())
+      .toEqual([repo.base, repo.side].toSorted());
+    run(clone, "fsck", "--no-reflogs");
+    await spawnGit(clone, ["fetch", "--deepen=1"]);
+    expect(run(clone, "log", "--format=%s", "--topo-order")).toBe("DO merge\nside\nDO child\nbase\nancestor");
+    run(clone, "fsck", "--no-reflogs");
+  } finally {
+    rmSync(dir, {recursive: true, force: true});
   }
 }, 30_000);
 

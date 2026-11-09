@@ -138,8 +138,9 @@ export interface ReplicableWorktree extends RpcTarget {
    * The repository has a single branch, whose head (HEAD) is the worktree's Git head (its latest
    * explicit commit), including commits created in the workspace that haven't been pushed
    * anywhere. If the worktree came from a connected repository, it is served as a shallow clone,
-   * with history cut off at the commit the worktree was created at. Its files are streamed from
-   * that repository's provider rather than stored in the workspace.
+   * with history cut off where it reaches commits that repository has: the commit the worktree
+   * was created at, or a later one that was pushed or merged in. Those commits' files are
+   * streamed from the repository's provider rather than stored in the workspace.
    *
    * The trees returned by `snapshot()` and `WorktreeCommand.submit()` can be fetched by ID
    * (`git fetch origin <tree>`) during the execution that received them; no other tree can. Fetch
@@ -151,8 +152,8 @@ export interface ReplicableWorktree extends RpcTarget {
    * `git fetch --depth=1 origin <sha>`, or `git fetch --deepen=10`): such a fetch is served by
    * a connected repository that has the history, once it confirms the commit is in it. Other
    * refs and commits are refused. So is a single fetch that needs both commits only the
-   * workspace has and history only a connected repository has; fetching the current head first
-   * avoids that.
+   * workspace has and more history from a connected repository; fetching the current head first
+   * avoids that. (A `git clone --depth` deeper than the cutoff is given less history instead.)
    */
   gitPull(request: Request): Promise<Response>;
 }

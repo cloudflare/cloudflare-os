@@ -6486,7 +6486,6 @@ class OverseerImpl implements AgentHooks {
     // As for the Worktree binding, HEAD includes a commit() buffered earlier in the running step.
     const execution = this.#activeExecutions.get(chatId);
     const head = execution?.worktree?.getBufferedHead(worktreeId) ?? piece.headCommit;
-    const sources = this.#liveGitSources(piece.baseCommit);
     // Pull from a connection, ending the stream if worktree access ends or the connection is
     // removed.
     const pullFrom = async (source: WorkpieceId, oids: string[], hints: GitPullHints) => {
@@ -6529,23 +6528,10 @@ class OverseerImpl implements AgentHooks {
     const remotes = new Map<WorkpieceId, string[]>();
     for (const [commit, ids] of this.#remoteHistoryBoundaries(head))
       for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
-    // The base commit's own connections can deepen history beyond it, even once a pushed
-    // descendant has become the walk's boundary.
-    for (const id of sources)
-      if (!remotes.get(id)?.includes(piece.baseCommit)) remotes.set(id, [...remotes.get(id) ?? [], piece.baseCommit]);
-    return worktreeGitPull(this.gitCache, {head,
-      shallowCommit: sources.length ? piece.baseCommit : null, check,
+    return worktreeGitPull(this.gitCache, {head, check,
       trees: execution?.replicas?.fetchableTrees(worktreeId) ?? new Set(),
       remotes: [...remotes].map(([id, haves]) => ({haves, pull: (oids, hints) => pullFrom(id, oids, hints)})),
-      upstream: async () => {
-        let cause: unknown;
-        for (const source of sources) {
-          try {
-            return (await pullFrom(source, [piece.baseCommit], {type: "commit", commitHistory: {kind: "depth", depth: 1}})).pack;
-          } catch (error) { cause = error; }
-        }
-        throw new Error("No authorized Git source could supply the worktree base.", {cause});
-      }}, request);
+    }, request);
   }
 
   // Connections with recorded provenance for `oid` that still exist.

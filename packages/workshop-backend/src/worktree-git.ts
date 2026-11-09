@@ -14,13 +14,6 @@ export interface WorktreeGitSource {
   /** The worktree's latest commit (WorktreeRecord.headCommit): advertised as HEAD. */
   head: string;
 
-  /**
-   * For a worktree that came from a connected repository, the commit it was created at: the
-   * history boundary, as in a shallow clone. Its objects are streamed from `upstream()`, not
-   * read from the workspace. Null when all of the worktree's history is in the workspace.
-   */
-  shallowCommit: string | null;
-
   /** Throws if access has ended (e.g. the worktree or its chat was deleted). Called repeatedly. */
   check(): void;
 
@@ -30,15 +23,17 @@ export interface WorktreeGitSource {
    */
   trees: ReadonlySet<string>;
 
-  /** Streams the raw pack (no protocol framing) for `shallowCommit`, at depth 1. */
-  upstream(): Promise<ReadableStream<Uint8Array>>;
-
   /**
-   * Connections that can serve the part of `head`'s history beyond the workspace's own commits,
-   * for a fetch of commits the workspace doesn't have (e.g. a build script running
-   * `git fetch --depth=1 origin <sha>`) or of more history (`git fetch --deepen`). `haves` are
-   * the history's boundary commits this connection is known to have; `pull` is its
-   * `Gatekeeper.gitPull()`.
+   * The connections that can serve the history beyond the workspace's own commits. That history
+   * starts at its *boundary*: walking back from `head` through the workspace's commits, the
+   * first ones a connection has (the commit the worktree was created at, or one pushed or merged
+   * in since). Each is in some connection's `haves`, the boundary commits that connection is
+   * known to have; `pull` is its `Gatekeeper.gitPull()`. With no connections, all of the history
+   * is in the workspace.
+   *
+   * A clone is cut off at the boundary, whose commits' files are streamed from a connection
+   * rather than read from the workspace. Fetches of more history (e.g. a build script running
+   * `git fetch --depth=1 origin <sha>`, or `git fetch --deepen`) are proxied whole.
    */
   remotes: {haves: string[]; pull(oids: string[], hints: GitPullHints): Promise<RemotePack>}[];
 }
@@ -64,12 +59,12 @@ const INFINITE_DEPTH = 0x7fffffff;
 
 /**
  * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `ReplicableWorktree.gitPull()`.
- * The worktree's own commits are built from workspace storage, while the base commit's files
- * from a connected repository are streamed through from the provider rather than loaded into
- * the workspace. History beyond the base is proxied from a connected repository.
+ * The worktree's own commits are built from workspace storage, while the files of the history's
+ * boundary commits are streamed through from a connection rather than loaded into the
+ * workspace. History beyond the boundary is proxied from a connection.
  */
-export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
-    request: Request): Promise<Response> {
+export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects">,
+    source: WorktreeGitSource, request: Request): Promise<Response> {
   const path = gitPullPath(request);
   source.check();
   const response = (lines: Uint8Array[]) => new Response(new Blob(lines), {headers: {
@@ -91,36 +86,38 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
 
   // Decide by what the client lacks, not by what it names: e.g. `git fetch --deepen=1` wants
   // the head the client already has, and lacks only history beyond the shallow boundary.
-  const history = await localHistory(cache, source);
-  if (fetch.wants.some(oid => source.trees.has(oid))) return treeFetch(cache, source, history, fetch);
-  const has = commonHistory(history, source.shallowCommit, fetch.haves);
-  // The client only has the base's files if it has some commit in the history and is not
-  // shallower than the base.
-  const hasBase = has.size > 0 && !fetch.shallow.some(oid => history.has(oid));
-  const localWants = fetch.wants.filter(oid => history.has(oid) || oid === source.shallowCommit);
-  const remoteWants = fetch.wants.filter(oid => !localWants.includes(oid));
-  // The base's own objects are remote ones (streamed from `upstream()`), so a connection can
-  // serve them too.
-  const needsLocal = localWants.some(oid => history.has(oid) ? !has.has(oid) : oid !== source.shallowCommit);
-  const depth = source.shallowCommit ? baseDepth(history, source.shallowCommit, localWants) : undefined;
-  const deeper = depth !== undefined && await wantsDeeperHistory(cache, source.shallowCommit!, depth, fetch);
-  if (remoteWants.length || deeper) {
+  const boundary = new Set(source.remotes.flatMap(remote => remote.haves));
+  const history = await localHistory(cache, source, boundary);
+  if (fetch.wants.some(oid => source.trees.has(oid))) return treeFetch(cache, source, history, boundary, fetch);
+  const has = commonHistory(history, boundary, fetch);
+  const remoteWants = fetch.wants.filter(oid => !history.has(oid) && !boundary.has(oid));
+  const needsLocal = fetch.wants.some(oid => history.has(oid) && !has.has(oid));
+  const reached = reachedBoundary(history, boundary, fetch.wants);
+  const deeper = await wantsDeeperHistory(cache, reached, fetch);
+  if (!needsLocal && (remoteWants.length || deeper)) {
+    // All the client lacks is remote history: proxy it whole.
+    const bases = [...reached.keys()].filter(oid => deeper || fetch.wants.includes(oid));
+    return proxyFetch(source, fetch, remoteWants, bases, bases.filter(oid => has.has(oid)),
+      deeper ? Math.min(...reached.values()) : undefined);
+  }
+  if (needsLocal && (remoteWants.length || deeper && has.size)) {
     // Serving this would mean merging a local pack with a proxied one that may contain some of
     // the same objects, which Git rejects; see plans/git-proxy.md. A replica that fetches the
-    // worktree's head before any older history never needs both.
-    if (needsLocal) {
-      throw new Error("This fetch needs both new commits from the workspace and older history from the " +
-        "connected repository. Fetch the worktree's head first, then fetch again.");
-    }
-    const base = deeper || localWants.includes(source.shallowCommit!);
-    return proxyFetch(source, fetch, remoteWants, base, deeper ? depth : undefined, has.size > 0);
+    // worktree's head before any older history never needs both. (A clone deeper than the
+    // boundary is given less history instead, as any shallow server gives it.)
+    throw new Error("This fetch needs both new commits from the workspace and older history from the " +
+      "connected repository. Fetch the worktree's head first, then fetch again.");
   }
 
-  let pack = await localPack(cache, source.shallowCommit, localWants, [...has], source.check);
+  // Serve the workspace's commits the client lacks, plus the boundary commits they reach that it
+  // lacks, at depth 1 from a connection.
+  let pack = await localPack(cache, source, boundary, [...reached.keys()], fetch.wants, has);
+  const lacking = [...reached.keys()].filter(oid => !has.has(oid));
   let shallow: GitShallowInfo | undefined;
-  if (source.shallowCommit && !hasBase) {
-    pack = await mergePackStreams([await source.upstream(), pack]);
-    shallow = {shallow: [source.shallowCommit], unshallow: []};
+  if (lacking.length) {
+    const upstream = await pullBoundary(source, lacking);
+    pack = await mergePackStreams([upstream.pack, pack]);
+    shallow = upstream.shallow;
   }
   return fetchResponse(!fetch.done, shallow, pack, source.check);
 }
@@ -132,12 +129,12 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
  * tree is mostly files the workspace would have to pull.
  */
 async function treeFetch(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
-    history: Map<string, string[]>, fetch: FetchRequest): Promise<Response> {
+    history: Map<string, string[]>, boundary: Set<string>, fetch: FetchRequest): Promise<Response> {
   if (!fetch.wants.every(oid => source.trees.has(oid))) {
     throw new Error("Fetch a worktree's snapshot trees on their own, not together with commits.");
   }
-  const haves = fetch.haves.filter(oid => history.has(oid) || oid === source.shallowCommit);
-  if (source.shallowCommit && !haves.length) {
+  const haves = fetch.haves.filter(oid => history.has(oid) || boundary.has(oid));
+  if (boundary.size && !haves.length) {
     throw new Error("Fetch the worktree's head before fetching a snapshot tree.");
   }
   const read = checkedRead(cache, source.check);
@@ -204,14 +201,15 @@ function parseFetch(items: ReturnType<typeof parsePktItems>): FetchRequest {
 
 /**
  * The workspace-stored commits of the history served: everything reachable from the worktree's
- * head, back to (not including) `shallowCommit`. Maps each commit to its parents.
+ * head, back to (not including) its `boundary`. Maps each commit to its parents.
  */
-async function localHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource): Promise<Map<string, string[]>> {
+async function localHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
+    boundary: Set<string>): Promise<Map<string, string[]>> {
   const history = new Map<string, string[]>();
   const stack = [source.head];
   while (stack.length) {
     const oid = stack.pop()!;
-    if (oid === source.shallowCommit || history.has(oid)) continue;
+    if (boundary.has(oid) || history.has(oid)) continue;
     source.check();
     const commit = parseGitCommitRefs((await cache.ensureObject(oid, {type: "commit"})).payload);
     source.check();
@@ -223,90 +221,106 @@ async function localHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, sour
 }
 
 /**
- * The commits of `history`, plus `shallowCommit`, that the client has: those reachable from its
- * `haves`. Each `have` claims the commit's whole history, down to the client's shallow boundary.
+ * The commits of `history` and `boundary` that the client has: those reachable from its `haves`.
+ * Each `have` claims the commit's history, down to the client's shallow commits.
  */
-function commonHistory(history: Map<string, string[]>, shallowCommit: string | null, haves: string[]): Set<string> {
+function commonHistory(history: Map<string, string[]>, boundary: Set<string>, fetch: FetchRequest): Set<string> {
   const has = new Set<string>();
-  const stack = haves.filter(oid => history.has(oid) || oid === shallowCommit);
+  const stack = fetch.haves.filter(oid => history.has(oid) || boundary.has(oid));
   while (stack.length) {
     const oid = stack.pop()!;
     if (has.has(oid)) continue;
     has.add(oid);
-    stack.push(...history.get(oid) ?? []);
+    if (!fetch.shallow.includes(oid)) stack.push(...history.get(oid) ?? []);
   }
   return has;
 }
 
 /**
- * Whether a fetch of local commits, which reach `shallowCommit` at `depth`, asks for history
- * beyond it, which only a connection can serve: any relative deepen, an absolute depth reaching
- * past it, or a date no later than its commit time.
+ * The boundary commits `wants` reach through `history`, each with the depth (1 = a want itself)
+ * at which it is first reached.
  */
-async function wantsDeeperHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, shallowCommit: string,
-    depth: number, fetch: FetchRequest): Promise<boolean> {
-  if (!fetch.deepen) return false;
-  if (fetch.deepen.kind === "relative") return true;
-  if (fetch.deepen.kind === "depth") return fetch.deepen.depth > depth;
-  const commit = (await cache.ensureObject(shallowCommit, {type: "commit"})).payload;
-  const time = /(\d+) [+-]\d{4}$/.exec(readGitCommitHeader(commit, "committer")[0] ?? "");
-  return !time || Number(time[1]) >= fetch.deepen.since;
-}
-
-/** The depth (1 = the commit itself) at which `shallowCommit` is first reached from `wants`. */
-function baseDepth(history: Map<string, string[]>, shallowCommit: string, wants: string[]): number | undefined {
+function reachedBoundary(history: Map<string, string[]>, boundary: Set<string>, wants: string[]): Map<string, number> {
+  const reached = new Map<string, number>();
   let level = [...new Set(wants)];
   const seen = new Set(level);
   for (let depth = 1; level.length; depth++) {
-    if (level.includes(shallowCommit)) return depth;
+    for (const oid of level) if (boundary.has(oid)) reached.set(oid, depth);
     level = level.flatMap(oid => history.get(oid) ?? []).filter(oid => !seen.has(oid) && seen.add(oid));
   }
+  return reached;
 }
 
 /**
- * Pack the workspace-stored history of `heads` back to `shallowCommit` (exclusive), leaving out
- * the history of `haves`, which the client already has. Objects in the base's tree are left out
- * too: either the client has them, or the upstream pack streamed alongside this one supplies them.
+ * Whether a fetch asks for history beyond the boundary commits its wants reach (`reached`), which
+ * only a connection can serve: any relative deepen, an absolute depth reaching past the nearest
+ * of them, or a date no later than one's commit time.
  */
-async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallowCommit: string | null,
-    heads: string[], haves: string[], requireLive: () => void): Promise<ReadableStream<Uint8Array>> {
-  const read = checkedRead(cache, requireLive);
-  const baseTree = shallowCommit
-    ? parseGitCommitRefs((await read(shallowCommit, "commit")).payload).tree : undefined;
-  // Collect the objects of `commits`' history into `objects`, skipping anything in `skip`.
-  const collect = async (commits: string[], objects: PackObjects, skip: PackObjects = new Map()) => {
+async function wantsDeeperHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, reached: Map<string, number>,
+    fetch: FetchRequest): Promise<boolean> {
+  if (!fetch.deepen || !reached.size) return false;
+  if (fetch.deepen.kind === "relative") return true;
+  if (fetch.deepen.kind === "depth") return fetch.deepen.depth > Math.min(...reached.values());
+  for (const oid of reached.keys()) {
+    const commit = (await cache.ensureObject(oid, {type: "commit"})).payload;
+    const time = /(\d+) [+-]\d{4}$/.exec(readGitCommitHeader(commit, "committer")[0] ?? "");
+    if (!time || Number(time[1]) >= fetch.deepen.since) return true;
+  }
+  return false;
+}
+
+/**
+ * Pack the workspace-stored history of `heads` back to the `boundary` (exclusive), leaving out
+ * the commits the client `has` and their objects. Every object reachable from the trees of the
+ * boundary commits in `bases` is left out too, whatever its path (a rename, copy or revert reuses
+ * one): either the client has it, or the connection's pack streamed alongside this one supplies
+ * it, and native Git rejects a pack holding an object twice. Only those trees are read, never
+ * their blobs.
+ */
+async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects">, source: WorktreeGitSource,
+    boundary: Set<string>, bases: string[], heads: string[], has: Set<string>): Promise<ReadableStream<Uint8Array>> {
+  const read = checkedRead(cache, source.check);
+  const skip = new Set<string>();
+  let level: string[] = [];
+  for (const oid of bases) level.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
+  while (level.length) {
+    level = level.filter(oid => !skip.has(oid) && skip.add(oid));
+    // A merged-in commit's trees may not be stored yet: fetch those missing in one pull, as
+    // metadata only, which brings their subtrees too.
+    await cache.ensureGitObjects(level, {type: "tree", commitHistory: {kind: "depth", depth: 1}, filterBlobSize: 0});
+    const next: string[] = [];
+    for (const oid of level) {
+      for (const entry of parseGitTree((await read(oid, "tree")).payload)) {
+        if (entry.mode === "40000") next.push(entry.oid); else skip.add(entry.oid);
+      }
+    }
+    level = next;
+  }
+  // Collect the objects of `commits`, and of their history if `follow`, into `objects`, leaving
+  // out anything `known`.
+  const collect = async (commits: Iterable<string>, follow: boolean, objects: PackObjects, known: Known) => {
     const stack = [...new Set(commits)];
     while (stack.length) {
       const oid = stack.pop()!;
-      if (oid === shallowCommit || objects.has(oid) || skip.has(oid)) continue;
+      if (boundary.has(oid) || objects.has(oid) || known.has(oid)) continue;
       addObject(objects, oid, "commit");
       const commit = parseGitCommitRefs((await read(oid, "commit")).payload);
-      await collectTree(read, objects, commit.tree, baseTree ? [baseTree] : [], skip);
-      stack.push(...commit.parents);
+      await collectTree(read, objects, commit.tree, [], known);
+      if (follow) stack.push(...commit.parents);
     }
   };
   const present: PackObjects = new Map();
-  await collect(haves, present);
+  await collect(has, false, present, skip);
   const objects: PackObjects = new Map();
-  await collect(heads, objects, present);
-  // The base's files are supplied by the upstream pack or are already in the client. A
-  // rename/copy can reuse a base blob at another path: same-path comparisons above alone cannot
-  // prevent duplicate objects, which native Git rejects in a single combined pack. Inspect tree
-  // metadata only; never fault a base blob into DO storage or retain the base's file contents in
-  // memory.
-  const excludeBase = async (oid: string) => {
-    objects.delete(oid);
-    for (const entry of parseGitTree((await read(oid, "tree")).payload)) {
-      objects.delete(entry.oid);
-      if (entry.mode === "40000") await excludeBase(entry.oid);
-    }
-  };
-  if (baseTree && [...objects.values()].some(object => object.type !== "commit")) await excludeBase(baseTree);
-  return packObjects(read, objects, requireLive);
+  await collect(heads, true, objects, {has: oid => skip.has(oid) || present.has(oid)});
+  return packObjects(read, objects, source.check);
 }
 
 /** Objects to send, by ID, with their types and the trees referring to blobs (for pull hints). */
 type PackObjects = Map<string, {type: GitObjectType; referencedBy?: string}>;
+
+/** Objects to leave out of a pack, by ID. */
+type Known = {has(oid: string): boolean};
 
 /** Reads an object, faulting it in if needed, and checks access before and after. */
 type ReadObject = (oid: string, type: GitObjectType, referencedBy?: string) => Promise<PackableObject>;
@@ -331,7 +345,7 @@ function addObject(objects: PackObjects, oid: string, type: GitObjectType, refer
  * path.
  */
 async function collectTree(read: ReadObject, objects: PackObjects, oid: string, previous: string[],
-    skip: PackObjects): Promise<void> {
+    skip: Known): Promise<void> {
   if (previous.includes(oid) || objects.has(oid) || skip.has(oid)) return;
   addObject(objects, oid, "tree");
   const entries = parseGitTree((await read(oid, "tree")).payload);
@@ -357,20 +371,16 @@ function packObjects(read: ReadObject, objects: PackObjects, requireLive: () => 
 
 /**
  * Serve a fetch of history beyond the workspace's own commits from a connection: the commits in
- * `remoteWants`, once it confirms they are in the worktree's history, plus `shallowCommit` if
- * `base`, and/or more history beyond `shallowCommit`, which the client's wants reach at `depth`
- * (undefined if not wanted). The
- * confirmation trusts the connection: the data it protects is the connection's own repository.
- * `hasHistory` says the client has some of the worktree's history, so also the base: the
- * connection may leave out the history it knows the client has.
+ * `remoteWants`, once it confirms they are in the worktree's history, plus the boundary commits
+ * in `bases`, of which the client has `has`, and/or more history beyond them, which the client's
+ * wants reach at `depth` (undefined if not wanted). The confirmation trusts the connection: the
+ * data it protects is the connection's own repository.
  */
-async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remoteWants: string[], base: boolean,
-    depth: number | undefined, hasHistory: boolean): Promise<Response> {
-  const deeper = depth !== undefined;
+async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remoteWants: string[], bases: string[],
+    has: string[], depth: number | undefined): Promise<Response> {
   let cause: unknown;
   let refused = false;
-  for (const remote of source.remotes) {
-    if (base && !remote.haves.includes(source.shallowCommit!)) continue;
+  for (const remote of remotesWith(source, bases)) {
     try {
       if (remoteWants.length && !await reachableFromHaves(remote, remoteWants)) {
         // A connection is only asked about the boundary commits it has provenance for, so
@@ -379,15 +389,15 @@ async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remote
         continue;
       }
       source.check();
-      const result = await remote.pull([...remoteWants, ...base ? [source.shallowCommit!] : []], {
+      const result = await remote.pull([...remoteWants, ...bases], {
         type: "commit",
         commitHistory: !fetch.deepen ? {kind: "full"}
           : fetch.deepen.kind === "since" ? {kind: "since", since: new Date(fetch.deepen.since * 1000)}
-          : fetch.deepen.kind === "depth" && deeper && !remoteWants.length && fetch.deepen.depth < INFINITE_DEPTH
+          : fetch.deepen.kind === "depth" && depth !== undefined && !remoteWants.length && fetch.deepen.depth < INFINITE_DEPTH
           // An absolute depth counts from the client's wants, which the connection doesn't have.
           ? {kind: "depth", depth: fetch.deepen.depth - depth + 1}
           : fetch.deepen,
-        haves: [...new Set([...fetch.haves, ...hasHistory ? remote.haves : []])],
+        haves: [...new Set([...fetch.haves, ...has])],
         shallow: fetch.shallow,
         ...fetch.filter,
       });
@@ -398,6 +408,33 @@ async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remote
   }
   if (refused) throw new Error("Only commits in the worktree's history can be fetched.");
   throw new Error("No connected repository could serve these commits.", {cause});
+}
+
+/** Pull the boundary commits in `bases`, with their files, at depth 1 from a connection. */
+async function pullBoundary(source: WorktreeGitSource, bases: string[]): Promise<RemotePack> {
+  let cause: unknown;
+  for (const remote of remotesWith(source, bases)) {
+    try {
+      return await remote.pull(bases, {type: "commit", commitHistory: {kind: "depth", depth: 1}});
+    } catch (error) {
+      cause = error;
+    }
+  }
+  throw new Error("No connected repository could supply the worktree's files.", {cause});
+}
+
+/**
+ * The connections that have every one of the boundary commits in `bases`. Those are pulled in
+ * one request to one connection: packs from several couldn't be merged, since they may hold
+ * some of the same objects, which Git rejects.
+ */
+function remotesWith(source: WorktreeGitSource, bases: string[]): WorktreeGitSource["remotes"] {
+  const remotes = source.remotes.filter(remote => bases.every(oid => remote.haves.includes(oid)));
+  if (bases.length && !remotes.length) {
+    throw new Error("The worktree's history comes from several connected repositories, and none of them " +
+      "has all of it, so it can't be fetched.");
+  }
+  return remotes;
 }
 
 /**
