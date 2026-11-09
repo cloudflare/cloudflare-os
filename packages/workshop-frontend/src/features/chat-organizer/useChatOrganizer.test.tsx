@@ -129,6 +129,19 @@ describe("useChatOrganizer", () => {
     expect(document.activeElement).toBe(findOtherToggle());
   });
 
+  it("keeps a folder collapsed under its old name when renaming it fails", async () => {
+    const overseer = fakeOverseer();
+    overseer.renameChatFolder.mockRejectedValue(new Error("Unauthorized"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const organizer = mount(freshKey(), overseer);
+    act(() => organizer().toggleFolder("Board deck"));
+
+    act(() => organizer().startRenamingFolder("Board deck"));
+    await act(() => organizer().finishNaming("Investor deck"));
+
+    expect(organizer().view.collapsedFolders).toEqual(["Board deck"]);
+  });
+
   it("says so when a change fails", async () => {
     const overseer = fakeOverseer();
     overseer.setChatPlacement.mockRejectedValue(new Error("Unauthorized"));

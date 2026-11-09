@@ -63,12 +63,19 @@ export const useChatOrganizer = (
     focusRequest.targets.map((find) => find()).find((target) => target !== null)?.focus();
   }, [focusRequest, chats]);
 
+  // Changes the stored view rather than this render's, since a change can come after an await.
   const updateView = (change: (current: ChatListView) => ChatListView) => {
-    if (viewStorageKey !== null) writeChatListView(viewStorageKey, change(view));
+    if (viewStorageKey !== null) {
+      writeChatListView(viewStorageKey, change(readChatListView(viewStorageKey)));
+    }
   };
   const openFolder = (folder: string) => updateView((current) => ({
     ...current,
     collapsedFolders: current.collapsedFolders.filter((name) => name !== folder),
+  }));
+  const moveCollapsed = (from: string, to: string) => updateView((current) => ({
+    ...current,
+    collapsedFolders: [...current.collapsedFolders.filter((name) => name !== from), to],
   }));
 
   const save = async (what: string, change: () => Promise<unknown>, focus: FocusRequest) => {
@@ -139,13 +146,20 @@ export const useChatOrganizer = (
         setFocusRequest({ targets: [() => findFolderToggle(folder)], shown: showsNow });
         return;
       }
-      if (view.collapsedFolders.includes(folder)) {
-        updateView((current) => ({
-          ...current,
-          collapsedFolders: [...current.collapsedFolders.filter((n) => n !== folder), trimmed],
-        }));
-      }
-      return save("rename the folder", () => overseer.renameChatFolder(folder, trimmed), {
+      // A collapsed folder stays collapsed under its new name, and goes back to its old one if the
+      // rename fails.
+      const carryCollapsed = view.collapsedFolders.includes(folder) &&
+        !view.collapsedFolders.includes(trimmed);
+      if (carryCollapsed) moveCollapsed(folder, trimmed);
+      const rename = async () => {
+        try {
+          await overseer.renameChatFolder(folder, trimmed);
+        } catch (error) {
+          if (carryCollapsed) moveCollapsed(trimmed, folder);
+          throw error;
+        }
+      };
+      return save("rename the folder", rename, {
         targets: [() => findFolderToggle(trimmed), () => findFolderToggle(folder)],
         shown: (list) => !list.some((chat) => chat.folder === folder),
       });
