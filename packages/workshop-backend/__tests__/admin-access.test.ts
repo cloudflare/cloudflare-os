@@ -5,15 +5,16 @@ import {
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
   type ActionLogEntry, type AdminChatState, type AiChatHistoryPage, type AiChatMetadata,
   type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
-  type WorkpieceSummary,
+  type GadgetConsoleLogEntry, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
   adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewCallAccess,
   adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent, chatHoldsContent,
   chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent, cutAdminAuditText,
-  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
-  minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
+  fileHoldsContent, gadgetConsoleLogPageHoldsContent, hookHoldsContent,
+  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays,
+  redactAdminAuditArgs, validateAdminAccessReason,
   withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdChatStateContent, withholdCommitContent, withholdHookContent, workpieceHoldsContent,
   type AdminViewTerms,
@@ -189,6 +190,11 @@ describe("view calls", () => {
       expect(adminViewCallAccess(terms(), method, { access: "full", retentionDays: 90 }))
           .toEqual({ access: "full" });
     }
+    // Console log entries are what a gadget's code printed, so their listing is content as well.
+    expect(adminViewCallAccess(terms(), "listConsoleLogs", metadata))
+        .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+    expect(adminViewCallAccess(terms(), "listConsoleLogs", { access: "full", retentionDays: 90 }))
+        .toEqual({ access: "full" });
     // The history and the listings of names run at either level: a commit log withholds its
     // messages rather than being refused.
     for (let method of [
@@ -439,6 +445,15 @@ describe("whether an answer holds content", () => {
       { kind: "absent" },
     ];
     expect(files.map(fileHoldsContent)).toEqual([true, true, false]);
+  });
+
+  it("finds an entry in a console log page", () => {
+    let entry: GadgetConsoleLogEntry = {
+      time: new Date(0), gadgetId: 1, chatId: null, source: "server", level: "log", text: "",
+    };
+    expect(gadgetConsoleLogPageHoldsContent({ entries: [entry] })).toBe(true);
+    expect(gadgetConsoleLogPageHoldsContent({ entries: [] })).toBe(false);
+    expect(gadgetConsoleLogPageHoldsContent({ entries: [], nextCursor: "1" })).toBe(false);
   });
 });
 

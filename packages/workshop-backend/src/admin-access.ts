@@ -19,7 +19,7 @@ import {
   type AdminSettingRecord, type AdminViewAccess, type AdminVia, type AdminWorkspaceAccess,
   type AdminWorkspaceMethod, type AiChatHistoryPage, type AiChatMetadata,
   type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
-  type WorkpieceSummary,
+  type GadgetConsoleLogPage, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -133,7 +133,8 @@ export type AdminViewTerms = {
 /** The view methods that read only content, refused below "full". */
 export const ADMIN_CONTENT_METHODS: ReadonlySet<AdminWorkspaceMethod> =
     new Set<AdminWorkspaceMethod>(
-        ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile"]);
+        ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile",
+         "listConsoleLogs"]);
 
 // --- Validation ---
 
@@ -460,6 +461,11 @@ export function blueprintHoldsContent(blueprint: BlueprintGadgetSummary): boolea
 /** Whether `page` holds what getChat() refuses below "full": a message or a compaction summary. */
 export function chatPageHoldsContent(page: AiChatHistoryPage): boolean {
   return page.messages.length > 0 || page.compacted !== undefined;
+}
+
+/** Whether `page` holds what listConsoleLogs() refuses below "full": an entry. */
+export function gadgetConsoleLogPageHoldsContent(page: GadgetConsoleLogPage): boolean {
+  return page.entries.length > 0;
 }
 
 /** Whether `file` holds what a file read (readFile(), readFileAtCommit(), readPendingFile())

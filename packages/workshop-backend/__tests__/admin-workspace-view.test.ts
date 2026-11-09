@@ -6,7 +6,8 @@
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) whose impl.env is replaced
 // per test: the admin path must read the environment only through it. The deployment-wide log is
 // the real AdminAuditDurableObject the Overseer reaches through ctx.exports, read back through the
-// TEST_ADMIN_AUDIT binding.
+// TEST_ADMIN_AUDIT binding, and the workspace's console logs are kept in the real
+// WorkspaceLogDurableObject, read back through TEST_WORKSPACE_LOG.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -18,7 +19,8 @@ import {
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess, type AiChatAuthorInfo,
-  type BlueprintGadgetSummary, type ChatGadgetPin, type FileAtCommit, type ObserverBindingNeed,
+  type BlueprintGadgetSummary, type ChatGadgetPin, type ConsoleLogEvent, type FileAtCommit,
+  type GadgetConsoleLogPage, type ObserverBindingNeed, type ReportedGadgetConsoleLog,
   type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
@@ -26,6 +28,10 @@ import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import type { AdminViewTerms } from "../src/admin-access.js";
+import {
+  GADGET_CONSOLE_LOG_PAGE_SIZE, GADGET_CONSOLE_LOG_RETENTION_HOURS,
+  type WorkspaceLogDurableObject,
+} from "../src/workspace-log.js";
 import { encodeGitTree, gitObjectOid } from "../src/git-codec.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import { putAction } from "./fixtures.js";
@@ -37,6 +43,7 @@ declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
     TEST_ADMIN_AUDIT: DurableObjectNamespace<AdminAuditDurableObject>;
+    TEST_WORKSPACE_LOG: DurableObjectNamespace<WorkspaceLogDurableObject>;
   }
 }
 
@@ -660,6 +667,7 @@ describe("a metadata view", () => {
     expect(await codeOf(view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID)))
         .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
     await view.listActions({ filter: "all" });
+    expect(await codeOf(view.listConsoleLogs())).toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
     await view.listFiles(ws.gadgetId);
     expect(await codeOf(view.readFile(ws.gadgetId, "notes.txt")))
         .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
@@ -692,6 +700,7 @@ describe("a metadata view", () => {
       ["readChatAttachment", { chatId: CHAT_ID, id: BLOB_ATTACHMENT_ID }, "metadata",
        ADMIN_ACCESS_ERROR_CODES.contentWithheld],
       ["listActions", { filter: "all" }, "metadata", undefined],
+      ["listConsoleLogs", {}, "metadata", ADMIN_ACCESS_ERROR_CODES.contentWithheld],
       ["listFiles", { gadgetId: ws.gadgetId }, "metadata", undefined],
       ["readFile", { gadgetId: ws.gadgetId, path: "notes.txt" }, "metadata",
        ADMIN_ACCESS_ERROR_CODES.contentWithheld],
@@ -841,6 +850,7 @@ describe("an inspection", () => {
     await view.listChatAttachments(CHAT_ID);
     await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID).catch(() => {});
     await view.listActions();
+    await view.listConsoleLogs().catch(() => {});
     await view.listFiles(ws.gadgetId);
     await view.readFile(ws.gadgetId, "notes.txt").catch(() => {});
     await view.getCommitLog(ws.commitId);
@@ -870,6 +880,7 @@ describe("an inspection", () => {
       await full.readChatAttachment(CHAT_ID, id);
     }
     await full.listActions();
+    await full.listConsoleLogs();
     await full.listFiles(ws.gadgetId);
     await full.readFile(ws.gadgetId, "notes.txt");
     await full.getCommitLog(ws.commitId);
@@ -1993,5 +2004,214 @@ describe("sharing reads", () => {
       await view.getDiagnostics();
     }
     expect(reached).toBe(0);
+  }));
+});
+
+// A console call of a gadget's server, as its tail delivers it.
+function serverLog(text: string, level: ConsoleLogEvent["level"] = "log"): ConsoleLogEvent {
+  return { timestamp: new Date(), level, message: [text] };
+}
+
+// A console call of a gadget's UI, as a browser reports it.
+function clientLog(text: string, level: ReportedGadgetConsoleLog["level"] = "log")
+    : ReportedGadgetConsoleLog {
+  return { time: new Date(), level, text };
+}
+
+// The workspace's log object, by the name the workspace stores for it.
+function logObject(ws: Workspace) {
+  return env.TEST_WORKSPACE_LOG.getByName(ws.impl.storage.consoleLogId.get());
+}
+
+// What the log object holds of each entry beside its labels and text, and its alarm: what a read
+// must leave as it was.
+function logState(ws: Workspace) {
+  return runInDurableObject(logObject(ws), async (_log, state) => ({
+    rows: state.storage.sql
+        .exec("SELECT seq, kept_at, at, bytes FROM console_logs ORDER BY seq").toArray(),
+    alarm: await state.storage.getAlarm(),
+  }));
+}
+
+function texts(page: GadgetConsoleLogPage): string[] {
+  return page.entries.map(entry => entry.text);
+}
+
+// The records of the listConsoleLogs() calls made so far, oldest first.
+async function consoleLogRecords(ws: Workspace): Promise<AdminAccessRecord[]> {
+  return (await deploymentRecords(ws)).filter(record => record.method === "listConsoleLogs");
+}
+
+describe("console log reads", () => {
+  it("are refused below full, recorded, without asking the log object",
+      () => withWorkspace(async ws => {
+    await ws.impl.deliverGadgetLogs(null, [serverLog("server line")], ws.gadgetId);
+    let view = await open(ws);
+    let asked = 0;
+    ws.impl.workspaceLogs = {
+      getByName: () => {
+        asked++;
+        throw new Error("the log object was asked");
+      },
+    };
+
+    expect(await codeOf(view.listConsoleLogs({ gadgetId: ws.gadgetId, level: "log" })))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.contentWithheld);
+    expect(asked).toBe(0);
+    let records = await consoleLogRecords(ws);
+    expect(records.map(r => [r.args, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual([[
+          { gadgetId: ws.gadgetId, level: "log" }, "metadata", "metadata", "metadata",
+          ADMIN_ACCESS_ERROR_CODES.contentWithheld,
+        ]]);
+  }));
+
+  it("return what the server logged and what browsers reported, each labelled",
+      () => withWorkspace(async ws => {
+    let server = serverLog("server line", "info");
+    let client = clientLog("client line", "warn");
+    await ws.impl.deliverGadgetLogs(null, [server], ws.gadgetId);
+    await ws.impl.reportGadgetConsoleLogs(ws.gadgetId, null, BOB.id, [client]);
+    let view = await openFull(ws);
+
+    expect(await view.listConsoleLogs()).toStrictEqual({
+      entries: [
+        { time: client.time, gadgetId: ws.gadgetId, chatId: null, source: "client",
+          userId: BOB.id, level: "warn", text: "client line" },
+        { time: server.timestamp, gadgetId: ws.gadgetId, chatId: null, source: "server",
+          level: "info", text: "server line" },
+      ],
+    });
+    // A query that matches nothing answers an empty page, which exposed nothing.
+    expect(await view.listConsoleLogs({ source: "client", level: "error" }))
+        .toStrictEqual({ entries: [] });
+
+    let records = await consoleLogRecords(ws);
+    expect(records.map(r => [r.args, r.access, r.exposed])).toStrictEqual([
+      [{}, "full", "content"],
+      [{ source: "client", level: "error" }, "full", "metadata"],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("list the entries of a gadget the workspace has since deleted, by its id",
+      () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    let gone: number = impl.createGadget("Scratch", "SCRATCH", undefined, undefined, ws.commitId).id;
+    await impl.deliverGadgetLogs(null, [serverLog("logged before removal")], gone);
+    await impl.reportGadgetConsoleLogs(gone, null, BOB.id, [clientLog("reported before removal")]);
+    await impl.removeWorkpiece(gone);
+    expect(impl.storage.gadgets.get(gone)).toBeUndefined();
+
+    let view = await openFull(ws);
+    let page = await view.listConsoleLogs({ gadgetId: gone });
+    expect(page.entries.map(entry => [entry.gadgetId, entry.source, entry.text])).toStrictEqual([
+      [gone, "client", "reported before removal"], [gone, "server", "logged before removal"],
+    ]);
+    expect((await consoleLogRecords(ws)).map(r => [r.args, r.exposed]))
+        .toStrictEqual([[{ gadgetId: gone }, "content"]]);
+  }));
+
+  it("leave the log object's entries and its alarm as they were", () => withWorkspace(async ws => {
+    await ws.impl.deliverGadgetLogs(
+        null, [serverLog("expired"), serverLog("fresh")], ws.gadgetId);
+    // One entry is past its retention and not deleted yet: a read hides it and deletes nothing.
+    await runInDurableObject(logObject(ws), (_log, state) => {
+      state.storage.sql.exec("UPDATE console_logs SET kept_at = ? WHERE text = 'expired'",
+          Date.now() - (GADGET_CONSOLE_LOG_RETENTION_HOURS + 1) * 3600_000).toArray();
+    });
+    let before = await logState(ws);
+    expect(before.rows).toHaveLength(2);
+    expect(before.alarm).not.toBeNull();
+
+    let view = await openFull(ws);
+    expect(texts(await view.listConsoleLogs())).toStrictEqual(["fresh"]);
+    expect(await logState(ws)).toStrictEqual(before);
+  }));
+
+  it("answer an empty page for a workspace that kept no entry, and name no log object",
+      () => withWorkspace(async ws => {
+    let view = await openFull(ws);
+    expect(await view.listConsoleLogs()).toStrictEqual({ entries: [] });
+    expect(ws.impl.storage.consoleLogId.get()).toBeUndefined();
+    expect((await consoleLogRecords(ws)).map(r => [r.args, r.access, r.exposed]))
+        .toStrictEqual([[{}, "full", "metadata"]]);
+  }));
+
+  it("record every field of the query, and a null chat as the word for the mainline",
+      () => withWorkspace(async ws => {
+    // More than a page under the draft's chat, so that the first page hands out a cursor, and one
+    // entry under no chat.
+    let drafts = Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE + 1 },
+        (_, index) => serverLog(`draft ${index}`, "warn"));
+    await ws.impl.deliverGadgetLogs(DRAFT_CHAT_ID, drafts, ws.gadgetId);
+    await ws.impl.deliverGadgetLogs(null, [serverLog("mainline line")], ws.gadgetId);
+    let view = await openFull(ws);
+    let since = new Date(Date.now() - 60_000);
+    let until = new Date(Date.now() + 60_000);
+    let query = {
+      gadgetId: ws.gadgetId, chatId: DRAFT_CHAT_ID, source: "server", level: "warn", since, until,
+    } as const;
+
+    let first = await view.listConsoleLogs(query);
+    expect(first.entries).toHaveLength(GADGET_CONSOLE_LOG_PAGE_SIZE);
+    let cursor = first.nextCursor!;
+    expect(texts(await view.listConsoleLogs({ ...query, cursor }))).toStrictEqual(["draft 0"]);
+    expect(texts(await view.listConsoleLogs({ gadgetId: ws.gadgetId, chatId: null })))
+        .toStrictEqual(["mainline line"]);
+    // With no chat named, entries are listed whatever their chat.
+    let anyChat = await view.listConsoleLogs({ gadgetId: ws.gadgetId });
+    expect(anyChat.entries.slice(0, 2).map(entry => entry.chatId))
+        .toStrictEqual([null, DRAFT_CHAT_ID]);
+
+    let recorded = {
+      gadgetId: ws.gadgetId, chatId: DRAFT_CHAT_ID, source: "server", level: "warn",
+      since: since.toISOString(), until: until.toISOString(),
+    };
+    expect((await consoleLogRecords(ws)).map(r => r.args)).toStrictEqual([
+      recorded,
+      { ...recorded, cursor },
+      { gadgetId: ws.gadgetId, chatId: "mainline" },
+      { gadgetId: ws.gadgetId },
+    ]);
+  }));
+
+  it("reject a malformed query before recording anything, at either level",
+      () => withWorkspace(async ws => {
+    for (let view of [await open(ws), await openFull(ws)]) {
+      await expect(view.listConsoleLogs({ since: new Date(NaN) })).rejects.toThrow(TypeError);
+      await expect(view.listConsoleLogs({ until: new Date(NaN) })).rejects.toThrow(TypeError);
+      await expect(view.listConsoleLogs({ cursor: "abc" })).rejects.toThrow(TypeError);
+      await expect(view.listConsoleLogs({ cursor: "abc" })).rejects.toThrow("Invalid cursor.");
+    }
+    expect(await consoleLogRecords(ws)).toStrictEqual([]);
+  }));
+
+  it("record a read the log object fails as an attempt that exposed nothing",
+      () => withWorkspace(async ws => {
+    await ws.impl.deliverGadgetLogs(null, [serverLog("line")], ws.gadgetId);
+    let view = await openFull(ws);
+    ws.impl.workspaceLogs = {
+      getByName: () => ({ list: async () => { throw new Error("log store down"); } }),
+    };
+
+    await expect(view.listConsoleLogs({ gadgetId: ws.gadgetId }))
+        .rejects.toThrow("log store down");
+    let records = await consoleLogRecords(ws);
+    expect(records.map(r => [r.args, r.access, r.exposed]))
+        .toStrictEqual([[{ gadgetId: ws.gadgetId }, "full", "metadata"]]);
+    expect(records[0]).not.toHaveProperty("refused");
+  }));
+
+  it("return nothing when the deployment-wide record cannot be written",
+      () => withWorkspace(async ws => {
+    await ws.impl.deliverGadgetLogs(null, [serverLog("line")], ws.gadgetId);
+    let view = await openFull(ws);
+    ws.impl.adminAudits = {
+      getByName: () => ({ append: async () => { throw new Error("audit store down"); } }),
+    };
+
+    await expect(view.listConsoleLogs()).rejects.toThrow("audit store down");
+    expect(await consoleLogRecords(ws)).toStrictEqual([]);
   }));
 });

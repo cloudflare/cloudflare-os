@@ -66,7 +66,8 @@ import {
   actionHoldsContent, adminAccessPolicy, adminCommitLogDepth, adminViewCallAccess,
   assertAdminViewLive, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
   chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
-  hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
+  gadgetConsoleLogPageHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
+  redactAdminAuditArgs, validateAdminAccessReason,
   withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
   withholdCommitContent, withholdHookContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
@@ -14230,9 +14231,10 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 // no presence or fan-out, and never reads through a connection: its reads of files, history,
 // attachments and a chat's pending content never pull, and what a connection could tell it, it
 // reads from the workspace's own records instead. Beyond the workspace's storage it reads only
-// the owner's profile, from their account (describe() and listShareLinks()). Every method runs
-// through #call, which reads the call's answer and records the call, with what that answer
-// exposed, in the deployment-wide log before returning anything.
+// the owner's profile, from their account (describe() and listShareLinks()), and the workspace's
+// console log object (listConsoleLogs()). Every method runs through #call, which reads the call's
+// answer and records the call, with what that answer exposed, in the deployment-wide log before
+// returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
@@ -14481,6 +14483,21 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
               ? page : {...page, entries: page.entries.map(withholdActionContent)};
         },
         page => page.entries.some(actionHoldsContent));
+  }
+
+  // The query is checked first, so a malformed one is rejected unrecorded. A recorded argument is
+  // a string or a number, so the null chat that asks for mainline entries is recorded as a word.
+  async listConsoleLogs(query: GadgetConsoleLogQuery = {}): Promise<GadgetConsoleLogPage> {
+    validateGadgetConsoleLogQuery(query);
+    return this.#call("listConsoleLogs", {
+      gadgetId: query.gadgetId,
+      chatId: query.chatId === null ? "mainline" : query.chatId,
+      source: query.source,
+      level: query.level,
+      since: query.since?.toISOString(),
+      until: query.until?.toISOString(),
+      cursor: query.cursor,
+    }, () => this.#impl.listConsoleLogs(query), gadgetConsoleLogPageHoldsContent);
   }
 
   async listFiles(gadgetId: WorkpieceId): Promise<TreeNode[]> {

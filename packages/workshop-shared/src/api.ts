@@ -1761,10 +1761,11 @@ export type AdminWorkspacePage = {
  *                 sizes and content hashes of attachments, the titles and descriptions of
  *                 blueprints, share links' notes, and diagnostics. Chat messages, queued steers,
  *                 attachments, file contents (at any commit, or pending in a chat), commit
- *                 messages, the arguments of calls queued for an agent, which blueprint a gadget
- *                 follows, the ids of the blueprints the workspace publishes, and the
- *                 descriptions and fields of actions, observations and hooks are withheld.
- *                 Titles, names, notes and blueprint descriptions stay, and can echo content.
+ *                 messages, gadget console logs, the arguments of calls queued for an agent,
+ *                 which blueprint a gadget follows, the ids of the blueprints the workspace
+ *                 publishes, and the descriptions and fields of actions, observations and hooks
+ *                 are withheld. Titles, names, notes and blueprint descriptions stay, and can
+ *                 echo content.
  *   - "full":     everything, what "metadata" withholds included.
  */
 export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata", "full"] as const;
@@ -1833,7 +1834,7 @@ export const ADMIN_WORKSPACE_METHODS = [
   "readChatAttachment", "listActions", "listFiles", "readFile", "getCommitLog",
   "listFilesAtCommit", "readFileAtCommit", "listChangedPaths", "listPendingChanges",
   "readPendingFile", "listGatekeepers", "listObservers", "listObserverRequirements",
-  "listShareLinks", "listAutoApprovals", "listBlueprints", "getDiagnostics",
+  "listShareLinks", "listAutoApprovals", "listBlueprints", "getDiagnostics", "listConsoleLogs",
 ] as const satisfies readonly ("inspectWorkspace" | keyof AdminWorkspaceView)[];
 
 /** One of ADMIN_WORKSPACE_METHODS. */
@@ -1921,9 +1922,10 @@ export type AdminAccessRecord = {
   /** "inspectWorkspace" for the open, else the view method called. */
   method: AdminWorkspaceMethod;
   /** The call's arguments by name: only those it declares, an absent optional one left out, each
-   * string cut to MAX_ADMIN_AUDIT_ARG_LENGTH. The open records `expiresAt` (ISO 8601), and
-   * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`. No
-   * view method takes content, so none is recorded. */
+   * string cut to MAX_ADMIN_AUDIT_ARG_LENGTH. The open records `expiresAt` (ISO 8601),
+   * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`, and
+   * listConsoleLogs() the fields of its query, `since` and `until` as ISO 8601 and a `chatId` of
+   * null as "mainline". No view method takes content, so none is recorded. */
   args: Record<string, string | number>;
   /** The reason the admin gave inspectWorkspace() for the view. */
   reason: string;
@@ -1943,6 +1945,7 @@ export type AdminAccessRecord = {
    *   - readFile(), readFileAtCommit(), readPendingFile(): any file found at the path,
    *     `unreadable` ones included, because that message can quote the file (a symlink's quotes
    *     its target);
+   *   - listConsoleLogs(): a console log entry;
    *   - listChats(): a queued steer;
    *   - getChatState(): a queued call's argument summary;
    *   - getCommitLog(): a commit message;
@@ -2741,8 +2744,8 @@ export type AdminAutoApproval = {
  * deployment's current setting. So lowering the setting reaches live views (within about a minute)
  * and raising it does not. A call that level refuses is recorded and refused, having read nothing:
  * `accessOff` once the setting is "off", `contentWithheld` below "full" for a method that reads
- * only content (getChat(), readChatAttachment(), readFile(), readFileAtCommit(),
- * readPendingFile()). Any other call reads its answer, never through a connection: what a
+ * only content (getChat(), readChatAttachment(), readFile(), readFileAtCommit(), readPendingFile(),
+ * listConsoleLogs()). Any other call reads its answer, never through a connection: what a
  * connection supplied is read only as the workspace stores it (the commits of a worktree checked
  * out through one are that repository's), on the level's terms, and the connection is not asked.
  * It is then recorded as an
@@ -2793,6 +2796,10 @@ export interface AdminWorkspaceView extends RpcTarget {
    */
   listActions(options?: { beforeId?: number; filter?: ActionHistoryFilter })
       : Promise<ActionHistoryPage>;
+
+  /** One page of the workspace's console log history, as Overseer.listConsoleLogs() pages it.
+   * Content: refused below "full". */
+  listConsoleLogs(query?: GadgetConsoleLogQuery): Promise<GadgetConsoleLogPage>;
 
   /**
    * The tree at a committed head, as Overseer.listTree() gives it, read only from the objects the
