@@ -9,18 +9,18 @@
 // same turn as it fires the unawaited `disable()`.
 //
 // The webhook route verifies each delivery and hands its event to the deployment's one
-// `PagerDutyHookDriver`, which queues it once for every enabled hook that may watch it and
-// delivers from its alarm, retrying failures. Each delivery starts a firing, and the facet re-reads
-// the incident as the hook's owner, dropping what they can't see or what lies outside the binding,
-// before calling the hook. An event reaches only hooks on the account its signed incident link
-// names: object IDs are not known to be unique across accounts, so a bare ID re-read in another
-// account could pair this event's text with someone else's incident.
+// `PagerDutyHookDriver`, which queues it once for every enabled hook that may watch it; the kit's
+// `HookRegistry` keeps the hooks and delivers from the driver's alarm, retrying failures. Each
+// delivery starts a firing, and the facet re-reads the incident as the hook's owner, dropping what
+// they can't see or what lies outside the binding, before calling the hook. An event reaches only
+// hooks on the account its signed incident link names: object IDs are not known to be unique
+// across accounts, so a bare ID re-read in another account could pair this event's text with
+// someone else's incident.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import {
-  DELIVERED_RETENTION_MS, HookDeliveryQueue, disposeStubs,
-} from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { DELIVERED_RETENTION_MS } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import { ResponseTooLargeError, readBytesCapped } from "@gadgets/gatekeeper-kit/response-body";
 import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
@@ -108,16 +108,11 @@ export function hookDescription(tenant: Tenant, { scope, incidentId }: HookScope
 
 // ── Facet side ──────────────────────────────────────────────────────
 
-/** What a hook's delivery stub reaches: the binding's facet, narrowed to delivering. */
-export interface PagerDutyHookDelivery extends RpcTarget {
-  /**
-   * Deliver `event` to one firing of the hook, as `HookInitiator.startHook()` returned it, if the
-   * hook's owner can see the incident and it lies within the capability the hook subscribed
-   * through; otherwise return without calling it.
-   */
-  deliver(callback: RpcStub<PagerDutyEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
-          event: StoredEvent): Promise<void>;
-}
+/**
+ * What a hook's delivery stub reaches: the binding's facet, which delivers an event if the hook's
+ * owner can see the incident and it lies within the capability the hook subscribed through.
+ */
+export type PagerDutyHookDelivery = HookDelivery<PagerDutyEventHookTarget, StoredEvent>;
 
 @validateRpc()
 export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHookDelivery {
@@ -181,10 +176,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
 /** What the driver filters a hook's events by: cheap checks that spare firings, which the facet repeats. */
 type Registration = { tenant: Tenant; events: PagerDutyEventKind[]; incidentId?: string; serviceId?: string };
 
-type Capabilities = {
-  delivery: RpcStub<PagerDutyHookDelivery>;
-  initiator: Fetcher<HookInitiator<PagerDutyEventHookTarget>>;
-};
+type Capabilities = HookCapabilities<PagerDutyEventHookTarget, StoredEvent>;
 
 /** Everything a hook needs once enabled, captured when the facet binds it. */
 type PagerDutyHookProps = Registration & { key: string; delivery: RpcStub<PagerDutyHookDelivery> };
@@ -209,71 +201,41 @@ export class PagerDutyHookController extends WorkerEntrypoint<Env, PagerDutyHook
 
 // ── Driver ──────────────────────────────────────────────────────────
 
-const REG_PREFIX = "reg:";
-const registrationKey = (key: string) => `${REG_PREFIX}${key}`;
-const capabilitiesKey = (key: string) => `caps:${key}`;
-
 /**
- * The deployment's one driver (see `driver`). Storage: `reg:`/`caps:` per enabled hook, and the
- * delivery queue's `msg:` rows and `queue:` indexes.
+ * The deployment's one driver (see `driver`). Its storage is the registry's: `reg:`/`caps:` per
+ * enabled hook, and the delivery queue's `msg:` rows and `queue:` indexes.
  */
 export class PagerDutyHookDriver extends DurableObject<Env> {
-  #queue = new HookDeliveryQueue<StoredEvent>(this.ctx.storage.kv, () => {
+  #hooks = new HookRegistry<PagerDutyEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, () => {
     logger.warn("dropped a PagerDuty event after repeated delivery failures", { event: "hooks.delivery.dropped" });
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
-    const kv = this.ctx.storage.kv;
-    disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
-    kv.put(registrationKey(key), registration);
-    kv.put(capabilitiesKey(key), capabilities);
+    // Both of the hook's records, or neither.
+    this.ctx.storage.transactionSync(() => this.#hooks.set(key, registration, capabilities));
   }
 
   async unregister(key: string): Promise<void> {
-    const kv = this.ctx.storage.kv;
-    disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
-    kv.delete(registrationKey(key));
-    kv.delete(capabilitiesKey(key));
-    this.#queue.cancel(key);
+    this.#hooks.remove(key);
     await this.#reschedule();
   }
 
   /** Queue `event` once for each enabled hook that may watch it. */
   async ingest(event: StoredEvent): Promise<void> {
     const now = Date.now();
-    let queued = false;
-    // Listed in full first, as the queue lists storage too.
-    for (const [regKey, registration] of Array.from(this.ctx.storage.kv.list<Registration>({ prefix: REG_PREFIX }))) {
-      if (!watches(registration, event)) continue;
-      this.#queue.enqueue(regKey.slice(REG_PREFIX.length), event.id, event, now);
-      queued = true;
-    }
+    const watching = this.#hooks.entries().filter(([, registration]) => watches(registration, event));
+    for (const [key] of watching) this.#hooks.enqueue(key, event.id, event, now);
     // Due now, so no later than anything else queued.
-    if (queued) await this.ctx.storage.setAlarm(now);
+    if (watching.length > 0) await this.ctx.storage.setAlarm(now);
   }
 
   async alarm(): Promise<void> {
-    await this.#queue.run(Date.now(), (key, event) => this.#deliver(key, event));
+    await this.#hooks.run(Date.now());
     await this.#reschedule();
   }
 
-  async #deliver(key: string, event: StoredEvent): Promise<void> {
-    // An unregistered hook's rows are finished, and it gets no new ones.
-    const capabilities = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(key));
-    if (!capabilities) return;
-    try {
-      // A refused firing is retried like a failed one; disabling the hook ends the retries. Awaited,
-      // not pipelined: workerd can't pass a property of a pending result into another call.
-      using firing = await capabilities.initiator.startHook();
-      // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
-      await capabilities.delivery.deliver(firing.callback, firing.approvalQueue, event);
-    } finally {
-      disposeStubs(capabilities);
-    }
-  }
-
   async #reschedule(): Promise<void> {
-    const due = this.#queue.nextDue();
+    const due = this.#hooks.nextDue();
     if (due === undefined) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(due);
   }
