@@ -45,7 +45,7 @@ export function describeFinishedStep(
     case 'editFile': {
       const app = call.input.workpiece === undefined ? undefined : apps.get(call.input.workpiece)
       if (app?.turn === turn) return `Building ${app.title}`
-      return `Updating ${app?.title ?? 'the app'}`
+      return `Updating ${app?.title ?? 'the gadget'}`
     }
     case 'createGadget':
       return `Creating ${call.input.title}`
@@ -63,10 +63,10 @@ export function describeFinishedStep(
     case 'describeBinding':
       return 'Checking your connections'
     case 'setGadgetBinding':
-      return `Connecting ${appTitle(apps, call.input.gadget) ?? 'the app'}`
+      return `Connecting ${appTitle(apps, call.input.gadget) ?? 'the gadget'}`
     case 'setBindingHook':
     case 'saveCapsuleAsBinding':
-      return 'Connecting the app'
+      return 'Connecting the gadget'
     case 'observeUserChanges':
       return 'Looking at your changes'
     case 'listBlueprints':

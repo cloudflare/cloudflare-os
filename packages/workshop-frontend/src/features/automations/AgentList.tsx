@@ -53,7 +53,7 @@ export function AgentList({ overseer, workspaceId, gadgetIds, chatId }: {
     <section className="flex flex-col gap-2">
       <div className="px-1 pt-4">
         <h2 className="text-[14px] font-medium leading-5 text-kumo-default">Agents</h2>
-        <p className="text-[13px] leading-[18px] text-kumo-subtle">Started by your apps to take on tasks, like answering each new email.</p>
+        <p className="text-[13px] leading-[18px] text-kumo-subtle">Started by your gadgets to take on tasks, like answering each new email.</p>
       </div>
       {agents.map(agent => (
         <div key={agent.gatekeeperId} className="flex flex-col rounded-2xl bg-kumo-base ring-1 ring-kumo-line">

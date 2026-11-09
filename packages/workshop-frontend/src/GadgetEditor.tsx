@@ -1436,7 +1436,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
     let cancelled = false
     publicApi.getBlueprint(settingsBlueprintId).then(
       info => { if (!cancelled) setAppDescription(info?.metadata.description || undefined) },
-      err => console.error('Failed to read the app\'s template:', err))
+      err => console.error('Failed to read the gadget\'s blueprint:', err))
     return () => { cancelled = true }
   }, [publicApi, settingsBlueprintId])
 
@@ -1702,7 +1702,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
           />
         ) : (
           <div className="flex min-h-full flex-col items-center justify-center gap-4 bg-kumo-base">
-            <p className="text-sm text-kumo-subtle">This app no longer exists.</p>
+            <p className="text-sm text-kumo-subtle">This gadget no longer exists.</p>
             <WorkshopButton tone="secondary" onClick={() => leaveAppPage()}>Go to its workspace</WorkshopButton>
           </div>
         )}

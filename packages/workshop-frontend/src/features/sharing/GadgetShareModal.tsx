@@ -241,8 +241,8 @@ export const GadgetShareModal = ({ open, onClose, overseer, metadata, gadget, cu
     : showResources ? (sharedViews ? 'What people see' : 'Protected resources')
     : <>Share <span className="text-kumo-subtle">&ldquo;{gadget.title}&rdquo;</span></>
   const description = removal.target || showResources ? undefined : isNamed
-    ? <>People you add can use this app on its own, without the rest of {metadata.title}.</>
-    : 'People you add can use this app on its own, without the chat it was made in.'
+    ? <>People you add can use this gadget on its own, without the rest of {metadata.title}.</>
+    : 'People you add can use this gadget on its own, without the chat it was made in.'
 
   return (
     <ShareDialogFrame

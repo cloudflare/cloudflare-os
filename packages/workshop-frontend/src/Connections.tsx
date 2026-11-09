@@ -248,7 +248,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-[15px] font-medium leading-5 text-kumo-default">Connections</h2>
-              <p className="text-[13px] leading-[18px] text-kumo-subtle">What this app can use, and the name its code knows each by.</p>
+              <p className="text-[13px] leading-[18px] text-kumo-subtle">What this gadget can use, and the name its code knows each by.</p>
             </div>
             {!loading && bindings.length > 0 && (
               <button type="button" onClick={openConnect} className={roundButtonClass('pill', 'h-[34px] shrink-0 !gap-1.5 !px-3 !text-[13px]')}>
@@ -350,7 +350,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           <section className="flex flex-col gap-3">
             <div>
               <h2 className="text-[15px] font-medium leading-5 text-kumo-default">Automations</h2>
-              <p className="text-[13px] leading-[18px] text-kumo-subtle">What runs this app&rsquo;s code, on a schedule or when something happens.</p>
+              <p className="text-[13px] leading-[18px] text-kumo-subtle">What runs this gadget&rsquo;s code, on a schedule or when something happens.</p>
             </div>
             <div className="flex flex-col gap-2">
               {hooks.map((hook) => {
@@ -396,7 +396,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       <DeleteConfirmationDialog
         open={deleteTarget !== null}
         title="Remove connection?"
-        description={<>This app stops being able to use <span className="font-medium text-kumo-default">{deleteTarget?.resourceTitle}</span>. Its code still names <span className="font-mono">env.{deleteTarget?.name}</span> until it&rsquo;s changed.</>}
+        description={<>This gadget stops being able to use <span className="font-medium text-kumo-default">{deleteTarget?.resourceTitle}</span>. Its code still names <span className="font-mono">env.{deleteTarget?.name}</span> until it&rsquo;s changed.</>}
         confirmLabel="Remove"
         confirmingLabel="Removing…"
         onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}

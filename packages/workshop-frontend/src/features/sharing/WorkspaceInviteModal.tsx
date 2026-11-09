@@ -168,8 +168,8 @@ export const WorkspaceInviteModal = ({ open, onClose, overseer, metadata, curren
     : showResources ? 'Protected resources'
     : named ? <>Invite to <span className="text-kumo-subtle">{metadata.title}</span></> : 'Share chat'
   const description = removal.target || showResources ? undefined : named
-    ? 'Members work on everything in it with you: its chats, apps and files.'
-    : 'People you add can read this chat, carry it on with you and use the apps it made.'
+    ? 'Members work on everything in it with you: its chats, gadgets and files.'
+    : 'People you add can read this chat, carry it on with you and use the gadgets it made.'
 
   return (
     <ShareDialogFrame

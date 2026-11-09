@@ -55,24 +55,31 @@ end of their section.
   chat.
 - **Workspace title menu.** The title pill opens a menu the design doesn't draw. It holds Rename,
   Invite people, notification settings, the workspace's cost, and Delete workspace for the owner.
-- **The New menu.** Chat opens Home with the workspace preselected in the composer, From a template
-  opens the templates, and Invite opens the share dialog.
+- **The New menu.** Chat opens Home with the workspace preselected in the composer. The formats
+  (Doc, Sheet, Slides) are listed as in the Library's New menu, but made in this workspace: the new
+  gadget opens beside the workspace's Library (kernel: `Overseer.createGadgetFromBlueprint`, for
+  blueprints that need no connections). From a blueprint opens Blueprints, and Invite opens the
+  share dialog.
 - **Members tab.** Roles are labelled Owner, Member, or Uses apps for people who can only open
   shared apps. The Activity tab shows the workspace's whole activity log.
 - **Chat Connections and Activity log.** Connections lists the connections of the chat's apps, with
-  a tab per app. The Activity log is the workspace's, because action records carry no chat id.
+  a tab per app. The Activity log is still the workspace's. Action records now carry the chat that
+  made them (`ActionLogEntry.chatId`), which the chat's Library uses for Google files, so the log
+  could be scoped to the chat later.
 - **Chat Notifications.** The toggle maps to the workspace's notification mute, and its copy says
   so, because notifications can't be muted per chat. Usage shows tokens, and cost only when it is
   above zero.
-- **App description.** The app settings page shows the description of the template the app came
-  from, and nothing when it didn't come from one.
+- **Gadget description.** The gadget settings page shows the description of the blueprint the
+  gadget came from, and nothing when it didn't come from one.
 - **Request access.** There is no request-access API. The button opens a dialog with a ready-made
-  message and the app's link to copy and send to its owner. The "same kind of app" card opens the
-  templates.
+  message and the gadget's link to copy and send to its owner. The "same kind of gadget" card opens
+  Blueprints.
 - **Use-only apps.** People who can only use an app now see it in the same full-screen frame. The
   old export menu and user menu are gone from that view, since the frame doesn't draw them.
-- **Template wording.** The design says "template" where the product said "blueprint", so menu
-  labels read "Publish as template…" and "Update from template…". Code and APIs keep "blueprint".
+- **Gadget and blueprint wording.** The design says "app" and "template". The UI keeps the words
+  people already know, "gadget" and "blueprint", everywhere it names them ("Gadget settings",
+  "Share gadget", "Publish as blueprint…"). "App" survives only as a format's label, beside Doc,
+  Sheet and Slides.
 - **Mobile drawer.** Buttons and rows are 44px touch targets, Search moves to the drawer's footer,
   and a New chat button sits beside it, following "814:5105". On phones a message's actions appear
   on tap, the same as hover on desktop, instead of always showing.
@@ -141,8 +148,9 @@ end of their section.
   once and shared with the preview.
 - **Apps open beside the Library.** Opening an app from the Library, a workspace page or chat
   details shows it live in the side pane, as files open. Full screen is the pane's expand button.
-  The More menu has "Open with chat" and "Open on its own". Library thumbnails for apps stay as
-  their format glyph, since apps have no screenshots.
+  The More menu has "Open with chat", "Open on its own", Export and Gadget settings, as the
+  gadget's pane in its workspace has. Library thumbnails for apps stay as their format glyph,
+  since apps have no screenshots.
 
 ## Automations and agents
 
@@ -219,3 +227,33 @@ end of their section.
   composer's attachment tray. Menus scale in from where they open, and respect reduced motion.
 - **Safari.** No `using` declarations in frontend code: Safari can't parse them and the dev
   server doesn't lower them.
+
+## The Library, gadget pages and Gatekeepers
+
+- **One Library.** Skills (the Context Library) and Scheduled (scheduled tasks) are tabs of the
+  Library rather than pages of their own; the old addresses redirect. Scheduled is read-only,
+  with search and status: tasks come from asking a chat, so the page only shows what exists.
+- **Google files.** Docs, Sheets and Slides an agent created or edited through a connection are
+  listed among a Library's files (all of them in the Library, the workspace's on its page, the
+  chat's in its details), from the action log. They preview live and open in Google.
+- **Removing and deleting.** Anything can be taken out of a Library ("Remove from Library", per
+  user, kernel: `setLibraryRemoved`). A Google file worked on again comes back. Gadgets can also
+  be deleted, by builders, after a confirm. There is no Undo, since the toast has no actions.
+- **Starred first.** Starred items lead every Library list and grid.
+- **Renaming.** Gadgets rename in place: Rename on a row's right-click or More menu, or a
+  double-click on the name in the side pane or full screen.
+- **The side pane** has the workspace's draggable gutter, remembered across pages; a double-click
+  evens it out.
+- **Gadget pages return where they came from.** A gadget opened on its own, or its settings,
+  carries `?from=` (Library, workspace, chat, or the gadget), so Close and Back return there and
+  say so ("Back to Library"). Opened from a list, full screen leaves out the gadget switcher.
+  Full screen has a More menu with Export and Gadget settings.
+- **Blueprints.** Explore and the blueprint list are one page, Blueprints: featured ones and your
+  own. "Use a blueprint" on Home goes there.
+- **Gatekeepers.** The page keeps its name and is redrawn in this theme: Connected, Built in and
+  Available groups, with matching connect and manage dialogs. The built-in rows for Skills and
+  Scheduled open their Library tabs. The sidebar's connections pill stacks the connected
+  services' logos, which fan out on hover.
+- **Chatting with a new gadget.** A gadget made from a blueprint has no chat yet; the first
+  message starts one rather than failing.
+
