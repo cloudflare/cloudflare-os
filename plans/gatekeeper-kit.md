@@ -825,9 +825,9 @@ conversion and every read not yet converted. `observerAccessVerifier` reuses the
 shape but not its error policy: the tracker excludes an observer whose stored verifier throws, so
 one dead stub cannot fail every read, while the Workshop asks with fresh verifiers and expects a
 throw when access cannot be determined, so the throw propagates. It asks no further verifier once
-one throws, and rejects only after those already asked have answered, so no verifier, meant for
-the one call, is still in use after it. It stores nothing, since the same observer id may arrive
-with another account's verifier.
+one throws, and rejects with that first error only after those already asked have settled, so no
+verifier, meant for the one call, is still in use after it. It stores nothing, since the same
+observer id may arrive with another account's verifier.
 
 **A proven refusal reclaims only this read's reservations.** For withheld reads, `discard()` deletes
 the read's `observer-withhold:` marker. For set-scoped reads it releases the check's per-storage

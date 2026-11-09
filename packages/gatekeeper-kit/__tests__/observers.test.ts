@@ -1200,10 +1200,12 @@ describe("observerAccessVerifier", () => {
     await expect(check([{ id: "x", verifier: someUser }], ["a"])).rejects.toBe(failure);
   });
 
-  it("starts no more checks once one cannot tell, and fails only after those running return", async () => {
+  it.each([
+    { outcome: "success", failure: new Error("credentials expired") },
+    { outcome: "failure", failure: undefined },
+  ])("stops new checks and drains an in-flight $outcome before rejecting with the first error", async ({ outcome: laterOutcome, failure }) => {
     // Each verifier is meant for this call only, so none may still be in use once it has failed.
     vi.useFakeTimers();
-    const failure = new Error("credentials expired");
     const asked: string[] = [];
     const check = observerAccessVerifier<{ id: string }>({
       concurrency: 2,
@@ -1214,6 +1216,7 @@ describe("observerAccessVerifier", () => {
         const answered = Promise.withResolvers<void>();
         setTimeout(answered.resolve, 1000);
         await answered.promise;
+        if (laterOutcome === "failure") throw new Error("a later failure must not replace the first");
         return collectionIds.map(() => true);
       },
     });
