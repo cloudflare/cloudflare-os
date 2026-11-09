@@ -2,9 +2,11 @@ import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
-  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, PREVIEW_OUTLINE_FIELDS, PREVIEW_SLIDE_FIELDS, SLIDE_FIELDS,
+  SUMMARY_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
+import { styledPlaceholder } from "./slides-blank-theme";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
@@ -17,8 +19,22 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_THUMBNAIL_RESPONSE_BYTES = 16 * 1024;
 // A 1600-pixel PNG of a photo-heavy slide runs to a few MiB; a text slide is about 150 KiB.
 const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
-const THUMBNAIL_HOST_SUFFIX = ".googleusercontent.com";
+const CONTENT_HOST_SUFFIX = ".googleusercontent.com";
+// An uploaded picture's `contentUrl` is on Docs, which redirects it once to the image host.
+const IMAGE_REDIRECT_HOST = "docs.google.com";
+// The image host's size suffix, ending the path: `=s2048` serves the picture at most 2048 wide.
+const IMAGE_SIZE_SUFFIX = /=s\d+$/;
+// Asked of the image host with a size: JPEG quality 85, a quarter smaller than its default and no
+// different to see on a slide. A PNG is served as it is.
+const IMAGE_QUALITY_OPTION = "-l85";
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+// The picture formats a preview inlines, by their first bytes. Anything else, SVG included, is not.
+const IMAGE_SIGNATURES: { mediaType: string; at: number; bytes: number[] }[] = [
+  { mediaType: "image/png", at: 0, bytes: PNG_SIGNATURE },
+  { mediaType: "image/jpeg", at: 0, bytes: [0xff, 0xd8, 0xff] },
+  { mediaType: "image/gif", at: 0, bytes: [0x47, 0x49, 0x46, 0x38] },
+  { mediaType: "image/webp", at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+];
 
 /** A `Dimension`; Slides reports sizes in EMU or points. */
 export type RestDimension = { magnitude?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED" };
@@ -89,15 +105,37 @@ export type RestSolidFill = { color?: RestOpaqueColor; alpha?: number };
 /** A fill or outline Google renders, does not render, or inherits from a placeholder. */
 export type RestPropertyState = "RENDERED" | "NOT_RENDERED" | "INHERIT";
 
+/** An `Outline` of a shape or picture. */
+export type RestOutline = {
+  propertyState?: RestPropertyState;
+  outlineFill?: { solidFill?: RestSolidFill };
+  weight?: RestDimension;
+  dashStyle?: string;
+};
+
+/** A `Shadow`: `transform` offsets it, and `color` omits a zero component, so black is `{}`. */
+export type RestShadow = {
+  propertyState?: RestPropertyState;
+  type?: string;
+  transform?: RestTransform;
+  alignment?: string;
+  blurRadius?: RestDimension;
+  color?: RestOpaqueColor;
+  alpha?: number;
+  rotateWithShape?: boolean;
+};
+
+/** A picture's `CropProperties`: each offset a fraction of its width or height. */
+export type RestCropProperties = {
+  leftOffset?: number; rightOffset?: number; topOffset?: number; bottomOffset?: number;
+  angle?: number;
+};
+
 /** A shape's `ShapeProperties`, as far as the gatekeeper reads them. */
 export type RestShapeProperties = {
   shapeBackgroundFill?: { propertyState?: RestPropertyState; solidFill?: RestSolidFill };
-  outline?: {
-    propertyState?: RestPropertyState;
-    outlineFill?: { solidFill?: RestSolidFill };
-    weight?: RestDimension;
-    dashStyle?: string;
-  };
+  outline?: RestOutline;
+  shadow?: RestShadow;
   contentAlignment?: string;
   autofit?: { autofitType?: string; fontScale?: number; lineSpacingReduction?: number };
 };
@@ -167,10 +205,24 @@ export type RestPageElement = {
     verticalBorderRows?: RestBorderRow[];
   };
   elementGroup?: { children?: RestPageElement[] };
-  /** `contentUrl`, on images and charts, is a bearer URL, so it is never read. */
-  image?: { sourceUrl?: string };
+  /**
+   * `contentUrl` is a bearer URL, good for 30 minutes to anyone holding it. Only the approver's
+   * preview reads it, to download the picture from Google's image host (`downloadContentImage`);
+   * it is never returned or logged. A chart's is never read.
+   */
+  image?: {
+    sourceUrl?: string;
+    contentUrl?: string;
+    imageProperties?: {
+      cropProperties?: RestCropProperties;
+      transparency?: number;
+      outline?: RestOutline;
+      shadow?: RestShadow;
+    };
+  };
   video?: { source?: string; id?: string; url?: string };
-  line?: { lineCategory?: string; lineProperties?: RestLineProperties };
+  /** A freehand line has no `lineType`, and nothing a read gives describes its path. */
+  line?: { lineType?: string; lineCategory?: string; lineProperties?: RestLineProperties };
   sheetsChart?: { spreadsheetId?: string; chartId?: number };
   wordArt?: { renderedText?: string };
   speakerSpotlight?: unknown;
@@ -180,8 +232,9 @@ export type RestPageElement = {
 export type RestPage = { objectId?: string; pageElements?: RestPageElement[] };
 
 /**
- * A page's `pageBackgroundFill`. A read never carries `contentUrl`, which only a request sets: the
- * picture Google downloads.
+ * A page's `pageBackgroundFill`. A request sets `contentUrl` to the picture Google downloads; a
+ * read carries Google's own copy's, a bearer URL, only if its mask asks for it, as only the
+ * approver's preview does.
  */
 export type RestPageBackgroundFill = {
   propertyState?: RestPropertyState;
@@ -257,13 +310,59 @@ export type ThumbnailSize = "SMALL" | "MEDIUM" | "LARGE";
 export type PageThumbnail = { width: number; height: number; content: ArrayBuffer };
 
 // `contentUrl` is a bearer URL: anyone holding it sees the image as the account that asked, for
-// 30 minutes. So it is fetched only from Google's image host, and never returned or logged.
-function thumbnailContentUrl(contentUrl: string | undefined): URL {
+// 30 minutes. So it is fetched only from Google's hosts, and never returned or logged.
+function googleContentUrl(contentUrl: string | undefined, what: string, redirectHost?: string): URL {
   let url = URL.parse(contentUrl ?? "");
-  if (url?.protocol !== "https:" || !url.hostname.endsWith(THUMBNAIL_HOST_SUFFIX)) {
-    throw new Error("Google Slides returned an unexpected thumbnail location");
+  let host = url?.hostname ?? "";
+  if (url?.protocol !== "https:" || !(host.endsWith(CONTENT_HOST_SUFFIX) || host === redirectHost)) {
+    throw new Error(`Google Slides returned an unexpected ${what} location`);
   }
   return url;
+}
+
+/**
+ * Fetches a `contentUrl` from Google's image host, at most `maxBytes` of it. No credentials: the
+ * URL itself is the authority. A redirect is followed only from `IMAGE_REDIRECT_HOST` to the image
+ * host, as no other could keep it on Google's; there, `resize` may rewrite the URL first.
+ */
+async function downloadContent(
+  url: URL, maxBytes: number, what: string, resize: (url: URL) => URL = url => url,
+): Promise<Uint8Array> {
+  let get = (from: URL) => fetch(from, { redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  let response = await get(url.hostname === IMAGE_REDIRECT_HOST ? url : resize(url));
+  if (url.hostname === IMAGE_REDIRECT_HOST && response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    let location = URL.parse(response.headers.get("location") ?? "", url.href);
+    response = await get(resize(googleContentUrl(location?.href, what)));
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Google Slides ${what} download failed [http=${response.status}]`);
+  }
+  return readBytesCapped(response, maxBytes);
+}
+
+/**
+ * Downloads the picture an image element's `contentUrl` names, if it is on Google's hosts, at
+ * most `maxBytes` long, and a PNG, JPEG, GIF or WebP by its own first bytes. Throws otherwise.
+ * Where the image host can resize it, it is fetched at most `pixels` wide.
+ */
+export async function downloadContentImage(
+  contentUrl: string, maxBytes: number, pixels: number,
+): Promise<{ mediaType: string; content: Uint8Array }> {
+  let resize = (url: URL) => {
+    if (!IMAGE_SIZE_SUFFIX.test(url.pathname)) return url;
+    let sized = new URL(url);
+    sized.pathname = url.pathname.replace(IMAGE_SIZE_SUFFIX, `=s${Math.round(pixels)}${IMAGE_QUALITY_OPTION}`);
+    return sized;
+  };
+  let content = await downloadContent(
+    googleContentUrl(contentUrl, "image", IMAGE_REDIRECT_HOST), maxBytes, "image", resize,
+  );
+  let format = IMAGE_SIGNATURES.find(({ at, bytes }) =>
+    content.byteLength >= at + bytes.length && bytes.every((byte, i) => content[at + i] === byte));
+  if (!format) throw new Error("Google Slides returned an image of an unsupported format");
+  return { mediaType: format.mediaType, content };
 }
 
 // The dimensions come from the image's own header: Google's reported height has been seen to
@@ -340,10 +439,18 @@ export class GoogleSlidesApi {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }
 
+  /**
+   * Fetch what the approver's preview draws slides over: the outline, the page size, and every
+   * master and layout with its elements.
+   */
+  getPreviewOutline(presentationId: string): Promise<RestPresentation> {
+    return this.#presentation(presentationId, PREVIEW_OUTLINE_FIELDS, "get preview outline");
+  }
+
   /** Fetch one slide's content, whatever the size of the rest of the presentation. */
-  async getSlide(presentationId: string, slideId: string): Promise<RestSlide> {
+  async getSlide(presentationId: string, slideId: string, fields = SLIDE_FIELDS): Promise<RestSlide> {
     let slide = await this.#get<RestSlide>(
-      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
+      pagePath(presentationId, slideId), { fields }, "get slide", MAX_SLIDE_BYTES);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
   }
@@ -358,30 +465,40 @@ export class GoogleSlidesApi {
 
   /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
   async getSlides(
-    presentationId: string, ids: Iterable<string>, order: readonly string[],
+    presentationId: string, ids: Iterable<string>, order: readonly string[], fields = SLIDE_FIELDS,
   ): Promise<Map<string, RestSlide>> {
     let slides = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.getSlide(presentationId, id)));
+      .map(id => this.getSlide(presentationId, id, fields)));
     return new Map(slides.map(slide => [slide.objectId!, slide]));
+  }
+
+  /** As `getSlides()`, with the URL of each picture background, for the approver's preview alone. */
+  getPreviewSlides(
+    presentationId: string, ids: Iterable<string>, order: readonly string[],
+  ): Promise<Map<string, RestSlide>> {
+    return this.getSlides(presentationId, ids, order, PREVIEW_SLIDE_FIELDS);
+  }
+
+  /**
+   * Render the latest version of a page as a PNG, and give the bearer URL Google serves it from,
+   * which `downloadContentImage()` takes. Google counts this as an expensive read.
+   */
+  async getThumbnailUrl(presentationId: string, pageId: string, size: ThumbnailSize): Promise<string> {
+    let { contentUrl } = await this.#get<{ contentUrl?: string }>(
+      `${pagePath(presentationId, pageId)}/thumbnail`,
+      { "thumbnailProperties.mimeType": "PNG", "thumbnailProperties.thumbnailSize": size },
+      "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES);
+    return googleContentUrl(contentUrl, "thumbnail").href;
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */
   async getThumbnail(
     presentationId: string, pageId: string, size: ThumbnailSize,
   ): Promise<PageThumbnail> {
-    let { contentUrl } = await this.#get<{ contentUrl?: string }>(
-      `${pagePath(presentationId, pageId)}/thumbnail`,
-      { "thumbnailProperties.mimeType": "PNG", "thumbnailProperties.thumbnailSize": size },
-      "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES);
-    // No credentials: the URL itself is the authority. A redirect could leave Google's host.
-    let image = await fetch(thumbnailContentUrl(contentUrl), {
-      redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!image.ok) {
-      await image.body?.cancel();
-      throw new Error(`Google Slides thumbnail download failed [http=${image.status}]`);
-    }
-    let content = await readBytesCapped(image, MAX_THUMBNAIL_BYTES).catch((error: unknown) => {
+    let contentUrl = await this.getThumbnailUrl(presentationId, pageId, size);
+    let content = await downloadContent(
+      new URL(contentUrl), MAX_THUMBNAIL_BYTES, "thumbnail",
+    ).catch((error: unknown) => {
       if (!(error instanceof ResponseTooLargeError)) throw error;
       throw new Error(
         `Google Slides thumbnail exceeded ${MAX_THUMBNAIL_BYTES} bytes; request a smaller size.`);
@@ -420,6 +537,9 @@ export class GoogleSlidesApi {
   }
 }
 
+/** The reads the approver's preview makes. */
+export type PreviewReader = Pick<GoogleSlidesApi, "getPreviewOutline" | "getPreviewSlides">;
+
 /** The reads a presentation session makes. */
 export type PresentationReader = Pick<
   GoogleSlidesApi, "getPresentation" | "getOutline" | "getSlides" | "getLayout" | "getThumbnail">;
@@ -446,11 +566,32 @@ const BLANK_REVISION = "blank";
  * it applies unchanged to the presentation a user's approval creates. Makes no request. Each read
  * is a copy, since one recording serves every session in the isolate.
  */
-export class BlankPresentation implements PresentationReader {
+export class BlankPresentation implements PresentationReader, PreviewReader {
   constructor(private title: string) {}
 
   async getPresentation(presentationId: string): Promise<RestPresentation> {
     return { ...structuredClone(BLANK.presentation), presentationId, title: this.title };
+  }
+
+  /**
+   * The outline, with the page size and theme pages of the presentation read. Its layouts' elements
+   * are the placeholders' geometry, as the recording holds them, and their text styles, as Simple
+   * Light sets them (see `slides-blank-theme.ts`).
+   */
+  async getPreviewOutline(presentationId: string): Promise<RestPresentation> {
+    let { pageSize, masters, layouts } = structuredClone(BLANK.presentation);
+    return {
+      ...await this.getOutline(presentationId),
+      ...(pageSize ? { pageSize } : {}),
+      ...(masters ? { masters } : {}),
+      layouts: layouts?.map(page => ({
+        ...page,
+        pageElements: page.objectId && Object.hasOwn(BLANK.layouts, page.objectId)
+          ? structuredClone(BLANK.layouts[page.objectId].pageElements ?? [])
+            .map(element => styledPlaceholder(element, page.layoutProperties?.displayName))
+          : [],
+      })),
+    };
   }
 
   /** With a revision, as Google reports one to the account that creates, and so can edit, it. */
@@ -465,6 +606,12 @@ export class BlankPresentation implements PresentationReader {
   ): Promise<Map<string, RestSlide>> {
     return new Map([...ids].filter(id => order.includes(id) && Object.hasOwn(BLANK.slides, id))
       .map(id => [id, structuredClone(BLANK.slides[id])]));
+  }
+
+  getPreviewSlides(
+    presentationId: string, ids: Iterable<string>, order: readonly string[],
+  ): Promise<Map<string, RestSlide>> {
+    return this.getSlides(presentationId, ids, order);
   }
 
   async getLayout(_presentationId: string, layoutId: string): Promise<RestPage> {

@@ -66,6 +66,17 @@ const AUTO_APPROVABLE = [
 ];
 
 /** Fields of a cell's value, which no format read may ask for. */
+/** The format Google gives a new spreadsheet's cells, as its API returns it. */
+const STANDARD_FORMAT = {
+  backgroundColorStyle: { rgbColor: { red: 1, green: 1, blue: 1 } },
+  verticalAlignment: "BOTTOM",
+  wrapStrategy: "OVERFLOW_CELL",
+  textFormat: {
+    foregroundColorStyle: { rgbColor: {} }, fontFamily: "arial,sans,sans-serif", fontSize: 10,
+    bold: false, italic: false, strikethrough: false, underline: false,
+  },
+};
+
 const VALUE_FIELDS = ["formattedValue", "effectiveValue", "userEnteredValue", "hyperlink", "note"];
 
 const BORDER_SIDES = ["top", "bottom", "left", "right", "innerHorizontal", "innerVertical"];
@@ -297,6 +308,53 @@ class SheetsProvider {
       endColumn: Math.min(parsed.rect.endColumn, sheet.columnCount),
     };
     return Response.json({ sheets: [this.#formatSheet(sheet, [rect], paths)] });
+  }
+
+  /**
+   * `spreadsheets.get` of a preview: A1 ranges of the sheets Google holds, each cell as entered,
+   * as displayed and as drawn (its effective format, Sheets' standard format with its own over it,
+   * left out where it has none), each row 21 pixels high, and each column 100 pixels wide but
+   * column B, 150; with the spreadsheet's default format, which is the standard one.
+   */
+  #previewRead(url: URL): Response {
+    let blocks = url.searchParams.getAll("ranges").map(range => {
+      let parsed = parseRange(range);
+      let sheet = this.sheets.find(s => s.title.toLowerCase() === parsed.sheet?.toLowerCase());
+      return sheet && parsed.rect.endRow <= sheet.rowCount && parsed.rect.endColumn <= sheet.columnCount
+        ? { sheet, rect: parsed.rect } : undefined;
+    });
+    if (blocks.some(block => !block)) return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    let sheets = [...new Set(blocks.map(block => block!.sheet))].map(sheet => ({
+      properties: sheet.id === 0 ? {} : { sheetId: sheet.id },
+      data: blocks.filter(block => block!.sheet === sheet).map(block => {
+        let { rect } = block!;
+        return {
+          ...(rect.startRow ? { startRow: rect.startRow } : {}),
+          ...(rect.startColumn ? { startColumn: rect.startColumn } : {}),
+          rowMetadata: Array.from({ length: rect.endRow - rect.startRow }, () => ({ pixelSize: 21 })),
+          columnMetadata: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
+            ({ pixelSize: rect.startColumn + c === 1 ? 150 : 100 })),
+          rowData: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) => ({
+            values: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) => {
+              let cell = key(sheet.id, rect.startRow + r, rect.startColumn + c);
+              let value = this.cells.get(cell) ?? null;
+              let format = this.formats.get(cell);
+              return {
+                ...(value === null ? {} : {
+                  userEnteredValue: userEnteredValue(value), formattedValue: this.#shown(value, "FORMATTED_VALUE"),
+                }),
+                ...(format ? {
+                  effectiveFormat: {
+                    ...STANDARD_FORMAT, ...format, textFormat: { ...STANDARD_FORMAT.textFormat, ...format.textFormat },
+                  },
+                } : {}),
+              };
+            }),
+          })),
+        };
+      }),
+    }));
+    return Response.json({ properties: { defaultFormat: STANDARD_FORMAT }, sheets });
   }
 
   /** `spreadsheets:getByDataFilter` by grid range, with grid data, each sheet once. */

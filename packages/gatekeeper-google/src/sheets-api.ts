@@ -1,11 +1,12 @@
 import type {
-  SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
+  SheetCellFormat, SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
-  baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
+  baseFormats, FORMAT_READ_FIELDS, projectFormat, sheetColor, type BaseFormats, type RestCellFormat,
+  type RestColorStyle, type RestFormatSheet,
 } from "./sheets-format";
 import {
   a1Of, cellCount, findSheet, parseRange, validateRange, type EnteredValue, type Rect,
@@ -33,6 +34,27 @@ const PROTECTED_RANGE_FIELDS =
 // Each range's position, which Google leaves out where it is 0, and its cells as entered.
 const ENTERED_FIELDS =
   "sheets(properties(sheetId),data(startRow,startColumn,rowData(values(userEnteredValue))))";
+
+// The parts of a cell's format a preview draws. Colours are read only as colour styles, which name
+// a theme colour where one is set: the theme is read too, to resolve it.
+const PREVIEW_BORDER = "style,colorStyle";
+const PREVIEW_FORMAT_FIELDS =
+  "textFormat(bold,italic,underline,strikethrough,fontFamily,fontSize,foregroundColorStyle)," +
+  "backgroundColorStyle,horizontalAlignment,verticalAlignment,wrapStrategy," +
+  `borders(top(${PREVIEW_BORDER}),bottom(${PREVIEW_BORDER}),left(${PREVIEW_BORDER}),right(${PREVIEW_BORDER}))`;
+const PREVIEW_LINE = "pixelSize,hiddenByUser,hiddenByFilter";
+// What a preview reads: the spreadsheet's default format and theme colours; of each sheet read,
+// whether it hides its gridlines and its merges; and of each range, its position, each row's and
+// column's size and whether it is hidden, and each cell as entered, as displayed and as Google
+// draws it. A cell's effective format includes conditional formatting, and Google leaves it out
+// where it is the default format.
+const PREVIEW_SPREADSHEET_FIELDS =
+  `properties(defaultFormat(${PREVIEW_FORMAT_FIELDS}),spreadsheetTheme(themeColors(colorType,color)))`;
+const PREVIEW_FIELDS =
+  `${PREVIEW_SPREADSHEET_FIELDS},` +
+  "sheets(properties(sheetId,gridProperties(hideGridlines)),merges," +
+  `data(startRow,startColumn,rowMetadata(${PREVIEW_LINE}),columnMetadata(${PREVIEW_LINE}),` +
+  `rowData(values(userEnteredValue,formattedValue,effectiveFormat(${PREVIEW_FORMAT_FIELDS})))))`;
 
 /** A `GridRange`. Google omits each index that is 0, and an end that is unbounded. */
 type RestGridRange = {
@@ -87,6 +109,71 @@ type RestGridSheet = {
     startColumn?: number;
     rowData?: { values?: { userEnteredValue?: RestExtendedValue }[] }[];
   }[];
+};
+
+/** Sheets' `DimensionProperties`, as far as a preview reads them. */
+type RestLine = { pixelSize?: number; hiddenByUser?: boolean; hiddenByFilter?: boolean };
+
+/** A preview's `spreadsheets.get` answer: a block of each sheet's cells per range. */
+type RestPreview = {
+  properties?: {
+    defaultFormat?: RestCellFormat;
+    spreadsheetTheme?: { themeColors?: { colorType?: string; color?: RestColorStyle }[] };
+  };
+  sheets?: {
+    properties?: { sheetId?: number; gridProperties?: { hideGridlines?: boolean } };
+    merges?: RestGridRange[];
+    data?: {
+      startRow?: number;
+      startColumn?: number;
+      rowMetadata?: RestLine[];
+      columnMetadata?: RestLine[];
+      rowData?: {
+        values?: {
+          userEnteredValue?: RestExtendedValue; formattedValue?: unknown; effectiveFormat?: RestCellFormat;
+        }[];
+      }[];
+    }[];
+  }[];
+};
+
+/** A row or column of a sheet Google holds: its size in pixels, and whether it is hidden. */
+export type PreviewLine = { size?: number; hidden?: true };
+
+/**
+ * What `readPreviewCells` read, by sheet ID and zero-based row and column of the sheets Google
+ * holds: each cell as entered, as Google displays it, and as it draws it (its effective format,
+ * and its font, which an agent cannot read or set); each row and column; each sheet's merges and
+ * whether it hides its gridlines; and the spreadsheet's default format and theme colours.
+ */
+export type PreviewCells = {
+  entered: (sheetId: number, row: number, column: number) => EnteredValue;
+  shown: (sheetId: number, row: number, column: number) => string | null;
+  formats: BaseFormats;
+  fontFamily: (sheetId: number, row: number, column: number) => string | undefined;
+  row: (sheetId: number, row: number) => PreviewLine | undefined;
+  column: (sheetId: number, column: number) => PreviewLine | undefined;
+  /** The merges of a sheet read, whole, wherever they lie. */
+  merges: (sheetId: number) => Rect[];
+  hidesGridlines: (sheetId: number) => boolean;
+  /** The format of a cell with none of its own, and its font. */
+  defaultFormat: { format: SheetCellFormat | null; fontFamily?: string };
+  /** A theme colour's `#rrggbb`, by name (`ACCENT1`, say), if the spreadsheet's theme gives it. */
+  themeColor: (name: string) => string | undefined;
+};
+
+/** A read of no cells, from a spreadsheet with Sheets' standard default format and no theme. */
+export const NO_PREVIEW_CELLS: PreviewCells = {
+  entered: () => null,
+  shown: () => null,
+  formats: () => null,
+  fontFamily: () => undefined,
+  row: () => undefined,
+  column: () => undefined,
+  merges: () => [],
+  hidesGridlines: () => false,
+  defaultFormat: { format: null },
+  themeColor: () => undefined,
 };
 
 /** Cells of one sheet. An end Google leaves unbounded is `Infinity`. */
@@ -231,6 +318,70 @@ function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
   throw new Error("Google Sheets returned an unsupported cell value.");
 }
 
+function previewLine(line: RestLine): PreviewLine {
+  return {
+    ...(typeof line.pixelSize === "number" ? { size: line.pixelSize } : {}),
+    ...(line.hiddenByUser || line.hiddenByFilter ? { hidden: true as const } : {}),
+  };
+}
+
+/** What `readPreviewCells` read of `areas`, from Google's answer. Throws if one is missing. */
+export function previewCellsOf(result: RestPreview, areas: readonly SheetArea[]): PreviewCells {
+  let starts = new Set<string>();
+  let entered = new Map<string, EnteredValue>();
+  let shown = new Map<string, string>();
+  let formats = new Map<string, SheetCellFormat>();
+  let fonts = new Map<string, string>();
+  let rows = new Map<string, PreviewLine>();
+  let columns = new Map<string, PreviewLine>();
+  let merges = new Map<number, Rect[]>();
+  let plain = new Set<number>();
+  for (let sheet of result.sheets ?? []) {
+    let sheetId = sheet.properties?.sheetId ?? 0;
+    if (sheet.properties?.gridProperties?.hideGridlines) plain.add(sheetId);
+    merges.set(sheetId, (sheet.merges ?? []).map(range => areaOf(range, sheetId).rect));
+    for (let { startRow = 0, startColumn = 0, rowMetadata, columnMetadata, rowData } of sheet.data ?? []) {
+      starts.add(`${sheetId}:${startRow}:${startColumn}`);
+      rowMetadata?.forEach((line, r) => rows.set(`${sheetId}:${startRow + r}`, previewLine(line)));
+      columnMetadata?.forEach((line, c) => columns.set(`${sheetId}:${startColumn + c}`, previewLine(line)));
+      rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
+        let key = `${sheetId}:${startRow + r}:${startColumn + c}`;
+        entered.set(key, enteredValue(cell.userEnteredValue));
+        if (typeof cell.formattedValue === "string") shown.set(key, cell.formattedValue);
+        let format = projectFormat(cell.effectiveFormat);
+        if (format) formats.set(key, format);
+        let font = cell.effectiveFormat?.textFormat?.fontFamily;
+        if (typeof font === "string") fonts.set(key, font);
+      }));
+    }
+  }
+  // Each range's cells are placed by the position Google gives them, whichever order they come in.
+  if (!areas.every(({ sheetId, rect }) => starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`))) {
+    throw new Error("Google Sheets did not return every range it was asked for.");
+  }
+  let theme = new Map<string, string>();
+  for (let { colorType, color } of result.properties?.spreadsheetTheme?.themeColors ?? []) {
+    let rgb = color?.rgbColor && sheetColor({ rgbColor: color.rgbColor });
+    if (colorType && rgb) theme.set(colorType, rgb);
+  }
+  let defaultFont = result.properties?.defaultFormat?.textFormat?.fontFamily;
+  return {
+    entered: (sheetId, row, column) => entered.get(`${sheetId}:${row}:${column}`) ?? null,
+    shown: (sheetId, row, column) => shown.get(`${sheetId}:${row}:${column}`) ?? null,
+    formats: (sheetId, row, column) => formats.get(`${sheetId}:${row}:${column}`) ?? null,
+    fontFamily: (sheetId, row, column) => fonts.get(`${sheetId}:${row}:${column}`),
+    row: (sheetId, row) => rows.get(`${sheetId}:${row}`),
+    column: (sheetId, column) => columns.get(`${sheetId}:${column}`),
+    merges: sheetId => merges.get(sheetId) ?? [],
+    hidesGridlines: sheetId => plain.has(sheetId),
+    defaultFormat: {
+      format: projectFormat(result.properties?.defaultFormat),
+      ...(typeof defaultFont === "string" ? { fontFamily: defaultFont } : {}),
+    },
+    themeColor: name => theme.get(name),
+  };
+}
+
 /** The Google Sheets API, as far as the gatekeeper uses it. */
 /** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
 const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
@@ -270,6 +421,14 @@ export class GoogleSheetsApi {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set("fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS})`);
     return spreadsheetInfo(await this.#request<RestSpreadsheet>(url, "get spreadsheet"));
+  }
+
+  /** The spreadsheet's title. */
+  async getTitle(spreadsheetId: string): Promise<string> {
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
+    url.searchParams.set("fields", "properties(title)");
+    let result = await this.#request<{ properties?: { title?: string } }>(url, "get spreadsheet title");
+    return result.properties?.title ?? "Untitled spreadsheet";
   }
 
   /** A spreadsheet's metadata and the ranges it protects, but not who may edit them. */
@@ -515,6 +674,25 @@ export class GoogleSheetsApi {
         (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
     if (!answered) throw new Error("Google Sheets did not return every range it was asked for.");
     return baseFormats(sheets);
+  }
+
+  /**
+   * What a preview draws of each of `areas`, each on a sheet Google holds titled `title` and lying
+   * within its grid: each cell as entered, which tells a formula from text starting with `=`, as
+   * Google displays it, and as it draws it, and each row and column (see `PreviewCells`); with the
+   * spreadsheet's default format and theme even when `areas` is empty. One `spreadsheets.get` by
+   * A1 range, which a read-only grant allows. Only the response size bounds the read, so callers
+   * bound how many cells they ask for.
+   */
+  async readPreviewCells(
+    spreadsheetId: string, areas: readonly (SheetArea & { title: string })[],
+  ): Promise<PreviewCells> {
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
+    for (let { title, rect } of areas) url.searchParams.append("ranges", a1Of(title, rect));
+    // With no range, Google would answer for every sheet; only the default format and theme count.
+    url.searchParams.set("fields", areas.length > 0 ? PREVIEW_FIELDS : PREVIEW_SPREADSHEET_FIELDS);
+    url.searchParams.set("prettyPrint", "false");
+    return previewCellsOf(await this.#request<RestPreview>(url, "read cells to preview"), areas);
   }
 
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */

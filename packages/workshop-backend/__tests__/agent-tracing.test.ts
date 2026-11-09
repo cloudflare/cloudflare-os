@@ -529,4 +529,38 @@ describe("turn notifications", () => {
     await turn.session;
     expect(turn.notifications).toEqual([notification(turn, kind)]);
   });
+
+  // A simulated action does not suspend the turn, so the turn finishes with it unapplied; the
+  // person still has to hear that it is waiting on them, unless a rule will apply it on its own.
+  it.each([
+    { rule: false, auto: false, kind: "permissionRequested" },
+    { rule: true, auto: false, kind: "taskCompleted" },
+    { rule: false, auto: true, kind: "taskCompleted" },
+  ] as const)("sends $kind when the turn leaves a simulated action pending (rule: $rule, auto: $auto)",
+      async ({ rule, auto, kind }) => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, async impl => {
+      impl.storage.gatekeepers.put({ id: 7, resourceTitle: "Launch Plan", class: {} });
+      if (rule) {
+        impl.storage.autoApproveTags.put({
+          gatekeeperId: 7, actionKind: { tag: "edit", label: "Edits" }, enabledBy: OWNER,
+        });
+      }
+      if (auto) {
+        let meta = impl.storage.chatMeta.get(CHAT_ID)!;
+        impl.storage.chatMeta.put({ ...meta, autoApprove: { enabledBy: OWNER } });
+      }
+      // No drain: the facet is a stand-in, so an applying rule would only log its failure.
+      impl.drainAutoApprovals = async () => {};
+      await impl.submitAction(7, 1, {
+        title: "Edit Google Doc", description: "", implementsRevert: false,
+        autoApprovable: true, actionKind: { tag: "edit", label: "Edits" },
+      }, { from: "agent", chatId: CHAT_ID });
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, kind)]);
+  });
 });

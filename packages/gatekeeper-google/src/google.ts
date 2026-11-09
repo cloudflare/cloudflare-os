@@ -143,6 +143,8 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
+import { trimDocumentPreviewMarkdown, type MarkdownSpan } from "./docs-preview";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";

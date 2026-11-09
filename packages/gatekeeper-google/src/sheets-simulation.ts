@@ -113,11 +113,13 @@ export type PlannedChange =
  * as it was to be by the time the batch applies: as Google held it, with what changes queued
  * before it enter. `after` lists those of them it builds on, which must have been applied for the
  * digest to hold. `cells` are the cells it covers, as the spreadsheet is to be just before the
- * batch applies; without them, the cells the changes write.
+ * batch applies; without them, the cells the changes write. `title` is the spreadsheet's, as it was
+ * when the batch was queued, to name it to the approver; batches queued before it was kept have none.
  */
 export type SheetBatch = {
   changes: PlannedChange[];
   sheets: Record<string, string>;
+  title?: string;
   marker: { id: number; token: string };
   guard: { sha256: string; after: number[]; cells?: SheetArea[] };
 };
@@ -756,9 +758,11 @@ export function simulatedRange(
 
 const NEW_LINE = /^n(\d+)\./;
 
-// Whether the line with `identity` is one a queued insert of rows or columns made, rather than one
-// of a sheet a queued change added.
-function insertedLine(grid: Grid, identity: string): boolean {
+/**
+ * Whether the line with `identity` is one a queued insert of rows or columns made, rather than one
+ * of a sheet a queued change added.
+ */
+export function insertedLine(grid: Grid, identity: string): boolean {
   let match = identity.match(NEW_LINE);
   return match !== null && grid.log[Number(match[1])]?.kind === "insert";
 }

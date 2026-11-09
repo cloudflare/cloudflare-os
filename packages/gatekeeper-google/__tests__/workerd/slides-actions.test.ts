@@ -6,8 +6,10 @@ import type {
 import type {
   RestPageBackgroundFill, RestPresentation, RestThemeColorPair,
 } from "../../src/slides-api";
+import type { PresentationPreview } from "@gadgets/workshop-shared/gatekeeper";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
+import { picturePixels } from "../../src/slides-preview";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 import { PICTURE_COPY, SlidesProvider, table } from "../slides-provider";

@@ -745,6 +745,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
         old.head?.spawnerName === cursor.head?.spawnerName && old.archived === cursor.archived &&
+        old.head?.draftsWaiting === cursor.head?.draftsWaiting &&
         old.unjoined === cursor.unjoined &&
         old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
         old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
@@ -756,7 +757,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
     let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
       (incoming.head.latestSequence === current.head.latestSequence &&
-        at !== undefined && (previous === undefined || at > previous)));
+        // At the same time too: a chat's drafts change its head without a message, and each
+        // delivery reads the head as it then stands.
+        at !== undefined && (previous === undefined || at >= previous)));
     return newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
       {head: current.head, headUpdatedAt: current.headUpdatedAt};
   }
@@ -906,6 +909,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         latestMessagePreview: cursor.head?.latestMessagePreview,
         latestActivityAt: cursor.head?.latestActivityAt,
         ...(cursor.head?.spawnerName === undefined ? {} : {spawnerName: cursor.head.spawnerName}),
+        ...(cursor.head?.draftsWaiting ? {draftsWaiting: cursor.head.draftsWaiting} : {}),
         ...(cursor.archived ? {archived: true as const} : {}),
         ...(cursor.unjoined ? {unjoined: true as const} : {})}))
       .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0) ||
