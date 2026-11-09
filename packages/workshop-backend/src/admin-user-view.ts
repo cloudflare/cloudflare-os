@@ -70,8 +70,9 @@ export function openAdminUserView(user: AdminUserViewHost, adminId: string, reas
 // Every method runs through #call, which reads the call's answer and records the call, with what
 // that answer exposed, in the deployment-wide log before returning anything. Each answer names
 // its fields one by one, since the stored records hold more (token ids, hashes, API tokens); the
-// three values returned whole are API values that hold no credential: the profile, a shared
-// workspace's owner, and at "full" a connected account's description. Each storage listing is
+// four values returned whole are API values that hold no credential: the profile, a shared
+// workspace's owner, a workspace's notification mute, and at "full" a connected account's
+// description. Each storage listing is
 // read to its end before the next starts.
 @validateRpc()
 class AdminUserViewImpl extends RpcTarget implements AdminUserView {

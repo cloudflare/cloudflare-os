@@ -581,7 +581,10 @@ describe("a full view", () => {
     ]);
     expect(answers.getDiagnostics.billing).toBeDefined();
     for (let record of records) {
-      expect(record).toMatchObject({ requested: "full", access: "full", args: {} });
+      expect(record).toMatchObject({ requested: "full", access: "full" });
+      // toMatchObject() takes any args for an empty one, so the args are compared whole.
+      expect(record.args).toStrictEqual(record.method === "inspectUser"
+          ? { expiresAt: expect.any(String) } : {});
     }
 
     // A description is returned as its gatekeeper stored it: a name that carries a token is

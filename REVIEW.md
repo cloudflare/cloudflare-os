@@ -62,11 +62,11 @@ through logs and errors, then everything else.
   records without `account`. Flag a change that widens either type, casts around them, gives the
   view the Durable Object itself, builds an answer by spreading a stored record, or exports the
   view's class or constructs it anywhere but in its `open()`: `openAdminUserView()` is the one way
-  to a view, and it records the open first. The rule excepts three stored values, which the view
+  to a view, and it records the open first. The rule excepts four stored values, which the view
   returns whole because each is an API value that holds no credential: `describe()`'s profile, a
-  shared workspace's owner, and a connected account's description at `"full"` (its gatekeeper's
-  free text, returned as stored even where a name carries a token). It builds everything else
-  field by field.
+  shared workspace's owner, a workspace's notification mute, and a connected account's description
+  at `"full"` (its gatekeeper's free text, returned as stored even where a name carries a token).
+  It builds everything else field by field.
 - `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
   config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
   prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.

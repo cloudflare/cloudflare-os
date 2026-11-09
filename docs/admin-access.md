@@ -376,7 +376,8 @@ handoffs (grants staged and not yet confirmed) are not read at all.
 The view writes nothing to the account, starts no session, syncs no directory (the user's last
 login and their listing stay as they were) and sets no alarm, and no method of it connects,
 disconnects, renames or deletes anything. Its records go to the deployment-wide log alone, so
-nothing the user can read ever shows an inspection.
+nothing the user can read shows an inspection, unless they are a deployment admin themselves, who
+can read that log.
 
 Opening a view wakes the account's Durable Object if it was asleep, and any wake runs the
 constructor's recovery, which delivers the notifications already queued for the user and re-arms a
@@ -401,9 +402,9 @@ column names and returns the rest.
 At no level does a call return what the account stores as a credential: session tokens and their
 hashes, the password's hash, model API tokens and extra headers, push subscriptions, and pending
 connect and sign-in tickets. Each answer names its fields one by one, since the stored records hold
-more than an answer may. The three stored values returned whole are API values that hold no
-credential: `describe()`'s profile, a shared workspace's owner, and a connected account's
-description at `"full"`.
+more than an answer may. The four stored values returned whole are API values that hold no
+credential: `describe()`'s profile, a shared workspace's owner, a workspace's notification mute,
+and a connected account's description at `"full"`.
 
 Free text is not a credential, and the two pieces of it that can carry one are told apart. A
 model's API URL is never returned either, only whether one is set (`AdminUserModel.customApiUrl`):

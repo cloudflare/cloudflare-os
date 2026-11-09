@@ -1989,7 +1989,8 @@ export type AdminAccessRecord = {
  * One admin call into a user's account: the open that minted an AdminUserView, or a call made
  * through one. Recorded as an AdminAccessRecord is: once the call has read what it answers with and
  * before any of that leaves the server, in the deployment-wide log behind AdminApi.listAdminAudit()
- * and never in the account, so nothing the user can read ever shows it. A call the view itself
+ * and never in the account, so nothing the user can read shows it unless they are a deployment
+ * admin themselves, who can read that log. A call the view itself
  * stops (expired, its admin no longer one, the account gone) is not recorded; a call the access
  * level refuses is, with `refused` set, as is a call whose read fails, and an open refused before
  * it reaches the account because the deployment's access level is "off".
@@ -3021,10 +3022,15 @@ export type AdminUserDescription = {
 };
 
 /** One workspace a user's account lists, as AdminUserView.listWorkspaces() lists it: what the
- * account itself records of it. `owner` is present for a workspace shared with the user, and
- * `role` is then their role in it. */
+ * account itself records of it. */
 export type AdminUserWorkspace = Pick<WorkspaceMetadata,
-    "id" | "title" | "totalCost" | "notificationMute" | "owner" | "role"> & {
+    "title" | "totalCost" | "notificationMute"> & {
+  /** The workspace's id, as AdminApi.inspectWorkspace() takes it. */
+  id: WorkspaceMetadata["id"];
+  /** Who owns the workspace, when it is shared with the user. Absent for one the user owns. */
+  owner?: WorkspaceMetadata["owner"];
+  /** The user's role in a workspace shared with them. Absent for one the user owns. */
+  role?: WorkspaceMetadata["role"];
   /** When the account first recorded the workspace: its creation for one the user owns, the
    * user's first open of it for one shared with them. */
   created: Date;
@@ -3091,7 +3097,8 @@ export type AdminUserModels = {
 export type AdminUserSession = {
   /** When it was created: a sign-in, or the staging of a device session. */
   created: Date;
-  /** When it stops working. Absent for a browser session, which does not expire. */
+  /** When it stops working. Only a device session has one: a session a password or provider
+   * sign-in made, the CLI's included, does not expire. */
   expiresAt?: Date;
   /** Present on a device session staged for a handoff its device has not completed: when that
    * handoff lapses. It cannot sign in meanwhile. */
