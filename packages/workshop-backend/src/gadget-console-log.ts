@@ -90,6 +90,11 @@ const URL_PASSWORD = /(:\/\/[^\s/?#:"]*:)[^\s/?#"]+(?=@)/g;
 export function redactGadgetConsoleLogText(text: string): string {
   // Whether what follows "bearer", "basic" or "sk-" is a credential is decided in a callback: a
   // lookahead doing the same would be quadratic on "sk-sk-sk-...".
+  //
+  // The member patterns come before the parameter pattern. A parameter's value takes backslashes
+  // and ends at a quote, so where an escaped quote follows it the escape's backslash is replaced
+  // with it and the quote is left bare: a member's value would then end there, and the rest of it
+  // be kept. The patterns before them replace a JSON escape whole or not at all.
   return text
       .replace(BEARER_OR_BASIC,
           (match, scheme: string, gap: string, token: string) =>
@@ -98,9 +103,9 @@ export function redactGadgetConsoleLogText(text: string): string {
       .replace(SK_KEY, match => isTokenLike(match.slice(3)) ? REDACTED : match)
       .replace(PRIVATE_KEY, `$1${REDACTED}$2`)
       .replace(URL_PASSWORD, `$1${REDACTED}`)
-      .replace(SECRET_PARAMETER, `$1${REDACTED}`)
       .replace(SECRET_MEMBER, `$1${REDACTED}`)
-      .replace(ESCAPED_SECRET_MEMBER, `$1${REDACTED}`);
+      .replace(ESCAPED_SECRET_MEMBER, `$1${REDACTED}`)
+      .replace(SECRET_PARAMETER, `$1${REDACTED}`);
 }
 
 // --- Text ---

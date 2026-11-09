@@ -262,6 +262,35 @@ const CAUGHT: Record<string, Case[]> = {
       String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
   ],
 
+  // A parameter's value takes the backslash of an escaped quote that follows it. A member is
+  // replaced before a parameter is, so its value still runs to its own closing quote.
+  "a JSON member's value that holds a URL parameter named like a secret": [
+    // A cookie that quotes a URL, and what follows the URL in it.
+    [String.raw`{"cookie":"return_to=\"/cb?code=abc\"; session=secret-tail","n":1}`,
+      '{"cookie":"[redacted]","n":1}'],
+    // A digest authorization, whose response follows its uri.
+    [String.raw`{"authorization":"Digest username=\"app\", uri=\"/v1/items?api_key=k-123\", ` +
+        String.raw`response=\"secret-tail\"","n":1}`,
+      '{"authorization":"[redacted]","n":1}'],
+    // A value that is JSON itself, with members after the URL in it.
+    [String.raw`{"token":"{\"url\":\"https://x.example/cb?code=abc\",\"next\":\"secret-tail\"}",` +
+        '"n":2}',
+      '{"token":"[redacted]","n":2}'],
+    // The parameter's value ends in a backslash of its own.
+    [String.raw`{"password":"C:\\dir?key=abc\\\"secret-tail","n":1}`,
+      '{"password":"[redacted]","n":1}'],
+    // In JSON inside a JSON string, once and twice over.
+    [String.raw`{"body":"{\"cookie\":\"return_to=\\\"/cb?code=abc\\\"; session=secret-tail\",` +
+        String.raw`\"n\":1}"}`,
+      String.raw`{"body":"{\"cookie\":\"[redacted]\",\"n\":1}"}`],
+    [String.raw`{"a":"{\"b\":\"{\\\"cookie\\\":\\\"to=\\\\\\\"/cb?code=abc\\\\\\\"; ` +
+        String.raw`session=secret-tail\\\",\\\"n\\\":1}\"}"}`,
+      String.raw`{"a":"{\"b\":\"{\\\"cookie\\\":\\\"[redacted]\\\",\\\"n\\\":1}\"}"}`],
+    // The parameter ends the value: the closing quote keeps the backslash before it.
+    [String.raw`{"body":"{\"password\":\"/cb?key=abc\",\"n\":1}"}`,
+      String.raw`{"body":"{\"password\":\"[redacted]\",\"n\":1}"}`],
+  ],
+
   "several shapes in one text": [
     [String.raw`fetch https://svc:Tr0ub4dor@api.example.com/v1?api_key=K9&x=1 failed: ` +
         String.raw`{"error":"bad","refresh_token":"1//0g\"x"}`,
@@ -623,18 +652,23 @@ describe("gadgetConsoleLogText", () => {
         .toBe("# keys\n[redacted] Your token is:\n[redacted]");
   });
 
-  it("redacts a secret member of a body a gadget serialized, whatever its value holds", () => {
-    // A quote, a backslash and a line break, each inside the value and at either end of it, and
-    // a value that is JSON itself.
+  it("redacts a secret member, printed or in a serialized body, whatever its value holds", () => {
+    // A quote, a backslash and a line break, each inside the value and at either end of it, a
+    // value that is JSON itself, and a URL parameter named like a secret, before a quote and at
+    // the value's end.
     let values = [
       'first"second-secret-tail', '"whole-secret', 'whole-secret"', "\\whole-secret",
       "whole-secret\\", 'a\\"b\\\\c-secret-tail', "line\nsecret-tail", "\twhole-secret\r\n",
       '{"inner":"secret-tail"}', '""',
+      'return_to="/cb?code=abc"; session=secret-tail', "/cb?code=abc&next=/home", "/cb?key=abc",
+      '{"url":"/cb?sig=abc","inner":"secret-tail"}',
     ];
     let kept = JSON.stringify({ password: "[redacted]", n: 1 });
 
     for (let value of values) {
-      // The member is in a string of the printed object, and then in a string of a string.
+      // The member is in the printed object, in a string of it, and then in a string of a string.
+      expect(gadgetConsoleLogText(["POST", { password: value, n: 1 }]), value)
+          .toBe("POST " + kept);
       let body = JSON.stringify({ password: value, n: 1 });
       expect(gadgetConsoleLogText(["POST", { body }]), value)
           .toBe("POST " + JSON.stringify({ body: kept }));

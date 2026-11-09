@@ -264,9 +264,10 @@ are. A JSON member is too when its whole name is `authorization`, `proxy-authori
 
 A member is found in JSON a gadget prints and in JSON held in a string of it, once or twice over,
 such as a request body the gadget serialized itself. Its value is replaced to its closing quote,
-whatever escaped characters it holds. A URL parameter's value is replaced up to the next `&`, `#`,
-space, double quote or angle bracket, and a JSON Web Token with its empty segments, which a
-directly encrypted one has.
+whatever escaped characters it holds, and whole where it holds a URL with a parameter named like
+a secret: a member is replaced before a parameter is. A URL parameter's value is replaced up to
+the next `&`, `#`, space, double quote or angle bracket, and a JSON Web Token with its empty
+segments, which a directly encrypted one has.
 
 Redaction happens before the cut, and a browser sends up to twice the kept length
 (`MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH`, 4,000 characters) for that reason: a token that
