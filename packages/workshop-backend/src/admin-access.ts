@@ -237,7 +237,8 @@ function isLowSurrogate(code: number): boolean {
 /** `text` as an audit record keeps it: whole while at most `maxLength` characters, else its first
  * `maxLength` - 1 characters and "…" (one fewer when the cut would split a surrogate pair). The one
  * cut the audit stores apply, marked so that a record never passes a fragment off as the whole: to
- * arguments, workspace titles and setting keys. */
+ * arguments, workspace titles and setting keys. Gadget console entries cut their text with it too
+ * (gadget-console-log.ts). */
 export function cutAdminAuditText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   let end = maxLength - 1;
