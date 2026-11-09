@@ -72,6 +72,11 @@ export interface DriveConfiguratorRpc {
   /** Makes a native `kind` copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
   convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult>;
   /**
+   * Whether this deployment lets a Drive connection be read and write. Where it does not, the picker
+   * offers no access choice and every Drive connection is read only.
+   */
+  offersWriteAccess(): Promise<boolean>;
+  /**
    * Whether the account allows changes to Drive files, and the grant that allows them. Read afresh
    * on every call, as after a consent pop-up.
    */

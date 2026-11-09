@@ -1,0 +1,36 @@
+/**
+ * The approval-backed writes of a Drive binding as one action set: comments, sharing changes and
+ * moves are declared together, so one journal stores and numbers them all.
+ */
+
+import { defineActions, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
+import { DRIVE_COMMENT_DEFINITIONS, type DriveCommentActions } from "./drive-comments";
+import { DRIVE_MOVE_DEFINITIONS, type DriveMoveActions } from "./drive-moves";
+import { DRIVE_SHARING_DEFINITIONS, type DriveSharingActions } from "./drive-sharing";
+import type { DriveWriteQueue, DriveWritesHost } from "./drive-writes";
+
+/** Every Drive write, by the action kind it is queued as. */
+export type DriveActions = DriveCommentActions & DriveSharingActions & DriveMoveActions;
+
+/** One queued Drive write. */
+export type DriveAction = TaggedAction<DriveActions>;
+
+/** What a Drive session needs of its gatekeeper to show and queue writes. */
+export type DriveQueue = DriveWriteQueue<DriveActions>;
+
+/**
+ * The declared Drive writes: comments, sharing and moves, over one journal, so one numbering
+ * serves the overseer's apply and reject. A comment is not tied to the account that queued it; a
+ * sharing change or a move is made as one Google account, and is fenced on it. No applied record
+ * is kept: none of these can be reverted from here.
+ */
+export const DRIVE_ACTIONS = defineActions<DriveWritesHost, DriveActions>({
+  ...DRIVE_COMMENT_DEFINITIONS, ...DRIVE_SHARING_DEFINITIONS, ...DRIVE_MOVE_DEFINITIONS,
+}, {
+  fence: "none",
+  fenceOverrides: {
+    createPermission: "authority", updatePermission: "authority", deletePermission: "authority",
+    moveFile: "authority",
+  },
+  vendorId: "google",
+});

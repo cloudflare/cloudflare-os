@@ -1,10 +1,10 @@
-import { env } from "cloudflare:workers";
+import { env, type RpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
 import type { OfficeConversionResult, OfficeFileInspection } from "../../src/office-conversion";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../../src/drive-session";
-import { GatekeeperUserImpl, type UserAccount } from "../../src/google";
+import { GatekeeperUserImpl, UserAccount } from "../../src/google";
 import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
@@ -45,7 +45,8 @@ describe("Google resource configurators", () => {
 
   describe("Drive picker", () => {
     const picker = (holdsSharedDrivesGrant = true) => new DriveConfiguratorUI(
-      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant);
+      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant,
+      true);
 
     /**
      * Answers each Drive request from `routes` by path, recording every URL asked for. A batch is
@@ -487,6 +488,34 @@ describe("Google resource configurators", () => {
         expect(account.getGrantedResourceUrlPatterns).toHaveBeenCalledTimes(2);
         expect(calls).toEqual([]);
       });
+
+    it("says whether the deployment offers read and write", async () => {
+      const calls = stubDrive({});
+      const account = {
+        getAccessToken: vi.fn(async () => token("access-token")),
+        getGrantedResourceUrlPatterns: vi.fn(async () => [DRIVE_WRITES_GRANT]),
+      };
+      const ctx = {
+        props: { userObjectId: "account-id" },
+        exports: { UserAccount: { idFromString: () => "account-id", get: () => account } },
+      };
+      /** What the picker's frame is told on a deployment whose Worker has the environment `deployed`. */
+      const offers = async (deployed: { GOOGLE_DRIVE_ACCESS?: string }) => {
+        const frame = await new GatekeeperUserImpl(ctx as never, deployed as never)
+          .startResourceConfigurator(GOOGLE_DRIVE_RESOURCE.urlPattern);
+        // The Drive pattern's frame is the picker's, which the frame's own type does not say.
+        const ui = frame.ui as RpcStub<DriveConfiguratorUI>;
+        return await ui.offersWriteAccess();
+      };
+
+      await expect(offers({})).resolves.toBe(true);
+      await expect(offers({ GOOGLE_DRIVE_ACCESS: "read" })).resolves.toBe(false);
+      // A value the setting does not know is read as the safe side.
+      await expect(offers({ GOOGLE_DRIVE_ACCESS: "READ-ONLY" })).resolves.toBe(false);
+      // The account is not asked either: the answer is the deployment's alone.
+      expect(account.getGrantedResourceUrlPatterns).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    });
   });
 
   it("offers every calendar the account can write, including limited writers", async () => {
@@ -770,7 +799,7 @@ async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string
  * workerd reports a rejection through a local RPC stub as uncaught even once it is handled.
  */
 function directOfficeConfigurator(testCase: OfficeKindCase): OfficeConfigurator {
-  let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true);
+  let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true, true);
   return {
     inspectFile: fileId => target.inspectFile(testCase.kind, fileId),
     hasConversionAccess: () => target.hasConversionAccess(),
@@ -1071,6 +1100,27 @@ describe("the Drive writes grant on a stored account", () => {
 
     await user.reconnect();
     expect(await requested(account)).toEqual([FILE]);
+  });
+
+  it("is asked for by no consent where the deployment keeps Drive read-only, and stays recorded", async () => {
+    const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+    const REDIRECT_URI = "https://gatekeeper-google.example.workers.dev/oauth";
+    let { account, user } = await storedAccount([FILE, DRIVE_WRITES_GRANT]);
+    /** A reconnect's initiation nonce, which its URL ends with. */
+    let reconnect = async () => (await user.reconnect()).url.split("/").at(-1) ?? "";
+
+    // The account as a deployment that sets the variable runs it: its own class over its own state.
+    let nonce = await reconnect();
+    let capped = await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      new UserAccount(state, { ...env, GOOGLE_DRIVE_ACCESS: "read" } as never)
+        .beginOAuthFlow(nonce, REDIRECT_URI));
+    expect(capped?.scopes).toEqual(resourceUrlPatternsToOAuthScopes([FILE]));
+    expect(capped?.scopes).not.toContain(DRIVE_SCOPE);
+    // The grant is still what completing that consent records, so the next one asks again.
+    expect(await requested(account)).toContain(DRIVE_WRITES_GRANT);
+
+    let lifted = await account.beginOAuthFlow(await reconnect(), REDIRECT_URI);
+    expect(lifted?.scopes).toContain(DRIVE_SCOPE);
   });
 });
 

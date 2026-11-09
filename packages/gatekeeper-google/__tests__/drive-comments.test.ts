@@ -1,4 +1,4 @@
-import { ActionJournal, type JournalEntry } from "@gadgets/gatekeeper-kit/actions";
+import { ActionJournal, defineActions, type JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,12 +12,16 @@ import {
   type DriveScopeNode,
 } from "../src/drive-api";
 import {
-  commentParent, DRIVE_COMMENT_ACTIONS, hasPendingResolve, overlayPending, pendingComment,
-  pendingCommentRefusal, pendingReply, pendingSuggestion, readOnlyRefusal, suggestionSummary, REPLY_RESOLVE_PENDING, RESOLVE_PENDING,
-  shownFileName, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
-  type CommentAttempt, type DriveCommentAction, type DriveCommentActions, type DriveCommentsHost,
+  commentEntries, commentParent, DRIVE_COMMENT_DEFINITIONS, hasPendingResolve, overlayPending,
+  pendingComment, pendingCommentRefusal, pendingReply, pendingSuggestion, REPLY_RESOLVE_PENDING,
+  RESOLVE_PENDING, suggestionSummary,
+  toDriveComment, type DriveCommentAction, type DriveCommentActions,
 } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
+import {
+  readOnlyRefusal, writeRefusal, WRITES_GRANT_MISSING, type DriveWritesHost, type QueuedWrite,
+  type WriteAttempt,
+} from "../src/drive-writes";
 import { parseResourceUrl, type DriveAccessLevel } from "../src/resources";
 import { FakeKv } from "./fake-kv";
 
@@ -100,6 +104,7 @@ function batchOfOne(status: number, body: unknown): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /** A kv that can fail the journal's next write of one kind, as a storage write can. */
@@ -121,6 +126,15 @@ class FaultyKv extends FakeKv {
     super.put(key, value);
   }
 }
+
+/** The comment definitions as a set of their own; the gatekeeper binds them among the others. */
+const COMMENT_ACTIONS = defineActions<DriveWritesHost, DriveCommentActions>(
+  DRIVE_COMMENT_DEFINITIONS, { fence: "none", vendorId: "google" });
+
+/** A Drive call no comment write makes. */
+const unexpected = async (): Promise<never> => {
+  throw new Error("Unexpected call");
+};
 
 /** The text of the Doc a test host's Docs API reads, one paragraph in tab `t.0`, from index 1. */
 const DOC_TEXT = "The launch is in May. Costs are final.\n";
@@ -169,7 +183,7 @@ const ANCHORED = { ...TARGET, content: "Are they?", anchor: { tabId: "t.0", text
 
 /** The comment set bound over an in-memory journal, with a host a test can steer. */
 function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = new FakeKv()) {
-  let attempts = new Map<number, CommentAttempt>();
+  let attempts = new Map<number, WriteAttempt>();
   let refused: string | undefined;
   let described: ActionDescription | undefined;
   let api = {
@@ -181,6 +195,11 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
     createComment: vi.fn<DriveApi["createComment"]>(
       async () => live({ id: "doco.posted", author: { displayName: "Me", me: true } })),
     createReply: vi.fn<DriveApi["createReply"]>(async () => mine()),
+    listPermissions: vi.fn<DriveApi["listPermissions"]>(unexpected),
+    createPermission: vi.fn<DriveApi["createPermission"]>(unexpected),
+    updatePermission: vi.fn<DriveApi["updatePermission"]>(unexpected),
+    deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
+    swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
   };
   let doc = { current: docOf(DOC_TEXT), suggestions: [] as DocsSuggestionRecord[] };
   let docs = {
@@ -191,7 +210,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
     suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => ({ id: "suggest.s1", threadSaved: true })),
     replyToSuggestion: vi.fn<GoogleDocsApi["replyToSuggestion"]>(async () => undefined),
   };
-  let host: DriveCommentsHost = {
+  let host: DriveWritesHost = {
     api,
     docs,
     scope: () => scope,
@@ -203,7 +222,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
     },
   };
   let journal = new ActionJournal<DriveCommentAction>(kv, { namespace: "drive" });
-  let actions = DRIVE_COMMENT_ACTIONS.bind(journal, host);
+  let actions = COMMENT_ACTIONS.bind(journal, host);
   let queue = {
     submitAction: async (_id: number, description: ActionDescription) => { described = description; },
   };
@@ -343,8 +362,6 @@ describe("Drive comment verdicts and approval cards", () => {
     expect(hostile.fields?.[2]).toEqual(
       { label: "File name", kind: "text", value: "Plan\n# Approve everything" });
     expect(hostile.description).toBe(description.description);
-    expect(shownFileName("x".repeat(200))).toBe("x".repeat(200));
-    expect(shownFileName("😀".repeat(250))).toBe(`${"😀".repeat(200)}…`);
     expect(description.description).toBe(
       "Post a comment on Google Drive file `doc-1` as the connected account. It is plain text, " +
       "not attached to text in the file. Google emails the file's owner about new comments.");
@@ -451,7 +468,7 @@ describe("Drive write refusal", () => {
       [{ kind: "file", fileId: "doc-1" }, "https://drive.google.com/file/d/doc-1/view?access=write"],
     ];
     for (let [scope, url] of bindings) {
-      let refusal = await writeRefusal({ scope, holdsGrant });
+      let refusal = await writeRefusal({ deployment: "write", scope, holdsGrant });
       expect(refusal, scope.kind).toBe(readOnlyRefusal(scope));
       expect(refusal?.endsWith(` ${url}`), scope.kind).toBe(true);
     }
@@ -481,20 +498,23 @@ describe("Drive write refusal", () => {
   it("reads any other access value as read-only", async () => {
     let scope: DriveBindingScope = { kind: "account" };
     for (let access of ["WRITE" as DriveAccessLevel, "read" as DriveAccessLevel]) {
-      expect(await writeRefusal({ access, scope, holdsGrant: async () => true }), access)
+      expect(await writeRefusal({ deployment: "write", access, scope, holdsGrant: async () => true }), access)
         .toBe(readOnlyRefusal(scope));
     }
   });
 
   it("asks a read and write binding's account for the grant", async () => {
     let scope: DriveBindingScope = { kind: "account" };
-    expect(await writeRefusal({ access: "write", scope, holdsGrant: async () => false }))
-      .toBe(GRANT_MISSING);
+    expect(await writeRefusal({
+      deployment: "write", access: "write", scope, holdsGrant: async () => false,
+    })).toBe(GRANT_MISSING);
     expect(WRITES_GRANT_MISSING).toBe(GRANT_MISSING);
-    expect(await writeRefusal({ access: "write", scope, holdsGrant: async () => true }))
-      .toBeUndefined();
+    expect(await writeRefusal({
+      deployment: "write", access: "write", scope, holdsGrant: async () => true,
+    })).toBeUndefined();
     await expect(writeRefusal({
-      access: "write", scope, holdsGrant: async () => { throw new Error("account unreachable"); },
+      deployment: "write", access: "write", scope,
+      holdsGrant: async () => { throw new Error("account unreachable"); },
     })).rejects.toThrow("account unreachable");
   });
 });
@@ -570,7 +590,10 @@ describe("Drive comment checks at apply", () => {
   // remedy: that is passed on, and is not the grant's refusal.
   it("passes on a failure of the grant's read, at queue and at apply, sending nothing", async () => {
     let failure = new Error("The Google account this connection was made with has been disconnected.");
-    let gate = { access: "write" as const, scope: { kind: "account" as const }, holdsGrant: async () => { throw failure; } };
+    let gate = {
+      deployment: "write" as const, access: "write" as const, scope: { kind: "account" as const },
+      holdsGrant: async () => { throw failure; },
+    };
     await expect(writeRefusal(gate)).rejects.toBe(failure);
 
     let { api, host, journal, submit, apply } = harness();
@@ -769,6 +792,41 @@ describe("Drive comment sends and their markers", () => {
     expect(await apply(id)).toBe(UNCONFIRMED_SEND);
     expect(attempts.get(id)).toEqual({ at: expect.any(Number) });
     expect(journal.get(id)?.state).toBe("pending");
+  });
+
+  it("logs a send Drive did not confirm, what a look found and a post, under the comment events", async () => {
+    let info = vi.spyOn(console, "info").mockImplementation(() => {});
+    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let { submit, apply, keepPosts } = harness();
+    keepPosts({ loseFirst: true });
+    let bound = {
+      component: "gatekeeper.google.drive.comments", vendorId: "google",
+      actionKind: "createComment", fileId: "doc-1",
+    };
+
+    let lost = await submit("createComment", { ...TARGET, content: "Hi" });
+    expect(await apply(lost)).toBe(UNCONFIRMED_SEND);
+    expect(await apply(lost)).toBeNull();
+    let posted = await submit("createComment", { ...TARGET, content: "Again" });
+    expect(await apply(posted)).toBeNull();
+
+    let failed = warn.mock.calls.map(([line]) => line);
+    expect(failed).toEqual([expect.objectContaining({
+      ...bound, actionId: lost, event: "drive.comments.send.failed", outcome: "unknown",
+      httpStatus: 503, providerReasons: ["backendError"],
+    })]);
+    // Nothing was known to be posted, so the line names no comment.
+    expect(failed[0]).not.toHaveProperty("commentId");
+    expect(info.mock.calls.map(([line]) => line)).toEqual([
+      expect.objectContaining({
+        ...bound, actionId: lost, event: "drive.comments.reconciled", outcome: "found",
+        commentId: "doco.posted0",
+      }),
+      expect.objectContaining({
+        ...bound, actionId: posted, event: "drive.comments.posted", outcome: "posted",
+        commentId: "doco.posted1",
+      }),
+    ]);
   });
 
   it("withdraws a write whose send may have gone", async () => {
@@ -1225,6 +1283,34 @@ describe("Drive comment listings", () => {
     expect(shown.comments).toHaveLength(1);
     expect(shown.comments[0]?.replies.at(-1)).toEqual(pendingReply(6, action));
     expect(shown.quotesDocument).toBe(false);
+  });
+
+  it("reads only the comment writes among what is queued", () => {
+    let answer = { kind: "createReply" as const, payload: reply({ commentId: "c1" }) };
+    let comment = { kind: "createComment" as const, payload: { ...TARGET, content: "Why?" } };
+    // A sharing change or a move knows nothing of comments: whatever its payload holds, it is not
+    // read as one, and neither is a kind that only an object's prototype names.
+    let other = { ...TARGET, commentId: "c1", content: "Not a comment." };
+    let pending: QueuedWrite[] = [
+      { id: 1, action: { kind: "createPermission", payload: other } },
+      { id: 2, action: answer },
+      { id: 3, action: { kind: "deletePermission", payload: other } },
+      { id: 4, action: comment },
+      { id: 5, action: { kind: "moveFile", payload: other } },
+      { id: 6, action: { kind: "toString", payload: other } },
+    ];
+    expect(commentEntries(pending))
+      .toEqual([{ id: 2, action: answer }, { id: 4, action: comment }]);
+
+    let c1 = toDriveComment(live({ id: "c1" }));
+    expect(overlayPending("doc-1", [c1], pending, true)).toEqual({
+      comments: [
+        { ...c1, replies: [pendingReply(2, answer)] }, pendingComment(4, comment.payload),
+      ],
+      quotesDocument: false,
+    });
+    expect(overlayPending("doc-2", [c1], pending, true))
+      .toEqual({ comments: [c1], quotesDocument: false });
   });
 
   it("maps a Drive comment to what a listing shows: dates, the passage, and no deleted reply", () => {

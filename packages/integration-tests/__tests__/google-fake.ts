@@ -1,11 +1,17 @@
 // Google, as the real Google gatekeeper reaches it from the integration harness: its OAuth token
 // and userinfo endpoints, one Gmail mailbox per account, Chat spaces, Workspace Events
-// subscriptions, Drive files' comments and replies, and Pub/Sub pushes signed as Google signs them,
-// delivered through the gatekeeper's own route. A handler module for the harness's
-// NetworkInterceptor, as github-fake.ts is for GitHub.
+// subscriptions, Drive files' comments and replies, permissions and parents, and Pub/Sub pushes
+// signed as Google signs them, delivered through the gatekeeper's own route. A handler module for
+// the harness's NetworkInterceptor, as github-fake.ts is for GitHub.
 //
 // Each account is whoever completes OAuth with code `<code>`: its access token is `token-<code>`,
-// its Google subject `sub-<code>`, and its mailbox `<code>@example.com`.
+// its Google subject `sub-<code>`, its mailbox `<code>@example.com`, and its Drive permission ID
+// `perm-<code>`, with the code in lower case.
+//
+// Two of Drive's answers here are what Google documents, where no probe saw Google give them: the
+// reason code of an organization's rule against sharing outside it, `shareOutNotPermitted`, and the
+// refusal of a role change, a removal or a move by an account that cannot share the file,
+// `insufficientFilePermissions`, which Google was seen to answer that account's listing and share.
 
 import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -135,8 +141,42 @@ type DriveReply = {
 };
 /** A Drive comment as stored. `resolved` stays absent until it is first resolved, as Drive sends it. */
 type DriveComment = Omit<DriveReply, "action"> & { replies: DriveReply[]; resolved?: boolean };
-/** A Drive file: who may only view it, who cannot see it, and its comments. */
-type DriveFile = { viewOnly: Set<string>; hidden: Set<string>; comments: DriveComment[] };
+
+/** The roles Drive's permission calls give, lowest first. */
+const DRIVE_SHARE_ROLES = ["reader", "commenter", "writer"] as const;
+type DriveShareRole = typeof DRIVE_SHARE_ROLES[number];
+
+/** A permission as Drive holds it on the file or folder it was given on. */
+export type DrivePermission = {
+  id: string;
+  type: "user" | "group" | "domain" | "anyone";
+  role: DriveShareRole;
+  emailAddress?: string;
+  domain?: string;
+  allowFileDiscovery?: boolean;
+};
+/** A permission as stored. Its ID is not kept: {@link permissionId} tells it from its grantee. */
+type StoredPermission = Omit<DrivePermission, "id">;
+/**
+ * A permission as Drive lists it on one file: the higher of its roles, with one detail for what
+ * the folder the file is in gives the grantee and one for what is given on the file itself.
+ */
+type ListedPermission = DrivePermission & {
+  permissionDetails: { permissionType: "file"; role: DriveShareRole; inherited: boolean }[];
+};
+
+/**
+ * A Drive file or folder: who may only view it, who cannot see it, who can share and move it
+ * (every account that can see it, when absent), the folder it is in, the permissions given on it
+ * itself, and its comments.
+ */
+type DriveFile = {
+  viewOnly: Set<string>; hidden: Set<string>; sharers?: Set<string>; folder: boolean;
+  parent?: string; permissions: StoredPermission[]; comments: DriveComment[];
+};
+
+const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const DOCUMENT_MIME_TYPE = "application/vnd.google-apps.document";
 
 /** Drive's error body: `errors[0].reason` is what a caller tells failures apart by. */
 const driveErrorBody = (status: number, reason: string, message: string, location?: string) => ({
@@ -151,6 +191,52 @@ const driveError = (status: number, reason: string, message: string, location?: 
 /** Drive's error body for a file it does not hold, or does not show the caller. */
 const fileNotFound = (fileId: string) =>
   driveErrorBody(404, "notFound", `File not found: ${fileId}.`, "fileId");
+
+/** Drive's refusal to show or change a file's sharing, or to move it, for an account that may not. */
+const insufficientFilePermissions = (fileId: string) => driveError(
+  403, "insufficientFilePermissions", `The user does not have sufficient permissions for file ${fileId}.`);
+/** Drive's answer for a permission ID that names nothing it can act on. */
+const permissionNotFound = (id: string) =>
+  driveError(404, "notFound", `Permission not found: ${id}.`, "permissionId");
+
+/** Where a role ranks: the higher the number, the more it allows. */
+const rank = (role: DriveShareRole) => DRIVE_SHARE_ROLES.indexOf(role);
+
+/** `value` as an ID can hold it: letters, digits, `_` and `-`, with `-` for anything else. */
+const idPart = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, "-");
+
+/**
+ * The permission ID of the mailbox at `address`, which is its own on every file: `perm-<code>` for
+ * the address of the account of OAuth code `code`, and `perm-<address>` for any other. A mailbox is
+ * one grantee however its address is capitalized, so the ID is made from the address in lower case.
+ */
+const mailboxPermissionId = (address: string) =>
+  `perm-${idPart(address.toLowerCase().replace(/@example\.com$/, ""))}`;
+
+/**
+ * The ID Drive lists a permission under. A person's or a group's is their mailbox's
+ * ({@link mailboxPermissionId}), and a domain's is `perm-domain-<domain>`, from the domain in lower
+ * case. Each has `-` where the address or the domain has a character an ID cannot hold. Anyone's
+ * follows its form: `anyone` when the file can be found by searching, and `anyoneWithLink` when it
+ * cannot.
+ */
+function permissionId(permission: StoredPermission): string {
+  if (permission.type === "anyone") return permission.allowFileDiscovery ? "anyone" : "anyoneWithLink";
+  if (permission.type === "domain") {
+    return `perm-domain-${idPart((permission.domain ?? "").toLowerCase())}`;
+  }
+  return mailboxPermissionId(permission.emailAddress ?? "");
+}
+
+/** What tells one grantee from another on a file. Anyone's access is one permission, in either form. */
+const granteeOf = (permission: StoredPermission) =>
+  permission.type === "anyone" ? "anyone" : permissionId(permission);
+/** The grantee a permission ID names: either of anyone's two IDs reaches whichever form exists. */
+const granteeNamed = (id: string) => id === "anyoneWithLink" ? "anyone" : id;
+
+/** One source of a listed permission's role: the folder the file is in, or the file itself. */
+const permissionDetail = (role: DriveShareRole, inherited: boolean) =>
+  ({ permissionType: "file" as const, role, inherited });
 
 /** Google's limit on a comment's or reply's content, in bytes of UTF-8. */
 const MAX_COMMENT_BYTES = 4096;
@@ -179,6 +265,8 @@ export class FakeGoogle {
   readonly #keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
   /** What each account consented to last, by its OAuth code (see #consent). */
   readonly #consented = new Map<string, string>();
+  /** The domain each account's organization keeps sharing within, by its OAuth code. */
+  readonly #sharingWithin = new Map<string, string>();
   #nextId = 0x1000;
 
   /** The mailbox address of the account OAuth code `code` connects. */
@@ -216,7 +304,8 @@ export class FakeGoogle {
     }
     const host = url.hostname;
     const batch = host === "www.googleapis.com" && url.pathname === "/batch/drive/v3" && method === "POST";
-    const drive = host === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files/");
+    const drive = host === "www.googleapis.com" &&
+      (url.pathname.startsWith("/drive/v3/files/") || url.pathname === "/drive/v3/about");
     if (!batch && !drive && host !== "gmail.googleapis.com" && host !== "chat.googleapis.com" &&
         host !== "workspaceevents.googleapis.com") {
       return null;
@@ -270,23 +359,61 @@ export class FakeGoogle {
     await api.completeConnectHandoff(JSON.parse(ticket[1]!), nonce);
   }
 
+  /** A Drive folder every account can open, list and add to. */
+  driveFolder(folderId: string, options: { parent?: string; sharers?: string[] } = {}): void {
+    this.#driveEntry(folderId, true, options);
+  }
+
   /**
    * A Google Doc every account can open and comment on, except the accounts whose OAuth codes
    * `viewOnly` names, which can open it and not comment, and those `hidden` names, which cannot
-   * see it.
+   * see it. `parent` is the folder it is in, and `sharers` the accounts (by OAuth code) that can
+   * share and move it: every account that can see it, unless given.
    */
   driveFile(
-    fileId: string, { viewOnly = [], hidden = [] }: { viewOnly?: string[]; hidden?: string[] } = {},
+    fileId: string,
+    options: { viewOnly?: string[]; hidden?: string[]; parent?: string; sharers?: string[] } = {},
   ): void {
-    this.#driveFiles.set(fileId, {
-      viewOnly: new Set(viewOnly), hidden: new Set(hidden),
-      comments: this.#driveFiles.get(fileId)?.comments ?? [],
+    this.#driveEntry(fileId, false, options);
+  }
+
+  /** Holds a Drive file or folder as described, with the comments and permissions its ID has. */
+  #driveEntry(
+    id: string, folder: boolean,
+    { viewOnly = [], hidden = [], parent, sharers }:
+      { viewOnly?: string[]; hidden?: string[]; parent?: string; sharers?: string[] },
+  ): void {
+    const held = this.#driveFiles.get(id);
+    this.#driveFiles.set(id, {
+      viewOnly: new Set(viewOnly), hidden: new Set(hidden), folder,
+      ...(sharers ? { sharers: new Set(sharers) } : {}),
+      ...(parent === undefined ? {} : { parent }),
+      permissions: held?.permissions ?? [], comments: held?.comments ?? [],
     });
   }
 
   /** The comments on Drive file `fileId`, as stored, oldest first. */
   driveComments(fileId: string): readonly DriveComment[] {
     return this.#driveFiles.get(fileId)?.comments ?? [];
+  }
+
+  /** The permissions given on a file itself, as stored. */
+  drivePermissions(fileId: string): readonly DrivePermission[] {
+    return (this.#driveFiles.get(fileId)?.permissions ?? [])
+      .map(permission => ({ id: permissionId(permission), ...permission }));
+  }
+
+  /** The folder a file is in. */
+  driveParent(fileId: string): string | undefined {
+    return this.#driveFiles.get(fileId)?.parent;
+  }
+
+  /**
+   * Makes Google refuse, as the rule of its organization would, every share the account of OAuth
+   * code `code` makes with an address or domain outside `domain`.
+   */
+  forbidSharingOutside(code: string, domain: string): void {
+    this.#sharingWithin.set(code, domain);
   }
 
   /** A new message from Bob lands in `mailbox`'s inbox, recorded in its history: returns its ID. */
@@ -411,17 +538,44 @@ export class FakeGoogle {
     return file?.hidden.has(code) ? undefined : file;
   }
 
-  /** `files.get` of `fileId` as the account of OAuth code `code`: the file, or Drive's refusal. */
+  /** Whether the account of OAuth code `code` can share and move `file`. */
+  #shares(code: string, file: DriveFile): boolean {
+    return file.sharers?.has(code) ?? true;
+  }
+
+  /**
+   * `files.get` of `fileId` as the account of OAuth code `code`: the file, or Drive's refusal.
+   * Drive's alias `root` answers the account's own My Drive root, a folder under an ID of its own
+   * that is in no folder and in no shared drive.
+   */
   #filesGet(code: string, fileId: string): { status: number; body: Row } {
     this.driveLookups.push(`${code} ${fileId}`);
+    const modifiedTime = new Date().toISOString();
+    if (fileId === "root") {
+      return {
+        status: 200,
+        body: {
+          id: `my-drive-${code}`, name: "My Drive", mimeType: FOLDER_MIME_TYPE, modifiedTime,
+          trashed: false,
+          capabilities: {
+            canListChildren: true, canAddChildren: true, canComment: true, canShare: true,
+            canMoveItemWithinDrive: true,
+          },
+        },
+      };
+    }
     const file = this.#driveFileFor(code, fileId);
     if (!file) return { status: 404, body: fileNotFound(fileId) };
+    const shares = this.#shares(code, file);
     return {
       status: 200,
       body: {
-        id: fileId, name: fileId, mimeType: "application/vnd.google-apps.document",
-        modifiedTime: new Date().toISOString(), trashed: false,
-        capabilities: { canListChildren: false, canComment: !file.viewOnly.has(code) },
+        id: fileId, name: fileId, mimeType: file.folder ? FOLDER_MIME_TYPE : DOCUMENT_MIME_TYPE,
+        modifiedTime, trashed: false, ...(file.parent === undefined ? {} : { parents: [file.parent] }),
+        capabilities: {
+          canListChildren: file.folder, canAddChildren: file.folder,
+          canComment: !file.viewOnly.has(code), canShare: shares, canMoveItemWithinDrive: shares,
+        },
       },
     };
   }
@@ -452,17 +606,187 @@ export class FakeGoogle {
   }
 
   /**
-   * Drive's files.get and its comments and replies, answering as Google was seen to: a write needs
-   * `fields`, an empty resolve is stored as `""`, a plain reply to a resolved comment reopens it,
-   * and resolving a resolved one adds another reply. Content is stored without the spaces, tabs
-   * and line breaks at its ends, and refused over 4096 bytes of UTF-8. An account that can only
-   * view a file is listed none of its comments, and is refused a write.
+   * A file's permissions as Drive lists them to an account that can share it: those given on the
+   * file itself, then those of the folder it is in that it does not have itself, which it inherits.
+   * A grantee both have is one permission, with a detail for each.
+   */
+  #listedPermissions(file: DriveFile): ListedPermission[] {
+    const inherited = this.#driveFiles.get(file.parent ?? "")?.permissions ?? [];
+    const listed = (permission: StoredPermission, details: ListedPermission["permissionDetails"]) => ({
+      id: permissionId(permission), ...permission,
+      role: details.map(detail => detail.role).reduce((a, b) => rank(a) < rank(b) ? b : a),
+      permissionDetails: details,
+    });
+    return [
+      ...file.permissions.map(own => listed(own, [
+        ...inherited.filter(above => granteeOf(above) === granteeOf(own))
+          .map(above => permissionDetail(above.role, true)),
+        permissionDetail(own.role, false),
+      ])),
+      ...inherited.filter(above => !file.permissions.some(own => granteeOf(own) === granteeOf(above)))
+        .map(above => listed(above, [permissionDetail(above.role, true)])),
+    ];
+  }
+
+  /**
+   * Drive's permissions of one file: the list, a create, and the role change or the removal of the
+   * permission `named`. Each is refused to an account that cannot share the file. A create without
+   * `fields` is refused as a comment write is, takes no `emailMessage` without a notification, is
+   * refused by the sharing rule of the caller's organization, and otherwise only ever raises: a
+   * grantee who already has the role or a higher one, on the file or from its folder, is answered
+   * unchanged, and anyone's link is made searchable and never the reverse. A role cannot be set
+   * below what the folder gives, and set to exactly that, what is given on the file itself is gone.
+   * A permission the folder also gives cannot be deleted. Any other request is declined, so that it
+   * is reported unmocked.
+   */
+  async #drivePermissions(
+    url: URL, method: string, code: string, request: Request, fileId: string,
+    named: string | undefined,
+  ): Promise<Response | null> {
+    const lists = method === "GET" && named === undefined;
+    const creates = method === "POST" && named === undefined;
+    const changes = (method === "PATCH" || method === "DELETE") && named !== undefined;
+    if (!lists && !creates && !changes) return null;
+    const file = this.#driveFileFor(code, fileId);
+    if (!file) return json(fileNotFound(fileId), 404);
+    if (creates && !url.searchParams.has("fields")) {
+      return driveError(400, "required", "The 'fields' parameter is required for this method.", "fields");
+    }
+    if (!this.#shares(code, file)) return insufficientFilePermissions(fileId);
+    if (lists) return json({ permissions: this.#listedPermissions(file) });
+
+    const inherited = this.#driveFiles.get(file.parent ?? "")?.permissions ?? [];
+    /** The permission of `grantee` as the file lists it, which is what a write answers with. */
+    const answer = (grantee: string) => {
+      const listed = this.#listedPermissions(file)
+        .find(permission => granteeNamed(permission.id) === grantee);
+      return listed ? json(listed) : permissionNotFound(grantee);
+    };
+    if (named === undefined) {
+      const sent = await request.json() as StoredPermission;
+      const within = this.#sharingWithin.get(code);
+      const outside = sent.domain ?? sent.emailAddress?.split("@").at(-1);
+      if (within !== undefined && outside !== undefined &&
+          outside.toLowerCase() !== within.toLowerCase()) {
+        return driveError(403, "shareOutNotPermitted",
+          "The user is not permitted to share this item outside their organization.");
+      }
+      if (url.searchParams.has("emailMessage") &&
+          url.searchParams.get("sendNotificationEmail") === "false") {
+        return driveError(403, "forbidden", "The emailMessage parameter is only applicable when " +
+          "sendNotificationEmail=true and the permission type is 'user' or 'group'.", "emailMessage");
+      }
+      const grant: StoredPermission = {
+        type: sent.type, role: sent.role,
+        ...(sent.emailAddress === undefined ? {} : { emailAddress: sent.emailAddress }),
+        ...(sent.domain === undefined ? {} : { domain: sent.domain }),
+        ...(sent.type === "domain" || sent.type === "anyone"
+          ? { allowFileDiscovery: sent.allowFileDiscovery === true } : {}),
+      };
+      const grantee = granteeOf(grant);
+      let own = file.permissions.find(permission => granteeOf(permission) === grantee);
+      const above = inherited.find(permission => granteeOf(permission) === grantee);
+      // True of a grantee with no access at all, too.
+      const raises = [own, above].every(held => !held || rank(held.role) < rank(grant.role));
+      if (raises && own) own.role = grant.role;
+      else if (raises) file.permissions.push(own = grant);
+      // A create widens a link and never narrows one.
+      if (own?.type === "anyone" && grant.allowFileDiscovery) own.allowFileDiscovery = true;
+      return answer(grantee);
+    }
+
+    const id = decodeURIComponent(named);
+    const grantee = granteeNamed(id);
+    const at = file.permissions.findIndex(permission => granteeOf(permission) === grantee);
+    const own = file.permissions[at];
+    const above = inherited.find(permission => granteeOf(permission) === grantee);
+    if (method === "DELETE") {
+      if (above) {
+        return driveError(403, "cannotDeletePermission",
+          "The authenticated user does not have the required access to delete the permission.");
+      }
+      if (!own) return permissionNotFound(id);
+      file.permissions.splice(at, 1);
+      return new Response(null, { status: 204 });
+    }
+    const held = own ?? above;
+    if (!held) return permissionNotFound(id);
+    const { role } = await request.json() as { role: DriveShareRole };
+    if (above && rank(role) < rank(above.role)) {
+      return driveError(403, "cannotModifyInheritedPermission", "Cannot modify a permission on an " +
+        "item to be less than the inherited access from a direct or indirect parent.");
+    }
+    // Set to exactly what the folder gives, nothing is left on the file itself.
+    if (above && role === above.role) {
+      if (own) file.permissions.splice(at, 1);
+    } else if (own) {
+      own.role = role;
+    } else {
+      file.permissions.push({ ...held, role });
+    }
+    return answer(grantee);
+  }
+
+  /** Whether folder `folderId` is `fileId` itself, or is inside it at any depth. */
+  #isWithin(folderId: string, fileId: string): boolean {
+    const seen = new Set<string>();
+    for (let at: string | undefined = folderId; at !== undefined && !seen.has(at);
+        at = this.#driveFiles.get(at)?.parent) {
+      if (at === fileId) return true;
+      seen.add(at);
+    }
+    return false;
+  }
+
+  /**
+   * Drive's move of a file or folder into folder `to`, as the gatekeeper sends it, with the folder
+   * it leaves named too. That one is not looked at: Drive ignores one that is not the file's
+   * parent, so a repeat changes nothing. A folder is not moved into itself, or into a folder
+   * inside it.
+   */
+  #driveMove(code: string, fileId: string, to: string): Response {
+    const file = this.#driveFileFor(code, fileId);
+    if (!file) return json(fileNotFound(fileId), 404);
+    if (!this.#shares(code, file)) return insufficientFilePermissions(fileId);
+    const destination = this.#driveFileFor(code, to);
+    if (!destination) return json(fileNotFound(to), 404);
+    if (!destination.folder) {
+      return driveError(403, "parentNotAFolder", "The specified parent is not a folder.");
+    }
+    if (this.#isWithin(to, fileId)) return driveError(400, "badRequest", "Bad Request");
+    file.parent = to;
+    return json({ id: fileId, parents: [to] });
+  }
+
+  /**
+   * Drive's about.get, files.get, permissions, moves, and comments and replies, answering as Google
+   * was seen to: a comment write needs `fields`, an empty resolve is stored as `""`, a plain reply
+   * to a resolved comment reopens it, and resolving a resolved one adds another reply. Content is
+   * stored without the spaces, tabs and line breaks at its ends, and refused over 4096 bytes of
+   * UTF-8. An account that can only view a file is listed none of its comments, and is refused a
+   * write.
    */
   async #drive(url: URL, method: string, code: string, request: Request): Promise<Response | null> {
+    if (url.pathname === "/drive/v3/about") {
+      if (method !== "GET") return null;
+      const emailAddress = FakeGoogle.mailboxOf(code);
+      return json({ user: { permissionId: mailboxPermissionId(emailAddress), emailAddress } });
+    }
+    const permissions = /^\/drive\/v3\/files\/([^/]+)\/permissions(?:\/([^/]+))?$/.exec(url.pathname);
+    if (permissions) {
+      return this.#drivePermissions(
+        url, method, code, request, decodeURIComponent(permissions[1] ?? ""), permissions[2]);
+    }
     const match = /^\/drive\/v3\/files\/([^/]+)(\/comments(?:\/([^/]+)(\/replies)?)?)?$/.exec(url.pathname);
     if (!match) return null;
     const [, rawFileId, commentsPath, rawCommentId, repliesPath] = match;
     const fileId = decodeURIComponent(rawFileId ?? "");
+    // A move names the folder a file leaves as well as the one it enters, as the gatekeeper always
+    // does: with either alone Drive moves the file somewhere else, and it is declined here.
+    const to = url.searchParams.get("addParents");
+    if (method === "PATCH" && !commentsPath && to !== null && url.searchParams.has("removeParents")) {
+      return this.#driveMove(code, fileId, to);
+    }
     // Reads, and the two writes that make a comment and a reply: any other request is declined,
     // so that it is reported unmocked rather than answered as a read.
     const creates = method === "POST" && commentsPath !== undefined &&

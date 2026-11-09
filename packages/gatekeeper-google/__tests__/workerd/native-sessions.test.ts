@@ -7,7 +7,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
-import type { DriveCommentQueue } from "../../src/drive-comments";
+import type { DriveQueue } from "../../src/drive-actions";
 import { FILE_READ_IDLE_MS } from "../../src/drive-file-read";
 import type { DriveBindingScope } from "../../src/drive-session";
 import type { PdfConverter } from "../../src/drive-pdf";
@@ -247,11 +247,13 @@ function docFetches(): number {
 }
 
 /** A comment queue for sessions these tests never comment through. */
-const NO_COMMENTS: DriveCommentQueue = {
+const NO_COMMENTS: DriveQueue = {
   access: "read",
   writeRefusal: async () => "Unexpected comment write",
+  actor: async () => { throw new Error("Unexpected identity read"); },
   submit: async () => { throw new Error("Unexpected comment submission"); },
   undecided: read => read([]),
+  waiting: read => read([]),
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -2083,7 +2085,8 @@ describe("Drive comment actions", () => {
           title: "Google Drive Account (read and write)",
           snippet: "Read and write: find files anywhere this Google account can read in Drive, " +
             "read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any " +
-            "other file's bytes with readFile(), and read and queue comments",
+            "other file's bytes with readFile(), read and queue comments, change who files are " +
+            "shared with, and move files",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveSession",
         },
@@ -2102,8 +2105,9 @@ describe("Drive comment actions", () => {
           title: "folder-root (read and write)",
           snippet: "Read and write: list and search direct children, navigate child folders, read " +
             "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
-            "file's bytes with readFile(), and read and queue comments on direct children in " +
-            "Drive folder \"folder-root\"",
+            "file's bytes with readFile(), read and queue comments on direct children, change who " +
+            "they and the folder are shared with, and move them within Drive folder " +
+            "\"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
           tsType: "GoogleDriveFolderSession",
         },
@@ -2121,7 +2125,8 @@ describe("Drive comment actions", () => {
           title: "doc-1 (read and write)",
           snippet: "Read and write: read metadata and, when native, Google Doc, Sheet or Slides " +
             "content, with readPdf() a PDF's text, or with readFile() the bytes of any other " +
-            "file, from Drive file \"doc-1\", and read and queue comments on it",
+            "file, from Drive file \"doc-1\", read and queue comments on it, and change who it " +
+            "is shared with",
           suggestedBindingName: "GOOGLE_DRIVE_FILE",
           tsType: "GoogleDriveFileSession",
         },
@@ -2154,11 +2159,15 @@ describe("Drive comment actions", () => {
       expect((await binding().call("getScope")).value).toEqual({ kind: "account", access: "write" });
       expect((await binding({ kind: "file", fileId: "doc-1" }, null).call("getScope")).value)
         .toEqual({ kind: "file", fileId: "doc-1", name: "doc-1", access: "read" });
-      expect((await folder.call("getScope")).value).toEqual({
+      let bound = (await folder.call("getScope")).value;
+      expect(bound).toEqual({
         kind: "folder", folderId: ROOT, rootFolderId: ROOT, name: ROOT, access: "write",
       });
+      // Nothing above the bound folder is named.
+      expect(bound).not.toHaveProperty("parentFolderId");
       expect((await folder.callIn(["inner"], "getScope")).value).toEqual({
-        kind: "folder", folderId: "inner", rootFolderId: ROOT, name: "inner", access: "write",
+        kind: "folder", folderId: "inner", rootFolderId: ROOT, parentFolderId: ROOT, name: "inner",
+        access: "write",
       });
       expect((await binding({ kind: "account" }, "WRITE" as DriveAccessLevel).call("getScope")).value)
         .toEqual({ kind: "account", access: "read" });

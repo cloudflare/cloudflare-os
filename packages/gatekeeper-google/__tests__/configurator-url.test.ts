@@ -7,7 +7,7 @@
 // `encodeURIComponent`, a normalization one side does and the other does not -- shows up here
 // rather than as a resource the backend rejects after the user has filled the form.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@gadgets/configurator-ui", () => ({
   h: (component: unknown, props: unknown, ...children: unknown[]) => ({
@@ -291,6 +291,24 @@ describe("Drive configurator URLs", () => {
     resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: noUi,
   });
 
+  // Reading a read and write URL back asks whether the deployment offers that level and whether
+  // the account allows changes, which `noUi` refuses.
+  const allowed = {
+    offersWriteAccess: async () => true,
+    getWriteAccess: async () => ({ grant: "g", held: true }),
+  } as never;
+  const writeValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: allowed,
+  });
+
+  // The module mints the parameter only once it has heard that the deployment offers read and
+  // write, and a mint cannot ask: its `ui` refuses every call. Reading a URL back asks, and the
+  // module keeps the answer for every case below.
+  beforeAll(async () => {
+    await expect(writeValues("https://drive.google.com/drive/my-drive?access=write"))
+      .resolves.toEqual({ target: "drive", access: "write" });
+  });
+
   it.for([
     ["the whole account", "drive", { kind: "driveAccount" }],
     ["a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" }],
@@ -315,12 +333,6 @@ describe("Drive configurator URLs", () => {
   it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
     expect(() => configurableUrl(driveConfigurator, { target: null })).toThrow("Choose what to connect.");
     expect(() => configurableUrl(driveConfigurator, { target: "shared-with-me" })).toThrow();
-  });
-
-  // Reading a read and write URL back asks whether the account allows changes, which `noUi` refuses.
-  const allowed = { getWriteAccess: async () => ({ grant: "g", held: true }) } as never;
-  const writeValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
-    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: allowed,
   });
 
   it.for([
