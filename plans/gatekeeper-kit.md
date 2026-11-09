@@ -2415,6 +2415,73 @@ gatekeeper's own name; a single-product gatekeeper omits it.
 lowercase or needless escape, instead of decoding it to a nearby resource. The 512-code-unit ID
 bound stays the overseer's to enforce; the kit does not keep a second copy.
 
+### 4.24 `./hook-registry`
+
+```ts
+export interface HookDelivery<Hook extends RpcTarget, Message> extends RpcTarget {
+  deliver(callback: RpcStub<Hook>, approvalQueue: RpcStub<ApprovalQueue>, message: Message): Promise<void>;
+}
+export type HookCapabilities<Hook extends RpcTarget, Message> = {
+  delivery: RpcStub<HookDelivery<Hook, Message>>; initiator: Fetcher<HookInitiator<Hook>> };
+export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
+  constructor(kv: KvScannable, onDrop: () => void);
+  set(key: string, registration: Registration, capabilities: HookCapabilities<Hook, Message>): void;
+  remove(key: string): Registration | undefined;
+  entries(): [key: string, registration: Registration][];
+  enqueue(key: string, messageId: string, message: Message, now: number): void;
+  run(now: number): Promise<void>;
+  nextDue(): number | undefined;
+}
+```
+
+The drivers that queue provider pushes (GitHub, Gmail, Chat, Outlook) each keep the same three
+things by hand: a `reg:{key}` record the driver filters events by, a `caps:{key}` record holding the
+hook's stubs, and one delivery — start a firing through the `HookInitiator`, hand it with the
+message to the binding's delivery stub, dispose what was read. `HookRegistry` is that copy made
+once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, bounded runs)
+the same drivers already share. The keys are the ones they wrote, so a port migrates nothing.
+
+- **Synchronous but for `run()`.** Every driver relies on nothing awaiting between its provider
+  work and the registration, and GitHub writes it inside a serialized webhook change. `set()` and
+  `remove()` are plain storage writes, so those invariants stay in the driver's hands.
+- **`set()` disposes the stubs it replaces; `remove()` disposes them, ends the hook's queued
+  deliveries, and returns the registration**, which GitHub needs for the removed hook's repository.
+  `remove()` only forgets: provider teardown stays in the driver's `unregister`.
+- **`entries()` returns bare keys, listed in full**, so it is safe across the writes and awaits a
+  live KV iterator is not.
+- **`set()` refuses a key containing `:`**, which the queue's row keys split on.
+- **The delivery call type-checks without suppression** because the stored stubs are read as the
+  interfaces themselves (`Pick<HookDelivery, "deliver">`, the awaited `startHook()` result): Worker
+  RPC's mapped stub types do not resolve over an unbound `Hook` or `Message`. Being derived, the
+  read type stops compiling if `startHook()` changes shape.
+
+The Durable Object, its alarm, the provider lifecycle (webhooks, watches, subscriptions, cursors),
+ingest filters, the controller and account-disconnect handling stay in each gatekeeper. Email and
+scheduler stay out: email holds one initiator per address and delivers inline with no queue, and
+scheduler admits an occurrence before counting an attempt, under its own records.
+
+Rejected:
+
+- **A `HookDriver` Durable Object base class.** That is Layer 2, and the drivers order their alarm
+  differently around `run()` (sync before, check before, renew after).
+- **A kit controller.** About fifteen lines each, and only the driver lookup differs.
+- **`clear()`**, with one caller (GitHub's disconnect, which can remove its hooks one at a time), and
+  **`offer(id, message, admits)`**, which does not fit Gmail's and Outlook's cursor syncs.
+- **Account-disconnect tracking.** Google, Microsoft and GitHub have three different contracts.
+
+Left out until a driver needs it, each an additive change:
+
+- **`get(key)`.** No driver's provider names the hook it pushes for, so none looks one up.
+- **A `deliver` argument to `run()`.** The delivery is built in, so a driver that must wrap or
+  change it (log a refusal, bound it, observe before the callback) can only drop to the queue and
+  keep its own records. The override is the callback §1 asks a leaf to offer for one gatekeeper's
+  behavior; all four deliver identically today.
+- **Key-prefix options**, as the journal, cache and observer tracker have for ports with records
+  already written. The four share `reg:`/`caps:`, and the queue's `msg:`/`queue:` are fixed too.
+
+Until then the escape hatch is the storage itself: the registry keeps nothing in memory, so a
+driver may read or delete its records directly, disposing a `caps:` record's stubs when it does.
+
 ## 5. Layer 2: the assembly
 
 **Layer-1 reconciliation, 2026-09-05 — the leaf contracts this section now builds on.** Observation
@@ -3474,8 +3541,10 @@ recorded here because the pass found it. Each entry names why it waits and what 
 - **`Retry-After` parser.** Slack, Google, Cloudflare observability and internal Jira parse it under
   different fallbacks and caps; internal Zip and NetSuite pass it through. *Trigger:* the next
   hand-written retry loop.
-- **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
-  with different policies. *Trigger:* a third producer.
+- **Alarm scheduling** for hook drivers: bringing the alarm forward to a time, and setting it for
+  the earliest of several deadlines. Four drivers copy both, but neither is about
+  hooks, so they were left out of `./hook-registry` (§4.24, which the push drivers' shared delivery
+  became). *Trigger:* a small leaf of its own, justified apart from hooks.
 - **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
   granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
   that records requested and granted scopes the way Google does.
