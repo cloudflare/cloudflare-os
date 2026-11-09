@@ -20,6 +20,10 @@ declare global {
       // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
       // (see the /api route in server.ts).
       WORKSHOP_ENVIRONMENT?: "development" | "test";
+      // "off" leaves a user's chat changes waiting for them to keep or discard, as every chat's
+      // did before changes were kept as each turn ends (see #autoAcceptTurn in overseer.ts). Any
+      // other value, or none, keeps them.
+      AUTO_KEEP_CHANGES?: string;
       // The fewest days the admin audit log keeps a record, whatever admins choose in the admin
       // panel: a positive whole number, 90 when unset, blank or invalid (see admin-access.ts, and
       // docs/admin-access.md, which also says where each kind of deployment sets it). An

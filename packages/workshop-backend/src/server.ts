@@ -3,7 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, type UnreadStateSubscriber, AdminVia } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
-import type { UnreadStateScope } from "@gadgets/workshop-shared/api";
+import type { FavoriteItemSpec, NewWorkspaceOptions, UnreadStateScope } from "@gadgets/workshop-shared/api";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isDeploymentAdmin, isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -223,6 +223,22 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.getUnreadThreads());
   }
 
+  getChatThreads() {
+    return retryOnDoReset(() => this.#user.getChatThreads());
+  }
+
+  setChatArchived(workspaceId: string, chatId: number, archived: boolean): Promise<void> {
+    return this.#user.setChatArchived(workspaceId, chatId, archived);
+  }
+
+  listFavorites() {
+    return retryOnDoReset(() => this.#user.listFavorites());
+  }
+
+  setFavorite(item: FavoriteItemSpec, favorite: boolean): Promise<void> {
+    return this.#user.setFavorite(item, favorite);
+  }
+
   getWorkspaceUnreadState(workspaceId: string) {
     return retryOnDoReset(() => this.#user.getWorkspaceUnreadState(workspaceId));
   }
@@ -375,9 +391,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
-  async newWorkspace(): Promise<RpcStub<Overseer>> {
+  async newWorkspace(options: NewWorkspaceOptions = {}): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newWorkspace(id, "Untitled Workspace");
+    let title = options.title?.trim() || "Untitled Workspace";
+    await this.#user.newWorkspace(id, title, options.kind);
+    if (options.kind || options.title?.trim()) {
+      let overseerDo = this.overseers.get(this.overseers.idFromString(id));
+      await overseerDo.initializeWorkspace(title, options.kind);
+    }
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),

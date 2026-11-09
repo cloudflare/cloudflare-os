@@ -814,7 +814,7 @@ test("`--` lets through the one token after it, so a later segment's options are
 test("a positional typed after a `--` is never said to be a forgotten one, whatever the chain ends on", () => {
   assert.equal(incompleteChain(realTable, parseInvocation(realTable, ["open-workspace", "abc", "create-gadget", "--", "export"])),
     "create-gadget returns a capability (GadgetClient), so the chain goes on: nothing was sent. " +
-    "Finish it with one of GadgetClient's commands, as in `cf-os api open-workspace abc create-gadget -- export get-export-formats`; " +
+    "Finish it with one of GadgetClient's commands, as in `cf-os api open-workspace abc create-gadget -- export get-access-mode`; " +
     "`cf-os api open-workspace abc create-gadget -- export --help` lists them.");
   assert.throws(() => parseInvocation(realTable, ["new-workspace-from-blueprint", "--", "get-metadata"]), (error: Error) =>
     error instanceof UsageError && error.message === "new-workspace-from-blueprint needs <bindings>. " +

@@ -419,6 +419,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     ambientGatekeeperModes,
     restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
     restrictedWebFetchApprovals: p.restrictedWebFetchApprovals === true,
+    sharedViews: p.sharedViews !== false,
     formats: parseFormats(p.formats),
     modelModes,
     addedProviders: Array.isArray(p.addedProviders)

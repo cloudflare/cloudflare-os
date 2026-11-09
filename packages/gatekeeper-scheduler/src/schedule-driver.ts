@@ -427,6 +427,8 @@ export class ScheduleDriver extends DurableObject {
         scheduledTime: prepared.scheduledTime,
         actualTime: Date.now(),
         timeZone: timeZoneOf(admitted.state),
+        title: admitted.title,
+        description: admitted.description,
       };
       try {
         await hookResult.approvalQueue.authorizeObservation({

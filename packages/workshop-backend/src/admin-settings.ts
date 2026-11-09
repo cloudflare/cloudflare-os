@@ -564,6 +564,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       restrictedWebFetchHosts: config.restrictedWebFetchHosts,
       restrictedWebFetchApprovals: config.restrictedWebFetchApprovals,
+      sharedViews: config.sharedViews,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -1308,6 +1309,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   async setRestrictedWebFetchApprovals(enabled: boolean): Promise<void> {
     await this.admin.updateAdminConfig(
         { restrictedWebFetchApprovals: enabled }, this.#actor("setRestrictedWebFetchApprovals"));
+  }
+
+  async setSharedViews(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig({ sharedViews: enabled }, this.#actor("setSharedViews"));
   }
 
   setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
