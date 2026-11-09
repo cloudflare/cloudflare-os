@@ -140,7 +140,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async listServices(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyServiceSummary>> {
-    return listServices(this.ctx, options, this.#id);
+    return listServices(this.ctx, options);
   }
 
   async getService(id: string): Promise<PagerDutyService> {
@@ -149,7 +149,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async listSchedules(options?: PagerDutyListOptions): Promise<Cursor<PagerDutyScheduleSummary>> {
-    return listSchedules(this.ctx, options, this.#id);
+    return listSchedules(this.ctx, options);
   }
 
   async getSchedule(id: string): Promise<PagerDutySchedule> {

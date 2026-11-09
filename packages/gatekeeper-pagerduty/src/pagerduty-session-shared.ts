@@ -270,7 +270,7 @@ export async function currentIncident(ctx: { host: SessionHost }, id: string, wi
     Promise<{ wire: WireIncident; outside?: string }> {
   const wire = await readIncident(ctx, id, include);
   const outside = await outsideOf(ctx, wire.service.id, within, loadService);
-  return outside ? { wire, outside } : { wire };
+  return { wire, outside };
 }
 
 /** What a change can act on, or add to, that a team or service capability must still reach. */
@@ -380,9 +380,10 @@ export function listed(title: string, noun: string) {
  * too, since PagerDuty showing the team needn't mean it shows everything the team owns.
  */
 function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "service" | "team" | "schedule",
-                                               list: PagerDutyListOptions | undefined, teamId: string | undefined,
+                                               list: PagerDutyListOptions | undefined,
                                                sources: (filters: Query) => readonly OffsetSource<T>[]): Cursor<T> {
   const query = list?.query === undefined ? undefined : text(list.query, "query", 200);
+  const { teamId } = ctx.within;
   return offsetCursor<T>(ctx, {
     pageSize: pageSizeOf(list),
     sources: sources({ query, ...(teamId ? { team_ids: [teamId] } : {}) }),
@@ -392,19 +393,17 @@ function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "serv
 }
 
 /** Services, by name. */
-export const listServices = (ctx: SessionContext, list: PagerDutyListOptions | undefined,
-                             teamId?: string): Cursor<PagerDutyServiceSummary> =>
-  namedListing(ctx, "service", list, teamId,
+export const listServices = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyServiceSummary> =>
+  namedListing(ctx, "service", list,
     filters => [listing("/services", "services", { ...filters, sort_by: "name" }, toServiceSummary)]);
 
 /** The account's teams. */
 export const listTeams = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyTeamSummary> =>
-  namedListing(ctx, "team", list, undefined, filters => [listing("/teams", "teams", filters, toTeam)]);
+  namedListing(ctx, "team", list, filters => [listing("/teams", "teams", filters, toTeam)]);
 
 /** Schedules: layer-based ones, by name, then shift-based ones, which PagerDuty lists apart. */
-export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | undefined,
-                              teamId?: string): Cursor<PagerDutyScheduleSummary> =>
-  namedListing(ctx, "schedule", list, teamId,
+export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyScheduleSummary> =>
+  namedListing(ctx, "schedule", list,
     filters => scheduleListings(filters, (wire: WireSchedule, shiftBased) => toScheduleSummary({ ...wire, shiftBased })));
 
 /** The most services a team's incident listing names in its URL, about 2.6 KB of it. */
@@ -481,15 +480,17 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     const simulated = overlayIncident(row, pending, resolve, you);
     return keeps(simulated) ? [simulated] : [];
   };
-  const opened = () => pendingIncidents(pending, resolve, you).filter(keeps);
-  const injected = [...opened(), ...[...changed.values()].flatMap(simulate)].toSorted(newestFirst);
-  const named = (filter?.serviceIds ? query.serviceIds ?? [] : []).map(service);
+  const openedNow = () => pendingIncidents(pending, resolve, you).filter(keeps);
+  let opened = openedNow();
+  const injected = [...opened, ...[...changed.values()].flatMap(simulate)].toSorted(newestFirst);
+  const named = (filter?.serviceIds ? query.serviceIds! : []).map(service);
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize,
     sources: [nothing ? empty : listing("/incidents", "incidents", params, toIncidentSummary)],
     refresh: async () => {
       live = await servicesWithin(ctx);
       pending = host.pending();
+      opened = openedNow();
     },
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,
@@ -503,7 +504,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
       compare: newestFirst,
       revalidate: row => {
         const read = changed.get(row.id);
-        return (read ? simulate(read)[0] : opened().find(({ id }) => id === row.id)) ?? null;
+        return (read ? simulate(read)[0] : opened.find(({ id }) => id === row.id)) ?? null;
       },
       identity: row => resolve(row.id),
     },

@@ -173,8 +173,7 @@ export function toServiceSummary(wire: WireService): PagerDutyServiceSummary {
   };
 }
 
-export function toServiceDetails(wire: WireService, you: PagerDutyUser): PagerDutyServiceDetails {
-  if (!wire.escalation_policy) throw new Error("PagerDuty described a service without its escalation policy.");
+export function toServiceDetails(wire: WireService & { escalation_policy: WireRef }, you: PagerDutyUser): PagerDutyServiceDetails {
   return {
     ...toServiceSummary(wire),
     escalationPolicy: toRef(wire.escalation_policy),

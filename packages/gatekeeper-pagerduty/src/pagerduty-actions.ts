@@ -95,6 +95,9 @@ export type PagerDutyActions = {
 
 export type PagerDutyAction = TaggedAction<PagerDutyActions>;
 
+/** An action on one incident. */
+export type IncidentAction = Extract<PagerDutyAction, { payload: { incident: IncidentTarget } }>;
+
 /** What apply handlers may do. */
 export type PagerDutyActionHost = {
   readonly tenant: Tenant;
@@ -111,8 +114,6 @@ export type PagerDutyActionHost = {
    * @throws ActionApplyError once it has left `within`.
    */
   currentIncident(id: string, within: Within): Promise<WireIncident>;
-  /** Drops every cached read, once an action changed what they hold. */
-  invalidate(): void;
 };
 
 /** Whether an ID is a temporary one a pending action created. */
@@ -497,7 +498,6 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
   // Fenced on the connected user rather than the connection generation: a reconnect, which must be
   // the same user, must not strand what is waiting.
   fence: "authority",
-  afterResolve: host => host.invalidate(),
   isResolvedReference: (host, ref) => host.refs.isResolved(ref),
   vendorId: VENDOR_ID,
 });

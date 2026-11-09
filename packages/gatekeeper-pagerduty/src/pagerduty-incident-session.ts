@@ -7,12 +7,12 @@ import { validateRpc } from "capnweb-validate";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import { listing, type Query } from "./pagerduty-api";
-import { isProvisional, type IncidentTarget, type NewIncident, type PagerDutyActions } from "./pagerduty-actions";
+import { isProvisional, type IncidentAction, type IncidentTarget, type NewIncident, type PagerDutyActions } from "./pagerduty-actions";
 import {
   toAlert, toIncidentDetails, toIncidentSummary, toNote, toTimelineEntry,
   type WireAlert, type WireIncident, type WireNote,
 } from "./pagerduty-normalize";
-import { overlayAlert, overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
+import { overlayAlert, overlayIncident, pendingIncident, pendingNotes, type Pending } from "./pagerduty-simulation";
 import {
   MAX_NOTE_LENGTH, countOf, currentIncident, findUsers, ids, incident, listPriorities, listed, offsetCursor, outsideOf,
   pageSizeOf, priorityNamed, service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext,
@@ -32,9 +32,6 @@ const MAX_SNOOZE_SECONDS = 604_800;
 type Loaded = { wire: WireIncident; pending?: never } | { wire?: never; pending: NewIncident };
 
 const INCIDENT_INCLUDES = ["acknowledgers", "assignees", "conference_bridge", "priorities", "body"];
-
-/** The kinds of action that act on one incident. */
-type IncidentActionKind = { [K in keyof PagerDutyActions]: PagerDutyActions[K] extends { incident: IncidentTarget } ? K : never }[keyof PagerDutyActions];
 
 /**
  * The incident `id` names now, checked against what `ctx` is within: PagerDuty's ID, or the `~N` of
@@ -138,7 +135,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>> {
     const { host } = this.#ctx;
     return await this.#listing<WireAlert, PagerDutyAlert>(options, listed("Listed a PagerDuty incident's alerts", "alert"),
-      "alerts", { sort_by: "created_at:desc" }, toAlert, (alert, id) => overlayAlert(alert, id, host.pending(), host.resolve));
+      "alerts", { sort_by: "created_at:desc" }, toAlert, (alert, id, pending) => overlayAlert(alert, id, pending, host.resolve));
   }
 
   async findUsers(query?: string): Promise<PagerDutyUser[]> {
@@ -151,11 +148,12 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
 
   /**
    * One of the incident's listings, `GET /incidents/{id}/{key}`, walked by offset, each page
-   * authorized with the incident's dependencies, and each row served as `overlay` leaves it.
+   * authorized with the incident's dependencies, and each row served as `overlay` leaves it, given
+   * the actions pending as the page is served.
    */
   async #listing<W, T>(options: PagerDutyPageOptions | undefined,
                        describe: (rows: readonly T[], terminal: boolean) => ObservationInput, key: string, query: Query,
-                       convert: (row: W) => T, overlay?: (row: T, incidentId: string) => T): Promise<Cursor<T>> {
+                       convert: (row: W) => T, overlay?: (row: T, incidentId: string, pending: Pending) => T): Promise<Cursor<T>> {
     const pageSize = pageSizeOf(options);
     const loaded = await this.#load();
     // An incident still waiting to be opened has none.
@@ -164,6 +162,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       return new ArrayCursor<T>([], pageSize);
     }
     const { id } = loaded.wire;
+    let pending: Pending = [];
     return offsetCursor(this.#ctx, {
       pageSize,
       sources: [listing(`/incidents/${id}/${key}`, key, query, convert)],
@@ -171,7 +170,10 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       // The incident can move to another service while the walk is open, so each page reads it
       // again: refused once it has left the capability's scope, and reporting the service it is on.
       result: async () => this.#result(await this.#load()),
-      overlay: overlay && (row => [overlay(row, id)]),
+      refresh: overlay && (async () => {
+        pending = this.#ctx.host.pending();
+      }),
+      overlay: overlay && (row => [overlay(row, id, pending)]),
     });
   }
 
@@ -190,7 +192,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   /** Stages `kind` against this incident, once `check` passes for its status as pending actions leave it. */
-  async #stage<K extends IncidentActionKind>(kind: K, fields: Omit<PagerDutyActions[K], "incident" | "stagedAt">,
+  async #stage<K extends IncidentAction["kind"]>(kind: K, fields: Omit<PagerDutyActions[K], "incident" | "stagedAt">,
                                              check?: (status: PagerDutyIncidentSummary["status"]) => void): Promise<void> {
     const { target, status } = await this.#target();
     check?.(status);

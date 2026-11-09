@@ -15,7 +15,7 @@
 // over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
-import { isProvisional, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
+import { isProvisional, type IncidentAction, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
 import type { WireService, WireSupportHours } from "./pagerduty-normalize";
 import type {
   PagerDutyAlert, PagerDutyIncidentDetails, PagerDutyIncidentFilter, PagerDutyIncidentSummary, PagerDutyNote, PagerDutyOnCall,
@@ -27,8 +27,6 @@ export type Pending = readonly JournalEntry<PagerDutyAction>[];
 
 /** Maps a temporary ID to PagerDuty's once the action creating it applied, else returns it. */
 export type Resolve = (id: string) => string;
-
-type IncidentAction = Extract<PagerDutyAction, { payload: { incident: unknown } }>;
 
 /** The pending actions on the incident `id`, in order. */
 function actionsOn(id: string, pending: Pending, resolve: Resolve): IncidentAction[] {

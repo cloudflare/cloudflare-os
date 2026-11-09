@@ -115,7 +115,6 @@ export class PagerDutyGatekeeperImpl extends DurableObject<Env, PagerDutyGatekee
       if (outside) throw new ActionApplyError(outside);
       return wire;
     },
-    invalidate: () => this.#cache.invalidateAll(),
   };
 
   readonly #actions = actions.bind(this.#journal, this.#actionHost);

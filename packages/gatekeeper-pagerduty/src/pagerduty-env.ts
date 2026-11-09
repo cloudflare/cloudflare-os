@@ -75,7 +75,7 @@ export type PagerDutyGatekeeperImplProps = Tenant & {
   userObjectId: string;
 } & (
   | { resourceKind: "account" }
-  | { resourceKind: "team" | "service" | "incident" | "schedule"; id: string }
+  | { resourceKind: Exclude<ResourceKind, "account">; id: string }
 );
 
 /** Every account host, US or EU. */
