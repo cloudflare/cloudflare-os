@@ -165,12 +165,11 @@ export function toTeam(wire: WireTeam): PagerDutyTeamSummary {
 }
 
 export function toServiceSummary(wire: WireService): PagerDutyServiceSummary {
-  const team = wire.teams?.[0];
   return {
     ...toRef(wire),
     description: wire.description || null,
     status: wire.status ?? "active",
-    team: team ? toRef(team) : null,
+    teams: (wire.teams ?? []).map(toRef),
   };
 }
 
@@ -187,7 +186,6 @@ export function toServiceDetails(wire: WireService, you: PagerDutyUser): PagerDu
 }
 
 export function toIncidentSummary(wire: WireIncident): PagerDutyIncidentSummary {
-  const team = wire.teams?.[0];
   return {
     id: wire.id,
     number: wire.incident_number,
@@ -196,7 +194,7 @@ export function toIncidentSummary(wire: WireIncident): PagerDutyIncidentSummary 
     urgency: wire.urgency,
     priority: wire.priority?.name ?? wire.priority?.summary ?? null,
     service: toRef(wire.service),
-    team: team ? toRef(team) : null,
+    teams: (wire.teams ?? []).map(toRef),
     assignees: (wire.assignments ?? []).map(({ assignee }) => toUserRef(assignee)),
     createdAt: wire.created_at,
     updatedAt: wire.last_status_change_at ?? wire.created_at,

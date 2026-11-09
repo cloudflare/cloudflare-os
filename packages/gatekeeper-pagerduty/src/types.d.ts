@@ -185,8 +185,8 @@ export interface PagerDutyService {
 /**
  * One PagerDuty incident.
  *
- * `getDetails`, `getTimeline`, `listNotes` and `listAlerts` read the incident; every other method
- * changes it.
+ * `getDetails`, `getTimeline`, `listNotes` and `listAlerts` read the incident, `findUsers` and
+ * `listPriorities` find what a change can name, and every other method changes it.
  */
 export interface PagerDutyIncident {
   /** The incident's current details, including the triggering alert's payload. */
@@ -200,6 +200,12 @@ export interface PagerDutyIncident {
 
   /** The alerts grouped into the incident, newest first. */
   listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>>;
+
+  /** As `PagerDutyAccount.findUsers()`. */
+  findUsers(query?: string): Promise<PagerDutyUser[]>;
+
+  /** As `PagerDutyAccount.listPriorities()`. */
+  listPriorities(): Promise<PagerDutyPriority[]>;
 
   /**
    * Acknowledges the incident as the connected user, which stops escalation while it lasts and, if
@@ -225,8 +231,8 @@ export interface PagerDutyIncident {
 
   /**
    * Reassigns the incident, which notifies the new assignees: either to users, by email or id
-   * (`PagerDutyAccount.findUsers()` resolves names), or to an escalation policy by id. Replaces
-   * the current assignees.
+   * (`findUsers()` resolves names), or to an escalation policy by id. Replaces the current
+   * assignees.
    */
   reassign(to: { users: string[] } | { escalationPolicyId: string }): Promise<void>;
 
@@ -280,10 +286,13 @@ export interface PagerDutySchedule {
    */
   listOverrides(window?: PagerDutyTimeWindow): Promise<PagerDutyOverride[]>;
 
+  /** As `PagerDutyAccount.findUsers()`. */
+  findUsers(query?: string): Promise<PagerDutyUser[]>;
+
   /**
-   * Puts `user` (an email or id) on call from `start` to `end` (ISO 8601), over whoever the
-   * schedule would otherwise have. Returns the new override's id. Throws for a shift-based
-   * schedule, which this doesn't support yet.
+   * Puts `user` (an email or id; `findUsers()` resolves names) on call from `start` to `end`
+   * (ISO 8601), over whoever the schedule would otherwise have. Returns the new override's id.
+   * Throws for a shift-based schedule, which this doesn't support yet.
    */
   createOverride(user: string, start: string, end: string): Promise<string>;
 
@@ -523,7 +532,7 @@ export type PagerDutyServiceSummary = PagerDutyRef & {
   description: string | null;
   /** `"critical"` while it has a high-urgency open incident, `"warning"` for low urgency. */
   status: "active" | "warning" | "critical" | "maintenance" | "disabled";
-  team: PagerDutyRef | null;
+  teams: PagerDutyRef[];
 };
 
 export type PagerDutyServiceDetails = PagerDutyServiceSummary & {
@@ -547,7 +556,8 @@ export type PagerDutyIncidentSummary = {
   urgency: PagerDutyUrgency;
   priority: string | null;
   service: PagerDutyRef;
-  team: PagerDutyRef | null;
+  /** Every team the incident has involved so far, which can be more than its service's. */
+  teams: PagerDutyRef[];
   assignees: PagerDutyUserRef[];
   createdAt: string;
   /** When its status last changed. */

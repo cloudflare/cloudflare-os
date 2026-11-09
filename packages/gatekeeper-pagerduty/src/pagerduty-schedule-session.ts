@@ -12,10 +12,12 @@ import {
 } from "./pagerduty-normalize";
 import { overlayOverrides, overlayShifts } from "./pagerduty-simulation";
 import {
-  countOf, readSchedule, requireTeam, text, time, usersNamed, windowOf, type ScheduleQuery, type SessionContext,
+  countOf, findUsers, readSchedule, requireTeam, text, time, usersNamed, windowOf, type ScheduleQuery, type SessionContext,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID } from "./pagerduty-urls";
-import type { PagerDutyOverride, PagerDutySchedule, PagerDutyScheduleDetails, PagerDutyShift, PagerDutyTimeWindow } from "./types";
+import type {
+  PagerDutyOverride, PagerDutySchedule, PagerDutyScheduleDetails, PagerDutyShift, PagerDutyTimeWindow, PagerDutyUser,
+} from "./types";
 
 /** The longest schedule window PagerDuty renders shifts for. */
 const MAX_SHIFT_DAYS = 90;
@@ -82,6 +84,10 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
       read<WireShift | WireShiftOverride>(span), schedule.shiftBased ? [] : read<WireOverride>({ ...span, editable: true }),
     ]);
     return overlayOverrides(toOverrides(schedule, rows, editable), this.#id, span, host.pending(), host.resolve);
+  }
+
+  async findUsers(query?: string): Promise<PagerDutyUser[]> {
+    return await findUsers(this.#ctx, query);
   }
 
   async createOverride(user: string, start: string, end: string): Promise<string> {

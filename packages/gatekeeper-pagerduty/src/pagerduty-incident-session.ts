@@ -14,14 +14,15 @@ import {
 } from "./pagerduty-normalize";
 import { overlayAlert, overlayIncident, pendingIncident, pendingNotes } from "./pagerduty-simulation";
 import {
-  MAX_NOTE_LENGTH, countOf, currentIncident, ids, incident, listed, offsetCursor, outsideOf, pageSizeOf, priorityNamed,
-  service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext,
+  MAX_NOTE_LENGTH, countOf, currentIncident, findUsers, ids, incident, listPriorities, listed, offsetCursor, outsideOf,
+  pageSizeOf, priorityNamed, service, subscribed, text, usersNamed, youRef, type ObjectRef, type SessionContext,
 } from "./pagerduty-session-shared";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
 import type {
   Cursor, PagerDutyAlert, PagerDutyIncident, PagerDutyIncidentDetails, PagerDutyIncidentSummary, PagerDutyNote,
-  PagerDutyPageOptions, PagerDutyResponderRequest, PagerDutySubscribeOptions, PagerDutyTimelineEntry, PagerDutyUrgency,
+  PagerDutyPageOptions, PagerDutyPriority, PagerDutyResponderRequest, PagerDutySubscribeOptions, PagerDutyTimelineEntry,
+  PagerDutyUrgency, PagerDutyUser,
 } from "./types";
 
 /** PagerDuty's longest snooze. */
@@ -140,6 +141,14 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       "alerts", { sort_by: "created_at:desc" }, toAlert, (alert, id) => overlayAlert(alert, id, host.pending(), host.resolve));
   }
 
+  async findUsers(query?: string): Promise<PagerDutyUser[]> {
+    return await findUsers(this.#ctx, query);
+  }
+
+  async listPriorities(): Promise<PagerDutyPriority[]> {
+    return await listPriorities(this.#ctx);
+  }
+
   /**
    * One of the incident's listings, `GET /incidents/{id}/{key}`, walked by offset, each page
    * authorized with the incident's dependencies, and each row served as `overlay` leaves it.
@@ -181,11 +190,12 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   }
 
   /** Stages `kind` against this incident, once `check` passes for its status as pending actions leave it. */
-  async #stage<K extends IncidentActionKind>(kind: K, fields: Omit<PagerDutyActions[K], "incident">,
+  async #stage<K extends IncidentActionKind>(kind: K, fields: Omit<PagerDutyActions[K], "incident" | "stagedAt">,
                                              check?: (status: PagerDutyIncidentSummary["status"]) => void): Promise<void> {
     const { target, status } = await this.#target();
     check?.(status);
-    await this.#ctx.host.submit(this.#ctx.queue, kind, { incident: target, ...fields } as PagerDutyActions[K]);
+    await this.#ctx.host.submit(this.#ctx.queue, kind,
+      { incident: target, stagedAt: new Date().toISOString(), ...fields } as PagerDutyActions[K]);
   }
 
   async acknowledge(): Promise<void> {
@@ -212,7 +222,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async addNote(content: string): Promise<void> {
     text(content, "content", MAX_NOTE_LENGTH);
     const ref = this.#ctx.host.allocate("note");
-    await this.#stage("addNote", { ref, content, stagedAt: new Date().toISOString() });
+    await this.#stage("addNote", { ref, content });
   }
 
   async reassign(to: { users: string[] } | { escalationPolicyId: string }): Promise<void> {

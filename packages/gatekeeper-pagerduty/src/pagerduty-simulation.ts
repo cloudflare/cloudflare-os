@@ -1,7 +1,8 @@
 // Reads as if pending actions had been applied, as far as PagerDuty's data allows: an incident
-// shows the status, title, priority, urgency and assignees its pending changes give it, with
-// PagerDuty's side effects (acknowledging reassigns it to whoever acknowledges it, resolving
-// resolves its alerts, and raising an acknowledged incident's urgency returns it to triggered),
+// shows the status, title, priority, urgency and assignees its pending changes give it, its status
+// changing when the change was staged, with PagerDuty's side effects (acknowledging reassigns it to
+// whoever acknowledges it, resolving resolves its alerts and ends its acknowledgements, and raising
+// an acknowledged incident's urgency returns it to triggered),
 // incidents and overrides a pending action creates are listed (a created override's user is in
 // shifts, and on call where PagerDuty has someone on call it displaces), an override pending
 // removal is gone from overrides (or, if under way, ends when the removal was staged), and a note
@@ -27,10 +28,12 @@ export type Pending = readonly JournalEntry<PagerDutyAction>[];
 /** Maps a temporary ID to PagerDuty's once the action creating it applied, else returns it. */
 export type Resolve = (id: string) => string;
 
+type IncidentAction = Extract<PagerDutyAction, { payload: { incident: unknown } }>;
+
 /** The pending actions on the incident `id`, in order. */
-function actionsOn(id: string, pending: Pending, resolve: Resolve): PagerDutyAction[] {
-  return pending.map(({ action }) => action)
-    .filter(action => "incident" in action.payload && resolve(action.payload.incident.id) === id);
+function actionsOn(id: string, pending: Pending, resolve: Resolve): IncidentAction[] {
+  return pending.map(({ action }) => action).filter((action): action is IncidentAction =>
+    "incident" in action.payload && resolve(action.payload.incident.id) === id);
 }
 
 /**
@@ -45,27 +48,37 @@ export function changedIncidents(pending: Pending, resolve: Resolve): string[] {
   return [...new Set(ids)].filter(id => !isProvisional(id));
 }
 
+/**
+ * `incident` moved to `status` at `at`, which ends its acknowledgements unless `acknowledgedBy`
+ * makes one: PagerDuty lists them only while an incident is acknowledged.
+ */
+function moved<T extends PagerDutyIncidentSummary>(incident: T, status: T["status"], at: string,
+                                                   acknowledgedBy?: PagerDutyUserRef): T {
+  const result = { ...incident, status, updatedAt: at };
+  if (!("acknowledgers" in result)) return result;
+  const details: Pick<PagerDutyIncidentDetails, "acknowledgers" | "resolvedAt"> = {
+    acknowledgers: acknowledgedBy ? [{ user: acknowledgedBy, at }] : [],
+    resolvedAt: status === "resolved" ? at : null,
+  };
+  return { ...result, ...details };
+}
+
 /** `incident` with its pending changes applied; `overlayAlert` applies them to its alerts. */
 export function overlayIncident<T extends PagerDutyIncidentSummary>(
   incident: T, pending: Pending, resolve: Resolve, me: PagerDutyUserRef,
 ): T {
   let result = incident;
   for (const action of actionsOn(incident.id, pending, resolve)) {
+    const { stagedAt } = action.payload;
     switch (action.kind) {
       case "acknowledge":
         // PagerDuty leaves a resolved incident as it is, and reassigns one to whoever acknowledges it.
         if (result.status === "resolved") break;
         if (!result.assignees.some(({ id }) => id === me.id)) result = { ...result, assignees: [me] };
-        if (result.status === "triggered") {
-          result = { ...result, status: "acknowledged" };
-          if ("acknowledgers" in result) {
-            const details = result as T & PagerDutyIncidentDetails;
-            result = { ...details, acknowledgers: [...details.acknowledgers, { user: me, at: details.updatedAt }] };
-          }
-        }
+        if (result.status === "triggered") result = moved(result, "acknowledged", stagedAt, me);
         break;
       case "resolve":
-        result = { ...result, status: "resolved", assignees: [] };
+        if (result.status !== "resolved") result = { ...moved(result, "resolved", stagedAt), assignees: [] };
         break;
       case "setPriority":
         result = { ...result, priority: action.payload.priority?.name ?? null };
@@ -78,10 +91,7 @@ export function overlayIncident<T extends PagerDutyIncidentSummary>(
         break;
       case "raiseUrgency":
         // Raising a low-urgency incident someone acknowledged un-acknowledges it, and escalation resumes.
-        if (result.urgency === "low" && result.status === "acknowledged") {
-          result = { ...result, status: "triggered" };
-          if ("acknowledgers" in result) result = { ...result, acknowledgers: [] };
-        }
+        if (result.urgency === "low" && result.status === "acknowledged") result = moved(result, "triggered", stagedAt);
         result = { ...result, urgency: "high" };
         break;
       case "reassign":
@@ -112,7 +122,7 @@ function pendingSummary(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIn
     urgency: payload.urgency ?? payload.serviceUrgency,
     priority: payload.priority?.name ?? null,
     service: payload.service,
-    team: payload.teams[0] ?? null,
+    teams: payload.teams,
     assignees: (payload.assignTo ?? []).map(({ id, name }) => ({ id, name })),
     createdAt: payload.stagedAt,
     updatedAt: payload.stagedAt,

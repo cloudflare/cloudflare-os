@@ -32,16 +32,16 @@ The full API is `src/types.d.ts`, which is also what agents read. In brief:
   change to an incident that has since moved off the team or service it was reached through (the
   binding, or one opened from it), or to a service or schedule that has since left that team, is
   refused when it would apply; so is a listing's page of such an incident.
-- **Incident** reads its details, log, notes and alerts, and acknowledges, snoozes, resolves,
-  reassigns, escalates, requests responders, sets the title, priority or urgency, adds notes and
-  posts status updates. A resolved incident isn't acknowledged, since PagerDuty would reopen it:
-  `acknowledge()` refuses one, and an acknowledgement waiting for approval fails if the incident is
-  resolved by then.
-- **Schedule** reads its details, shifts and overrides, and adds or removes overrides. Both kinds
-  of PagerDuty schedule are read, by the same IDs: layer-based ones from `/schedules`, shift-based
-  ones from `/v3/schedules`, which is asked first for a schedule not yet known, as PagerDuty
-  recommends, and refuses a layer-based one with 400. Listings give layer-based schedules first,
-  then shift-based ones, whose rows carry only a name.
+- **Incident** reads its details, log, notes and alerts, looks up users and lists priorities, and
+  acknowledges, snoozes, resolves, reassigns, escalates, requests responders, sets the title,
+  priority or urgency, adds notes and posts status updates. A resolved incident isn't
+  acknowledged, since PagerDuty would reopen it: `acknowledge()` refuses one, and an
+  acknowledgement waiting for approval fails if the incident is resolved by then.
+- **Schedule** reads its details, shifts and overrides, looks up users, and adds or removes
+  overrides. Both kinds of PagerDuty schedule are read, by the same IDs: layer-based ones from
+  `/schedules`, shift-based ones from `/v3/schedules`, which is asked first for a schedule not yet
+  known, as PagerDuty recommends, and refuses a layer-based one with 400. Listings give
+  layer-based schedules first, then shift-based ones, whose rows carry only a name.
 
 Methods that take a user accept an email or a PagerDuty ID. `getMetadata().you` is the connected
 user, so "my incidents" is `listIncidents({ assignedToMe: true })`.

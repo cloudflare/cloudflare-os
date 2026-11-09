@@ -63,22 +63,23 @@ type NewOverride = {
   within: Within;
 };
 
+/** A change to an incident, and when it was staged, which is when a simulated read says it happened. */
+type OnIncident<Fields = unknown> = { incident: IncidentTarget; stagedAt: string } & Fields;
+
 /** Every action's payload, by kind. */
 export type PagerDutyActions = {
-  acknowledge: { incident: IncidentTarget };
-  snooze: { incident: IncidentTarget; seconds: number };
-  resolve: { incident: IncidentTarget; resolution?: string };
-  setPriority: { incident: IncidentTarget; priority: PriorityTarget | null };
-  setTitle: { incident: IncidentTarget; title: string };
-  lowerUrgency: { incident: IncidentTarget };
-  raiseUrgency: { incident: IncidentTarget };
-  addNote: { incident: IncidentTarget; ref: string; content: string; stagedAt: string };
-  reassign: { incident: IncidentTarget; to: { users: UserTarget[] } | { escalationPolicyId: string } };
-  escalate: { incident: IncidentTarget; level: number };
-  requestResponders: {
-    incident: IncidentTarget; message: string; users: UserTarget[]; escalationPolicyIds: string[];
-  };
-  postStatusUpdate: { incident: IncidentTarget; message: string };
+  acknowledge: OnIncident;
+  snooze: OnIncident<{ seconds: number }>;
+  resolve: OnIncident<{ resolution?: string }>;
+  setPriority: OnIncident<{ priority: PriorityTarget | null }>;
+  setTitle: OnIncident<{ title: string }>;
+  lowerUrgency: OnIncident;
+  raiseUrgency: OnIncident;
+  addNote: OnIncident<{ ref: string; content: string }>;
+  reassign: OnIncident<{ to: { users: UserTarget[] } | { escalationPolicyId: string } }>;
+  escalate: OnIncident<{ level: number }>;
+  requestResponders: OnIncident<{ message: string; users: UserTarget[]; escalationPolicyIds: string[] }>;
+  postStatusUpdate: OnIncident<{ message: string }>;
   createIncident: NewIncident;
   createOverride: NewOverride;
   /** As `createOverride`, for an override putting someone other than the connected user on call. */
@@ -295,13 +296,15 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     kind: ACKNOWLEDGE,
     autoApprovable: true,
     delivery: "continue-with-simulation",
+    // Each request counts the time from when it lands, so one repeated later would snooze for longer.
+    claimBeforeApply: true,
     dependsOn: dependedRefs,
     describe: (payload, host) => present("Snooze a PagerDuty incident",
       buildDescription(`Snoozes ${incidentLabel(host, payload.incident)}: it triggers again after the time below ` +
         "unless it is resolved first.").inline("Seconds", String(payload.seconds))),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await idempotent(host, api => api.write("POST", `/incidents/${id}/snooze`, { duration: payload.seconds }));
+      await once(host, api => api.write("POST", `/incidents/${id}/snooze`, { duration: payload.seconds }));
     },
   },
   resolve: {

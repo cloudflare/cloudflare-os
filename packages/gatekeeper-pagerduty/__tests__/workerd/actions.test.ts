@@ -9,7 +9,7 @@ import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
   ALICE, BOB, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
-  accountStub, bound, failure, hooks, sub, unwrap, type Binding,
+  accountStub, bound, failure, hooks, json, sub, unwrap, type Binding,
 } from "./fake-pagerduty";
 import type { Step } from "./worker";
 
@@ -40,6 +40,7 @@ const at = (hours: number) => new Date(DAY + hours * HOUR).toISOString();
 const START = at(9);
 const END = at(17);
 const incidentRef = { type: "incident_reference" };
+const ids = (refs: readonly { id: string }[]) => refs.map(({ id }) => id);
 /** An on-call entry for `user` at the first level of the platform policy, through its schedule. */
 const onCallEntry = (user: { id: string }, start: string, end: string) =>
   ({ user: { id: user.id }, level: 1, escalationPolicy: { id: POLICY.id }, schedule: { id: SCHEDULE.id }, start, end });
@@ -164,6 +165,17 @@ describe("each change", () => {
     ]);
   });
 
+  it("sends a snooze once, failing it for good if PagerDuty's answer is lost, since another would count its time afresh", async () => {
+    const t = await setup();
+    t.incident.status = "acknowledged";
+    await t.run(onIncident("snooze", 3600)(t.incident.id));
+    const [{ actionId }] = await t.submitted();
+    t.pd.on("POST", /\/snooze$/, () => json({ error: { message: "Internal error" } }, { status: 500 }));
+    expect(await t.tryApply(actionId)).toMatch(/HTTP 500/);
+    await t.tryApply(actionId);
+    expect(t.pd.matching("POST", /\/snooze$/)).toHaveLength(1);
+  });
+
   it("won't acknowledge an incident that is resolved, or that a pending resolve closes, since that would reopen it", async () => {
     const t = await setup();
     const resolved = t.pd.incident(SERVICE, { status: "resolved" });
@@ -263,6 +275,13 @@ describe("narrow bindings", () => {
     expect(await t.submitted()).toEqual([]);
   });
 
+  it("finds, through an incident or a schedule binding, the users and priorities its changes name", async () => {
+    const incident = await setup({ resourceKind: "incident", id: "PINC001" });
+    expect(await incident.run([["findUsers", "bob"]])).toMatchObject([{ id: BOB.id }]);
+    expect(await incident.run([["listPriorities"]])).toMatchObject([{ name: "P1" }, { name: "P2" }]);
+    expect(await (await setup(schedule)).run([["findUsers", "bob"]])).toMatchObject([{ id: BOB.id }]);
+  });
+
   it("won't let a service binding act on another service's incident", async () => {
     const t = await setup({ resourceKind: "service", id: "PSVC002" });
     expect(await t.attempt(onIncident("acknowledge")(t.incident.id))).toMatch(/belongs to another service/);
@@ -347,6 +366,20 @@ describe("simulation", () => {
     });
     expect(await t.run(steps("listNotes"))).toMatchObject([{ content: "Failing over", author: { id: ALICE.id } }]);
     expect(t.pd.writes()).toEqual([]);
+  });
+
+  it("dates a pending acknowledgement and resolve from when each was staged, the resolve ending the acknowledgement", async () => {
+    const t = await setup();
+    const staged = Date.now();
+    const details = async () => await t.run(onIncident("getDetails")(t.incident.id)) as PagerDutyIncidentDetails;
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    const acknowledged = await details();
+    expect(Date.parse(acknowledged.updatedAt)).toBeGreaterThanOrEqual(staged);
+    expect(acknowledged).toMatchObject({ acknowledgers: [{ user: { id: ALICE.id }, at: acknowledged.updatedAt }], resolvedAt: null });
+    await t.run(onIncident("resolve")(t.incident.id));
+    const resolved = await details();
+    expect(Date.parse(resolved.updatedAt)).toBeGreaterThanOrEqual(staged);
+    expect(resolved).toMatchObject({ status: "resolved", acknowledgers: [], resolvedAt: resolved.updatedAt });
   });
 
   it("drops an incident a pending resolve closes from the open incidents", async () => {
@@ -481,7 +514,7 @@ describe("simulation", () => {
     const t = await setup({ resourceKind: "team", id: TEAM.id });
     await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
-    expect([opened.id, opened.team?.id, existing.id]).toEqual(["~1", TEAM.id, t.incident.id]);
+    expect([opened.id, ids(opened.teams), existing.id]).toEqual(["~1", [TEAM.id], t.incident.id]);
     const reported = new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)]);
     expect(await t.reported()).toEqual([reported, reported]);
   });
@@ -491,7 +524,7 @@ describe("simulation", () => {
     t.pd.services.get(OTHER_SERVICE.id)!.teams = [OTHER_TEAM, TEAM];
     await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
     const [[opened]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
-    expect([opened.id, opened.team?.id]).toEqual(["~1", OTHER_TEAM.id]);
+    expect([opened.id, ids(opened.teams)]).toEqual(["~1", [OTHER_TEAM.id, TEAM.id]]);
   });
 
   it("opens an incident assigned to oneself alone acknowledged by them, as PagerDuty does, and one assigned to another triggered", async () => {
