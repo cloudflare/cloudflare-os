@@ -502,6 +502,8 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
     ["share key", openWorkspace, 3],
+    // An admin's write to a workspace.
+    ["request a write to a workspace", / request-workspace-write </, 1],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);

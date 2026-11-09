@@ -1905,11 +1905,15 @@ export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
 
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
- * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord. The rest
- * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
- * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats,
+ * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord, and
+ * requestWorkspaceWrite() and denyWorkspaceWrite() as AdminWriteRecords. The rest change no
+ * setting and are not recorded: the reads (getSettings, isBlueprintFeatured, getUpdateStatus,
+ * listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats, getWorkspaceWrite,
  * listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
- * beginAdminPasskeyRemoval), the gateway tests, and checkForUpdates.
+ * beginAdminPasskeyRemoval), the gateway tests, and checkForUpdates. A call that is not recorded
+ * can still leave a record that is not its own: getWorkspaceWrite(), like every write-request
+ * method, first ends the requests that have run out, each recorded "expired" (see
+ * AdminWriteRecord).
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2267,9 +2271,20 @@ export type AdminWriteArgs = {
   note?: string;
 };
 
+/** How long a write request stays pending before it expires, in seconds: ten minutes. */
+export const ADMIN_WRITE_REQUEST_LIFETIME_SECONDS = 600;
+
+/** How long an approved write request waits for its workspace's answer, in seconds: fifteen
+ * minutes, far longer than any write runs. A request still "approved" then is settled as "failed",
+ * its outcome unknown (see AdminWriteState). */
+export const ADMIN_WRITE_SETTLE_SECONDS = 900;
+
 /** How long a passkey challenge can be answered, in seconds: five minutes, and never past the
  * expiry of the request it approves. */
 export const ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS = 300;
+
+/** The most write requests that may be pending at once, across the deployment. */
+export const MAX_PENDING_ADMIN_WRITES = 50;
 
 /** The most pending actions one "rejectPendingActions" request rejects one by one. A creation
  * among them takes everything queued on its connection with it, however much that is. */
@@ -2280,6 +2295,72 @@ export const MAX_ADMIN_PASSKEY_NAME_LENGTH = 64;
 
 /** The most passkeys one admin may have enrolled at once. */
 export const MAX_ADMIN_PASSKEYS = 10;
+
+/**
+ * Where a write request stands:
+ *   - "pending":  waiting for an admin to approve it with a passkey, or to deny it;
+ *   - "approved": a passkey approved it, and the workspace is being asked to run it. It stays
+ *                 here until the workspace answers, at most ADMIN_WRITE_SETTLE_SECONDS;
+ *   - "applied":  the workspace ran it (`outcome`);
+ *   - "failed":   it was approved, and the workspace refused it or failed to run it, or its
+ *                 answer never arrived (`error`);
+ *   - "denied":   an admin denied it;
+ *   - "expired":  nobody approved or denied it before `expiresAt`, or its requester stopped being
+ *                 a deployment admin first.
+ * A request leaves "pending" once, and is never run twice. Whether a failed request changed the
+ * workspace is what the audit log says: the workspace records "approved" before it changes
+ * anything, so a request with no such record changed nothing (see AdminWriteRecord).
+ */
+export type AdminWriteState = "pending" | "approved" | "applied" | "failed" | "denied" | "expired";
+
+/** One write request, as AdminApi.requestWorkspaceWrite() and getWorkspaceWrite() return it. */
+export type AdminWriteRequest = {
+  /** Opaque. Names the request in its approval URL and in its audit records. */
+  id: string;
+  /** The workspace it would change. */
+  workspaceId: string;
+  /** The workspace's title as the deployment directory listed it when the request was made, cut
+   * as an audit record cuts it (see AdminAccessRecord.workspaceTitle); "" for an untitled one.
+   * The request never reads the workspace. */
+  workspaceTitle: string;
+  /** The workspace's owner as the deployment directory listed them then, by canonical user id,
+   * kept as an audit record keeps it (see AdminAccessRecord.workspaceOwner). Never empty: a
+   * workspace the directory does not list cannot be requested. A request is run only while the
+   * workspace still has this owner. */
+  workspaceOwner: string;
+  /** What it would do (see ADMIN_WRITE_ACTIONS). */
+  action: AdminWriteAction;
+  /** The action's arguments (see AdminWriteArgs). */
+  args: AdminWriteArgs;
+  /** Why, as the requester gave it. Once the write is approved, the workspace's owner and its
+   * "build" collaborators read it, word for word, in the workspace's action log (see
+   * ActionLogEntry.byAdmin), and for "addCollaborator" in the collaborator's note too. */
+  reason: string;
+  /** The admin who made the request, by canonical user id. */
+  requestedBy: string;
+  /** How the requester's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** When it was made. */
+  requestedAt: Date;
+  /** When it stops being approvable. */
+  expiresAt: Date;
+  /** The Workshop page on which an admin approves it with a passkey, or denies it: a page of the
+   * deployment's PUBLIC_BASE_URL. Opening it needs an admin's session, and grants nothing. */
+  approvalUrl: string;
+  /** Where it stands (see AdminWriteState). */
+  state: AdminWriteState;
+  /** The admin who approved or denied it, once one has. */
+  resolvedBy?: string;
+  /** When it left "pending". */
+  resolvedAt?: Date;
+  /** What the workspace reported once it ran: for "rejectPendingActions", how many actions were
+   * rejected, how many connections were removed with a rejected creation, how many actions could
+   * not be rejected, and how many remain pending. */
+  outcome?: string;
+  /** Why it failed, or why it expired before `expiresAt`, cut to MAX_ADMIN_AUDIT_ARG_LENGTH
+   * characters. */
+  error?: string;
+};
 
 /**
  * Why a passkey answer was refused. Its caller is told only `passkeyRefused`
@@ -2869,8 +2950,37 @@ export interface AdminApi {
   // and removeAdminPasskey(), so that a passkey can still be seen, and removed by its own admin,
   // while it can approve nothing. Each also refuses a caller who is no longer a deployment admin
   // (`notAdmin`).
-  // Enrolling a passkey needs only an admin's session, an admin removes only their own, and every
-  // enrolment and removal is recorded.
+  // Any admin session may request a write, an agent's or the CLI's included. Enrolling a passkey
+  // needs only an admin's session, an admin removes only their own, and every enrolment and
+  // removal is recorded.
+
+  /**
+   * Ask for a write to a workspace: `action` with `args` (see ADMIN_WRITE_ACTIONS and
+   * AdminWriteArgs), for `reason`. A reason is required, as for inspectWorkspace(), but unlike an
+   * inspection's it does not stay in the admins' log: once the write is approved, everyone who
+   * reads the workspace's action log, its owner and its "build" collaborators, reads it word for
+   * word, so write it for them.
+   *
+   * Nothing in the workspace is read or changed: its title and owner are the deployment
+   * directory's. The request is recorded ("requested") before it is stored, so a request whose
+   * record cannot be written is refused. It stays pending for
+   * ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, and is run once an admin approves it at its
+   * `approvalUrl`. Its arguments are checked against the workspace only then.
+   *
+   * Refused `workspaceNotFound` for a malformed id, `workspaceUnlisted` for a workspace the
+   * directory does not list (see listWorkspaces()), `originUnset` while the deployment has no
+   * PUBLIC_BASE_URL, and `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects
+   * arguments the action does not take.
+   */
+  requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                        reason: string): Promise<AdminWriteRequest>;
+
+  /** One write request, by id, for a day after it is resolved. Refused `requestNotFound`. */
+  getWorkspaceWrite(requestId: string): Promise<AdminWriteRequest>;
+
+  /** Deny a pending write request, recorded ("denied") before it is. Refused `requestNotFound`,
+   * and `requestNotPending` once it is approved, denied or expired. */
+  denyWorkspaceWrite(requestId: string): Promise<void>;
 
   /** Every passkey enrolled on the deployment, by admin and then by enrolment time, those of
    * accounts that are no longer deployment admins included: they stay stored, and approve

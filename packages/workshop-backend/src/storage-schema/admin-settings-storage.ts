@@ -17,6 +17,7 @@ import {
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
   type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
+import type { StoredAdminWrite } from "../admin-writes.js";
 import type { PasskeyKey } from "../webauthn.js";
 
 export type AdminConfig = {
@@ -254,6 +255,12 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // is deleted as it is answered, so that none can be answered twice.
       adminPasskeyChallenges: collection<AdminPasskeyChallengeRecord>()({
         primaryKey: 'key',
+      }),
+
+      // The write requests admins made, by id: the pending ones and, for a day after, the
+      // resolved ones.
+      adminWrites: collection<StoredAdminWrite>()({
+        primaryKey: 'id',
       }),
     },
     singletons: {

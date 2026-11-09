@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError, getAdminAccessErrorCode,
-  getAdminWriteErrorCode,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  getAdminAccessErrorCode, getAdminWriteErrorCode,
   type AdminAccessRecord, type AdminPasskeyAssertion, type AdminPasskeyRegistration,
-  type AdminVia, type AdminViewAccess,
+  type AdminVia, type AdminViewAccess, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
 import { AdminApiImpl } from "../src/admin-settings.js";
+import type { StoredAdminWrite } from "../src/admin-writes.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
@@ -477,5 +478,239 @@ describe("AdminApiImpl passkeys", () => {
           .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     }
     expect(calls).toEqual([]);
+  });
+});
+
+describe("AdminApiImpl write requests", () => {
+  const ON = { ADMIN_WORKSPACE_WRITES: "on", PUBLIC_BASE_URL: "https://workshop.example/" };
+  const REQUEST_ID = "4c1d2a0e-8a53-4c59-9a0e-3d7f1b6c2e11";
+  const LISTING = { title: "Quarterly report", ownerId: "bob@example.test" };
+
+  // A request as the AdminSettings stub answers getWorkspaceWrite() with.
+  const STORED: StoredAdminWrite = {
+    id: REQUEST_ID, workspaceId: "a".repeat(64), workspaceTitle: "Quarterly report",
+    workspaceOwner: "bob@example.test", action: "deleteChat", args: { chatId: 3 }, reason: REASON,
+    requestedBy: "other-admin@example.test", via: "api", sessionId: "the requester's session",
+    requestedAt: new Date("2026-01-02T03:04:05.000Z"),
+    expiresAt: new Date("2026-01-02T03:14:05.000Z"), state: "denied",
+    resolvedBy: ADMIN, resolvedAt: new Date("2026-01-02T03:05:00.000Z"),
+  };
+
+  const writesDeployment = (vars: object = ON,
+      workspaceListing: Handler = () => LISTING) => deployment({
+    vars,
+    handlers: {
+      admin: { getWorkspaceWrite: () => STORED },
+      directory: { workspaceListing },
+    },
+  });
+
+  const methods: Record<string, (api: AdminApiImpl) => Promise<unknown>> = {
+    requestWorkspaceWrite: api =>
+        api.requestWorkspaceWrite(workspaceId(), "deleteChat", { chatId: 3 }, REASON),
+    getWorkspaceWrite: api => api.getWorkspaceWrite(REQUEST_ID),
+    denyWorkspaceWrite: api => api.denyWorkspaceWrite(REQUEST_ID),
+  };
+
+  it.each([
+    ["unset", {}],
+    ["\"off\"", { ADMIN_WORKSPACE_WRITES: "off" }],
+    ["\"true\"", { ADMIN_WORKSPACE_WRITES: "true" }],
+  ])("refuses every method before touching anything while ADMIN_WORKSPACE_WRITES is %s",
+      async (_label, vars) => {
+    // A value that is neither "on" nor "off" is reported once, as an error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { mint, calls } = writesDeployment({ ...ON, ADMIN_WORKSPACE_WRITES: undefined, ...vars });
+    const api = mint();
+    for (let call of Object.values(methods)) {
+      expect(getAdminWriteErrorCode(await rejection(call(api))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+    expect(calls).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("refuses a caller no longer an admin before touching anything", async () => {
+    const { mint, calls } = writesDeployment();
+    const api = mint("former@example.test");
+    for (let call of Object.values(methods)) {
+      expect(getAdminAccessErrorCode(await rejection(call(api))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a bad reason or bad arguments before touching anything", async () => {
+    const { mint, calls } = writesDeployment();
+    const api = mint();
+    const id = workspaceId();
+    for (let reason of ["", "   ", "r".repeat(501)]) {
+      expect(await rejection(api.requestWorkspaceWrite(id, "deleteChat", { chatId: 3 }, reason)))
+          .toBeInstanceOf(TypeError);
+    }
+    const refused: [Parameters<AdminApiImpl["requestWorkspaceWrite"]>[1], AdminWriteArgs][] = [
+      ["restartWorkspace", { chatId: 1 }],
+      ["deleteChat", {}],
+      ["deleteChat", { chatId: -1 }],
+      ["addCollaborator", { username: " ", grant: "workspace" }],
+    ];
+    for (let [action, args] of refused) {
+      const error = await rejection(api.requestWorkspaceWrite(id, action, args, REASON));
+      expect(error).toBeInstanceOf(TypeError);
+      expect(getAdminWriteErrorCode(error)).toBeUndefined();
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("never runs with an action that is not one of ADMIN_WRITE_ACTIONS", () => {
+    // The validator refuses it before the method's body runs: synchronously, on a direct call.
+    const { mint, calls } = writesDeployment();
+    const api = mint();
+    expect(() => api.requestWorkspaceWrite(workspaceId(), "bogus" as any, {}, REASON))
+        .toThrow(TypeError);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a malformed id as not found, before the directory is asked", async () => {
+    const { mint, calls } = writesDeployment();
+    const error = await rejection(
+        mint().requestWorkspaceWrite("not-an-id", "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect(calls).toEqual([{ target: "overseers", method: "idFromString", args: ["not-an-id"] }]);
+  });
+
+  it("refuses a request no page could approve: PUBLIC_BASE_URL is unset", async () => {
+    const { mint, calls, callsTo } = writesDeployment({ ADMIN_WORKSPACE_WRITES: "on" });
+    const api = mint();
+    const error = await rejection(
+        api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON));
+    expect(getAdminWriteErrorCode(error)).toBe(ADMIN_WRITE_ERROR_CODES.originUnset);
+    expect(calls).toEqual([callsTo("overseers", "idFromString")[0]]);
+
+    expect(getAdminWriteErrorCode(await rejection(api.getWorkspaceWrite(REQUEST_ID))))
+        .toBe(ADMIN_WRITE_ERROR_CODES.originUnset);
+  });
+
+  it.each<[string, Handler]>([
+    ["lists no such workspace", () => null],
+    ["lists it with no owner", () => ({ title: "Orphan", ownerId: "" })],
+    ["cannot be asked", () => { throw new Error("directory unavailable"); }],
+  ])("stores nothing for a workspace the directory %s", async (_label, workspaceListing) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mint, calls, callsTo } = writesDeployment(ON, workspaceListing);
+    const id = workspaceId();
+    const error = await rejection(
+        mint().requestWorkspaceWrite(id, "restartWorkspace", {}, REASON));
+    expect(getAdminWriteErrorCode(error)).toBe(ADMIN_WRITE_ERROR_CODES.workspaceUnlisted);
+    expect(callsTo("directory", "workspaceListing")).toEqual(
+        [{ target: "directory", method: "workspaceListing", args: [id] }]);
+    expect(calls.filter(call => call.target === "admin" || call.target === "audit")).toEqual([]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("stores the request with the directory's title and owner, never reaching the workspace",
+      async () => {
+    const longTitle = "t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 40);
+    const longOwner = `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`;
+    const { mint, calls, callsTo } =
+        writesDeployment(ON, () => ({ title: longTitle, ownerId: longOwner }));
+    const id = workspaceId();
+    const before = Date.now();
+    const view = await mint(ADMIN, "api").requestWorkspaceWrite(
+        id, "addCollaborator",
+        { username: "carol@example.test", grant: { gadgetId: 5, role: "owner" } as any },
+        `  ${REASON}  `);
+
+    // In order: the id, the directory, then the one call that records and stores.
+    expect(calls.map(call => `${call.target}.${call.method}`)).toEqual([
+      "overseers.idFromString", "directorys.getByName", "directory.workspaceListing",
+      "admin.requestWorkspaceWrite",
+    ]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored).toStrictEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/), workspaceId: id,
+      workspaceTitle: `${"t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`,
+      workspaceOwner: expect.stringMatching(/^o+…#[0-9a-f]{20}$/),
+      action: "addCollaborator",
+      args: { username: "carol@example.test", grant: { gadgetId: 5 } },
+      reason: REASON, requestedBy: ADMIN, via: "api", sessionId: expect.any(String),
+      requestedAt: expect.any(Date), expiresAt: expect.any(Date), state: "pending",
+    });
+    expect(stored.workspaceOwner).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(stored.requestedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(stored.requestedAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(stored.expiresAt.getTime() - stored.requestedAt.getTime())
+        .toBe(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000);
+    expect(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS).toBe(600);
+
+    // The view is the stored request without the session, plus the page that approves it.
+    const { sessionId, ...shown } = stored;
+    expect(view).toStrictEqual(
+        { ...shown, approvalUrl: `https://workshop.example/admin/approve/${stored.id}` });
+    expect(view).not.toHaveProperty("sessionId");
+    expect(view.via).toBe("api");
+  });
+
+  it("stores the workspace's id as the id itself prints it, however the caller wrote it",
+      async () => {
+    const { mint, callsTo } = writesDeployment();
+    const id = workspaceId();
+    const written = id.toUpperCase();
+    expect(written).not.toBe(id);
+    const view = await mint().requestWorkspaceWrite(written, "restartWorkspace", {}, REASON);
+
+    expect(callsTo("directory", "workspaceListing")[0].args).toEqual([id]);
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored.workspaceId).toBe(id);
+    expect(view.workspaceId).toBe(id);
+  });
+
+  it("requests and denies through the capability's own session and `via`", async () => {
+    const { mint, callsTo } = writesDeployment();
+    const api = mint(ADMIN, "cli");
+    await api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON);
+    await api.denyWorkspaceWrite(REQUEST_ID);
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored.via).toBe("cli");
+    expect(callsTo("admin", "denyWorkspaceWrite")[0].args).toStrictEqual(
+        [REQUEST_ID, { admin: ADMIN, sessionId: stored.sessionId, via: "cli" }]);
+
+    // Another capability of the same admin is another session, with a `via` of its own.
+    await mint(ADMIN, "api").denyWorkspaceWrite(REQUEST_ID);
+    const [, later] = callsTo("admin", "denyWorkspaceWrite")[0].args;
+    expect(later).toStrictEqual({ admin: ADMIN, sessionId: expect.any(String), via: "api" });
+    expect((later as { sessionId: string }).sessionId).not.toBe(stored.sessionId);
+  });
+
+  it("reads a request by id, as its view", async () => {
+    const { mint, calls } = writesDeployment();
+    const view = await mint().getWorkspaceWrite(REQUEST_ID);
+    expect(calls).toStrictEqual(
+        [{ target: "admin", method: "getWorkspaceWrite", args: [REQUEST_ID] }]);
+    const { sessionId, ...shown } = STORED;
+    expect(view).toStrictEqual(
+        { ...shown, approvalUrl: `https://workshop.example/admin/approve/${REQUEST_ID}` });
+    expect(view).not.toHaveProperty("sessionId");
+  });
+
+  it("forwards a failure of the AdminSettings object as it is", async () => {
+    const refusal = new Error("refused by the settings object");
+    const { mint } = deployment({
+      vars: ON,
+      handlers: {
+        admin: {
+          requestWorkspaceWrite: () => { throw refusal; },
+          denyWorkspaceWrite: () => { throw refusal; },
+        },
+        directory: { workspaceListing: () => LISTING },
+      },
+    });
+    const api = mint();
+    expect(await rejection(
+        api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON))).toBe(refusal);
+    expect(await rejection(api.denyWorkspaceWrite(REQUEST_ID))).toBe(refusal);
   });
 });
