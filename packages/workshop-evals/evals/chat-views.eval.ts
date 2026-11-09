@@ -4,7 +4,7 @@ import { asEvidence, defineEvalTask } from "../src/task.js";
 import type { EvalVerifier, VerifierChat } from "../src/verifier.js";
 import {
   checkAnswersInProse, checkAnswersWithView, checkBuildsGadget, checkMakesNoGadget, checkView,
-  countAmount, mentions, plotsValues, showsAmount,
+  countAmount, mentions, plotsValues, showsAmount, showsPrice,
 } from "./views.js";
 
 // How the agent answers in one chat (agent.ts, "Workspaces" and "Live views in your answers"): an
@@ -102,7 +102,7 @@ export async function verifyPlanPicker(verifier: EvalVerifier): Promise<void> {
   await checkView(verifier, view, async rendered => {
     await verifier.check("compares-every-plan", async () => {
       const shown = await rendered.waitForSeries(PLANS.map(plan => plan.name), series =>
-        PLANS.every((plan, index) => showsAmount(series.beside[index] ?? "", plan.price)));
+        PLANS.every((plan, index) => showsPrice(series.beside[index] ?? "", plan.price)));
       return { pass: shown.pass, evidence: asEvidence({ beside: shown.series.beside }) };
     });
     await verifier.check("picking-a-plan-asks-about-it", async () => {
@@ -110,7 +110,8 @@ export async function verifyPlanPicker(verifier: EvalVerifier): Promise<void> {
       const tried = await rendered.click(PICK, PLANS.map(plan => plan.name).filter(name => name !== PICK));
       const sent = rendered.messages.slice(before);
       return {
-        pass: sent.some(message => mentions(message, PICK)),
+        // The Workshop offers only the latest message a view asks to send.
+        pass: mentions(sent.at(-1), PICK),
         evidence: asEvidence({ tried, sent, before: rendered.messages.slice(0, before) }),
       };
     });
@@ -180,25 +181,28 @@ export async function verifySpendingView(verifier: EvalVerifier): Promise<void> 
   await checkMakesNoGadget(verifier, "makes-no-new-gadget");
   if (view === undefined) return;
   await checkView(verifier, view, async rendered => {
+    // Every category the Log holds, the agent's own entries included.
+    let categories: readonly string[] = CATEGORIES;
     await verifier.check("shows-each-category-total", async () => {
       using api = await verifier.connect<ExpenseApi>(LOG);
       const expected = TotalsSchema.parse(await api.totals()).byCategory;
-      const shown = await rendered.waitForSeries(CATEGORIES, series => CATEGORIES.every((category, index) =>
+      categories = Object.keys(expected);
+      const shown = await rendered.waitForSeries(categories, series => categories.every((category, index) =>
         showsAmount(series.beside[index] ?? "", expected[category] ?? Number.NaN)));
       return {
         pass: shown.pass,
         evidence: asEvidence({
           expected,
-          shown: Object.fromEntries(CATEGORIES.map((category, index) => [category, shown.series.beside[index] ?? ""])),
+          shown: Object.fromEntries(categories.map((category, index) => [category, shown.series.beside[index] ?? ""])),
         }),
       };
     });
     await verifier.check("asks-about-a-category", async () => {
       const before = rendered.messages.length;
-      const tried = await rendered.click("Travel", ["Food", "Books"]);
+      const tried = await rendered.click("Travel", categories.filter(category => category !== "Travel"));
       const sent = rendered.messages.slice(before);
       return {
-        pass: sent.some(message => mentions(message, "travel")),
+        pass: mentions(sent.at(-1), "travel"),
         evidence: asEvidence({ tried, sent, before: rendered.messages.slice(0, before) }),
       };
     });

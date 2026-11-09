@@ -354,6 +354,18 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
         .toEqual(["compares-every-plan"]);
     });
 
+    it("fails a price that is only a number beside the plan, such as its data", async ({ expect }) => {
+      expect(await failed(verifyPlanPicker, PICKER.replace("$15/mo", "$15/mo, 5 GB"))).toEqual([]);
+      expect(await failed(verifyPlanPicker, PICKER.replace("$15/mo", "$5/mo, 15 GB"))).toEqual(["compares-every-plan"]);
+    });
+
+    it("fails a choice whose last message, the one offered, is about another plan", async ({ expect }) => {
+      expect(await failed(verifyPlanPicker, PICKER.replace(
+          `() => agent.send("Tell me more about " + button.dataset.plan)`,
+          `() => { agent.send("Tell me more about " + button.dataset.plan); agent.send("Tell me more about Basic"); }`)))
+        .toEqual(["picking-a-plan-asks-about-it"]);
+    });
+
     it("fails a message sent as the view loads, from a button that does nothing", async ({ expect }) => {
       expect(await failed(verifyPlanPicker, `
         <ul><li>Basic $15</li><li>Everyday $30</li><li>Family $80</li></ul>
@@ -519,6 +531,13 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
     it("fails totals shown against the wrong categories", async ({ expect }) => {
       expect(await failed(verifySpendingView, spending({ Food: 185, Travel: 96, Books: 420 }, " ")))
         .toEqual(["shows-each-category-total"]);
+    });
+
+    it("checks every category the Log holds, the agent's own included", async ({ expect }) => {
+      const withOwn = connectingTo(() => new ExpenseLog({ ...TOTALS, Utilities: 73 }));
+      const shown = (view: string) => failedThrough(new EvalVerifier(withOwn, [LOG], answer(view)), verifySpendingView);
+      expect(await shown(spending({ ...TOTALS, Utilities: 73 }))).toEqual([]);
+      expect(await shown(spending(TOTALS))).toEqual(["shows-each-category-total"]);
     });
 
     it("fails a message sent as the view loads, from a button that does nothing", async ({ expect }) => {

@@ -166,25 +166,34 @@ export function showsAmount(text: string, amount: number): boolean {
   return countAmount(text, amount) > 0;
 }
 
+/**
+ * Whether `text` shows `amount` as a price, as `showsAmount` reads it and with a $ before it, so
+ * that another number beside the price, such as "15 GB", does not count.
+ */
+export function showsPrice(text: string, amount: number): boolean {
+  return amounts(text).some(shown => shown.money && Math.abs(shown.value - amount) < 0.005);
+}
+
 /** How many times `text` shows `amount`, written as `showsAmount` reads it. */
 export function countAmount(text: string, amount: number): number {
-  return amounts(text).filter(shown => Math.abs(shown - amount) < 0.005).length;
+  return amounts(text).filter(shown => Math.abs(shown.value - amount) < 0.005).length;
 }
 
 // A minus sign right before an amount or its $, where it follows no letter or digit, since "Jan-410"
 // and "5-10" join two things. Read together, an amount and a percentage after it, as in "$420.00"
 // "60%", run to "$420.0060%": the first two decimals then end the amount.
-const AMOUNT = /(?:(?<![\p{L}\p{N}])([-−])\$?|\$([-−]))?(?<![\d.])(\d+)(?:\.(\d+))?(?!\d)/gu;
+const AMOUNT = /(?:(?<![\p{L}\p{N}])([-−])(\$?)|(\$)([-−]))?(?<![\d.])(\d+)(?:\.(\d+))?(?!\d)/gu;
 
-function amounts(text: string): number[] {
+function amounts(text: string): { value: number; money: boolean }[] {
   const plain = text.replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
   return [...plain.matchAll(AMOUNT)].map(match => {
-    const [whole, before, after, units = "", decimals = ""] = match;
+    const [whole, before, beforeSign = "", afterSign, after, units = "", decimals = ""] = match;
     const rest = plain.slice(match.index + whole.length);
     const cents = decimals.length > 2 && /^\d+(?:\.\d+)?%/.test(decimals.slice(2) + rest)
       ? decimals.slice(0, 2) : decimals;
     const value = Number(cents === "" ? units : `${units}.${cents}`);
-    return before === undefined && after === undefined ? value : -value;
+    const money = beforeSign !== "" || afterSign !== undefined || /\$\s?$/.test(plain.slice(0, match.index));
+    return { value: before === undefined && after === undefined ? value : -value, money };
   });
 }
 
