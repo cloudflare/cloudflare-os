@@ -120,6 +120,29 @@ describe("agent transform validation boundaries", () => {
       .toEqual(new Map([["client.js", "const SEP = '\\0';\n"]]));
   }));
 
+  it("refuses an edit inserting a lone surrogate as a tool error, so the step's other edits persist", () => inKernel(async impl => {
+    const commitId = await impl.gitCache.writeFilesAsCommit(new Map([["client.js", "const ICON = '?';\n"]]),
+      {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
+    const gadget = impl.createGadget("Board", "BOARD", undefined, undefined, commitId);
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    // Half of an emoji's surrogate pair, as a model's JSON escape \ud83d sends it.
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("readFile", {workpiece: "BOARD", filename: "client.js"}),
+        fauxToolCall("editFile", {workpiece: "BOARD", filename: "client.js", textToReplace: "'?'", replacement: "'\ud83d'"}),
+        fauxToolCall("editFile", {workpiece: "BOARD", filename: "client.js", textToReplace: "'?'", replacement: "'😀'"}),
+      ], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, AUTHOR,
+      new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
+    expect(calls.map(call => call.error)).toEqual([undefined,
+      expect.stringMatching(/inserts a lone surrogate: gadget \d+ client\.js/), undefined]);
+    const files = (await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!)).get(gadget.id)!;
+    expect(files.get("client.js")).toBe("const ICON = '😀';\n");
+  }));
+
   it("fails closed at persistence with bounded shape diagnostics but no file contents", () => inKernel(async impl => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(impl.commitAgentStep(1, AUTHOR, [], {
