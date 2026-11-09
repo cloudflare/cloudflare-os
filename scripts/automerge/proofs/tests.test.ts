@@ -128,7 +128,7 @@ describe("proof-tests scope", () => {
     assert.deepEqual(sourceGraph([test], "packages/bundled-blueprints", read, WORKSPACE), {
       sources: ["packages/bundled-blueprints/libraries/zip/server.ts", "packages/bundled-blueprints/libraries/zip/src/zip.ts",
         "packages/bundled-blueprints/src/index.ts"],
-      problems: [`${test.path}: @gadgets/bundled-blueprints/nowhere is not in packages/bundled-blueprints/package.json exports`],
+      problems: [`${test.path}: @gadgets/bundled-blueprints/nowhere names no export this proof can resolve in packages/bundled-blueprints/package.json`],
     });
   });
 
@@ -234,6 +234,14 @@ describe("proof-tests scope", () => {
   it("replaces every * in an exports target", () => {
     const manifest = { name: "@gadgets/p", exports: { "./lib/*": "./lib/*/*.ts" } };
     assert.equal(selfImportPath("packages/p", manifest, "@gadgets/p/lib/zip"), "packages/p/lib/zip/zip.ts");
+  });
+
+  // Bonk on #987, round 7: vitest may pick a condition other than `import`/`default`.
+  it("resolves no export that has a condition other than import, default or types", () => {
+    const conditional = { name: "@gadgets/p", exports: { "./feature": { node: "./src/feature.node.ts", default: "./src/feature.ts" } } };
+    assert.equal(selfImportPath("packages/p", conditional, "@gadgets/p/feature"), undefined);
+    const plain = { name: "@gadgets/p", exports: { "./feature": { types: "./src/feature.d.ts", import: "./src/feature.ts" } } };
+    assert.equal(selfImportPath("packages/p", plain, "@gadgets/p/feature"), "packages/p/src/feature.ts");
   });
 
   it("flags edited helpers and fixtures, which unchanged tests may import", () => {

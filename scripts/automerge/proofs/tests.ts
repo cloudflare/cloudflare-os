@@ -204,10 +204,15 @@ export interface SourceGraph {
   problems: string[];
 }
 
-/** The file an `exports` entry names for an import: a path, or its `import` or `default` condition. */
+/**
+ * The file an `exports` entry names for an import: a path, or its `import` or `default` condition.
+ * Any other condition (`node`, `browser`, `development`, …) may be the one vitest picks, so an
+ * entry with one names no file this proof can be sure of. `types` only matters to the type checker.
+ */
 function exportTarget(value: Json | undefined): string | undefined {
   if (typeof value === "string") return value;
   if (!isObject(value)) return undefined;
+  if (Object.keys(value).some((condition) => !["import", "default", "types"].includes(condition))) return undefined;
   return exportTarget(value.import) ?? exportTarget(value.default);
 }
 
@@ -283,7 +288,7 @@ export function sourceGraph(
       } else if (name !== undefined && names(specifier, name)) {
         const target = selfImportPath(packageDir, manifest, specifier);
         if (target === undefined) {
-          problems.push(`${next.path}: ${specifier} is not in ${packageDir}/package.json exports`);
+          problems.push(`${next.path}: ${specifier} names no export this proof can resolve in ${packageDir}/package.json`);
           continue;
         }
         base = normalize(target);
