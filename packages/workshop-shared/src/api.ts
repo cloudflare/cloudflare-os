@@ -679,6 +679,43 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]>;
 
+  // --- Spaces ---
+  //
+  // A space is an id, a display name, a member list and a listing of the workspaces that belong
+  // to it. Its members may open the workspaces that it lists and that belong to it, each in the
+  // role their membership gives them; see the "Spaces" section below.
+
+  /**
+   * List the spaces the caller is a member of: their personal space first, then the others by
+   * name, each with `role` set to the caller's role in it. The caller's personal space is created
+   * here if it does not exist yet; its id never changes, so read it from the first entry.
+   *
+   * The list comes from a record the caller's own account keeps of their memberships, which each
+   * space updates as they change and `openSpace` corrects for the space being opened. It is for
+   * presentation only: a listed space may still refuse to open, and a membership the record
+   * missed appears once that space has been opened by id.
+   */
+  listSpaces(): Promise<SpaceInfo[]>;
+
+  /**
+   * Open a space the caller is a member of, by its id (`SpaceInfo.id`). A string that is not a
+   * space id throws "Invalid space id.". An id is not a capability: one that names no space and
+   * one that names a space the caller is not a member of, another user's personal space
+   * included, fail with the same error. The returned `Space` acts as the caller; dispose it when
+   * done.
+   */
+  openSpace(id: string): Promise<RpcStub<Space>>;
+
+  /**
+   * Create a team space and open it; any signed-in user may. `name` is trimmed, and must then be
+   * non-empty and within the server's length limit. It need not be unique: every call creates
+   * another space, under an id the server makes (`SpaceInfo.id`). The caller becomes the space's
+   * first admin. Dispose the returned stub when done.
+   *
+   * @reportsId space getInfo().id
+   */
+  createSpace(name: string): Promise<RpcStub<Space>>;
+
   /**
    * Change the user's password, if using password-based authentication.
    *
@@ -891,6 +928,10 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Open an existing workspace, or join one shared with you by redeeming its share link's key.
    *
+   * A user may open a workspace they own, one shared with them and one that their role in a
+   * space reaches (see `SpaceMemberRole`), with what the workspace's own sharing and that
+   * membership give them, taken together (see `CollaboratorAccess`).
+   *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
    * collaborator. If the key is invalid or expired, the call throws an exception. If the workspace
    * has `ownerInvitesOnly` set (see `WorkspaceMetadata`), a caller the owner has not added directly
@@ -901,11 +942,11 @@ export interface AuthenticatedApi extends RpcTarget {
    * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
    * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
    *
-   * `configureObservers` is invoked only when the opening user is a non-owner "build" collaborator
+   * `configureObservers` is invoked only when the opening user is a non-owner with "build" access
    * who must choose connected accounts for one or more gatekeeper bindings before they can observe
    * the workspace (see ObserverConfigCallback). It is never called for the owner or an
    * already-configured observer, so the common-case open is still a single pipelined round trip.
-   * Collaborators with access to individual gadgets are verified when they get each gadget instead
+   * A user who opens the workspace to "use" is verified when they get each gadget instead
    * (see Overseer.getGadget()).
    */
   openWorkspace(id: string, shareKey?: string,
@@ -926,9 +967,21 @@ export interface AuthenticatedApi extends RpcTarget {
    * workspace's id with Overseer.getMetadata() before letting it go, and later opens the workspace
    * with openWorkspace().
    *
+   * `spaceId` is the id of the team space the workspace belongs to (`SpaceInfo.id`). Omitted, or
+   * the id of the caller's own personal space, the workspace belongs to the caller's personal
+   * space. A string that is not a space id throws "Invalid space id." and creates nothing.
+   * Nothing else about the space is checked here. A workspace is listed by its space
+   * (`Space.listWorkspaces`) only once it has seen activity, and whether the caller may add
+   * workspaces to that space is checked then: a workspace whose owner may not, because the id
+   * names no space, a space they are not a member of or another user's personal space, ends up
+   * in their personal space instead, with no error. Once a team space lists it, the workspace is
+   * open to that space's members in the role their membership gives them (see
+   * `SpaceMemberRole`); a personal space has no members besides its owner, so it opens the
+   * workspace to nobody else.
+   *
    * @reportsId workspace getMetadata().id
    */
-  newWorkspace(): Promise<RpcStub<Overseer>>;
+  newWorkspace(spaceId?: string): Promise<RpcStub<Overseer>>;
 
   /**
    * List metadata about all the user's workspaces, which hold their gadgets. Used to display the
@@ -1153,11 +1206,19 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
    *
+   * `spaceId` is the id of the team space the new workspace belongs to, exactly as for
+   * `newWorkspace()`: a string that is not a space id throws and creates nothing, and omitted, or
+   * the id of the caller's own personal space, means the caller's personal space. The workspace
+   * is listed by its space only once it has seen activity; whether the caller may add workspaces
+   * to that space is checked then, and a workspace whose owner may not ends up in their personal
+   * space instead, with no error.
+   *
    * @reportsId workspace getMetadata().id
    */
   newWorkspaceFromBlueprint(
     blueprintId: string,
-    bindings: Record<string, BlueprintBindingAssignment>
+    bindings: Record<string, BlueprintBindingAssignment>,
+    spaceId?: string
   ): Promise<RpcStub<Overseer>>;
 
   /**
@@ -2839,14 +2900,22 @@ export type WorkspaceMetadata = {
 
   /**
    * Set when the workspace is not owned by the current user. Presence of this field indicates the
-   * user is a collaborator, not the owner.
+   * user is not the owner: they are a collaborator, or a member of the workspace's space (see
+   * `SpaceMemberRole`).
    */
   owner?: AiChatAuthorInfo;
 
   /**
-   * The viewing user's effective role for this workspace. The owner is always "build". Used by the
-   * frontend to decide whether to render the full editor ("build") or the UI-only shell ("use").
+   * The viewing user's role for this workspace: the higher of their effective role as a
+   * collaborator (see `CollaboratorRole`) and the role their membership of the workspace's space
+   * gives them (see `SpaceMemberRole`). The owner is always "build". Used by the frontend to
+   * decide whether to render the full editor ("build") or the UI-only shell ("use"). It does not
+   * say which of the two it came from, and only "build" from the first lets the user share it.
    * Absent implies "build" for backwards compatibility.
+   *
+   * On a record from `AuthenticatedApi.listWorkspaces` for a workspace shared with the user, this
+   * is the role the workspace's own sharing gave them at their last open, to which membership
+   * of a space adds nothing.
    */
   role?: CollaboratorRole;
 
@@ -2863,8 +2932,26 @@ export type WorkspaceMetadata = {
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
+   * A role held through the workspace's space still applies (see `SpaceMemberRole`).
    */
   ownerInvitesOnly?: boolean;
+
+  /**
+   * The id of the team space this workspace belongs to (`SpaceInfo.id`); absent means its
+   * owner's personal space, whose id is never recorded here. Set by
+   * `AuthenticatedApi.newWorkspace` and `newWorkspaceFromBlueprint`, and changed by
+   * `Overseer.moveToSpace`. The server changes it as well, with no call asking it to: when the
+   * space it names refuses to list the workspace (see those methods for when that is decided),
+   * the id is cleared, or set back to the team space that still lists the workspace. Until its
+   * space has listed the workspace, the id says only where the workspace was asked to go, which
+   * may be no space the owner can add to.
+   *
+   * Set only on the owner's own record of the workspace, which is what
+   * `AuthenticatedApi.listWorkspaces` returns for a workspace the caller owns. A record of a
+   * workspace shared with the user (`owner` present) and the metadata an `Overseer` reports never
+   * carry it, so there its absence says nothing about where the workspace belongs.
+   */
+  spaceId?: string;
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
@@ -3006,10 +3093,10 @@ export type OutputSummary = {
   owner?: AiChatAuthorInfo;
 
   /**
-   * The caller's role, cached on their last open and refreshed when a revocation downgrades them,
-   * so a listing can offer only the actions it permits; the workspace still authorizes each one
-   * when attempted. Absent for the caller's own workspaces, and for a shared one whose last open
-   * predates this field.
+   * The caller's role as a collaborator, cached on their last open and refreshed when a
+   * revocation downgrades them, so a listing can offer only the actions it permits; the
+   * workspace still authorizes each one when attempted. Absent for the caller's own workspaces,
+   * and for a shared one whose last open predates this field.
    */
   role?: CollaboratorRole;
 }
@@ -3306,6 +3393,36 @@ export interface Overseer extends RpcTarget {
   setTitle(title: string): Promise<void>;
 
   /**
+   * Move this workspace to another space. Owner only: anyone else is refused, whatever their
+   * role. `spaceId` is the id of a team space (`SpaceInfo.id`), or null to return the workspace
+   * to its owner's personal space; the id of the owner's own personal space means the same as
+   * null. A string that is not a space id throws "Invalid space id." and records nothing.
+   *
+   * After a move that succeeds the target space lists the workspace, the space it left no longer
+   * does, and `WorkspaceMetadata.spaceId` on the owner's record follows. When the owner may not add
+   * workspaces to the target space (see `SpaceKind` for who may), this throws and the workspace
+   * is not moved. The error is the one `AuthenticatedApi.openSpace` gives a caller it refuses,
+   * whether the id names no space, a space the owner is not a member of or another user's
+   * personal space.
+   *
+   * The roles that membership gives on the workspace, where it gives any (see
+   * `SpaceMemberRole`), move with it: the target's members hold them, and the members of the
+   * space it left no longer do, on the sessions they have open too, a moment later.
+   *
+   * A move can also fail with no answer from a space, one that could not be reached for
+   * instance. This throws too, but `WorkspaceMetadata.spaceId` may be left as the move would have
+   * set it, because the space may have carried out what it did not answer. A later sync of the
+   * workspace with its space, which its next activity, change of title or move starts, then
+   * either completes the move or returns the workspace to the space that still lists it. So
+   * after such a failure read `spaceId` again.
+   *
+   * A workspace that has seen no activity yet is listed by no space, so for one the move is only
+   * recorded: it is checked when the workspace first sees activity, with the outcome
+   * `AuthenticatedApi.newWorkspace` describes.
+   */
+  moveToSpace(spaceId: string | null): Promise<void>;
+
+  /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and
    * deleting all data. Further method calls will fail.
    *
@@ -3351,10 +3468,10 @@ export interface Overseer extends RpcTarget {
    * Get the gadget with the given workpiece ID. To allow for pipelining, this throws an
    * exception if there is no such gadget.
    *
-   * A collaborator without "build" access is verified as an observer of this one gadget here,
+   * A user who opened the workspace to "use" is verified as an observer of this one gadget here,
    * rather than when opening the workspace, so `configureObservers` is invoked as described for
-   * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others that
-   * collaborator holds untouched. Ignored for everyone else, whom opening the workspace verified.
+   * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others they
+   * hold untouched. Ignored for everyone else, whom opening the workspace verified.
    */
   getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<RpcStub<GadgetClient>>;
@@ -6495,6 +6612,10 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
  *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
  *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
+ *
+ * A user may also reach a workspace as a member of the space that lists it (see
+ * `SpaceMemberRole`). That is no part of the access defined here: it counts toward what the user
+ * may open and do in the workspace, never toward what they may grant to others.
  */
 export type CollaboratorRole = "build" | "use";
 
@@ -6614,3 +6735,202 @@ export type ShareLinkInfo = {
    */
   gadgetId?: WorkpieceId;
 };
+
+// =======================================================================================
+// Spaces
+//
+// A space is a named set of users and a grouping of workspaces: an id, a display name, a member
+// list and a listing of the workspaces that belong to it (see `Space.listWorkspaces`). Every user
+// has one personal space and may create team spaces. Every workspace belongs to exactly one
+// space: its owner's personal space, unless the owner placed it in a team space.
+//
+// The space's member list is the only authority on who belongs to it and in what role. Being a
+// member lets a user see the space's listing of workspaces and open the workspaces that it lists
+// and that belong to it, in the role their membership gives them (see `SpaceMemberRole`). A
+// workspace's own sharing applies alongside: a user may open what either gives them, and only
+// the workspace's own sharing lets them share it with others.
+// =======================================================================================
+
+/**
+ * Whether a space belongs to one user or to a team. Fixed when the space is created.
+ *
+ * - "personal": one per user, created the first time it is needed (see
+ *   `AuthenticatedApi.listSpaces`). It has no members besides its owner, who is its only admin
+ *   and can be neither demoted nor removed, and only its owner adds workspaces to it. It is
+ *   where the owner's workspaces belong unless placed in a team space; a workspace in it
+ *   reaches other people only by being shared directly, and teams use team spaces.
+ * - "team": created with `AuthenticatedApi.createSpace` and administered by its "admin" members,
+ *   of whom there is always at least one. Any member, whatever their role, may add workspaces
+ *   they own to it.
+ */
+export type SpaceKind = "personal" | "team";
+
+/**
+ * A member's role in a space. Every member holds exactly one, and being a member in any role is
+ * what lets a user open the space and see the workspaces listed in it. The role also decides how
+ * the member may open those workspaces.
+ *
+ * - "admin": opens the space's workspaces to build, exactly as "build" does. May also change the
+ *   member list of a team space (`Space.setMemberRole`, `Space.removeMember`).
+ * - "build" and "use": ordinary members, named after the `CollaboratorRole` each confers on the
+ *   space's workspaces: "build" opens them to build, "use" opens every gadget of each to use. In
+ *   the space itself the two confer the same thing: reading its info, its member list and its
+ *   listing of workspaces, adding workspaces of their own to a team space, and leaving it.
+ *
+ * A member may open what either their membership or the workspace's own sharing gives them (see
+ * `CollaboratorAccess`), verified as an observer exactly as a collaborator who holds that access
+ * (see `AuthenticatedApi.openWorkspace`). Membership confers no power to share a workspace: only
+ * its owner and a collaborator whose own access is "build" grant anything, so a member the
+ * workspace's sharing gives less can add no collaborator and create no share link. Nor does it
+ * make them a collaborator: `Overseer.listCollaborators` does not show them, and a workspace
+ * opened through the space alone is not in their `AuthenticatedApi.listWorkspaces`.
+ *
+ * The role reaches every workspace that belongs to the space and that the space lists (see
+ * `Space.listWorkspaces`). One its owner has not been active in yet is not listed, so the role
+ * does not reach it.
+ *
+ * Losing the role reaches the sessions a member already has open. When they are removed or
+ * lowered to "use", or when a workspace leaves the listing, a workspace they have open through
+ * the role is restarted a moment later: every session of it, not only theirs, is disconnected
+ * and authorized afresh when it reopens. A raised role applies from the member's next open.
+ */
+export type SpaceMemberRole = "admin" | "build" | "use";
+
+/**
+ * A space as one user sees it: an entry of `AuthenticatedApi.listSpaces`, or the result of
+ * `Space.getInfo`, in both cases produced for the caller.
+ */
+export interface SpaceInfo {
+  /**
+   * The space's id: opaque, unique and immutable, made by the server. Pass it to
+   * `AuthenticatedApi.openSpace`. A team space's is made when the space is created; a personal
+   * space's is derived from its owner, so it is the same on every call. It is not a capability:
+   * a space answers only its members, whoever knows its id.
+   */
+  id: string;
+
+  /**
+   * Display name. A team space's is the name it was created with; a personal space's is its
+   * owner's display name, a stored snapshot that may trail a rename.
+   */
+  name: string;
+
+  /** Personal or team. */
+  kind: SpaceKind;
+
+  /**
+   * The owner of a personal space; absent for a team space, which has admins instead (see
+   * `Space.listMembers`). The display name is a stored snapshot and may trail a rename.
+   */
+  owner?: AiChatAuthorInfo;
+
+  /**
+   * The role in this space of the user the info was produced for. For display only: every
+   * operation is decided from the space's member list at the time of the call.
+   */
+  role: SpaceMemberRole;
+}
+
+/** One member of a space, as returned by `Space.listMembers` and `Space.setMemberRole`. */
+export interface SpaceMemberInfo {
+  /** Who the member is. The display name is a stored snapshot and may trail a rename. */
+  profile: AiChatAuthorInfo;
+
+  /** The member's current role. */
+  role: SpaceMemberRole;
+
+  /** When they became a member; a later change of role leaves it as it is. */
+  added: Date;
+}
+
+/**
+ * One workspace in a space's listing, as returned by `Space.listWorkspaces`: what the space
+ * recorded when the workspace last registered with it. Opening the workspace is
+ * `AuthenticatedApi.openWorkspace(id)`, which a member of the space may do in the role their
+ * membership gives them (see `SpaceMemberRole`).
+ */
+export interface SpaceWorkspaceInfo {
+  /** The workspace's id, as in `WorkspaceMetadata.id`. */
+  id: string;
+
+  /** The workspace's title. A stored snapshot, which may trail a change of title. */
+  title: string;
+
+  /**
+   * The workspace's owner, who need not still be a member of the space. The display name is a
+   * stored snapshot and may trail a rename.
+   */
+  owner: AiChatAuthorInfo;
+
+  /** When the workspace was created. */
+  created: Date;
+}
+
+/**
+ * A space opened by one user, obtained from `AuthenticatedApi.openSpace` or `createSpace`. The
+ * stub acts as that user and carries no standing permission of its own: every method looks the
+ * user's membership up again when it is called, so a stub held by someone who has since been
+ * removed or demoted loses those powers at once. Dispose the stub when done.
+ */
+export interface Space extends RpcTarget {
+  /** The space's info, with `role` the caller's current role. Available to every member. */
+  getInfo(): Promise<SpaceInfo>;
+
+  /**
+   * List the space's members and their roles. Available to every member. A personal space lists
+   * only its owner, as admin.
+   */
+  listMembers(): Promise<SpaceMemberInfo[]>;
+
+  /**
+   * List the workspaces that belong to the space, newest first by `created`. Available to every
+   * member, whatever their role. A workspace is listed once it has seen activity, so one that is
+   * still provisional (see `AuthenticatedApi.newWorkspace`) is absent, and it stays listed after
+   * its owner stops being a member.
+   *
+   * The listing trails the workspaces it describes. A workspace registers with its space in the
+   * background once it has seen activity, not within the call that caused the activity, so it
+   * appears a moment later. One that has seen activity and that no space lists yet, because it
+   * is older than the listing or its registration failed, appears at its next activity or change
+   * of title, or once a catch-up that its owner's `AuthenticatedApi.listSpaces` starts reaches it.
+   *
+   * A member may open each workspace listed with `AuthenticatedApi.openWorkspace`, in the role
+   * their membership gives them (see `SpaceMemberRole`).
+   */
+  listWorkspaces(): Promise<SpaceWorkspaceInfo[]>;
+
+  /**
+   * Set the role of the user with this username/email to exactly `role`: adds them if they are
+   * not a member, and otherwise replaces their role, whether that grants or takes away. An
+   * existing member keeps their `added` date. Returns the member's resulting info, or null if
+   * the username doesn't correspond to an existing account.
+   *
+   * Admins only. A caller who is not an admin is refused before the username is looked up, so
+   * they cannot use the call to find out which accounts exist.
+   *
+   * The role applies as well to the workspaces that the space lists and that belong to it (see
+   * `SpaceMemberRole`), so adding a member lets them open every one of those. Lowering a member
+   * to "use" takes effect on the sessions they have open too, a moment later: such a workspace
+   * is restarted and each of its sessions is authorized afresh. Raising a member applies from
+   * their next open.
+   *
+   * Throws rather than demote the space's last admin. In a personal space it always throws
+   * ("A personal space has no members."), whoever the target, its owner included.
+   */
+  setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null>;
+
+  /**
+   * Remove a member (identified by profile.id). An admin can remove anyone; any other member can
+   * remove only themself, which is how one leaves a space. An admin removing someone who is not
+   * a member does nothing.
+   *
+   * A removed member loses the role their membership gave them on the space's workspaces (see
+   * `SpaceMemberRole`), on the sessions they have open too, a moment later: such a workspace is
+   * restarted and each of its sessions is authorized afresh, theirs by the workspace's own
+   * sharing alone.
+   *
+   * Throws rather than remove the space's last admin, so the owner of a personal space can
+   * neither leave it nor be removed.
+   */
+  removeMember(profileId: string): Promise<void>;
+}

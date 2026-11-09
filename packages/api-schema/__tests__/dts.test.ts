@@ -1417,7 +1417,7 @@ export async function use(id: string): Promise<number> {
     });
     test("a method dropped from the root", () => {
       const newWorkspace = schema.services[ROOT]!.methods.find((m) => m.name === "newWorkspace")!;
-      expect(newWorkspace.params).toEqual([]);
+      expect(newWorkspace.params).toMatchObject([{ type: { kind: "string" }, optional: true }]);
       expect(newWorkspace.returns).toEqual({ kind: "stub", service: "Overseer" });
       const { target, diagnostics } = droppedRootMethod;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`"${target}"[\\s\\S]*Missing_${ROOT}`));
