@@ -326,6 +326,21 @@ export type FavoriteItemSpec = FavoriteItemRef & {
   output?: BlueprintOutput;
 };
 
+/**
+ * Identifies something the user can take out of their Library: an app, a file attached in a chat,
+ * or a file in a connected service that the workspace worked on (by its ResourceSubject.id).
+ */
+export type LibraryItemRef =
+  | { kind: "app"; workspaceId: string; workpieceId: WorkpieceId }
+  | { kind: "file"; workspaceId: string; chatId: number; fileId: string }
+  | { kind: "external"; workspaceId: string; subjectId: string };
+
+/** An item the user took out of their Library, as `AuthenticatedApi.listLibraryRemovals()` returns. */
+export type LibraryRemoval = LibraryItemRef & {
+  /** When the user removed it. Something done with the item since puts it back. */
+  removed: Date;
+};
+
 /** One of the user's starred items, as returned by `AuthenticatedApi.listFavorites()`. */
 export type FavoriteItem = FavoriteItemSpec & {
   /** When the user starred it. */
@@ -808,6 +823,15 @@ export interface AuthenticatedApi extends RpcTarget {
    * `listFavorites()`; starring an item already starred refreshes them.
    */
   setFavorite(item: FavoriteItemSpec, favorite: boolean): Promise<void>;
+
+  /** The items the user has taken out of their Library (see setLibraryRemoved()). */
+  listLibraryRemovals(): Promise<LibraryRemoval[]>;
+
+  /**
+   * Take an item out of the user's Library, or put it back. Only the user's Library changes: the
+   * item itself -- an app, a file, a Google Doc -- is left as it is.
+   */
+  setLibraryRemoved(item: LibraryItemRef, removed: boolean): Promise<void>;
 
   /**
    * Get the user's read state for the chats in one workspace, to combine with that workspace's own
@@ -3274,6 +3298,8 @@ export type ActionLogEntry = {
   state: ActionState;
 } & ({
   type: "action";
+  /** The chat it was made in -- by its agent, a gadget used there or a person -- if any. */
+  chatId?: number;
   description: ActionDescription;
   /**
    * Who resolved the action (approved or rejected it). Set when the action leaves "pending"; absent
@@ -3305,6 +3331,8 @@ export type ActionLogEntry = {
 } | {
   type: "observation";
   description: ObservationDescription;
+  /** The chat it was made in, as for an action. */
+  chatId?: number;
 } | {
   type: "bindHook";
 
@@ -3533,6 +3561,16 @@ export interface Overseer extends RpcTarget {
    */
   createGadget(title: string, chatId?: number, bindingName?: string)
       : Promise<RpcStub<GadgetClient>>;
+
+  /**
+   * Add a gadget to this workspace made from a blueprint, as `AuthenticatedApi.newWorkspaceFromBlueprint()`
+   * makes one in a workspace of its own: titled, labelled with its format and following the
+   * blueprint from its current release. Only for a blueprint with no bindings (an
+   * `OutputFormatOffer` without `requiresSetup`), since there are no accounts to assign here;
+   * throws for one with any. The gadget's binding name is chosen from its title, as for
+   * `createGadget()` without one.
+   */
+  createGadgetFromBlueprint(blueprintId: string): Promise<RpcStub<GadgetClient>>;
 
   /**
    * Get the gadget with the given workpiece ID. To allow for pipelining, this throws an

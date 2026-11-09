@@ -11,8 +11,8 @@ type Group = 'chat' | 'workspace' | 'apps' | 'always'
 
 const GROUP_LABEL: Record<Group, string> = {
   chat: 'Connected in this chat',
-  workspace: "From this workspace's apps",
-  apps: 'Used by its apps',
+  workspace: "From this workspace's gadgets",
+  apps: 'Used by its gadgets',
   always: 'Built in',
 }
 

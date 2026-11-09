@@ -23,14 +23,21 @@ import { useExternalFiles, useFavorites, useOutputs, useWorkspaceFiles } from '.
 import { mediaKind } from '../../features/drafts/drafts'
 import { useLibraryItems } from '../../features/library/useLibraryItems'
 import { useLibraryLayout } from '../../features/library/useLibraryLayout'
+import { LIBRARY_APPS, type LibraryAppTab } from '../../features/library/libraryApps'
+import GatekeeperAppPage from '../../GatekeeperAppPage'
+import { useGatekeeperApps } from '../../useGatekeeperApps'
 
-/** The Library's tabs (Figma "Frame 804"). */
-export type LibraryTab = 'favorites' | 'apps' | 'files'
+type ListTab = 'favorites' | 'gadgets' | 'files'
+
+/** The Library's tabs (Figma "Frame 804"), with those hosting a gatekeeper's app (see LIBRARY_APPS). */
+export type LibraryTab = ListTab | LibraryAppTab
 
 const TABS: { value: LibraryTab; label: string }[] = [
   { value: 'favorites', label: 'Favorites' },
-  { value: 'apps', label: 'Apps' },
+  { value: 'gadgets', label: 'Gadgets' },
   { value: 'files', label: 'Files' },
+  { value: 'skills', label: 'Skills' },
+  { value: 'scheduled', label: 'Scheduled' },
 ]
 
 const FILE_FILTERS: LibraryFilterOption[] = [
@@ -62,9 +69,13 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
   const [layout, setLayout] = useLibraryLayout()
   const [sort, setSort] = useState<LibrarySort>('recent')
   const [query, setQuery] = useState('')
-  const [filters, setFilters] = useState<Record<LibraryTab, string>>({ favorites: 'all', apps: 'all', files: 'all' })
+  const [filters, setFilters] = useState<Record<ListTab, string>>({ favorites: 'all', gadgets: 'all', files: 'all' })
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [paneExpanded, setPaneExpanded] = useState(false)
+  // A tab hosting an app shows only on a deployment that has it.
+  const gatekeeperApps = useGatekeeperApps()
+  const tabs = TABS.filter(t => !(t.value in LIBRARY_APPS) || gatekeeperApps.some(a => a.id === LIBRARY_APPS[t.value as LibraryAppTab]))
+  const hostedApp = tab in LIBRARY_APPS ? LIBRARY_APPS[tab as LibraryAppTab] : null
 
   // Files are read from each workspace the user can build in, most recently active first.
   const fileWorkspaces = useMemo(() => workspaces
@@ -75,28 +86,34 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
   const files = useWorkspaceFiles(workspaces.length ? fileWorkspaces : null)
   const external = useExternalFiles(workspaces.length ? fileWorkspaces : null)
 
-  const apps = useMemo(() => (outputs ?? []).map(output => ({
-    workspaceId: output.workspaceId, workpieceId: output.workpieceId, title: output.title,
-    output: output.output, date: output.lastActive, workspaceTitle: output.workspaceTitle,
-  })), [outputs])
-  const { appItems, fileItems, favoriteItems, preview, setPreview } = useLibraryItems({
-    apps, files: files ?? [], external: external ?? undefined, favorites: favorites ?? [], starred, showContext: true,
+  const apps = useMemo(() => {
+    const builds = new Set(workspaces.filter(w => w.owner === undefined || w.role === 'build').map(w => w.id))
+    return (outputs ?? []).map(output => ({
+      workspaceId: output.workspaceId, workpieceId: output.workpieceId, title: output.title,
+      output: output.output, date: output.lastActive, workspaceTitle: output.workspaceTitle,
+      canDelete: builds.has(output.workspaceId),
+    }))
+  }, [outputs, workspaces])
+  const { appItems, fileItems, favoriteItems, preview, setPreview, remove, dialogs } = useLibraryItems({
+    apps, files: files ?? [], external: external ?? undefined, favorites: favorites ?? [], starred, setStarred,
+    showContext: true,
+    origin: 'library',
   })
 
   const appFilters: LibraryFilterOption[] = useMemo(() => [
-    { value: 'all', label: 'All apps' },
+    { value: 'all', label: 'All gadgets' },
     ...[...new Set(appItems.map(item => formatOf(item.output).noun))].map(noun => ({ value: noun, label: noun })),
   ], [appItems])
   const favoriteFilters: LibraryFilterOption[] = [
-    { value: 'all', label: 'Everything' }, { value: 'app', label: 'Apps' }, { value: 'file', label: 'Files' },
+    { value: 'all', label: 'Everything' }, { value: 'app', label: 'Gadgets' }, { value: 'file', label: 'Files' },
   ]
-  const filterOptions = tab === 'apps' ? appFilters : tab === 'files' ? FILE_FILTERS : favoriteFilters
-  const filter = filters[tab]
+  const filterOptions = tab === 'gadgets' ? appFilters : tab === 'files' ? FILE_FILTERS : favoriteFilters
+  const filter = filters[tab as ListTab] ?? 'all'
 
-  const loading = tab === 'apps' ? outputs === null : tab === 'files' ? files === null
+  const loading = tab === 'gadgets' ? outputs === null : tab === 'files' ? files === null
     : favorites === null
   const shown: LibraryItem[] = useMemo(() => {
-    if (tab === 'apps') {
+    if (tab === 'gadgets') {
       return arrangeLibraryItems(appItems.filter(item => filter === 'all' || formatOf(item.output).noun === filter), sort, query)
     }
     if (tab === 'files') {
@@ -126,9 +143,9 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
     >
       <PageHeader icon={<LibraryIcon size={16} />} title="Library" />
       <div className="mt-2.5 flex shrink-0 flex-wrap items-center gap-3 px-3 pb-3 max-md:px-4">
-        <PageTabs label="Library" tabs={TABS} value={tab} onChange={next => { setSelected(new Set()); onTabChange(next) }} />
+        <PageTabs label="Library" tabs={tabs} value={tab} onChange={next => { setSelected(new Set()); onTabChange(next) }} />
         <span className="flex-1" />
-        <div className="flex items-center gap-2 max-md:fixed max-md:inset-x-0 max-md:bottom-4 max-md:z-10 max-md:justify-center">
+        {!hostedApp && <div className="flex items-center gap-2 max-md:fixed max-md:inset-x-0 max-md:bottom-4 max-md:z-10 max-md:justify-center">
           <LibraryViewControls
             layout={layout}
             onLayoutChange={setLayout}
@@ -136,7 +153,7 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
             onSortChange={setSort}
             filters={filterOptions}
             filter={filter}
-            onFilterChange={value => setFilters(current => ({ ...current, [tab]: value }))}
+            onFilterChange={value => setFilters(current => ({ ...current, [tab as ListTab]: value }))}
           />
           <LibrarySearch query={query} onQueryChange={setQuery} placeholder="Search the library" />
           <NewMenuButton>
@@ -152,11 +169,16 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
               </DropdownMenu.Item>
             ))}
             <DropdownMenu.Separator />
-            <DropdownMenu.Item onClick={() => navigate({ to: '/blueprints' })} className={MENU_ITEM}>From a template…</DropdownMenu.Item>
+            <DropdownMenu.Item onClick={() => navigate({ to: '/blueprints' })} className={MENU_ITEM}>From a blueprint…</DropdownMenu.Item>
           </NewMenuButton>
-        </div>
+        </div>}
       </div>
-      <div className="flex-1 px-4 pb-24 pt-2.5 md:px-[45px] md:pb-8">
+      {hostedApp ? (
+        // The app brings its own search and actions, beneath the Library's header and tabs.
+        <div className="min-h-0 flex-1">
+          <GatekeeperAppPage key={hostedApp} appId={hostedApp} />
+        </div>
+      ) : <div className="flex-1 px-4 pb-24 pt-2.5 md:px-[45px] md:pb-8">
         {loading ? (
           <div className="flex justify-center py-16">
             <div className="size-5 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />
@@ -168,8 +190,8 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
             grouping={tab === 'favorites' ? 'favorites' : 'recency'}
             onToggleStar={toggleStar}
             empty={query ? 'Nothing matches your search.'
-              : tab === 'favorites' ? 'Star apps and files to keep them here.'
-              : tab === 'apps' ? 'Apps you make will show up here.'
+              : tab === 'favorites' ? 'Star gadgets and files to keep them here.'
+              : tab === 'gadgets' ? 'Gadgets you make will show up here.'
               : 'Files you add to chats, and Google files agents work on, will show up here.'}
             selection={{
               selected,
@@ -182,7 +204,7 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
             }}
           />
         )}
-      </div>
+      </div>}
       {selectedItems.length > 0 && (
         <div className="pointer-events-none sticky bottom-4 flex justify-center">
           <div className="pointer-events-auto flex items-center gap-1 rounded-full bg-kumo-contrast p-1 pl-4 text-[13px] text-kumo-inverse shadow-lg">
@@ -196,12 +218,17 @@ export function LibraryPage({ tab, onTabChange }: { tab: LibraryTab; onTabChange
               {selectedItems.some(item => !item.starred) ? 'Star' : 'Unstar'}
             </button>
             <button type="button" className="h-7 cursor-pointer rounded-full px-3 hover:bg-kumo-inverse/15"
+              onClick={() => { remove(selectedItems); setSelected(new Set()) }}>
+              Remove from Library
+            </button>
+            <button type="button" className="h-7 cursor-pointer rounded-full px-3 hover:bg-kumo-inverse/15"
               onClick={() => setSelected(new Set())}>
               Clear
             </button>
           </div>
         </div>
       )}
+      {dialogs}
     </SplitPage>
   )
 }

@@ -8,6 +8,15 @@ export type MenuEntry =
   | { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean }
   | 'separator'
 
+/**
+ * Where focus goes as a menu closes (Base UI's `finalFocus`): back to what opened it, unless the
+ * chosen action moved it somewhere of its own, such as a field to rename the row in.
+ */
+export const returnFocusUnlessMoved = () => {
+  const focused = document.activeElement
+  return focused === null || focused === document.body || focused.closest('[role="menu"]') !== null
+}
+
 // Base UI's items, unlike Kumo's, bring no layout of their own.
 const BASE_ITEM = 'flex cursor-default select-none items-center gap-2 outline-none data-[disabled]:opacity-50'
 
@@ -23,6 +32,7 @@ export const ContextMenu = ({ items, children }: { items: MenuEntry[]; children:
     <BaseContextMenu.Portal>
       <BaseContextMenu.Positioner className="outline-none" style={MENU_POSITIONER_STYLE}>
         <BaseContextMenu.Popup
+          finalFocus={returnFocusUnlessMoved}
           className={`${MENU_CONTENT} origin-[var(--transform-origin)] transition-[opacity,scale] duration-150 ease-out data-[starting-style]:scale-[0.96] data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 data-[ending-style]:duration-100 motion-reduce:transition-none`}
         >
           {items.map((item, index) => item === 'separator'

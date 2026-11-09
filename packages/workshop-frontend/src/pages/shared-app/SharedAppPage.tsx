@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { InlineRename } from '../../components/InlineRename'
 import { Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { Link } from '@tanstack/react-router'
 import type { BlueprintOutput, WorkpieceId } from '@gadgets/workshop-shared/api'
@@ -17,6 +18,7 @@ import {
   CopyIcon,
   LinkIcon,
   LockIcon,
+  MoreIcon,
   RequestAccessIcon,
 } from '../../components/icons/designIcons'
 import { MENU_CONTENT, MENU_ITEM, MENU_POSITIONER_STYLE } from '../../components/menuStyles'
@@ -36,7 +38,7 @@ const AppGlyph = ({ output }: { output?: BlueprintOutput }) => (
  * drawn grab handle left out, since nothing drags it). The
  * same frame shows why it can't be opened (Figma "- 25" and "- 26").
  */
-export function SharedAppFrame({ title, output, choices, activeId, onSelect, status, presence, link, onCollapse, children }: {
+export function SharedAppFrame({ title, output, choices, activeId, onSelect, status, presence, menu, onRename, link, onCollapse, collapseLabel = 'Exit full screen', children }: {
   title: string
   output?: BlueprintOutput
   /** The other apps the visitor can open here; the pill becomes a switcher when there are some. */
@@ -47,19 +49,31 @@ export function SharedAppFrame({ title, output, choices, activeId, onSelect, sta
   status?: ReactNode
   /** Who is here, drawn as faces. */
   presence?: ReactNode
+  /** The More menu's items, for someone who builds the app; nothing leaves the button out. */
+  menu?: ReactNode
+  /** Renames the app, from a double-click on its name; nothing leaves it as it is. */
+  onRename?: (title: string) => void
   /** The app's address, for the copy-link button. */
   link?: string
   /** Leaves full screen for the app's workspace; absent for a visitor with nowhere to go. */
   onCollapse?: () => void
+  /** What the collapse button says: where it goes. */
+  collapseLabel?: string
   children: ReactNode
 }) {
   useDocumentTitle(title)
   const siteName = useSiteName()
   const toasts = useKumoToastManager()
+  const [renaming, setRenaming] = useState(false)
   const pillContent = <>
     <AppGlyph output={output} />
-    <span className="truncate">{title}</span>
+    {renaming
+      ? <InlineRename value={title} label={`Rename ${title}`} className="-ml-1 h-7 w-[min(320px,50vw)] px-1.5"
+          onDone={next => { setRenaming(false); if (next !== null) onRename?.(next) }} />
+      : <span className="truncate">{title}</span>}
   </>
+  const startRename = onRename && (() => setRenaming(true))
+  const pillTitle = onRename ? `${title} · Double-click to rename` : undefined
   const pillClass = roundButtonClass('pill', '!gap-2 !pl-1.5 !pr-3 min-w-0 max-w-[50vw] ring-kumo-tint')
   return (
     <div className="visual-viewport-fixed z-20 flex flex-col bg-kumo-base">
@@ -69,10 +83,10 @@ export function SharedAppFrame({ title, output, choices, activeId, onSelect, sta
             <CloudMark size={18} className="text-kumo-brand" />
           </SiteLogo>
         </RoundLink>
-        {choices && choices.length > 1 && onSelect ? (
+        {!renaming && choices && choices.length > 1 && onSelect ? (
           <DropdownMenu>
             <DropdownMenu.Trigger render={
-              <button type="button" className={`${pillClass} data-[popup-open]:bg-kumo-elevated`}>
+              <button type="button" className={`${pillClass} data-[popup-open]:bg-kumo-elevated`} title={pillTitle} onDoubleClick={startRename}>
                 {pillContent}
                 <ChevronUpDownIcon size={12} className="shrink-0 opacity-50" />
               </button>
@@ -87,11 +101,23 @@ export function SharedAppFrame({ title, output, choices, activeId, onSelect, sta
             </DropdownMenu.Content>
           </DropdownMenu>
         ) : (
-          <h1 className={`${pillClass} cursor-default hover:!bg-kumo-base`}>{pillContent}</h1>
+          <h1 className={`${pillClass} cursor-default hover:!bg-kumo-base`} title={renaming ? undefined : pillTitle} onDoubleClick={startRename}>{pillContent}</h1>
         )}
         {status}
         <span className="flex-1" />
         {presence && <span className="hidden items-center md:flex">{presence}</span>}
+        {menu && (
+          <DropdownMenu>
+            <DropdownMenu.Trigger render={
+              <button type="button" aria-label="More" className={roundButtonClass('icon', 'ring-kumo-tint')}>
+                <MoreIcon size={16} />
+              </button>
+            } />
+            <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE} align="end">
+              {menu}
+            </DropdownMenu.Content>
+          </DropdownMenu>
+        )}
         {link && (
           <RoundButton label="Copy link" onClick={async () => {
             const copied = await copyToClipboard(link)
@@ -101,7 +127,7 @@ export function SharedAppFrame({ title, output, choices, activeId, onSelect, sta
           </RoundButton>
         )}
         {onCollapse && (
-          <RoundButton label="Exit full screen" onClick={onCollapse}>
+          <RoundButton label={collapseLabel} onClick={onCollapse}>
             <CollapseIcon size={16} />
           </RoundButton>
         )}
@@ -115,13 +141,13 @@ export function SharedAppFrame({ title, output, choices, activeId, onSelect, sta
 
 /**
  * Why an app can't be opened (Figma "MacBook Pro 14\" - 25"): a lock, the reason, a way to ask
- * for access, and above it a way to make an app like it from the templates instead.
+ * for access, and above it a way to make an app like it from the blueprints instead.
  */
 export function NoAccessApp({ link }: { link: string }) {
   const { currentUser } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [requestOpen, setRequestOpen] = useState(false)
-  const request = `Could you give me access to this app? ${link}${currentUser ? `\nMy account is ${currentUser.name}.` : ''}`
+  const request = `Could you give me access to this gadget? ${link}${currentUser ? `\nMy account is ${currentUser.name}.` : ''}`
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto px-5 pb-5 pt-[34px]">
       <Link
@@ -132,16 +158,16 @@ export function NoAccessApp({ link }: { link: string }) {
           <CopyIcon size={16} />
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-[13px] font-medium leading-4 text-kumo-default">Do you want the same kind of app?</span>
-          <span className="text-[13px] leading-[18px] text-kumo-subtle">Use a template to roll your own</span>
+          <span className="text-[13px] font-medium leading-4 text-kumo-default">Do you want the same kind of gadget?</span>
+          <span className="text-[13px] leading-[18px] text-kumo-subtle">Use a blueprint to roll your own</span>
         </span>
         <ChevronRightIcon size={18} className="shrink-0 text-kumo-subtle" />
       </Link>
       <div className="flex flex-1 flex-col items-center justify-center gap-3 pb-[72px] text-center">
         <LockIcon size={24} className="text-kumo-default" />
-        <h1 className="text-[18px] font-medium leading-[22px] text-kumo-default">You don&rsquo;t have access to this app</h1>
+        <h1 className="text-[18px] font-medium leading-[22px] text-kumo-default">You don&rsquo;t have access to this gadget</h1>
         <p className="max-w-[382px] text-[14px] leading-[17px] text-kumo-subtle">
-          This is someone else&rsquo;s shared app. Only people they&rsquo;ve invited can see what&rsquo;s inside.
+          This is someone else&rsquo;s shared gadget. Only people they&rsquo;ve invited can see what&rsquo;s inside.
         </p>
         <button
           type="button"
@@ -156,7 +182,7 @@ export function NoAccessApp({ link }: { link: string }) {
         <Dialog className="responsive-dialog !z-[1000] !w-[min(400px,calc(100vw-32px))] bg-kumo-base p-5" size="sm">
           <Dialog.Title className="text-[16px] font-medium leading-5 text-kumo-default">Request access</Dialog.Title>
           <Dialog.Description className="mt-1.5 text-[13px] leading-[18px] text-kumo-subtle">
-            Send this to the person who shared the app. Once they invite you, the same link opens it.
+            Send this to the person who shared the gadget. Once they invite you, the same link opens it.
           </Dialog.Description>
           <pre className="mt-3 whitespace-pre-wrap break-all rounded-xl bg-kumo-recessed p-3 font-sans text-[13px] leading-[18px] text-kumo-default">{request}</pre>
           <div className="mt-4 flex justify-end gap-2">

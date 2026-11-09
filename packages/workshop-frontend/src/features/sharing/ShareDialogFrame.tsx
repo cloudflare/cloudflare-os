@@ -77,6 +77,6 @@ export const ShareDialogBody = ({ children }: { children: ReactNode }) => (
 export const sharePrimaryButtonClass =
   'ml-auto inline-flex h-[34px] shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-kumo-contrast px-3.5 text-[13px] font-medium text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-40'
 
-/** The footer's way into a sub-view, such as what people without access see. */
+/** The footer's way into a sub-view, such as what people without access see; as tall as the main action. */
 export const shareFooterPillClass =
-  'inline-flex h-7 min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full bg-kumo-tint px-2.5 text-[12px] font-medium text-kumo-default transition-colors hover:bg-kumo-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring'
+  'inline-flex h-[34px] min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full bg-kumo-tint px-3 text-[13px] font-medium text-kumo-default transition-colors hover:bg-kumo-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring'

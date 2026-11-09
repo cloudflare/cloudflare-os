@@ -385,7 +385,7 @@ function ModalHeader({
   return (
     <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
       <div className="min-w-0">
-        <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+        <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
           {title}
         </Dialog.Title>
         {description ? (
@@ -849,7 +849,7 @@ function CollectionSettingsModal({
       onOpenChangeComplete={onOpenChangeComplete}
     >
       <Dialog
-        className="z-[1000]! w-[min(480px,calc(100vw-32px))]! overflow-visible bg-kumo-base p-0 top-[14%]! translate-y-0!"
+        className="z-[1000]! w-[min(480px,calc(100vw-32px))]! overflow-visible bg-kumo-base p-0 top-[14%]! translate-y-0! rounded-[20px]!"
         size="sm"
       >
         {mode === "edit" ? (
@@ -1048,7 +1048,7 @@ function GitTokenManagementModal({
       onOpenChangeComplete={onOpenChangeComplete}
     >
       <Dialog
-        className="z-[1000]! w-[min(560px,calc(100vw-32px))]! overflow-visible bg-kumo-base p-0 top-[14%]! translate-y-0!"
+        className="z-[1000]! w-[min(560px,calc(100vw-32px))]! overflow-visible bg-kumo-base p-0 top-[14%]! translate-y-0! rounded-[20px]!"
         size="sm"
       >
         <ModalHeader
@@ -1971,7 +1971,7 @@ function CollectionEditor({
             className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            Skills
           </button>
           <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
             <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
@@ -2035,7 +2035,7 @@ function CollectionEditor({
         }}
       >
         <Dialog
-          className="z-[1000]! w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
+          className="z-[1000]! w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0! rounded-[20px]!"
           size="sm"
         >
           <ModalHeader
@@ -2086,7 +2086,7 @@ function CollectionEditor({
             className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            Skills
           </button>
         </div>
           {metadata && (

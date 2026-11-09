@@ -104,9 +104,9 @@ export const CreateCollectionDialog = ({
         if (!isOpen && gitSetup) onCreated();
       }}
     >
-      <Dialog className="w-[min(520px,calc(100vw-32px))]! bg-kumo-base p-0 top-[10%]! translate-y-0!" size="sm">
+      <Dialog className="w-[min(520px,calc(100vw-32px))]! bg-kumo-base p-0 top-[10%]! translate-y-0! rounded-[20px]!" size="sm">
         <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
-          <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+          <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
             {gitSetup ? "Set up Git mirror" : "Add collection"}
           </Dialog.Title>
           <Dialog.Close

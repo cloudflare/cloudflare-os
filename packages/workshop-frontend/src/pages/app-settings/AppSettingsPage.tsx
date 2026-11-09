@@ -19,7 +19,7 @@ const TABS: { value: AppSettingsTab; label: string }[] = [
 
 /**
  * An app's settings (Figma "MacBook Pro 14\" - 27"): back to the app, its glyph, name and what it
- * is for, then who can use it, publishing it as a template, and deleting it, with what runs it
+ * is for, then who can use it, publishing it as a blueprint, and deleting it, with what runs it
  * and its connections on tabs of their own.
  */
 export function AppSettingsPage({
@@ -28,6 +28,7 @@ export function AppSettingsPage({
   description,
   canPublish,
   onBack,
+  backLabel,
   onManageAccess,
   onPublish,
   onDelete,
@@ -36,10 +37,12 @@ export function AppSettingsPage({
 }: {
   title: string
   output?: BlueprintOutput
-  /** What the app is for: its template's description, when it came from one. */
+  /** What the app is for: its blueprint's description, when it came from one. */
   description?: string
   canPublish: boolean
   onBack: () => void
+  /** Where back goes, such as "Back to Library". */
+  backLabel: string
   onManageAccess: () => void
   onPublish: () => void
   /** Deletes the app; resolves once it is gone, and rejects if it could not be. */
@@ -67,9 +70,9 @@ export function AppSettingsPage({
   return (
     <div className="flex min-h-full flex-col">
       <div className="flex h-[68px] shrink-0 items-center gap-2.5 p-3 max-md:px-4 md:h-[58px]">
-        <RoundButton label="Back to app" shape="pill" onClick={onBack} className="!gap-2 !px-2.5 max-md:h-11">
+        <RoundButton label={backLabel} shape="pill" onClick={onBack} className="!gap-2 !px-2.5 max-md:h-11">
           <ChevronLeftIcon size={14} className="opacity-50" />
-          Back to app
+          {backLabel}
         </RoundButton>
       </div>
 
@@ -82,21 +85,21 @@ export function AppSettingsPage({
           <p className="max-w-[347px] text-center text-[14px] leading-[17px] text-kumo-subtle">{description}</p>
         )}
         <div className="flex max-w-full justify-center pb-4">
-          <PageTabs label="App settings" tabs={TABS} value={tab} onChange={setTab} />
+          <PageTabs label="Gadget settings" tabs={TABS} value={tab} onChange={setTab} />
         </div>
 
         <div className="flex w-full max-w-[640px] flex-col gap-2.5">
           {tab === 'settings' ? (
             <>
               <SettingsCard>
-                <Setting title="Access" description="Manage who gets access to your application. Control usage and editing rights.">
+                <Setting title="Access" description="Choose who can use this gadget and who can edit it.">
                   <button type="button" onClick={onManageAccess} className={`${SETTING_BUTTON} text-kumo-default`}>
                     <ManageAccessIcon size={16} />
                     Manage
                   </button>
                 </Setting>
                 <SettingsDivider />
-                <Setting title="Publish template" description="Make your app discoverable in the app templates.">
+                <Setting title="Publish blueprint" description="Let others start their own gadget from this one.">
                   <button type="button" onClick={onPublish} disabled={!canPublish} className={`${SETTING_BUTTON} text-kumo-default`}>
                     <PublishIcon size={16} />
                     Publish
@@ -105,9 +108,9 @@ export function AppSettingsPage({
               </SettingsCard>
               <SettingsCard>
                 <Setting
-                  title="Delete app"
+                  title="Delete gadget"
                   danger
-                  description={<>Delete app completely, so it will not be accessible anymore. <span className="text-kumo-default">This is not reversible.</span></>}
+                  description={<>Delete this gadget for everyone it is shared with. <span className="text-kumo-default">This is not reversible.</span></>}
                 >
                   <button type="button" onClick={() => setDeleteOpen(true)} className={`${SETTING_BUTTON} text-kumo-danger`}>
                     <TrashIcon size={14} />
@@ -124,7 +127,7 @@ export function AppSettingsPage({
 
       <DeleteConfirmationDialog
         open={deleteOpen}
-        title="Delete app?"
+        title="Delete gadget?"
         description={<>This removes <span className="font-medium text-kumo-default">{title}</span> for everyone it is shared with. You can&apos;t undo this.</>}
         isDeleting={deleting}
         onOpenChange={setDeleteOpen}

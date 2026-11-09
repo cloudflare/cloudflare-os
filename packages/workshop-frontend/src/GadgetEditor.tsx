@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
-import { useParams, useNavigate, useSearch } from '@tanstack/react-router'
+import { useParams, useNavigate, useRouter, useSearch } from '@tanstack/react-router'
+import { backToOriginLabel, type AppPageOrigin } from './features/gadget-page/appPageOrigin'
+import { logRpcFailure } from './rpcErrors'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
   Check,
@@ -315,7 +317,7 @@ function getStoredWorkspaceView(gadgetId: string | undefined): WorkspaceView | n
 // The menu item that opens the "Update from blueprint" dialog, in the desktop and mobile menus.
 const UpdateFromBlueprintLabel = ({ updateAvailable }: { updateAvailable: boolean }) => (
   <>
-    <span className="min-w-0 flex-1">Update from template…</span>
+    <span className="min-w-0 flex-1">Update from blueprint…</span>
     {updateAvailable && (
       <span className="ml-3 flex-shrink-0 text-[11px] leading-4 font-medium text-kumo-brand">
         Update available
@@ -345,12 +347,13 @@ function NoGadgetPlaceholder({ height }: { height: string }) {
  * A page of one app the editor shows instead of the workspace: the app full screen at its own
  * address, or its settings.
  */
-export type EditorAppPage = { kind: 'app' | 'settings'; appId: WorkpieceId }
+export type EditorAppPage = { kind: 'app' | 'settings'; appId: WorkpieceId; from?: AppPageOrigin }
 
 export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
+  const router = useRouter()
   const { authenticatedApi } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
@@ -1445,7 +1448,10 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   const appLink = page && `${window.location.origin}/workspace/${id}/app/${page.appId}`
   const openAppPage = (kind: EditorAppPage['kind'], appId: WorkpieceId) => navigate(kind === 'app'
     ? { to: '/workspace/$id/app/$appId', params: { id: id!, appId: String(appId) } }
-    : { to: '/workspace/$id/app/$appId/settings', params: { id: id!, appId: String(appId) } })
+    : {
+        to: '/workspace/$id/app/$appId/settings', params: { id: id!, appId: String(appId) },
+        search: { from: namedWorkspace ? 'workspace' : 'chat' },
+      })
   // Back from an app's own page to the workspace, with the app open in the pane. A chat started
   // outside any workspace has no workspace page to show, so that returns to the chat, the one
   // that built the app if it is known.
@@ -1458,12 +1464,30 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
       search: { ...(page ? { w: page.appId } : {}), ...(chat === undefined ? {} : { chat }) },
     })
   }
+  // Back from an app's own page to where it was opened from: the page before it when there is
+  // one, so a list keeps its tab and scroll; otherwise that page afresh, or for a link followed
+  // from elsewhere, the app's workspace (or chat).
+  const returnToOrigin = () => {
+    if (page?.from && router.history.canGoBack()) router.history.back()
+    else if (page?.from === 'library') navigate({ to: '/library', search: { tab: 'gadgets' } })
+    else if (page?.from === 'gadget') openAppPage('app', page.appId)
+    else leaveAppPage()
+  }
+  // Renames the gadget on screen from its title pill; the new name arrives through the workpiece
+  // list, as any rename does.
+  const renameSelectedGadget = (title: string) => {
+    selectedGadgetStub?.setTitle(title).catch(err => {
+      logRpcFailure('Failed to rename gadget:', err)
+      toasts.add({ title: "Couldn't rename the gadget", variant: 'error' })
+    })
+  }
+  const originLabel = backToOriginLabel(page?.from ?? (namedWorkspace ? 'workspace' : 'chat'))
 
   // ── error / loading states ────────────────────────────────────────────────────
   if (page?.kind === 'app' && error?.kind === 'open' &&
       (error.failure === 'access-denied' || error.failure === 'share-links-disabled')) {
     return (
-      <SharedAppFrame title="App" link={appLink}>
+      <SharedAppFrame title="Gadget" link={appLink}>
         <NoAccessApp link={appLink!} />
       </SharedAppFrame>
     )
@@ -1580,16 +1604,41 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
         <GadgetUseView
           overseer={overseer.stub}
           gadget={selectedGadgetStub}
-          gadgetMode={gadget?.id === selectedGadgetId ? gadget.mode ?? null : null}
+          // A builder's own stub carries no mode: it is always live.
+          gadgetMode={gadget?.id === selectedGadgetId ? gadget.mode ?? 'live' : null}
           workspaceId={id!}
           // An explore passed; the server kept its accounts, so reopening admits live.
           onGadgetLive={() => setGadgetOpenAttempt(attempt => attempt + 1)}
           selectedGadgetId={selectedGadgetId}
           // Drafts belong to their chat; full screen shows the workspace's apps.
           gadgets={visibleGadgets.filter(g => g.chatId === undefined)}
+          // Opened from a list, it goes back there to open another.
+          switchable={!page?.from}
+          onRename={!isUseOnly && selectedGadgetStub ? renameSelectedGadget : undefined}
+          // What the gadget's pane offers, so it reads the same full screen.
+          menu={!isUseOnly && selectedGadgetSummary && (
+            <>
+              <GadgetExportMenu
+                gadget={selectedGadgetStub}
+                gadgetTitle={selectedGadgetSummary.title}
+                asSubmenu={{ itemClassName: MENU_ITEM, contentClassName: MENU_CONTENT }}
+              />
+              <DropdownMenu.Item
+                onClick={() => navigate({
+                  to: '/workspace/$id/app/$appId/settings',
+                  params: { id: id!, appId: String(selectedGadgetSummary.id) },
+                  search: { from: 'gadget' },
+                })}
+                className={MENU_ITEM}
+              >
+                Gadget settings
+              </DropdownMenu.Item>
+            </>
+          )}
           onSelectGadget={page ? appId => openAppPage('app', appId) : handleSelectWorkpiece}
           link={appLink ?? (selectedGadgetId !== null ? `${window.location.origin}/workspace/${id}/app/${selectedGadgetId}` : undefined)}
-          onCollapse={isUseOnly ? undefined : leaveAppPage}
+          onCollapse={isUseOnly ? undefined : returnToOrigin}
+          collapseLabel={page?.from ? originLabel : undefined}
           // A lost connection breaks the stub too; reconnecting reopens the gadget.
           gadgetOpenFailure={!showReconnecting && gadgetOpenFailure?.id === selectedGadgetId
             ? gadgetOpenFailure.message
@@ -1613,15 +1662,16 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
             output={selectedGadgetSummary.output}
             description={appDescription}
             canPublish={selectedGadgetStub !== null}
-            // In a chat's own workspace the app lives beside the chat, so back is to the chat.
-            onBack={() => namedWorkspace ? openAppPage('app', selectedGadgetSummary.id) : leaveAppPage()}
+            onBack={returnToOrigin}
+            backLabel={originLabel}
             onManageAccess={() => openShareModal(selectedGadgetSummary.id)}
             onPublish={() => setBlueprintModalOpen(true)}
             onDelete={async () => {
               if (!selectedGadgetStub) return
               try {
                 await selectedGadgetStub.remove()
-                navigate({ to: '/workspace/$id', params: { id: id! }, search: {} })
+                if (page.from === 'library') navigate({ to: '/library', search: { tab: 'gadgets' } })
+                else navigate({ to: '/workspace/$id', params: { id: id! }, search: {} })
               } catch (err) {
                 console.error('Failed to delete app:', err)
                 toasts.add({ title: "Couldn't delete the app", variant: 'error' })
@@ -1633,7 +1683,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                 <AutomationList
                   overseer={overseer.stub}
                   scope={{ gadgetId: selectedGadgetSummary.id }}
-                  empty="Ask a chat to run this app on a schedule or when something happens, and it shows up here."
+                  empty="Ask a chat to run this gadget on a schedule or when something happens, and it shows up here."
                 />
                 <AgentList overseer={overseer.stub} workspaceId={id!} gadgetIds={[selectedGadgetSummary.id]} />
               </div>
@@ -1899,7 +1949,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
             onShare={!selectedGadgetSummary || metadata.role === 'use' ? undefined
               : selectedGadgetSummary.chatId === undefined ? () => openShareModal(selectedGadgetSummary.id)
               : false}
-            shareLabel={selectedGadgetSummary?.chatId === undefined ? 'Share app' : 'Keep this draft to share it'}
+            shareLabel={selectedGadgetSummary?.chatId === undefined ? 'Share gadget' : 'Keep this draft to share it'}
             onExpand={selectedWorkpieceSummary?.type === 'worktree'
               ? undefined
               : activeTab === 'app' && !previewMode && enterGadgetFullscreen}
@@ -1908,6 +1958,8 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
               : `Full screen is available in ${formatOf(selectedGadgetSummary?.output).noun} view`}
             onClose={closeWorkspacePane}
             closeLabel={selectedWorkpieceSummary?.type === 'worktree' ? 'Close worktree pane' : 'Close gadget pane'}
+            onRename={selectedGadgetStub && selectedGadgetSummary?.chatId === undefined && metadata.role !== 'use'
+              ? renameSelectedGadget : undefined}
             menu={<>
               {viewTabs.length > 1 && viewTabs.map(tab => (
                 <DropdownMenu.Item key={tab.value} onClick={() => handleTabSelect(tab.value)} className={MENU_ITEM}>
@@ -1929,7 +1981,7 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                     onClick={() => setBlueprintModalOpen(true)}
                     className={MENU_ITEM}
                   >
-                    Publish as template…
+                    Publish as blueprint…
                   </DropdownMenu.Item>
                   {!builtFromScratch && (
                     <DropdownMenu.Item
@@ -1947,10 +1999,11 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                         onClick={() => navigate({
                           to: '/workspace/$id/app/$appId/settings',
                           params: { id: id!, appId: String(selectedGadgetSummary.id) },
+                          search: { from: namedWorkspace ? 'workspace' : 'chat' },
                         })}
                         className={MENU_ITEM}
                       >
-                        App settings
+                        Gadget settings
                       </DropdownMenu.Item>
                     </>
                   )}

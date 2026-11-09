@@ -1,4 +1,4 @@
-import { Button, DropdownMenu, LayerCard, Text } from "@cloudflare/kumo";
+import { Button, DropdownMenu, Text } from "@cloudflare/kumo";
 import { ContextMenu } from "@cloudflare/kumo/primitives/context-menu";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
@@ -164,7 +164,7 @@ const StyledRow = ({
             </span>
           ) : item.description ? (
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink">
+              <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink font-medium">
                 {item.name}
               </Text>
               <Text
@@ -178,7 +178,7 @@ const StyledRow = ({
               </Text>
             </span>
           ) : (
-            <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
+            <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1 font-medium">
               {item.name}
             </Text>
           )}
@@ -224,15 +224,16 @@ const StyledRow = ({
   const rowClassName = cn(
     rowProps.className,
     "group relative focus-visible:z-20",
-    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
-    !renaming && !passiveMessage && "active:!bg-kumo-recessed",
+    // The Workshop Library's rows: 49px, rounded, washed with tint on hover.
+    "!flex !h-auto w-full min-h-[49px] min-w-0 items-center justify-start gap-3 !rounded-[14px] pr-3 text-left",
+    !renaming && !passiveMessage && "hover:!bg-kumo-tint active:!bg-kumo-tint",
     !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
     !renaming && state.draggable && showTouchDragHandle && "[@media(any-pointer:coarse)]:pr-11",
-    highlighted && "bg-kumo-recessed",
+    highlighted && "bg-kumo-tint",
     coarsePointer && !renaming && (
       highlighted
-        ? "hover:!bg-kumo-recessed"
-        : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
+        ? "hover:!bg-kumo-tint"
+        : "hover:!bg-transparent data-[popup-open]:!bg-kumo-tint"
     ),
   );
   const row = renaming || passiveMessage ? (
@@ -288,7 +289,7 @@ export const HierarchicalList = ({
   const [openActionsItemId, setOpenActionsItemId] = useState<string | null>(null);
 
   return (
-    <LayerCard className="bg-kumo-control p-1">
+    <div className="rounded-[20px] bg-kumo-contrast/[0.03] p-2">
       <HierarchicalListPrimitive
         {...props}
         getDropIndicatorInset={itemPadding}
@@ -355,7 +356,7 @@ export const HierarchicalList = ({
           </div>
         )}
       />
-    </LayerCard>
+    </div>
   );
 };
 

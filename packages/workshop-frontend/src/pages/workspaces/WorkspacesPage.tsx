@@ -183,7 +183,7 @@ export function WorkspacesPage() {
         ) : groups.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-center">
             <p className="text-[13px] leading-5 text-kumo-subtle">
-              {needle || filter !== 'all' ? 'No workspaces match.' : 'Workspaces hold the chats, apps and files you share with others.'}
+              {needle || filter !== 'all' ? 'No workspaces match.' : 'Workspaces hold the chats, gadgets and files you share with others.'}
             </p>
             {!needle && filter === 'all' && (
               <button type="button" onClick={() => setCreating(true)}

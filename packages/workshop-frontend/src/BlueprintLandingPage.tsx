@@ -791,8 +791,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       <BlueprintStatePage
         title="Blueprint not found"
         message="This blueprint may have been removed or the link may be incorrect."
-        actionLabel="Back to Explore"
-        onAction={() => navigate({ to: '/explore' })}
+        actionLabel="Back to Blueprints"
+        onAction={() => navigate({ to: '/blueprints' })}
       />
     )
   }
@@ -802,8 +802,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       <BlueprintStatePage
         title="Couldn’t load blueprint"
         message={error || 'Failed to load blueprint.'}
-        actionLabel="Back to Explore"
-        onAction={() => navigate({ to: '/explore' })}
+        actionLabel="Back to Blueprints"
+        onAction={() => navigate({ to: '/blueprints' })}
       />
     )
   }
@@ -839,7 +839,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
             if (router.history.canGoBack()) {
               router.history.back()
             } else {
-              navigate({ to: '/explore' })
+              navigate({ to: '/blueprints' })
             }
           }}
           className="mb-8 inline-flex cursor-pointer items-center gap-2 px-1 py-1 text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-subtle transition-[color,transform] duration-150 ease-out hover:text-kumo-default active:scale-[0.98]"

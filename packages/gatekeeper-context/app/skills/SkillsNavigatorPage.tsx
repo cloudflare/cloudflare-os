@@ -1,12 +1,4 @@
-import {
-  Button,
-  DropdownMenu,
-  Input,
-  LayerCard,
-  Loader,
-  Text,
-  Tooltip,
-} from "@cloudflare/kumo";
+import { DropdownMenu, Loader, Tooltip } from "@cloudflare/kumo";
 import {
   FolderPlus,
   MagnifyingGlassIcon,
@@ -80,37 +72,30 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
   const reload = () => setReloadKey((value) => value + 1);
 
   return (
-    <main className="h-full overflow-y-auto bg-kumo-base px-5 py-8 sm:px-10 sm:py-10">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
-        <header>
-          <Text as="h1" variant="heading" size="lg">Skills</Text>
-          <Text variant="secondary" size="sm" DANGEROUS_className="mt-1 max-w-2xl">
-            Skills your agents can use, organized by collection.
-          </Text>
-        </header>
-
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1">
-            <MagnifyingGlassIcon
-              aria-hidden
-              size={16}
-              className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-kumo-inactive"
-            />
-            <Input
+    <main className="h-full overflow-y-auto bg-kumo-base px-4 pb-8 pt-2.5 md:px-[45px]">
+      <div className="flex w-full flex-col gap-3">
+        <div className="flex items-center justify-end gap-2">
+          <label className="flex h-[34px] w-[min(220px,50vw)] shrink-0 items-center gap-2 rounded-full bg-kumo-base px-2.5 ring-1 ring-kumo-line focus-within:ring-2 focus-within:ring-kumo-ring">
+            <MagnifyingGlassIcon aria-hidden size={16} className="shrink-0 text-kumo-subtle" />
+            <input
               aria-label="Search skills"
+              type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search skills"
-              className="w-full pl-9"
+              placeholder="Search"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-kumo-default outline-none placeholder:text-kumo-subtle"
             />
-          </div>
+          </label>
           <DropdownMenu>
             <DropdownMenu.Trigger
               render={(
-                <Button variant="primary">
-                  <PlusIcon size={16} weight="bold" />
+                <button
+                  type="button"
+                  className="inline-flex h-[34px] shrink-0 items-center gap-1.5 rounded-full bg-kumo-contrast px-3 text-[13px] font-medium leading-4 text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+                >
+                  <PlusIcon size={14} weight="bold" />
                   Add
-                </Button>
+                </button>
               )}
             />
             <DropdownMenu.Content align="end" sideOffset={6}>
@@ -158,18 +143,20 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
 
         <div className="min-h-[240px]">
           {status === "loading" ? (
-            <LayerCard
-              role="status"
-              aria-label="Loading skills"
-              className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1"
-            >
-              <Loader size="lg" />
-            </LayerCard>
+            <div role="status" aria-label="Loading skills" className="flex justify-center py-16">
+              <Loader />
+            </div>
           ) : status === "error" ? (
-            <LayerCard className="flex min-h-[240px] flex-col items-center justify-center gap-3 bg-kumo-control p-1">
-              <Text variant="secondary" size="sm">Skills could not be loaded.</Text>
-              <Button variant="secondary" onClick={reload}>Retry</Button>
-            </LayerCard>
+            <div className="flex flex-col items-center gap-3 py-16 text-center">
+              <p className="text-[13px] text-kumo-subtle">Skills could not be loaded.</p>
+              <button
+                type="button"
+                onClick={reload}
+                className="inline-flex h-[34px] items-center rounded-full bg-kumo-base px-3 text-[13px] font-medium text-kumo-default ring-1 ring-kumo-line hover:bg-kumo-elevated"
+              >
+                Retry
+              </button>
+            </div>
           ) : navigator.length > 0 ? (
             <SkillsNavigatorTree
               navigator={navigator}
@@ -191,11 +178,11 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
               onChanged={reload}
             />
           ) : (
-            <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
-              <Text variant="secondary" size="sm">
-                {query.trim() ? "No skills match your search." : "No skills are available."}
-              </Text>
-            </LayerCard>
+            <p className="mx-auto max-w-sm py-16 text-center text-[13px] leading-5 text-kumo-subtle">
+              {query.trim()
+                ? "No skills match your search."
+                : "No skills yet. Add one, or a collection to keep them in."}
+            </p>
           )}
         </div>
       </div>

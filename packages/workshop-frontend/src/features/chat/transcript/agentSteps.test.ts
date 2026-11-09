@@ -15,7 +15,7 @@ describe('describeAgentStep', () => {
 
   it("names the newest tool call's step, even while text from before it is on screen", () => {
     expect(step({ writing: true, toolCalls: [{ toolName: 'webFetch' }, { toolName: 'listBlueprints' }] }))
-      .toEqual({ label: 'Browsing templates...' })
+      .toEqual({ label: 'Browsing blueprints...' })
   })
 
   it('puts waiting on the person first, and holds it still', () => {

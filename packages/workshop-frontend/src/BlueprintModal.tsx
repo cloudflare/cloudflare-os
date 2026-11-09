@@ -470,7 +470,7 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                     Create blueprint
                   </span>
                   <span className="mt-0.5 block text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                    Publish this gadget as a reusable template.
+                    Publish this gadget as a reusable blueprint.
                   </span>
                 </span>
                 <Plus size={16} className="text-kumo-subtle" />

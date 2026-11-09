@@ -1,11 +1,11 @@
 // Loading and instantiating the deployment's standard output formats. Shared by every surface that
 // offers them, so "what happens when you pick a format" is decided once.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { Overseer, OutputFormatOffer } from '@gadgets/workshop-shared/api'
+import type { Overseer, OutputFormatOffer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 
 type AuthenticatedApiStub = ReturnType<typeof useAuthenticatedApi>['authenticatedApi']
@@ -77,8 +77,52 @@ export async function createFromFormat(
   }
 }
 
-/** `enabled` defers the fetch until a surface is about to show the list, such as a menu opening. */
-export function useOutputFormats(enabled = true): OutputFormats {
+/** A gadget a format was made as. */
+export type CreatedGadget = { id: WorkpieceId; title: string }
+
+/**
+ * Add a format's gadget to an existing workspace. Only for a format that
+ * needs no setup: one that does has its accounts chosen on its blueprint's page, which makes a
+ * workspace of its own.
+ */
+async function createInWorkspace(
+  api: AuthenticatedApiStub,
+  toasts: Toasts,
+  workspaceId: string,
+  format: OutputFormatOffer,
+): Promise<CreatedGadget> {
+  const overseer = api.openWorkspace(workspaceId)
+  const gadget = overseer.createGadgetFromBlueprint(format.blueprintId)
+  try {
+    const [id, title] = await Promise.all([gadget.getId(), gadget.getTitle()])
+    return { id, title }
+  } catch (err) {
+    console.error('Failed to add a format to the workspace:', err)
+    toasts.add({ title: `Couldn't create a new ${format.output.noun}`, variant: 'error' })
+    throw err
+  } finally {
+    gadget[Symbol.dispose]()
+    overseer[Symbol.dispose]()
+  }
+}
+
+/** A workspace to make formats in, rather than each in a workspace of its own. */
+export type OutputFormatTarget = {
+  workspaceId: string
+  /** Shows the new gadget, which `create` has added to the workspace. */
+  onCreated: (gadget: CreatedGadget, format: OutputFormatOffer) => void
+}
+
+/**
+ * `enabled` defers the fetch until a surface is about to show the list, such as a menu opening.
+ * With a `target`, the list is the formats that can be made in its workspace, and `create` adds
+ * the new gadget there; without one, each is made in a workspace of its own and opened.
+ */
+export function useOutputFormats(enabled = true, target?: OutputFormatTarget): OutputFormats {
+  const workspaceId = target?.workspaceId
+  // Read through a ref: callers pass a new callback each render.
+  const onCreatedRef = useRef(target?.onCreated)
+  onCreatedRef.current = target?.onCreated
   const { authenticatedApi } = useAuthenticatedApi()
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
@@ -90,7 +134,7 @@ export function useOutputFormats(enabled = true): OutputFormats {
     let cancelled = false
     loadOutputFormats(authenticatedApi)
       .then((list) => {
-        if (!cancelled) setFormats(list)
+        if (!cancelled) setFormats(workspaceId === undefined ? list : list.filter(format => !format.requiresSetup))
       })
       .catch((err) => {
         // Nothing else depends on this, so a failure is a missing shortcut, not an error.
@@ -99,18 +143,24 @@ export function useOutputFormats(enabled = true): OutputFormats {
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi, enabled])
+  }, [authenticatedApi, enabled, workspaceId])
 
   const create = useCallback(async (format: OutputFormatOffer) => {
     setCreating(format.blueprintId)
     try {
-      await createFromFormat(authenticatedApi, navigate, toasts, format)
+      if (workspaceId === undefined) await createFromFormat(authenticatedApi, navigate, toasts, format)
+      else {
+        const gadget = await createInWorkspace(authenticatedApi, toasts, workspaceId, format)
+        // Staying on the page, so the row is free again once its gadget is shown.
+        setCreating(null)
+        onCreatedRef.current?.(gadget, format)
+      }
     } catch {
       // Already reported; clear the busy state so the row can be retried. On success the component
       // is navigating away, so it stays busy.
       setCreating(null)
     }
-  }, [authenticatedApi, navigate, toasts])
+  }, [authenticatedApi, navigate, toasts, workspaceId])
 
   return { formats, creating, create }
 }

@@ -1,18 +1,24 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { libraryTabOfApp } from '../features/library/libraryApps'
 import GatekeeperAppPage from '../GatekeeperAppPage'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useGatekeeperApps } from '../useGatekeeperApps'
 
 /**
  * Generic host for any gatekeeper-served management app (VendorDescription.providesUi). The set of
- * apps and their nav entries come from the backend (useGatekeeperApps); nothing about a specific
- * gatekeeper is hardcoded here. GatekeeperAppPage renders "not available" if the id isn't bound.
+ * apps and their nav entries come from the backend (useGatekeeperApps), except that the apps the
+ * Library hosts as tabs (LIBRARY_APPS) redirect there. GatekeeperAppPage renders "not available" if the id isn't bound.
  *
  * The file is `gatekeepers_.$appId` (trailing underscore) so the URL is /gatekeepers/$appId without
  * nesting inside the /gatekeepers connectors page's component.
  */
 export const Route = createFileRoute('/gatekeepers_/$appId')({
   component: GatekeeperApp,
+  // The apps the Library hosts as tabs open there.
+  beforeLoad: ({ params }) => {
+    const tab = libraryTabOfApp(params.appId)
+    if (tab) throw redirect({ to: '/library', search: { tab }, replace: true })
+  },
 })
 
 function GatekeeperApp() {

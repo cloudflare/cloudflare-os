@@ -98,6 +98,32 @@ describe("favorites", () => {
   });
 });
 
+describe("library removals", () => {
+  it("records each kind with only the fields it defines, and puts an item back", async () => {
+    const {user, workspaceId} = await setup();
+    await user.setLibraryRemoved({kind: "external", workspaceId, subjectId: "doc1",
+      // A field the kind doesn't define is not stored.
+      title: "Plan"} as never, true);
+    await user.setLibraryRemoved({kind: "file", workspaceId, chatId: 1, fileId: "f"}, true);
+    await user.setLibraryRemoved({kind: "app", workspaceId, workpieceId: 3}, true);
+
+    const removals = await user.listLibraryRemovals();
+    expect(removals).toHaveLength(3);
+    expect(removals.find(r => r.kind === "external")).toEqual(
+      {kind: "external", workspaceId, subjectId: "doc1", removed: expect.any(Date)});
+
+    await user.setLibraryRemoved({kind: "file", workspaceId, chatId: 1, fileId: "f"}, false);
+    expect((await user.listLibraryRemovals()).map(r => r.kind).toSorted()).toEqual(["app", "external"]);
+  });
+
+  it("refuses to remove something in a workspace the user doesn't have", async () => {
+    const {user} = await setup();
+    await runInDurableObject(user, instance =>
+      expect(instance.setLibraryRemoved({kind: "app", workspaceId: "elsewhere", workpieceId: 1}, true))
+        .rejects.toThrow(/No such workspace/));
+  });
+});
+
 describe("listing a workspace's chat files", () => {
   it("lists committed attachments that recorded their file, newest first, by chat", async () => {
     const workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());

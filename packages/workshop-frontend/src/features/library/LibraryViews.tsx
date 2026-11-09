@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { FileText, ImageSquare } from '@phosphor-icons/react'
-import type { BlueprintOutput, FavoriteItemSpec } from '@gadgets/workshop-shared/api'
+import type { BlueprintOutput, FavoriteItemSpec, LibraryItemRef } from '@gadgets/workshop-shared/api'
 import { FormatGlyph } from '../../components/format/FormatVisuals'
 import { DraftFileIcon } from '../drafts/DraftFileIcon'
 import { mediaKind } from '../drafts/drafts'
@@ -9,6 +9,7 @@ import { FileAudioIcon, FilePdfIcon, MoreIcon, StarIcon } from '../../components
 import { MENU_CONTENT, MENU_POSITIONER_STYLE } from '../../components/menuStyles'
 import { ContextMenu, DropdownMenuEntries, type MenuEntry } from '../../components/ContextMenu'
 import { libraryBucket, libraryTimeLabel } from './libraryTime'
+import { InlineRename } from '../../components/InlineRename'
 
 /** One app or file as the Library shows it, in a list row or a grid tile. */
 export type LibraryItem = {
@@ -23,6 +24,8 @@ export type LibraryItem = {
    * starred: a file in a connected service, which lives there rather than here.
    */
   favorite?: FavoriteItemSpec
+  /** How to take it out of the Library, for what can be (see `AuthenticatedApi.setLibraryRemoved()`). */
+  libraryRef?: LibraryItemRef
   /** Where it lives, shown under its name in the global Library. */
   context?: string
   mimeType?: string
@@ -32,6 +35,11 @@ export type LibraryItem = {
   onOpen: () => void
   /** What can be done with it, in its More menu and on a right-click, if anything. */
   actions?: MenuEntry[]
+  /**
+   * Present while its name is being edited in place (its Rename action): called with the new
+   * name, or null when it is kept.
+   */
+  renaming?: { finish: (title: string | null) => void }
 }
 
 /** A filled version of the design's star, for starred items. */
@@ -141,7 +149,8 @@ function ItemMenu({ item, className = '' }: { item: LibraryItem; className?: str
           <MoreIcon size={16} />
         </button>
       } />
-      <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE} align="end">
+      {/* The menu is portaled, but React still bubbles its clicks to the row, which would open the item. */}
+      <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE} align="end" onClick={event => event.stopPropagation()}>
         <DropdownMenuEntries items={item.actions} />
       </DropdownMenu.Content>
     </DropdownMenu>
@@ -179,17 +188,19 @@ function LibraryRow({ item, onToggleStar, selection }: {
         <div
           role="button"
           tabIndex={0}
-          onClick={item.onOpen}
+          onClick={item.renaming ? undefined : item.onOpen}
           onKeyDown={event => {
-            if (event.target !== event.currentTarget) return
+            if (item.renaming || event.target !== event.currentTarget) return
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.onOpen() }
           }}
-          className="flex h-[49px] cursor-pointer items-center gap-3 rounded-[14px] px-3 outline-none transition-colors hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-ring [[data-popup-open]>*>&]:bg-kumo-tint"
+          className={`flex h-[49px] cursor-pointer items-center gap-3 rounded-[14px] px-3 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-kumo-ring [[data-popup-open]>*>&]:bg-kumo-tint ${item.renaming ? 'bg-kumo-tint' : 'hover:bg-kumo-tint'}`}
         >
           <ItemGlyph item={item} />
           <span className="flex min-w-0 flex-1 items-baseline gap-2">
-            <span className="truncate text-[14px] font-medium leading-[17px] text-kumo-default">{item.title}</span>
-            {item.context && (
+            {item.renaming
+              ? <InlineRename value={item.title} label={`Rename ${item.title}`} onDone={item.renaming.finish} className="-mx-1.5 h-7 flex-1 self-center px-1.5 text-[14px] font-medium leading-[17px]" />
+              : <span className="truncate text-[14px] font-medium leading-[17px] text-kumo-default">{item.title}</span>}
+            {item.context && !item.renaming && (
               <span className="hidden truncate text-[13px] text-kumo-subtle sm:inline">{item.context}</span>
             )}
           </span>
@@ -213,9 +224,9 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
       <div
         role="button"
         tabIndex={0}
-        onClick={item.onOpen}
+        onClick={item.renaming ? undefined : item.onOpen}
         onKeyDown={event => {
-          if (event.target !== event.currentTarget) return
+          if (item.renaming || event.target !== event.currentTarget) return
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.onOpen() }
         }}
         title={item.title}
@@ -235,9 +246,11 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
             <span className="absolute left-3.5 top-3.5 text-kumo-default">
               {item.kind === 'app' ? <FormatGlyph output={item.output} size="md" weight="regular" /> : <FileTypeIcon mimeType={item.mimeType} />}
             </span>
-            <span className="absolute inset-x-3.5 bottom-3.5 line-clamp-2 break-all text-[13px] leading-[18px] text-kumo-default">
-              {item.title}
-            </span>
+            {item.renaming
+              ? <InlineRename value={item.title} label={`Rename ${item.title}`} onDone={item.renaming.finish} className="absolute inset-x-2.5 bottom-2.5 h-7 px-1.5 text-[13px] leading-[18px]" />
+              : <span className="absolute inset-x-3.5 bottom-3.5 line-clamp-2 break-all text-[13px] leading-[18px] text-kumo-default">
+                  {item.title}
+                </span>}
           </>
         )}
         {item.favorite && <span className={`absolute right-2 top-2 ${url && !isPdf ? 'text-white [&_button]:!text-white' : ''}`}>
@@ -253,7 +266,7 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
             {item.starred ? <StarFilledIcon size={16} /> : <StarIcon size={16} />}
           </button>
         </span>}
-        <ItemMenu item={item} className="absolute bottom-2 right-2 bg-kumo-base/80" />
+        {!item.renaming && <ItemMenu item={item} className="absolute bottom-2 right-2 bg-kumo-base/80" />}
       </div>
     </ContextMenu>
   )
@@ -261,7 +274,7 @@ function LibraryTile({ item, onToggleStar }: { item: LibraryItem; onToggleStar: 
 
 export type LibraryLayout = 'list' | 'grid'
 
-/** How a Library splits its list into cards: favorites first, by recency, or as one card. */
+/** How a Library splits its list into cards: favorites first, or starred then by recency, or as one card. */
 export type LibraryGrouping = 'favorites' | 'recency' | 'none'
 
 /** The Library's list or grid of items, grouped into the design's grey cards (Figma "Frame 817"). */
@@ -283,18 +296,22 @@ export function LibraryCollection({
   if (items.length === 0) {
     return <div className="py-16 text-center text-[13px] leading-5 text-kumo-subtle">{empty}</div>
   }
+  // What the user starred comes first, wherever it is listed.
+  const starredFirst = grouping === 'none' ? items
+    : [...items.filter(item => item.starred), ...items.filter(item => !item.starred)]
   if (layout === 'grid') {
     return (
       <div className="grid grid-cols-[repeat(auto-fill,minmax(121px,1fr))] gap-2 sm:grid-cols-[repeat(auto-fill,121px)]">
-        {items.map(item => <LibraryTile key={item.key} item={item} onToggleStar={onToggleStar} />)}
+        {starredFirst.map(item => <LibraryTile key={item.key} item={item} onToggleStar={onToggleStar} />)}
       </div>
     )
   }
   const groups = grouping === 'none' ? [items]
     : grouping === 'favorites'
       ? [items.filter(item => item.starred), items.filter(item => !item.starred)]
-      : [items.filter(item => libraryBucket(item.date) === 'recent'),
-         items.filter(item => libraryBucket(item.date) === 'earlier')]
+      : [items.filter(item => item.starred),
+         items.filter(item => !item.starred && libraryBucket(item.date) === 'recent'),
+         items.filter(item => !item.starred && libraryBucket(item.date) === 'earlier')]
   return (
     <div className="flex flex-col gap-2.5">
       {groups.filter(group => group.length > 0).map((group, index) => (

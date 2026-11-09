@@ -32,6 +32,7 @@ import {
   UserPlusIcon,
 } from '../../components/icons/designIcons'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../../components/menuStyles'
+import { useOutputFormats } from '../../components/format/useOutputFormats'
 import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
 import { useRecentChats } from '../../features/recent-chats/useRecentChats'
 import { MemberStack } from '../../features/workspaces/MemberStack'
@@ -74,7 +75,7 @@ const CHAT_FILTERS: LibraryFilterOption[] = [
 
 const LIBRARY_FILTERS: LibraryFilterOption[] = [
   { value: 'all', label: 'Everything' },
-  { value: 'app', label: 'Apps' },
+  { value: 'app', label: 'Gadgets' },
   { value: 'file', label: 'Files' },
 ]
 
@@ -206,7 +207,7 @@ function ChatRow({ row, renaming, onOpen, onToggleStar, onRename, onRenameDone, 
   )
 }
 
-const ROLE_LABELS = { owner: 'Owner', build: 'Member', use: 'Uses apps' } as const
+const ROLE_LABELS = { owner: 'Owner', build: 'Member', use: 'Uses gadgets' } as const
 
 /** A workspace member (in the Library row's shape): face, name, and what they can do. */
 function MemberRow({ person, role, you }: { person: AiChatAuthorInfo; role: keyof typeof ROLE_LABELS; you: boolean }) {
@@ -401,14 +402,30 @@ export function WorkspacePage({
   }
 
   // ── Library ────────────────────────────────────────────────────────────────────
+  // When gadgets were made here this visit, from the New menu: summaries carry no dates, and a
+  // new one belongs at the top rather than with the workspace's last activity.
+  const [createdHere, setCreatedHere] = useState<ReadonlyMap<number, Date>>(new Map())
   const lastActive = chats?.[0]?.lastActive ?? new Date(0)
   const apps = useMemo(() => gadgets
     .filter(g => g.chatId === undefined)
-    .map(g => ({ workspaceId, workpieceId: g.id, title: g.title, output: g.output, date: lastActive })),
-  [gadgets, workspaceId, lastActive])
+    .map(g => ({ workspaceId, workpieceId: g.id, title: g.title, output: g.output,
+      date: createdHere.get(g.id) ?? lastActive, canDelete: metadata.role !== 'use' })),
+  [gadgets, workspaceId, lastActive, metadata.role, createdHere])
   const workspaceFiles = useMemo(() => (files ?? []).map(file => ({ ...file, workspaceId })), [files, workspaceId])
-  const { appItems, fileItems, preview, setPreview } = useLibraryItems({
-    apps, files: workspaceFiles, external: externalFiles, favorites: favorites ?? [], starred, showContext: false,
+  const { appItems, fileItems, preview, setPreview, previewApp, dialogs } = useLibraryItems({
+    apps, files: workspaceFiles, external: externalFiles, favorites: favorites ?? [], starred, setStarred,
+    showContext: false,
+    origin: 'workspace',
+  })
+  // The formats a builder can add to this workspace from the New menu. The new gadget opens
+  // beside the Library, where it is listed, as opening it there would.
+  const outputFormats = useOutputFormats(metadata.role !== 'use', {
+    workspaceId,
+    onCreated: (gadget, format) => {
+      setCreatedHere(current => new Map(current).set(gadget.id, new Date()))
+      onTabChange('library')
+      previewApp({ workspaceId, workpieceId: gadget.id, title: gadget.title, output: format.output })
+    },
   })
   const libraryFilter = filters.library
   const libraryItems: LibraryItem[] = useMemo(() => arrangeLibraryItems(
@@ -532,11 +549,23 @@ export function WorkspacePage({
               key={tab}
               query={query}
               onQueryChange={setQuery}
-              placeholder={tab === 'chats' ? 'Search chats' : 'Search apps and files'}
+              placeholder={tab === 'chats' ? 'Search chats' : 'Search gadgets and files'}
             />
             <NewMenuButton>
               <DropdownMenu.Item onClick={startChat} className={MENU_ITEM}>Chat</DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => navigate({ to: '/blueprints' })} className={MENU_ITEM}>From a template…</DropdownMenu.Item>
+              {/* As the Library's New menu offers them, but made here, in this workspace. */}
+              {outputFormats.formats.map(format => (
+                <DropdownMenu.Item
+                  key={format.blueprintId}
+                  disabled={outputFormats.creating !== null}
+                  onClick={() => void outputFormats.create(format)}
+                  className={MENU_ITEM}
+                >
+                  {format.output.noun}
+                </DropdownMenu.Item>
+              ))}
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item onClick={() => navigate({ to: '/blueprints' })} className={MENU_ITEM}>From a blueprint…</DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item onClick={onInvite} className={MENU_ITEM}>Invite people…</DropdownMenu.Item>
             </NewMenuButton>
@@ -596,7 +625,7 @@ export function WorkspacePage({
             layout={layout}
             grouping="favorites"
             onToggleStar={item => { if (item.favorite) void setStarred(item.favorite, !item.starred) }}
-            empty={query ? 'Nothing matches your search.' : 'Apps made here and files added to its chats will show up here.'}
+            empty={query ? 'Nothing matches your search.' : 'Gadgets made here and files added to its chats will show up here.'}
           />
         ))}
 
@@ -664,6 +693,7 @@ export function WorkspacePage({
         onOpenChange={setDeletingWorkspace}
         onConfirm={() => void deleteWorkspace()}
       />
+      {dialogs}
     </SplitPage>
   )
 }

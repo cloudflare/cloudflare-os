@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { Badge, Tooltip } from '@cloudflare/kumo'
 import { Clock, Eye } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -48,8 +48,16 @@ type Props = {
   currentUserId: string | null
   // The app's address, for the frame's copy-link button.
   link?: string
-  // Leaves full screen for the app's workspace, for someone who can build in it.
+  // Leaves full screen for wherever it was opened from, for someone who can build in it.
   onCollapse?: () => void
+  // What the collapse button says.
+  collapseLabel?: string
+  // Whether the title pill switches among `gadgets`; off where it was opened from a list.
+  switchable?: boolean
+  // The frame's More menu, for someone who builds the gadget.
+  menu?: ReactNode
+  // Renames the gadget from its title pill, for someone who builds it.
+  onRename?: (title: string) => void
 }
 
 // The card over a snapshot, put away into the top bar: whose snapshot, and when. Clicking it
@@ -96,6 +104,10 @@ export default function GadgetUseView({
   currentUserId,
   link,
   onCollapse,
+  collapseLabel,
+  switchable = true,
+  menu,
+  onRename,
 }: Props) {
   const [viewChrome, setViewChrome] = useState<SharedViewChrome | null>(null)
   const [expandView, setExpandView] = useState(0)
@@ -104,9 +116,9 @@ export default function GadgetUseView({
   const showsView = gadgetOpenFailure === null && gadget !== null && gadgetMode === 'view'
   return (
     <SharedAppFrame
-      title={selected?.title ?? 'App'}
+      title={selected?.title ?? 'Gadget'}
       output={selected?.output}
-      choices={gadgets.map(g => ({ id: g.id, title: g.title, output: g.output }))}
+      choices={switchable ? gadgets.map(g => ({ id: g.id, title: g.title, output: g.output })) : undefined}
       activeId={selectedGadgetId}
       onSelect={onSelectGadget}
       status={showsView && viewChrome?.collapsed
@@ -115,8 +127,11 @@ export default function GadgetUseView({
       presence={
         <GadgetPresence overseer={overseer} authenticatedApi={authenticatedApi} currentUserId={currentUserId} />
       }
+      menu={menu}
+      onRename={onRename}
       link={link}
       onCollapse={onCollapse}
+      collapseLabel={collapseLabel}
     >
       {showsView && selectedGadgetId !== null ? (
         <SharedViewPane
@@ -124,7 +139,7 @@ export default function GadgetUseView({
           gadget={gadget}
           gadgetId={selectedGadgetId}
           workspaceId={workspaceId}
-          appName={selected?.title ?? 'App'}
+          appName={selected?.title ?? 'Gadget'}
           overseer={overseer}
           authenticatedApi={authenticatedApi}
           onLive={onGadgetLive}
@@ -149,7 +164,7 @@ export default function GadgetUseView({
       ) : (
         <div className="flex h-full items-center justify-center px-6 text-center">
           {selectedGadgetId === null
-            ? <p className="text-sm text-kumo-subtle">This workspace has no apps yet.</p>
+            ? <p className="text-sm text-kumo-subtle">This workspace has no gadgets yet.</p>
             : <div className="size-6 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />}
         </div>
       )}

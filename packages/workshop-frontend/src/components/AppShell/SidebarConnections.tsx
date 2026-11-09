@@ -8,7 +8,7 @@ import { AccountsSubscriberAdapter } from '../../accountsSubscriber'
 import { logRpcFailure } from '../../rpcErrors'
 import { PlusIcon } from '../icons/designIcons'
 
-// The pill shows this many of the user's connected services; the Connections page lists them all.
+// The pill shows this many of the user's connected services; the Gatekeepers page lists them all.
 const MAX_LOGOS = 3
 
 type ConnectedVendor = { vendorId: string; name: string; logoUrl?: string }
@@ -51,34 +51,47 @@ const useConnectedVendors = (): ConnectedVendor[] => {
 
 /**
  * The sidebar footer's connections pill (Figma "Round Btn" 107×34): a plus to connect a service,
- * then the logos of services already connected. It opens the Connections page.
+ * then the logos of services already connected, overlapped like a stack of cards that fans out
+ * when pointed at. It opens the Gatekeepers page.
  */
 export const SidebarConnections = () => {
   const vendors = useConnectedVendors()
   const shown = vendors.slice(0, MAX_LOGOS)
+  const more = vendors.length - shown.length
   const label = vendors.length
-    ? `Connections: ${vendors.map(v => v.name).join(', ')}`
+    ? `Gatekeepers: ${vendors.map(v => v.name).join(', ')}`
     : 'Connect a service'
   return (
     <Tooltip content={label} render={
       <Link
         to="/gatekeepers"
         aria-label={label}
-        className="flex h-[34px] max-md:h-11 shrink-0 items-center gap-2.5 rounded-full bg-kumo-base py-2.5 pl-1.5 pr-2.5 ring-1 ring-kumo-line transition-colors hover:bg-kumo-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+        className="group/connections flex h-[34px] max-md:h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full bg-kumo-base py-2.5 pl-1.5 pr-2 ring-1 ring-kumo-line transition-colors hover:bg-kumo-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
       >
-        <span className="flex size-6 max-md:size-[30px] items-center justify-center rounded-full bg-kumo-tint text-kumo-subtle">
+        <span className="flex size-6 max-md:size-[30px] items-center justify-center rounded-full bg-kumo-tint text-kumo-subtle transition-colors group-hover/connections:text-kumo-default">
           <PlusIcon size={14} />
         </span>
         {shown.length > 0 && (
-          <span className="flex items-center gap-[7px]">
-            {shown.map(vendor => vendor.logoUrl ? (
-              <img key={vendor.vendorId} src={vendor.logoUrl} alt="" className="size-[18px] object-contain" />
-            ) : (
-              <span key={vendor.vendorId}
-                className="flex size-[18px] items-center justify-center rounded-full bg-kumo-tint text-[10px] font-semibold text-kumo-default">
-                {vendor.name.slice(0, 1).toUpperCase()}
+          <span className="flex items-center">
+            {shown.map((vendor, index) => (
+              <span
+                key={vendor.vendorId}
+                style={{ zIndex: shown.length - index }}
+                // Each logo sits on its own outlined tile, whose edge tucks under the one before it
+                // (the 2px halo in the pill's colour keeps them apart); pointing at the pill fans
+                // them out. The overlap stays within the tile's padding, so no logo is covered.
+                className={`relative flex size-[22px] shrink-0 items-center justify-center rounded-full bg-kumo-base shadow-[0_0_0_2px_var(--color-kumo-base)] ring-1 ring-inset ring-kumo-line group-hover/connections:shadow-[0_0_0_2px_var(--color-kumo-elevated)] motion-safe:transition-[margin] motion-safe:duration-200 motion-safe:ease-[cubic-bezier(0.2,0,0,1)] ${
+                  index === 0 ? '' : '-ml-[3px] group-hover/connections:ml-1 group-focus-visible/connections:ml-1'
+                }`}
+              >
+                {vendor.logoUrl
+                  ? <img src={vendor.logoUrl} alt="" className="size-3 object-contain" />
+                  : <span className="text-[10px] font-semibold text-kumo-default">{vendor.name.slice(0, 1).toUpperCase()}</span>}
               </span>
             ))}
+            {more > 0 && (
+              <span className="ml-1.5 text-[12px] font-medium leading-4 text-kumo-subtle">+{more}</span>
+            )}
           </span>
         )}
       </Link>

@@ -34,7 +34,8 @@ import {
   type LibrarySort,
 } from '../../features/library/LibraryToolbar'
 import { LibraryPreviewPane } from '../../features/library/LibraryPreviewPane'
-import { useFavorites } from '../../features/library/useLibraryData'
+import { readExternalFiles, useFavorites } from '../../features/library/useLibraryData'
+import type { ExternalFileSource } from '../../features/library/externalFiles'
 import { useLibraryItems } from '../../features/library/useLibraryItems'
 import { useLibraryLayout } from '../../features/library/useLibraryLayout'
 import { describeMute } from '../../features/notifications/notificationMute'
@@ -54,7 +55,7 @@ const TABS: { value: ChatDetailsTab; label: string }[] = [
 
 const LIBRARY_FILTERS: LibraryFilterOption[] = [
   { value: 'all', label: 'Everything' },
-  { value: 'app', label: 'Apps' },
+  { value: 'app', label: 'Gadgets' },
   { value: 'file', label: 'Files' },
 ]
 
@@ -127,6 +128,17 @@ export function ChatDetailsPage({
     return () => { cancelled = true }
   }, [overseer, chatId, lastActive])
 
+  // Google files and the like the chat worked on, read again as its files are.
+  const [externalFiles, setExternalFiles] = useState<ExternalFileSource[]>([])
+  useEffect(() => {
+    if (chatId === undefined) return
+    let cancelled = false
+    readExternalFiles(overseer, { id: workspaceId }, chatId).then(
+      list => { if (!cancelled) setExternalFiles(list) },
+      err => logRpcFailure('Failed to list the chat\'s connected files:', err))
+    return () => { cancelled = true }
+  }, [overseer, workspaceId, chatId, lastActive])
+
   useEffect(() => {
     let cancelled = false
     overseer.listCollaborators().then(
@@ -145,10 +157,14 @@ export function ChatDetailsPage({
   const chatAppIds = useMemo(() => chatApps.map(app => app.id), [chatApps])
   const appSources = useMemo(() => chatApps.map(app => ({
     workspaceId, workpieceId: app.id, title: app.title, output: app.output, date: chat?.lastActive ?? new Date(0),
-  })), [chatApps, workspaceId, chat?.lastActive])
+    // A draft is discarded with the chat's changes, not deleted on its own.
+    canDelete: metadata.role !== 'use' && app.chatId === undefined,
+  })), [chatApps, workspaceId, chat?.lastActive, metadata.role])
   const fileSources = useMemo(() => (files ?? []).map(file => ({ ...file, workspaceId })), [files, workspaceId])
-  const { appItems, fileItems, preview, setPreview } = useLibraryItems({
-    apps: appSources, files: fileSources, favorites: favorites ?? [], starred, showContext: false,
+  const { appItems, fileItems, preview, setPreview, dialogs } = useLibraryItems({
+    apps: appSources, files: fileSources, external: externalFiles, favorites: favorites ?? [], starred, setStarred,
+    showContext: false,
+    origin: 'chat',
   })
   const items: LibraryItem[] = useMemo(() => arrangeLibraryItems([
     // A chat's apps open beside it, where its drafts can be seen.
@@ -275,7 +291,7 @@ export function ChatDetailsPage({
                   layout={layout}
                   grouping="recency"
                   onToggleStar={item => { if (item.favorite) void setStarred(item.favorite, !item.starred) }}
-                  empty={query ? 'Nothing matches your search.' : 'Files added to this chat and apps it makes will show up here.'}
+                  empty={query ? 'Nothing matches your search.' : 'Files added to this chat and gadgets it makes will show up here.'}
                 />
               )}
             </div>
@@ -320,7 +336,7 @@ export function ChatDetailsPage({
                   title="Who can see this"
                   description={named
                     ? <>Everyone in {metadata.title} can open its chats and work in them with you. Connections that protect data still ask each person for their own access.</>
-                    : 'Only the people you share this chat with. They can read it, carry it on with you and use its apps.'}
+                    : 'Only the people you share this chat with. They can read it, carry it on with you and use its gadgets.'}
                 >
                   {people && (
                     <span className="flex items-center gap-2">
@@ -384,6 +400,7 @@ export function ChatDetailsPage({
         onOpenChange={setDeleteOpen}
         onConfirm={() => void deleteChat()}
       />
+      {dialogs}
     </SplitPage>
   )
 }

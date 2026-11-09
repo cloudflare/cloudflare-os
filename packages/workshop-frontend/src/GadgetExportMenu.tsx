@@ -1,3 +1,4 @@
+import { MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { useEffect, useRef, useState } from 'react'
 import { DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
@@ -132,7 +133,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, asSubmen
         <DropdownMenu.SubTrigger className={asSubmenu.itemClassName} disabled={exportingId !== null}>
           {exportingFormat ? `Exporting to ${exportingFormat.label}…` : 'Export'}
         </DropdownMenu.SubTrigger>
-        <DropdownMenu.SubContent className={asSubmenu.contentClassName}>{items}</DropdownMenu.SubContent>
+        <DropdownMenu.SubContent className={asSubmenu.contentClassName} style={MENU_POSITIONER_STYLE}>{items}</DropdownMenu.SubContent>
       </DropdownMenu.Sub>
     )
   }

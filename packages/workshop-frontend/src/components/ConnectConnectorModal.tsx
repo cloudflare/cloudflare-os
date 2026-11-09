@@ -6,7 +6,7 @@ import {
   SupportedResource,
   VendorDescription,
 } from '@gadgets/workshop-shared/gatekeeper'
-import { WorkshopButton, WorkshopIconButton } from './WorkshopControls'
+import { roundButtonClass } from './RoundButton'
 
 interface ConnectConnectorModalProps {
   open: boolean
@@ -149,53 +149,21 @@ export default function ConnectConnectorModal({
     accountDescription?.displayName ??
     accountDescription?.uniqueName ??
     'Connected'
+  const accountLine = accountDescription?.uniqueName && accountDescription.uniqueName !== accountDisplayName
+    ? `${accountDisplayName} · ${accountDescription.uniqueName}`
+    : accountDisplayName
 
   const headerTitle = isManage
     ? vendorDescription.displayName
+    : autoProvisions
+    ? `Add ${vendorDescription.displayName}`
     : `Connect ${vendorDescription.displayName}`
-
-  const headerSubline = isManage ? (
-    <div className="mt-0.5 flex items-center gap-1.5 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          credentialsValid ? 'bg-kumo-success' : 'bg-kumo-danger'
-        }`}
-        aria-hidden
-      />
-      <span className="truncate">
-        {credentialsValid
-          ? accountDescription?.uniqueName
-            ? `${accountDisplayName} / ${accountDescription.uniqueName}`
-            : accountDisplayName
-          : 'Credentials expired; reconnect from the Gatekeepers page'}
-      </span>
-    </div>
-  ) : (
-    vendorDescription.tagline && (
-      <Dialog.Description className="mt-0.5 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-        {vendorDescription.tagline}
-      </Dialog.Description>
-    )
-  )
 
   const busy = connecting || disconnecting
 
-  // Resource icon helper shared by every resource row.
-  function resourceIcon(resource?: SupportedResource) {
-    const icon = resource?.icon?.url ?? logoUrl
-    return (
-      <div
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-kumo-strong"
-        style={{ backgroundColor: color ?? 'var(--color-kumo-tint)' }}
-      >
-        {icon ? (
-          <img src={icon} alt="" className="h-4 w-4 object-contain" />
-        ) : (
-          <ResourceIconGlyph />
-        )}
-      </div>
-    )
-  }
+  const resourcesHeading = granular
+    ? isManage ? 'What it can reach' : 'Choose what it can reach'
+    : 'What it can do'
 
   return (
     <Dialog.Root
@@ -206,94 +174,80 @@ export default function ConnectConnectorModal({
       }}
     >
       <Dialog
-        className="responsive-dialog connect-connector-dialog !z-[1000] !top-[clamp(28px,8vh,80px)] !flex !max-h-[calc(100vh-clamp(28px,8vh,80px)-28px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0"
+        className="responsive-dialog connect-connector-dialog !z-[1000] !top-[clamp(28px,8vh,80px)] !flex !max-h-[calc(100vh-clamp(28px,8vh,80px)-28px)] !w-[min(560px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden !rounded-[20px] bg-kumo-base p-0"
         size="lg"
       >
-        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-kumo-line px-5 py-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-              style={{ backgroundColor: color ?? 'var(--color-kumo-tint)' }}
-            >
-              {logoUrl ? (
-                <img src={logoUrl} alt="" className="h-5 w-5 object-contain" />
-              ) : (
-                <span className="text-sm font-semibold text-kumo-strong">
-                  {vendorDescription.displayName[0]}
+        <div className="flex shrink-0 items-start gap-3 px-5 pb-4 pt-5">
+          <span
+            className="grid size-10 shrink-0 place-items-center rounded-[12px] ring-1 ring-inset ring-kumo-line"
+            style={{ backgroundColor: color ?? 'var(--color-kumo-tint)' }}
+          >
+            {logoUrl ? (
+              <img src={logoUrl} alt="" className="size-5 object-contain" />
+            ) : (
+              <span className="text-sm font-semibold text-kumo-strong">{vendorDescription.displayName[0]}</span>
+            )}
+          </span>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <Dialog.Title className="text-[16px] font-medium leading-5 text-kumo-default">
+              {headerTitle}
+            </Dialog.Title>
+            {isManage ? (
+              <p className="mt-1 flex items-center gap-1.5 text-[13px] leading-4 text-kumo-subtle">
+                <span className={`size-1.5 shrink-0 rounded-full ${credentialsValid ? 'bg-kumo-success' : 'bg-kumo-danger'}`} aria-hidden />
+                <span className="truncate">
+                  {!credentialsValid ? 'Sign-in expired. Reconnect it from the list.'
+                    : accountLine === vendorDescription.displayName ? 'Connected' : accountLine}
                 </span>
-              )}
-            </div>
-            <div className="min-w-0">
-              <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-                {headerTitle}
-              </Dialog.Title>
-              {headerSubline}
-            </div>
+              </p>
+            ) : vendorDescription.tagline && (
+              <Dialog.Description className="mt-1 text-[13px] leading-4 text-kumo-subtle">
+                {vendorDescription.tagline}
+              </Dialog.Description>
+            )}
           </div>
           <Dialog.Close
             render={(props) => (
-              <WorkshopIconButton {...props} disabled={busy} aria-label="Close">
+              <button {...props} type="button" disabled={busy} aria-label="Close" className={roundButtonClass('icon', '!size-8 -mr-1 -mt-1 ring-0 hover:bg-kumo-tint')}>
                 <X size={16} />
-              </WorkshopIconButton>
+              </button>
             )}
           />
         </div>
 
-        <div className="new-gatekeeper-scroll-balanced min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-2">
           {vendorDescription.description && (
-            <p className="text-[13px] leading-[19px] font-normal tracking-[-0.25px] text-kumo-default">
-              {vendorDescription.description}
-            </p>
+            <p className="text-[14px] leading-5 text-kumo-default">{vendorDescription.description}</p>
           )}
 
           {supportedResources.length > 0 && (
-            <div className="mt-5">
-              <h3 className="mb-2 text-[12px] leading-4 font-semibold uppercase tracking-[0.6px] text-kumo-inactive">
-                {granular
-                  ? isManage
-                    ? 'Resources'
-                    : 'Resources to enable'
-                  : 'What this gatekeeper can do'}
-              </h3>
-              <ul className="space-y-2">
+            <div className="mt-5 flex flex-col gap-2">
+              <h3 className="text-[13px] font-medium leading-4 text-kumo-subtle">{resourcesHeading}</h3>
+              <ul className="flex flex-col rounded-[16px] bg-kumo-contrast/[0.03] p-1.5">
                 {supportedResources.map((resource) => {
                   const grantable = Boolean(resource.grantable)
                   const granted = isManage && grantable && isGranted(resource.urlPattern)
-                  const ensuring = ensuringResourceUrlPatterns.includes(
-                    resource.urlPattern,
-                  )
-                  const checked =
-                    grantable &&
-                    (selected.has(resource.urlPattern) || ensuring)
+                  const ensuring = ensuringResourceUrlPatterns.includes(resource.urlPattern)
+                  const checked = grantable && (selected.has(resource.urlPattern) || ensuring)
                   const disabled = isManage && (granted || ensuring)
+                  const icon = resource.icon?.url ?? logoUrl
                   return (
-                    <li
-                      key={resource.urlPattern}
-                      className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5"
-                    >
-                      {resourceIcon(resource)}
+                    <li key={resource.urlPattern} className="flex items-center gap-3 rounded-[12px] px-2.5 py-2">
+                      <span className="grid size-[25px] shrink-0 place-items-center text-kumo-default">
+                        {icon ? <img src={icon} alt="" className="size-4 object-contain" /> : <ResourceIconGlyph />}
+                      </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                          {resource.title}
-                        </p>
-                        <p className="mt-0.5 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-                          {resource.description}
-                        </p>
+                        <p className="text-[14px] font-medium leading-[17px] text-kumo-default">{resource.title}</p>
+                        <p className="mt-0.5 text-[13px] leading-4 text-kumo-subtle">{resource.description}</p>
                       </div>
                       {grantable && (
                         <Switch
                           size="sm"
                           className="shrink-0"
-                          aria-label={
-                            isManage
-                              ? `Grant ${resource.title}`
-                              : `Enable ${resource.title}`
-                          }
+                          aria-label={isManage ? `Grant ${resource.title}` : `Enable ${resource.title}`}
                           checked={checked}
                           disabled={disabled}
-                          onCheckedChange={(next) =>
-                            toggleResource(resource.urlPattern, next)
-                          }
+                          onCheckedChange={(next) => toggleResource(resource.urlPattern, next)}
                         />
                       )}
                     </li>
@@ -303,150 +257,80 @@ export default function ConnectConnectorModal({
             </div>
           )}
 
-          {!isManage && !autoProvisions && (
-            <div
-              className="relative mt-5 overflow-hidden rounded-lg border border-kumo-line px-4 py-3"
-              style={{
-                background:
-                  'linear-gradient(180deg, rgba(255, 72, 1, 0.04) 0%, rgba(255, 72, 1, 0.02) 100%)',
-              }}
-            >
-              <div className="flex items-start gap-3">
-                <ShieldCheck
-                  size={18}
-                  className="mt-0.5 shrink-0 text-kumo-brand"
-                  weight="duotone"
-                />
-                <div className="text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-default">
-                  <span className="font-medium">
-                    Gatekeeper sits between {vendorDescription.displayName} and your Gadgets.
-                  </span>{' '}
-                  <span className="text-kumo-subtle">
-                    Each Gadget only sees the resources you connect. If the workspace is shared,
-                    Gatekeeper verifies other users have the required permissions before they can
-                    access those resources.
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isManage && (
-            <div className="mt-5 rounded-lg border border-kumo-line bg-kumo-elevated px-4 py-3 text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-subtle">
-              This account can be used by Gadgets you connect it to. Shared users must have the
-              required permissions before they can access those connected resources.
-            </div>
+          {!autoProvisions && (
+            <p className="mt-4 flex items-start gap-2 text-[13px] leading-[18px] text-kumo-subtle">
+              <ShieldCheck size={16} className="mt-px shrink-0" />
+              {isManage
+                ? 'Gadgets reach only what you connect them to, and anyone you share with is checked first.'
+                : `Each gadget sees only the ${vendorDescription.displayName} resources you connect to it, and anyone you share with is checked first.`}
+            </p>
           )}
         </div>
 
-        <div className="shrink-0 flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-base px-5 py-3">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-5 pb-5 pt-4">
           {isManage && confirmingDisconnect ? (
-            <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-default">
-              Disconnect {vendorDescription.displayName}? Gadgets using this will lose access.
+            <p className="mr-auto min-w-0 flex-1 text-[13px] leading-4 text-kumo-default">
+              Disconnect {vendorDescription.displayName}? Gadgets using it lose access.
             </p>
           ) : isManage && hasPending ? (
-            <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {pendingPatterns.length} resource{pendingPatterns.length === 1 ? '' : 's'} to add
+            <p className="mr-auto min-w-0 flex-1 text-[13px] leading-4 text-kumo-subtle">
+              {pendingPatterns.length} to add
             </p>
           ) : !isManage && granular && noneSelected ? (
-            <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              Select at least one resource to continue.
+            <p className="mr-auto min-w-0 flex-1 text-[13px] leading-4 text-kumo-subtle">
+              Choose at least one to continue.
             </p>
-          ) : (
-            <span aria-hidden />
-          )}
-          <div className="flex items-center gap-2">
-            {isManage ? (
+          ) : null}
+          {isManage ? (
+            confirmingDisconnect ? (
               <>
-                {confirmingDisconnect ? (
-                  <>
-                    <WorkshopButton
-                      onClick={() => setConfirmingDisconnect(false)}
-                      disabled={disconnecting}
-                      className="!h-9"
-                    >
-                      Cancel
-                    </WorkshopButton>
-                    <WorkshopButton
-                      tone="danger"
-                      onClick={handleDisconnect}
-                      disabled={disconnecting}
-                      className="!h-9 min-w-[140px]"
-                    >
-                      {disconnecting ? 'Disconnecting...' : 'Yes, disconnect'}
-                    </WorkshopButton>
-                  </>
-                ) : hasPending ? (
-                  <>
-                    <WorkshopButton onClick={discardPending} disabled={ensuringBusy} className="!h-9">
-                      Cancel
-                    </WorkshopButton>
-                    <WorkshopButton
-                      tone="primary"
-                      onClick={handleAddResources}
-                      disabled={ensuringBusy}
-                      className="min-w-[140px]"
-                    >
-                      {ensuringBusy
-                        ? 'Opening...'
-                        : `Continue to ${vendorDescription.displayName}`}
-                    </WorkshopButton>
-                  </>
-                ) : (
-                  <>
-                    <Dialog.Close
-                      render={(props) => (
-                        <WorkshopButton {...props} className="!h-9">
-                          Close
-                        </WorkshopButton>
-                      )}
-                    />
-                    <WorkshopButton
-                      tone="danger"
-                      onClick={handleDisconnect}
-                      disabled={disconnecting}
-                      className="!h-9"
-                    >
-                      Disconnect
-                    </WorkshopButton>
-                  </>
-                )}
+                <button type="button" onClick={() => setConfirmingDisconnect(false)} disabled={disconnecting} className={SECONDARY}>
+                  Cancel
+                </button>
+                <button type="button" onClick={handleDisconnect} disabled={disconnecting} className={DANGER}>
+                  {disconnecting ? 'Disconnecting…' : 'Yes, disconnect'}
+                </button>
+              </>
+            ) : hasPending ? (
+              <>
+                <button type="button" onClick={discardPending} disabled={ensuringBusy} className={SECONDARY}>
+                  Cancel
+                </button>
+                <button type="button" onClick={handleAddResources} disabled={ensuringBusy} className={PRIMARY}>
+                  {ensuringBusy ? 'Opening…' : `Continue to ${vendorDescription.displayName}`}
+                </button>
               </>
             ) : (
               <>
-                {connecting && onCancelConnect ? (
-                  <WorkshopButton onClick={onCancelConnect} className="!h-9">
-                    Cancel connection
-                  </WorkshopButton>
-                ) : <Dialog.Close
-                  render={(props) => (
-                    <WorkshopButton {...props} disabled={connecting} className="!h-9">
-                      Cancel
-                    </WorkshopButton>
-                  )}
-                />}
-                <WorkshopButton
-                  tone="primary"
-                  onClick={handleConfirm}
-                  disabled={connecting || (granular && noneSelected)}
-                  className="min-w-[140px]"
-                >
-                  {autoProvisions
-                    ? connecting
-                      ? 'Adding...'
-                      : `Add ${vendorDescription.displayName}`
-                    : connecting
-                    ? 'Opening...'
-                    : `Continue to ${vendorDescription.displayName}`}
-                </WorkshopButton>
+                <button type="button" onClick={handleDisconnect} disabled={disconnecting} className={`${SECONDARY} mr-auto !text-kumo-danger`}>
+                  Disconnect
+                </button>
+                <Dialog.Close render={(props) => <button {...props} type="button" className={PRIMARY}>Done</button>} />
               </>
-            )}
-          </div>
+            )
+          ) : (
+            <>
+              {connecting && onCancelConnect ? (
+                <button type="button" onClick={onCancelConnect} className={SECONDARY}>Cancel connection</button>
+              ) : (
+                <Dialog.Close render={(props) => <button {...props} type="button" disabled={connecting} className={SECONDARY}>Cancel</button>} />
+              )}
+              <button type="button" onClick={handleConfirm} disabled={connecting || (granular && noneSelected)} className={PRIMARY}>
+                {autoProvisions
+                  ? connecting ? 'Adding…' : `Add ${vendorDescription.displayName}`
+                  : connecting ? 'Opening…' : `Continue to ${vendorDescription.displayName}`}
+              </button>
+            </>
+          )}
         </div>
       </Dialog>
     </Dialog.Root>
   )
 }
+
+const SECONDARY = roundButtonClass('pill')
+const PRIMARY = 'inline-flex h-[34px] shrink-0 cursor-pointer items-center rounded-full bg-kumo-contrast px-3.5 text-[13px] font-medium leading-4 text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-50'
+const DANGER = 'inline-flex h-[34px] shrink-0 cursor-pointer items-center rounded-full bg-kumo-danger px-3.5 text-[13px] font-medium leading-4 text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-50'
 
 function ResourceIconGlyph() {
   const size = 14

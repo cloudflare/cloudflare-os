@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { InlineRename } from '../../components/InlineRename'
 import { DropdownMenu, Tooltip } from '@cloudflare/kumo'
 import { Link } from '@tanstack/react-router'
 import { RoundButton, roundButtonClass } from '../../components/RoundButton'
@@ -111,7 +112,8 @@ export type PaneChoice = { id: number; title: string; glyph: ReactNode; draft: b
 /**
  * The side pane's header (Figma "Frame 798" in "MacBook Pro 14\" - 22"): what the pane shows, in a
  * pill with its glyph, then More, Share, Full screen and Close. With several workpieces open to
- * the chat the pill switches between them.
+ * the chat the pill switches between them. With `onRename`, double-clicking the pill renames it
+ * in place.
  */
 export function PaneHeader({
   glyph,
@@ -123,14 +125,17 @@ export function PaneHeader({
   menu,
   actions,
   onShare,
-  shareLabel = 'Share app',
+  shareLabel = 'Share gadget',
   onExpand,
   expandLabel = 'Full screen',
   onClose,
   closeLabel,
+  onRename,
 }: {
   glyph: ReactNode
   title: string
+  /** Renames what the pane shows, from a double-click on its name; nothing leaves it as it is. */
+  onRename?: (title: string) => void
   badge?: string
   choices?: PaneChoice[]
   activeId?: number | null
@@ -148,12 +153,16 @@ export function PaneHeader({
   onClose: () => void
   closeLabel: string
 }) {
+  const [renaming, setRenaming] = useState(false)
   const pill = (
     <>
       <span className="flex size-[26px] shrink-0 items-center justify-center overflow-hidden rounded-full bg-kumo-tint text-kumo-default">
         {glyph}
       </span>
-      <span className="truncate">{title}</span>
+      {renaming
+        ? <InlineRename value={title} label={`Rename ${title}`} className="-ml-1 h-7 w-[min(320px,40vw)] px-1.5"
+            onDone={next => { setRenaming(false); if (next !== null) onRename?.(next) }} />
+        : <span className="truncate">{title}</span>}
       {badge && (
         <span className="shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
           {badge}
@@ -162,13 +171,15 @@ export function PaneHeader({
     </>
   )
   const pillClass = roundButtonClass('pill', 'min-w-0 max-w-[60%] gap-2 !pl-1.5 !pr-3 ring-kumo-line')
+  const startRename = onRename && (() => setRenaming(true))
+  const pillTitle = onRename ? `${title} · Double-click to rename` : title
 
   return (
     <div className="flex h-[58px] shrink-0 items-center gap-2 p-3">
-      {choices && choices.length > 1 && onSelect ? (
+      {!renaming && choices && choices.length > 1 && onSelect ? (
         <DropdownMenu>
           <DropdownMenu.Trigger render={
-            <button type="button" className={pillClass} title={title} aria-label={`${title}: switch`}>
+            <button type="button" className={pillClass} title={pillTitle} aria-label={`${title}: switch`} onDoubleClick={startRename}>
               {pill}
               <ChevronDownIcon size={14} className="shrink-0 text-kumo-subtle" />
             </button>
@@ -189,7 +200,7 @@ export function PaneHeader({
           </DropdownMenu.Content>
         </DropdownMenu>
       ) : (
-        <div className={`${pillClass} cursor-default hover:!bg-kumo-base`} title={title}>{pill}</div>
+        <div className={`${pillClass} cursor-default hover:!bg-kumo-base`} title={renaming ? undefined : pillTitle} onDoubleClick={startRename}>{pill}</div>
       )}
       <span className="flex-1" />
       {actions}

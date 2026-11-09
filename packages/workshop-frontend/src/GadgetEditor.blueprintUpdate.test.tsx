@@ -77,6 +77,7 @@ vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ id: 'workspace' }),
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,
+  useRouter: () => ({ history: { back: vi.fn<() => void>(), canGoBack: () => false } }),
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
 }))
 
@@ -217,7 +218,7 @@ const currentView = () => {
 }
 
 async function proposeUpdate() {
-  await click('Update from template…')
+  await click('Update from blueprint…')
   await click('propose update')
 }
 
@@ -241,7 +242,7 @@ afterEach(() => {
 
 describe('GadgetEditor, offering an update from a blueprint', () => {
   const offers = () => [...container.querySelectorAll('button')]
-    .filter(candidate => candidate.textContent === 'Update from template…').length
+    .filter(candidate => candidate.textContent === 'Update from blueprint…').length
 
   // In the app pane's More menu.
   it('offers it for a gadget that follows a blueprint, and for one of unknown origin', async () => {
@@ -261,7 +262,7 @@ describe('GadgetEditor, offering an update from a blueprint', () => {
     await openEditor('desktop')
 
     expect(offers()).toBe(0)
-    expect(button('Publish as template…')).toBeTruthy()
+    expect(button('Publish as blueprint…')).toBeTruthy()
   })
 })
 

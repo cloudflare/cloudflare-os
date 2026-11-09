@@ -3,42 +3,91 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "FT Kunst Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --color-kumo-base: #fcfcfb;
-  --color-kumo-elevated: #f8f8f7;
-  --color-kumo-tint: #f3f3f1;
+  /* ===== FONTS ===== the Workshop's: Inter, bundled below since the frame loads nothing. */
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* ===== KUMO SEMANTIC COLOR OVERRIDES =====
+     The Workshop's Cloudflare OS palette (workshop-frontend/src/styles.css), so the app sits in the
+     Workshop's Library as part of the page. */
+  --color-kumo-base: #ffffff;
+  --color-kumo-elevated: #fafafa;
+  --color-kumo-tint: #0000000a;
+  --color-kumo-overlay: #ffffff;
+  --color-kumo-recessed: #0000000f;
   --color-kumo-control: #ffffff;
-  --color-kumo-fill: #e8e7e4;
-  --color-kumo-brand: #ff4801;
-  --color-kumo-brand-hover: #e03f00;
-  --color-kumo-line: #1411100f;
-  --color-kumo-ring: #cac8c3;
-  --color-kumo-danger: oklch(63.7% 0.237 25.331);
-  --color-kumo-danger-tint: oklch(92% 0.06 25);
-  --text-color-kumo-default: #1c1a18;
-  --text-color-kumo-subtle: oklch(52% 0.006 60);
-  --text-color-kumo-inactive: oklch(66% 0.005 60);
-  --text-color-kumo-link: #ff4801;
-  --text-color-kumo-danger: oklch(63.7% 0.237 25.331);
+  --color-kumo-contrast: #000000;
+  --color-kumo-fill: #0000000a;
+  --color-kumo-fill-hover: #00000014;
+  --color-kumo-interact: #e4e4e4;
+  --color-kumo-brand: #ff5c2e;
+  --color-kumo-brand-hover: #f04a1a;
+  --color-kumo-line: #0000000f;
+  --color-kumo-ring: #00000033;
+  --color-kumo-info: #2b7fff;
+  --color-kumo-info-tint: #2b7fff1a;
+  --color-kumo-warning: oklch(79.5% 0.184 86.047);
+  --color-kumo-warning-tint: oklch(92% 0.08 85);
+  --color-kumo-danger: #c10007;
+  --color-kumo-danger-tint: #c100070f;
+  --color-kumo-success: #10b981;
+  --color-kumo-success-tint: #10b9811a;
+  --color-kumo-tip-shadow: #00000014;
+  --text-color-kumo-default: #000000;
+  --text-color-kumo-inverse: #ffffff;
+  --text-color-kumo-strong: #000000;
+  --text-color-kumo-subtle: #00000080;
+  --text-color-kumo-inactive: #00000066;
+  --text-color-kumo-brand: #ff5c2e;
+  --text-color-kumo-link: #ff5c2e;
+  --text-color-kumo-success: #10b981;
+  --text-color-kumo-danger: #c10007;
+  --text-color-kumo-warning: oklch(47.6% 0.114 61.907);
 }
 
 [data-mode="dark"] {
-  --color-kumo-base: oklch(0.115 0.012 285);
-  --color-kumo-elevated: oklch(0.155 0.011 285);
-  --color-kumo-tint: oklch(0.225 0.025 285);
-  --color-kumo-control: oklch(0.155 0.011 285);
-  --color-kumo-fill: oklch(0.225 0.025 285);
-  --color-kumo-brand: #b84e00;
-  --color-kumo-brand-hover: #a54200;
-  --color-kumo-line: oklch(0.34 0.022 285);
-  --color-kumo-ring: oklch(0.52 0.065 285);
-  --color-kumo-danger: oklch(70.4% 0.191 22.216);
+  --color-kumo-base: #141414;
+  --color-kumo-elevated: #0c0c0c;
+  --color-kumo-tint: #ffffff0f;
+  --color-kumo-overlay: #1c1c1c;
+  --color-kumo-recessed: #ffffff14;
+  --color-kumo-control: #1c1c1c;
+  --color-kumo-contrast: #ffffff;
+  --color-kumo-fill: #ffffff0f;
+  --color-kumo-fill-hover: #ffffff1f;
+  --color-kumo-interact: #3a3a3a;
+  --color-kumo-brand: #ff5c2e;
+  --color-kumo-brand-hover: #ff7a52;
+  --color-kumo-line: #ffffff14;
+  --color-kumo-ring: #ffffff40;
+  --color-kumo-info: oklch(62.3% 0.214 259.815);
+  --color-kumo-info-tint: oklch(0.25 0.065 259.815);
+  --color-kumo-warning: oklch(55.5% 0.163 48.998);
+  --color-kumo-warning-tint: oklch(0.27 0.06 84.429);
+  --color-kumo-danger: oklch(50.5% 0.213 27.518);
   --color-kumo-danger-tint: oklch(0.25 0.065 25.331);
-  --text-color-kumo-default: oklch(0.92 0.01 285);
-  --text-color-kumo-subtle: oklch(0.66 0.02 285);
-  --text-color-kumo-inactive: oklch(0.58 0.025 285);
-  --text-color-kumo-link: #ff8a5c;
+  --color-kumo-success: oklch(52.7% 0.154 150.069);
+  --color-kumo-success-tint: oklch(0.25 0.06 150.069);
+  --color-kumo-tip-shadow: #00000066;
+  --text-color-kumo-default: #ffffff;
+  /* Black on the white contrast fill (the primary action), so it reads in dark mode too. */
+  --text-color-kumo-inverse: #000000;
+  --text-color-kumo-strong: #ffffff;
+  --text-color-kumo-subtle: #ffffff80;
+  --text-color-kumo-inactive: #ffffff66;
+  --text-color-kumo-brand: #ff7a52;
+  --text-color-kumo-link: #ff7a52;
+  --text-color-kumo-success: oklch(79.2% 0.209 151.711);
   --text-color-kumo-danger: oklch(70.4% 0.191 22.216);
+  --text-color-kumo-warning: oklch(82.8% 0.189 84.429);
+}
+
+/* Inlined by the single-file build; the frame's CSP allows only data: fonts. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
 }
 
 html,

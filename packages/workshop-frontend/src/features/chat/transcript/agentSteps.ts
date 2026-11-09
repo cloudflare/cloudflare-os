@@ -62,7 +62,7 @@ export function describeToolStep(call: LiveToolCall, editing?: EditedApp): strin
     case 'observeUserChanges':
       return 'Looking at your changes...'
     case 'listBlueprints':
-      return 'Browsing templates...'
+      return 'Browsing blueprints...'
     case 'listConnectableResources':
       return 'Checking what can be connected...'
     case 'requestConnection':

@@ -70,7 +70,7 @@ export function describeFinishedStep(
     case 'observeUserChanges':
       return 'Looking at your changes'
     case 'listBlueprints':
-      return 'Browsing templates'
+      return 'Browsing blueprints'
     case 'listConnectableResources':
       return 'Checking what can be connected'
     case 'requestConnection':

@@ -780,6 +780,58 @@ describe("instantiating a blueprint", () => {
   });
 });
 
+describe("adding a blueprint's gadget to a workspace", () => {
+  it("makes it beside the workspace's others, from the release, following the blueprint",
+      async () => {
+    let blueprintId!: string;
+    let release!: string;
+    await withWorkspace(async ({ impl, client }) => {
+      await commitToGadget(impl, V1);
+      blueprintId = (await createBlueprint(client)).id;
+      release = (await publishedMetadata(blueprintId))!.commitId!;
+    });
+
+    await withWorkspace(async ({ impl, client }) => {
+      impl.storage.title.put("Planning");
+      using own = await client.createGadget("Notes");
+      let ownId = await own.getId();
+      let ownRecord = { ...impl.getGadgetRecord(ownId) };
+
+      using gadget = await client.createGadgetFromBlueprint(blueprintId);
+      let record = impl.getGadgetRecord(await gadget.getId());
+      expect(record).toMatchObject({ title: "Starter", upstream: { blueprintId, commitId: release } });
+      expect(record.pending).toBeUndefined();
+      expect(record.bindingName).not.toBe(ownRecord.bindingName);
+      expect(Object.fromEntries(impl.gitCache.readCommitFiles(record.commitId))).toEqual(V1);
+
+      // The same history a workspace made from the blueprint starts with: the release merged
+      // into an empty root of the gadget's own.
+      let [root, merged, ...more] = await parentsOf(impl, record.commitId);
+      expect([merged, ...more]).toEqual([release]);
+      expect(impl.gitCache.commitTree(root)).toBe(EMPTY_TREE);
+      expect(releasesMarkedBy(impl, record.commitId)).toEqual([release]);
+
+      // The workspace and its other gadget are as they were.
+      expect(impl.storage.title.get()).toBe("Planning");
+      expect(impl.getGadgetRecord(ownId)).toEqual(ownRecord);
+      expect(impl.defaultGadgetId).toBeUndefined();
+    });
+  });
+
+  it("refuses a blueprint with bindings to set up, and one that does not exist", async () => {
+    await storeBlueprint("needs-setup", metadataFor("Mail", {
+      bindings: { MAIL: { description: "The inbox to read" } as any },
+    }), new Uint8Array());
+    await withWorkspace(async ({ impl, client }) => {
+      await expect(client.createGadgetFromBlueprint("needs-setup"))
+          .rejects.toThrow(/needs connections set up/);
+      await expect(client.createGadgetFromBlueprint("no-such-blueprint"))
+          .rejects.toThrow(/Blueprint not found/);
+      expect([...impl.storage.gadgets.list()]).toEqual([]);
+    });
+  });
+});
+
 describe("publishing a blueprint built on another", () => {
   // Bob's additions to the second version of Alice's files.
   const BOBS = { ...V2, "bob.js": "bob\n" };

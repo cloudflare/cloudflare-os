@@ -6,12 +6,13 @@ type LibrarySearch = {
   tab?: LibraryTab
 }
 
-const TABS: readonly LibraryTab[] = ['favorites', 'apps', 'files']
+const TABS: readonly LibraryTab[] = ['favorites', 'gadgets', 'files', 'skills', 'scheduled']
 
 export const Route = createFileRoute('/library')({
   component: LibraryRoute,
   validateSearch: (search: Record<string, unknown>): LibrarySearch => ({
-    tab: TABS.find(tab => tab === search.tab),
+    // `apps` is what the Gadgets tab was once called, kept so old links still land there.
+    tab: search.tab === 'apps' ? 'gadgets' : TABS.find(tab => tab === search.tab),
   }),
 })
 

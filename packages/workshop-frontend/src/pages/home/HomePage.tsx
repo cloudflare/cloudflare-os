@@ -199,7 +199,7 @@ export const HomePageContent = ({ prompt, workspace }: HomeSearch) => {
             Hello {firstName(currentUser?.name)}, what should we do today?
           </h1>
           <div className="flex flex-col items-center gap-2.5 sm:flex-row">
-            <QuickAction icon={<TemplateIcon size={16} />} label="Use a template"
+            <QuickAction icon={<TemplateIcon size={16} />} label="Use a blueprint"
               onClick={() => navigate({ to: "/blueprints" })} />
             <QuickAction icon={<AutomationIcon size={16} />} label="Add an automation" onClick={addAutomation} />
             <QuickAction icon={<FolderIcon size={16} />} label="Create a workspace"

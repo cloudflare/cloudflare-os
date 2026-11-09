@@ -11,7 +11,7 @@ const base = (id: number, at: number) => ({
 
 const read = (id: number, at: number, fileId: string, title: string): ActionLogEntry => ({
   ...base(id, at), type: 'observation',
-  description: { summary: 'Read', subject: {
+  description: { title: 'Read', description: 'Read it', subject: {
     id: fileId, title, url: `https://docs.google.com/document/d/${fileId}/edit`, mediaType: DOC, role: 'read',
   } },
 } as ActionLogEntry)
@@ -19,7 +19,7 @@ const read = (id: number, at: number, fileId: string, title: string): ActionLogE
 const creation = (id: number, at: number, state: 'pending' | 'approved' | 'rejected', url?: string): ActionLogEntry => ({
   ...base(id, at), type: 'action', state, creation: true, resourceTitle: 'Trip plan',
   ...(url ? { resourceUrl: url } : {}),
-  description: { summary: 'Create a document' },
+  description: { title: 'Create a document', description: '', implementsRevert: false, autoApprovable: false },
 } as ActionLogEntry)
 
 describe('externalFiles', () => {
@@ -39,7 +39,7 @@ describe('externalFiles', () => {
   it('leaves out what is not a file, such as an issue', () => {
     const issue = {
       ...base(1, 100), type: 'action', resourceTitle: 'Linear',
-      description: { summary: 'Create issue', subject: { id: 'ENG-1', title: 'Bug', url: 'https://linear.app/x/issue/ENG-1', role: 'created' } },
+      description: { title: 'Create issue', description: '', implementsRevert: false, autoApprovable: false, subject: { id: 'ENG-1', title: 'Bug', url: 'https://linear.app/x/issue/ENG-1', role: 'created' } },
     } as ActionLogEntry
     const createdIssue = { ...creation(2, 100, 'approved', 'https://linear.app/x/issue/ENG-2') }
     expect(externalFiles([issue, createdIssue], workspace)).toEqual([])

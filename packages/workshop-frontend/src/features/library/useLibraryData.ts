@@ -8,6 +8,8 @@ import type {
   FavoriteItem,
   FavoriteItemRef,
   FavoriteItemSpec,
+  LibraryItemRef,
+  LibraryRemoval,
   OutputSummary,
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
@@ -53,6 +55,52 @@ export function useFavorites() {
   }, [authenticatedApi, favorites, toasts])
 
   return { favorites, starred, setStarred }
+}
+
+/** The key an item taken out of the Library is known by, matching the server's (see `libraryItemKey`). */
+export const libraryRefKey = (item: LibraryItemRef) => item.kind === 'app'
+  ? `${item.workspaceId}:app:${item.workpieceId}`
+  : item.kind === 'file' ? `${item.workspaceId}:file:${item.chatId}:${item.fileId}`
+  : `${item.workspaceId}:external:${item.subjectId}`
+
+/**
+ * What the user took out of their Library, by key, with when; and a way to take items out or put
+ * them back that updates at once.
+ */
+export function useLibraryRemovals() {
+  const { authenticatedApi } = useAuthenticatedApi()
+  const toasts = useKumoToastManager()
+  const [removals, setRemovals] = useState<ReadonlyMap<string, Date>>(new Map())
+
+  useEffect(() => {
+    let cancelled = false
+    authenticatedApi.listLibraryRemovals().then(
+      list => { if (!cancelled) setRemovals(new Map(list.map((r: LibraryRemoval) => [libraryRefKey(r), r.removed]))) },
+      err => logRpcFailure('Failed to list library removals:', err))
+    return () => { cancelled = true }
+  }, [authenticatedApi])
+
+  const setRemoved = useCallback(async (items: readonly LibraryItemRef[], removed: boolean) => {
+    const keys = items.map(libraryRefKey)
+    const update = (remove: boolean) => setRemovals(current => {
+      const next = new Map(current)
+      for (const key of keys) {
+        if (remove) next.set(key, new Date())
+        else next.delete(key)
+      }
+      return next
+    })
+    update(removed)
+    const results = await Promise.allSettled(items.map(item => authenticatedApi.setLibraryRemoved(item, removed)))
+    const failed = results.find(result => result.status === 'rejected')
+    if (failed) {
+      logRpcFailure('Failed to update the library:', failed.reason)
+      update(!removed)
+      toasts.add({ title: removed ? "Couldn't remove this from your Library" : "Couldn't put this back", variant: 'error' })
+    }
+  }, [authenticatedApi, toasts])
+
+  return { removals, setRemoved }
 }
 
 /** The apps of every workspace the user can see, from their outputs index. */
@@ -109,9 +157,12 @@ export function useWorkspaceFiles(workspaces: { id: string; title: string }[] | 
 // How many pages of each workspace's action log the Library reads for connected files, newest first.
 const ACTION_PAGES_READ = 4
 
-/** The connected files `overseer`'s workspace has worked on, from its recent action log. */
+/**
+ * The connected files `overseer`'s workspace has worked on, from its recent action log; with
+ * `chatId`, those worked on in that chat.
+ */
 export async function readExternalFiles(
-  overseer: RpcStub<Overseer>, workspace: { id: string; title?: string },
+  overseer: RpcStub<Overseer>, workspace: { id: string; title?: string }, chatId?: number,
 ): Promise<ExternalFileSource[]> {
   const entries: ActionLogEntry[] = []
   let beforeId: number | undefined
@@ -121,7 +172,8 @@ export async function readExternalFiles(
     beforeId = result.nextBeforeId
     if (beforeId === undefined) break
   }
-  return externalFiles(entries, workspace)
+  return externalFiles(chatId === undefined ? entries
+    : entries.filter(entry => entry.type !== 'bindHook' && entry.chatId === chatId), workspace)
 }
 
 /**

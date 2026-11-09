@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
 import type { RpcStub } from 'capnweb'
-import { DropdownMenu } from '@cloudflare/kumo'
+import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useNavigate } from '@tanstack/react-router'
+import type { AppPageOrigin } from '../gadget-page/appPageOrigin'
 import type { BlueprintOutput, GadgetClient } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import GadgetUI from '../../GadgetUI'
 import ObserverConfigModal from '../../ObserverConfigModal'
 import { observerOpenFailureMessage, useWorkspaceOpen } from '../../useWorkspaceOpen'
 import { FormatGlyph } from '../../components/format/FormatVisuals'
-import { MENU_ITEM } from '../../components/menuStyles'
+import { MENU_CONTENT, MENU_ITEM } from '../../components/menuStyles'
+import GadgetExportMenu from '../../GadgetExportMenu'
+import { logRpcFailure } from '../../rpcErrors'
 import { GadgetShareModal } from '../sharing/GadgetShareModal'
 import { PaneHeader } from '../chat-page/ChatPageChrome'
 
@@ -18,6 +21,10 @@ export type PreviewApp = {
   workpieceId: number
   title: string
   output?: BlueprintOutput
+  /** The page showing the preview, which the gadget opened on its own returns to. */
+  from?: AppPageOrigin
+  /** Told of a rename made from the pane's pill, so the list showing it can follow. */
+  onRenamed?: (title: string) => void
 }
 
 const noop = () => {}
@@ -71,7 +78,7 @@ export function AppPreviewPane({ app, onClose, expanded, onExpandedChange }: {
       },
       caught => {
         if (!abort.signal.aborted) {
-          setFailure(observerOpenFailureMessage(caught, 'gadget') ?? 'This app couldn’t be opened.')
+          setFailure(observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.')
         }
       },
     )
@@ -85,14 +92,34 @@ export function AppPreviewPane({ app, onClose, expanded, onExpandedChange }: {
 
   const openFullScreen = () => navigate({
     to: '/workspace/$id/app/$appId', params: { id: app.workspaceId, appId: String(app.workpieceId) },
+    search: app.from ? { from: app.from } : {},
   })
   const [sharing, setSharing] = useState(false)
+  const toasts = useKumoToastManager()
+
+  // A name given from the pill shows at once, for this app only; a failed rename takes it back.
+  const appKey = `${app.workspaceId}:${app.workpieceId}`
+  const [renamed, setRenamed] = useState<{ key: string; title: string } | null>(null)
+  const title = renamed?.key === appKey ? renamed.title : app.title
+  const rename = (next: string) => {
+    if (!gadget) return
+    setRenamed({ key: appKey, title: next })
+    gadget.stub.setTitle(next).then(
+      () => app.onRenamed?.(next),
+      err => {
+        logRpcFailure('Failed to rename gadget:', err)
+        setRenamed(current => current?.key === appKey && current.title === next ? null : current)
+        toasts.add({ title: "Couldn't rename the gadget", variant: 'error' })
+      },
+    )
+  }
 
   return (
     <>
       <PaneHeader
         glyph={<FormatGlyph output={app.output} size="sm" weight="regular" />}
-        title={app.title}
+        title={title}
+        onRename={!useOnly && gadget ? rename : undefined}
         menu={<>
           {!useOnly && (
             <DropdownMenu.Item
@@ -103,17 +130,38 @@ export function AppPreviewPane({ app, onClose, expanded, onExpandedChange }: {
             </DropdownMenu.Item>
           )}
           <DropdownMenu.Item onClick={openFullScreen} className={MENU_ITEM}>Open on its own</DropdownMenu.Item>
+          {/* What the gadget's pane offers in its workspace, so it reads the same here. */}
+          {!useOnly && (
+            <>
+              <DropdownMenu.Separator />
+              <GadgetExportMenu
+                gadget={gadget?.stub ?? null}
+                gadgetTitle={title}
+                asSubmenu={{ itemClassName: MENU_ITEM, contentClassName: MENU_CONTENT }}
+              />
+              <DropdownMenu.Item
+                onClick={() => navigate({
+                  to: '/workspace/$id/app/$appId/settings',
+                  params: { id: app.workspaceId, appId: String(app.workpieceId) },
+                  search: app.from ? { from: app.from } : {},
+                })}
+                className={MENU_ITEM}
+              >
+                Gadget settings
+              </DropdownMenu.Item>
+            </>
+          )}
         </>}
         onShare={!useOnly && overseer && metadata ? () => setSharing(true) : undefined}
         onExpand={() => onExpandedChange(!expanded)}
         expandLabel={expanded ? 'Exit full screen' : 'Full screen'}
         onClose={onClose}
-        closeLabel="Close app"
+        closeLabel="Close gadget"
       />
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {error || failure ? (
           <p className="flex h-full items-center justify-center px-6 text-center text-[13px] text-kumo-subtle">
-            {failure ?? 'This app couldn’t be opened.'}
+            {failure ?? 'This gadget couldn’t be opened.'}
           </p>
         ) : gadget ? (
           <GadgetUI key={`${app.workspaceId}:${app.workpieceId}`} gadget={gadget.stub} height="100%" isVisible />
@@ -129,7 +177,7 @@ export function AppPreviewPane({ app, onClose, expanded, onExpandedChange }: {
           onClose={() => setSharing(false)}
           overseer={overseer.stub}
           metadata={metadata}
-          gadget={{ id: app.workpieceId, title: app.title }}
+          gadget={{ id: app.workpieceId, title }}
           currentUser={currentUser}
           authenticatedApi={authenticatedApi}
         />

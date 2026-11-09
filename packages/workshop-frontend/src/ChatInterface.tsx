@@ -4454,7 +4454,11 @@ function ChatInterface({
     const model = modelId !== undefined ? modelId : selectedModel;
 
     try {
-      if (selectedChatId === null) {
+      // A chat the workspace doesn't have yet -- the one a lone gadget's workspace opens on before
+      // anyone has written, as one made from a blueprint does -- starts with this message.
+      const startsChat = selectedChatId === null
+        || (chatListReady && !cacheRef.current.chats.has(selectedChatId));
+      if (startsChat) {
         // Create a new chat (with optional capsules).
         const newChatId = await overseer.newChat(
             message, model, capsules, attachments, formats);
@@ -4463,7 +4467,7 @@ function ChatInterface({
       } else {
         // Send message to existing chat.
         await overseer.sendChatMessage(
-          selectedChatId,
+          selectedChatId!,
           message,
           model,
           capsules || undefined,

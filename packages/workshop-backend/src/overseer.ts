@@ -576,6 +576,8 @@ async function computeSessionAffinity(gadgetId: string, chatId: number): Promise
   return new Uint8Array(hash).toHex();
 }
 
+const callerChatId = (caller: GatekeeperCaller) => "chatId" in caller ? caller.chatId : undefined;
+
 function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // TODO: ActionRecord and ActionLogEntry are almost identical. The main difference is that
   // ActionRecord includes `action`, which should NOT be provided to the client. We could make
@@ -599,6 +601,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         state: record.state,
         type: "observation",
         description,
+        chatId: callerChatId(record.caller),
       };
     }
     case "action":
@@ -617,6 +620,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        chatId: callerChatId(record.caller),
         gadgetId: record.caller.from === "gadget" || record.caller.from === "hook"
             ? record.caller.gadgetId : undefined,
       };
@@ -10681,6 +10685,42 @@ class OverseerImpl implements AgentHooks {
     return {files, notes: lines.join("\n"), output, merge};
   }
 
+  // Write the history a gadget instantiated from a blueprint starts with, ahead of its record:
+  // every permanent gadget is born with a head (see GadgetRecord.commitId), so a failure here --
+  // invalid content, an empty release, an unreachable owner -- must not leave a headless record
+  // behind. The commits are content-addressed and referenced by nothing until the record lands,
+  // so writing them first is safe. An empty release is refused rather than instantiated as a
+  // code-less gadget: blueprints of such gadgets cannot be created (see createBlueprint), so one
+  // can only arrive corrupted or hand-crafted.
+  //
+  // The history starts at an empty root of its own, into which the head merges the release: the
+  // head's tree is the release's, its first parent the root, its second the release, which it
+  // marks as a release it merged (see releasesMergedSince). A commit's first parent is always the
+  // gadget's own previous state, so the gadget's first-parent chain is its own history, every
+  // commit of which has its tree here. The release's ancestors, most of which arrived without
+  // theirs, are only ever reached through other parents -- where a later update finds what the
+  // gadget and a blueprint have in common. Returns the head and the release.
+  async writeBlueprintInstanceCommits(blueprintId: string, metadata: BlueprintMetadata,
+      title: string, author: AiChatAuthorInfo): Promise<{commitId: string, release: string}> {
+    let release = await this.loadBlueprint(blueprintId, metadata);
+    if (this.gitCache.readCommitFiles(release).size === 0) {
+      throw new Error("This blueprint's code archive is empty.");
+    }
+    let authorship = { author: commitIdentityForAuthor(author), timestamp: new Date() };
+    let root = await this.gitCache.writeFilesAsCommit(new Map(), {
+      ...authorship,
+      parents: [],
+      message: `Create gadget: ${title}`,
+    });
+    let commitId = this.gitCache.writeCommitForTree(this.gitCache.commitTree(release), {
+      ...authorship,
+      parents: [root, release],
+      message: `Instantiate blueprint: ${title}`,
+      headers: [releaseMergeHeader(release)],
+    });
+    return {commitId, release};
+  }
+
   #tailSubscribers: Set<RpcStub<ConsoleLogSubscriber>> = new Set();
 
   async deliverGadgetLogs(chatId: number | null, logs: ConsoleLogEvent[]) {
@@ -11910,18 +11950,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let { title } = metadata;
     this.impl.storage.title.put(title);
 
-    // Load the release and write the gadget's initial commits *before* creating the gadget
-    // record: every permanent gadget is born with a head (see GadgetRecord.commitId), so a
-    // failure here -- invalid content, an empty release, an unreachable owner -- must not leave
-    // a headless record behind. The commits are content-addressed and referenced by nothing
-    // until the record lands, so writing them first is safe. The release's tree becomes the
-    // gadget's first committed tree. An empty release is refused rather than instantiated as a
-    // code-less gadget: blueprints of such gadgets cannot be created (see createBlueprint), so
-    // one can only arrive corrupted or hand-crafted.
-    let release = await this.impl.loadBlueprint(blueprintId, metadata);
-    if (this.impl.gitCache.readCommitFiles(release).size === 0) {
-      throw new Error("This blueprint's code archive is empty.");
-    }
     let ownerId = this.impl.ownerId;
     if (!ownerId) {
       throw new Error("Workspace has no owner.");
@@ -11931,27 +11959,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let owner = () => this.impl.wrapUserDo(
         this.impl.users.get(this.impl.users.idFromString(ownerId)));
     let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
-
-    // The gadget's history starts at an empty root of its own, into which its head merges the
-    // release: the head's tree is the release's, its first parent the root, its second the
-    // release, which it marks as a release it merged (see releasesMergedSince). A commit's first
-    // parent is always the gadget's own previous state, so the gadget's first-parent chain is its
-    // own history, every commit of which has its tree here. The release's ancestors, most of
-    // which arrived without theirs, are only ever reached through other parents -- where a later
-    // update finds what the gadget and a blueprint have in common.
-    let authorship = { author: commitIdentityForAuthor(ownerProfile), timestamp: new Date() };
-    let root = await this.impl.gitCache.writeFilesAsCommit(new Map(), {
-      ...authorship,
-      parents: [],
-      message: `Create gadget: ${title}`,
-    });
-    let commitId = this.impl.gitCache.writeCommitForTree(
-        this.impl.gitCache.commitTree(release), {
-      ...authorship,
-      parents: [root, release],
-      message: `Instantiate blueprint: ${title}`,
-      headers: [releaseMergeHeader(release)],
-    });
+    let {commitId, release} =
+        await this.impl.writeBlueprintInstanceCommits(blueprintId, metadata, title, ownerProfile);
 
     // Blueprint instantiation still creates a fresh workspace containing one auto-created gadget,
     // recorded as the default gadget (see ensureDefaultGadget).
@@ -12576,20 +12585,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       chatNames = this.impl.chatScopeNames(chatId);
     }
     if (bindingName === undefined) {
-      // The user didn't pick a name: derive one from the title via the quick model (the
-      // title-to-identifier transform is exactly what it's for), falling back to a generic
-      // GADGET/GADGET_2. Existing gadget names -- including pending ones -- are off-limits.
-      let taken = new Set(
-          [...this.impl.storage.gadgets.list()].flatMap(
-              gadget => gadget.bindingName !== undefined ? [gadget.bindingName] : []));
-      for (let name of chatNames ?? []) taken.add(name);
-      let userMeta = await retryOnDoReset(
-          () => this.#clientUser.getChatContext(null), this.impl.logger);
-      if (userMeta.quickModel) {
-        bindingName = await this.impl.generateBindingName(
-            title, taken, {config: userMeta.quickModel, initiator: userMeta.profile});
-      }
-      bindingName ??= fallbackBindingName("GADGET", name => taken.has(name));
+      bindingName = await this.#chooseBindingName(title, chatNames);
     } else if (chatNames?.has(bindingName)) {
       throw new Error(`The name "${bindingName}" is already in use in this chat. Choose a ` +
           `different name.`);
@@ -12634,6 +12630,61 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         createdGadgets: [{gadgetId: record.id, title: record.title, bindingName}],
       }]);
     }
+    // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
+    //     type system doesn't know this.
+    return new GadgetClientImpl(this.impl, record.id, this.clientUserId,
+        this.#mintedCapabilityKind());
+  }
+
+  // A name for a gadget the user didn't name: derived from the title via the quick model (the
+  // title-to-identifier transform is exactly what it's for), falling back to a generic
+  // GADGET/GADGET_2. Existing gadget names -- including pending ones -- and `chatNames` are
+  // off-limits.
+  async #chooseBindingName(title: string, chatNames?: Set<string>): Promise<string> {
+    let taken = new Set(
+        [...this.impl.storage.gadgets.list()].flatMap(
+            gadget => gadget.bindingName !== undefined ? [gadget.bindingName] : []));
+    for (let name of chatNames ?? []) taken.add(name);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(null), this.impl.logger);
+    let bindingName: string | undefined;
+    if (userMeta.quickModel) {
+      bindingName = await this.impl.generateBindingName(
+          title, taken, {config: userMeta.quickModel, initiator: userMeta.profile});
+    }
+    return bindingName ?? fallbackBindingName("GADGET", name => taken.has(name));
+  }
+
+  async createGadgetFromBlueprint(blueprintId: string): Promise<RpcStub<GadgetClient>> {
+    let kvRecord = await readBlueprintKvRecord(this.impl.env, blueprintId);
+    if (!kvRecord) throw new Error("Blueprint not found.");
+    let {metadata} = kvRecord;
+    // Bindings need accounts chosen for them, which the blueprint's own page does as it makes a
+    // workspace of its own.
+    if (Object.keys(metadata.bindings).length > 0) {
+      throw new Error("This blueprint needs connections set up, so it has to be used from its " +
+          "own page.");
+    }
+    // Named and drawn as the deployment presents the format, as newWorkspaceFromBlueprint does.
+    let output = deploymentOutputForBlueprint(await readAdminConfig(this.impl.env), blueprintId,
+        sanitizeBlueprintOutput(metadata.output));
+    let title = metadata.title;
+    let [{commitId, release}, bindingName] = await Promise.all([
+      this.#getClientProfile().then(author =>
+          this.impl.writeBlueprintInstanceCommits(blueprintId, metadata, title, author)),
+      this.#chooseBindingName(title),
+    ]);
+    // (createGadget validates the title and name.) The gadget follows the blueprint from the
+    // release it was made from.
+    let record = this.impl.createGadget(title, bindingName, undefined, {output}, commitId);
+    record.upstream = {blueprintId, commitId: release};
+    this.impl.storage.gadgets.put(record);
+    this.impl.recordGadgetAnalytics({
+      event_name: "workpiece_created",
+      user_id: this.clientUserId,
+      workpiece_id: record.id,
+      source: "blueprint",
+    });
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetClientImpl(this.impl, record.id, this.clientUserId,
@@ -14286,6 +14337,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
+  async createGadgetFromBlueprint(_blueprintId: string): Promise<RpcStub<GadgetClient>> {
+    this.#deny();
+  }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
     this.#deny();
