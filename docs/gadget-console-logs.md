@@ -224,6 +224,10 @@ workspace's own logger, component `workshop.overseer`, as a warn with event
 report is rejected, and it counts that batch as dropped. A marker that report was to bring is not
 lost with it: the gadget's next marker counts what it held.
 
+The length of an error's text never causes this, since no more of a text is handed to the writer
+than is read. A value a gadget throws that is not an Error is handed over as it is, for the writer
+to print, so one larger than a call between Workers can carry (32 MiB) is not recorded.
+
 ### What the capture loses without a marker
 
 Three things a gadget view holds are lost with nothing to mark them. A closed tab sends only what

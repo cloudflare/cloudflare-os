@@ -20,7 +20,7 @@ import {
   MAX_GADGET_CONSOLE_LOGS_PER_CALL, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH,
   type AiChatAuthorInfo, type ConsoleLogEvent, type Overseer, type ReportedGadgetConsoleLog,
 } from "@gadgets/workshop-shared/api";
-import { GADGET_CONSOLE_LOGS_PER_MINUTE } from "../src/gadget-console-log.js";
+import { GADGET_CONSOLE_LOGS_PER_MINUTE, gadgetConsoleLogText } from "../src/gadget-console-log.js";
 import { GadgetTailLoopback, type OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -41,6 +41,10 @@ export class Gadget extends DurableObject {
 
   fail() {
     throw new Error("boom");
+  }
+
+  failWithObject() {
+    throw { code: 42 };
   }
 }
 `;
@@ -142,6 +146,9 @@ const errorLine = (impl: any, text: unknown) => ({
 // What the facet proxy makes of the error fail() throws.
 const BOOM = expect.stringMatching(/boom\n {4}at fail\(\)$/);
 
+// Filler of `n` characters in which no run of token characters is long.
+const words = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
+
 describe("recording an exception a gadget method throws at its caller", () => {
   it.each([
     ["a workspace", (_impl: any) => {}],
@@ -178,6 +185,49 @@ describe("recording an exception a gadget method throws at its caller", () => {
     expect(line.text).toMatch(/at noSuchMethod_zzq\(\)$/);
     await vi.waitFor(() => expect(received).toHaveLength(1));
     expect(received).toStrictEqual([{ chatId: null, level: "error", message: [line.text] }]);
+  }));
+
+  // The gadget and its caller decide how long an error's text is, and the proxy's event holds a
+  // called name twice, so a name of some seventeen million characters makes an event too large
+  // for the call to the writer to carry. Cut to what is read, it makes the line the whole event
+  // would. (The written line would show nothing here: the writer cuts whatever it is handed.)
+  it("hands its writer no more of an exception's text than is read", () =>
+      withGadget(async (impl, received) => {
+    setRecording(impl, "true");
+    let handed: unknown[][] = [];
+    replaceGadgetConsoleLogLoopback(
+        impl, () => ({ server: async (...args: unknown[]) => { handed.push(args); } }));
+
+    let name = words(100_000);
+    await rejects(impl, name, /does not implement the method/);
+
+    await vi.waitFor(() => expect(handed).toHaveLength(1));
+    let [event] = handed[0][2] as ConsoleLogEvent[];
+    expect(event.message).toHaveLength(1);
+    expect(event.message[0]).toHaveLength(MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH);
+
+    // A live subscriber is sent the event whole.
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    let [whole] = received[0].message as string[];
+    expect(whole.length).toBeGreaterThan(2 * name.length);
+    expect(gadgetConsoleLogText(event.message)).toBe(gadgetConsoleLogText([whole]));
+  }));
+
+  // A thrown value that is no Error reaches the proxy as the value, with members the runtime adds
+  // after its own. It is handed on as it is and printed by the writer as any console argument
+  // is: as JSON.
+  it("records a thrown value that is no Error as JSON", () =>
+      withGadget(async (impl, received) => {
+    setRecording(impl, "true");
+
+    using gadget = await impl.getGadgetFacet(GADGET_ID);
+    await expect(() => gadget.failWithObject()).rejects.toMatchObject({ code: 42 });
+
+    await vi.waitFor(() => expect(lines()).toHaveLength(1));
+    expect(lines()).toStrictEqual([errorLine(impl, expect.stringMatching(/^\{"code":42[,}]/))]);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received).toStrictEqual(
+        [{ chatId: null, level: "error", message: [expect.objectContaining({ code: 42 })] }]);
   }));
 
   // "false" stands beside the unset variable because the Overseer has to ask
@@ -329,9 +379,6 @@ const reportedMarker = (impl: any, droppedCount: number) => ({
   workpieceId: GADGET_ID, consoleSource: "client", userId: OWNER.id, droppedCount,
   time: expect.any(String), text: `${droppedCount} entries dropped`,
 });
-
-// Filler of `n` characters in which no run of token characters is long.
-const words = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
 
 // A moment for the cases that fake the clock.
 const NOON = Date.parse("2026-01-02T12:00:00Z");

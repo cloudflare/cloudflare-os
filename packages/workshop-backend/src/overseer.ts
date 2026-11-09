@@ -10202,8 +10202,13 @@ class OverseerImpl implements AgentHooks {
     if (!isGadgetConsoleLogRecordingEnabled(this.env)) return;
     this.ctx.waitUntil((async () => {
       try {
+        // No more of a text is handed on than is read: the gadget and its caller decide how long
+        // an error's text is, and one longer than a call can carry would not be recorded at all.
+        // A thrown value that is no Error goes on as it is: printing it is the writer's work.
+        let message = event.message.map((part: unknown) => typeof part === "string"
+            ? part.slice(0, MAX_REPORTED_GADGET_CONSOLE_LOG_TEXT_LENGTH) : part);
         await this.#gadgetConsoleLog.server(
-            gadgetId, this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [event]);
+            gadgetId, this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [{...event, message}]);
       } catch (error) {
         this.logger.warn("failed to record a gadget exception",
             { event: "gadget.console.record.failed", error });
