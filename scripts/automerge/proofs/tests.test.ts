@@ -206,6 +206,17 @@ describe("proof-tests scope", () => {
     });
   });
 
+  // Bonk on #987, round 6: a JavaScript module the tests run was taken for data, so neither
+  // mutated nor reported.
+  it("names an import that resolves to a JavaScript module", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/feature.js": "export const double = (x) => x * 2;\n" });
+    const text = 'import { a } from "./a.ts";\nimport { double } from "./feature.js";\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts"],
+      problems: ["packages/p/src/x.test.ts: imports the JavaScript module packages/p/src/feature.js, which is not mutated"],
+    });
+  });
+
   // Clanky on #987, round 2: a weakened assertion about another workspace package's code changes no
   // kill in this package's mutants.
   it("names a value import of another workspace package, but not a type-only one or a node_modules one", () => {

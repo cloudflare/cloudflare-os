@@ -147,10 +147,11 @@ const WRAPPER_SETUP = "vitest.automerge.setup.mjs";
 
 /**
  * Runs `files` (repo-relative) under `config` from its package directory, with
- * body-mark.setup.mjs added to the config's setup files through a wrapper config written beside it
- * and removed after. The wrapper resolves a config exported as a function or a promise. A config
- * with `test.projects` makes the wrapper throw, so vitest writes no report and the run reads as
- * unseen: projects do not all inherit the root's setup files.
+ * body-mark.setup.mjs put first among the config's setup files, through a wrapper config written
+ * beside it and removed after: a later setup file may load a `test.extend` helper, which must see
+ * the patched collectors. The wrapper resolves a config exported as a function or a promise. A
+ * config with `test.projects` makes the wrapper throw, so vitest writes no report and the run
+ * reads as unseen: projects do not all inherit the root's setup files.
  */
 export function runTests(config: string, files: string[]): TestRun {
   const pkg = packageOf(config);
@@ -165,7 +166,7 @@ export function runTests(config: string, files: string[]): TestRun {
       `  const resolved = await (typeof config === "function" ? config(env) : config);`,
       `  if (resolved.test?.projects) throw new Error("automerge: a vitest config with test.projects is not supported");`,
       `  const setupFiles = [resolved.test?.setupFiles ?? []].flat();`,
-      `  return { ...resolved, test: { ...resolved.test, setupFiles: [...setupFiles, "./${WRAPPER_SETUP}"] } };`,
+      `  return { ...resolved, test: { ...resolved.test, setupFiles: ["./${WRAPPER_SETUP}", ...setupFiles] } };`,
       `};`,
       "",
     ].join("\n"));
