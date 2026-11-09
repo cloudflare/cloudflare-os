@@ -2,7 +2,7 @@ import { createElement, isValidElement, type CSSProperties, type ElementType, ty
 import { Menu } from '@cloudflare/kumo/primitives/menu'
 import { cn } from '@cloudflare/kumo/utils'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from './Button'
+import { Button, type ButtonProps } from './Button'
 import { useMenuMorph } from './useMenuMorph'
 import './DropdownMenu.css'
 
@@ -15,6 +15,8 @@ export type DropdownMenuProps = TriggerContent & {
   children: ReactNode
   /** Sizes and styles the trigger Button; the morphing surface copies it. */
   triggerClassName?: string
+  /** The trigger Button's variant. A ghost trigger has no surface, so the menu's fades in as it grows. */
+  triggerVariant?: ButtonProps['variant']
   /** Positions the popup against this element instead of the trigger. */
   anchorRef?: RefObject<HTMLElement | null>
   side?: 'top' | 'right' | 'bottom' | 'left'
@@ -43,6 +45,7 @@ const DropdownMenuRoot = ({
   'aria-label': ariaLabel,
   children,
   triggerClassName,
+  triggerVariant,
   anchorRef,
   side = 'bottom',
   align = 'start',
@@ -69,6 +72,7 @@ const DropdownMenuRoot = ({
         render={(props, { open }) => (
           <Button
             {...props}
+            variant={triggerVariant}
             style={{ ...props.style, ...time }}
             icon={iconNode ? <>{iconNode}{close}</> : undefined}
             aria-label={open && !inPlace ? 'Close menu' : ariaLabel}
@@ -98,6 +102,7 @@ const DropdownMenuRoot = ({
           <Menu.Popup
             ref={popupRef}
             data-in-place={inPlace || undefined}
+            data-variant={triggerVariant}
             style={time}
             aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}
             onKeyDownCapture={(event) => {
@@ -113,7 +118,7 @@ const DropdownMenuRoot = ({
             </div>
             {/* A copy of the trigger rides the surface, so the button itself appears to morph. */}
             <div inert aria-hidden="true" className="dropdown-menu-ghost pointer-events-none absolute">
-              <Button icon={iconNode} aria-label="" tabIndex={-1} className={cn(triggerClassName, 'h-full w-full')}>
+              <Button icon={iconNode} aria-label="" tabIndex={-1} variant={triggerVariant} className={cn(triggerClassName, 'h-full w-full')}>
                 {label}
               </Button>
             </div>
