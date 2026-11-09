@@ -40,7 +40,7 @@ describe("proof-tests verdict", () => {
     assert.equal(outcome.details.killed_base, outcome.details.killed_head);
   });
 
-  it("counts the red head run's Killed and Timeout statuses: 213 of its 280 mutants", () => {
+  it("counts the red head run's killed mutants: 213 of its 280", () => {
     const killed = killedMutants(report("red-head"));
     assert.equal(killed.size, 213);
   });
@@ -153,6 +153,18 @@ describe("proof-tests scope", () => {
         'packages/p/src/x.test.ts: cannot follow "import /* webpackIgnore: true */ ("./fea", not a call with one string literal',
       ],
     });
+  });
+
+  // CodeQL on #987, round 3: a run of `*//*` after `import` must not make the call scan backtrack.
+  // The run ends in an unclosed comment, which counts as a call the proof cannot read.
+  it("scans a long run of comment markers after `import` in linear time, and fails closed on it", () => {
+    const text = `const x = import${"/*".concat("*//*".repeat(100_000))};\n`;
+    const started = performance.now();
+    const { sources, problems } = sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", files({}), WORKSPACE);
+    assert.ok(performance.now() - started < 1000, "the scan took over a second");
+    assert.deepEqual(sources, []);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /cannot follow "import\/\*/);
   });
 
   // Clanky on #987, round 2: a weakened assertion about another workspace package's code changes no

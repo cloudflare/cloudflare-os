@@ -110,11 +110,34 @@ export function planScope(files: FileDiff[]): TestsScope {
 const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
 /** A type-only import or re-export, which brings no behavior with it. */
 const TYPE_ONLY = /^[\s;]*(?:import|export)\s+type\s/;
+/** Every `import` or `require` name; callFollows says which ones are calls. */
+const CALL_NAME = /(?<![\w$#.])(?:import|require)(?![\w$])/g;
+
 /**
- * Every `import` or `require` call, however spelled: spaces or comments may sit between the name
- * and its parenthesis.
+ * Whether `(` follows position `at` of `text`, past any spaces and comments: `import ("x")` and
+ * `import /* c *\/ ("x")` are calls too. A linear scan, so no input can make it backtrack. An
+ * unterminated comment counts as a call, so the caller reports it rather than skips it.
  */
-const CALL = /(?<![\w$#.])(?:import|require)(?=\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*\()/g;
+export function callFollows(text: string, at: number): boolean {
+  let i = at;
+  while (i < text.length) {
+    if (/\s/.test(text[i])) {
+      i++;
+    } else if (text.startsWith("/*", i)) {
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1) return true;
+      i = end + 2;
+    } else if (text.startsWith("//", i)) {
+      const end = text.indexOf("\n", i + 2);
+      if (end === -1) return true;
+      i = end + 1;
+    } else {
+      return text[i] === "(";
+    }
+  }
+  return false;
+}
+
 /** The one call spelling IMPORT reads: the name, then `(` and a single string literal. */
 const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
@@ -185,7 +208,8 @@ export function sourceGraph(
   const name = typeof manifest.name === "string" ? manifest.name : undefined;
   const queue = [...roots];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    for (const call of next.text.matchAll(CALL)) {
+    for (const call of next.text.matchAll(CALL_NAME)) {
+      if (!callFollows(next.text, call.index + call[0].length)) continue;
       READABLE_CALL.lastIndex = call.index;
       if (READABLE_CALL.test(next.text)) continue;
       const shown = next.text.slice(call.index, call.index + 40).split("\n")[0];
