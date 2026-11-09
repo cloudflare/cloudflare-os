@@ -14332,10 +14332,25 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   async listPendingChanges(chatId: number): Promise<AdminPendingChange[]> {
     return this.#call("listPendingChanges", {chatId}, async () => {
       let impl = this.#impl;
-      let content = await this.#pendingContent(chatId);
+      // The fold settles one microtask before this goes on, and an accept's synchronous tail can
+      // run in that gap and clear the pins the content was folded from. So the chat's code base
+      // and message sequence are read on both sides of the fold, and a fold they moved under is
+      // taken again.
+      let content: CodeContent;
+      let codeBase: ChatCodeBase;
+      for (let attempt = 0; ; attempt++) {
+        let before = impl.chatCodeBase(impl.getChatMetaOrThrow(chatId));
+        let token = impl.nextChatSequencePeek(chatId);
+        content = await this.#pendingContent(chatId);
+        codeBase = impl.chatCodeBase(impl.getChatMetaOrThrow(chatId));
+        if (codeBase.generation === before.generation && codeBase.revision === before.revision &&
+            impl.nextChatSequencePeek(chatId) === token) {
+          break;
+        }
+        if (attempt >= 4) throw new Error("The chat is changing too quickly; please retry.");
+      }
       // Nothing is awaited from here on, so the pins and the change stream are the ones the
       // content was folded from.
-      let codeBase = impl.chatCodeBase(impl.getChatMetaOrThrow(chatId));
       let pins = new Map(codeBase.pins.map(pin => [pin.gadgetId, pin]));
       let messages = [...impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
       let touched = impl.worktreeTouchedPaths(messages, chatChangeStatuses(messages),

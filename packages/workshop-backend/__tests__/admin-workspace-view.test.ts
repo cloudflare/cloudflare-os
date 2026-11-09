@@ -1581,6 +1581,36 @@ describe("a chat's pending changes", () => {
         .toStrictEqual({ kind: "text", text: "code\n" });
   }));
 
+  it("list one side of an accept whole, never the chat's files against the pins it cleared",
+      async () => {
+    // An accept clears the chat's pins in a synchronous tail, which can run in the microtask
+    // between the fold settling and the listing going on. The accept is started first and the
+    // listing a growing number of microtasks later, so that some offset lands in that gap: the
+    // listing then folds a second time, which is counted so that the sweep cannot miss the gap
+    // unnoticed.
+    let refolded = false;
+    for (let ticks = 0; ticks <= 16; ticks++) {
+      await withWorkspace(async ws => {
+        let view = await openFull(ws);
+        // Only the view passes a base reader, so these are its folds and not the accept's.
+        let folds = 0;
+        let fold = ws.impl.getCurrentChatContent.bind(ws.impl);
+        ws.impl.getCurrentChatContent = (...args: unknown[]) => {
+          if (args[2] !== undefined) folds++;
+          return fold(...args);
+        };
+        let merge = ws.impl.mergeChanges(DRAFT_CHAT_ID, { profile: OWNER }, OWNER_USER_ID);
+        for (let i = 0; i < ticks; i++) await Promise.resolve();
+        let listing = await view.listPendingChanges(DRAFT_CHAT_ID);
+        expect((await merge).outcome).toBe("merged");
+        expect([[seededPendingChange(ws)], []], `${ticks} microtasks after the accept began`)
+            .toContainEqual(listing);
+        refolded ||= folds > 1;
+      });
+    }
+    expect(refolded).toBe(true);
+  });
+
   it("record a chat or a workpiece that holds none as a read that failed",
       () => withWorkspace(async ws => {
     let view = await openFull(ws);
