@@ -167,6 +167,20 @@ describe("a team binding", () => {
     expect([asked.getAll("service_ids[]"), asked.getAll("team_ids[]")]).toEqual([[SERVICE.id], []]);
   });
 
+  it.each([
+    ["service", "listServices", (pd: FakePagerDuty, teams: WireRef[]) => { pd.services.get(OTHER_SERVICE.id)!.teams = teams; }],
+    ["schedule", "listSchedules", (pd: FakePagerDuty, teams: WireRef[]) => { pd.shiftSchedules.get(SHIFT_SCHEDULE.id)!.teams = teams; }],
+  ] as const)("serves no %s it lists that leaves the team mid-walk", async (_kind, method, place) => {
+    const t = await setup(team);
+    place(t.pd, [TEAM]);
+    // The second row leaves the team after the first page.
+    t.pd.on("GET", /^\/users/, () => {
+      place(t.pd, [OTHER_TEAM]);
+      return undefined;
+    });
+    expect(await t.run([[method, { pageSize: 1 }]], 5, [[["findUsers", "bob"]]])).toHaveLength(1);
+  });
+
   it("lists the incidents on its services, not those PagerDuty relates to the team", async () => {
     const t = await setup(team);
     const movedOut = t.pd.incident(SERVICE);

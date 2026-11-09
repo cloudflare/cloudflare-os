@@ -350,13 +350,15 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   overlay?(row: T): readonly T[];
   inject?: CursorInjection<T>;
   refresh?(): Promise<void>;
+  /** How many rows to ask PagerDuty for at a time; by default at least `DEFAULT_PAGE_SIZE`. */
+  remotePageSize?: number;
 }): Cursor<T> {
   const { pageSize, sources, describe, filter = [], result, ...hooks } = options;
   const walk = ctx.dup();
   return new TokenCursor<T>({
+    remotePageSize: Math.max(pageSize, DEFAULT_PAGE_SIZE),
     ...hooks,
     pageSize,
-    remotePageSize: Math.max(pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
     fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, sources, token, perPage)),
     authorizePage: async (rows, { terminal }) => walk.authorize(describe(rows, terminal), [...filter, ...await result(rows)]),
@@ -384,8 +386,12 @@ function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "serv
                                                sources: (filters: Query) => readonly OffsetSource<T>[]): Cursor<T> {
   const query = list?.query === undefined ? undefined : text(list.query, "query", 200);
   const { teamId } = ctx.within;
+  const pageSize = pageSizeOf(list);
   return offsetCursor<T>(ctx, {
-    pageSize: pageSizeOf(list),
+    pageSize,
+    // Only PagerDuty filters by team, so a team's rows are fetched a page at a time, as they're
+    // served: none waits to be served after it has left the team.
+    ...(teamId ? { remotePageSize: pageSize } : {}),
     sources: sources({ query, ...(teamId ? { team_ids: [teamId] } : {}) }),
     describe: listed(`Listed PagerDuty ${plural(kind)}`, kind),
     result: rows => rows.map(({ id }) => ({ kind, id })),
