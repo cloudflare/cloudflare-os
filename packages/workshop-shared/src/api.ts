@@ -4708,12 +4708,34 @@ export interface Overseer extends RpcTarget {
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
    * being produced by the gadget.
    *
-   * At present, logs are not stored, so the only way to see them is to be subscribed when they
-   * happen.
+   * Only logs written while subscribed are delivered. What was written earlier is read with
+   * listConsoleLogs().
    *
    * To unsubscribe, dispose the returned stub.
    */
   subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Read one page of the console log history kept for this workspace, newest first by the order
+   * its entries were kept in. An entry is a console call or an uncaught exception of a gadget's
+   * server code, or a console call that a session reported for a gadget's UI (see
+   * reportGadgetConsoleLogs()).
+   *
+   * An entry is kept for 72 hours from when it was kept, whatever its own `time` says, and the
+   * oldest go sooner once the entries of one gadget count past 10 MB or those of the workspace
+   * past 50 MB. "client" entries have a part of each bound to themselves, 2 MB and 10 MB, and
+   * "server" entries the rest, so what browsers report never pushes out what a gadget's server
+   * logged. An entry counts as an estimate of what it takes in storage, which for a long line is
+   * a whole 4 KB page (docs/gadget-console-logs.md). Deleting a gadget leaves its entries, listed
+   * by its id until they expire. Deleting the workspace deletes them all.
+   *
+   * Page size is a server constant. Pages are full until the last: absence of `nextCursor` means
+   * there is nothing older. Throws for a `since` or `until` that is not a valid time, and for a
+   * malformed `cursor`.
+   *
+   * Requires "build" access. A "use" session gets an empty page, as it gets no live logs.
+   */
+  listConsoleLogs(query?: GadgetConsoleLogQuery): Promise<GadgetConsoleLogPage>;
 
   // --- Blueprint management ---
   //
@@ -7189,9 +7211,10 @@ export interface WorkpieceClient extends RpcTarget {
    * Delete this workpiece (a gadget or a gatekeeper), permanently removing it from the workspace.
    *
    * For a gadget, this deletes its registry entry (including its binding map) and hooks and
-   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
-   * a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from
-   * one gadget (GadgetClient.unbind()).
+   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. The
+   * console log entries kept for it survive too: Overseer.listConsoleLogs() lists them by its id
+   * until they expire. For a gatekeeper, this destroys the connection itself -- distinct from
+   * merely unbinding it from one gadget (GadgetClient.unbind()).
    */
   remove(): Promise<void>;
 }

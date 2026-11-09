@@ -1450,6 +1450,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
 
+      // The name of the Durable Object that keeps this workspace's gadget console logs
+      // (workspace-log.ts): random, made when the first entry is kept. It goes with the rest of this
+      // storage when the workspace is deleted, so a workspace initialised again under the same id
+      // starts with no log, and nothing written late to the old one is ever read from the new.
+      consoleLogId: <string | undefined>undefined,
+
       // When the workspace was initialised; unset for one initialised before this was recorded,
       // until the directory feed backfills it from the owner's record (OverseerImpl.syncDirectory).
       createdAt: <Date | undefined>undefined,

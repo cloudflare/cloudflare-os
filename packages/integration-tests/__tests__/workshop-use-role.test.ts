@@ -75,11 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert action/console reads. Everything else must be
-// classified below, so a new Overseer or GadgetClient method fails to compile until it is.
+// What renders the gadget UI, plus the inert reads: the actions, and the console logs, live and
+// kept. Everything else must be classified below, so a new Overseer or GadgetClient method fails
+// to compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
     "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs";
+    "subscribeToConsoleLogs" | "listConsoleLogs";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
@@ -232,6 +233,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   expect(await useWs.listActions()).toEqual({ entries: [] });
   expect(await useWs.listActions({ filter: "pending" })).toEqual({ entries: [] });
+  expect(await useWs.listConsoleLogs()).toEqual({ entries: [] });
   const actions = new ActionRecorder();
   using actionsStub = stubFor(actions);
   using _actions = await useWs.subscribeToActions(actionsStub, new Date(0));
