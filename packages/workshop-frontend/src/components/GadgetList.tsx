@@ -1,20 +1,23 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, UserPlus, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
-import { useState, useEffect, useRef } from 'react'
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, UserPlus, Trash, Info, Star, Pencil, ArrowRight, ArrowBendUpRight } from '@phosphor-icons/react'
+import { useState, useEffect, useRef, type ReactNode, type Ref } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { useUnreadState } from '../features/notifications/UnreadStateBridge'
 import { UnreadBadge } from '../features/notifications/UnreadBadge'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
-import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
+import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute, SpaceInfo } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../features/notifications/notificationMute'
 import ShareModal from '../ShareModal'
+import { takeLostFocus } from '../features/spaces/lostFocus'
+import { hasMoveTarget, MoveToSpaceDialog } from '../features/spaces/MoveToSpaceDialog'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
 import { BlueprintPreviewImage } from './BlueprintPreviewImage'
 import DeleteConfirmationDialog from './DeleteConfirmationDialog'
 import { isImeComposing } from '../keyboardEvent'
+import { logRpcFailure } from '../rpcErrors'
 
 // Neutral monogram for a workspace — matches the sidebar treatment (no per-item color noise).
 function initials(title: string | undefined): string {
@@ -47,6 +50,9 @@ function AppRow({
   onTogglePin,
   onRename,
   onNotificationMuteChange,
+  onMove,
+  menuButtonRef,
+  describedBy,
 }: {
   gadget: WorkspaceMetadataWithTimestamps
   onDelete: (gadget: WorkspaceMetadataWithTimestamps) => void
@@ -55,6 +61,14 @@ function AppRow({
   onTogglePin: (gadget: WorkspaceMetadataWithTimestamps) => void
   onRename: (gadget: WorkspaceMetadataWithTimestamps, newTitle: string) => void
   onNotificationMuteChange: (gadget: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  /**
+   * Offered on the user's own workspaces while the list is laid out under spaces and there is a
+   * space to move this one to.
+   */
+  onMove?: (gadget: WorkspaceMetadataWithTimestamps) => void
+  menuButtonRef?: Ref<HTMLButtonElement>
+  /** The id of an element outside the row that describes it, such as the space it is in. */
+  describedBy?: string
 }) {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
@@ -85,6 +99,7 @@ function AppRow({
     <Link
       to="/workspace/$id"
       params={{ id: gadget.id }}
+      aria-describedby={describedBy}
       className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
       onClick={(e) => {
         // Prevent navigation when renaming or clicking the menu
@@ -143,6 +158,7 @@ function AppRow({
         <DropdownMenu.Trigger
           render={
             <button
+              ref={menuButtonRef}
               className="p-1.5 text-kumo-subtle hover:text-kumo-default rounded-md hover:bg-kumo-fill transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
             >
               <DotsThreeVertical size={16} />
@@ -177,6 +193,12 @@ function AppRow({
             mute={gadget.notificationMute}
             onMuteChange={mute => onNotificationMuteChange(gadget, mute)}
           />
+          {onMove && !gadget.owner && (
+            <DropdownMenu.Item onClick={() => onMove(gadget)} className={MENU_ITEM}>
+              <ArrowBendUpRight size={13} />
+              Move to space
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Separator />
           <DropdownMenu.Item
             variant="danger"
@@ -193,7 +215,41 @@ function AppRow({
   )
 }
 
-export default function GadgetList({ showHeader = true }: { showHeader?: boolean } = {}) {
+/** What `GadgetList` hands the caller that lays its rows out under sections. */
+export type GadgetListRows = {
+  /** Every workspace in the list, in list order: favorites first, then the most recently active. */
+  gadgets: WorkspaceMetadataWithTimestamps[]
+  /** What the search field holds; empty while the list is not being searched. */
+  search: string
+  /**
+   * The list's row for one of `gadgets`, keyed by its id, with all its actions. `describedBy`
+   * is the id of an element outside the row that describes it, such as the space it is in.
+   */
+  renderRow: (gadget: WorkspaceMetadataWithTimestamps, describedBy?: string) => ReactNode
+  /**
+   * Gives the search field the focus if nothing has it. For a caller whose own control went
+   * away under the user, as a `Try again` does once the read works: the field is also where the
+   * list sends the focus of a row that has left it.
+   */
+  onFocusLost: () => void
+  /**
+   * What stands in for an empty list: the blueprints a user with no workspace can start one
+   * from, and nothing for a user who has one. The caller shows it only where it shows no row,
+   * which a space may have for a user with no workspace, and while nothing is searched for.
+   */
+  emptyState: ReactNode
+}
+
+export default function GadgetList({ showHeader = true, sections }: {
+  showHeader?: boolean
+  /**
+   * Lays the list out by space instead of flat, and adds 'Move to space' to the rows of the
+   * user's own workspaces. `spaces` is what that action offers; `render` returns what is shown,
+   * the workspaces page's sections and team space cards or one space's rows, and decides what a
+   * search shows in their place.
+   */
+  sections?: { spaces: SpaceInfo[]; render: (rows: GadgetListRows) => ReactNode }
+} = {}) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [gadgets, setGadgets] = useState<WorkspaceMetadataWithTimestamps[]>([])
@@ -212,6 +268,25 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
   const [shareTarget, setShareTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
   const [shareOverseer, setShareOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
+
+  // Move-to-space dialog state: the workspace being moved, as the list has it now.
+  const [moveTargetId, setMoveTargetId] = useState<string | null>(null)
+  const moveTarget = gadgets.find(g => g.id === moveTargetId)
+  // The workspace whose move dialog has just closed, and the menu button of each row on show
+  // while the list is laid out under spaces, by workspace id.
+  const [moveClosed, setMoveClosed] = useState<{ id: string } | null>(null)
+  const menuButtons = useRef(new Map<string, HTMLButtonElement>())
+
+  // A row whose workspace changed space while the dialog was open has mounted again under its
+  // new section, so the menu button the dialog would hand focus back to is gone, and the row's
+  // new one takes it. Where the row has left what is shown, as it does on the page of the space
+  // it left, the search field does. Queued, so that it follows the dialog's own attempt rather
+  // than being undone by it.
+  const searchRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (!moveClosed) return
+    queueMicrotask(() => (menuButtons.current.get(moveClosed.id) ?? searchRef.current)?.focus())
+  }, [moveClosed])
 
   useEffect(() => {
     authenticatedApi.whoami().then(setUserInfo).catch(() => {})
@@ -349,10 +424,57 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     setShareTarget(null)
   }
 
+  const setSpaceId = (id: string, spaceId: string | undefined) => {
+    setGadgets(prev => prev.map(g => g.id === id ? { ...g, spaceId } : g))
+  }
+
+  const closeMoveDialog = (id: string) => {
+    setMoveTargetId(null)
+    setMoveClosed({ id })
+  }
+
+  // A move that failed may have changed the space the workspace is recorded in all the same (see
+  // `Overseer.moveToSpace`), so the record is read again. Only its space is taken from the read:
+  // loading the whole list again would blank it behind the open dialog.
+  const handleMoveFailed = async (id: string) => {
+    try {
+      const record = (await authenticatedApi.listWorkspaces()).find(g => g.id === id)
+      if (record) setSpaceId(id, record.spaceId)
+    } catch (err) {
+      logRpcFailure('Failed to read a workspace again after a failed move:', err)
+    }
+  }
+
+  const renderRow = (gadget: WorkspaceMetadataWithTimestamps, describedBy?: string) => (
+    <AppRow
+      key={gadget.id}
+      gadget={gadget}
+      describedBy={describedBy}
+      onDelete={handleDelete}
+      onShare={handleShare}
+      onInfo={setInfoTarget}
+      onTogglePin={handleTogglePin}
+      onRename={handleRename}
+      onNotificationMuteChange={handleNotificationMuteChange}
+      onMove={sections && hasMoveTarget(gadget, sections.spaces)
+        ? () => setMoveTargetId(gadget.id)
+        : undefined}
+      menuButtonRef={sections ? (button) => {
+        if (button) menuButtons.current.set(gadget.id, button)
+        else menuButtons.current.delete(gadget.id)
+      } : undefined}
+    />
+  )
+
   const filtered = gadgets.filter((g) => {
     if (!search) return true
     return (g.title || '').toLowerCase().includes(search.toLowerCase())
   })
+
+  // Laid out under spaces, the list also has what the user's team spaces list, so there can be
+  // rows to search while the user has no gadget of their own.
+  const searchable = gadgets.length > 0
+    || (!loadError && sections?.spaces.some((space) => space.kind === 'team') === true)
 
   return (
     <div className="flex flex-col h-full">
@@ -370,8 +492,8 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         </div>
       )}
 
-      {/* Search — hidden when the user has no gadgets */}
-      {!loading && gadgets.length > 0 && (
+      {/* Search — hidden when there is nothing to search */}
+      {!loading && searchable && (
         <div className="mb-4 px-3">
           <div className="relative">
             <MagnifyingGlass
@@ -379,6 +501,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
               className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive"
             />
             <input
+              ref={searchRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -404,6 +527,14 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
             <p className="text-kumo-danger">Something went wrong loading your workspaces.</p>
             <button onClick={loadGadgets} className="text-kumo-brand mt-1 underline">Try again</button>
           </div>
+        ) : sections ? (
+          sections.render({
+            gadgets,
+            search,
+            renderRow,
+            onFocusLost: () => takeLostFocus(searchRef.current),
+            emptyState: gadgets.length === 0 ? <FeaturedBlueprintsGallery /> : null,
+          })
         ) : filtered.length === 0 ? (
           search ? (
             <div className="text-center py-12 text-kumo-inactive text-sm">
@@ -413,18 +544,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
             <FeaturedBlueprintsGallery />
           )
         ) : (
-          filtered.map((gadget) => (
-            <AppRow
-              key={gadget.id}
-              gadget={gadget}
-              onDelete={handleDelete}
-              onShare={handleShare}
-              onInfo={setInfoTarget}
-              onTogglePin={handleTogglePin}
-              onRename={handleRename}
-              onNotificationMuteChange={handleNotificationMuteChange}
-            />
-          ))
+          filtered.map(gadget => renderRow(gadget))
         )}
       </div>
 
@@ -499,6 +619,20 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
           target={{ kind: 'workspace' }}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
+        />
+      )}
+
+      {/* Move-to-space dialog */}
+      {sections && moveTarget && (
+        <MoveToSpaceDialog
+          workspace={moveTarget}
+          spaces={sections.spaces}
+          onClose={() => closeMoveDialog(moveTarget.id)}
+          onMoved={(spaceId) => {
+            setSpaceId(moveTarget.id, spaceId ?? undefined)
+            closeMoveDialog(moveTarget.id)
+          }}
+          onMoveFailed={() => handleMoveFailed(moveTarget.id)}
         />
       )}
     </div>
