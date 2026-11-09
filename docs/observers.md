@@ -17,6 +17,15 @@ Specifically:
   an exception. Alice can optionally resolve the problem by revoking Bob's access.
 - Bob's access is also re-checked every time he opens the gadget.
 
+**Exception: static snapshots.** These checks guard use of the gadget's live capabilities, not
+disclosure of its stored data through snapshots. A collaborator whose sharing grant includes a
+gadget can view a static snapshot of it without verifying: a copy of its stored state, which may
+include data read through the owner's connections, served with no bindings, network or usable
+stored capabilities. While their sharing grant remains valid, the collaborator may repeatedly
+refresh to obtain subsequently stored data, including data they could not read directly. This is
+a deliberate relaxation of the invariant below, not a missing check; the decision and its limits
+are recorded in [Sharing › Static snapshots](./sharing.md#static-snapshots).
+
 This document contains the original implementation plan for this mechanism, which was used to guide
 AI in implementing it. This doc may become outdated over time.
 
@@ -24,14 +33,17 @@ AI in implementing it. This doc may become outdated over time.
 
 ## 1. Introduction & high-level intent
 
-Gadgets enforce a core security invariant (see `overview.md` §"Security Model"):
+Gadgets enforce a core security invariant:
 
 > If a Gadget can read information that has restricted access, then any user who is not
-> able to read that information will also be prohibited from interacting with the Gadget,
-> to prevent data leaks.
+> able to read that information will also be prohibited from interacting with the Gadget's live
+> capabilities, to prevent data leaks. Data the Gadget has already stored is the exception: it is
+> disclosed through static snapshots to everyone the Gadget is shared with (see
+> [Sharing › Static snapshots](./sharing.md#static-snapshots)).
 
-The mechanism is a per-user, gatekeeper-mediated check — "this data may be shared, but only with
-people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
+For verified live access, the mechanism is a per-user, gatekeeper-mediated check — "this data may
+be shared through live capabilities, but only with people who *also* have access to it". Static
+snapshots are exempt from this check. (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
@@ -49,8 +61,8 @@ can add collaborators; see `sharing.md`, "`ownerInvitesOnly`".)
 
 The check works as follows:
 
-- **Observers.** Every non-owner who can see data the Gadget read is an *observer*. When a user
-  becomes an observer, each relevant gatekeeper is asked — via `Gatekeeper.addObserver()` — to
+- **Observers.** Non-owners admitted to verified live access are registered as *observers*;
+  snapshot-only viewers are not. When a user becomes an observer, each relevant gatekeeper is asked — via `Gatekeeper.addObserver()` — to
   verify that this specific person is allowed to directly observe everything the Gadget has
   already read through that gatekeeper. The gatekeeper is the authority on its own resource's
   ACL, so the check runs inside the gatekeeper's trust domain.
@@ -105,7 +117,9 @@ The check works as follows:
   sharing graph (`computeEffectiveAccess`), and for a gadget, whether their access includes a
   gadget that reaches it -- never off whether they currently have it open. The one exception is
   §10's read-time check of reported subresources, which asks only collaborators holding a live
-  session; the others meet those requirements at their next admission.
+  session; the others meet those requirements at their next admission. (Static snapshots are
+  another exception: they show stored data to collaborators who were never verified. See
+  [Sharing › Static snapshots](./sharing.md#static-snapshots).)
 
 ---
 

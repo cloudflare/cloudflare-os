@@ -7,9 +7,10 @@
 // resolved values (or, where laziness matters, a callback) into this module.
 //
 // ACCESS: A collaborator holds "build" access to the whole workspace, or "use" access to some of
-// its gadgets (see CollaboratorAccess). Each permission edge or share link confers its own grant
-// only while its sharer (a link's creator) holds "build". A collaborator holds the union over all
-// their valid edges; "use" access supports no grants.
+// its gadgets, each live or only as a static snapshot (see CollaboratorAccess). Each permission
+// edge or share link confers its own grant only while its sharer (a link's creator) holds
+// "build". A collaborator holds the union over all their valid edges, in which a live grant of a
+// gadget covers a snapshot of it; "use" access supports no grants.
 //
 // LAZY REVOCATION MODEL: Access is determined by reachability from the owner in the permission
 // graph, recomputed live at every open() (see `getEffectiveAccess`). Revocation is therefore lazy:
@@ -37,65 +38,86 @@ import type { CollaboratorRecord, ShareKeyRecord, ShareLinkRecord }
 const BUILD: CollaboratorAccess = {role: "build"};
 
 /**
- * Whether `access` lets its holder open gadget `gadgetId`. Says nothing about whether that gadget
- * exists: a grant naming a gadget that doesn't confers nothing (see SharingManager), but "build"
- * includes every id.
+ * Whether `access` lets its holder open gadget `gadgetId`, live or only as a snapshot. Says
+ * nothing about whether that gadget exists: a grant naming a gadget that doesn't confers nothing
+ * (see SharingManager), but "build" includes every id.
  */
 export function accessIncludesGadget(access: CollaboratorAccess, gadgetId: WorkpieceId): boolean {
   return access.role === "build" || access.gadgetIds.includes(gadgetId);
 }
 
-// Whether `a` grants everything `b` does.
+/** Whether `access` lets its holder open gadget `gadgetId` live (see accessIncludesGadget). */
+export function accessIncludesLiveGadget(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : boolean {
+  return access.role === "build" ||
+      (access.gadgetIds.includes(gadgetId) && !access.snapshotOnly?.includes(gadgetId));
+}
+
+// "use" of `gadgetIds`, those of them in `snapshotOnly` only as snapshots, omitting the field
+// when there are none.
+function useAccess(gadgetIds: WorkpieceId[], snapshotOnly: WorkpieceId[] = []): CollaboratorAccess {
+  return snapshotOnly.length > 0 ? {role: "use", gadgetIds, snapshotOnly} : {role: "use", gadgetIds};
+}
+
+// Whether `a` grants everything `b` does. A live grant of a gadget covers a snapshot of it.
 function accessCovers(a: CollaboratorAccess, b: CollaboratorAccess): boolean {
   if (a.role === "build") return true;
   if (b.role === "build") return false;
-  let held = a.gadgetIds;
-  return b.gadgetIds.every(id => held.includes(id));
+  return b.gadgetIds.every(id => accessIncludesGadget(a, id) &&
+      (!accessIncludesLiveGadget(b, id) || accessIncludesLiveGadget(a, id)));
 }
 
 // What either `a` or `b` grants.
 function unionAccess(a: CollaboratorAccess, b: CollaboratorAccess): CollaboratorAccess {
   if (a.role === "build" || b.role === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y),
-  };
+  let gadgetIds = [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y);
+  return useAccess(gadgetIds, gadgetIds.filter(
+      id => !accessIncludesLiveGadget(a, id) && !accessIncludesLiveGadget(b, id)));
 }
 
 // What `prior` grants that `now` does not cover (see accessCovers), as access to restore.
 function lostAccess(prior: CollaboratorAccess, now: CollaboratorAccess | undefined)
     : CollaboratorAccess {
   if (!now || now.role === "build" || prior.role === "build") return prior;
-  let kept = now.gadgetIds;
-  return {role: "use", gadgetIds: prior.gadgetIds.filter(id => !kept.includes(id))};
+  let lost = prior.gadgetIds.filter(id => !accessCovers(now, narrowAccess(prior, id)!));
+  return useAccess(lost, lost.filter(id => !accessIncludesLiveGadget(prior, id)));
+}
+
+// What `access` grants of gadget `gadgetId` alone, if anything.
+function narrowAccess(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : CollaboratorAccess | undefined {
+  if (!accessIncludesGadget(access, gadgetId)) return undefined;
+  return useAccess([gadgetId], accessIncludesLiveGadget(access, gadgetId) ? [] : [gadgetId]);
 }
 
 // The fields of a permission edge or share link that say what it grants. Only a link names
 // several gadgets.
-type GrantFields = {role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]};
+type GrantFields = {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]; mode?: "snapshot";
+};
 
 type UserEdge = Extract<PermissionEdge, {type: "user"}>;
 
 // What `record` confers at most: its role (absent on records from before roles, meaning "build"),
-// narrowed to the gadgets it names. A "use" grant naming none confers nothing.
+// narrowed to the gadgets it names, as snapshots only for a snapshot grant. A "use" grant naming
+// none confers nothing.
 function ceilingOf(record: GrantFields): CollaboratorAccess {
   if ((record.role ?? "build") === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]),
-  };
+  let gadgetIds = record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]);
+  return useAccess(gadgetIds, record.mode === "snapshot" ? gadgetIds : []);
 }
 
 // The edges conferring `access`: one per gadget, since an edge names at most one.
 function grantFieldsFor(access: CollaboratorAccess): GrantFields[] {
   if (access.role === "build") return [{role: "build"}];
-  return access.gadgetIds.map(gadgetId => ({role: "use", gadgetId}));
+  return access.gadgetIds.map(gadgetId => accessIncludesLiveGadget(access, gadgetId)
+      ? {role: "use", gadgetId} : {role: "use", gadgetId, mode: "snapshot"});
 }
 
 // Identifies what an edge or link grants, so what each grant confers is computed once.
 function grantKey(record: GrantFields): string {
   if ((record.role ?? "build") === "build") return "build";
-  return `use:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
+  return `${record.mode ?? "use"}:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
 }
 
 // Fixed 256-bit key used to domain-separate share key hashes from other hashes in the system.
@@ -200,7 +222,7 @@ export class SharingManager {
     let ceiling = ceilingOf(record);
     if (ceiling.role === "build") return ceiling;
     let gadgetIds = ceiling.gadgetIds.filter(id => this.gadgetExists(id));
-    return gadgetIds.length > 0 ? {role: "use", gadgetIds} : undefined;
+    return gadgetIds.length > 0 ? ceilingOf({...record, gadgetIds}) : undefined;
   }
 
   // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
@@ -209,7 +231,8 @@ export class SharingManager {
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
-    return {role: "use", gadgetId: grant.gadgetId};
+    let {gadgetId, mode} = grant;
+    return mode ? {role: "use", gadgetId, mode} : {role: "use", gadgetId};
   }
 
   // Throw unless `caller` holds "build": only then do the grants they make confer anything (see
@@ -400,6 +423,8 @@ export class SharingManager {
     kept.role = fields.role;
     if (fields.gadgetId === undefined) delete kept.gadgetId;
     else kept.gadgetId = fields.gadgetId;
+    if (fields.mode === undefined) delete kept.mode;
+    else kept.mode = fields.mode;
     if (note !== undefined) kept.note = note;
     let droppedEdges = new Set<PermissionEdge>(dropped);
     record.addedBy = record.addedBy.filter(edge => !droppedEdges.has(edge));
@@ -691,8 +716,7 @@ export class SharingManager {
             source = info.creator;
             // A link to several gadgets gives one edge per gadget, each conferring its own.
             conferred = edge.gadgetId === undefined ? info.ceiling
-                : accessIncludesGadget(info.ceiling, edge.gadgetId)
-                ? {role: "use", gadgetIds: [edge.gadgetId]} : undefined;
+                : narrowAccess(info.ceiling, edge.gadgetId);
           } else {
             if (ownerGrantsOnly && edge.sharer !== this.ownerProfileId) continue;
             source = edge.sharer;

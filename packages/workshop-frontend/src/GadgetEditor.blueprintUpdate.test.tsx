@@ -13,8 +13,8 @@ import type {
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, or the one a notification opens),
-// which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
-// workspace a gadget's deletion is confirmed in.
+// which gadget stub a use-only collaborator's view is given while gadgets are admitted or viewed
+// as snapshots, and which workspace a gadget's deletion is confirmed in.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -41,9 +41,12 @@ const mocks = vi.hoisted(() => {
     // The props the use-only view was last rendered with.
     useView: null as null | {
       gadget: unknown
-      gadgetOpenFailure: string | null
+      snapshot: { refreshedAt: Date; onRefresh: () => Promise<void> } | null
+      gadgetOpenFailure: { message: string } | null
       onRetryGadget: () => void
     },
+    // The props the account prompt was last rendered with.
+    observerModal: null as null | { subject: 'workspace' | 'gadget' },
     workspace: {
       overseer: {
         stub: {
@@ -53,6 +56,8 @@ const mocks = vi.hoisted(() => {
             return disposable
           },
           getGadget: () => disposable,
+          isSnapshotOnly: async () => false,
+          getGadgetSnapshot: () => disposable,
           listHooks: async () => [],
           subscribeToConsoleLogs: async () => disposable,
         },
@@ -60,8 +65,14 @@ const mocks = vi.hoisted(() => {
       metadata: { id: 'workspace', title: 'Trips', role: 'build' } as unknown as WorkspaceMetadata,
       error: null,
       connectionLost: false,
-      observerConfig: null,
-      createObserverConfigCallback: () => disposable,
+      observerConfig: null as null | {
+        needs: unknown[]
+        subject: 'workspace' | 'gadget'
+        resolve: () => void
+        reject: () => void
+      },
+      createObserverConfigCallback:
+        vi.fn<(signal: AbortSignal, subject: 'workspace' | 'gadget') => typeof disposable>(() => disposable),
       retry: () => {},
       cancelObserverConfig: () => {},
       updateTitle: () => {},
@@ -104,6 +115,7 @@ vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () 
 vi.mock('./useWorkspaceOpen', () => ({
   useWorkspaceOpen: () => mocks.workspace,
   observerOpenFailureMessage: () => null,
+  isObserverConfigCancelled: (caught: unknown) => caught instanceof Error && caught.message === 'cancelled',
 }))
 vi.mock('./useActions', () => ({ useActions: () => ({ pending: [] }), useActionEntries: () => {} }))
 vi.mock('./errorReporting', () => ({ reportIssue: () => {} }))
@@ -160,7 +172,12 @@ vi.mock('./GadgetUseView', () => ({
     return null
   },
 }))
-vi.mock('./ObserverConfigModal', () => ({ default: () => null }))
+vi.mock('./ObserverConfigModal', () => ({
+  default: (props: NonNullable<typeof mocks.observerModal>) => {
+    mocks.observerModal = props
+    return null
+  },
+}))
 vi.mock('./ShareModal', () => ({ default: () => null }))
 vi.mock('./TopBarNotice', () => ({ default: () => null }))
 vi.mock('./components/DeleteConfirmationDialog', () => ({ default: () => null }))
@@ -385,6 +402,10 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
   const workspace = mocks.workspace
   const original = { overseer: workspace.overseer, metadata: workspace.metadata }
   let admissions: { resolve: () => void; reject: (error: Error) => void }[]
+  let snapshots: { gadgetId: WorkpieceId; resolve: () => void; client: SnapshotClient }[]
+  // The gadgets the collaborator may open only as snapshots (Overseer.isSnapshotOnly).
+  let snapshotOnly: ReadonlySet<WorkpieceId>
+  type SnapshotClient = Client & Disposable & { refresh: () => Promise<Date> }
   const shownClient = () => mocks.useView?.gadget as Client | null | undefined
 
   // A fresh overseer stub, as a reconnect hands the editor.
@@ -409,13 +430,28 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
           admissions.push({ resolve: () => resolve({ dup: () => client, [Symbol.dispose]() {} }), reject })
           return Object.assign(promise, disposable)
         },
+        isSnapshotOnly: async (gadgetId?: WorkpieceId) => snapshotOnly.has(gadgetId!),
+        getGadgetSnapshot: (gadgetId?: WorkpieceId) => {
+          const { promise, resolve } = Promise.withResolvers<unknown>()
+          const client: SnapshotClient = {
+            gadgetId: gadgetId!,
+            disposed: false,
+            refresh: async () => new Date(2000),
+            [Symbol.dispose]() { client.disposed = true },
+          }
+          snapshots.push({ gadgetId: gadgetId!, client, resolve: () => resolve({ dup: () => client, [Symbol.dispose]() {} }) })
+          return Object.assign(promise, disposable, { getRefreshedAt: async () => new Date(1000) })
+        },
       },
     }
   }
 
   beforeEach(() => {
     admissions = []
+    snapshots = []
+    snapshotOnly = new Set()
     mocks.useView = null
+    mocks.observerModal = null
     workspace.metadata = { ...original.metadata, role: 'use' } as WorkspaceMetadata
     workspace.overseer = useOnlyOverseer()
   })
@@ -423,6 +459,7 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
   afterEach(() => {
     workspace.overseer = original.overseer
     workspace.metadata = original.metadata
+    workspace.observerConfig = null
   })
 
   it('shows nothing while a gadget it left is admitted again', async () => {
@@ -460,6 +497,69 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await act(async () => mocks.useView!.onRetryGadget())
     expect(mocks.useView?.gadgetOpenFailure).toBeNull()
     expect(shownClient()).toBeNull()
+  })
+
+  it('opens a snapshot-only gadget as a snapshot, verifying nothing', async () => {
+    snapshotOnly = new Set([GADGET.id])
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(admissions).toHaveLength(0)
+    expect(workspace.createObserverConfigCallback).not.toHaveBeenCalled()
+    expect(snapshots.map(s => s.gadgetId)).toEqual([GADGET.id])
+    expect(shownClient()).toBeNull()
+
+    await act(async () => snapshots[0].resolve())
+    expect(shownClient()).toBe(snapshots[0].client)
+    expect(mocks.useView?.snapshot?.refreshedAt).toEqual(new Date(1000))
+    await act(() => mocks.useView!.snapshot!.onRefresh())
+    expect(mocks.useView?.snapshot?.refreshedAt).toEqual(new Date(2000))
+    expect(shownClient()).toBe(snapshots[0].client)
+
+    // Another gadget, given live, is admitted live.
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    expect(snapshots[0].client.disposed).toBe(true)
+    expect(snapshots).toHaveLength(1)
+    expect(admissions).toHaveLength(1)
+    expect(workspace.createObserverConfigCallback).toHaveBeenLastCalledWith(expect.any(AbortSignal), 'gadget')
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(shownClient()).toMatchObject({ gadgetId: BUDGET.id, disposed: false })
+    expect(mocks.useView?.snapshot).toBeNull()
+  })
+
+  it('prompts for a live gadget’s accounts as the gadget’s, and never falls back to its snapshot', async () => {
+    workspace.observerConfig = { needs: [], subject: 'gadget', resolve: () => {}, reject: () => {} }
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(mocks.observerModal?.subject).toBe('gadget')
+    workspace.observerConfig = null
+
+    await act(async () => admissions.at(-1)!.reject(new Error('refused')))
+    expect(mocks.useView?.gadgetOpenFailure).toEqual({ message: 'This gadget couldn’t be opened.' })
+    expect(mocks.useView?.snapshot).toBeNull()
+    expect(shownClient()).toBeNull()
+
+    // Retrying verifies again rather than opening the snapshot.
+    await act(async () => mocks.useView!.onRetryGadget())
+    expect(admissions).toHaveLength(2)
+    expect(snapshots).toHaveLength(0)
+  })
+
+  it('shows a snapshot that fails to open as a failure', async () => {
+    snapshotOnly = new Set([BUDGET.id])
+    workspace.overseer = {
+      stub: {
+        ...useOnlyOverseer().stub,
+        getGadgetSnapshot: () => Object.assign(Promise.reject(new Error('gone')), {
+          [Symbol.dispose]() {},
+          getRefreshedAt: async () => new Date(1000),
+        }),
+      },
+    }
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    expect(mocks.useView?.gadgetOpenFailure).not.toBeNull()
+    expect(admissions).toHaveLength(0)
   })
 })
 

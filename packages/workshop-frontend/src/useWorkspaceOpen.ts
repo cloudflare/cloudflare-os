@@ -28,6 +28,8 @@ export type WorkspaceLoadError =
 
 type ObserverConfigState = {
   needs: ObserverBindingNeed[]
+  // What is being opened: the workspace, or one gadget of it.
+  subject: 'workspace' | 'gadget'
   resolve: (choices: ObserverAccountChoice[]) => void
   reject: (error: unknown) => void
 }
@@ -62,6 +64,11 @@ export function observerOpenFailureMessage(caught: unknown, subject: 'workspace'
   return null
 }
 
+/** Whether opening something failed because the collaborator cancelled its account prompt. */
+export function isObserverConfigCancelled(caught: unknown): boolean {
+  return caught instanceof Error && caught.message.includes(OBSERVER_CANCELLED)
+}
+
 type Options = {
   id: string | undefined
   authenticatedApi: RpcStub<AuthenticatedApi>
@@ -92,10 +99,11 @@ export function useWorkspaceOpen({
   useDocumentTitle(error ? '' : metadata?.title)
 
   // A callback routing the overseer's account prompts to the picker until `signal` aborts. Gadget
-  // opens need one each, since a collaborator given individual gadgets is verified per gadget. One
-  // prompt shows at a time: a newer one supersedes an unanswered one, whose open then fails rather
-  // than holding the collaborator's admission open. Stable, as each gadget open depends on it.
-  const createObserverConfigCallback = useCallback((signal: AbortSignal) =>
+  // opens need one each, as a `subject: 'gadget'`, since a collaborator given individual gadgets is
+  // verified per gadget. One prompt shows at a time: a newer one supersedes an unanswered one, whose
+  // open then fails rather than holding the collaborator's admission open. Stable, as each gadget
+  // open depends on it.
+  const createObserverConfigCallback = useCallback((signal: AbortSignal, subject: ObserverConfigState['subject']) =>
     new RpcStub<ObserverConfigCallback>(new ObserverConfigTarget(needs =>
       new Promise<ObserverAccountChoice[]>((resolve, reject) => {
         if (signal.aborted) {
@@ -112,6 +120,7 @@ export function useWorkspaceOpen({
         }
         const request: ObserverConfigState = {
           needs,
+          subject,
           resolve: choices => settle(() => resolve(choices)),
           reject: observerError => settle(() => reject(observerError)),
         }
@@ -161,7 +170,7 @@ export function useWorkspaceOpen({
         const shareKey = hash.startsWith('#share=') ? hash.slice('#share='.length) : undefined
         if (shareKey) callbacksRef.current.onShareKeyConsumed()
 
-        configureObservers = createObserverConfigCallback(abort.signal)
+        configureObservers = createObserverConfigCallback(abort.signal, 'workspace')
 
         overseerStub = authenticatedApi.openWorkspace(id, shareKey, configureObservers)
         linkActionLog(overseerStub, id)
