@@ -113,8 +113,8 @@ const DropdownMenuRoot = ({
             }}
             className="dropdown-menu relative isolate max-h-[min(var(--available-height),24rem)] w-max max-w-[min(var(--available-width),28rem)] rounded-[21px] text-kumo-default outline-none"
           >
-            <div aria-hidden="true" className="dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-line">
-              <div className="dropdown-menu-shadow absolute inset-0 rounded-[inherit] shadow-lg shadow-kumo-contrast/5 dark:shadow-none" />
+            <div aria-hidden="true" className="dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-contrast/6">
+              <div className="absolute inset-0 rounded-[inherit]" />
             </div>
             {/* A copy of the trigger rides the surface, so the button itself appears to morph. */}
             <div inert aria-hidden="true" className="dropdown-menu-ghost pointer-events-none absolute">
