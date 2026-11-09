@@ -194,7 +194,9 @@ seconds if it denied, so a lost role or team membership goes unnoticed for up to
   an override PagerDuty already has leaves its user on call in shifts and on-call listings (its
   overrides show it removed), since PagerDuty doesn't say whom it displaced; an override for a
   time nobody is on call shows in shifts but not in on-call listings, which take each entry's
-  escalation policy and level from PagerDuty; and an incident's log shows no pending change at all.
+  escalation policy and level from PagerDuty; an on-call listing filtered by `users` doesn't show
+  an override staged after it was opened that puts one of them on call, since PagerDuty was asked
+  only for their entries, so list again; and an incident's log shows no pending change at all.
 
 ## Troubleshooting
 
