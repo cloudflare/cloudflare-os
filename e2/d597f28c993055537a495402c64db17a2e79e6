@@ -1,0 +1,60 @@
+packages/workshop-frontend/src/features/chat-organizer/FolderNameInput.tsx
+  s_351616a23717ae::t_98be2e6c3c7b99 1-44
+packages/workshop-frontend/src/features/chat-organizer/chatOrganization.test.ts
+  s_351616a23717ae::t_a3d4af9bfcbdf4 1,3,5,16-18,24-25,31-35,40,42,46-60
+  s_351616a23717ae::t_a90e494ba78d97 2,4,6-15,19-23,26-30,36-39,41,43-45
+packages/workshop-frontend/src/features/chat-organizer/chatListFocus.ts
+  s_351616a23717ae::t_7e3b7905f56411 1-15
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.test.tsx
+  s_351616a23717ae::t_8d29d81b2de833 6,9,30-31,43,59,67-68,142-143,154-156,159-160
+  s_351616a23717ae::t_5af9461f43b05d 1-3,5,12-15,38-39,56,58,60-64,66,69-71,83-84,88,99-100,110,115-116,131-132,162-163,166,168-169
+  s_351616a23717ae::t_de8d1807fbe7d8 4,7-8,10-11,16-29,32-37,40-42,44-55,57,65,72-82,85-87,89-98,101-109,111-114,117-130,133-141,144-153,157-158,161,164-165,167
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_351616a23717ae::t_7a1c221369d72f 134,136-138,2683-2706,3157,3165,3169,5484,5488-5490,5492-5577,5581-5598,5606-5642,5720-5728,5730
+  s_351616a23717ae::t_7129aed6052baf 135,3166-3168,3170,5605
+  s_351616a23717ae::t_f03b9b55b737cb 5485-5487,5491,5578-5580,5599-5604
+packages/workshop-frontend/src/features/chat-organizer/ChatFolderGroup.tsx
+  s_351616a23717ae::t_3dc9219a62ee8c 1,7,11-12,17-18,32-33,41-42,52,61,71,79,91
+  s_351616a23717ae::t_d91841b8321212 2-6,8-10,13-16,19-31,34-40,43-51,53-60,62-70,72-78,80-90,92-96
+  s_351616a23717ae::t_f8014a0c9ebe4f 97-115
+packages/workshop-frontend/src/features/chat-organizer/ChatStatusSummary.test.tsx
+  s_351616a23717ae::t_8bdea7297649ff 1-37
+packages/workshop-frontend/src/features/chat-organizer/chatOrganization.ts
+  s_351616a23717ae::t_c18e2b4b00a383 3,5,8,12-13,15-18,20,22,26,28-36,38,41,46-49
+  s_351616a23717ae::t_afe0cfab8499bd 1-2,4,6-7,9-11,14,19,21,23-25,27,37,39-40,42-45,50-64
+packages/workshop-frontend/src/features/chat-organizer/ChatOrganizerMenuItems.tsx
+  s_351616a23717ae::t_5f3173020eae9d 10,19-20,26-27,30,40,42-43,46,49,52,55,58,60,63
+  s_351616a23717ae::t_7bbf596e87c99a 1-9,11-18,21-25,28-29,31-39,41,44-45,47-48,50-51,53-54,56-57,59,61-62,64-74
+packages/workshop-frontend/src/features/chat-organizer/ChatStatusSummary.tsx
+  s_351616a23717ae::t_23e5a8157e87a2 1-29
+  s_351616a23717ae::t_911d6a032c0b80 30-38
+packages/workshop-frontend/src/features/chat-organizer/ChatListSections.tsx
+  s_351616a23717ae::t_55fd721a3c0fa2 85-87
+  s_351616a23717ae::t_b8715a98970dd6 60
+  s_351616a23717ae::t_05fff182c6526e 1,3-6,8-10,12-18,21-32,34,46,49-59,61-84
+  s_351616a23717ae::t_cc4a9940214a70 2,7,11,19-20,33,35-45,47-48
+packages/workshop-frontend/src/features/chat-organizer/chatListViewStore.ts
+  s_351616a23717ae::t_e0794535b4d8ab 60-63
+  s_351616a23717ae::t_26e4b04d883d88 1-59,64
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.ts
+  s_351616a23717ae::t_2575518b222e27 1,3-7,9-24,26-33,36-39,41-48,50-52,55-74,76-79,81-82,85-86,90-131,133-153,155-176
+  s_351616a23717ae::t_e6d7d589a1c179 2,53,75,80,83-84,87
+  s_351616a23717ae::t_a7f916be863dce 8,25,34-35,40,49,88,132,154,177-179
+  s_351616a23717ae::t_f47302a547af44 54,89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e2d597f28c993055537a495402c64db17a2e79e6",
+  "prompts": {},
+  "sessions": {
+    "s_351616a23717ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d776dc67-24ab-4cbe-9900-ce747bbf939a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
