@@ -116,11 +116,11 @@ observer verification by explicit policy, and the admin is never registered as a
 `excludeObservers` never names an admin, and no observation is blocked on an admin's account.
 
 The exception is bounded. Restricted data (chat messages and attachments, file contents, commit
-messages, the descriptions and fields of observations) is visible only at the `"full"` access
-level, which only a deployment config change permits and which an inspection must ask for:
-`ADMIN_WORKSPACE_ACCESS_MAX` caps the level, `metadata` by default, and fails closed to `off` for
-any value that is not a level. Titles, names, notes and blueprint descriptions stay visible at
-`"metadata"`, and can echo content.
+messages, the descriptions and fields of actions, observations and hooks) is visible only at the
+`"full"` access level, which only a deployment config change permits and which an inspection must
+ask for: `ADMIN_WORKSPACE_ACCESS_MAX` caps the level, `metadata` by default, and fails closed to
+`off` for any value that is not a level. Titles, names, notes and blueprint descriptions stay
+visible at `"metadata"`, and can echo content.
 
 What a connection supplied is read only as the workspace stores it, and the connection is never
 asked. That includes a repository: a worktree can be a checkout through a connection, and the view
