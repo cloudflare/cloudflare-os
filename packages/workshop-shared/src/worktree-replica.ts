@@ -88,8 +88,7 @@ export interface WorktreeCommand extends RpcTarget {
    *
    * `pack` is a Git packfile holding every object reachable from `tree` that isn't reachable
    * from the snapshot's tree, and must not rely on objects outside itself (no thin packs); see
-   * docs/worktree-replicas.md for the Git command. The pack may be at most 64 MiB, and each
-   * file at most 8 MB.
+   * docs/worktree-replicas.md for the Git command. Files of any size are accepted.
    *
    * File modes are kept. The call fails if a changed entry is a symlink or a submodule, if
    * `tree` contains a `.git` entry, or if merging would make a path both a file and a directory;

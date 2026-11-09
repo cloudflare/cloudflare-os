@@ -155,8 +155,8 @@ nothing, so it may be retried.
 
 A worktree's submissions run one at a time. Each one:
 
-1. **Ingests the pack** into the Git cache, with the cache's usual limits: a pack of at most
-   64 MiB, and blobs of at most 8 MB.
+1. **Ingests the pack** into the Git cache. Files of any size are accepted: one over 1 MiB is
+   streamed into storage in chunks rather than held whole.
 2. **Checks the submitted tree.** It diffs the snapshot's tree against the submitted one,
    descending only into subtrees whose IDs differ. Every object at a changed path must have come
    in the pack, or be one the workspace has or can pull (for example a file the command moved
@@ -172,9 +172,8 @@ A worktree's submissions run one at a time. Each one:
    parallel.
    - Conflicting hunks get diff3-style conflict markers. A file deleted on one side and changed
      on the other keeps the change.
-   - A file that isn't readable as text (binary, or too large) and changed on both sides keeps
-     the command's bytes, unless the command deleted it, even if the command changed only its
-     mode.
+   - A binary file changed on both sides keeps the command's bytes, unless the command deleted
+     it, even if the command changed only its mode.
    - All of these are reported as conflicts.
    - A file's mode merges on its own: one side's `chmod +x` survives the other side's edit.
    - A merge that would make a path both a file and a directory (the command replaced a file
@@ -284,10 +283,11 @@ history, so its clones and fetches then fail on the missing objects.
 - **A clone** holds the workspace-only commits, plus the boundary commits as shallow commits.
   The boundary commits and their files come at depth 1, in one pull from one connection that has
   all of them, streamed through without being stored in the workspace. The rest of the pack is
-  built from workspace storage, and leaves out every object in the boundary commits' trees,
-  since a pack can't hold an object twice (that includes renamed, copied and reverted files,
-  which match by content). The trees of a boundary commit the workspace hasn't stored, such as a
-  merged-in commit's, are fetched without blobs, a level at a time.
+  built from workspace storage, streaming a file over 1 MiB from its stored chunks. It leaves
+  out every object in the boundary commits' trees, since a pack can't hold an object twice (that
+  includes renamed, copied and reverted files, which match by content). The trees of a boundary
+  commit the workspace hasn't stored, such as a merged-in commit's, are fetched without blobs, a
+  level at a time.
 - **More history.** Once the guest has the head, any further history it asks for (`--deepen`,
   `--unshallow`, `--depth=N`, or `git fetch --depth=1 origin <sha>`) is purely remote, and is
   proxied whole from a connection, rebased on the boundary. A commit wanted by ID is served only
@@ -346,7 +346,7 @@ index stay at the head.
   `executeCode` again; the agent continues in its next step.
 - **Symlinks and submodules** can't be changed by a command, and `.git` entries can't be
   submitted.
-- **Size.** A submission's pack is limited to 64 MiB, and a file to 8 MB.
+- **Large text files** changed on both sides are merged in memory, all three versions whole.
 - **Binary files** changed on both sides keep the command's version; a file-versus-directory
   conflict with concurrent edits is refused.
 - **Snapshot trees** can be fetched only during the execution they were handed out to.

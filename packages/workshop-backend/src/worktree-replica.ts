@@ -154,8 +154,7 @@ export class WorktreeReplicas {
       let versions = await Promise.all(
           [ours.from, ours.to, theirs.to].map(entry => this.#readText(entry, path)));
       if (versions.includes(null)) {
-        // Unreadable as text (binary or too large): the command's version, unless it deleted
-        // what the workspace changed.
+        // Binary: the command's version, unless it deleted what the workspace changed.
         changes.set(path, { mode: mode!, oid: (theirs.to ?? ours.to)!.oid });
         conflicts.push(path);
         continue;
