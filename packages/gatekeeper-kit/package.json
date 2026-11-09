@@ -49,7 +49,7 @@
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
-    "fast-check": "^4.10.2",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -1,6 +1,6 @@
-// fast-check options shared by the property-based suites: integration-tests' under Node, and
-// workshop-backend's inside workerd, whose vitest config forwards `FAST_CHECK_SEED` as a binding
-// that `nodejs_compat` copies into `process.env`.
+// fast-check options shared by the property-based suites: integration-tests' and gatekeeper-kit's
+// under Node, and workshop-backend's inside workerd, whose vitest config forwards
+// `FAST_CHECK_SEED` as a binding that `nodejs_compat` copies into `process.env`.
 
 /**
  * `FAST_CHECK_SEED` pins every property's seed, so a run generates the same cases each time; CI

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { vitestTask } from "./vitest-task-vite-config.ts";
 
 /**
  * A cached `vp` run executes each task in a clean environment: only a built-in set (`PATH`, `HOME`,
@@ -87,7 +88,7 @@ const EXPECTED: Record<string, ExpectedArea> = {
     injected: ["NODE_ENV"],
   },
   // `vitest.config.ts` forwards FAST_CHECK_SEED into workerd for the property suites; the `test`
-  // task declares it.
+  // task declares it, as every generated test task does.
   "packages/workshop-backend": {
     forwarded: ["FAST_CHECK_SEED"],
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
@@ -98,8 +99,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
   // never as vp tasks.
   // Every cached watchdogged task declares the timeout policy via TESTS_WITH_TIMEOUT_ENV;
   // vitest-task.test.ts pins the shared declaration.
-  // `property-runs.ts` reads FAST_CHECK_SEED inside the `test` tasks of integration-tests,
-  // workshop-backend and gatekeeper-kit, each of which declares it.
+  // `property-runs.ts` reads FAST_CHECK_SEED inside the `test` task of whichever package runs a
+  // property suite. Every generated test task declares it, which vitest-task.test.ts pins too.
   scripts: {
     forwarded: [
       "FAST_CHECK_SEED",
@@ -196,6 +197,10 @@ function declarationsIn(directory: string): { patterns: Set<string>; hasUncached
   for (const file of readdirSync(directory).filter(name => /^vite.*\.config\.ts$/.test(name))) {
     const source = stripComments(readFileSync(join(directory, file), "utf8"));
     if (/cache:\s*false/.test(source)) hasUncachedTask = true;
+    // A generated test task declares the shared list, which is not spelled out in the config.
+    if (/\b(vitestTask\w*|withVitestTask)\(/.test(source)) {
+      for (const name of vitestTask("vitest run").cache.env) patterns.add(name);
+    }
     for (const block of source.matchAll(/env:\s*\[([^\]]*)\]/g)) {
       for (const entry of block[1].matchAll(/["']([A-Z0-9_*]+)["']/g)) patterns.add(entry[1]);
     }
