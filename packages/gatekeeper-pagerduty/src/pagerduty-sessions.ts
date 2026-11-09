@@ -158,12 +158,10 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
-    const policyIds = await this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
-      (await this.ctx.host.read(api => api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })))
-        .map(({ id }) => id));
-    // With no policy to filter by, PagerDuty would answer for the whole account.
     return listOnCalls(this.ctx, window, {
-      params: { escalation_policy_ids: policyIds }, filter: policyIds.map(escalationPolicy), none: policyIds.length === 0,
+      policies: () => this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
+        (await this.ctx.host.read(api => api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })))
+          .map(({ id }) => id)),
     });
   }
 }
@@ -223,7 +221,7 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
   }
 
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
-    const { id } = (await this.#service()).escalation_policy;
-    return listOnCalls(this.ctx, window, { params: { escalation_policy_ids: [id] }, filter: [escalationPolicy(id)] });
+    // Read before each page, so a walk ends once the service leaves the team it was opened from.
+    return listOnCalls(this.ctx, window, { policies: async () => [(await this.#service()).escalation_policy.id] });
   }
 }

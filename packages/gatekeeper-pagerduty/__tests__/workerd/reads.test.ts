@@ -9,6 +9,7 @@ import {
   ALICE, BOB, FakePagerDuty, OTHER_POLICY, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE,
   SHIFT_SCHEDULE, TEAM, bound as setup, json, sub,
 } from "./fake-pagerduty";
+import type { Step } from "./worker";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -204,6 +205,41 @@ describe("a team binding", () => {
       expect(await t.run([["listIncidents", { allTime: true, pageSize: 1 }]], 5, [[["findUsers", "bob"]]]))
         .toMatchObject([[{ id: newest.id }]]);
       expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Alice and Bob on call for the team's policy, fetched together; `leave` runs after the first page is served.
+  const onCallWalk = async (leave: (t: Awaited<ReturnType<typeof setup>>) => void) => {
+    const t = await setup(team);
+    const alice = { user: { id: ALICE.id, summary: "Alice" }, escalation_level: 1, escalation_policy: POLICY, schedule: SCHEDULE };
+    t.pd.oncalls = [alice, { ...alice, user: { id: BOB.id, summary: "Bob" } }];
+    t.pd.on("GET", /^\/users/, () => {
+      leave(t);
+      // Past what the team's cached services and policies last.
+      vi.setSystemTime(Date.now() + 15 * 60_000);
+      return undefined;
+    });
+    return t;
+  };
+  const afterFirstPage: Step[][] = [[["findUsers", "bob"]]];
+
+  it("ends a service's on-call walk once the service leaves the team mid-walk", async () => {
+    const t = await onCallWalk(({ pd }) => { pd.services.get(SERVICE.id)!.teams = [OTHER_TEAM]; });
+    try {
+      expect(await t.attempt([["getService", SERVICE.id], ["listOnCalls", { pageSize: 1 }]], 5, afterFirstPage))
+        .toMatch(/doesn't belong to this team/);
+      expect(await t.reported()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops serving on-call entries for an escalation policy that leaves the team mid-walk", async () => {
+    const t = await onCallWalk(({ pd }) => { pd.policies[0].teams = [OTHER_TEAM]; });
+    try {
+      expect(await t.run([["listOnCalls", { pageSize: 1 }]], 5, afterFirstPage)).toMatchObject([[{ user: { id: ALICE.id } }]]);
     } finally {
       vi.useRealTimers();
     }

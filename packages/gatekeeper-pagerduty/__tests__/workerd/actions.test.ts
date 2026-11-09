@@ -8,7 +8,8 @@ import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyIncidentSummary, PagerDutyOverride } from "../../src/types";
 import {
-  ALICE, BOB, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
+  ALICE, BOB, OTHER_POLICY, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, PRIORITY, SCHEDULE, SERVICE, SHIFT_SCHEDULE,
+  TEAM,
   accountStub, bound, failure, hooks, json, sub, unwrap, type Binding,
 } from "./fake-pagerduty";
 import type { Step } from "./worker";
@@ -624,11 +625,27 @@ describe("simulation", () => {
       expect(await t.run([["listOnCalls", { since: hour(2), until: hour(3) }]], 5)).toMatchObject([[onCallEntry(BOB, hour(1), hour(12))]]);
     });
 
-    it("pages the pieces a pending override splits an entry into", async () => {
+    it("serves the pieces a pending override splits an entry into on one page, however small", async () => {
       const t = await covered();
-      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(2), pageSize: 2 }]], 5)).toMatchObject([
-        [onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(ALICE, hour(-1), hour(1))], [onCallEntry(BOB, hour(1), hour(12))],
+      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(2), pageSize: 2 }]], 5)).toMatchObject([[
+        onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(ALICE, hour(-1), hour(1)), onCallEntry(BOB, hour(1), hour(12)),
+      ]]);
+    });
+
+    it("shows an entry already fetched without an override discarded since", async () => {
+      const t = await setup();
+      const bob = {
+        user: { id: BOB.id, summary: "Bob" }, escalation_level: 1, escalation_policy: POLICY, schedule: SCHEDULE,
+        start: hour(-12), end: hour(12),
+      };
+      // One fetch buffers both entries; the override, yet to begin, goes after the first is served.
+      t.pd.oncalls = [{ ...bob, escalation_policy: OTHER_POLICY, schedule: OTHER_SCHEDULE }, bob];
+      await t.run([["getSchedule", SCHEDULE.id], ["createOverride", ALICE.email, hour(1), hour(2)]]);
+      const discard: Step[] = [["getSchedule", SCHEDULE.id], ["deleteOverride", "~1"]];
+      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(3), pageSize: 1 }]], 5, [discard])).toMatchObject([
+        [{ schedule: { id: OTHER_SCHEDULE.id } }], [onCallEntry(BOB, hour(-12), hour(12))],
       ]);
+      expect(t.pd.matching("GET", /^\/oncalls/)).toHaveLength(1);
     });
 
     it("still asks PagerDuty only for a user filter's users when no pending override puts one of them on call", async () => {

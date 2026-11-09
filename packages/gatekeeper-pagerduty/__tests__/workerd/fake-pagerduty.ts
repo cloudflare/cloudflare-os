@@ -437,7 +437,8 @@ export async function bound(binding: Binding = { resourceKind: "account" }, pd =
     pd, name, props,
     run: async (steps: Step[], pages?: number, between?: Step[][]) =>
       unwrap(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
-    attempt: async (steps: Step[], pages?: number) => failure(await hooks().run(name, props, steps, pages ? { pages } : {})),
+    attempt: async (steps: Step[], pages?: number, between?: Step[][]) =>
+      failure(await hooks().run(name, props, steps, pages ? { pages, between } : {})),
     /** What each observation so far reported, order aside. */
     reported: async () => (await hooks().queueLog(name)).observations.map(o => new Set(o.subresources)),
   };

@@ -348,22 +348,17 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   /** What a page shows, as it is served: a page it throws for is refused. */
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   overlay?(row: T): readonly T[];
-  /** What a fetched page's rows become where a pending action splits one in two, which `overlay` can't. */
-  derive?(rows: T[]): T[];
   inject?: CursorInjection<T>;
   refresh?(): Promise<void>;
 }): Cursor<T> {
-  const { pageSize, sources, describe, filter = [], result, derive = rows => rows, ...hooks } = options;
+  const { pageSize, sources, describe, filter = [], result, ...hooks } = options;
   const walk = ctx.dup();
   return new TokenCursor<T>({
     ...hooks,
     pageSize,
     remotePageSize: Math.max(pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
-    fetchPage: async (token, perPage) => {
-      const page = await walk.host.read(api => chainedPage(api, sources, token, perPage));
-      return { ...page, items: derive(page.items) };
-    },
+    fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, sources, token, perPage)),
     authorizePage: async (rows, { terminal }) => walk.authorize(describe(rows, terminal), [...filter, ...await result(rows)]),
   });
 }
@@ -520,13 +515,14 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
 }
 
 /**
- * Who is on call, as `GET /oncalls` answers for `params`, each page with the overrides pending as
- * it is fetched applied, reporting what `filter` names even when the answer is empty; only
- * `users`, when given.
+ * Who is on call, as `GET /oncalls` answers for `params`, each entry as the overrides pending when
+ * it is served leave it, reporting what `filter` names even when the answer is empty; only
+ * `users`, when given. `policies` reads the escalation policies a team or service capability
+ * reaches: the listing asks for those, and each page drops entries on one it has since lost.
  */
-export function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
-  params: Query; users?: readonly string[]; filter: readonly ObjectRef[]; none?: boolean;
-}): Cursor<PagerDutyOnCall> {
+export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
+  params?: Query; users?: readonly string[]; filter?: readonly ObjectRef[]; policies?(): Promise<readonly string[]>;
+}): Promise<Cursor<PagerDutyOnCall>> {
   const levels = window?.levels;
   if (levels?.some(level => !Number.isInteger(level) || level < 1)) {
     throw new Error("levels must be whole numbers from 1.");
@@ -536,30 +532,40 @@ export function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow |
   const { users } = options;
   const since = time(window?.since, "since");
   const until = time(window?.until, "until");
+  // The capability's policies and the pending overrides as of the page being served.
+  let reach = await options.policies?.();
+  let pending = host.pending();
+  let overriding = overridingUsers(pending, resolve);
   // A pending override can put a user on call where PagerDuty doesn't list them yet, and cut short
   // the entry it covers, so entries are then split and picked out here; users too, when the filter
   // names one an override puts on call, as PagerDuty would leave out the entry they cover.
-  const overriding = overridingUsers(host.pending(), resolve);
   const covering = users?.some(id => overriding.includes(id));
-  const params = { ...options.params, user_ids: covering ? undefined : users, since, until };
+  const params = {
+    ...options.params, ...(reach && { escalation_policy_ids: reach }), user_ids: covering ? undefined : users, since, until,
+  };
   return offsetCursor<PagerDutyOnCall>(ctx, {
     pageSize: pageSizeOf(window),
-    sources: [options.none ? empty : listing("/oncalls", "oncalls", params, toOnCall)],
+    // With no policy to filter by, PagerDuty would answer for the whole account.
+    sources: [reach?.length === 0 ? empty : listing("/oncalls", "oncalls", params, toOnCall)],
     describe: listed("Listed who is on call in PagerDuty", "on-call entry"),
-    filter: options.filter,
+    filter: [...options.filter ?? [], ...(reach ?? []).map(escalationPolicy)],
     result: rows => rows.flatMap(entry =>
       [escalationPolicy(entry.escalationPolicy.id), ...(entry.schedule ? [schedule(entry.schedule.id)] : [])]),
-    derive: fetched => {
-      const pending = host.pending();
+    refresh: async () => {
+      reach = await options.policies?.();
+      pending = host.pending();
+      overriding = overridingUsers(pending, resolve);
+    },
+    overlay: entry => {
+      if (reach && !reach.includes(entry.escalationPolicy.id)) return [];
       // PagerDuty answers for the window, each end now by default, and an override can leave part of an
       // entry outside it. An empty window is the moment `from`; an entry without a start or end is open.
       const now = Date.now();
       const from = since ? Date.parse(since) : now;
       const to = Math.max(until ? Date.parse(until) : now, from + 1);
-      const simulated = overridingUsers(pending, resolve).length === 0 ? fetched
-        : overlayOnCalls(fetched, pending, resolve).filter(entry =>
-          (entry.start === null || Date.parse(entry.start) < to) && (entry.end === null || Date.parse(entry.end) > from));
-      return simulated.filter(entry => (!users || users.includes(entry.user.id)) && (!levels || levels.includes(entry.level)));
+      const simulated = overriding.length === 0 ? [entry] : overlayOnCalls([entry], pending, resolve).filter(piece =>
+        (piece.start === null || Date.parse(piece.start) < to) && (piece.end === null || Date.parse(piece.end) > from));
+      return simulated.filter(piece => (!users || users.includes(piece.user.id)) && (!levels || levels.includes(piece.level)));
     },
   });
 }
