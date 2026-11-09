@@ -898,18 +898,19 @@
       ],
       "inputs": [
         {
-          "consoleUrl": "https://app.pagerduty.com/developer/apps",
+          "consoleUrl": "https://app.pagerduty.com/developer/applications",
           "help": "A Scoped OAuth app registered on your own PagerDuty account. Only users of that account can connect, and each sees only what PagerDuty shows them.",
           "kind": "secret",
           "label": "OAuth Client ID",
           "name": "CLIENT_ID",
           "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/pagerduty/oauth",
           "setupSteps": [
-            "Sign in to your PagerDuty account as a Manager, Global Admin or Account Owner, and open Integrations > Developer Tools > App Registration.",
-            "Select New App, and leave its App Type as Private. Under Functionality, add OAuth and choose \"Scoped OAuth\".",
-            "Grant it these permissions: Incidents (read and write), Schedules (read and write), and read access to Services, Teams, Users, On-Calls, Priorities and Escalation Policies.",
-            "Add the Redirect URL below, and save.",
-            "Copy the Client ID and Client Secret here."
+            "Sign in to your PagerDuty account as a Manager, Global Admin or Account Owner, open Integrations > Developer Tools > App Registration, and select New App.",
+            "Give it a name and a description. Under Functionality, tick \"OAuth 2.0\" only, and continue.",
+            "Set Authorization to \"Scoped OAuth\". The form starts on \"Classic User OAuth\", which the gatekeeper can't use.",
+            "Add the Redirect URL below.",
+            "Under Permission Scope, grant these permissions: Incidents (read and write), Schedules (read and write), and read access to Services, Teams, Users, On-Calls, Priorities and Escalation Policies.",
+            "Select Register App, and copy the Client ID and Client Secret here."
           ]
         },
         {
