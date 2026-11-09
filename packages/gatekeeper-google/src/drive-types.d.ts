@@ -162,7 +162,11 @@ export type DriveFileBytes = {
   /**
    * The bytes, read from Google as you read them, so a file of any size never has to be held in
    * memory. Pass it to a worktree's `writeBytes()` to save the file, read it whole with
-   * `await new Response(content).arrayBuffer()` (or `.text()`), or use a reader to stop early.
+   * `await new Response(content).arrayBuffer()` (or `.text()`, for UTF-8 text), or use a reader
+   * to stop early. A range can end partway through a multi-byte character, so decode text read in
+   * several ranges with one `TextDecoder`, calling `decoder.decode(bytes, { stream: true })` for
+   * each range and `decoder.decode()` at the end; decoding each range on its own corrupts the
+   * characters split between them.
    * Read it straight away, and cancel it if you will not: a stream left unread for a minute is
    * ended. A stream that fails partway, whatever its error says, did not deliver the file: it was
    * left unread, or Google stopped sending it or sent less of it than the file had, so read the
