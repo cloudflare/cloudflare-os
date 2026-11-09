@@ -237,6 +237,14 @@ function unreachableLogs() {
   };
 }
 
+// A log object namespace whose every append() rejects with `error`.
+function failingLogs(error: Error) {
+  return { getByName: () => ({ append: async (): Promise<never> => { throw error; } }) };
+}
+
+// What a report that could not be kept is refused with, whatever the log object failed with.
+const REPORT_REFUSED = "Gadget console logs could not be recorded.";
+
 // The warnings written with `event`, as [message, fields] pairs.
 function warnings(warn: { mock: { calls: unknown[][] } }, event: string): unknown[][] {
   return warn.mock.calls.filter(([, fields]) => (fields as { event?: string })?.event === event);
@@ -1211,18 +1219,33 @@ describe("keeping what a session reports of a gadget's UI", () => {
     expect(await listAll(ws)).toHaveLength(GADGET_CONSOLE_LOGS_PER_MINUTE + 1);
   }));
 
+  // What the log object failed with is in the warning alone. The caller is refused with the
+  // Overseer's own error whatever it was: a log object that was reset fails with a message and
+  // flags that a client takes for a failure a retry cures, and a client that took a refused
+  // report for one would not wait any longer before its next.
   it.each([
-    ["rejects", () => ({ getByName: () => ({ append: async () => { throw new Error("down"); } }) }),
-      /down/],
+    ["rejects", () => failingLogs(new Error("down")), /down/],
+    ["was reset", () => failingLogs(Object.assign(
+        new Error("Durable Object storage operation exceeded timeout which caused object to be " +
+            "reset."),
+        { remote: true, overloaded: true, durableObjectReset: true, retryable: true })),
+      /storage operation exceeded timeout/],
     ["cannot be asked", unreachableLogs, /no log object should be asked/],
-  ])("fails a report whose log object %s: one warning, with nothing of the entry in it",
-      (_name, logs, failure) => withReporter(async (ws, client) => {
+  ])("refuses a report whose log object %s with its own error: one warning, and nothing of the " +
+      "entry in it", (_name, logs, failure) => withReporter(async (ws, client) => {
     let warn = vi.spyOn(ws.impl.logger, "warn");
     let real = ws.impl.workspaceLogs;
     ws.impl.workspaceLogs = logs();
 
-    await expect(client.reportGadgetConsoleLogs(GADGET_ID, null, [reported(`${MARKER} unkept`)]))
-        .rejects.toThrow(failure);
+    let refused: unknown = await client
+        .reportGadgetConsoleLogs(GADGET_ID, null, [reported(`${MARKER} unkept`)])
+        .then(() => undefined, error => error);
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).message).toBe(REPORT_REFUSED);
+    // Nor does the caught error go along as a cause, which is sent to a client with its error.
+    for (let relayed of ["durableObjectReset", "overloaded", "retryable", "cause"]) {
+      expect(refused).not.toHaveProperty(relayed);
+    }
 
     expect(warn.mock.calls).toStrictEqual([[
       "failed to record reported gadget console output",
@@ -1256,7 +1279,7 @@ describe("keeping what a session reports of a gadget's UI", () => {
       },
     }) };
     await expect(client.reportGadgetConsoleLogs(GADGET_ID, null, batch(3)))
-        .rejects.toThrow(/down/);
+        .rejects.toThrow(REPORT_REFUSED);
     // The marker and the call's entries went in one append, the marker first.
     expect(handed).toStrictEqual([["7 entries dropped", "n0", "n1", "n2"]]);
     ws.impl.workspaceLogs = real;

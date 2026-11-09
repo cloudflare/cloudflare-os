@@ -10658,7 +10658,13 @@ class OverseerImpl implements AgentHooks {
   // change to the gadget is recorded as its mainline, as #resolveGadgetChatId decides for the
   // server's entries. The write is awaited, so that a client learns of a failure and can keep one
   // report in flight at a time, and a failure is logged here because the client that learns of it
-  // is a browser. It is rethrown as well: a client slows down only when its report is refused.
+  // is a browser.
+  //
+  // The call then throws an error of this object's own, which holds nothing of the one it caught,
+  // not even as its cause. A client slows down only when its report is refused for a reason a
+  // retry would not cure. A log object that was reset fails with an error that reads to a client
+  // as this object's own reset, which a retry does cure, so relaying it would have every browser
+  // report at its full pace to a log object that cannot be written.
   async reportGadgetConsoleLogs(gadgetId: WorkpieceId, chatId: number | null, userId: string,
                                 entries: ReportedGadgetConsoleLog[]): Promise<void> {
     let {admitted, dropped} = this.#gadgetConsoleLogLimiter.admit(
@@ -10685,7 +10691,8 @@ class OverseerImpl implements AgentHooks {
       this.#gadgetConsoleLogLimiter.unmark(gadgetId, dropped);
       this.logger.warn("failed to record reported gadget console output",
           { event: "gadget.console.record.failed", error });
-      throw error;
+      // oxlint-disable-next-line eslint/preserve-caught-error -- a cause is sent with its error.
+      throw new Error("Gadget console logs could not be recorded.");
     }
   }
 

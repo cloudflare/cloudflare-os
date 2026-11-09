@@ -312,9 +312,13 @@ and the reporter (`createGadgetConsoleLogReporter()`) batches them:
   away while the connection is lost, or as its user moves straight to another workspace, loses
   what it had queued with nothing to mark it.
 - **A wait that doubles, up to five minutes** (`GADGET_CONSOLE_LOG_MAX_BACKOFF_MS`), each time a
-  report is refused for a reason a reconnect would not cure. A report that succeeds sets the wait
-  back to five seconds. A reporter slows down only when its report is refused, which is why a
-  report whose entries could not be kept rejects.
+  report is refused for a reason neither a retry nor a reconnect would cure. A report that
+  succeeds sets the wait back to five seconds. A reporter slows down only when its report is
+  refused, which is why a report whose entries could not be kept rejects. It rejects with an error
+  of the Overseer's own, whatever the log object failed with: a log object that was reset fails
+  with an error that a browser reads as the Overseer's reset, which a retry cures, and a reporter
+  that was handed it would keep reporting every five seconds to a log object that cannot be
+  written.
 
 A view that floods meets both limits, the reporter's and the server's. Its reporter offers up to
 50 entries every five seconds, 600 a minute, against the 300 the server records for a gadget in a
@@ -574,9 +578,9 @@ nothing else of what was being written:
 | `gadget.console.delete.failed` | the Overseer (`workshop.overseer`) | The log object's deletion was deferred. |
 | `gadget.console.expire.failed` | the log object (`workshop.workspace-log`) | An alarm failed. |
 
-A report that could not be kept is also refused to its caller, and whatever marker it was to
-bring is counted by the gadget's next. A gadget's tail and a gadget's caller are never failed by
-a batch that could not be kept: its entries are lost.
+A report that could not be kept is also refused to its caller, with an error that says only
+that, and whatever marker it was to bring is counted by the gadget's next. A gadget's tail and a
+gadget's caller are never failed by a batch that could not be kept: its entries are lost.
 
 ## Tests
 
@@ -595,9 +599,10 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   kept under the right chat; a trace's entries passing no rate limit, and caught exceptions held
   to theirs with a marker; a batch that names no gadget; a trace from before the workspace was
   initialised;
-  failed appends logged with nothing of an entry; the report's cap, rate limit and markers; the
-  listing for a build and a use session; a deleted gadget and a deleted chat; and the workspace's
-  deletion, with an append in flight, a reset, a failing log object and an id initialised again.
+  failed appends logged with nothing of an entry, and a report that could not be kept refused
+  with the Overseer's own error; the report's cap, rate limit and markers; the listing for a build
+  and a use session; a deleted gadget and a deleted chat; and the workspace's deletion, with an
+  append in flight, a reset, a failing log object and an id initialised again.
 - `use-gadget-access.test.ts`: what a `use` session may report, and for which gadgets.
 - `admin-workspace-view.test.ts` and `admin-access.test.ts`: the admin read, refused below `"full"`
   and recorded, its query in the record, a malformed query or another spelling of a cursor
