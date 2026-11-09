@@ -7,7 +7,7 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, SpaceInfo,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -119,6 +119,18 @@ export type GadgetRecord = WorkspaceMetadata & {
   lastActive?: Date;  // if missing, gadget is provisional
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
+
+  /**
+   * What a space last acknowledged for this workspace: the id of the space listing it, personal
+   * or team, and the title listed there. It is the marker UserDurableObject.#reconcileSpace()
+   * works from: absent, or different from what the record now says, it means the listing has
+   * yet to catch up. Without `title`, the space has acknowledged nothing: it was asked to list
+   * the workspace and may or may not have. A marker is written before any space is asked to
+   * list the workspace, so with no marker no space lists it, and with one the spaces that may
+   * are the one it names and the one the record points at. Set on the user's own workspaces
+   * only, and never sent to a client.
+   */
+  registered?: { spaceId: string; title?: string };
 };
 
 /**
@@ -285,6 +297,12 @@ export function makeUserStorage(storage: DurableObjectStorage) {
         nonUniqueIndexes: {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
+      }),
+      // The spaces this user is a member of, mirrored here by each space so listing them is one
+      // read of the user's own DO, like the record of a workspace shared with them. Presentation
+      // only: a space's own member list is the authority, and nothing is authorized from this.
+      spaces: collection<SpaceInfo>()({
+        primaryKey: "id",
       }),
     },
     singletons: {
