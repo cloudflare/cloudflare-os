@@ -98,10 +98,11 @@ export async function openFakeOverseer(
       outputsSnapshot: () => [],
       wrapUserDo: (stub: unknown) => stub,
       // What open() consults for a non-owner's access: the permission-graph lookup and (for
-      // "build") observer verification in one. The sharing manager is still reached, but only to
-      // redeem a share key, which these tests never pass.
+      // "build") observer verification in one. The sharing manager is reached besides, to redeem
+      // a share key, which these tests never pass, and for the access the graph gives them,
+      // which is what their own record of the workspace is written from.
       authorizeCollaborator: async () => access,
-      getSharingManager: async () => ({}),
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
         idFromString: (id: string) => id,
