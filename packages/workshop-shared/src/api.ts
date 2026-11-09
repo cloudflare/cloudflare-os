@@ -686,13 +686,15 @@ export interface AuthenticatedApi extends RpcTarget {
   // role their membership gives them; see the "Spaces" section below.
 
   /**
-   * List the spaces the caller is a member of: their personal space first, then the others by
-   * name, each with `role` set to the caller's role in it. The caller's personal space is created
-   * here if it does not exist yet; its id never changes, so read it from the first entry.
+   * List the spaces the caller was given a role in: their personal space first, then the others
+   * by name, each with `role` set to that role and no `parent`. A space they are a member of
+   * only by inheritance (see `SpaceMemberRole`) is not listed; `Space.listSubspaces` finds it.
+   * The caller's personal space is created here if it does not exist yet; its id never changes,
+   * so read it from the first entry.
    *
-   * The list comes from a record the caller's own account keeps of their memberships, which each
-   * space updates as they change and `openSpace` corrects for the space being opened. It is for
-   * presentation only: a listed space may still refuse to open, and a membership the record
+   * The list comes from a record the caller's own account keeps of the roles they were given,
+   * which each space updates as they change and `openSpace` corrects for the space being opened.
+   * It is for presentation only: a listed space may still refuse to open, and a role the record
    * missed appears once that space has been opened by id.
    */
   listSpaces(): Promise<SpaceInfo[]>;
@@ -6744,7 +6746,7 @@ export type ShareLinkInfo = {
 // has one personal space and may create team spaces. Every workspace belongs to exactly one
 // space: its owner's personal space, unless the owner placed it in a team space.
 //
-// The space's member list is the only authority on who belongs to it and in what role. Being a
+// Only the member lists of a space and of the spaces it is inside say who belongs to it. Being a
 // member lets a user see the space's listing of workspaces and open the workspaces that it lists
 // and that belong to it, in the role their membership gives them (see `SpaceMemberRole`). A
 // workspace's own sharing applies alongside: a user may open what either gives them, and only
@@ -6759,9 +6761,10 @@ export type ShareLinkInfo = {
  *   and can be neither demoted nor removed, and only its owner adds workspaces to it. It is
  *   where the owner's workspaces belong unless placed in a team space; a workspace in it
  *   reaches other people only by being shared directly, and teams use team spaces.
- * - "team": created with `AuthenticatedApi.createSpace` and administered by its "admin" members,
- *   of whom there is always at least one. Any member, whatever their role, may add workspaces
- *   they own to it.
+ * - "team": created with `AuthenticatedApi.createSpace`, or inside any space, a personal one
+ *   included, with `Space.createSubspace`. It is administered by its "admin" members, of whom
+ *   there is always at least one. Any member, whatever their role, may add workspaces they own
+ *   to it.
  */
 export type SpaceKind = "personal" | "team";
 
@@ -6774,8 +6777,17 @@ export type SpaceKind = "personal" | "team";
  *   member list of a team space (`Space.setMemberRole`, `Space.removeMember`).
  * - "build" and "use": ordinary members, named after the `CollaboratorRole` each confers on the
  *   space's workspaces: "build" opens them to build, "use" opens every gadget of each to use. In
- *   the space itself the two confer the same thing: reading its info, its member list and its
- *   listing of workspaces, adding workspaces of their own to a team space, and leaving it.
+ *   the space itself both confer reading its info, its member list and its listings, adding
+ *   workspaces of their own to a team space, and leaving it; "build", like "admin", also confers
+ *   creating a sub-space in it (`Space.createSubspace`).
+ *
+ * Membership is inherited. A member of a space is a member of every sub-space created in it, and
+ * of theirs, in at least the same role: the role they hold in a space is the higher of the one
+ * they were given there, if any, and the one they hold in the space it is inside ("admin" over
+ * "build" over "use"), so a role given in a sub-space never lowers the one inherited. It gives
+ * nothing in the space above or in the sub-spaces beside it, which refuse someone added only to
+ * that sub-space as they refuse anyone who is no member. A role lost in a space is lost in every
+ * space below it, and the sessions it opened there end as the last paragraph describes.
  *
  * A member may open what either their membership or the workspace's own sharing gives them (see
  * `CollaboratorAccess`), verified as an observer exactly as a collaborator who holds that access
@@ -6825,8 +6837,18 @@ export interface SpaceInfo {
   owner?: AiChatAuthorInfo;
 
   /**
-   * The role in this space of the user the info was produced for. For display only: every
-   * operation is decided from the space's member list at the time of the call.
+   * The id of the space this one was created in (`Space.createSubspace`); absent for a personal
+   * space and for one made with `AuthenticatedApi.createSpace`. Told only to a user who is a
+   * member of that space, so someone added only to a sub-space is not told what it is inside,
+   * and never in an entry of `AuthenticatedApi.listSpaces`.
+   */
+  parent?: string;
+
+  /**
+   * The role in this space of the user the info was produced for: from `Space.getInfo` the one
+   * they hold, the higher of the one given here and the one inherited (see `SpaceMemberRole`);
+   * in an entry of `AuthenticatedApi.listSpaces` the one given here. For display only: every
+   * operation is decided from the member lists at the time of the call.
    */
   role: SpaceMemberRole;
 }
@@ -6866,6 +6888,15 @@ export interface SpaceWorkspaceInfo {
   created: Date;
 }
 
+/** One sub-space of a space, as returned by `Space.listSubspaces` and `createSubspace`. */
+export interface SubspaceInfo {
+  /** The sub-space's id, as in `SpaceInfo.id`. */
+  id: string;
+
+  /** The name the sub-space was created with. */
+  name: string;
+}
+
 /**
  * A space opened by one user, obtained from `AuthenticatedApi.openSpace` or `createSpace`. The
  * stub acts as that user and carries no standing permission of its own: every method looks the
@@ -6877,8 +6908,9 @@ export interface Space extends RpcTarget {
   getInfo(): Promise<SpaceInfo>;
 
   /**
-   * List the space's members and their roles. Available to every member. A personal space lists
-   * only its owner, as admin.
+   * List the members who were given a role in this space, each with that role. A member by
+   * inheritance (see `SpaceMemberRole`) is not listed, so a sub-space may list nobody. Available
+   * to every member. A personal space lists only its owner, as admin.
    */
   listMembers(): Promise<SpaceMemberInfo[]>;
 
@@ -6900,6 +6932,23 @@ export interface Space extends RpcTarget {
   listWorkspaces(): Promise<SpaceWorkspaceInfo[]>;
 
   /**
+   * List the sub-spaces created in this space, by name: those directly inside it, not the ones
+   * inside them. Available to every member, who is a member of each and may open it with
+   * `AuthenticatedApi.openSpace`.
+   */
+  listSubspaces(): Promise<SubspaceInfo[]>;
+
+  /**
+   * Create a sub-space in this space. For "build" members and admins. `name` is as for
+   * `AuthenticatedApi.createSpace`. The sub-space is of kind "team", whatever this space is, and
+   * starts with no member of its own: the members of this space are its members, the caller
+   * included, and its admins may give others a role in it alone (`setMemberRole`). Returns its
+   * id and name; open it with `AuthenticatedApi.openSpace`. Throws in a space that is as many
+   * levels below a personal space, or one made with `createSpace`, as the server allows.
+   */
+  createSubspace(name: string): Promise<SubspaceInfo>;
+
+  /**
    * Set the role of the user with this username/email to exactly `role`: adds them if they are
    * not a member, and otherwise replaces their role, whether that grants or takes away. An
    * existing member keeps their `added` date. Returns the member's resulting info, or null if
@@ -6914,6 +6963,11 @@ export interface Space extends RpcTarget {
    * is restarted and each of its sessions is authorized afresh. Raising a member applies from
    * their next open.
    *
+   * The role set is the one given in this space, which never lowers one the user inherits (see
+   * `SpaceMemberRole`): added or lowered here, they still hold at least what they hold in the
+   * space above. A sub-space always has the admins it inherits, so the rule below never stops a
+   * change in one.
+   *
    * Throws rather than demote the space's last admin. In a personal space it always throws
    * ("A personal space has no members."), whoever the target, its owner included.
    */
@@ -6921,13 +6975,14 @@ export interface Space extends RpcTarget {
 
   /**
    * Remove a member (identified by profile.id). An admin can remove anyone; any other member can
-   * remove only themself, which is how one leaves a space. An admin removing someone who is not
-   * a member does nothing.
+   * remove only themself, which is how one leaves a space. It takes away the role given in this
+   * space: removing someone who was given none does nothing, and a role they inherit (see
+   * `SpaceMemberRole`) ends only where it was given.
    *
    * A removed member loses the role their membership gave them on the space's workspaces (see
    * `SpaceMemberRole`), on the sessions they have open too, a moment later: such a workspace is
-   * restarted and each of its sessions is authorized afresh, theirs by the workspace's own
-   * sharing alone.
+   * restarted and each of its sessions is authorized afresh, theirs by a role they still
+   * inherit and the workspace's own sharing.
    *
    * Throws rather than remove the space's last admin, so the owner of a personal space can
    * neither leave it nor be removed.
