@@ -286,20 +286,21 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
         await this.#authorizePage(page.provided, { terminal });
       } catch (error) {
         // An empty window disclosed nothing, and pinning it would stall the walk on a lost reply.
-        // The rows it dropped go as they would had it been authorized.
-        if (!terminal && page.items.length === 0) {
-          this.#held = undefined;
-          this.#buffer.splice(0, page.consumed);
-        }
+        if (!terminal && page.items.length === 0) this.#commit(page, terminal);
         throw error;
       }
     }
+    this.#commit(page, terminal);
+    return terminal ? null : page.items;
+  }
+
+  /** Consumes `page` from the queue and records what it served. */
+  #commit(page: Outgoing<T>, terminal: boolean): void {
     this.#held = undefined;
     this.#buffer.splice(0, page.consumed);
     for (const id of page.ids) this.#servedIds.add(id);
     this.#servedInjected.push(...page.injected);
     if (terminal || page.provided.length > 0) this.#answered = true;
-    return terminal ? null : page.items;
   }
 
   /**
