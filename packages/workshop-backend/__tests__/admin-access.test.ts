@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
@@ -10,11 +10,11 @@ import {
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
   adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewCallAccess,
-  adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent, chatHoldsContent,
-  chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent, cutAdminAuditText,
-  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
-  minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent,
+  adminViewLifetimeMs, adminWorkspaceWritesEnabled, assertAdminViewLive, blueprintHoldsContent,
+  chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent,
+  cutAdminAuditText, fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
+  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs,
+  validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdChatStateContent, withholdCommitContent, withholdHookContent, workpieceHoldsContent,
   type AdminViewTerms,
 } from "../src/admin-access.js";
@@ -85,6 +85,55 @@ describe("minAdminAuditRetentionDays", () => {
     }
     expect(minAdminAuditRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "5000" })))
         .toBe(MAX_ADMIN_AUDIT_RETENTION_DAYS);
+  });
+});
+
+function writes(value: unknown): boolean {
+  return adminWorkspaceWritesEnabled(envWith({ ADMIN_WORKSPACE_WRITES: value }));
+}
+
+// The misconfigurations the logger reports from here on, as the entries it writes.
+function invalidReports(): () => Record<string, unknown>[] {
+  let error = vi.spyOn(console, "error").mockImplementation(() => {});
+  return () => error.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+      .filter(entry => entry.event === "admin.access.config.invalid");
+}
+
+describe("adminWorkspaceWritesEnabled", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is off while unset, blank or off, which is no misconfiguration", () => {
+    let reports = invalidReports();
+    expect(adminWorkspaceWritesEnabled(envWith({}))).toBe(false);
+    for (let value of [undefined, null, "", "  ", "off", " OFF "]) {
+      expect(writes(value), String(value)).toBe(false);
+    }
+    expect(reports()).toEqual([]);
+  });
+
+  it("is on for on alone, in any case and trimmed", () => {
+    let reports = invalidReports();
+    for (let value of ["on", " On ", "ON"]) expect(writes(value), value).toBe(true);
+    expect(reports()).toEqual([]);
+  });
+
+  // The variable turns on a privileged surface, so no other spelling of yes does.
+  it("is off for anything else, reported once per value and never with the value", () => {
+    let reports = invalidReports();
+    let values = ["true", "1", "yes", "enabled", "onn", "full", 1, true];
+    for (let value of values) expect(writes(value), String(value)).toBe(false);
+    expect(reports()).toHaveLength(values.length);
+    for (let report of reports()) {
+      expect(report.message).toBe(
+          "ADMIN_WORKSPACE_WRITES is not on or off, so admin writes to workspaces are off");
+    }
+
+    for (let value of values) expect(writes(value), String(value)).toBe(false);
+    expect(reports()).toHaveLength(values.length);
+    let logged = JSON.stringify(reports());
+    for (let value of values) expect(logged, String(value)).not.toContain(String(value));
   });
 });
 

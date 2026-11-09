@@ -524,6 +524,15 @@ describe("AdminSettings admin access bounds", () => {
     expect(appended.at(-1)!.retentionDays).toBe(180);
   });
 
+  it("reports writes to workspaces as on only while ADMIN_WORKSPACE_WRITES is on", async () => {
+    const { inDo } = adminSettings();
+    const writes = async (more: object) =>
+        (await inDo(admin => admin.getSettings("admin"), { more })).adminWorkspaceWrites;
+    expect(await writes({})).toBe(false);
+    expect(await writes({ ADMIN_WORKSPACE_WRITES: "true" })).toBe(false);
+    expect(await writes({ ADMIN_WORKSPACE_WRITES: "on" })).toBe(true);
+  });
+
   it("appends to the deployment-wide audit log", async () => {
     const { inDo } = adminSettings();
     const admin = `audit-${crypto.randomUUID()}@example.test`;

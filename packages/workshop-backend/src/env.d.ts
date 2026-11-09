@@ -31,6 +31,12 @@ declare global {
       // The fewest days the admin audit log keeps a record, whatever admins choose: a positive
       // whole number. 90 when unset, blank or invalid.
       ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+      // Whether admins may change a workspace through AdminApi.requestWorkspaceWrite(): "on"
+      // enables it, and unset, blank, "off" or anything else leaves it off. An environment
+      // variable for the reason the two above are, and a bound of its own, which
+      // ADMIN_WORKSPACE_ACCESS_MAX does not limit: a write can add an admin to a workspace as a
+      // collaborator, who then reads it whatever the cap.
+      ADMIN_WORKSPACE_WRITES?: string;
 
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;

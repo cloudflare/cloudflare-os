@@ -1500,6 +1500,17 @@ export type AdminSettingsView = {
      * positive whole number. */
     min: number;
   };
+  /**
+   * Whether admins may change a workspace through AdminApi.requestWorkspaceWrite(): true only
+   * while the deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". Unset, blank,
+   * "off" and any other value are false, so a misconfiguration never enables writes, and no admin
+   * setting can. This switch alone bounds writes: `adminWorkspaceAccess` does not. While it is
+   * on, an approved "addCollaborator" makes any account, the admin's own included, a collaborator
+   * of any workspace, who then reads it as its members do, whatever level inspections are held
+   * to. That grant shows in the workspace's action log, which its owner and "build" collaborators
+   * read, and it is recorded.
+   */
+  adminWorkspaceWrites: boolean;
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
   siteName: string;
   /** Custom deployment logo, or undefined to use the default Cloudflare OS mark. */

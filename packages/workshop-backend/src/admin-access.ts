@@ -6,6 +6,9 @@
 // admin session can change neither: admins choose an access level and a retention within them (in
 // AdminConfig), and adminAccessPolicy() holds that choice inside them wherever it is enforced. This
 // is the reason authentication config stays in auth/config.ts rather than in AdminConfig.
+//
+// Whether admins may change a workspace at all is a third bound read from the environment
+// (adminWorkspaceWritesEnabled()): a switch, with no admin setting under it.
 
 import { createHash } from "node:crypto";
 import {
@@ -33,6 +36,7 @@ const logger = createWorkshopLogger("workshop.admin.access");
 // on every request that reads it.
 const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
+const reportedInvalidWrites = new Set<unknown>();
 
 function isBlank(raw: unknown): boolean {
   return raw === undefined || raw === null || String(raw).trim() === "";
@@ -80,6 +84,27 @@ export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
         { event: "admin.access.config.invalid" });
   }
   return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
+}
+
+/** Whether ADMIN_WORKSPACE_WRITES lets admins change workspaces: only "on", in any case and
+ * trimmed. Unset, blank and "off" are off. Any other value misconfigures a security bound, so it
+ * is off too, logged as an error (once per isolate per value, never the value itself). A bound of
+ * its own: neither ADMIN_WORKSPACE_ACCESS_MAX nor the level admins chose holds a write back. */
+export function adminWorkspaceWritesEnabled(env: Cloudflare.Env): boolean {
+  let raw: unknown = env.ADMIN_WORKSPACE_WRITES;
+  if (isBlank(raw)) return false;
+  let value = String(raw).trim().toLowerCase();
+  if (value === "on") return true;
+
+  // This turns on a privileged surface, so only its one documented value does: "true", "1" and a
+  // typo of "on" all leave writes off.
+  if (value !== "off" && !reportedInvalidWrites.has(raw)) {
+    reportedInvalidWrites.add(raw);
+    logger.error(
+        "ADMIN_WORKSPACE_WRITES is not on or off, so admin writes to workspaces are off",
+        { event: "admin.access.config.invalid" });
+  }
+  return false;
 }
 
 /** The lower of two access levels (ADMIN_WORKSPACE_ACCESS_LEVELS lists them in order). */
