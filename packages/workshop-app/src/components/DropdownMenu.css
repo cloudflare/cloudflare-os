@@ -181,6 +181,14 @@
   border-radius: var(--menu-radius);
 }
 
+/* A ghost trigger has no fill or ring to grow from, so the surface fades in while
+   it still roughly covers the button, and back out at the very end of the close,
+   leaving just the trigger copy there. Quickly, so content behind never shows
+   through a half-transparent surface. */
+.dropdown-menu[data-variant='ghost'] .dropdown-menu-surface {
+  opacity: clamp(0, var(--menu-size) / 0.1, 1);
+}
+
 .dropdown-menu-shadow {
   /* Share the morph's clock so both handoffs match the shadowless trigger. */
   opacity: clamp(0, var(--menu-size), 1);

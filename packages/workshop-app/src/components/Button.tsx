@@ -13,6 +13,8 @@ export type ButtonProps = BaseButtonProps &
   ButtonContent & {
     /** A Phosphor icon component, or an element (e.g. an avatar). Shown before `children`. */
     icon?: ElementType | ReactElement
+    /** `ghost` drops the fill and ring until hovered, for secondary actions inside another surface. */
+    variant?: 'secondary' | 'ghost'
     className?: string
   }
 
@@ -27,7 +29,7 @@ const renderIcon = (icon: ButtonProps['icon']): ReactNode => {
  * The one button size: 36px tall and fully rounded. With only an `icon` it is a 36px circle; with
  * text it stretches and keeps round ends.
  */
-export const Button = ({ icon, children, className, ...props }: ButtonProps) => {
+export const Button = ({ icon, children, variant = 'secondary', className, ...props }: ButtonProps) => {
   const iconNode = renderIcon(icon)
   const iconOnly = iconNode !== undefined && children === undefined
 
@@ -36,7 +38,8 @@ export const Button = ({ icon, children, className, ...props }: ButtonProps) => 
       type="button"
       className={cn(
         'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium whitespace-nowrap',
-        'bg-kumo-base text-kumo-default ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-tint',
+        'text-kumo-default not-data-disabled:hover:bg-kumo-tint',
+        variant === 'ghost' ? 'bg-transparent' : 'bg-kumo-base ring-1 ring-kumo-line',
         '[&>svg]:size-[1.125em] [&>svg]:shrink-0',
         iconOnly ? 'w-9 p-0' : iconNode ? 'pr-4 pl-3' : 'px-4',
         className,
