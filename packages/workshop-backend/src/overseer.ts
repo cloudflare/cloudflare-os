@@ -573,6 +573,10 @@ const WAIT_FOR_AGENT_RESULT_TYPES =
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
 
+// How many exceptions caught on one gadget's facet calls are kept in a minute. See
+// OverseerImpl.#recordGadgetException.
+const GADGET_EXCEPTIONS_KEPT_PER_MINUTE = 30;
+
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
 // the workpiece as the user knows it. An accept writes its objects before it moves anything, so
@@ -10501,6 +10505,10 @@ class OverseerImpl implements AgentHooks {
   // restart forgets at most one window.
   #gadgetConsoleLogLimiter = new GadgetConsoleLogLimiter();
 
+  // What may still be kept this minute of the exceptions caught on each gadget's facet calls
+  // (#recordGadgetException). In memory as well.
+  #gadgetExceptionLimiter = new GadgetConsoleLogLimiter(GADGET_EXCEPTIONS_KEPT_PER_MINUTE);
+
   // The appends to this workspace's log object that have not settled, which deleting the
   // workspace waits for (#deleteConsoleLogs).
   #consoleLogAppends = new Set<Promise<void>>();
@@ -10552,6 +10560,11 @@ class OverseerImpl implements AgentHooks {
   // `chatId`, the chat the gadget's tail carries. Never throws: a failed append is logged, and its
   // entries are lost.
   //
+  // A trace is delivered when its gadget's request ends, which can be after the workspace was
+  // deleted and its id initialised again for another owner (receiveExternalMessage), with gadget
+  // ids that start again at the same numbers. A batch holding a log from before this workspace
+  // was initialised is a request of that earlier workspace, and nothing of it is kept.
+  //
   // The tail loopback and this object can run different versions of the Worker while a deployment
   // is under way, so a call may name no gadget: its logs are delivered live as any other's, and
   // nothing is kept.
@@ -10564,6 +10577,8 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (gadgetId === undefined || logs.length === 0) return;
+    let created = this.storage.createdAt.get()?.getTime();
+    if (created !== undefined && logs.some(log => log.timestamp.getTime() < created)) return;
     try {
       await this.#appendConsoleLogs(
           logs.map(log => serverGadgetConsoleLogEntry(gadgetId, chatId, log)));
@@ -10581,13 +10596,28 @@ class OverseerImpl implements AgentHooks {
   // of its rethrow, so nothing here may throw, or the gadget's caller would get that in place of
   // the gadget's own error: resolving the chat and the append both run inside the one async
   // function, whose failure is logged.
+  //
+  // A gadget is held to GADGET_EXCEPTIONS_KEPT_PER_MINUTE of these, with a marker for the rest, as
+  // a report's entries are. The text of one is its caller's choice (the error names the method
+  // that was called), every session that may call the gadget can make calls fail, a "use" session
+  // included, and the entry names no user. Unlimited, such a session could fill the gadget's
+  // "server" entries with its own lines in seconds and push out what the gadget's server logged.
   #recordGadgetException(gadgetId: WorkpieceId, chatId: number | undefined, event: ConsoleLogEvent)
       : void {
     this.ctx.waitUntil((async () => {
+      let {admitted, dropped} = this.#gadgetExceptionLimiter.admit(gadgetId, 1, Date.now());
+      if (admitted === 0 && dropped === 0) return;
       try {
-        await this.#appendConsoleLogs([serverGadgetConsoleLogEntry(
-            gadgetId, this.#resolveGadgetChatId(gadgetId, chatId) ?? null, event)]);
+        let kept = this.#resolveGadgetChatId(gadgetId, chatId) ?? null;
+        let batch = admitted > 0 ? [serverGadgetConsoleLogEntry(gadgetId, kept, event)] : [];
+        if (dropped > 0) {
+          batch.unshift({ time: new Date(), gadgetId, chatId: kept, source: "server",
+                          level: "warn", text: droppedGadgetConsoleLogsText(dropped) });
+        }
+        await this.#appendConsoleLogs(batch);
       } catch (error) {
+        // Whatever marker this brought was not written, so its count waits for the gadget's next.
+        this.#gadgetExceptionLimiter.unmark(gadgetId, dropped);
         this.logger.warn("failed to record a gadget exception",
             { event: "gadget.console.record.failed", error });
       }

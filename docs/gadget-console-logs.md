@@ -12,7 +12,7 @@ itself. This document is the design record. The API is documented in
 | Concern | Location |
 | --- | --- |
 | The entry, report, query and page types, the caps, the marker wording, `Overseer.listConsoleLogs()`, `Overseer.reportGadgetConsoleLogs()`, `AdminWorkspaceView.listConsoleLogs()` | `packages/workshop-shared/src/api.ts` |
-| Shaping, redaction, the entry makers and the report limiter | `packages/workshop-backend/src/gadget-console-log.ts` |
+| Shaping, redaction, the entry makers and the limiter | `packages/workshop-backend/src/gadget-console-log.ts` |
 | The log object (`WorkspaceLogDurableObject`): schema, retention, byte bounds, listing | `packages/workshop-backend/src/workspace-log.ts` |
 | The Overseer's writer (`#appendConsoleLogs()`, `deliverGadgetLogs()`, `#recordGadgetException()`, `reportGadgetConsoleLogs()`), its listing, its deletion (`#deleteConsoleLogs()`), the sessions' methods and the admin read (`AdminWorkspaceViewImpl.listConsoleLogs()`) | `packages/workshop-backend/src/overseer.ts` |
 | The log object's name (`consoleLogId`) | `packages/workshop-backend/src/storage-schema/overseer-storage.ts` |
@@ -51,11 +51,14 @@ holds the log object's name.
   runtime reports for it, and hands it to `OverseerImpl.deliverGadgetLogs()`, which sends the batch
   to live subscribers and then keeps it as `"server"` entries. A trace is delivered when the
   gadget's request ends, so an entry's `time` is the call's own and the entry is kept later.
+  Nothing is kept of a trace that holds a log from before the workspace was initialised: it is a
+  request of an earlier workspace under the same id (see [Deletion](#deletion)).
 - **An exception caught on a facet call.** `getGadgetFacet()` wraps the facet so that a method that
   throws is delivered live as an `"error"` naming the method called, and
   `#recordGadgetException()` keeps the same event. Most of these exceptions never reach the tail.
   One that does, because the runtime reports it for the gadget's request as well (a constructor's
-  throw), is kept by both, as live subscribers are sent both.
+  throw), is kept by both, as live subscribers are sent both. A gadget is held to 30 of these a
+  minute (see [The limit on caught exceptions](#the-limit-on-caught-exceptions)).
 
 `deliverGadgetLogs()` takes the gadget last, after the chat and the logs, and as an optional
 argument. The tail loopback and the Overseer can run different versions of the Worker while a
@@ -246,9 +249,33 @@ The counts live in the Overseer's memory (`GadgetConsoleLogLimiter`), so a resta
 one window: what it admitted, and the drops no marker has counted. The limit bounds a flood. It is
 not an exact quota.
 
-A gadget's server entries pass no rate limit. One gadget request's console output is one trace,
-which the platform ends at 256 KB with a warning of its own (kept like any other entry), and the
-byte bounds of the log object hold whatever arrives.
+## The limit on caught exceptions
+
+A trace's entries pass no rate limit. One gadget request's console output is one trace, which the
+platform ends at 256 KB with a warning of its own (kept like any other entry), and the byte bounds
+of the log object hold whatever arrives.
+
+The exceptions caught on facet calls are limited, to 30 a minute for one gadget
+(`GADGET_EXCEPTIONS_KEPT_PER_MINUTE` in `overseer.ts`). The reason is who chooses them. A failed
+call's error names the method that was called, every session that may call the gadget can make a
+call fail (a call for a method the gadget does not have is enough), a `use` collaborator's
+included, and a `"server"` entry names no user. With no limit, such a session could fill a
+gadget's `"server"` entries with lines of its own in seconds, and push out what the gadget's
+server logged.
+
+The limit works as the one on reports does, with a `GadgetConsoleLogLimiter` of its own, so
+caught exceptions and reports take nothing from each other's minute. The minute is one budget for
+the gadget, whoever calls it: a caller whose calls keep failing uses it up for the others until
+the minute ends. What the limit drops is said by a marker: one `"server"` entry of level `warn`,
+with the same wording, at most one a minute for a gadget, kept before the exception that brought
+it and under that exception's chat. Live subscribers are sent every exception, kept or not.
+
+The limit slows a flood, and no more than that:
+
+- At 30 a minute, each cut to 2,000 characters, failing calls take about an hour to turn over a
+  gadget's 8,000,000 bytes of `"server"` entries.
+- A gadget whose own code logs what it is called with is not covered. Its console calls arrive
+  by its trace, and whoever may call it can have it log as often as they call.
 
 ## The Workshop's reporter
 
@@ -341,6 +368,12 @@ Each source has its part of each bound to itself and loses only its own entries.
 what a browser reports, so if the two shared a bound, anyone who may report could push a gadget's
 server entries out. As it is, what browsers report can push out only what browsers reported.
 
+The split covers reports only. A session that may call a gadget can cause `"server"` entries as
+well, and those push out the gadget's older `"server"` entries like any other: through the
+gadget's own code, when it logs what it is called with, and through calls that fail, which are
+rate-limited for that reason (see
+[The limit on caught exceptions](#the-limit-on-caught-exceptions)).
+
 Past a gadget's bound, that gadget's oldest entries of that source go. Past the workspace's bound,
 the entries go from the gadget holding the most of that source, its oldest first, and not from the
 oldest rows of the workspace: that keeps a gadget that logs little from losing its entries to
@@ -405,19 +438,24 @@ A read changes nothing: `list()` creates no table, deletes nothing and sets no a
 
 A listing is paged, 100 entries a page (`GADGET_CONSOLE_LOG_PAGE_SIZE`), newest first by the order
 the entries were kept in. Every page but the last is full, and a page without `nextCursor` is the
-last. It is filtered as `GadgetConsoleLogQuery` says, and the filters combine: by gadget, by chat
-(null for the entries of a gadget's mainline only, absent for any chat), by source, by level, and
-by the entry's own time (`since`, `until`). An id that names no gadget or no chat, or a deleted
-one, is not an error. A `since` or `until` that is not a valid time, or a malformed `cursor`,
-throws a `TypeError`, whether or not the workspace has kept anything.
+last. A cursor names the last entry of its page, by its sequence number and by when it was kept
+(`<seq>@<kept_at>`), and is taken only in the one spelling it was handed out in. A cursor held until
+every entry has expired lists nothing: the object's storage is deleted then, the sequence starts
+again with the next entry, and the listing takes nothing kept later than the cursor's entry for an
+older one. It is filtered as `GadgetConsoleLogQuery` says, and the filters combine: by gadget, by
+chat (null for the entries of a gadget's mainline only, absent for any chat), by source, by level,
+and by the entry's own time (`since`, `until`). An id that names no gadget or no chat, or a deleted
+one, is not an error. A `since` or `until` that is not a valid time, or a malformed `cursor`, throws
+a `TypeError`, whether or not the workspace has kept anything.
 
 The admin read is one of the view's content methods (`ADMIN_CONTENT_METHODS`), described in
 [admin-access.md](admin-access.md#each-call). Below `"full"` it is refused with `contentWithheld`
 and recorded, and the log object is not asked. At `"full"` its record holds the fields of its
 query among the call's arguments (`since` and `until` as ISO 8601, a null chat as `"mainline"`,
 since a recorded argument is a string or a number), and `exposed` is `"content"` when the page
-holds an entry. An invalid time or cursor is rejected before the call starts, unrecorded. The read
-leaves the log object as it was.
+holds an entry. An invalid time or cursor is rejected before the call starts, unrecorded. A cursor
+has one spelling, so the `cursor` in a record names the page that was read. The read leaves the
+log object as it was.
 
 ### Why these readers
 
@@ -494,6 +532,14 @@ initialise a deleted workspace's id again, for whoever posts next, with gadget i
 again at the same numbers; that life makes a name of its own with its first entry, and starts
 with no log.
 
+A trace of the earlier life can reach the next one as well. A gadget call still open at the
+deletion ends when the workspace's instance restarts, a moment later, and its trace is delivered
+to whatever holds the id by then. `deliverGadgetLogs()` keeps nothing of a batch that holds a log
+from before the workspace was initialised (its `createdAt`), so what such a call logged is not
+kept in the next life's log. What is not told apart is a request of the earlier life that logged
+nothing until the id was initialised again, in the tenth of a second before that restart. Live
+subscribers are sent a late trace as they are sent any other.
+
 **A gadget.** Deleting a gadget keeps its entries. They stay listable by its id, through
 `listConsoleLogs()` and the admin view, until they expire. A report for a deleted gadget is
 refused.
@@ -527,19 +573,22 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   replaced though it is no credential, what is not caught, and its time on adversarial text), the
   text (the join, the read bound, the cut), the two entry makers, the marker's wording and the
   limiter.
-- `workspace-log.test.ts`: the log object. Appending, the listing with its filters and cursors,
-  what an entry counts and what a freshly filled database takes, the 72 hours counted from
-  keeping, the per-gadget and per-workspace bounds for each source, oldest first, pruning on write
-  and by alarm, the alarm's failures, and `destroy()`.
+- `workspace-log.test.ts`: the log object. Appending, the listing with its filters and cursors (a
+  cursor's one spelling, and one that outlived its entries), what an entry counts and what a freshly
+  filled database takes, the 72 hours counted from keeping, the per-gadget and per-workspace bounds
+  for each source, oldest first, pruning on write and by alarm, the alarm's failures, and
+  `destroy()`.
 - `gadget-console-history.test.ts`: the Overseer's side. A trace, a caught exception and a report
-  kept under the right chat; server entries passing no rate limit; a batch that names no gadget;
+  kept under the right chat; a trace's entries passing no rate limit, and caught exceptions held
+  to theirs with a marker; a batch that names no gadget; a trace from before the workspace was
+  initialised;
   failed appends logged with nothing of an entry; the report's cap, rate limit and markers; the
   listing for a build and a use session; a deleted gadget and a deleted chat; and the workspace's
   deletion, with an append in flight, a reset, a failing log object and an id initialised again.
 - `use-gadget-access.test.ts`: what a `use` session may report, and for which gadgets.
 - `admin-workspace-view.test.ts` and `admin-access.test.ts`: the admin read, refused below `"full"`
-  and recorded, its query in the record, a malformed query unrecorded, and whether a page holds
-  content.
+  and recorded, its query in the record, a malformed query or another spelling of a cursor
+  unrecorded, and whether a page holds content.
 
 Frontend suites, in `packages/workshop-frontend/src/`:
 
@@ -554,7 +603,8 @@ Frontend suites, in `packages/workshop-frontend/src/`:
 Integration suite, `packages/integration-tests/__tests__/workshop-console-log-history.test.ts`: a
 gadget's server console call and a reported client batch both kept and read back by a build
 session; a use session reading nothing while what it reports is kept; the admin read refused at
-`"metadata"` and recorded as a content read at `"full"`; a report over the cap of a call; a
-deleted gadget's entries listed by its id; and the workspace's deletion deleting its log.
+`"metadata"` and recorded as a content read at `"full"`; a report over the cap of a call; a use
+session's failing calls held to 30 kept errors a minute; a deleted gadget's entries listed by its
+id; and the workspace's deletion deleting its log.
 `workshop-use-role.test.ts` holds the methods a use session may call, the report among them, and
 `packages/api-cli/src/run.test.ts` the search ranks.

@@ -229,6 +229,48 @@ describe("WorkspaceLogDurableObject.list", () => {
     expect((await log.list()).entries[0].text).toBe("later");
   });
 
+  it("hands out a cursor that names its page's last entry, in one spelling", async () => {
+    let log = workspaceLog();
+    await log.append(Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE + 5 }, () => server()));
+    let { nextCursor } = await log.list();
+
+    // The page's last entry is the sixth kept.
+    let [last] = await sql<{ seq: number; kept_at: number }>(log,
+        "SELECT seq, kept_at FROM console_logs ORDER BY seq LIMIT 1 OFFSET 5");
+    expect(last.seq).toBe(6);
+    expect(nextCursor).toBe(`6@${last.kept_at}`);
+    expect((await log.list({ cursor: nextCursor })).entries).toHaveLength(5);
+
+    // The same numbers spelt another way are refused, however long.
+    for (let cursor of [`06@${last.kept_at}`, `6@0${last.kept_at}`,
+                        `${"0".repeat(300)}6@${last.kept_at}`]) {
+      await expectRejection(log.list({ cursor }), "TypeError: Invalid cursor.");
+    }
+  });
+
+  it("lists nothing from a cursor handed out before every entry expired", async () => {
+    let log = workspaceLog();
+    await log.append(Array.from({ length: 150 }, (_, i) => server({ text: `old ${i}` })));
+    // Kept almost 72 hours ago, so the first page is read shortly before its entries expire.
+    await backdate(log, "1", 71.9);
+    let first = await log.list();
+    expect(first.entries[99].text).toBe("old 50");
+    expect(first.nextCursor).toBeDefined();
+
+    // They all expire, and the alarm deletes the schema with them, so the sequence of what is
+    // kept next starts again below the cursor's.
+    await backdate(log, "1", 73);
+    await runAlarm(log);
+    expect(await logTables(log)).toEqual([]);
+    await log.append(Array.from({ length: 60 }, (_, i) => server({ text: `new ${i}` })));
+    expect((await seqRows(log)).map(row => row.seq))
+        .toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+
+    // Nothing kept since is older than the first page.
+    expect(await log.list({ cursor: first.nextCursor })).toEqual({ entries: [] });
+    expect((await log.list()).entries).toHaveLength(60);
+  });
+
   it("ends a listing that fills its last page exactly without a cursor", async () => {
     let log = workspaceLog();
     await log.append(Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE }, () => server()));
@@ -315,7 +357,15 @@ describe("WorkspaceLogDurableObject.list", () => {
   it("throws a TypeError for a malformed cursor and for invalid dates", async () => {
     let log = workspaceLog();
     await log.append([server()]);
-    for (let cursor of ["", "abc", "-1", "1.5", " 1", "1e3", "99999999999999999999"]) {
+    let malformed = [
+      "", "abc", "-1", "1.5", " 1", "1e3", "99999999999999999999",
+      // A cursor is two numbers.
+      "12", "12@", "@34", "12@34@56", "12@-34", "12@3.4", "12@34 ", "12@34\n",
+      // Each in its one decimal form: no other spelling of a cursor is one.
+      "012@34", "12@034", "00@34", `${"0".repeat(300)}12@34`, "+12@34", "0x12@34",
+      "99999999999999999999@34", "12@99999999999999999999", "9007199254740992@34",
+    ];
+    for (let cursor of malformed) {
       await expectRejection(log.list({ cursor }), "TypeError: Invalid cursor.");
       expect(() => validateGadgetConsoleLogQuery({ cursor })).toThrow(TypeError);
     }
@@ -328,7 +378,8 @@ describe("WorkspaceLogDurableObject.list", () => {
     expect(() => validateGadgetConsoleLogQuery({ cursor: "x" }))
         .toThrow(new TypeError("Invalid cursor."));
     expect(() => validateGadgetConsoleLogQuery(
-        { since: new Date(0), until: new Date(), cursor: "12" })).not.toThrow();
+        { since: new Date(0), until: new Date(), cursor: "12@34" })).not.toThrow();
+    expect(() => validateGadgetConsoleLogQuery({ cursor: "9007199254740991@0" })).not.toThrow();
     // A query is refused before the table is looked for.
     await expectRejection(workspaceLog().list({ cursor: "x" }), "TypeError: Invalid cursor.");
   });
@@ -513,6 +564,28 @@ describe("WorkspaceLogDurableObject, loaded again", () => {
 });
 
 describe("WorkspaceLogDurableObject retention", () => {
+  it("keeps an entry 72 hours, by the listing and by the alarm", async () => {
+    expect(GADGET_CONSOLE_LOG_RETENTION_HOURS).toBe(72);
+
+    let log = workspaceLog();
+    await log.append([
+      server({ text: "kept 70 hours ago" }), server({ text: "kept 73 hours ago" }),
+      server({ text: "fresh" }),
+    ]);
+    await backdate(log, "text = 'kept 70 hours ago'", 70);
+    await backdate(log, "text = 'kept 73 hours ago'", 73);
+    expect((await log.list()).entries.map(entry => entry.text))
+        .toEqual(["fresh", "kept 70 hours ago"]);
+
+    await runAlarm(log);
+    expect((await sql<{ text: string }>(log, "SELECT text FROM console_logs ORDER BY seq"))
+        .map(row => row.text)).toEqual(["kept 70 hours ago", "fresh"]);
+    // The next alarm is for when the oldest entry left has been kept 72 hours.
+    let [{ kept_at }] = await sql<{ kept_at: number }>(log,
+        "SELECT kept_at FROM console_logs WHERE text = 'kept 70 hours ago'");
+    expect(await getAlarm(log)).toBe(kept_at + 72 * HOUR_MS);
+  });
+
   it("counts from when an entry was kept, not from its own time: pruned on write", async () => {
     let log = workspaceLog();
     await log.append([server({ time: new Date("2999-01-01T00:00:00Z"), text: "future" })]);

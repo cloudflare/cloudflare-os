@@ -358,6 +358,31 @@ describe("a gadget's server console output", () => {
     expect(consoleLogId(ws)).toBeUndefined();
   }));
 
+  it("keeps nothing of a trace that logged before the workspace was initialised, and delivers it",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    let created = new Date(1700000100_000);
+    ws.impl.storage.createdAt.put(created);
+    let events = await subscribe(ws);
+    let at = (ms: number, text: string): ConsoleLogEvent =>
+        ({ timestamp: new Date(created.getTime() + ms), level: "log", message: [text] });
+
+    // A request of an earlier workspace under this id, and one that was still logging when the
+    // id was initialised again: nothing of either is kept, and no log object is named.
+    let before = [at(-60_000, "a minute before")];
+    let straddling = [at(-1, "just before"), at(0, "at"), at(1, "after")];
+    await ws.impl.deliverGadgetLogs(null, before, GADGET_ID);
+    await ws.impl.deliverGadgetLogs(null, straddling, GADGET_ID);
+    expect(consoleLogId(ws)).toBeUndefined();
+
+    // A request that logged from the initialisation on is this workspace's.
+    let own = [at(0, "at"), at(1, "after")];
+    await ws.impl.deliverGadgetLogs(null, own, GADGET_ID);
+    expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["after", "at"]);
+
+    expect(events.map(event => event.logs)).toStrictEqual([before, straddling, own]);
+  }));
+
   it("keeps nothing of a batch with no logs: no log object is named, and none is asked",
       () => withWorkspace(async ws => {
     initialise(ws);
@@ -446,7 +471,26 @@ async function failEntries(ws: Workspace): Promise<GadgetConsoleLogEntry[]> {
       .filter(entry => entry.text.endsWith("at fail()"));
 }
 
+// Calls `count` methods the gadget does not have, each named by its caller, and returns what the
+// caller chose.
+async function failCalls(gadget: any, count: number, from = 0): Promise<string[]> {
+  let names = Array.from({ length: count }, (_, i) => `forged_${from + i}`);
+  for (let name of names) await rejection(gadget[name]());
+  return names;
+}
+
+// The entries kept for those calls and the markers of the ones dropped, each oldest first.
+const keptForged = async (ws: Workspace) =>
+  (await kept(ws, { gadgetId: GADGET_ID, level: "error" }))
+      .filter(entry => /at forged_\d+\(\)$/.test(entry.text)).toReversed();
+const dropMarkers = async (ws: Workspace) =>
+  (await kept(ws, { gadgetId: GADGET_ID, level: "warn" })).toReversed();
+
 describe("an exception a gadget's method did not catch", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("is kept under the calling chat only if it pins the gadget, and told live under that chat",
       () => withWorkspace(async ws => {
     initialise(ws);
@@ -524,6 +568,77 @@ describe("an exception a gadget's method did not catch", () => {
     let exceptionWarnings = () => warnings(warn, "gadget.console.record.failed")
         .filter(([text]) => text === "failed to record a gadget exception");
     await vi.waitFor(() => expect(exceptionWarnings()).toHaveLength(1), KEPT_SOON);
+  }), GADGET_TEST_MS);
+
+  it("holds a gadget to 30 a minute, whichever methods its callers name, and marks the rest",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "the server's own")], GADGET_ID);
+    let events = await subscribe(ws);
+    let start = Date.now();
+    let now = vi.spyOn(Date, "now").mockReturnValue(start);
+
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    let names = await failCalls(gadget, 100);
+
+    // The first 30 are kept, and one marker for the call that was dropped first.
+    await vi.waitFor(async () => {
+      expect(await keptForged(ws)).toHaveLength(30);
+      expect(await dropMarkers(ws)).toHaveLength(1);
+    }, KEPT_SOON);
+    expect((await keptForged(ws)).map(entry => entry.text.split("at ").at(-1)))
+        .toStrictEqual(names.slice(0, 30).map(name => `${name}()`));
+    let [marker] = await dropMarkers(ws);
+    expect(marker).toMatchObject({ gadgetId: GADGET_ID, chatId: null, source: "server",
+                                   text: "1 entry dropped" });
+    expect(marker).not.toHaveProperty("userId");
+    expect(texts({ entries: await kept(ws, { level: "log" }) }))
+        .toStrictEqual(["the server's own"]);
+
+    // The gadget's next minute: the marker of its first kept call counts the other 69.
+    now.mockReturnValue(start + 60_000);
+    await failCalls(gadget, 1, 100);
+    await vi.waitFor(async () => expect(await keptForged(ws)).toHaveLength(31), KEPT_SOON);
+    expect(texts({ entries: await dropMarkers(ws) }))
+        .toStrictEqual(["1 entry dropped", "69 entries dropped"]);
+    // What is said of the drops is kept before the call that brought it.
+    expect(texts({ entries: (await kept(ws, { gadgetId: GADGET_ID })).slice(0, 2) }))
+        .toStrictEqual([expect.stringMatching(/at forged_100\(\)$/), "69 entries dropped"]);
+
+    // A subscriber is told every one of them.
+    let told = events.flatMap(event => event.logs)
+        .filter(log => /at forged_\d+\(\)$/.test(String(log.message[0])));
+    expect(told).toHaveLength(101);
+  }), GADGET_TEST_MS);
+
+  it("counts what a marker that could not be written held with the gadget's next",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    let start = Date.now();
+    let now = vi.spyOn(Date, "now").mockReturnValue(start);
+    let warn = vi.spyOn(ws.impl.logger, "warn");
+
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    await failCalls(gadget, 30);
+    await vi.waitFor(async () => expect(await keptForged(ws)).toHaveLength(30), KEPT_SOON);
+
+    // The marker of the first drop cannot be kept, and two more calls are dropped after it.
+    let real = ws.impl.workspaceLogs;
+    ws.impl.workspaceLogs = {
+      getByName: () => ({ append: async () => { throw new Error("log object unavailable"); } }),
+    };
+    await failCalls(gadget, 3, 30);
+    await vi.waitFor(() => expect(warnings(warn, "gadget.console.record.failed")
+        .filter(([text]) => text === "failed to record a gadget exception")).toHaveLength(1),
+        KEPT_SOON);
+    ws.impl.workspaceLogs = real;
+
+    now.mockReturnValue(start + 60_000);
+    await failCalls(gadget, 1, 33);
+    await vi.waitFor(async () => expect(await keptForged(ws)).toHaveLength(31), KEPT_SOON);
+    expect(texts({ entries: await dropMarkers(ws) })).toStrictEqual(["3 entries dropped"]);
   }), GADGET_TEST_MS);
 });
 
@@ -844,6 +959,8 @@ describe("deleting the workspace", () => {
     initialise(ws);
     await ws.impl.deliverGadgetLogs(null, [logEvent("log", "first life")], GADGET_ID);
     let earlier = consoleLogId(ws)!;
+    // What a gadget call still open at the deletion logged: its trace is delivered when it ends.
+    let open = logEvent("log", "first life, delivered late");
 
     beginDeletion(ws);
     await ws.impl.deliverUserUpdates();
@@ -855,8 +972,15 @@ describe("deleting the workspace", () => {
       text: "late",
     }]);
 
+    // The id is initialised again, as an external message does it, and the open call's trace
+    // arrives: the same gadget id, under the next life's owner.
     initialise(ws);
-    await ws.impl.deliverGadgetLogs(null, [logEvent("log", "second life")], GADGET_ID);
+    ws.impl.storage.createdAt.put(new Date(open.timestamp.getTime() + 1));
+    await ws.impl.deliverGadgetLogs(null, [open], GADGET_ID);
+    expect(consoleLogId(ws)).toBeUndefined();
+
+    await ws.impl.deliverGadgetLogs(null, [{ ...logEvent("log", "second life"),
+        timestamp: new Date(open.timestamp.getTime() + 2) }], GADGET_ID);
     expect(consoleLogId(ws)).not.toBe(earlier);
     expect(texts(await ws.impl.listConsoleLogs())).toStrictEqual(["second life"]);
   }));

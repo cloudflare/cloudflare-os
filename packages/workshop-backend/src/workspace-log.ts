@@ -77,9 +77,22 @@ function entryBytes(text: string, userId?: string): number {
   return Math.ceil(pages * PAGE_BYTES) + INDEX_BYTES;
 }
 
-// The sequence number a cursor names, or NaN for a string that is not a cursor.
-function cursorSeq(cursor: string): number {
-  return /^[0-9]+$/.test(cursor) ? Number(cursor) : NaN;
+// A cursor names the last entry of its page as "<seq>@<kept_at>", each number in its one decimal
+// form: a cursor has one spelling, so a caller that records the cursor it read from (the admin
+// view does) records which page that was. The next page is the entries below that sequence number
+// that were kept no later than that entry. The second condition is for a cursor that outlived the
+// schema: the alarm deletes the schema once every entry has expired, the sequence starts again at
+// 1 with the next append, and an entry kept since must not be listed as an older one.
+type Cursor = { seq: number; keptAt: number };
+const CURSOR = /^(0|[1-9][0-9]*)@(0|[1-9][0-9]*)$/;
+
+// The entry a cursor names, or undefined for a string that is not a cursor.
+function parseCursor(cursor: string): Cursor | undefined {
+  let match = CURSOR.exec(cursor);
+  if (match === null) return undefined;
+  let seq = Number(match[1]);
+  let keptAt = Number(match[2]);
+  return Number.isSafeInteger(seq) && Number.isSafeInteger(keptAt) ? { seq, keptAt } : undefined;
 }
 
 /** Throws a TypeError unless `since` and `until` are valid times and `cursor` is a cursor. */
@@ -90,13 +103,14 @@ export function validateGadgetConsoleLogQuery(query: GadgetConsoleLogQuery): voi
   if (query.until !== undefined && Number.isNaN(query.until.getTime())) {
     throw new TypeError("Invalid until.");
   }
-  if (query.cursor !== undefined && !Number.isSafeInteger(cursorSeq(query.cursor))) {
+  if (query.cursor !== undefined && parseCursor(query.cursor) === undefined) {
     throw new TypeError("Invalid cursor.");
   }
 }
 
 type LogRow = {
   seq: number;
+  kept_at: number;
   at: number;
   gadget_id: WorkpieceId;
   chat_id: number | null;
@@ -235,18 +249,22 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
       where.push("at <= ?");
       params.push(query.until.getTime());
     }
-    if (query.cursor !== undefined) {
-      where.push("seq < ?");
-      params.push(cursorSeq(query.cursor));
+    let cursor = query.cursor === undefined ? undefined : parseCursor(query.cursor);
+    if (cursor !== undefined) {
+      where.push("seq < ? AND kept_at <= ?");
+      params.push(cursor.seq, cursor.keptAt);
     }
 
     let limit = GADGET_CONSOLE_LOG_PAGE_SIZE;
     let rows = this.ctx.storage.sql.exec<LogRow>(
-      `SELECT seq, at, gadget_id, chat_id, source, user_id, level, text FROM console_logs
-       WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT ?`,
+      `SELECT seq, kept_at, at, gadget_id, chat_id, source, user_id, level, text
+       FROM console_logs WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT ?`,
       ...params, limit + 1).toArray();
     let page: GadgetConsoleLogPage = { entries: rows.slice(0, limit).map(entryFromRow) };
-    if (rows.length > limit) page.nextCursor = String(rows[limit - 1].seq);
+    if (rows.length > limit) {
+      let last = rows[limit - 1];
+      page.nextCursor = `${last.seq}@${last.kept_at}`;
+    }
     return page;
   }
 

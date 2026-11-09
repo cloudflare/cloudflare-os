@@ -2187,6 +2187,29 @@ describe("console log reads", () => {
     expect(await consoleLogRecords(ws)).toStrictEqual([]);
   }));
 
+  it("take a cursor only as it was handed out, so that a recorded cursor names its page",
+      () => withWorkspace(async ws => {
+    let logs = Array.from({ length: GADGET_CONSOLE_LOG_PAGE_SIZE + 1 },
+        (_, index) => serverLog(`line ${index}`));
+    await ws.impl.deliverGadgetLogs(null, logs, ws.gadgetId);
+    let view = await openFull(ws);
+    let cursor = (await view.listConsoleLogs()).nextCursor!;
+
+    // Padded with zeros past what a record keeps of an argument, the cursor would read the same
+    // page and be recorded as zeros alone.
+    let padded = [
+      `${"0".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}${cursor}`, `0${cursor}`,
+      cursor.replace("@", "@0"),
+    ];
+    for (let spelling of padded) {
+      await expect(view.listConsoleLogs({ cursor: spelling })).rejects.toThrow("Invalid cursor.");
+    }
+    expect(texts(await view.listConsoleLogs({ cursor }))).toStrictEqual(["line 0"]);
+
+    expect(cursor.length).toBeLessThan(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect((await consoleLogRecords(ws)).map(r => r.args)).toStrictEqual([{}, { cursor }]);
+  }));
+
   it("record a read the log object fails as an attempt that exposed nothing",
       () => withWorkspace(async ws => {
     await ws.impl.deliverGadgetLogs(null, [serverLog("line")], ws.gadgetId);

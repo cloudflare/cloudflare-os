@@ -4726,7 +4726,9 @@ export interface Overseer extends RpcTarget {
    * Read one page of the console log history kept for this workspace, newest first by the order
    * its entries were kept in. An entry is a console call or an uncaught exception of a gadget's
    * server code, or a console call that a session reported for a gadget's UI (see
-   * reportGadgetConsoleLogs()).
+   * reportGadgetConsoleLogs()). Of the errors that calls to a gadget's server fail with, at most
+   * 30 a minute are kept for one gadget, and a "server" entry of level "warn", worded by
+   * droppedGadgetConsoleLogsText(), says how many were not.
    *
    * An entry is kept for 72 hours from when it was kept, whatever its own `time` says, and the
    * oldest go sooner once the entries of one gadget count past 10 MB or those of the workspace

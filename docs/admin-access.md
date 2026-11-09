@@ -417,6 +417,7 @@ typed, so type the number of days you want kept, even the minimum.
   above `requested`), what its answer exposed (`exposed`), and `refused` when the level refused
   it. An argument is recorded as a string or a number, so `listConsoleLogs()` records the fields
   of its query one by one, `since` and `until` as ISO 8601 and a `chatId` of null as `"mainline"`.
+  Its `cursor` is taken in one spelling only, so the one recorded names the page that was read.
 - **`AdminSettingRecord`** (`kind: "setting"`): one `AdminApi` setter's change. It holds `at`,
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.

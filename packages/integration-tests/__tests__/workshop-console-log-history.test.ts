@@ -364,6 +364,46 @@ it("gives a use session nothing to read, and keeps what it reports for a gadget 
   expect(await useWs.listConsoleLogs()).toEqual({ entries: [] });
 });
 
+it("holds what a use session's failing calls add to a gadget's server entries to 30 a minute",
+    async () => {
+  using stack = new DisposableStack();
+  const workspace = await newWorkspace(stack, "logflooded");
+  const { ws } = workspace;
+  const { gadget, gadgetId } = await loggingGadget(stack, workspace);
+  const [viewer] = nextUsernames("logflooder");
+  const viewerApi = stack.use(await signUp(stack.use(connect(harness.url)), viewer!));
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
+  const useWs = stack.use(await viewerApi.openWorkspace(workspace.id));
+
+  await greet(gadget, "Ada");
+  const serverCall = await keptCall(ws, gadgetId, "mainline Ada");
+
+  // Calls for methods the gadget does not have: each error names the method, which its caller
+  // chose.
+  using facet = await useWs.getGadget(gadgetId).connectToGadget() as
+      RpcStub<Record<string, () => void>>;
+  for (let call = 0; call < 40; call++) {
+    await expect(facet[`forged_${call}_${"Z".repeat(100)}`]!()).rejects.toThrow();
+  }
+
+  // The first 30 are kept as the gadget's server's, naming no user, then one marker.
+  expect(await keptEntry(ws, { gadgetId, level: "warn" }, "the marker of the dropped calls",
+      entry => entry.text === "1 entry dropped"))
+      .toStrictEqual(serverEntry(gadgetId, null, "warn", "1 entry dropped"));
+  // They are all the errors the gadget has: a call that fails so is kept by nothing else.
+  const forged = await kept(ws, { gadgetId, level: "error" });
+  expect(forged.map(entry => /at forged_(\d+)_Z+\(\)$/.exec(entry.text)?.[1]).toReversed())
+      .toStrictEqual(Array.from({ length: 30 }, (_, call) => String(call)));
+  for (const entry of forged) {
+    expect(entry).toMatchObject({ gadgetId, chatId: null, source: "server" });
+    expect(entry).not.toHaveProperty("userId");
+  }
+  expect(await kept(ws, { gadgetId, level: "log" })).toStrictEqual([serverCall]);
+  expect(await useWs.listConsoleLogs()).toEqual({ entries: [] });
+});
+
 it("refuses an admin's read below full access, and records it as a content read at full",
     async () => {
   using stack = new DisposableStack();
