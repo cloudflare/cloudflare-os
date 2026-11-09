@@ -116,7 +116,9 @@ observer verification by explicit policy, and the admin is never registered as a
 `excludeObservers` never names an admin, and no observation is blocked on an admin's account.
 
 The exception is bounded. Restricted data (chat messages and attachments, file contents, commit
-messages, the descriptions and fields of actions, observations and hooks) is visible only at the
+messages, the argument summaries of queued agent calls, the descriptions and fields of actions,
+observations and hooks, and blueprint ids; see
+[What a call exposed](admin-access.md#what-a-call-exposed) for each call) is visible only at the
 `"full"` access level, which only a deployment config change permits and which an inspection must
 ask for: `ADMIN_WORKSPACE_ACCESS_MAX` caps the level, `metadata` by default, and fails closed to
 `off` for any value that is not a level. Titles, names, notes and blueprint descriptions stay
