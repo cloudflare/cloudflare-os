@@ -1,8 +1,9 @@
 import { env, type RpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, AiChatMessageBody, UserNotification } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer";
+import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage";
 import { UserDurableObject } from "../src/user";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { openFakeOverseer } from "./fixtures";
@@ -27,21 +28,30 @@ declare module "cloudflare:workers" {
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function inference(gate?: Promise<void>) {
+// Answers each model request with the next of `steps`, a step's tool calls, then with "Done.".
+function inference(gate?: Promise<void>, steps: {name: string, input: object}[][] = []) {
   let count = 0;
   const fetch = globalThis.fetch;
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== MODEL.config.apiUrl) return fetch(input, init);
-    count++;
+    const calls = steps[count++];
+    const blocks = calls ? calls.flatMap(({name, input: args}, index) => [
+      {type: "content_block_start", index, content_block: {type: "tool_use", id: `call-${index}`, name, input: {}}},
+      {type: "content_block_delta", index, delta: {type: "input_json_delta", partial_json: JSON.stringify(args)}},
+      {type: "content_block_stop", index},
+    ]) : [
+      {type: "content_block_start", index: 0, content_block: {type: "text", text: ""}},
+      {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "Done."}},
+      {type: "content_block_stop", index: 0},
+    ];
     const events = [
       {type: "message_start", message: {id: "resume", type: "message", role: "assistant",
         model: MODEL.profile.id, content: [], stop_reason: null, stop_sequence: null,
         usage: {input_tokens: 1, output_tokens: 1}}},
-      {type: "content_block_start", index: 0, content_block: {type: "text", text: ""}},
-      {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "Done."}},
-      {type: "content_block_stop", index: 0},
-      {type: "message_delta", delta: {stop_reason: "end_turn", stop_sequence: null}, usage: {output_tokens: 1}},
+      ...blocks,
+      {type: "message_delta", delta: {stop_reason: calls ? "tool_use" : "end_turn", stop_sequence: null},
+        usage: {output_tokens: 1}},
       {type: "message_stop"},
     ];
     const response = new Response(events.map(e =>
@@ -64,18 +74,18 @@ function request(impl: Impl, kind: Kind, requestId = "1:connection") {
   }
 }
 
-function decide(impl: Impl, kind: Kind) {
+function decide(impl: Impl, kind: Kind, approve = true) {
   if (kind === "action") {
     const action = impl.storage.actions.get(7)!;
-    impl.storage.actions.put({...action, state: "approved"});
+    impl.storage.actions.put({...action, state: approve ? "approved" : "rejected"});
   } else {
     const msg = [...impl.storage.chats.list()].findLast(m => m.type === "connectionRequest")!;
     if (msg.type !== "connectionRequest") throw new Error("Missing request");
-    impl.storage.chats.put({...msg, state: "accepted", gatekeeperId: 31});
+    impl.storage.chats.put(approve ? {...msg, state: "accepted", gatekeeperId: 31} : {...msg, state: "denied"});
   }
 }
 
-async function scenario(kind: Kind = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
+async function scenario(kind: Kind | null = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
   const stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const user = env.TEST_USER.getByName(crypto.randomUUID());
   await runInDurableObject(user, instance => {
@@ -96,7 +106,7 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
       ...(active ? {activeAgent: MODEL.profile} : {})});
     impl.storage.chatContext.put({chatId: CHAT, bindings: {}, alwaysAvailableCapsuleIds: []});
     impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
-    request(impl, kind);
+    if (kind) request(impl, kind);
     impl.storage.activeAgents.put({chatId: CHAT, modelId: MODEL.profile.id,
       initiatorUserId: user.id.toString(), initiator, callbackInitiated: initiator.type === "gadget"});
   });
@@ -744,5 +754,157 @@ describe("decision handoff using the existing execution row", () => {
       await impl.waitForAllAgentsToComplete();
     });
     expect(requests()).toBe(1);
+  });
+});
+
+// An agent step whose executeCode showed a view, "Spending", beside a call that read data or, when
+// `failed`, threw.
+function viewStep(failed = false): AiChatMessageBody {
+  return {type: "message", message: "", toolCalls: [{
+    toolCallId: "show", toolName: "executeCode", input: {code: "export default async function() {}"},
+    output: "Showed the user a view: Spending.", views: [{title: "Spending", html: "<p>$420</p>"}],
+  }, {
+    toolCallId: "read", toolName: "executeCode", input: {code: "export default async function() {}"},
+    output: failed ? "Uncaught exception: Error: x" : "42", ...failed ? {failed: true} : {},
+  }]};
+}
+
+// A step whose executeCode showed a view with embedView is the turn's answer (plans/live-views.md).
+describe("a step that answered with a view", () => {
+  it.each([false, true])("recovers as the final response unless a call failed (failed: %s)", async failed => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => { impl.addChatMessages(CHAT, MODEL.profile, [viewStep(failed)]); });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(failed ? 1 : 0);
+  });
+
+  // turn_end logs the step's decision cards after its message. Its awaited action the user approved
+  // before the turn ended is consumed; a connection request, answered only after its step, resumes.
+  it.each([{kind: "action", resumes: 0}, {kind: "connection", resumes: 1}] as const)(
+      "recovers with its step's $kind approved before the turn ended, resuming $resumes times",
+      async ({kind, resumes}) => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => {
+      impl.addChatMessages(CHAT, MODEL.profile, [viewStep()]);
+      request(impl, kind);
+      decide(impl, kind);
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(resumes);
+    });
+    expect(requests()).toBe(resumes);
+  });
+
+  it.each(["connection", "action"] as const)(
+      "waits on its step's pending %s, and resumes once it is approved", async kind => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => {
+      impl.addChatMessages(CHAT, MODEL.profile, [viewStep()]);
+      request(impl, kind);
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeDefined();
+      expect(requests()).toBe(0);
+      decide(impl, kind);
+      impl.resumeAgentAfterDecision(CHAT, kind === "action" ? 7 : "1:connection");
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(1);
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it.each(["connection", "action"] as const)("ends on its step's rejected %s", async kind => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => {
+      impl.addChatMessages(CHAT, MODEL.profile, [viewStep()]);
+      request(impl, kind);
+      decide(impl, kind, false);
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(0);
+  });
+
+  it("leaves a later step's approved action to resume the agent", async () => {
+    const requests = inference(), s = await scenario(null, true);
+    await s.visit(impl => {
+      impl.addChatMessages(CHAT, MODEL.profile, [viewStep()]);
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Now save it.", steered: true}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "", toolCalls: [{
+        toolCallId: "save", toolName: "executeCode", input: {code: "export default async function() {}"},
+        output: "Saved.",
+      }]}]);
+      request(impl, "action");
+      decide(impl, "action");
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(1);
+    });
+    expect(requests()).toBe(1);
+  });
+
+  // A turn whose one step shows a view and, as it runs, submits an awaited action, which the user
+  // approves before the step ends unless `approve` is false.
+  async function viewTurn(impl: Impl, userId: string, approve: boolean) {
+    // submitAction reads only the record; nothing here starts the gatekeeper.
+    const unusedClass = {} as unknown as GatekeeperRecord["class"];
+    impl.storage.gatekeepers.put({id: 31, class: unusedClass});
+    const run = impl.executeCodeMode.bind(impl);
+    vi.spyOn(impl, "executeCodeMode").mockImplementation(async (...args) => {
+      await impl.submitAction(31, 42, {title: "Edit", description: "Edit", implementsRevert: false,
+        awaitDecision: true}, {from: "agent", chatId: CHAT});
+      const [action] = impl.storage.actions.list();
+      if (approve) impl.storage.actions.put({...action, state: "approved"});
+      return run(...args);
+    });
+    impl.startAgent(CHAT, MODEL, USER, userId);
+    await impl.waitForAllAgentsToComplete();
+  }
+  const SHOW_VIEW = [[{name: "executeCode", input: {code:
+      `export default async function() { embedView({title: "Spending", html: "<p>$420</p>"}); }`}}]];
+
+  it("ends the turn though its step's awaited action was approved as it ran", async () => {
+    const requests = inference(undefined, SHOW_VIEW), s = await scenario(null, true);
+    await s.visit(async impl => {
+      await viewTurn(impl, s.user.id.toString(), true);
+      const log = [...impl.storage.chats.list()];
+      expect(log.flatMap(m => m.type === "message" ? m.toolCalls ?? [] : [])[0]?.views).toHaveLength(1);
+      expect(log.filter(m => m.type === "action")).toHaveLength(1);
+      expect(log.filter(m => m.type === "agentNudge")).toEqual([]);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("waits on its step's pending awaited action, and resumes once it is approved", async () => {
+    const requests = inference(undefined, SHOW_VIEW), s = await scenario(null, true);
+    await s.visit(async impl => {
+      await viewTurn(impl, s.user.id.toString(), false);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeDefined();
+      expect(requests()).toBe(1);
+      const [action] = impl.storage.actions.list();
+      impl.storage.actions.put({...action, state: "approved"});
+      impl.resumeAgentAfterDecision(CHAT, action.id);
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(1);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(2);
   });
 });
