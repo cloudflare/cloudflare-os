@@ -55,7 +55,8 @@ const DAY = new Date("2026-01-01");
 // The revocations one run of a space's alarm attempts.
 const REVOCATION_BATCH = 16;
 const unique = () => crypto.randomUUID().slice(0, 8);
-const pair = (lease: SpaceLease) => `${lease.workspace}:${lease.profile}`;
+const pair = (lease: SpaceLease) =>
+    `${"space" in lease ? `space:${lease.space}` : lease.workspace}:${lease.profile}`;
 const space = (id: string) => spaceById(env.TEST_SPACE, id);
 // An id that names a workspace's Overseer, which a revocation has to be able to reach.
 const workspaceId = () => env.TEST_OVERSEER.newUniqueId().toString();
