@@ -1,7 +1,9 @@
 /**
- * A hook driver's enabled hooks, and the delivery every driver makes the same way: a firing started
- * through the hook's `HookInitiator`, handed with the message to the binding's own delivery stub,
- * which decides whether the hook receives it.
+ * The fan-out behind a push-driven hook driver, which sends one provider event to every hook
+ * enabled against it that watches for it. This holds those hooks, and makes the delivery every
+ * driver makes the same way: a firing started through the hook's `HookInitiator`, handed with the
+ * message to the binding's own delivery stub, which decides whether the hook receives it. Receiving
+ * the event and choosing its hooks stay in the driver.
  */
 
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
