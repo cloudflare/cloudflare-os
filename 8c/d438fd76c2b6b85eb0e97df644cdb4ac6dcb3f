@@ -1,0 +1,1271 @@
+.agents/skills/write-gatekeeper/SKELETON.md
+  s_351616a23717ae::t_2b955ad8cadee9 5-42,57,65-66,112,117-137,321-326,329,346-347,356,362-363,373-385,430,438,451-457,484-507,509,512-516,558-559,561,563-564,567-571,599-607,609,611-612,630-634,716-717
+.agents/skills/write-gatekeeper/SKILL.md
+  s_351616a23717ae::t_81a2662e468587 3,16-29,38,44,48,56,71,87-88,109-129,189,191,193,195,201,203,205,207-213,215,217-219,221-225,254-276,283,285,287,289-293,297,316-319,335-371,375,377-382,384,386,388,390,392-399,401-405,407,426,445-456,463,469,473-488
+.gitattributes
+  s_351616a23717ae::t_e9698eccc1ae63 8-10
+.github/workflows/cla.yml
+  s_351616a23717ae::t_1fff01a30f52d8 19-61,72
+.github/workflows/preview.yml
+  s_351616a23717ae::t_e3f0a2c4c126d0 124-126
+.github/workflows/workshop-evals-pr.yml
+  s_351616a23717ae::t_f538a20dd67dd8 175-179
+.github/workflows/workshop-evals.yml
+  s_351616a23717ae::t_244ea0d37d8e13 42-46
+.gitignore
+  s_351616a23717ae::t_acb3709a074142 16-19
+AGENTS.md
+  s_351616a23717ae::t_57baa269a44064 43,64-65,86-87
+README.md
+  s_351616a23717ae::t_cf955dfb2559b6 249
+REVIEW.md
+  s_351616a23717ae::t_c55e998f6240e6 40-52,67-76
+docs/admin-access.md
+  s_351616a23717ae::t_c8958fad999452 1-159
+docs/blueprints.md
+  s_351616a23717ae::t_2b920e87f7ad70 56,136,213
+docs/chat-scratch-worktree.md
+  s_351616a23717ae::t_da9b5da47fe2ab 12-14,21-24,42-43
+docs/gatekeeper-resource-discovery.md
+  s_351616a23717ae::t_df5cadab1ec478 1-36
+docs/integration-testing.md
+  s_351616a23717ae::t_a61ac8cf68b4c0 116-127,145,150-152
+docs/notifications.md
+  s_351616a23717ae::t_c7e2af23032f0d 67-96,149-151,153-154,172-181,192-203,206-215,217-223
+docs/observers.md
+  s_351616a23717ae::t_c21ae42054ce13 38-41,122,140-145,231-234,300-304,322-323,332-343,348-354,547-548,593-595,649-656,682-683,732-733,795-797,843-845,847-848,852-853,884,888-893,896-898,909,911-919,940,968-971,974-978,1031-1038,1047-1051,1084-1090,1092
+docs/public-server.md
+  s_351616a23717ae::t_66d9eceee7acdf 19,75-89,95-96
+docs/testing.md
+  s_351616a23717ae::t_eb2ba67ea0b248 8-9,11-12,19,23-31,33-36,41-44,73-93
+docs/unread-push-badges.md
+  s_351616a23717ae::t_a7081612fc40ca 1-54
+docs/user-unread-state.md
+  s_351616a23717ae::t_60db4644eb2f84 1-231
+docs/user-unread-ui.md
+  s_351616a23717ae::t_6e96473d53c163 1-89
+package.json
+  s_351616a23717ae::t_25abd0e63f3be6 27-28,31
+packages/api-cli/README.md
+  s_351616a23717ae::t_61e4ee0db4ab4f 1-191
+packages/api-cli/generator/__fixtures__/generated/app-sketch.schema.json
+  s_351616a23717ae::t_f605f379efff6e 1-105
+packages/api-cli/generator/__fixtures__/generated/commands.ts
+  s_351616a23717ae::t_fe6c9a95409ff6 1-386
+packages/api-cli/generator/__fixtures__/generated/schema.json
+  s_351616a23717ae::t_7ac486649bb62a 1-782
+packages/api-cli/generator/__fixtures__/src/table.ts
+  s_351616a23717ae::t_a6399b4f915fb9 1-4
+packages/api-cli/generator/emit.test.ts
+  s_351616a23717ae::t_8e7a47d867308e 1-684
+packages/api-cli/generator/emit.ts
+  s_351616a23717ae::t_733dbe664d89c6 1-941
+packages/api-cli/generator/generate.test.ts
+  s_351616a23717ae::t_9b384fb48df8ed 1-73
+packages/api-cli/package.json
+  s_351616a23717ae::t_9042d76f3909bd 1-22
+packages/api-cli/src/api.test.ts
+  s_351616a23717ae::t_ab501bac289d2d 1-901
+packages/api-cli/src/api.ts
+  s_351616a23717ae::t_1f00b56ee98a32 1-273
+packages/api-cli/src/bin.ts
+  s_351616a23717ae::t_3b1eb657b553b0 1-18
+packages/api-cli/src/callbacks.test.ts
+  s_351616a23717ae::t_a1e8fe074b59ec 1-158
+packages/api-cli/src/callbacks.ts
+  s_351616a23717ae::t_1bd89e32d4c972 1-100
+packages/api-cli/src/codec.test.ts
+  s_351616a23717ae::t_3cf79d68f4fc38 1-539
+packages/api-cli/src/codec.ts
+  s_351616a23717ae::t_828b84dbaf103a 1-639
+packages/api-cli/src/create-account.test.ts
+  s_351616a23717ae::t_9f51190d5860da 1-94
+packages/api-cli/src/create-account.ts
+  s_351616a23717ae::t_ee2a0d5b4c9630 1-183
+packages/api-cli/src/doc-text.ts
+  s_351616a23717ae::t_5fb985272bb0c8 1-10
+packages/api-cli/src/main.test.ts
+  s_351616a23717ae::t_15af83dfeb691c 1-165
+packages/api-cli/src/main.ts
+  s_351616a23717ae::t_ec6188dfe80e3a 1-104
+packages/api-cli/src/output.ts
+  s_351616a23717ae::t_5d10d67cc46d2d 1-28
+packages/api-cli/src/paths.ts
+  s_351616a23717ae::t_095305cec35d36 1-65
+packages/api-cli/src/run.test.ts
+  s_351616a23717ae::t_c55f5ec08837f0 1-943
+packages/api-cli/src/run.ts
+  s_351616a23717ae::t_c321a244a56453 1-1828
+packages/api-cli/src/session.test.ts
+  s_351616a23717ae::t_65af497f4956de 1-527
+packages/api-cli/src/session.ts
+  s_351616a23717ae::t_9cd91cd92aad12 1-620
+packages/api-cli/src/table.ts
+  s_351616a23717ae::t_91d783e851f830 1-262
+packages/api-cli/src/test-server.ts
+  s_351616a23717ae::t_51e695700fbe97 1-412
+packages/api-cli/src/type-text.ts
+  s_351616a23717ae::t_bac21dba840406 1-77
+packages/api-cli/src/types.test.ts
+  s_351616a23717ae::t_6ea1c13a7da080 1-80
+packages/api-cli/src/types.ts
+  s_351616a23717ae::t_6085cc6f9ad6e4 1-49
+packages/api-cli/tsconfig.json
+  s_351616a23717ae::t_fdd7f06bfe42ce 1-23
+packages/api-cli/vite.config.ts
+  s_351616a23717ae::t_81d7c72abe8561 1-41
+packages/api-schema/README.md
+  s_351616a23717ae::t_102e1af6af4915 1-160
+packages/api-schema/__tests__/__fixtures__/api.ts
+  s_351616a23717ae::t_bf74ccaaacea2c 1-165
+packages/api-schema/__tests__/__fixtures__/schema.json
+  s_351616a23717ae::t_f9aef98fc52eff 1-753
+packages/api-schema/__tests__/dts.test.ts
+  s_351616a23717ae::t_5a3d0e5222f239 1-1648
+packages/api-schema/__tests__/extract.test.ts
+  s_351616a23717ae::t_0b221287a24123 1-641
+packages/api-schema/__tests__/tools.test.ts
+  s_351616a23717ae::t_d4dd53f5b0a438 1-541
+packages/api-schema/package.json
+  s_351616a23717ae::t_f98de384fbcea5 1-27
+packages/api-schema/scripts/generate.ts
+  s_351616a23717ae::t_b1c6f94af7b5d7 1-285
+packages/api-schema/src/emit/dts.ts
+  s_351616a23717ae::t_db728e36cbb0ba 1-713
+packages/api-schema/src/emit/tools.ts
+  s_351616a23717ae::t_295fea8faf9ecd 1-399
+packages/api-schema/src/extract.ts
+  s_351616a23717ae::t_afc884358013f9 1-797
+packages/api-schema/src/schema.ts
+  s_351616a23717ae::t_36828c0c609248 1-199
+packages/api-schema/tsconfig.json
+  s_351616a23717ae::t_6d38a6b7ac4d98 1-28
+packages/api-schema/vite.config.ts
+  s_351616a23717ae::t_9c5c248372f75c 1-22
+packages/api-schema/vitest.config.ts
+  s_351616a23717ae::t_9ad3fd07ca7c1f 1-8
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/blocks.test.ts
+  s_351616a23717ae::t_25a73442dfb466 1-368
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/client.test.ts
+  s_351616a23717ae::t_5530875aefaa2b 1-889
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/docx.server.test.ts
+  s_351616a23717ae::t_4e3a22d09cc7da 1-453
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/markdown.test.ts
+  s_351616a23717ae::t_7ca3aa91679621 4-8,11-13,25,30,33,39,44,51,59-60,68-71,75-81,86,92-265,268-293,298-305,311,315,319
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/merge.test.ts
+  s_351616a23717ae::t_c70a62711abea2 1-293
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/paste.test.ts
+  s_351616a23717ae::t_d66869fd839936 1-211
+packages/bundled-blueprints/blueprints/workspace-docs/__tests__/server.test.ts
+  s_351616a23717ae::t_1110ed858f46b3 1-542
+packages/bundled-blueprints/blueprints/workspace-docs/blueprint.json
+  s_351616a23717ae::t_4fd1c3e9a9d0a2 17,19-20
+packages/bundled-blueprints/blueprints/workspace-docs/files/README.md
+  s_351616a23717ae::t_f6c80f21b613c4 3,5,7-8,10,12,14-18,20,23-32,36,38,40-51,53,55,57,59-66,68,70,72,74-79,81,83-85,87,89-91
+packages/bundled-blueprints/blueprints/workspace-docs/files/client.ts
+  s_351616a23717ae::t_d8638953b7b985 1-2,4-12,15,17-22,24-25,29,32-44,49,57-58,61-66,69-72,75-187,190-200,202-240,246-249,251-254,256,259,261-287,290-376,378-386,388-451,453,455-460,462-480,482-498,500-509,511-683,685,687-692,694-730,732-735,737-738,740,743-744,746-747,752-756,758-770,772-774,776-785,787-843,847-852,854-867,869-877,879-880,882-884,887-892,894-897,900-906,908-966,968-994,997-1005,1007-1014,1016-1030,1034-1048,1050-1052,1055-1076,1078-1104,1107-1123,1125-1152,1155,1157-1399,1402-1412,1414-1433,1435-1458,1460,1462-1514,1516-1517,1519-1631,1633-2198,2200-2269,2271-4836,4838,4840-4844,4847-4856,4859-4975,4978-4986,4988-5041,5044-5149,5151-5207,5210-5214,5216-5221,5224-5242,5244-5261,5264-5348,5351-5445,5448-5454,5456-5468,5470-5535,5537-5632,5637-5761,5763-5765,5767-5770,5772-5836,5840-5894,5896,5899-5902,5905-5915,5917-5990,5992-6004,6008-6009,6011-6012,6014-6015,6017-6027,6030-6150,6152,6154-6180,6182-6200,6202-6218,6220,6223,6225-6231,6233-6258,6261-6275,6277-6296,6298-6299,6301-6322,6325-6327,6329-6348,6350-6355,6357-6398,6400,6402-6404,6407-6473,6475-6544
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/blocks.ts
+  s_351616a23717ae::t_c264118869eee1 1-774
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/docx.ts
+  s_351616a23717ae::t_a28d00c5291501 1-1579
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/markdown.ts
+  s_351616a23717ae::t_9256b953b74732 1-11,13-15,17-51,53-55,60,62-65,67-70,72-76,78-80,82-86,88,90-91,94-108,110,112-113,118-122,131-139,141-142,144-146,154-155,157,160-164,166-177,182,194,198,203-204,207-209,211,215-232,235-281,287,291-296,303-362,364,366-373,376-385,387,389,391-392,395-397,403,407-424,430,439,444-446,448,456-458,461,470,473-476,488,500,506-535,538-545,547-552,555-619
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/merge.ts
+  s_351616a23717ae::t_682fffc00f0e3d 1-428
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/paste.ts
+  s_351616a23717ae::t_770121f035668e 1-631
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/protocol.ts
+  s_351616a23717ae::t_053f7c8344e4b6 2-7,11,13,19-23,49-51,61,64-88,97-101,105-106,119,129,136-143,145-156,159-161,166,169-173,176-187,189-193,195-218,223,230-244
+packages/bundled-blueprints/blueprints/workspace-docs/files/server.ts
+  s_351616a23717ae::t_f61770cd4a7436 3-5,16-20,22-23,28-29,32,35,37,39-61,64-67,69-73,78,86-107,111,114-115,141,179,181,183-189,207,209,219-223,227-232,237-240,242-245,247-252,258-259,262-264,268-269,273-280,300-306,309-316,319-326,336-539,541-553,556-570,575,579-580,582,587-588,603,612-616,618
+packages/bundled-blueprints/libraries/README.md
+  s_351616a23717ae::t_4b2b7e047ba4d3 74
+packages/bundled-blueprints/libraries/sync/README.md
+  s_351616a23717ae::t_760c1fec547fd2 5-6,31-36,77-78
+packages/bundled-blueprints/libraries/sync/__tests__/versioned.test.ts
+  s_351616a23717ae::t_fc9203ba906e3f 47-53
+packages/bundled-blueprints/libraries/sync/src/versioned.ts
+  s_351616a23717ae::t_fb0f39d4b7189b 12-13,57-63,136
+packages/bundled-blueprints/libraries/ui/README.md
+  s_351616a23717ae::t_059a3efabd480b 25,43-44,48-50
+packages/configurator-ui/build/frame.test.ts
+  s_351616a23717ae::t_a90aedb781d58a 83-100,335-363
+packages/configurator-ui/src/index.ts
+  s_351616a23717ae::t_61d78ffb093518 329-331
+packages/configurator-ui/src/runtime/Autocomplete.tsx
+  s_351616a23717ae::t_4d79e7ce72bdae 26-27,47-56
+packages/configurator-ui/src/runtime/ConfiguratorRoot.browser.test.tsx
+  s_351616a23717ae::t_3523a800917281 432-441
+packages/configurator-ui/src/runtime/HierarchyBreadcrumb.tsx
+  s_351616a23717ae::t_bdb486dfb50c6a 4,24,52
+packages/configurator-ui/src/runtime/HierarchyPicker.browser.test.tsx
+  s_351616a23717ae::t_e1d9ea32498092 891-892,895,898,900,903,910,915-916
+packages/configurator-ui/src/runtime/HierarchyPicker.tsx
+  s_351616a23717ae::t_9a90add041524e 505,508,552-575,579-584
+packages/gatekeeper-cloudflare/AGENTS.md
+  s_351616a23717ae::t_7fd2f1353d59b6 41-50
+packages/gatekeeper-cloudflare/README.md
+  s_351616a23717ae::t_c3672288658e3b 33-37,41-50
+packages/gatekeeper-cloudflare/__tests__/resources.test.ts
+  s_351616a23717ae::t_7f32437d6f5b58 8,10,60-85
+packages/gatekeeper-cloudflare/__tests__/worker.ts
+  s_351616a23717ae::t_1687b5bd9a831a 53,55-57,66-71,111-132
+packages/gatekeeper-cloudflare/__tests__/workerd/observer.test.ts
+  s_351616a23717ae::t_0da9c0d62018ae 1-3,11,37-62
+packages/gatekeeper-cloudflare/__tests__/workerd/session.test.ts
+  s_351616a23717ae::t_163ff1f7ca3cd0 18-20,78,80,83,111,120,132-133
+packages/gatekeeper-cloudflare/__tests__/workerd/telemetry-access.test.ts
+  s_351616a23717ae::t_6ef14b2ccf5895 1-169
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_351616a23717ae::t_2c464f6f36dffb 9,12,27-28,73-79,235-239,375,382-415,606-625,630-636,646-651,655-662,709-710,726-735
+packages/gatekeeper-cloudflare/src/observability-session.ts
+  s_351616a23717ae::t_30cfb161b78e7d 6-7,11,65,67-70,75,81,103-110,118,121
+packages/gatekeeper-cloudflare/src/resources.ts
+  s_351616a23717ae::t_9fd5e86cdf9988 2,7-9,43-65
+packages/gatekeeper-confluence/README.md
+  s_351616a23717ae::t_5756250f1b9114 132-134,148-150,176
+packages/gatekeeper-confluence/__tests__/api.test.ts
+  s_351616a23717ae::t_32ad2bc8a003a9 1-120
+packages/gatekeeper-confluence/__tests__/apply.test.ts
+  s_351616a23717ae::t_38d79169346c3a 5,12,188-218,268-314
+packages/gatekeeper-confluence/__tests__/configurator-frame.test.ts
+  s_351616a23717ae::t_a6667a30e0b1b8 142-143
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_351616a23717ae::t_8a063e29fcbe30 17-19,75-79,394-431,445,549,551-554,694-700,707
+packages/gatekeeper-confluence/src/confluence-api.ts
+  s_351616a23717ae::t_01b5eb18f08889 803
+packages/gatekeeper-confluence/src/confluence.ts
+  s_351616a23717ae::t_2d18a02a0dc18a 67,644,692,739
+packages/gatekeeper-context/src/app-api.ts
+  s_351616a23717ae::t_b0ea73434df9a9 1-4
+packages/gatekeeper-context/src/context-types.ts
+  s_351616a23717ae::t_b36048f9ecd133 105-110,372-377,397-407
+packages/gatekeeper-github/README.md
+  s_351616a23717ae::t_89bef87d0f8917 25-42,89-145
+packages/gatekeeper-github/__tests__/github-api.test.ts
+  s_351616a23717ae::t_fbe9455e2cb26c 215-216,221-256,285-290,293,295,297,299,302-303,305-309,315,368-369,372-379
+packages/gatekeeper-github/__tests__/workerd/auto-approval.test.ts
+  s_351616a23717ae::t_feefefdb7dae5f 3-4,59,61,65,77-78,96-126
+packages/gatekeeper-github/__tests__/workerd/ci.test.ts
+  s_351616a23717ae::t_132b2862e0db81 9-10,21-24,229-231,399-403,475
+packages/gatekeeper-github/__tests__/workerd/credentials.test.ts
+  s_351616a23717ae::t_f54aa782ea1d44 128,130,295,300,315,333,347,364
+packages/gatekeeper-github/__tests__/workerd/git-bootstrap.test.ts
+  s_351616a23717ae::t_26cd1acd942623 21-22,40-41,55-60,101
+packages/gatekeeper-github/__tests__/workerd/hooks.test.ts
+  s_351616a23717ae::t_9b32e33ef79b07 513,645,677,681,733-756
+packages/gatekeeper-github/__tests__/workerd/listings.test.ts
+  s_351616a23717ae::t_f90a7630dc4831 17-18,84,88,90-91
+packages/gatekeeper-github/__tests__/workerd/observers.test.ts
+  s_351616a23717ae::t_84ed31c27bf9f1 1-679
+packages/gatekeeper-github/__tests__/workerd/pull-simulation.test.ts
+  s_351616a23717ae::t_bb24b8406da8d5 25-28,196,260-261,263-264,284-292
+packages/gatekeeper-github/__tests__/workerd/push.test.ts
+  s_351616a23717ae::t_43d7a94cd45856 19,25-28,80-111,116-120,136,142-146,190-209,212,244,246,275-301,337,349-351,462-552,613-635,687-706,718-720,722,736,738,778-820
+packages/gatekeeper-github/__tests__/workerd/redirects.test.ts
+  s_351616a23717ae::t_5b35fedc67a1f1 1-4,72,76,84,86,99,102,112-113
+packages/gatekeeper-github/__tests__/workerd/session-git.test.ts
+  s_351616a23717ae::t_53b0ca91d1159c 4-5,105-106,109-114,142-143
+packages/gatekeeper-github/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_0e840d68d10e38 13,16,174-177,184,264,267-287,307,322,330,345,354,570-608,635,686-688,691-696,739-740,809,813-822
+packages/gatekeeper-github/src/github-api.ts
+  s_351616a23717ae::t_cec030b808d6f3 415-419,472-473,475-477,480-497,507,671-673,1497-1519,1885-1889,1892-1893
+packages/gatekeeper-github/src/github.ts
+  s_351616a23717ae::t_e3fff6ea43f7b5 31,59,103,118-119,121,125-126,405-410,561-565,595-596,608-611,615-635,799-804,901,903,905,918,920,958-959,961,964-965,969,971-973,1484-1494,1532-1540,1667-1688,1884-1887,1901-1903,1906-1908,1915-1962,1965-1977,1983-2016,2036-2067,2072,2075-2084,2086,2094,2097,2103,2124-2180,2984,3166,3190,3214,3216,3218,3236,3279,3281,3296,3301,3441,3469-3474,3476-3478,3483-3489,3495,3499,3556,3607,3692-3693,3701,3710,3719,3931-3932,3945,3959,4152-4154,4160,4171,4178,4193,4195,4210-4213,4224,4236,4252,4273,4317,4329-4330,4511-4537,4547,4786,5050-5051,5054,5063,5074-5075,5096-5097,5103-5105,5273-5274,5276,5473,5491,6392-6394,6398-6402,6423,6427-6462,6466-6467,6469-6478,6485-6489,6497-6543,6558-6656,6679,6719-6723,6727-6731,6741-6744,6751-6754,6763-6766,6770-6771,6774,6780,6795,6832-6835,6840,6859-6860,6863,6903,6959-6963,6997,7009,7018-7024,7028,7045-7048,7052-7056,7091,7112-7115,7150,7160-7164,7172,7204,7218-7223
+packages/gatekeeper-github/src/repo-subresources.ts
+  s_351616a23717ae::t_05d532d73b81d5 1-37
+packages/gatekeeper-github/storage-schema.md
+  s_351616a23717ae::t_49ba24fc5dcd82 24-29,47-60,84-86,185-197
+packages/gatekeeper-gitlab/README.md
+  s_351616a23717ae::t_33e995501d0d9b 34-54,94-103,110-162,288-291,343-347,351-355,359-362
+packages/gatekeeper-gitlab/__tests__/fixtures/gitlab-docs.ts
+  s_351616a23717ae::t_388aa3ee59923e 71-84
+packages/gatekeeper-gitlab/__tests__/gitlab-action-types.test.ts
+  s_351616a23717ae::t_6d37ef5688723c 7,36-37,41,68-100,113,123-148
+packages/gatekeeper-gitlab/__tests__/gitlab-api.test.ts
+  s_351616a23717ae::t_3d5e98a6b4c75f 62,132,134,137-159,176-204
+packages/gatekeeper-gitlab/__tests__/gitlab-normalize.test.ts
+  s_351616a23717ae::t_9d89971c9e47f5 187-205
+packages/gatekeeper-gitlab/__tests__/workerd/actions.test.ts
+  s_351616a23717ae::t_d5312bcf2935b7 23-26,43,64-73,77,86,112-136,468,488
+packages/gatekeeper-gitlab/__tests__/workerd/ci.test.ts
+  s_351616a23717ae::t_3f4c6c84157d23 8-10,26-27,31-32,95,108-109,918-922,929,937-944,946-949,954-957,960,964,966-970,974,977-980,984-989,993,1019,1029-1039,1042-1083
+packages/gatekeeper-gitlab/__tests__/workerd/git-bootstrap.test.ts
+  s_351616a23717ae::t_3028b7d8f7df12 13-19,22,36-39,53-60,67,71,74-76,133,142,154,166
+packages/gatekeeper-gitlab/__tests__/workerd/observers.test.ts
+  s_351616a23717ae::t_02f96278be993f 1-707
+packages/gatekeeper-gitlab/__tests__/workerd/push.test.ts
+  s_351616a23717ae::t_ccac1cafd5fc97 20-23,92-94,96,100-104,134-137,139-140,147-149,156,158-159,303-427,440-442,445,480-491,696-744
+packages/gatekeeper-gitlab/__tests__/workerd/reads.test.ts
+  s_351616a23717ae::t_0eda34feb623c6 15-18,36,59-61
+packages/gatekeeper-gitlab/__tests__/workerd/resources.test.ts
+  s_351616a23717ae::t_7b0cab66dc6dd4 9,96-98,101-103,112-116,178-179,181
+packages/gatekeeper-gitlab/__tests__/workerd/session-git.test.ts
+  s_351616a23717ae::t_5f0258a7af2d8b 19-21,24,27,33-36,38-39,77-79,81-87,133,140-141,143-144,146-147,149-151
+packages/gatekeeper-gitlab/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_dcaf3b26f51316 85-89,118-119,194-195,198-200,208-210,213,296-322,428-436,455-459,465,468-471,572-580,582
+packages/gatekeeper-gitlab/src/gitlab-action-types.ts
+  s_351616a23717ae::t_d54690963c54f5 6,91-97,106-107,215-220,262-263,281-285,287,289-318
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_351616a23717ae::t_fb5a9ebf7e3d62 391-395,422-424,508-528,619-624,660-682,714,718-719,726-732,908-913,917,919,922,929-932,934,968-975,1000,1002-1003,1289-1294,1363,1365,1383,1385,1498,1500
+packages/gatekeeper-gitlab/src/gitlab-cursors.ts
+  s_351616a23717ae::t_d2e030c044cbc8 1-4,9,145-215
+packages/gatekeeper-gitlab/src/gitlab-env.ts
+  s_351616a23717ae::t_6e0170d6dae22a 8,135-140,144,148-149,169-172,181-183,186,188,193-202,205,209-210,279-283
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_351616a23717ae::t_e724ee7a1168ef 23,42-49,64,77,84,110-111,174,236-237,249-250,253-254,260-265,356-372,395-402,410-446,448,457-521,851,872,880,882,884,933,937,1152-1154,1156-1157,1170-1171,1184,1230-1232,1266,1269,1446-1449,1460,1585,1835-1845,1847-1848,1852,1860,1863-1864,1866,1869-1871,1879,1887-1893,1895-1896,1898,1909,1923,1986-1992,1994-2008,2013-2020,2026-2028,2031,2037-2038,2049-2053,2055,2060,2065-2068,2070-2075,2309,2675-2680,2683,2688-2696,2700-2701,2717-2718,2832,2953-2976,2986,3485,3521,3536-3539,3542-3543,3552-3600,3673,3680-3681,3684,3686-3687,3689,3725-3726,3730,3757-3758,3773-3774,3777-3779
+packages/gatekeeper-gitlab/src/gitlab-normalize.ts
+  s_351616a23717ae::t_6f60db5dfac490 224-226,296
+packages/gatekeeper-gitlab/src/gitlab-sessions.ts
+  s_351616a23717ae::t_d3a6bbf21ed8d2 2-9,13,15,18-19,79-84,86-109,133,173-177,181-185,191-194,200-203,207-208,211,215-216,219,224,238,272-275,279-283,289,294,379-383,403,427,437,444-450,454-458,503-506,510,529-533,538,543,549-550,555,558,561,566,571,574,579-584,589,593-594,598,603-604,607,612-613,618,621,624,629,634,637,642,647,650
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_351616a23717ae::t_8aff226e63c004 40,70,276-282,335-343,516-539,649,716-719,747-748,750-755,762-763,767-774,776-782,788-802
+packages/gatekeeper-gitlab/src/project-subresources.ts
+  s_351616a23717ae::t_74f5d3c9250977 1-58
+packages/gatekeeper-gitlab/storage-schema.md
+  s_351616a23717ae::t_cf6c0576e5c923 19,28-32,35-36,40,49-52
+packages/gatekeeper-google/README.md
+  s_351616a23717ae::t_ea314ee5e77549 84,93,96,299-302,436-448,467-471,528-549,567-573,602,669,673,675
+packages/gatekeeper-google/__tests__/bigquery-configurator.test.ts
+  s_351616a23717ae::t_20fc15f886219b 1-215
+packages/gatekeeper-google/__tests__/calendar-hooks.ts
+  s_351616a23717ae::t_2a1c9acc6c3731 1-123
+packages/gatekeeper-google/__tests__/calendar-verdict.test.ts
+  s_351616a23717ae::t_f296ca6c4943a5 1-200
+packages/gatekeeper-google/__tests__/configurator-url.test.ts
+  s_351616a23717ae::t_655beea4a29fd6 26,35,335-355
+packages/gatekeeper-google/__tests__/drive-session.test.ts
+  s_351616a23717ae::t_a75ee8ee7f9112 15-21,57,155-158,161,163-165,168-169,172,175,178-179,182-184,187-188,190,195-196,199-201,204-205,211-213,220,224-226,276,285-286,290,296-297,301,306-307,311,318-319,333,340,365,374-376,380-386,403,409-411,428-429,438,441-452,454-469,505-506,578,654-686,689-691,694-695,697-699,728-729,731,735-737,740,747-748,751-769,773,775,778-779,787,799-803,812,816,839,841,845-846,868-871,875-877,888
+packages/gatekeeper-google/__tests__/env.d.ts
+  s_351616a23717ae::t_331337da5147ed 4,9
+packages/gatekeeper-google/__tests__/observers.test.ts
+  s_351616a23717ae::t_3cc786e68ca034 553-567
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_351616a23717ae::t_4fc9f569092024 716-730,734-737
+packages/gatekeeper-google/__tests__/sheets-formula.test.ts
+  s_351616a23717ae::t_1aecf18ae27479 3-5,370-371,394-447
+packages/gatekeeper-google/__tests__/sheets-kinds.test.ts
+  s_351616a23717ae::t_98c3a7f7776ece 1-104
+packages/gatekeeper-google/__tests__/slides-simulation.test.ts
+  s_351616a23717ae::t_d5f5097a17dac3 4-5,7,353-408
+packages/gatekeeper-google/__tests__/worker.ts
+  s_351616a23717ae::t_e0b155f83001ce 25,98,115-124,221-223
+packages/gatekeeper-google/__tests__/workerd/bigquery-observers.test.ts
+  s_351616a23717ae::t_b1f658e78c16f6 33-36,64,71-79,148,404-460
+packages/gatekeeper-google/__tests__/workerd/calendar-actions.test.ts
+  s_351616a23717ae::t_8c90a05ce5bcef 1-309
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_351616a23717ae::t_fb725d4b410865 338-343
+packages/gatekeeper-google/__tests__/workerd/chat-observers.test.ts
+  s_351616a23717ae::t_603c2118e1daae 1-268
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_351616a23717ae::t_1771394d99a639 954-1076
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_351616a23717ae::t_0593e4fdc953ed 1234,6546-6547
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_351616a23717ae::t_24239d933d61c8 335-338
+packages/gatekeeper-google/__tests__/workerd/gmail-observers.test.ts
+  s_351616a23717ae::t_aff33ba01b2c04 1-158
+packages/gatekeeper-google/__tests__/workerd/google-doc-actions.test.ts
+  s_351616a23717ae::t_a0fd128dee3cf7 714-734,2061,2064
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_351616a23717ae::t_2f1d8a7f95a6cf 314-317,384-385,389-394,742-743,748-751,959-962
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_351616a23717ae::t_9b17288c1b5f33 49-53,58,916,927-928,960-969,1492,1629,1724,1786,2108,2116
+packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
+  s_351616a23717ae::t_230a5f0d5f32c7 199-200,206,362,483,582
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_351616a23717ae::t_48ac701e7557cd 589,613-616,619-624,854-855,973,1033,1038,1044-1046,1048-1064,1102-1103,1293,1298,1307-1313,1315,1331
+packages/gatekeeper-google/__tests__/workerd/slides-session.test.ts
+  s_351616a23717ae::t_00a0de7335f9cc 101-104,119
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_73d054e054ae02 6-9,12-17,40-42,45-51,449-460,604-615,726-729,733-738,742,753,775-852,934-943
+packages/gatekeeper-google/__tests__/workerd/workspace-observers.test.ts
+  s_351616a23717ae::t_fa71f5e566b615 1-432
+packages/gatekeeper-google/src/bigquery-api.ts
+  s_351616a23717ae::t_b4d7b031792435 33-40,358,362,377,436,440,452
+packages/gatekeeper-google/src/bigquery-types.d.ts
+  s_351616a23717ae::t_54d58225f992cd 130-134
+packages/gatekeeper-google/src/calendar-api.ts
+  s_351616a23717ae::t_34d5c7aea3c62d 86-103,217,409-412,418,422-426,431,435-441
+packages/gatekeeper-google/src/calendar-verdict.ts
+  s_351616a23717ae::t_0f0147a3fc5f7b 1-110
+packages/gatekeeper-google/src/chat-api.ts
+  s_351616a23717ae::t_597479fca2c554 61-64,70,72-73,84-86,88-90,92,94-96,99-100,104
+packages/gatekeeper-google/src/chat.ts
+  s_351616a23717ae::t_ba74b0e900dea8 15-21,35,67,84-122,388-414,460-464,470,478-479,486-489,491,497-499,506-508,523-524,619-620,836-837,854-856,1000-1001,1010-1011,1016,1026-1028,1057-1058,1074-1075,1129-1130,1170-1171,1182-1183,1235-1236,1303-1304,1367-1368,1419-1420,1443-1444,1463-1464,1507-1508,1650-1651,1668-1671,1934-1936,1954-1967
+packages/gatekeeper-google/src/configurator/bigquery-configurator-types.d.ts
+  s_351616a23717ae::t_d7526c08b94ff6 4-45,48-59
+packages/gatekeeper-google/src/configurator/bigquery-configurator-ui.tsx
+  s_351616a23717ae::t_534a4de192d1c2 1-139,142,144-154,157-163,166-170,173-176,179-182,184-200,202-214,216-228,230-231,234-239,241-247,249-251,254
+packages/gatekeeper-google/src/creation.ts
+  s_351616a23717ae::t_c61b7493501b5a 67,69
+packages/gatekeeper-google/src/drive-api.ts
+  s_351616a23717ae::t_965dfdb8c108c8 11-12
+packages/gatekeeper-google/src/drive-session.ts
+  s_351616a23717ae::t_a399a5f62e5f14 5,13,62-74,77-78,88-91,93-94,96,99,104-116,121-122,127,332,335-336,340,347-348,351,362-368,376,383,395-396,451,480-485,488,496,521,524,536-537,543-544,546,548-550,609,641-642,647,665-668,670-673,680,734,745-747,755,784-786
+packages/gatekeeper-google/src/drive-types.d.ts
+  s_351616a23717ae::t_ea5ef431ceaa75 157,194
+packages/gatekeeper-google/src/file-subresources.ts
+  s_351616a23717ae::t_114f194969ff21 1-85
+packages/gatekeeper-google/src/gmail.ts
+  s_351616a23717ae::t_187551c41bb254 60,64,97-121,316,320-321,2049-2053,4817-4818,4838,4918-4919,4924-4925,4937-4938,4982,5479-5482,5489-5500
+packages/gatekeeper-google/src/google-configurators.ts
+  s_351616a23717ae::t_0142539f6caaaf 4-5,15-17,33,44,46-50,85-90,97-101,106-109,208-318,327-329,331-332,336-380,382-388,392-396,398-415
+packages/gatekeeper-google/src/google-response.ts
+  s_351616a23717ae::t_17d50542e2d000 1,23-26,28-32,96-99,101,117-118
+packages/gatekeeper-google/src/google-verifier-types.ts
+  s_351616a23717ae::t_8eb78ce36aa0fb 9-11,14,40-44,52-62
+packages/gatekeeper-google/src/google.ts
+  s_351616a23717ae::t_28775b3993917a 14,22,43,47-51,62-63,71-72,74-76,110,124,160-165,196-205,484-487,491-493,501-509,710-713,716-725,752-790,821,823,851,1051,1184-1187,1200-1214,1225-1230,1280-1327,1348-1349,1353-1354,1358-1359,1387-1388,1447-1461,1998-1999,2340-2342,2354-2366,2378-2379,2398-2407,2497,2560,2574,2581,2611,2663,2730-2742,2794,2861-2875,2969,2989-2991,2994,3011-3030,3032-3042,3283,3286,3299-3301,3303,3305-3306,3314-3315,3330,3333,3338-3345,3352,3439-3449,3467-3481,3666,3819-3825,3843,3846-3854,3856,3858,3880,3948,3956,3964,3993-3996,3998,4005-4028,4128-4130,4154,4156,4158,4168-4170
+packages/gatekeeper-google/src/observers.ts
+  s_351616a23717ae::t_31ceb5dd14716e 23-27,29,32,105,108,256
+packages/gatekeeper-google/src/resources.ts
+  s_351616a23717ae::t_e88ceacd55d71d 572-576,777-794,796-799,815-820
+packages/gatekeeper-google/src/shared-approval-queue.ts
+  s_351616a23717ae::t_9eb7f0acfcd284 18,23-28,30,44-48
+packages/gatekeeper-google/src/sheets-actions.ts
+  s_351616a23717ae::t_96edd78ee1c3db 41,78,83-101,104-106,112-118,417-418,420-421,454-457
+packages/gatekeeper-google/src/sheets-formula.ts
+  s_351616a23717ae::t_c98c5df2003e5c 6-7,419-462,465-470,477
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_351616a23717ae::t_60f2db3b0ccd34 127-130,135
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_351616a23717ae::t_41e616772cecbf 13-14,18,191-197
+packages/gatekeeper-google/src/sheets.ts
+  s_351616a23717ae::t_4ed8d423e28caf 14-15,216-219,293-295,308-320
+packages/gatekeeper-google/src/slides-actions.ts
+  s_351616a23717ae::t_3f4214796ccd92 42-46,49-56,76-104,106-108,110-111,550-551,553-554,594-598,601-602,625,627-628,647-648,679-680
+packages/gatekeeper-google/src/slides-simulation.ts
+  s_351616a23717ae::t_68b1b810f65250 50-52,57,83-96,273,363,376
+packages/gatekeeper-google/src/slides-types.d.ts
+  s_351616a23717ae::t_5804711fb24e93 269-272,285-286,293,300,311-312
+packages/gatekeeper-google/src/slides.ts
+  s_351616a23717ae::t_742b4ae1be949e 14-15,155,160-161,232-235,248-260
+packages/gatekeeper-google/vitest.docs-worker.config.ts
+  s_351616a23717ae::t_8c0e096158db34 9-10,22-23,36
+packages/gatekeeper-google/vitest.worker.config.ts
+  s_351616a23717ae::t_d7bf1a6e8a7dbd 8-11,32-35,49,53,55
+packages/gatekeeper-homeassistant/README.md
+  s_351616a23717ae::t_787da05d58e92d 65-72,96
+packages/gatekeeper-homeassistant/__tests__/apply-recheck.test.ts
+  s_351616a23717ae::t_f290b8850e246e 1-187
+packages/gatekeeper-homeassistant/__tests__/auto-approval.test.ts
+  s_351616a23717ae::t_69dcc25aaf9d87 1-527
+packages/gatekeeper-homeassistant/package.json
+  s_351616a23717ae::t_e38505e9572885 9-10,22
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_351616a23717ae::t_dfc4000ea4e932 5,22-27,115,136-137,268,280-281,287,304
+packages/gatekeeper-homeassistant/src/auto-approval.ts
+  s_351616a23717ae::t_819f1614942e83 1-318
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_351616a23717ae::t_295930f2c66515 54,988,1068-1071,1174,1200-1202,1206,1216-1232,1377,1381-1384
+packages/gatekeeper-homeassistant/src/types.d.ts
+  s_351616a23717ae::t_2f5b32a5cdf06a 55-56,326-327
+packages/gatekeeper-homeassistant/vite.config.ts
+  s_351616a23717ae::t_8d7a05f4747a28 1-3
+packages/gatekeeper-homeassistant/vitest.config.ts
+  s_351616a23717ae::t_3bae9e2adfcac0 1-8
+packages/gatekeeper-kit/README.md
+  s_351616a23717ae::t_dac17d89a4b238 40,56-63,94-95
+packages/gatekeeper-kit/USAGE.md
+  s_351616a23717ae::t_13558bf8362917 560-563,643-651,654-664,668-675,680-683,685-749,752-756,758-762,764-767,770-775,777-780,782,784-789,791-852,854-855,857-862,864-866,868-873,875-896,898,900-906,908-993,1003-1008,1013-1026,1030-1037,1044-1046,1064,1068,1091,1110-1113,1121-1138,1141-1146
+packages/gatekeeper-kit/__tests__/actions.test.ts
+  s_351616a23717ae::t_583d33046d41d7 32-34,583-584,589,591,601,615,627,640,688,937,955,962,975,1119-1131,1452,1471,1547,1639,1645,1731,1741
+packages/gatekeeper-kit/__tests__/git-bootstrap.test.ts
+  s_351616a23717ae::t_5515dc7e97cd26 12-16
+packages/gatekeeper-kit/__tests__/git-diff.test.ts
+  s_351616a23717ae::t_94bc2cd50bf9b9 17,405-425
+packages/gatekeeper-kit/__tests__/git-objects.test.ts
+  s_351616a23717ae::t_570646dffda263 8,11,217-258
+packages/gatekeeper-kit/__tests__/workerd/conformance.test.ts
+  s_351616a23717ae::t_7baccf0a621d74 418
+packages/gatekeeper-kit/__tests__/workerd/conformance/gatekeeper.ts
+  s_351616a23717ae::t_add22f2dc52619 162,181
+packages/gatekeeper-kit/src/actions.ts
+  s_351616a23717ae::t_69e7991b1c30e4 165-177,409,465,760-761,768-769
+packages/gatekeeper-kit/src/cursors.ts
+  s_351616a23717ae::t_f5fa212f3f77ca 113-117,437-440,448-458
+packages/gatekeeper-kit/src/git-diff.ts
+  s_351616a23717ae::t_19cce4239e57c0 106-108
+packages/gatekeeper-kit/src/git-objects.ts
+  s_351616a23717ae::t_2d55742c122374 17,142-187
+packages/gatekeeper-kit/src/observers.ts
+  s_351616a23717ae::t_c2f13ff722017e 206-208,222-227,375-378
+packages/gatekeeper-kit/src/subresource-ids.ts
+  s_351616a23717ae::t_2bf830bf428fde 1,5-15,24-29,38,58-61,99
+packages/gatekeeper-linear/__tests__/linear-auto-approval.test.ts
+  s_351616a23717ae::t_2aaf162541933c 1-138
+packages/gatekeeper-linear/__tests__/submit-race.test.ts
+  s_351616a23717ae::t_55387e2654d55e 1-76
+packages/gatekeeper-linear/package.json
+  s_351616a23717ae::t_a3bfc0d3fb84d8 9-10,23
+packages/gatekeeper-linear/src/linear-api.ts
+  s_351616a23717ae::t_75fa4e80730514 179-180,271
+packages/gatekeeper-linear/src/linear-auto-approval.ts
+  s_351616a23717ae::t_5166217d24e725 1-111
+packages/gatekeeper-linear/src/linear.ts
+  s_351616a23717ae::t_54f1c0cf0be752 20,77,944,957-964,966-970,1156-1157,1163,1495-1496,1582-1588
+packages/gatekeeper-linear/vite.config.ts
+  s_351616a23717ae::t_e5a6d85a59c403 1-3
+packages/gatekeeper-linear/vitest.config.ts
+  s_351616a23717ae::t_f3c9eef7e8f0c2 1-8
+packages/gatekeeper-mcp-portal/README.md
+  s_351616a23717ae::t_e8962eeb2c1b92 196-205,208-221
+packages/gatekeeper-mcp-portal/__tests__/observers.test.ts
+  s_351616a23717ae::t_3ed08b4ee6acd6 1-170
+packages/gatekeeper-mcp-portal/package.json
+  s_351616a23717ae::t_df3acc2308069d 14
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_351616a23717ae::t_bfd3b50d8684d1 38-39,445-446,453-457,460,463-466,543-544,553-556,585-588,659-720
+packages/gatekeeper-mcp/src/mcp.ts
+  s_351616a23717ae::t_6dd422ac198630 461-468
+packages/gatekeeper-microsoft/AGENTS.md
+  s_351616a23717ae::t_d67dc472256fc5 7,11
+packages/gatekeeper-microsoft/README.md
+  s_351616a23717ae::t_65d741a7266310 353-355,358-400
+packages/gatekeeper-microsoft/__tests__/binding.test.ts
+  s_351616a23717ae::t_cdbc13269e7a95 1-35
+packages/gatekeeper-microsoft/__tests__/calendar-session.test.ts
+  s_351616a23717ae::t_d5b6bfe156b10b 10,16,158,164,177,182,189,206-208,212,219,223,226,230,233,281,287,302,310,324,328,331-332,347,352,455,458
+packages/gatekeeper-microsoft/__tests__/calendar.test.ts
+  s_351616a23717ae::t_7672cfa9032f2c 11,16,327-333,338-345,353,374,376-377,387-397
+packages/gatekeeper-microsoft/__tests__/content/pathological.test.ts
+  s_351616a23717ae::t_be97975e017f1c 28-32,34,41-42
+packages/gatekeeper-microsoft/__tests__/contract/calendar.test.ts
+  s_351616a23717ae::t_9092bad326c18d 14,161,166,173,179,183,189,212,230,234
+packages/gatekeeper-microsoft/__tests__/contract/observers.test.ts
+  s_351616a23717ae::t_b1c05cf528a4ce 1-3,7,12,21,24,31-32,36,38-39,52-55,64,68-69
+packages/gatekeeper-microsoft/__tests__/contract/outlook.test.ts
+  s_351616a23717ae::t_a072aa3ba65ab5 13,386,390,395,403,408,414-415,417-418
+packages/gatekeeper-microsoft/__tests__/contract/tenant.ts
+  s_351616a23717ae::t_cc9ca2b5c1c915 110-120
+packages/gatekeeper-microsoft/__tests__/microsoft-env.test.ts
+  s_351616a23717ae::t_6e03662f7678e0 3,65-73
+packages/gatekeeper-microsoft/__tests__/observer-access.test.ts
+  s_351616a23717ae::t_bee8fefd96ecde 1-84
+packages/gatekeeper-microsoft/__tests__/outlook-session.test.ts
+  s_351616a23717ae::t_a28214b9f14823 190
+packages/gatekeeper-microsoft/__tests__/outlook.test.ts
+  s_351616a23717ae::t_248ede7bc93126 13,606-612,628-630,633-645
+packages/gatekeeper-microsoft/__tests__/sharepoint-observers.test.ts
+  s_351616a23717ae::t_aa8f6f34b9d601 3-4,15-28,40,50,52,54-57,59-60,64-65,74,93,101,106-109,118,124,129,134
+packages/gatekeeper-microsoft/__tests__/subresources.test.ts
+  s_351616a23717ae::t_1cab7171326d4e 1-126
+packages/gatekeeper-microsoft/__tests__/workerd/gatekeeper.test.ts
+  s_351616a23717ae::t_cc93ffbcb0489a 3-4,11
+packages/gatekeeper-microsoft/__tests__/workerd/observers.test.ts
+  s_351616a23717ae::t_d6c7f527bdad00 1-268
+packages/gatekeeper-microsoft/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_71d91a39bb36b3 27-28,77-88,202-204,350-365
+packages/gatekeeper-microsoft/src/binding.ts
+  s_351616a23717ae::t_b9445df8263f49 3-5,8,13,30-35,91-139
+packages/gatekeeper-microsoft/src/calendar-gatekeeper.ts
+  s_351616a23717ae::t_4e7f43be3567b4 17,20,25,29-30,56-63,82,179-183,192-212
+packages/gatekeeper-microsoft/src/calendar-graph.ts
+  s_351616a23717ae::t_5538155dc565d8 22-24,416,419-420
+packages/gatekeeper-microsoft/src/calendar-observers.ts
+  s_351616a23717ae::t_9cdb3f9264ed61 3,5-8,16-19,22-23,30,41,47,49-50,55,61-64,66,73,86-98,103-105,110,133,150,165,168-170
+packages/gatekeeper-microsoft/src/calendar-session.ts
+  s_351616a23717ae::t_c3e376dd87ac32 19,44,70-71,169-171,664-667
+packages/gatekeeper-microsoft/src/microsoft-credentials.ts
+  s_351616a23717ae::t_2cd0e612d84c35 47,51-64
+packages/gatekeeper-microsoft/src/microsoft-env.ts
+  s_351616a23717ae::t_c60568ac05484a 136-147
+packages/gatekeeper-microsoft/src/microsoft.ts
+  s_351616a23717ae::t_e81905f5532e1b 3-6,33,38,51-53,70,89,97,100-101,140-154,533-548,753-856,1070-1073,1089,1095-1102,1115-1120
+packages/gatekeeper-microsoft/src/observer-access.ts
+  s_351616a23717ae::t_ab31052a34433d 1-62
+packages/gatekeeper-microsoft/src/outlook-gatekeeper.ts
+  s_351616a23717ae::t_2e94677cd6704c 16,19,28-29,33,99,213-217,226-245
+packages/gatekeeper-microsoft/src/outlook-observers.ts
+  s_351616a23717ae::t_425cc9a6028bd6 3-8,14-15,20,31,34,43,48,51-53,69-71,73-74,76,87,89-90,100-102,107
+packages/gatekeeper-microsoft/src/outlook-session.ts
+  s_351616a23717ae::t_f9e3be240c2f82 19,74-75,244-246,689-692,724-728
+packages/gatekeeper-microsoft/src/sharepoint-actions.ts
+  s_351616a23717ae::t_ca366a60ae4e58 665-666,865-866
+packages/gatekeeper-microsoft/src/sharepoint-gatekeeper.ts
+  s_351616a23717ae::t_24d9e54962e65b 24,27,39-40,44,141,250-254,263-282
+packages/gatekeeper-microsoft/src/sharepoint-observers.ts
+  s_351616a23717ae::t_39cf0e7a292b9f 4-7,24-25,29,53,68,70,73,78,80-85,89,92-93,97-99,112,118-120,168-170,172-173,175,186-187,189-190,200-202,208
+packages/gatekeeper-microsoft/src/sharepoint-session.ts
+  s_351616a23717ae::t_46d8cebcb0c7bc 18,76-77,161-163,453-456,646-647,651,735-738,754-758,797-801,807-808,810-813,964-965,968-969,1093-1094,1097-1098
+packages/gatekeeper-microsoft/src/subresources.ts
+  s_351616a23717ae::t_92f4ecd165cd3d 1-224
+packages/gatekeeper-microsoft/storage-schema.md
+  s_351616a23717ae::t_ea5781def8ad3c 20-21,37,55,84,86
+packages/gatekeeper-notion/README.md
+  s_351616a23717ae::t_896420c33c8f85 47-53
+packages/gatekeeper-notion/__tests__/notion-actions.test.ts
+  s_351616a23717ae::t_a04b3d2524ec99 2-10,108-173,200-266
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_351616a23717ae::t_e7a613fe4ba7ad 35-40,94-98,702-752,756,759-766,1160-1163,1173-1179,1183-1186
+packages/gatekeeper-notion/src/notion.ts
+  s_351616a23717ae::t_0bf9f02c44b593 22,55,773-774,858-859
+packages/gatekeeper-scheduler/README.md
+  s_351616a23717ae::t_a5398649c258c9 132-134
+packages/gatekeeper-scheduler/src/app-api.ts
+  s_351616a23717ae::t_2b051b3a4ce00b 1-4
+packages/gatekeeper-scheduler/src/management-types.ts
+  s_351616a23717ae::t_8cf409de2227c9 24-36
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_351616a23717ae::t_88998cada8e4d9 38,310,312
+packages/gatekeeper-slack/README.md
+  s_351616a23717ae::t_966c3d677b7783 68-82,102-113,163-166
+packages/gatekeeper-slack/__tests__/env.d.ts
+  s_351616a23717ae::t_5f733cef70af51 1-19
+packages/gatekeeper-slack/__tests__/workerd/observers.test.ts
+  s_351616a23717ae::t_b49f9228dad4df 1-533
+packages/gatekeeper-slack/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_58db75d01877ad 1-149
+packages/gatekeeper-slack/package.json
+  s_351616a23717ae::t_41589c73ee1b55 7,20,22,24
+packages/gatekeeper-slack/src/slack-api.ts
+  s_351616a23717ae::t_086c25fb627e7d 303-310,335-342
+packages/gatekeeper-slack/src/slack.test.ts
+  s_351616a23717ae::t_d950cfd3f02b77 81,84,196,200,202-203,205
+packages/gatekeeper-slack/src/slack.ts
+  s_351616a23717ae::t_51a07f3ab2a212 10,13-14,331-394,401-422,568,642-678,809,827,834-836,897-900,911-922,929-930,935-940,946-947,949-952,977-999,1017,1020-1034,1127-1132,1135-1137,1173,1176,1178-1185,1193,1201-1206,1210,1212-1239,1251-1252,1298-1301,1315-1326,1338-1339,1389-1392,1406-1417,1440,1451-1452,1475,1485,1494,1505-1506,1535,1547,1559,1584,1632,1650
+packages/gatekeeper-slack/tsconfig.json
+  s_351616a23717ae::t_e635743addcb68 16-17
+packages/gatekeeper-slack/vite.config.ts
+  s_351616a23717ae::t_e506b095220693 1-26
+packages/gatekeeper-slack/vitest.worker.config.ts
+  s_351616a23717ae::t_07e575cb2af1f6 1-46
+packages/gatekeeper-spotify/README.md
+  s_351616a23717ae::t_ff1c46227fc519 81-83,86-95
+packages/gatekeeper-spotify/__tests__/action-kinds.test.ts
+  s_351616a23717ae::t_0a0af7d1b82203 1-155
+packages/gatekeeper-spotify/__tests__/submit-race.test.ts
+  s_351616a23717ae::t_af384a33c94327 1-127
+packages/gatekeeper-spotify/package.json
+  s_351616a23717ae::t_4fda9852231057 9-10,22
+packages/gatekeeper-spotify/src/action-kinds.ts
+  s_351616a23717ae::t_018a9cd39d3082 1-89
+packages/gatekeeper-spotify/src/spotify.ts
+  s_351616a23717ae::t_bf46d88fbfbe00 8,61,101,856,1180-1181,1817-1818,1820-1825,1829-1832,1887-1889,1895-1900
+packages/gatekeeper-spotify/src/types.d.ts
+  s_351616a23717ae::t_b2cdde5ffee52c 488-489
+packages/gatekeeper-spotify/vite.config.ts
+  s_351616a23717ae::t_d7cd1ff58f84bb 1-3
+packages/gatekeeper-spotify/vitest.config.ts
+  s_351616a23717ae::t_eaabf5a12f3719 1-8
+packages/gatekeeper-supabase/README.md
+  s_351616a23717ae::t_9b5c9a742af622 46-47
+packages/gatekeeper-supabase/__tests__/supabase-actions.test.ts
+  s_351616a23717ae::t_9edb44f5b50d46 1-34
+packages/gatekeeper-supabase/package.json
+  s_351616a23717ae::t_95e6d4d1e7183d 9-10,23
+packages/gatekeeper-supabase/src/supabase-actions.ts
+  s_351616a23717ae::t_14aaefb1d3fb8d 1-34
+packages/gatekeeper-supabase/src/supabase.ts
+  s_351616a23717ae::t_dff827c59db337 31,943,1111
+packages/gatekeeper-supabase/vite.config.ts
+  s_351616a23717ae::t_e0ff4c1e3ab893 1-3
+packages/gatekeeper-supabase/vitest.config.ts
+  s_351616a23717ae::t_c975647e10179c 1-8
+packages/gatekeeper-x/AGENTS.md
+  s_351616a23717ae::t_5988024001380b 18-35
+packages/gatekeeper-x/README.md
+  s_351616a23717ae::t_c21de91812c6f8 44-46,87-124
+packages/gatekeeper-x/__tests__/workerd/observers.test.ts
+  s_351616a23717ae::t_cbd75132bee1dd 1-6,12,19-53,55-96,98-118,121,123-126,129,131-146,148,150-151,153-177,179-193,195-196,198-204,207,209-211,213-233,235-236,239,241,243-244,247,249-266,268-302,304-317,320-349,351-353
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_351616a23717ae::t_48f41a03cbd72a 40,162-164,213-217,219-223,227,230-231,238,241-242,246,249-250,259,262-263,268,271,285,289,304,308,318-319,328,332,344,347-348,355,358-359,376,379-392,395-396,400,403-404,409,412-413,424,440-447,544-546
+packages/gatekeeper-x/__tests__/workerd/resources.test.ts
+  s_351616a23717ae::t_4a550940bc7bda 65,68-71,73-86,89-101,104,111,115-119
+packages/gatekeeper-x/__tests__/workerd/worker.ts
+  s_351616a23717ae::t_8b585babfb6097 17,100-103,106-112,147-148,155-156,162,166,208-225
+packages/gatekeeper-x/__tests__/x-actions.test.ts
+  s_351616a23717ae::t_ad7b2601b73615 42-43,119-174,183-225
+packages/gatekeeper-x/__tests__/x-text.test.ts
+  s_351616a23717ae::t_571635bba1110c 48-60
+packages/gatekeeper-x/src/x-actions.ts
+  s_351616a23717ae::t_a02967f8dd60e2 32,37,65-70,342-356,358-359,363-369,701-702,738-739,746-747,750,769-770,791-792,798-799,818-819,825-826,852-853,877-878,895-896,952-953,1009-1010,1018,1046-1047,1050,1069-1070,1081-1082
+packages/gatekeeper-x/src/x-credentials.ts
+  s_351616a23717ae::t_a49236b7d9aebd 2-4,7,12,43-47,49-73
+packages/gatekeeper-x/src/x-cursor.ts
+  s_351616a23717ae::t_59b2de55dfac23 10,19-20
+packages/gatekeeper-x/src/x-env.ts
+  s_351616a23717ae::t_7bc86787aafb46 77-81
+packages/gatekeeper-x/src/x-gatekeeper.ts
+  s_351616a23717ae::t_aaeebd212d24b0 4-7,22,42-44,73,78,83-85,112-117,120-133,135-136,144-151,204-218,221-227,294-298,307-339,450-451,453-465,471
+packages/gatekeeper-x/src/x-sessions.ts
+  s_351616a23717ae::t_9fdcf52440684c 13,22-25,182-192,194-195,259-262,265,273,307,310,499-501,576-577,586,637-638,714-716,745-746,758,761,823,826,864,866,912-917,921-922,945-946,1091,1094
+packages/gatekeeper-x/src/x.ts
+  s_351616a23717ae::t_2e8bc07133dcc7 529-538,643,700,711-714,730,732-735
+packages/gatekeeper-x/storage-schema.md
+  s_351616a23717ae::t_0896d5d982a0e2 15,24-30,33,35-36,43,45
+packages/gatekeeper-zoominfo/README.md
+  s_351616a23717ae::t_8a2efe947e9b25 19-22,73-74,77-80,91-111,131-154
+packages/gatekeeper-zoominfo/__tests__/env.d.ts
+  s_351616a23717ae::t_cc5572c55de173 1-17
+packages/gatekeeper-zoominfo/__tests__/fake-zoominfo.ts
+  s_351616a23717ae::t_ce86b888886eee 1-212
+packages/gatekeeper-zoominfo/__tests__/identity.test.ts
+  s_351616a23717ae::t_2c1a723a8df339 1-354
+packages/gatekeeper-zoominfo/__tests__/observers.test.ts
+  s_351616a23717ae::t_5abba6697bde14 1-113
+packages/gatekeeper-zoominfo/__tests__/worker.ts
+  s_351616a23717ae::t_43e6202cb24790 1-199
+packages/gatekeeper-zoominfo/__tests__/zoominfo-actions.test.ts
+  s_351616a23717ae::t_01668b83363d55 1-32
+packages/gatekeeper-zoominfo/package.json
+  s_351616a23717ae::t_2cb0d33ef0d9a9 9-10,15,21,24
+packages/gatekeeper-zoominfo/src/zoominfo-actions.ts
+  s_351616a23717ae::t_2cd450c0c435ce 1-46
+packages/gatekeeper-zoominfo/src/zoominfo-api.ts
+  s_351616a23717ae::t_eedf271bc7494f 2,26-40,88-98,176-189,194,221,224,229-250
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_351616a23717ae::t_727cea38ed9cc6 20,23,25-26,33,90,122-125,132-136,139-144,259-265,267-269,275,277-281,284,411-473,475,555-560,566-567,578,583,596,599-612,614-615,617-619,623,632,638-641,715-717,725-726,771,780-786,795-796,798-799,804,833-836,846-863,1031-1033,1035,1037,1154,1166,1174-1180,1183-1193,1196-1218,1237-1238,1250-1258,1262,1264,1272-1276,1284,1286,1298,1302,1353,1357,1392,1396,1426,1430,1454,1458,1485-1489,1495-1499,1503-1512,1529,1543,1553,1566,1576,1594,1606,1611,1619,1627,1636,1655,1666,1675
+packages/gatekeeper-zoominfo/tsconfig.json
+  s_351616a23717ae::t_9b1a13abd9ee7e 16-17
+packages/gatekeeper-zoominfo/vite.config.ts
+  s_351616a23717ae::t_82f0b69b837be3 1-21
+packages/gatekeeper-zoominfo/vitest.config.ts
+  s_351616a23717ae::t_65d6277de8b1b5 1-42
+packages/integration-tests/README.md
+  s_351616a23717ae::t_97d8448c2f02b1 20-24
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_351616a23717ae::t_69f86e931966db 199
+packages/integration-tests/__tests__/cli-admins-only.test.ts
+  s_351616a23717ae::t_a4bb27f48c78d1 1-98
+packages/integration-tests/__tests__/github-fake.ts
+  s_351616a23717ae::t_50097734fb1989 76,96-97,101-102,117-129,137-138,151
+packages/integration-tests/__tests__/github-observers.test.ts
+  s_351616a23717ae::t_ffed002491e8a8 1-231
+packages/integration-tests/__tests__/google-fake.ts
+  s_351616a23717ae::t_95372ca31ff02a 17,81,83-84
+packages/integration-tests/__tests__/observer-exclusion.test.ts
+  s_351616a23717ae::t_5731163411b030 143-147
+packages/integration-tests/__tests__/observer-scope-promotion.test.ts
+  s_351616a23717ae::t_9b5d3ff27ee6f1 9-11,120-128,196,198-199,406,408
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_351616a23717ae::t_0d477792c6de04 613-617
+packages/integration-tests/__tests__/workshop-admin-audit.test.ts
+  s_351616a23717ae::t_bed73e0e93fce7 1-373
+packages/integration-tests/__tests__/workshop-admin-bounds.test.ts
+  s_351616a23717ae::t_274e9e12ec1e6e 1-101
+packages/integration-tests/__tests__/workshop-lifecycle.test.ts
+  s_351616a23717ae::t_281acb8fea22d6 1,133-164
+packages/integration-tests/__tests__/workshop-restricted-web-fetch.test.ts
+  s_351616a23717ae::t_445ce337b06bef 18,22,102-150
+packages/integration-tests/__tests__/workshop-sharing.test.ts
+  s_351616a23717ae::t_b26b3dde383fc4 280-284
+packages/integration-tests/__tests__/workshop-unread.test.ts
+  s_351616a23717ae::t_29140b5ef203a2 1-237
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_351616a23717ae::t_4da75d8e3b7b52 114-117,141
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_351616a23717ae::t_415e3f79514e2b 514,633-634,707
+packages/integration-tests/package.json
+  s_351616a23717ae::t_ab27b60e90446d 15
+packages/integration-tests/src/agent-session.ts
+  s_351616a23717ae::t_cf6af7e0889945 106-109,612-633,661-669,684
+packages/integration-tests/src/harness.ts
+  s_351616a23717ae::t_e91587dad08aa5 8,13,15,119-125,152-153,190,194-240
+packages/integration-tests/vite.config.ts
+  s_351616a23717ae::t_af5efac4515420 54-55,61
+packages/mcp-shared/README.md
+  s_351616a23717ae::t_a174e90c9e0cf5 73-79
+packages/mcp-shared/__tests__/facet.test.ts
+  s_351616a23717ae::t_20a4d6e344cb57 43
+packages/mcp-shared/__tests__/session.test.ts
+  s_351616a23717ae::t_b2f5406938187c 266-338
+packages/mcp-shared/src/facet.ts
+  s_351616a23717ae::t_4a643abf2a1fea 87-91,98-100,246-249,251,254
+packages/mcp-shared/src/session.ts
+  s_351616a23717ae::t_013f746c3de0c0 8,73-80,126-134,144,163,182,225,296
+packages/mcp-shared/src/sharing-policy.ts
+  s_351616a23717ae::t_01e38f3db51901 1-7,14-15,17-19
+packages/workshop-backend/AGENTS.md
+  s_351616a23717ae::t_a1ed05831e6969 78,80-92,98-99,105-111
+packages/workshop-backend/__integration__/user-directory-rpc.test.ts
+  s_351616a23717ae::t_ba8c51fb1e2d61 27-29
+packages/workshop-backend/__tests__/action-log-pagination.test.ts
+  s_351616a23717ae::t_e40b42a71ef969 172-188
+packages/workshop-backend/__tests__/admin-access.test.ts
+  s_351616a23717ae::t_a30865798e2d49 1-194
+packages/workshop-backend/__tests__/admin-api-impl.test.ts
+  s_351616a23717ae::t_582f56421482d5 1-137
+packages/workshop-backend/__tests__/admin-audit.test.ts
+  s_351616a23717ae::t_419ece981b3b10 1-294
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_351616a23717ae::t_d44727c355b233 2-4,390-417,509-783
+packages/workshop-backend/__tests__/admin-settings-audit.test.ts
+  s_351616a23717ae::t_7164c5c2f7a7b6 1-514
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_351616a23717ae::t_12375be5ace0c9 7,28-30,37-38,40-41,48,51-55,63-68,74,85-86,90,92,98,103,112-113,123,134,148-149,162,179,196,210,216,218,229,233,243-244,252-253,259-263,265,272,281,283-284,292,295,309-310,327,333,340-341,344,364,370,377-379,382,395-396,422,424-425,467-468,470-472,505,516,530,535,555,564,566-567,571,576,583-585,588,592,601,607,609,628,631,642,644,647-648,656,665-666,674,680-682,684,688,699-700,709-710,722,728,737-738,756,772,781-782,792,809,813,829,832,849-851,883,894-895,898,901,912-914,920,927-928,935,946,957-961,968,974,976,979,992,1000,1002,1011-1100,1102,1106,1205-1206,1215,1220,1232-1234,1238-1239,1321-1322,1332,1359,1388,1413,1417,1426-1427,1429,1431,1438,1446,1499,1505,1520-1521,1528,1540-1541,1546,1557,1565-1566,1593,1653,1715,1781,1796,1824,1833-1834,1863,1880,1882-1883,1885-1889,1891-1900,1915-1976
+packages/workshop-backend/__tests__/agent-calls.test.ts
+  s_351616a23717ae::t_756b941ec3937c 18,51,63,81,279,302,305,352,368,417,476,634-635,661-662
+packages/workshop-backend/__tests__/agent-step-validation.test.ts
+  s_351616a23717ae::t_703314585006c7 64,94-122
+packages/workshop-backend/__tests__/agent-tool-results.test.ts
+  s_351616a23717ae::t_ae0b7c6723cbac 2-18,28,32,51,58,66-67,70-72,76-85,88-94
+packages/workshop-backend/__tests__/agent-tracing.test.ts
+  s_351616a23717ae::t_4b4b638660987c 27-28,37,184-189,198-199,415,419,513
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_351616a23717ae::t_caaab3d18dbaa8 3-4,168-169,171-172,278-279,283-320
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_351616a23717ae::t_1bab9b1151cb23 7,9,840,844-845,863,876-884,895,899-900,953,973-975,985-989,1064,1093,1095,1110-1111,1128,1145-1146,1205-1206,1909-1913,1916-1919,1934
+packages/workshop-backend/__tests__/anthropic-compaction.test.ts
+  s_351616a23717ae::t_11ac39c52c141a 6,9
+packages/workshop-backend/__tests__/attachment-worktrees.test.ts
+  s_351616a23717ae::t_8ad4d1e4b030f2 70,84-86,183-185,206,212,235,239,263-264,267,277,282,285,306,319,350,410,442,461,491,505,514,551,581,595,604,632,656,660,667-677,681
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_351616a23717ae::t_024af3af90051e 4-5,327-338
+packages/workshop-backend/__tests__/blueprint-release.test.ts
+  s_351616a23717ae::t_ccae0e7c4ce785 2,27,56,63,115,133,139,162,175,226,232,236,247,251,253,258,260,262-263,328,344,359,403,425,453,462,472,519,532,540-542,544,546,569,581
+packages/workshop-backend/__tests__/blueprints.test.ts
+  s_351616a23717ae::t_1883c57ed17ef8 117,162,294,298,352,358,370,380,461-462,475,601-602,608-609,612,672,705,742,748,751,809,814,875,987,997,1008,1123,1149,1187,1290-1291,1386,1411,1419,1563,1697,1764
+packages/workshop-backend/__tests__/bundled-blueprints.test.ts
+  s_351616a23717ae::t_bf05eb7a05d95b 107,281,290
+packages/workshop-backend/__tests__/chat-changes.test.ts
+  s_351616a23717ae::t_ce2b60e7d6f55c 79,185-197,279-290,466,468,511,513,534,578,959,963,1038,1043,1117-1118,1141,1144,1252,1282-1294,1297,1299,1305,1307-1310,1312-1315,1317
+packages/workshop-backend/__tests__/chat-model-data.test.ts
+  s_351616a23717ae::t_b47fa54025b00f 117-118
+packages/workshop-backend/__tests__/chat-reroot.test.ts
+  s_351616a23717ae::t_a148367db69e85 51,91,324-325,357,376,403-404
+packages/workshop-backend/__tests__/cli-admins-only.test.ts
+  s_351616a23717ae::t_be75079df330a9 1-194
+packages/workshop-backend/__tests__/commit-reads.test.ts
+  s_351616a23717ae::t_8bdcd175bd31d8 75
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_351616a23717ae::t_124f3126abe136 4,411-412,415-419,423-427,471,483,496,648,656,658,667,671,673,683,685,695-697,704,716,730,744,771
+packages/workshop-backend/__tests__/durable-decision-resume.test.ts
+  s_351616a23717ae::t_dd2c4a3c367b52 7,85,88-92,106-113,115-116,118-121,136-148,168,287-288,294-296,352,354-355,360,364-365,379,389-390,394,407,427,438,449,595-596,695-696,699
+packages/workshop-backend/__tests__/fixtures.ts
+  s_351616a23717ae::t_2a63cd7cfd896b 70,77,82-83,91,114
+packages/workshop-backend/__tests__/gadget-restore.test.ts
+  s_351616a23717ae::t_535f6be3d20c0b 59
+packages/workshop-backend/__tests__/git-binding.test.ts
+  s_351616a23717ae::t_fb0481a6d3d91b 47,133,144,187,197,315,321
+packages/workshop-backend/__tests__/git-blobs.test.ts
+  s_351616a23717ae::t_5d6f9b107b0f5a 5,11,30,32,34,37-72,75,78,80,123,128
+packages/workshop-backend/__tests__/git-cache-history.test.ts
+  s_351616a23717ae::t_9aca25800c536f 3,6,8-9,11-16,18-21,49,67,71,75,84,87-88,96,104,109,113,120,124,127,145,152,158,182,187,191-193,197-202,204,207,210,215,227-228,230-233,235,245,253-263,265-266,270,282-333,350,357,360-361,363,374,491-514,516,522,547-548
+packages/workshop-backend/__tests__/git-cache.test.ts
+  s_351616a23717ae::t_829a13fb14aa05 3-8,16,20,105,164-166,168-177,382,399,401-404,406-407,588-589,595,599-601,605,1176,1181,1184,1186-1187,1189,1193-1196,1198,1200-1224,1227,1231-1232,1240,1244,1246-1248,1250-1257,1268,1288,1317,1324,1333,1340,1346-1347,1375,1470,1472-1477,1479-1483,1485-1487,1582,1584-1585,1587,1589,1591,1593,1601,1607-1609,1613-1618,1621,1647-1679,1794,1835,1838,1870-2175
+packages/workshop-backend/__tests__/git-chunked-blob.test.ts
+  s_351616a23717ae::t_509583a257613b 1-426
+packages/workshop-backend/__tests__/git-codec.test.ts
+  s_351616a23717ae::t_12fdc98237f8bb 2,4-5,7,16,24-25,29-41,56,86,95,106-119,122-176,180,186,206,265,271,280,285-286,292,295,310,313-315,352-415,446,452,456-457,459-481,483-484,492,516,686,696,726-942,979-1340
+packages/workshop-backend/__tests__/git-migration-do.test.ts
+  s_351616a23717ae::t_a43a50540fe5af 109,114,119-120,161,166,174,176,179,397
+packages/workshop-backend/__tests__/git-migration.test.ts
+  s_351616a23717ae::t_eb069ff45a0c65 31,37,41,52,54,88,92,94,112,118-119,268,433,439,444,449,491,530,577-578
+packages/workshop-backend/__tests__/git-pull.test.ts
+  s_351616a23717ae::t_463226a82ce3f0 11-18,92-93,97,99,102,106-114,118-175
+packages/workshop-backend/__tests__/git-push-actions.test.ts
+  s_351616a23717ae::t_44b22f5f23d81a 64,85
+packages/workshop-backend/__tests__/inline-html-blocks.test.ts
+  s_351616a23717ae::t_8a6c7398734318 1-175
+packages/workshop-backend/__tests__/large-files.test.ts
+  s_351616a23717ae::t_d87b671e1c500a 1-163
+packages/workshop-backend/__tests__/legacy-workspace.ts
+  s_351616a23717ae::t_b9badcd6f399a5 18-19,38,47,121,168,211,221
+packages/workshop-backend/__tests__/line-window.test.ts
+  s_351616a23717ae::t_7165b1453bc227 1-262
+packages/workshop-backend/__tests__/local-git-cache.ts
+  s_351616a23717ae::t_13d1242e52aaf0 1-13
+packages/workshop-backend/__tests__/notifications.test.ts
+  s_351616a23717ae::t_e0b74bdb0b9f39 2,7,9,22-24,50,63-64,79-88,163-177,277-282,301-365,384-786,862-954
+packages/workshop-backend/__tests__/observer-ledger.test.ts
+  s_351616a23717ae::t_275d156c2f8beb 468,774,923-960,1141-1144,1148-1200,1306,1366,1389,1424,1545-1546
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_351616a23717ae::t_04c7044cc7f29b 1067,1209,1211-1216,1218-1222,1229-1236
+packages/workshop-backend/__tests__/observer-verification-failure.test.ts
+  s_351616a23717ae::t_c2b9602c6a316a 2-3,50-51,54-55,105-106,150-153,158-163,166,187-188,199-200,210,213-215,219-226,231,233-236,238,241-252,254-259,261-265
+packages/workshop-backend/__tests__/resource-creation.test.ts
+  s_351616a23717ae::t_d50a77066c297f 1-197
+packages/workshop-backend/__tests__/restricted-actions.test.ts
+  s_351616a23717ae::t_31b568a3c799fc 64
+packages/workshop-backend/__tests__/spawned-agent-tools.test.ts
+  s_351616a23717ae::t_5917cdd107446a 57
+packages/workshop-backend/__tests__/three-way-merge.test.ts
+  s_351616a23717ae::t_9dbdb656d6b825 1-113
+packages/workshop-backend/__tests__/unread-state.test.ts
+  s_351616a23717ae::t_edba22acdc7b72 1-1311
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_351616a23717ae::t_c2b46afbf3ce90 379,381
+packages/workshop-backend/__tests__/wait-for-agent.test.ts
+  s_351616a23717ae::t_b43155ccf562d7 1-203
+packages/workshop-backend/__tests__/worktree-session.test.ts
+  s_351616a23717ae::t_1014b5825d534b 12,14-15,152,185,188-271,281,285,300,316-321,339,640-642,647-649,653,662-664,667,670-671,678,681,703,726,769,823-837,902
+packages/workshop-backend/__tests__/worktrees.test.ts
+  s_351616a23717ae::t_c1bfaefdfaa93d 99,859,863,992,1066,1094,1098
+packages/workshop-backend/cloudflare.config.ts
+  s_351616a23717ae::t_4519799659698f 81-82
+packages/workshop-backend/package.json
+  s_351616a23717ae::t_c0c64db4661fff 18-19,29
+packages/workshop-backend/src/admin-access.ts
+  s_351616a23717ae::t_aa73c8debea3b6 1-212
+packages/workshop-backend/src/admin-audit.ts
+  s_351616a23717ae::t_24a187d4ce1e41 1-197
+packages/workshop-backend/src/admin-config.ts
+  s_351616a23717ae::t_c705c8a93cd55c 6-10,12,14,18-20,52-53,55-70,75-76,395-399,421,427-429,431,440-442,455-459,463-650,652,654,656,665
+packages/workshop-backend/src/admin-settings.ts
+  s_351616a23717ae::t_81813a08dee9c8 1,9,19-20,97-98,108-111,118,191-200,284-285,291-305,353-354,358,363,367-369,373-375,473,480-493,495-496,499-503,506-512,517-518,526-533,535-536,538-539,544-546,555,566,570-574,578-592,619-620,622,630,635,650,658,664-666,690-691,744-746,762-764,820-821,823,858-859,873,875,897-899,914-938,1057,1059,1063,1065,1069-1070,1072,1081,1083-1084,1087-1098,1100,1111,1113,1116,1124-1143,1150-1151,1156,1165,1239-1242,1245-1248,1250-1253,1255-1256,1258-1264,1272-1273,1277-1278,1285,1290,1297-1298,1303-1304,1308-1312,1314-1315,1322,1329,1339,1346,1354-1355,1359,1363,1367,1371,1375,1379,1383,1387,1391,1395-1396,1400,1404-1414,1438,1442-1443,1447,1451-1477
+packages/workshop-backend/src/agent-compaction.ts
+  s_351616a23717ae::t_85c635e7c3dbf9 89-90,97,176-179,182-184
+packages/workshop-backend/src/agent.ts
+  s_351616a23717ae::t_ab7b2d0c032cbb 11,14,17,34-35,50-51,137,399,401,462,467-472,474-475,490-496,506-509,512,582-584,586-587,616,629-630,632,705-737,1234,1356,1366,1684,1715-1725,1727,1730-1737,1739-1747,1990,1997,2032,2387-2389,2405-2406,2427-2444,2447-2448,2663,2761,2883-2894,2946-2947,2949-2951,2995-2996,3010-3013,3142,3316,3351,3354,3400,3477,3495-3499,3543-3549,3985,3987,4225-4227,4411-4416
+packages/workshop-backend/src/ai-gateway.ts
+  s_351616a23717ae::t_0df7704cf122e6 200-203,225-226,229-231,239-241,256,259-260,265,272-281,284,286
+packages/workshop-backend/src/auto-approval.ts
+  s_351616a23717ae::t_10fbb528e876d1 9-11,27-28,31
+packages/workshop-backend/src/blueprint-archive.ts
+  s_351616a23717ae::t_2f8fb1d85401df 106
+packages/workshop-backend/src/blueprint-release.ts
+  s_351616a23717ae::t_c1d5c6a28d407e 37,150-151,153-154,163-164,170-171,177,186,190,246-247,251-253,309
+packages/workshop-backend/src/browser-export.ts
+  s_351616a23717ae::t_2d7f14b5865ceb 40
+packages/workshop-backend/src/bundled-blueprints.ts
+  s_351616a23717ae::t_f6efbc6fba619b 52
+packages/workshop-backend/src/diff3.d.ts
+  s_351616a23717ae::t_93055ffdcc6ccf 1-2
+packages/workshop-backend/src/env.d.ts
+  s_351616a23717ae::t_3cb0d9b106050a 13-28
+packages/workshop-backend/src/git-binding.ts
+  s_351616a23717ae::t_7ef9d337ec8681 12,17,49,125,133-134
+packages/workshop-backend/src/git-cache.ts
+  s_351616a23717ae::t_1de1b6b6bfd19f 1-2,4-56,68-69,86-91,95-97,102-107,109,113-114,117-118,122,126-127,129,132-139,160,176-178,187-189,240-257,261-263,266,271-274,276,279-309,311-336,338-696,709-711,714,723-727,729,731-733,751-752,754-758,766-768,775-792,795-797,807-808,817-818,823-826,829-850,853,856,858,861,872,920-921,940,950,959-960,964-965,980-981,992-993,1001-1004,1011,1013-1017,1027-1038,1046,1048,1052-1064,1206-1208,1224,1237-1245,1318-1319,1327,1358-1361,1392-1393,1397,1400,1407-1410,1414,1418-1421,1423-1434,1461,1467,1506,1519,1559,1608-1609,1617,1701-1713,1778-1779,1784-1790,1793,1796,1798,1803,1810-1812,1814,1816,1846,1848-1857,1861,1865,1924-1938,1948-2019
+packages/workshop-backend/src/git-chunked-blob.ts
+  s_351616a23717ae::t_ae714b40f777b2 1-570
+packages/workshop-backend/src/git-codec.ts
+  s_351616a23717ae::t_1ac6bbfee92281 1-3,5-9,12-24,77-87,90-91,95-98,100-113,116,157-162,284-298,384-385,393,399-457,482,554,561-585,596-606,623-664,682-683,686-689,691,696-697,700-715,718-733,739-745,751-755,758-763,784-787,792,813-827,830-846,848-849,860-882,885-899,907-910,917,920,935-936,938,961-999,1003-1007,1009-1055,1057-1067,1069-1070,1072-1085,1088-1089,1091-1107,1109,1111-1112,1138-1159,1162-1168,1170-1171,1173-1188,1190-1200,1202-1257,1259-1294,1299-1343,1346-1354
+packages/workshop-backend/src/grep.ts
+  s_351616a23717ae::t_55863a6e12f3fe 6,8-10,14-16,18,20-21,25-35,39,42,52,106-107,109,111,113-115,119-123,149,161,164-171,173-188,190-207,217-220
+packages/workshop-backend/src/line-window.ts
+  s_351616a23717ae::t_26c7241a3b6f9e 1-195
+packages/workshop-backend/src/notification-service.ts
+  s_351616a23717ae::t_d50a5fedc4bfe5 82,90,94,96,120,139-140,149,159-172
+packages/workshop-backend/src/observer-ledger.ts
+  s_351616a23717ae::t_12c4166baf3696 12
+packages/workshop-backend/src/overseer.ts
+  s_351616a23717ae::t_a5531142242864 2,4,21,28-30,67,71,107-135,535-538,608-610,774-777,1053-1058,1060-1065,1092-1095,1118-1121,1128-1129,1148-1446,1615,1657-1661,1664-1669,1677,2396,2427-2429,2446-2450,2465-2470,2479-2480,2537,2554,2675,3241-3243,3245-3246,3249,3341,3516-3517,3582,3610-3626,3727,3732,3888-3889,3908,3910,3919,4021,4025-4026,4043,4116-4118,4121-4122,4126,4132,4137,4141-4142,4148,4151,4153,4160,4166,4168,4266,4307,4341,4353,4377,4388-4390,4432,4436-4437,4439,4941,5153,5283-5285,5316,5455-5494,5706-5709,5803,5806-5807,5811,5828,5842-5843,5849-5850,5863,5927,5938,5984,6024,6130-6132,6211-6212,6273-6275,6277-6301,6311,6315-6327,6819,6965-6967,9022,9024,9047,9049,9051-9053,9064,9066-9067,9071,9075,9154,9693,9696-9702,9711,9731-9732,9734,9750,9781-9783,9868-9880,9888,9904,9929-9934,9938,9944,9966-9969,9972,9977-9979,10139,10430-10439,10442-10455,10457,10536-10547,10549,10561-10564,10566-10571,10584-10589,10638-10639,10663-10665,10684-10689,10707,10746-10759,10761-10770,11039-11041,11144-11153,11157,11199,11371,11392,11397-11398,11847-11853,11862-11877,12064,12117,12134-12141,12143-12145,12183,12587-12589,12591,12593-12595,12597-12599,12604-12610,12658-12676,12750-12757,12772-12776,12862-12863,12955,13041-13043,13114,13138-13153,13180,13183,13197,13203-13204,13210,13212,13249,13337,13347-13354,13366-13367,13372-13376,13657-13658,13672-13673,13695-13698,13715-13717,13974,14014
+packages/workshop-backend/src/server.ts
+  s_351616a23717ae::t_cc99bf0bb4f6e4 4,6,27,73-75,96-101,109,222-246,714,756-758,763-775,778,834,840,850,866,895,924,932,1076-1083,1085-1086
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_351616a23717ae::t_9775b38ac52476 12-13,59-60,65-69,94-99,101-107,131-136,148-150,189,193,195,200,205,230-232
+packages/workshop-backend/src/storage-schema/overseer-git-migration.ts
+  s_351616a23717ae::t_2d5daba0ab83ea 72-73,95-96,200,323,355,528
+packages/workshop-backend/src/storage-schema/overseer-migrations.ts
+  s_351616a23717ae::t_7243c98e514b2e 23,52-53,198
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_351616a23717ae::t_6d6ac08461100e 7,193,339-341,343-350,355-393,404,417-422,484-491,521,639-643,645-654,1100,1179-1187,1202-1206,1344-1347,1429-1432,1447-1487,1507-1508,1512,1714-1732,1791-1794,1807-1822
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_351616a23717ae::t_3204d5e2d2e874 10,12,124-198,236-248,306-313
+packages/workshop-backend/src/system-prompt-blocks.ts
+  s_351616a23717ae::t_f59b9c994fb5dc 19-23,115-118,124-128,131
+packages/workshop-backend/src/three-way-merge.ts
+  s_351616a23717ae::t_065ecdd7528772 1-3,33-35,84-93,112,120
+packages/workshop-backend/src/user.ts
+  s_351616a23717ae::t_3d228c832e68bb 2,9,14,16,29,41-57,62-147,317-322,328-364,368-375,636,645-650,655-674,681-697,700,725-1018,1020-1023,1025-1141,1147-1186,1226-1227,1233,1253-1276,1289,1302,1655,1982-1985,2781,2784-2789,2815,2824-2825,2860-2863,2886-2892,2895-2896
+packages/workshop-backend/src/worktree-binding.d.ts
+  s_351616a23717ae::t_26a59a80c7df20 119-124,126,128-130,132,143,179,220,256-257
+packages/workshop-backend/src/worktree-session.ts
+  s_351616a23717ae::t_842bc35213e695 9-10,17,30-32,34,36-37,181-192,194-204,261-262,267-269,293,367,395,416-424
+packages/workshop-backend/vitest.config.ts
+  s_351616a23717ae::t_b74fa6aa96b4e4 103-104
+packages/workshop-backend/worker-configuration.d.ts
+  s_351616a23717ae::t_a5594bbb53d279 2,15
+packages/workshop-backend/wrangler.jsonc
+  s_351616a23717ae::t_b765b32e0cac1d 79-84
+packages/workshop-evals/evals/change-calendar.eval.ts
+  s_351616a23717ae::t_0d983f2aae7913 433-434,436
+packages/workshop-evals/evals/chat-views.eval.ts
+  s_351616a23717ae::t_39f4801fd08070 1-250
+packages/workshop-evals/evals/chat-views.test.ts
+  s_351616a23717ae::t_580f0ba32b7b1c 1-591
+packages/workshop-evals/evals/views.test.ts
+  s_351616a23717ae::t_33aacc77f660c7 1-64
+packages/workshop-evals/evals/views.ts
+  s_351616a23717ae::t_3c30b717d48d3b 1-237
+packages/workshop-evals/package.json
+  s_351616a23717ae::t_534c6c2d5635b6 24
+packages/workshop-evals/src/eval.ts
+  s_351616a23717ae::t_99b3f02bfbc2f7 10,57
+packages/workshop-evals/src/harness.test.ts
+  s_351616a23717ae::t_155f06866730b1 35-36
+packages/workshop-evals/src/verifier.test.ts
+  s_351616a23717ae::t_574652fffbe217 5,113,123,131-152
+packages/workshop-evals/src/verifier.ts
+  s_351616a23717ae::t_3883aaca9a202b 8,13-14,60,96-100,103-104,111,115,134,138-141
+packages/workshop-evals/src/view-host.test.ts
+  s_351616a23717ae::t_f0677b8b022aa5 1-245
+packages/workshop-evals/src/view-host.ts
+  s_351616a23717ae::t_b44fb7eb6383ad 1-942
+packages/workshop-evals/vite.config.ts
+  s_351616a23717ae::t_e57543b9f34f64 3-8
+packages/workshop-evals/vitest.config.ts
+  s_351616a23717ae::t_9f22edd178c75e 5
+packages/workshop-frontend/AGENTS.md
+  s_351616a23717ae::t_2dd6caf024a3fe 254
+packages/workshop-frontend/src/Activity.test.tsx
+  s_351616a23717ae::t_831c1fec0fa3f7 50
+packages/workshop-frontend/src/ActivityNotifications.test.tsx
+  s_351616a23717ae::t_bbc50d1b74b466 46
+packages/workshop-frontend/src/AdminPage.tsx
+  s_351616a23717ae::t_cae6115f277f98 15-16,19,59,61,108-117,119-120,122,151,161,488,513-523,946,950-951
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_351616a23717ae::t_0436193b5c6cad 285-289,311,316,319,338,340,391-433
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_351616a23717ae::t_eaad4a3a707743 1526-1528,1536,1619,1621-1622,1711,1745,1749,1758,1762-1764
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_351616a23717ae::t_d618b8dcc26cc3 8,48-51,91-94,178-181,564-610
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_351616a23717ae::t_f03b9b55b737cb 2-6,112,130-131,1287-1320,1902-1903,1908,2106-2114,2121-2123,2129-2130,2292,2333,2350,2356-2373,2737-2739,2751,2762,2842,2852-2855,3097-3103,3109-3113,3232-3237,3249-3256,3264-3276,3283-3293,3306-3312,3513-3518,3717,3828-3836,3988-3991,5485-5487,5491,5578-5580,5599-5604,5690-5694,5789-5790,5919-5929,6308-6320,6458-6465,6590-6594,6671-6676,6678-6679,6686-6687,6797,6835
+packages/workshop-frontend/src/ChatInterface.unread.test.tsx
+  s_351616a23717ae::t_aac749abcd945f 1-65
+packages/workshop-frontend/src/Connections.test.tsx
+  s_351616a23717ae::t_826db49e49e1d8 6-7,10,23-29,65-69,72-73,144-195
+packages/workshop-frontend/src/Connections.tsx
+  s_351616a23717ae::t_225d684ec9638c 1,11,24,59-62,91-102,158-168,491-492,494-502
+packages/workshop-frontend/src/GadgetEditor.blueprintUpdate.test.tsx
+  s_351616a23717ae::t_f6f2fa7d27a036 343-356
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_351616a23717ae::t_75f38dd02aa4b1 1189-1190,2037,2044-2045
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_351616a23717ae::t_e0552fa5e08ea8 6,18,101,508
+packages/workshop-frontend/src/GatekeeperModal.test.tsx
+  s_351616a23717ae::t_cc01f4c3990455 4,133-134,137,140,155-156,187-188,204-210,289-374,612-624
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_351616a23717ae::t_de39a89112b0a4 14,21,55-57,59,114,168,202-203,208-213,224,544-551,558-561,567-568,573,599,643,676-677,715-728,737,764,776,789-791,796-797,813,891
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_351616a23717ae::t_05c4636d7ddc32 103,109,119,219,225,238,245
+packages/workshop-frontend/src/ResourcePicker.test.tsx
+  s_351616a23717ae::t_6c6ba92520afe9 4,65-72,77-78,89,94-142
+packages/workshop-frontend/src/ResourcePicker.tsx
+  s_351616a23717ae::t_22cbad9196d267 89-93,201,281-282,315-316,502-503
+packages/workshop-frontend/src/action-test-harness.ts
+  s_351616a23717ae::t_0950547bcb3cf5 37-39
+packages/workshop-frontend/src/adminTab.test.ts
+  s_351616a23717ae::t_530cf78df4b081 6-8,12-13,17,21-26
+packages/workshop-frontend/src/adminTab.ts
+  s_351616a23717ae::t_42cdc147f303fa 2,14-16,20,24
+packages/workshop-frontend/src/components/AppShell/Sidebar.tsx
+  s_351616a23717ae::t_e1fbfcfcc22e2c 25,192
+packages/workshop-frontend/src/components/AppShell/SidebarGadgetRow.browser.test.tsx
+  s_351616a23717ae::t_a4b8ccf4589c51 1-79
+packages/workshop-frontend/src/components/AppShell/SidebarGadgetRow.tsx
+  s_351616a23717ae::t_9dd0c47b3b0a86 10-11,45-46,69-70,76-81,108-113,120,127-129
+packages/workshop-frontend/src/components/CreationAccountModal.test.tsx
+  s_351616a23717ae::t_90a04bb46ebfc6 144-145
+packages/workshop-frontend/src/components/DurationSetting.test.tsx
+  s_351616a23717ae::t_cb32a862fe2b38 132-148
+packages/workshop-frontend/src/components/DurationSetting.tsx
+  s_351616a23717ae::t_7d7cad71701b03 3,13,17
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_351616a23717ae::t_cad58ab08b9b9e 5-6,62-63,138,153-155
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.test.tsx
+  s_351616a23717ae::t_fde60a35783b1b 1-820
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.tsx
+  s_351616a23717ae::t_f2263262347fa2 1-251
+packages/workshop-frontend/src/features/admin-audit/AuditFilters.tsx
+  s_351616a23717ae::t_1fb0a3217eab16 1-119
+packages/workshop-frontend/src/features/admin-audit/AuditLog.tsx
+  s_351616a23717ae::t_c8535f79c11bea 1-228
+packages/workshop-frontend/src/features/admin-audit/AuditLogRow.tsx
+  s_351616a23717ae::t_d9ff8a7a8fb22a 1-134
+packages/workshop-frontend/src/features/admin-audit/AuditValue.test.tsx
+  s_351616a23717ae::t_8f7c28d479eba5 1-87
+packages/workshop-frontend/src/features/admin-audit/AuditValue.tsx
+  s_351616a23717ae::t_4933c4478099ad 1-73
+packages/workshop-frontend/src/features/admin-audit/ColumnResizeHandle.tsx
+  s_351616a23717ae::t_e84f1e6087d362 1-75
+packages/workshop-frontend/src/features/admin-audit/auditFilter.test.ts
+  s_351616a23717ae::t_871ef5bb3c1e26 1-14
+packages/workshop-frontend/src/features/admin-audit/auditFilter.ts
+  s_351616a23717ae::t_87605ffa1db929 1-29
+packages/workshop-frontend/src/features/admin-audit/auditSettings.test.ts
+  s_351616a23717ae::t_14fc418af7d430 1-28
+packages/workshop-frontend/src/features/admin-audit/auditSettings.ts
+  s_351616a23717ae::t_f79f70ced03bb1 1-21
+packages/workshop-frontend/src/features/admin-audit/useColumnWidths.ts
+  s_351616a23717ae::t_9dc183a38965d9 1-58
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_351616a23717ae::t_027caf4081cea6 15
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_351616a23717ae::t_41a1a3c1605475 232,234-235,239-244,420-421,431-432,445-446,544,1411-1440,1647-1648,1650-1653,1694-1762
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_351616a23717ae::t_d0f57bfd07c851 24,155-156,160-166,243-250,280-282,284,286,337,356,362,366,371-373,378-379,383,395-402
+packages/workshop-frontend/src/features/ai-models/AllowedModelsField.tsx
+  s_351616a23717ae::t_13f11d932b1109 14
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_351616a23717ae::t_d15ba9437356b7 201
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_351616a23717ae::t_5eb3efc9743603 14,21,81,95-96,102,176,242-243
+packages/workshop-frontend/src/features/ai-models/GatewayProviders.test.tsx
+  s_351616a23717ae::t_dc179efcd00032 29-30,75-81,113,125,129,147-177
+packages/workshop-frontend/src/features/ai-models/GatewayProviders.tsx
+  s_351616a23717ae::t_e2f8e0a9b04f1f 9,13,18,47,69-72,74,77,80-81,96-98,101,107
+packages/workshop-frontend/src/features/ai-models/MoveButtons.tsx
+  s_351616a23717ae::t_2c9154271bcd26 1-54
+packages/workshop-frontend/src/features/chat/UiBlockCard.test.tsx
+  s_351616a23717ae::t_e3eae972c146a7 1-236
+packages/workshop-frontend/src/features/chat/UiBlockCard.tsx
+  s_351616a23717ae::t_01c5d940cd7e05 1-211
+packages/workshop-frontend/src/features/chat/composer/attachments/useComposerAttachments.test.tsx
+  s_351616a23717ae::t_cbab1782e2bbfc 14-20,91-97
+packages/workshop-frontend/src/features/chat/composer/attachments/useComposerAttachments.ts
+  s_351616a23717ae::t_687d254fa6b201 73-74
+packages/workshop-frontend/src/features/chat/mergeConflicts.test.ts
+  s_351616a23717ae::t_762bd204f38f2f 2-3,158
+packages/workshop-frontend/src/features/chat/mergeConflicts.ts
+  s_351616a23717ae::t_12fe2c5fa34eec 1-2,97
+packages/workshop-frontend/src/features/chat/uiBlockFrame.browser.test.tsx
+  s_351616a23717ae::t_55dcd24bf2c213 1-70
+packages/workshop-frontend/src/features/chat/uiBlockFrame.ts
+  s_351616a23717ae::t_4af86ef9271d83 1-213
+packages/workshop-frontend/src/features/code/WorkpieceCodeInterface.tsx
+  s_351616a23717ae::t_10362e64008835 5,17,1371,1383
+packages/workshop-frontend/src/features/code/commitFileStore.test.ts
+  s_351616a23717ae::t_5267a22a118dfa 44-66,182-230
+packages/workshop-frontend/src/features/code/commitFileStore.ts
+  s_351616a23717ae::t_b1b1015cd4abe8 18-22,31-36,42-43,82,88-89,126,143-144,154-164,173-184,189-227
+packages/workshop-frontend/src/features/code/otClient.ts
+  s_351616a23717ae::t_56c5f3a5d9bb22 111
+packages/workshop-frontend/src/features/code/useCommitContent.ts
+  s_351616a23717ae::t_9184fa39dd98c4 2-3,11,70,79,103
+packages/workshop-frontend/src/features/code/workpieceTree.ts
+  s_351616a23717ae::t_19f748072e6e74 1-2,188,251
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_351616a23717ae::t_4dd2cabc7c7ecf 9
+packages/workshop-frontend/src/features/native-app/NativeAppBridge.test.tsx
+  s_351616a23717ae::t_efadb593ddd71a 5,8,13,37,90,96,115,122-194
+packages/workshop-frontend/src/features/native-app/NativeAppBridge.tsx
+  s_351616a23717ae::t_ace53d696b5a19 4,9,14-19
+packages/workshop-frontend/src/features/native-app/nativeApp.ts
+  s_351616a23717ae::t_191e048b9bd29f 16-19
+packages/workshop-frontend/src/features/notifications/NotificationBridge.test.tsx
+  s_351616a23717ae::t_9b234ad9f99f55 259,267,281,284,287,293-330,342-393
+packages/workshop-frontend/src/features/notifications/NotificationBridge.tsx
+  s_351616a23717ae::t_5abd0b2a24ba67 199-200,203-205,207,211,230,237-242,245-246,254-255,257
+packages/workshop-frontend/src/features/notifications/ReadTimeline.browser.test.tsx
+  s_351616a23717ae::t_192137c888c443 1-415
+packages/workshop-frontend/src/features/notifications/ReadTimeline.test.tsx
+  s_351616a23717ae::t_54234a7843f18b 1-851
+packages/workshop-frontend/src/features/notifications/ReadTimeline.tsx
+  s_351616a23717ae::t_fecf1f3c74891f 1-325
+packages/workshop-frontend/src/features/notifications/TimelineReadItem.tsx
+  s_351616a23717ae::t_004397e408cf40 1-73
+packages/workshop-frontend/src/features/notifications/UnreadBadge.tsx
+  s_351616a23717ae::t_97b8ea29b8fbc3 1-9
+packages/workshop-frontend/src/features/notifications/UnreadStateBridge.test.tsx
+  s_351616a23717ae::t_2c136de5aa34bb 1-284
+packages/workshop-frontend/src/features/notifications/UnreadStateBridge.tsx
+  s_351616a23717ae::t_ef1758fdc36c62 1-221
+packages/workshop-frontend/src/features/notifications/UnreadSummary.test.tsx
+  s_351616a23717ae::t_e9427452748783 1-157
+packages/workshop-frontend/src/features/notifications/UnreadSummary.tsx
+  s_351616a23717ae::t_57888941852c91 1-18
+packages/workshop-frontend/src/features/notifications/UnreadThreads.browser.test.tsx
+  s_351616a23717ae::t_a1bcebf28cf58e 1-44
+packages/workshop-frontend/src/features/notifications/UnreadThreads.tsx
+  s_351616a23717ae::t_7293d4cf592507 1-98
+packages/workshop-frontend/src/features/notifications/readTimelineContext.ts
+  s_351616a23717ae::t_18d9666d96a7dc 1-7
+packages/workshop-frontend/src/features/notifications/timelineReadRanges.test.ts
+  s_351616a23717ae::t_57d621dc5779b8 1-86
+packages/workshop-frontend/src/features/notifications/timelineReadRanges.ts
+  s_351616a23717ae::t_462d089e29345a 1-34
+packages/workshop-frontend/src/features/notifications/visibleChat.ts
+  s_351616a23717ae::t_00fdd6769220cb 6,11,13-16,20-25
+packages/workshop-frontend/src/features/web-fetch/RestrictedWebFetchCard.tsx
+  s_351616a23717ae::t_67ec614f1e03cf 2,7-8,14-16,21,43-58,64-66,89-106
+packages/workshop-frontend/src/features/web-fetch/WebFetchRequestCard.tsx
+  s_351616a23717ae::t_ef12e2495b6b7c 1-98
+packages/workshop-frontend/src/gatekeeper-modal/AccountChooser.tsx
+  s_351616a23717ae::t_bf2624b3be811a 55,81-82,84-85
+packages/workshop-frontend/src/rootRoute.test.tsx
+  s_351616a23717ae::t_a409f5830eb1cf 24
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_351616a23717ae::t_2beca8349cada0 22,80-84,127,146,166,187,206,225,245,326-332,389
+packages/workshop-frontend/src/router.tsx
+  s_351616a23717ae::t_2d4b6718fa739b 7-11
+packages/workshop-frontend/src/routes/__root.tsx
+  s_351616a23717ae::t_374e06c95f48ed 3,19,36,133-143
+packages/workshop-frontend/src/routes/admin.tsx
+  s_351616a23717ae::t_88cb1505fa1034 4,6,12
+packages/workshop-frontend/src/routes/unread.tsx
+  s_351616a23717ae::t_480fff9e3c78b3 1-10
+packages/workshop-frontend/src/sandboxDocument.ts
+  s_351616a23717ae::t_ede965c06488cb 1-26
+packages/workshop-frontend/src/useAuth.test.tsx
+  s_351616a23717ae::t_e48e0c8e2b3d14 79,158-162,167,170,173-177,181
+packages/workshop-frontend/src/useAuth.ts
+  s_351616a23717ae::t_7b6800fd787f37 5,135
+packages/workshop-frontend/vitest.browser.config.ts
+  s_351616a23717ae::t_ca69b89cbe6257 4,13
+packages/workshop-shared/package.json
+  s_351616a23717ae::t_532cf2c13dcec7 34-37,52-53
+packages/workshop-shared/src/api.ts
+  s_351616a23717ae::t_6f7d351fccc023 156-159,164-166,224-372,599-616,640-643,720-722,727-768,892,918-929,934-935,960-963,965-966,970-979,983-987,990-997,1023-1026,1033-1038,1043-1048,1073-1077,1155-1156,1177-1180,1194-1207,1232-1236,1341-1342,1428-1441,1456-1460,1601-1785,1792-1793,1830-1832,1924-1926,2001-2022,2113-2135,2543-2544,2567-2568,2628-2632,2635-2639,2691,2703-2707,2712-2714,2720,2724,2734,2738,2857-2858,3094-3100,3104,3118-3119,3131-3134,3206,3299-3301,3317,3385-3386,3422-3424,3481-3483,3490-3491,3535-3541,3548-3551,3554-3558,3561-3563,3611-3620,3643-3663,3689,3714-3715,3720-3722,3726-3727,3749-3750,3758-3769,3771-3772,3836-3841,3941-3967,4026-4029,4033-4035,4044-4046,4075-4082,4117,4504,4540,4955-4970,5708,6170,6318,6327,6372-6384,6407-6408,6415-6420,6464-6465
+packages/workshop-shared/src/code-change.ts
+  s_351616a23717ae::t_796009ba9a6c3a 509
+packages/workshop-shared/src/gatekeeper.ts
+  s_351616a23717ae::t_f236dcae8da573 357-363,366,436,448-449,568-577,672-673,722-723,1030-1035,1169-1171,1175,1483,1517-1518,1744-1745,1753,1777-1779,1868-1878,1924-1929,1939-1940,1952-1953,1994-1995
+packages/workshop-shared/src/inline-html-blocks.ts
+  s_351616a23717ae::t_d46b69870a30ac 1-149
+plans/chunked-git.md
+  s_351616a23717ae::t_29e81e63e6197b 1-1276
+plans/gatekeeper-kit.md
+  s_351616a23717ae::t_5cecc6f205dd7f 1285
+plans/git-storage.md
+  s_351616a23717ae::t_3a39f1d14af27d 5-10
+plans/gitlab-gatekeeper.md
+  s_351616a23717ae::t_fb4d071ded527f 327-334,1009-1035
+plans/live-views.md
+  s_351616a23717ae::t_c508476bd1a041 1-424
+plans/microsoft-365-gatekeeper.md
+  s_351616a23717ae::t_cc2b3ad9e408d4 248-253
+plans/microsoft-calendar.md
+  s_351616a23717ae::t_c1e940563956f2 138-139,141-144,146-153,166
+plans/microsoft-outlook.md
+  s_351616a23717ae::t_40a327b33b32a9 213-218
+plans/worktrees-ui.md
+  s_351616a23717ae::t_9bf745ee640206 3-8,96,244,276,350,557-558
+plans/worktrees.md
+  s_351616a23717ae::t_b02a9dade09179 8-10,1330-1332,1336-1340
+plans/x-gatekeeper.md
+  s_351616a23717ae::t_c520b1f9f5b030 173-176,396-402,761-766,768,770-773,776-804,919-921,952,1152
+pnpm-lock.yaml
+  s_351616a23717ae::t_cb96a91ff1f018 61,67-69,92-137,657-659,722-724,771-773,983-985,989-991,1026-1028,1060-1062,1152-1154,1165-1167,1174-1176,1353-1354,1356-1357,1385-1387,1447-1449,1616-1618,2061-2062,2065-2066,2070-2075,6436,6438-6439,6453,6457-6458,6478-6480,7530-7542,9893,9959
+pnpm-workspace.yaml
+  s_351616a23717ae::t_44b7151716d6bf 67-70
+scripts/build-bundled-blueprints.test.ts
+  s_351616a23717ae::t_e0cad14cbea944 14-18
+scripts/env-passthrough.test.ts
+  s_351616a23717ae::t_d13aa6324b024e 36-38,51-52,97-101,117,135
+scripts/evals/eval-keys.test.ts
+  s_351616a23717ae::t_f6b09191549783 9-13
+scripts/preview/staging-config.test.ts
+  s_351616a23717ae::t_e00554e171fc43 22,54,527-541
+scripts/preview/staging-config.ts
+  s_351616a23717ae::t_69ee964ca5c6b1 699,704,716,720-748
+scripts/release/testdata/golden-manifest.json
+  s_351616a23717ae::t_033fa1f5312226 1446-1451
+scripts/run-dev-server.ts
+  s_351616a23717ae::t_08b4fede7b6529 574-575,596-597
+scripts/vitest-task.test.ts
+  s_351616a23717ae::t_13b11b8d17d71b 23
+vite.config.ts
+  s_351616a23717ae::t_ded16ea487e88e 179-181,188-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8cd438fd76c2b6b85eb0e97df644cdb4ac6dcb3f",
+  "prompts": {},
+  "sessions": {
+    "s_351616a23717ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d776dc67-24ab-4cbe-9900-ce747bbf939a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
