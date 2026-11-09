@@ -55,8 +55,10 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
-  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would. */
+  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and keeps it. */
   mountWorktree(worktree: unknown): Promise<string>;
+  /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
+  runCommand(path: string, text: string): Promise<string>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
 }
@@ -429,23 +431,82 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         { ...input, chatGatewayRpcTarget });
   }
 
+  /** Fetches the worktree's head, as `git clone` would, and keeps the stub for runCommand(). */
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
-    const post = (body: BodyInit) => worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
-      method: "POST", body,
-      headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
-    }));
-    const refs = await (await post(new Blob([encodePktLine("command=ls-refs"), DELIM_PKT, FLUSH_PKT]))).text();
+    this.ctx.storage.kv.put("mounted-worktree", worktree);
+    const refs = await (await worktreeFetch(worktree,
+      new Blob([encodePktLine("command=ls-refs"), DELIM_PKT, FLUSH_PKT]))).text();
     const head = /([0-9a-f]{40}) HEAD/.exec(refs)?.[1];
     if (!head) throw new Error("No worktree HEAD advertised");
-    const response = await post(buildGitFetchRequest([head], {type: "commit", commitHistory: {kind: "full"}}));
-    const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
-    if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
+    await fetchPack(worktree, head);
     return `worktree pack received for ${head}`;
+  }
+
+  /**
+   * Runs a command in the worktree mountWorktree() kept, as a container would, in whichever
+   * execution is running now: snapshots it, fetches the snapshot's tree, and submits the tree
+   * the command left, which holds only `path`.
+   */
+  async runCommand(path: string, text: string): Promise<string> {
+    const worktree = this.ctx.storage.kv.get<RpcStub<ReplicableWorktree>>("mounted-worktree");
+    if (!worktree) throw new Error("No worktree is mounted");
+    const snapshot = await worktree.snapshot();
+    await fetchPack(worktree, snapshot.tree);
+    const blob = {type: 3, payload: new TextEncoder().encode(text)};
+    const blobId = await gitObjectId("blob", blob.payload);
+    const tree = {type: 2, payload: concat([new TextEncoder().encode(`100644 ${path}\0`), hexBytes(blobId)])};
+    const treeId = await gitObjectId("tree", tree.payload);
+    const pack = await packBytes([blob, tree]);
+    const result = await snapshot.command.submit(treeId, new Blob([pack]).stream());
+    return result.tree === treeId ? `submitted ${path}` : `merged into ${result.tree}`;
   }
 
   [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
     return new GadgetResponseRecorder(this, messageKey);
   }
+}
+
+function worktreeFetch(worktree: RpcStub<ReplicableWorktree>, body: BodyInit): Promise<Response> {
+  return worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
+    method: "POST", body,
+    headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
+  }));
+}
+
+// Fetches `oid` from the worktree, checking that a raw Git pack arrives.
+async function fetchPack(worktree: RpcStub<ReplicableWorktree>, oid: string): Promise<void> {
+  const response = await worktreeFetch(worktree, buildGitFetchRequest([oid], {type: "commit", commitHistory: {kind: "full"}}));
+  const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
+  if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  parts.reduce((offset, part) => (out.set(part, offset), offset + part.length), 0);
+  return out;
+}
+const hexBytes = (hex: string) => Uint8Array.from(hex.match(/../g)!, byte => parseInt(byte, 16));
+async function sha1(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-1", bytes));
+}
+async function gitObjectId(type: string, payload: Uint8Array): Promise<string> {
+  const hash = await sha1(concat([new TextEncoder().encode(`${type} ${payload.length}\0`), payload]));
+  return [...hash].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+// A Git pack holding `objects` whole (type 2 is a tree, 3 a blob).
+async function packBytes(objects: {type: number; payload: Uint8Array}[]): Promise<Uint8Array> {
+  const parts = [new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, objects.length])];
+  for (const {type, payload} of objects) {
+    const header = [(type << 4) | (payload.length & 15)];
+    for (let size = payload.length >> 4; size > 0; size >>= 7) {
+      header[header.length - 1] |= 0x80;
+      header.push(size & 0x7f);
+    }
+    parts.push(new Uint8Array(header), new Uint8Array(
+      await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()));
+  }
+  const body = concat(parts);
+  return concat([body, await sha1(body)]);
 }
 
 /** Records each delivery rather than the latest, since delivery is at-least-once. */
@@ -666,6 +727,8 @@ export interface TestSession {
   writeValues(values: number[]): Promise<number[]>;
   /** Exercises worktree capability delegation through the real code-mode bridge. */
   mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
+  /** Runs a command in the worktree mountWorktree() kept, in a later execution. */
+  runCommand(path: string, text: string): Promise<string>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
@@ -739,6 +802,10 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
     return this.state.mountWorktree(worktree);
+  }
+
+  async runCommand(path: string, text: string): Promise<string> {
+    return this.state.runCommand(path, text);
   }
 
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {

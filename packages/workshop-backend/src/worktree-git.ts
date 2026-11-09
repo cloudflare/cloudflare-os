@@ -1,7 +1,8 @@
 import {encodePktLine, FLUSH_PKT, DELIM_PKT, gitPullPath, parsePktItems, pktText} from "@gadgets/gatekeeper-kit/git-transport";
 import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
 import type {GitObjectType, GitPullHints, GitShallowInfo} from "@gadgets/workshop-shared/gatekeeper";
-import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, readGitCommitHeader} from "./git-codec";
+import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, readGitCommitHeader,
+  type GitTreeEntry, type PackableObject} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
 
 /**
@@ -22,6 +23,12 @@ export interface WorktreeGitSource {
 
   /** Throws if access has ended (e.g. the worktree or its chat was deleted). Called repeatedly. */
   check(): void;
+
+  /**
+   * The trees that may be fetched by ID: those the running execution handed out (see
+   * `ReplicableWorktree.snapshot()`).
+   */
+  trees: ReadonlySet<string>;
 
   /** Streams the raw pack (no protocol framing) for `shallowCommit`, at depth 1. */
   upstream(): Promise<ReadableStream<Uint8Array>>;
@@ -85,6 +92,7 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
   // Decide by what the client lacks, not by what it names: e.g. `git fetch --deepen=1` wants
   // the head the client already has, and lacks only history beyond the shallow boundary.
   const history = await localHistory(cache, source);
+  if (fetch.wants.some(oid => source.trees.has(oid))) return treeFetch(cache, source, history, fetch);
   const has = commonHistory(history, source.shallowCommit, fetch.haves);
   // The client only has the base's files if it has some commit in the history and is not
   // shallower than the base.
@@ -115,6 +123,29 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
     shallow = {shallow: [source.shallowCommit], unshallow: []};
   }
   return fetchResponse(!fetch.done, shallow, pack, source.check);
+}
+
+/**
+ * Serve a fetch of trees from `source.trees`, built from the workspace: everything they hold
+ * that the trees of the client's commits (its `haves` in the history) don't hold at the same
+ * path. For a worktree from a connected repository, the client must have one: the rest of a
+ * tree is mostly files the workspace would have to pull.
+ */
+async function treeFetch(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
+    history: Map<string, string[]>, fetch: FetchRequest): Promise<Response> {
+  if (!fetch.wants.every(oid => source.trees.has(oid))) {
+    throw new Error("Fetch a worktree's snapshot trees on their own, not together with commits.");
+  }
+  const haves = fetch.haves.filter(oid => history.has(oid) || oid === source.shallowCommit);
+  if (source.shallowCommit && !haves.length) {
+    throw new Error("Fetch the worktree's head before fetching a snapshot tree.");
+  }
+  const read = checkedRead(cache, source.check);
+  const previous: string[] = [];
+  for (const oid of haves) previous.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
+  const objects: PackObjects = new Map();
+  for (const tree of new Set(fetch.wants)) await collectTree(read, objects, tree, previous, new Map());
+  return fetchResponse(!fetch.done, undefined, packObjects(read, objects, source.check), source.check);
 }
 
 /**
@@ -239,47 +270,24 @@ function baseDepth(history: Map<string, string[]>, shallowCommit: string, wants:
  */
 async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallowCommit: string | null,
     heads: string[], haves: string[], requireLive: () => void): Promise<ReadableStream<Uint8Array>> {
-  const read = async (oid: string, type: GitObjectType, referencedBy?: string) => {
-    requireLive();
-    const object = await cache.ensureObject(oid, {type, referencedBy});
-    requireLive();
-    return object;
-  };
+  const read = checkedRead(cache, requireLive);
   const baseTree = shallowCommit
     ? parseGitCommitRefs((await read(shallowCommit, "commit")).payload).tree : undefined;
   // Collect the objects of `commits`' history into `objects`, skipping anything in `skip`.
-  const collect = async (commits: string[], objects: Map<string, {type: GitObjectType; referencedBy?: string}>,
-      skip = new Map<string, unknown>()) => {
-    const add = (oid: string, type: GitObjectType, referencedBy?: string) => {
-      objects.set(oid, {type, referencedBy});
-      if (objects.size > 100_000) throw new Error("Worktree history exceeds its object budget.");
-    };
-    const trees = async (oid: string, previous?: string) => {
-      if (oid === previous || objects.has(oid) || skip.has(oid)) return;
-      add(oid, "tree");
-      const entries = parseGitTree((await read(oid, "tree")).payload);
-      const prior = new Map(previous
-        ? parseGitTree((await read(previous, "tree")).payload).map(entry => [entry.name, entry]) : []);
-      for (const entry of entries) {
-        const old = prior.get(entry.name);
-        if (entry.oid === old?.oid || entry.mode === "160000" || skip.has(entry.oid)) continue;
-        if (entry.mode === "40000") await trees(entry.oid, old?.mode === "40000" ? old.oid : undefined);
-        else add(entry.oid, "blob", oid);
-      }
-    };
+  const collect = async (commits: string[], objects: PackObjects, skip: PackObjects = new Map()) => {
     const stack = [...new Set(commits)];
     while (stack.length) {
       const oid = stack.pop()!;
       if (oid === shallowCommit || objects.has(oid) || skip.has(oid)) continue;
-      add(oid, "commit");
+      addObject(objects, oid, "commit");
       const commit = parseGitCommitRefs((await read(oid, "commit")).payload);
-      await trees(commit.tree, baseTree);
+      await collectTree(read, objects, commit.tree, baseTree ? [baseTree] : [], skip);
       stack.push(...commit.parents);
     }
   };
-  const present = new Map<string, {type: GitObjectType; referencedBy?: string}>();
+  const present: PackObjects = new Map();
   await collect(haves, present);
-  const objects = new Map<string, {type: GitObjectType; referencedBy?: string}>();
+  const objects: PackObjects = new Map();
   await collect(heads, objects, present);
   // The base's files are supplied by the upstream pack or are already in the client. A
   // rename/copy can reuse a base blob at another path: same-path comparisons above alone cannot
@@ -294,6 +302,52 @@ async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject">, shallow
     }
   };
   if (baseTree && [...objects.values()].some(object => object.type !== "commit")) await excludeBase(baseTree);
+  return packObjects(read, objects, requireLive);
+}
+
+/** Objects to send, by ID, with their types and the trees referring to blobs (for pull hints). */
+type PackObjects = Map<string, {type: GitObjectType; referencedBy?: string}>;
+
+/** Reads an object, faulting it in if needed, and checks access before and after. */
+type ReadObject = (oid: string, type: GitObjectType, referencedBy?: string) => Promise<PackableObject>;
+
+function checkedRead(cache: Pick<WorkspaceGitCache, "ensureObject">, requireLive: () => void): ReadObject {
+  return async (oid, type, referencedBy) => {
+    requireLive();
+    const object = await cache.ensureObject(oid, {type, referencedBy});
+    requireLive();
+    return object;
+  };
+}
+
+function addObject(objects: PackObjects, oid: string, type: GitObjectType, referencedBy?: string): void {
+  objects.set(oid, {type, referencedBy});
+  if (objects.size > 100_000) throw new Error("Worktree history exceeds its object budget.");
+}
+
+/**
+ * Collect tree `oid` and what it holds into `objects`, leaving out anything in `objects` or
+ * `skip` already, and what any of the `previous` trees (which the client has) holds at the same
+ * path.
+ */
+async function collectTree(read: ReadObject, objects: PackObjects, oid: string, previous: string[],
+    skip: PackObjects): Promise<void> {
+  if (previous.includes(oid) || objects.has(oid) || skip.has(oid)) return;
+  addObject(objects, oid, "tree");
+  const entries = parseGitTree((await read(oid, "tree")).payload);
+  const prior: Map<string, GitTreeEntry>[] = [];
+  for (const tree of previous) prior.push(new Map(parseGitTree((await read(tree, "tree")).payload).map(entry => [entry.name, entry])));
+  for (const entry of entries) {
+    const old = prior.map(tree => tree.get(entry.name));
+    if (old.some(other => other?.oid === entry.oid) || entry.mode === "160000" || skip.has(entry.oid)) continue;
+    if (entry.mode === "40000") {
+      await collectTree(read, objects, entry.oid, old.flatMap(other => other?.mode === "40000" ? [other.oid] : []), skip);
+    } else addObject(objects, entry.oid, "blob", oid);
+  }
+}
+
+/** A pack of `objects`. */
+function packObjects(read: ReadObject, objects: PackObjects, requireLive: () => void): ReadableStream<Uint8Array> {
   async function* contents() {
     for (const [oid, hint] of objects) yield await read(oid, hint.type, hint.referencedBy);
     requireLive();

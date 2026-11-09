@@ -309,8 +309,13 @@ export class WorkspaceGitCache {
    * reads fault around them. No await separates these stores, so they still reach disk
    * together; one transaction around them all would also undo the earlier objects when a later
    * one throws, but in production it nearly doubled a vscode-size mount's CPU.
+   *
+   * A null `gatekeeperId` stores the objects attributed to no remote, as `importObjects` does
+   * (for a replica's submission, see worktree-replica.ts): an oversized one is skipped without
+   * recording anything.
    */
-  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId, pack: ReadableStream<Uint8Array>)
+  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId | null,
+                                  pack: ReadableStream<Uint8Array>)
       : Promise<GitOid[]> {
     let held = new Map<GitOid, PackableObject>();
     let stored: GitOid[] = [];
@@ -1291,12 +1296,18 @@ export class WorkspaceGitCache {
   // recorded and is then stored, which extends that proof to its referents as pull routing (see
   // `#extendToReferents`). An object already present, measured, and proven for this gatekeeper
   // is left as it is: a pull sends no `have`s, so a retried one, or one for another commit of a
-  // mounted repository, carries mostly such objects.
-  #storeVerifiedObject(gatekeeperId: WorkpieceId, oid: GitOid, { type, payload }: PackableObject)
-      : boolean {
+  // mounted repository, carries mostly such objects. With no gatekeeper, nothing is recorded.
+  #storeVerifiedObject(gatekeeperId: WorkpieceId | null, oid: GitOid,
+                       { type, payload }: PackableObject): boolean {
     if (payload.byteLength > MAX_GIT_OBJECT_SIZE) {
-      this.#recordOversized(gatekeeperId, oid, type, payload.byteLength);
+      if (gatekeeperId !== null) this.#recordOversized(gatekeeperId, oid, type, payload.byteLength);
       return false;
+    }
+    if (gatekeeperId === null) {
+      if (!this.hasLocalObject(oid)) {
+        this.storage.gitObjects.put({ oid, data: encodeLooseObject(type, payload) });
+      }
+      return true;
     }
     let { meta } = this.#metaFor(gatekeeperId, oid, type, "measured");
     if (meta.size !== undefined && meta.onRemote.includes(gatekeeperId) &&

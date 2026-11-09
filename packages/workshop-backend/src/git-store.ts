@@ -209,6 +209,18 @@ export interface WriteCommitOptions {
 // A parsed-but-unwritten tree: file contents at the leaves, subtrees within.
 type TreeNode = Map<string, TreeNode | FileContent>;
 
+/** A regular file's tree entry, given as is: its mode and its blob's oid. */
+export interface FileEntry {
+  mode: "100644" | "100755";
+  oid: string;
+}
+
+/**
+ * Thrown when changes to a tree would make a path both a file and a directory, or would write or
+ * delete a file where the tree has something else.
+ */
+export class TreeShapeError extends Error {}
+
 /**
  * A git object database over a `gitObjects` collection.
  *
@@ -392,7 +404,17 @@ export class GitStore {
    */
   async writeChangedTree(
       treeBase: string, changes: ReadonlyMap<string, FileContent | null>): Promise<string> {
-    let baseTree = await this.commitTree(treeBase);
+    return await this.writeChangedTreeOf(await this.commitTree(treeBase), changes);
+  }
+
+  /**
+   * `writeChangedTree` over a tree rather than a commit's, where a change may also be a file's
+   * whole entry (`FileEntry`), written with the mode it gives. Each tree it descends into must be
+   * stored, and throws TreeShapeError where the changes don't fit the tree's shape.
+   */
+  async writeChangedTreeOf(
+      baseTree: string, changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+      : Promise<string> {
     // No changes: the base's tree, by oid. Rebuilding reads each tree it descends into, and this
     // store holds only what has been pulled -- a worktree committed untouched may never have
     // needed its base's root tree locally (a commit object can arrive alone, e.g. via
@@ -444,7 +466,7 @@ export class GitStore {
       let base = entries.get(name);
       if (child instanceof Map) {
         if (base !== undefined && base.type !== "tree") {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         let sub = await this.#rebuildTree(base?.oid, child, `${path}/`);
         if (sub === undefined) {
@@ -454,13 +476,17 @@ export class GitStore {
         }
       } else if (child === null) {
         if (base !== undefined && base.type === "tree") {
-          throw new Error(`cannot delete ${path}: it is a directory`);
+          throw new TreeShapeError(`cannot delete ${path}: it is a directory`);
         }
         entries.delete(name);  // deleting an absent file is a no-op
       } else {
         if (base !== undefined &&
             (base.type !== "blob" || (base.mode !== "100644" && base.mode !== "100755"))) {
-          throw new Error(`cannot write ${path}: not a regular file`);
+          throw new TreeShapeError(`cannot write ${path}: not a regular file`);
+        }
+        if (typeof child === "object" && "mode" in child) {
+          entries.set(name, { mode: child.mode, path: name, oid: child.oid, type: "blob" });
+          continue;
         }
         let oid = await this.#writeFileBlob(path, child);
         // A changed file keeps its base entry's mode; only new files default to 100644.
@@ -522,13 +548,14 @@ export class GitStore {
   }
 }
 
-// A parsed-but-unwritten change set: new file contents (or null = delete) at the leaves,
-// touched subtrees within. The writeChangedFilesAsCommit analog of TreeNode.
-type ChangeNode = Map<string, ChangeNode | FileContent | null>;
+// A parsed-but-unwritten change set: new file contents or entries (or null = delete) at the
+// leaves, touched subtrees within. The writeChangedFilesAsCommit analog of TreeNode.
+type ChangeNode = Map<string, ChangeNode | FileContent | FileEntry | null>;
 
 // Converts a flat `path -> text | null` change map into nested nodes, with the same path-shape
 // validation as buildTreeNode.
-function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): ChangeNode {
+function buildChangeNode(changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+    : ChangeNode {
   let root: ChangeNode = new Map();
   for (let [path, content] of changes) {
     let segments = path.split("/");
@@ -540,14 +567,16 @@ function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): Chan
       let last = i === segments.length - 1;
       let existing = node.get(segment);
       if (last) {
-        if (existing !== undefined) throw new Error(`conflicting file paths at: ${path}`);
+        if (existing !== undefined) {
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
+        }
         node.set(segment, content);
       } else {
         if (existing === undefined) {
           existing = new Map();
           node.set(segment, existing);
         } else if (!(existing instanceof Map)) {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         node = existing;
       }

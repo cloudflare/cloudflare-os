@@ -68,9 +68,10 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import type { ReplicableWorktree } from "@gadgets/workshop-shared/worktree-replica";
+import type { ReplicableWorktree, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
 import type { Worktree } from "./worktree-binding";
 import { worktreeGitPull } from "./worktree-git";
+import { WorktreeReplicas } from "./worktree-replica";
 
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
@@ -2672,8 +2673,8 @@ class OverseerImpl implements AgentHooks {
           } else if (record?.type === "worktree") {
             // The programmatic Worktree binding (see worktree-session.ts). Served through the
             // loopback like every binding, resolving against this execution's registered
-            // worktree state -- the executionId is what keeps it live for exactly this
-            // executeCode run (see startGatekeeperSession's "worktree" case).
+            // worktree state -- the executionId is what keeps its file methods live for exactly
+            // this executeCode run (see startGatekeeperSession's "worktree" case).
             env[name] = this.makeBindingLoopback(
                 {type: "worktree", id: entry.id, executionId}, caller);
           } else if (this.storage.gatekeepers.get(entry.id)) {
@@ -5272,25 +5273,19 @@ class OverseerImpl implements AgentHooks {
             this.openGatekeeperSession(target.id, facet, caller, target.executionId));
 
       case "worktree": {
-        // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
-        // content and buffered effects live in the agent turn, so the session resolves against
-        // the turn state executeCodeMode registered for the calling chat -- reachable only from
-        // the agent's own executeCode (never gadgets: worktrees can't be bound into them), and
-        // only while the *minting* execution runs: the loopback's executionId must match the
-        // registered turn's, so a stub retained past its execution (e.g. stored in a gadget)
-        // fails closed here rather than reviving against a later execution's turn.
+        // The programmatic Worktree binding (worktree-session.ts), minted only into the agent's
+        // own executeCode env (never gadgets': worktrees can't be bound into them). Every call
+        // through the loopback, including from a gatekeeper the agent's code passed it to and
+        // that stored it, resolves here, to the WorktreeEndpoint for the minting execution: its
+        // file methods work only while that execution runs, since a worktree's uncommitted
+        // content and buffered effects live in its turn, while its replica methods keep working
+        // for as long as the worktree belongs to the chat (see ReplicableWorktree).
         if (caller.from !== "agent") {
           throw new Error("Worktree bindings are only available to the agent's executeCode.");
         }
         let record = this.getWorktreeRecord(target.id);
         if (record.chatId !== caller.chatId) {
           throw new Error(`No such worktree: ${target.id}`);
-        }
-        let execution = this.#activeExecutions.get(caller.chatId);
-        if (execution?.worktree === undefined || execution.executionId !== target.executionId) {
-          throw new Error(
-              "This worktree binding is no longer live; worktree bindings are usable only " +
-              "while the executeCode call they were provided to is running.");
         }
         return this.ctx.restore({type: "worktree", worktreeId: target.id, chatId: caller.chatId,
           executionId: target.executionId});
@@ -5340,10 +5335,11 @@ class OverseerImpl implements AgentHooks {
   // The executeCode invocation running for each chat (one turn per chat, and executeCode calls
   // within it are sequential), with the turn's worktree state when it has one. `executionId`
   // names the registering execution: worktree and gatekeeper loopbacks are minted with it and
-  // verified against it, so only stubs from the currently-running execution resolve. See
-  // executeCodeMode.
-  #activeExecutions = new Map<number,
-      {executionId: string, initiator: AiChatAuthorInfo, worktree?: WorktreeTurnAccess}>();
+  // verified against it, so only stubs from the currently-running execution resolve (except for
+  // a Worktree stub's replica methods; see WorktreeEndpoint). `replicas` holds the execution's
+  // worktree replica state (see worktree-replica.ts). See executeCodeMode.
+  #activeExecutions = new Map<number, {executionId: string, initiator: AiChatAuthorInfo,
+                                       worktree?: WorktreeTurnAccess, replicas?: WorktreeReplicas}>();
 
   // ObserverLedgerHost: whether `executionId` is the executeCode invocation running for `chatId`.
   isLiveExecution(chatId: number, executionId: string): boolean {
@@ -5353,7 +5349,10 @@ class OverseerImpl implements AgentHooks {
   getActiveWorktreeSession(chatId: number, worktreeId: number, executionId: string): WorktreeSessionImpl {
     const active = this.#activeExecutions.get(chatId);
     if (!active?.worktree || active.executionId !== executionId ||
-        this.getWorktreeRecord(worktreeId).chatId !== chatId) throw new Error("Worktree execution ended.");
+        this.getWorktreeRecord(worktreeId).chatId !== chatId) {
+      throw new Error("This worktree binding is no longer live; its file methods are usable only " +
+          "while the executeCode call it was provided to is running.");
+    }
     // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
     // attributed to the collaborator, matching how accepted commits use the acting user's
     // profile.
@@ -6463,15 +6462,30 @@ class OverseerImpl implements AgentHooks {
     return facet.startSession(queue);
   }
 
+  // ReplicableWorktree.snapshot(), for the execution running in the worktree's chat.
+  worktreeSnapshot(chatId: number, worktreeId: number): Promise<WorktreeSnapshot> {
+    this.#requireWorktreeAccess(chatId, worktreeId);
+    let replicas = this.#activeExecutions.get(chatId)?.replicas;
+    if (replicas === undefined) {
+      throw new Error("A worktree can be snapshotted only while the agent's code runs in its chat.");
+    }
+    return replicas.snapshot(worktreeId);
+  }
+
+  // Throws if the worktree no longer belongs to the chat, or the chat is gone: the end of a
+  // Worktree stub's replica access.
+  #requireWorktreeAccess(chatId: number, worktreeId: number): void {
+    if (this.getWorktreeRecord(worktreeId).chatId !== chatId || !this.storage.chatMeta.get(chatId))
+      throw new Error("Worktree access ended.");
+  }
+
   async worktreeGitPull(chatId: number, worktreeId: number, request: Request): Promise<Response> {
-    const check = () => {
-      if (this.getWorktreeRecord(worktreeId).chatId !== chatId || !this.storage.chatMeta.get(chatId))
-        throw new Error("Worktree access ended.");
-    };
+    const check = () => this.#requireWorktreeAccess(chatId, worktreeId);
     check();
     const piece = this.getWorktreeRecord(worktreeId);
     // As for the Worktree binding, HEAD includes a commit() buffered earlier in the running step.
-    const head = this.#activeExecutions.get(chatId)?.worktree?.getBufferedHead(worktreeId) ?? piece.headCommit;
+    const execution = this.#activeExecutions.get(chatId);
+    const head = execution?.worktree?.getBufferedHead(worktreeId) ?? piece.headCommit;
     const sources = this.#liveGitSources(piece.baseCommit);
     // Pull from a connection, ending the stream if worktree access ends or the connection is
     // removed.
@@ -6521,6 +6535,7 @@ class OverseerImpl implements AgentHooks {
       if (!remotes.get(id)?.includes(piece.baseCommit)) remotes.set(id, [...remotes.get(id) ?? [], piece.baseCommit]);
     return worktreeGitPull(this.gitCache, {head,
       shallowCommit: sources.length ? piece.baseCommit : null, check,
+      trees: execution?.replicas?.fetchableTrees(worktreeId) ?? new Set(),
       remotes: [...remotes].map(([id, haves]) => ({haves, pull: (oids, hints) => pullFrom(id, oids, hints)})),
       upstream: async () => {
         let cause: unknown;
@@ -9290,7 +9305,9 @@ class OverseerImpl implements AgentHooks {
     // startGatekeeperSession's "worktree" case and ObserverLedger.authorizeObservation), for
     // exactly this execution's duration -- the executionId is minted into the loopbacks below, so
     // stubs from other executions never resolve against this registration.
-    this.#activeExecutions.set(chatId, {executionId, initiator, worktree: worktreeTurn});
+    let replicas = worktreeTurn && new WorktreeReplicas(this, worktreeTurn,
+        () => this.isLiveExecution(chatId, executionId), initiator);
+    this.#activeExecutions.set(chatId, {executionId, initiator, worktree: worktreeTurn, replicas});
 
     if (onOutputText) {
       this.#codeModeOutputSubscribers.set(executionId, onOutputText);
@@ -9374,6 +9391,14 @@ class OverseerImpl implements AgentHooks {
         log += `\n\nUncaught exception: ${error}`;
       } else if (log === "") {
         log = "(function succeeded with no output)";
+      }
+      // Tell the agent which files a command's result was merged into with conflicts (see
+      // WorktreeCommand.submit), naming each worktree as its file tools do.
+      for (let [worktreeId, paths] of replicas?.conflicts ?? []) {
+        let name = Object.entries(bindings).find(([, entry]) =>
+            entry.type === "workpiece" && entry.id === worktreeId)?.[0] ?? `worktree ${worktreeId}`;
+        log += `\n\nA command's file changes in ${name} were merged with concurrent edits, ` +
+            `with conflicts in: ${[...paths].join(", ")}. Resolve them before continuing.`;
       }
 
       return log;
@@ -11134,10 +11159,11 @@ type BindingLoopbackTarget = {
   type: "worktree";
   id: WorkpieceId;
 
-  // The executeCodeMode execution this loopback was minted for. A worktree binding resolves
-  // against the turn state registered for exactly that execution (see #activeExecutions), so
-  // a stub retained past it -- say, stored in a gadget the agent called -- fails closed instead
-  // of coming back to life against a later execution's turn.
+  // The executeCodeMode execution this loopback was minted for. A worktree binding's file
+  // methods resolve against the turn state registered for exactly that execution (see
+  // #activeExecutions), so through a stub retained past it -- say, by a gatekeeper the agent's
+  // code passed it to -- they fail closed instead of coming back to life against a later
+  // execution's turn. Its replica methods outlive it (see WorktreeEndpoint).
   executionId: string;
 } | {
   // The `env.GIT` binding (see git-binding.ts).
@@ -13722,12 +13748,16 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
 
 /**
  * The Worktree stub handed to an agent's code (restored from "worktree" params). The file
- * methods work only while the code execution it was handed to is running; the replica method
- * (ReplicableWorktree.gitPull) checks only that the worktree still belongs to the chat.
+ * methods work only while the code execution it was handed to is running; the replica methods
+ * (ReplicableWorktree) check only that the worktree still belongs to the chat, and snapshot()
+ * serves whichever execution is running there.
  */
 @validateRpc()
 class WorktreeEndpoint extends NativeRpcTarget implements Worktree, ReplicableWorktree {
   constructor(private impl: OverseerImpl, private props: Extract<OverseerRestoreParams, {type: "worktree"}>) { super(); }
+  async snapshot(): Promise<WorktreeSnapshot> {
+    return this.impl.worktreeSnapshot(this.props.chatId, this.props.worktreeId);
+  }
   async gitPull(request: Request): Promise<Response> {
     return this.impl.worktreeGitPull(this.props.chatId, this.props.worktreeId, request);
   }

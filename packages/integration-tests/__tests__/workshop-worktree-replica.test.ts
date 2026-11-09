@@ -26,7 +26,7 @@ afterAll(async () => {
   } finally { network.uninstall(); }
 });
 
-it("passes a worktree from code mode to a gatekeeper, which fetches its commits with Git", async () => {
+it("passes a worktree from code mode to a gatekeeper, which fetches its commits with Git and later runs a command in it", async () => {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, nextUsernames("replica")[0]!);
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
@@ -60,11 +60,17 @@ it("passes a worktree from code mode to a gatekeeper, which fetches its commits 
       export default async function(self, env) {
         console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
       }`}}},
+    // A later execution, which passes no worktree: the gatekeeper uses the one it kept.
+    {toolCall: {id: "command", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        console.log(await env.TEST_AMBIENT.runCommand("formatted.txt", "formatted\\n"));
+      }`}}},
+    {toolCall: {id: "read", name: "readFile", arguments: {workpiece: "REPO", filename: "formatted.txt"}}},
     {text: "Done."},
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
   const chatId = await ws.newChat("Mount the worktree and fetch its commits.", SCRIPTED_MODEL_ID);
-  await waitFor("the model's final request", async () => model.requests.length === 5 || null);
+  await waitFor("the model's final request", async () => model.requests.length === 7 || null);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   const outputs = history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
@@ -73,6 +79,11 @@ it("passes a worktree from code mode to a gatekeeper, which fetches its commits 
   expect(commit).toBeDefined();
   expect(outputs).toEqual([expect.stringContaining(`worktree pack received for ${baseCommit}`),
     expect.stringContaining(`worktree pack received for ${commit}`),
-    expect.stringContaining(`worktree pack received for ${commit}`)]);
+    expect.stringContaining(`worktree pack received for ${commit}`),
+    expect.stringContaining("submitted formatted.txt")]);
+  // The model, in its next step, read the command's file.
+  const read = (model.requests[6] as {messages: {role: string; tool_call_id?: string; content?: string}[]})
+    .messages.find(message => message.role === "tool" && message.tool_call_id === "read");
+  expect(read?.content).toContain("formatted");
   expect(model.remainingSteps()).toBe(0);
 });

@@ -957,10 +957,12 @@ Cache fills never send `have`s.
 Container gatekeepers receive the Worktree capability directly. Clone and fetch the worktree
 with native Git through `worktree.gitPull(request)`; the gatekeeper invents its own guest-local
 Git URL. The workspace serves upstream and locally created commits through the same smart-HTTP
-endpoint, including ordinary Git ref discovery. Never buffer a whole pack or use base64. For now
-a mount is read-only: the chat's uncommitted edits don't reach it, and a command's file changes
-don't flow back (see `docs/worktree-replicas.md`). The gatekeeper owns command approvals and
-mount lifetime.
+endpoint, including ordinary Git ref discovery. Never buffer a whole pack or use base64. Store
+the stub with the mount: its replica methods keep working in later executions. Around each
+command, run during an agent's code execution, call `worktree.snapshot()` and check out its tree,
+then submit the tree the command left through the snapshot's handle (see
+`workshop-shared/src/worktree-replica.ts`). The gatekeeper owns command approvals and mount
+lifetime.
 
 ## Other module boundaries
 

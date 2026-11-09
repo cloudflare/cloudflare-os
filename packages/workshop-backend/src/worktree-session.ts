@@ -276,13 +276,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     // auto-commits since, they simply never appear in this commit's ancestry (squash semantics;
     // see WorktreeRecord). The overlay may include lazily-read untouched files; content
     // addressing makes rewriting them a no-op that reuses their blob oids and modes.
-    let changes = new Map<string, FileContent | null>();
-    for (let [path, text] of this.turn.getOverlayFiles(this.worktreeId)) {
-      changes.set(path, text);
-    }
-    for (let path of this.turn.getRemovedPaths(this.worktreeId)) {
-      changes.set(path, null);
-    }
+    let changes = worktreeChanges(this.turn, this.worktreeId);
     let commit = await this.host.gitStore.writeChangedFilesAsCommit(changes, {
       treeBase: base,
       parents: [previousHead],
@@ -404,6 +398,18 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     }
     return files;
   }
+}
+
+/**
+ * The worktree's current content as changes to its base commit (WorktreeTurnAccess.getBaseCommit):
+ * the overlay's files, and null for each removed path. A tree of its current files is the base's
+ * tree with these applied (GitStore.writeChangedTree).
+ */
+export function worktreeChanges(turn: WorktreeTurnAccess, worktreeId: WorkpieceId)
+    : Map<string, FileContent | null> {
+  let changes = new Map<string, FileContent | null>(turn.getOverlayFiles(worktreeId));
+  for (let path of turn.getRemovedPaths(worktreeId)) changes.set(path, null);
+  return changes;
 }
 
 /** One side of a path being diffed: its text and kind (absent where it doesn't exist), or a note. */

@@ -20,7 +20,7 @@ export default {
       const object = fixture.objects[oid];
       if (!object) throw new Error(`Unknown fixture object ${oid}`);
       return {oid, type: object.type, payload: Uint8Array.from(object.bytes)};
-    }}, {head, shallowCommit: fixture.boundary, check() {},
+    }}, {head, shallowCommit: fixture.boundary, check() {}, trees: new Set(),
       remotes: fixture.boundary ? [{haves: [fixture.boundary], pull: async (oids, hints) => {
         const {pack, shallowInfo} = await openGitPull(body => env.UPSTREAM.fetch("https://upstream.invalid/", {
           method: "POST", body}), oids, hints);

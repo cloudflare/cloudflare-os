@@ -167,6 +167,13 @@ export interface WorktreeTurnAccess {
    * barrier.
    */
   reRoot(worktreeId: WorkpieceId, commit: string): void;
+
+  /**
+   * A count of the changes to the worktree's content in this turn, advanced by every change
+   * (appendChange, and the file tools' edits) and re-root: a caller that reads the content
+   * across awaits compares it before and after to tell whether the content moved meanwhile.
+   */
+  getRevision(worktreeId: WorkpieceId): number;
 }
 
 /**
@@ -2933,6 +2940,10 @@ async function runAgentPass(
     changes: [] as AgentStepChange[], bytes: 0, reRoots: new Map<WorkpieceId, string>(),
   };
 
+  // Each workpiece's count of content changes this turn (see WorktreeTurnAccess.getRevision).
+  let revisions = new Map<WorkpieceId, number>();
+  let bumpRevision = (id: WorkpieceId) => revisions.set(id, (revisions.get(id) ?? 0) + 1);
+
   // Whether an executeCode call this step changed files: buffered changes, or re-rooted a
   // worktree. Replay re-runs no executeCode, so a file tool later in the step would replay
   // against content without those changes; the file tools refuse to run instead (see
@@ -3048,6 +3059,7 @@ async function runAgentPass(
     sessionContent = newContent;
     pinWorktreeInSession(workpieceId);
     noteWorktreeRemovals(change);
+    bumpRevision(workpieceId);
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
@@ -3094,7 +3106,9 @@ async function runAgentPass(
           (sum, {change}) => sum + codeChangeSerializedSize(change), 0);
       stepBuffer.reRoots.set(id, commit);
       reRootWorktreeSession(id, commit);
+      bumpRevision(id);
     },
+    getRevision: id => revisions.get(id) ?? 0,
   };
 
   let emitStreamEvent = (event: AiChatStreamEvent) => {
