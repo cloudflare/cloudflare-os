@@ -29,7 +29,7 @@ import { TEST_PATH } from "../proofs/tests.ts";
 import { runCommand } from "./exec.ts";
 import { groupByConfig, runDetails, runTests, RUNNABLE_TEST, type FileResult, type TestRun } from "./vitest.ts";
 
-/** The kernel, as the gate's path policy names it (scripts/risk-review-policy.ts). */
+/** The kernel, as the gate's path policy in #845 names it (`KERNEL` in scripts/risk-review-policy.ts). */
 const KERNEL = /^(packages\/workshop-backend\/|packages\/typed-storage\/|packages\/workshop-shared\/src\/api\.ts$)/;
 const DEPENDENCY_FILE = /(^|\/)(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$/;
 

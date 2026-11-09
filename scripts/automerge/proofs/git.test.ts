@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { fileAt } from "./git.ts";
+import { fileAt, filesIn } from "./git.ts";
 
 describe("fileAt", () => {
   // git quotes a path with non-ASCII bytes in ls-tree output unless it is asked for -z.
@@ -20,6 +20,8 @@ describe("fileAt", () => {
       const sha = run("rev-parse", "HEAD");
       assert.equal(fileAt(sha, "src/tést.test.ts", dir), "export {};\n");
       assert.equal(fileAt(sha, "src/missing.test.ts", dir), undefined);
+      // Clanky on #987: a listing without -z quoted this name, so proof-actions skipped the file.
+      assert.deepEqual(filesIn(sha, "src/", dir), ["src/tést.test.ts"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

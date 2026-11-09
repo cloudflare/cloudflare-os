@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
 import type { FileDiff } from "./diff.ts";
-import { git, pullRequestDiff } from "./git.ts";
+import { filesIn, git, pullRequestDiff } from "./git.ts";
 import { DEPENDABOT_LOGIN } from "./deps.ts";
 import { cacheReasons, workflowReasons } from "./workflow.ts";
 
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
       headRef: process.env.AUTOMERGE_HEAD_REF ?? "",
       files,
       tagTargets,
-      baseWorkflows: Object.fromEntries(git(["ls-tree", "--name-only", base, "--", ".github/workflows/"]).split("\n")
+      baseWorkflows: Object.fromEntries(filesIn(base, ".github/workflows/")
         .filter((path) => WORKFLOW.test(path))
         .map((path) => [path, git(["show", `${base}:${path}`])])),
     });

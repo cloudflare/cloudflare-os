@@ -27,3 +27,8 @@ export function fileAt(sha: string, path: string, cwd?: string): string | undefi
   if (listed !== path) return undefined;
   return git(["show", `${sha}:${path}`], cwd);
 }
+
+/** The paths of the files directly in `dir` at a commit, as they are (`-z`, so none is quoted). */
+export function filesIn(sha: string, dir: string, cwd?: string): string[] {
+  return git(["ls-tree", "-z", "--name-only", sha, "--", dir], cwd).split("\0").filter((path) => path !== "");
+}
