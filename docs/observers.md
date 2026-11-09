@@ -105,7 +105,9 @@ The check works as follows:
   *store* observed data and re-display it later (even to a `use` observer who opens much later),
   every exclusion/enforcement decision keys off whether a user is still *authorized* in the
   sharing graph (`computeEffectiveAccess`), and for a gadget, whether their access includes a
-  gadget that reaches it -- never off whether they currently have it open.
+  gadget that reaches it -- never off whether they currently have it open. A member of the
+  workspace's space is authorized through their space role as well (see `sharing.md`, "Space
+  roles").
 
 ---
 
@@ -134,7 +136,9 @@ The check works as follows:
 
 ## 3. Concepts & terminology
 
-- **Observer:** a non-owner collaborator (any role) who can see data the Gadget has read.
+- **Observer:** a non-owner (any role) who can see data the Gadget has read, whether the sharing
+  graph admits them as a collaborator or a role in the workspace's space does (docs/sharing.md,
+  "Space roles").
 - **Sharing table:** the existing `collaborators` / `shareKeys` storage + permission graph
   (`sharing.ts`). Records the owner's **intent** that a user have access.
 - **Observer record (new):** overseer storage holding a user's observer ID and the gatekeeper
@@ -142,7 +146,8 @@ The check works as follows:
   each admission then publishes the choices it verified, so a published choice — not the record's
   existence — marks someone configured and verified for that connection. This is distinct from
   the sharing table: intent vs. configured-and-verified. Opening requires **both** (reachable in
-  the sharing graph AND passing verification for what is opened).
+  the sharing graph, or through a space role, see `sharing.md` "Space roles", AND passing
+  verification for what is opened).
 - **Observer ID:** a **random, opaque** string the overseer generates when it first creates an
   observer record, and stores in that record. It is passed to gatekeepers as the stable handle
   for this observer. We deliberately do **not** use `profile.id` (usually an email), to avoid
@@ -584,8 +589,10 @@ you're allowed to see the data it uses."
 
 Extend `authorizeObservation()` (in `overseer.ts`) to honor `description.excludeObservers`.
 Because v1 has no per-thread hiding, an excluded-but-named observation can only proceed when the
-named observer cannot reach it at all: either they have *already lost access* in the sharing graph,
-or the connection that produced it is outside their access's forward reach.
+named observer cannot reach it at all: either they have *already lost access*, both in the sharing
+graph and as a member of the workspace's space, whose role is joined with the graph's
+(docs/sharing.md, "Space roles"), or the connection that produced it is outside their access's
+forward reach.
 
 For each id in `description.excludeObservers`:
 
@@ -594,7 +601,11 @@ For each id in `description.excludeObservers`:
    registering its id with any gatekeeper (Step 3), so a named id resolves until the record is
    torn down.
 2. Check sharing-graph reachability for that `profileId`
-   (`SharingManager.getEffectiveAccess` / `computeEffectiveAccess`).
+   (`SharingManager.getEffectiveAccess` / `computeEffectiveAccess`). The access checked is the
+   graph's joined with the role that profile holds as a member of the workspace's space
+   (docs/sharing.md, "Space roles"). The space is asked first, about every named observer not
+   already at `build`, and a lookup that fails blocks the observation rather than read as
+   "cannot reach".
    - **Still authorized, and the producing gatekeeper is in that access's forward reach → throw**,
      blocking the observation (degrade to per-observation lockdown). Use a clear message, e.g.:
      `"This observation was blocked because it contains data that a current collaborator is not permitted to see."`
@@ -670,7 +681,10 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
 
 - After a mutation, use the returned `AffectedCollaborator[]` to find users who **lost access**.
   For each who is now unreachable, if they have an observer record: delete the observer record,
-  then best-effort `removeObserver(record.observerId)` on **all** gatekeeper facets.
+  then best-effort `removeObserver(record.observerId)` on **all** gatekeeper facets. Someone the
+  graph dropped keeps their observer record while the workspace's space still gives them a role,
+  or while that cannot be learned: they can still open the workspace (docs/sharing.md,
+  "Space roles").
 - For access that **narrowed without being lost** (`build` → some gadgets, or one gadget of
   several), optionally `removeObserver` (and drop the corresponding `accountChoices` entries) for
   connections no gadget they still hold reaches. Safe to defer — an over-broad observer set only
@@ -678,9 +692,9 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
 - All these calls are best-effort: log and continue on error. An orphaned observer entry only
   causes superfluous future checks, never a data leak: a registration is what *admits* an open,
   and every open re-runs `addObserver`, so a stale one grants nothing on its own — while
-  `authorizeObservation`'s exclusion gate re-checks the live sharing graph for any id a gatekeeper
-  still names. Account choices are only ever published for a party who passed verification of
-  them; a reserved record carries none.
+  `authorizeObservation`'s exclusion gate re-checks the live sharing graph, and the space role
+  joined with it, for any id a gatekeeper still names. Account choices are only ever published
+  for a party who passed verification of them; a reserved record carries none.
 
 > Multi-gatekeeper sequencing/atomicity is an overseer implementation detail, not part of the
 > shared interface. Because `addObserver` is re-run every open and `removeObserver` is idempotent,
@@ -1018,8 +1032,18 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   Each observation checks its IDs for every configured observer the data reaches, online or not:
   for a gadget's read, "build" collaborators and those whose access includes a gadget that
   reaches it (`gadgetsReaching`); for a workspace read, anyone with access; for a chat's, "build"
-  collaborators. A collaborator who lost access is skipped. Either way the Workshop looks up each
-  observer's verifier for their chosen account (`getVerifier()` refuses a disconnected or
+  collaborators. A collaborator who lost access is skipped. Access there is the sharing graph's
+  joined with the space role the Overseer remembers giving each observer
+  (`ObserverLedgerHost.accessWithSpaceRole`; docs/sharing.md, "Space roles"). The role is
+  remembered from the admission that opened their session, so everyone who holds a session
+  through a space role is checked like a collaborator with that access; a member it remembers no
+  role of holds no session, and their next admission checks every recorded requirement. The one
+  exception is a role just taken back: it is forgotten in the step that schedules the restart, as
+  the graph drops a removed collaborator, so the sessions it opened stay live, unchecked, for the
+  restart's delay (the revocation window of "Known limitations"). The
+  remembered role only ever widens the audience, so it fails closed. At admission and at an
+  observation alike, the Workshop looks up each observer's verifier for their chosen account
+  (`getVerifier()` refuses a disconnected or
   wrong-vendor account even when there is nothing to check) and asks `verifyObserverAccess()`:
   one call per 10 observers for a read's audience, and batches of 10,000 IDs for admission,
   stopping at the first batch that denies. A denial, missing method, failed call, or malformed
