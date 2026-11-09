@@ -1276,6 +1276,17 @@ shallow-info.
   stateless and classifies nothing as grant death on its own, so a refresh still goes through
   `CredentialCoordinator` via `oauthRefresh`, and the two modules share no state with
   `PreviewOAuth`.
+- A hook driver keeps its enabled hooks in a `HookRegistry` over its own `ctx.storage.kv`, which
+  reserves `reg:`, `caps:`, `msg:` and `queue:` there. Every method but `run()` is synchronous, so
+  `set()` can share a turn with the driver's own records, where neither a disconnect nor the alarm
+  comes between them. A throw does not undo a Durable Object's earlier writes, and `set()` makes
+  two: call it inside `ctx.storage.transactionSync()`, along with any records that belong with it,
+  so a registration that can't be stored leaves the hook as it was. The driver owns the alarm:
+  bring it forward after `enqueue()`, call `run()` from it, then set it for the earliest of
+  `nextDue()` and its own deadlines. `remove()` only forgets the hook, so provider teardown stays
+  in the driver's `unregister`. Delete a hook's records directly only when clearing all of the
+  driver's storage: on their own, its queued messages outlive them and are delivered if the hook
+  is enabled again.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.
