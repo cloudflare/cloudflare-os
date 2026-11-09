@@ -75,16 +75,20 @@ The gatekeeper uses a private Scoped OAuth app, registered on the deployment's o
 account (for example `acme.pagerduty.com`). Only that account's users can connect, US or EU alike.
 
 1. Sign in as a Manager, Global Admin or Account Owner, and open **Integrations > Developer Tools
-   > App Registration**.
-2. Select **New App**, and leave its **App Type** as **Private**. Under **Functionality**, add
-   **OAuth** and choose **Scoped OAuth**.
-3. Grant it these scopes, exactly what the gatekeeper's endpoints need (`SCOPES` in
-   `src/pagerduty-env.ts`): `incidents.read`, `incidents.write`, `services.read`, `teams.read`,
-   `users.read`, `schedules.read`, `schedules.write`, `oncalls.read`, `priorities.read`,
-   `escalation_policies.read`.
-4. Add the redirect URL `$PUBLIC_BASE_URL/gatekeeper/pagerduty/oauth`, and save.
-5. Copy the **Client ID** and **Client Secret** into the deployment's `CLIENT_ID` and
-   `CLIENT_SECRET`.
+   > App Registration**. Select **New App**.
+2. Give it a **Name** and a **Description**. Under **Functionality**, tick **OAuth 2.0** only,
+   leaving **Events Integration** unticked, and continue to **Configure OAuth 2.0**.
+3. Set **Authorization** to **Scoped OAuth**. The form starts on **Classic User OAuth**, which
+   grants read or write on everything rather than the scopes below, and which the gatekeeper
+   can't use.
+4. Under **Redirect URL**, add `$PUBLIC_BASE_URL/gatekeeper/pagerduty/oauth`. **Add Redirect URL**
+   takes more, such as the local development one below.
+5. Under **Permission Scope**, grant these scopes, exactly what the gatekeeper's endpoints need
+   (`SCOPES` in `src/pagerduty-env.ts`): `incidents.read`, `incidents.write`, `services.read`,
+   `teams.read`, `users.read`, `schedules.read`, `schedules.write`, `oncalls.read`,
+   `priorities.read`, `escalation_policies.read`.
+6. Select **Register App**, and copy the **Client ID** and **Client Secret** into the deployment's
+   `CLIENT_ID` and `CLIENT_SECRET`.
 
 PagerDuty grants a scope the app lacks by silently leaving it out, so a connection missing any of
 them is refused, naming the ones missing.
