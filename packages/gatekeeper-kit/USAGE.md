@@ -1054,10 +1054,10 @@ Every outgoing page names all requirements for that disclosure, even if earlier 
 Do not drop a membership or parent-resource requirement just because `projects.length === 0`.
 
 A refusal holds the outgoing page, so the retry re-offers its rows with no further provider
-fetch: a page the provider capped short takes in no more of the provider's rows between the
-refusal and the retry, which would hand the approver more than what they refused. An empty page from a spent window is the
-exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the walk
-on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
+fetch. A page the provider capped short takes in none of its later rows before the retry, since
+they would hand the approver more than what they refused. An empty page from a spent window is
+the exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the
+walk on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
 `ArrayCursor` takes no callback: the session that assembled its items authorized them as one read.
 
 That hold is also why a walk pinned to a connection must re-check its authority in
