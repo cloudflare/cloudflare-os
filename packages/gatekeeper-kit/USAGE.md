@@ -1054,10 +1054,10 @@ Every outgoing page names all requirements for that disclosure, even if earlier 
 Do not drop a membership or parent-resource requirement just because `projects.length === 0`.
 
 A refusal holds the outgoing page, so the retry re-offers its rows with no further provider
-fetch: a page the provider capped short cannot grow between the refusal and the retry, which would
-hand the approver something larger than what they refused. An empty page from a spent window is the
-exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the walk
-on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
+fetch. A page the provider capped short takes in none of its later rows before the retry, since
+they would hand the approver more than what they refused. An empty page from a spent window is
+the exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the
+walk on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
 `ArrayCursor` takes no callback: the session that assembled its items authorized them as one read.
 
 That hold is also why a walk pinned to a connection must re-check its authority in
@@ -1079,22 +1079,38 @@ return new TokenCursor<Project>({
 });
 ```
 
-### Merge simulated rows with `inject`
+### Merge simulated rows with `inject`, and change provider rows with `overlay`
 
 Rows the gatekeeper's own simulation adds to a listing — a branch a queued push will create, a
 commit queued for push — go in `inject: { items, compare, revalidate?, identity? }` rather than a
 wrapper cursor, so they share the walk's serialization, fetch bound and refusal hold. Each injected
-row is served before the first provider row `compare` places it at-or-before, and the rest after the
-last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
-made only of them is not authorized, so do not inject anything the provider supplied. Their
+row is served before the first provider row `compare` places it at-or-before, and the rest after
+the last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
+made only of them is not authorized. Set `authorize` when they do carry provider data, such as a
+row re-read because a pending change moves it into the listing: each then reaches `authorizePage`
+with its page's provider rows, and a page made only of them is authorized like any other. Their
 position still says a little — an injected row served first means no fetched provider row sorts
 ahead of it — so a listing whose order is itself sensitive authorizes its observation up front.
 `revalidate` re-reads a row when it is served (`null` drops it), since a page may be drained long
 after the cursor was built. `identity` drops a later row of either source whose identity was
 already served, such as the provider's copy of a create that landed mid-walk; an injected row's
 identity is re-read at each check, so a temporary id that became the provider's still matches.
-A refused page's retry re-reads its injected rows and offers no provider row the refusal did not
-cover; one a dropped injected row had hidden leads the next page instead, with the rows after it.
+
+The cursor's own `overlay` does for provider rows what `revalidate` does for injected ones. They
+sit in the buffer as fetched until served, so apply the simulation's changes to them there rather
+than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
+It returns the rows to serve in a row's place, so it can drop a row or split it, as a pending
+override splits the on-call shift it covers. A row's pieces share a page, which can leave one
+short or, for a row that splits into more than `pageSize`, long.
+Both run synchronously, so state they read that needs a provider call or storage, such as whether a
+row's container is still within the binding, is re-read in `refresh`, which every `next()`
+awaits before building its page; refreshing it in the fetch callback would leave buffered rows
+judged by whatever the last fetch saw.
+
+A refused page's retry re-reads its rows, so `overlay` may make more or fewer of them, and offers
+no provider row the refusal did not cover; one a dropped injected row had hidden, one `overlay`
+had dropped, or one the page no longer has room for leads the next page instead, with the rows
+after it.
 
 ### Existing-code migration only: refusal and failure
 
