@@ -12,3 +12,97 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while
+   the conversation rests at that end (nothing is under the header at the first message; the newest
+   message sits clear of the composer), eased in over the first pixels scrolled away from it. The
+   column is reversed, so the timeline starts at the newest message and ends at the first: the top
+   amount holds until the last stretch, where it runs out, and the bottom one runs in at once.
+   Browsers without scroll-driven animations get the same two numbers from useScrollFadeFallback.
+
+   The gradients are eased, not linear: a straight ramp shows a hard line where it starts and stops
+   (https://larsenwork.com/easing-gradients/); each is a sine in-out sampled at ten steps. The top
+   fades to a floor, never to nothing; the bottom to nothing, where the messages end, measured from
+   the composer's midline, so half the composer's height of it is behind the composer itself.
+
+   The strip on the right is left unmasked so the scrollbar does not fade. It matches the
+   messages' own side padding, so it never covers a bubble. Not expressible with utilities, which
+   cannot declare a timeline. */
+@property --chat-fade-top {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+@property --chat-fade-bottom {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+@keyframes chat-fade-top {
+  from {
+    --chat-fade-top: 1;
+  }
+  to {
+    --chat-fade-top: 0;
+  }
+}
+@keyframes chat-fade-bottom {
+  from {
+    --chat-fade-bottom: 0;
+  }
+  to {
+    --chat-fade-bottom: 1;
+  }
+}
+.chat-fade {
+  --chat-fade-top: 0;
+  --chat-fade-bottom: 0;
+  --chat-fade-floor: calc(1 - 0.65 * var(--chat-fade-top));
+  --chat-fade-length: calc(var(--chat-fade-top) * (var(--header-height, 0px) + 2.5rem) / 2);
+  --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * (var(--composer-half, 0px) + 1.25rem));
+  mask-image:
+    linear-gradient(#000 0 0),
+    linear-gradient(
+      to bottom,
+        rgb(0 0 0 / var(--chat-fade-floor)) 0,
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.024)) calc(var(--chat-fade-length) * 0.1),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.095)) calc(var(--chat-fade-length) * 0.2),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.206)) calc(var(--chat-fade-length) * 0.3),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.345)) calc(var(--chat-fade-length) * 0.4),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.5)) calc(var(--chat-fade-length) * 0.5),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.655)) calc(var(--chat-fade-length) * 0.6),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.794)) calc(var(--chat-fade-length) * 0.7),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.905)) calc(var(--chat-fade-length) * 0.8),
+        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.976)) calc(var(--chat-fade-length) * 0.9),
+        #000 var(--chat-fade-length)
+    ),
+    linear-gradient(
+      to top,
+        transparent 0,
+        rgb(0 0 0 / 0.024) calc(var(--chat-fade-bottom-length) * 0.1),
+        rgb(0 0 0 / 0.095) calc(var(--chat-fade-bottom-length) * 0.2),
+        rgb(0 0 0 / 0.206) calc(var(--chat-fade-bottom-length) * 0.3),
+        rgb(0 0 0 / 0.345) calc(var(--chat-fade-bottom-length) * 0.4),
+        rgb(0 0 0 / 0.5) calc(var(--chat-fade-bottom-length) * 0.5),
+        rgb(0 0 0 / 0.655) calc(var(--chat-fade-bottom-length) * 0.6),
+        rgb(0 0 0 / 0.794) calc(var(--chat-fade-bottom-length) * 0.7),
+        rgb(0 0 0 / 0.905) calc(var(--chat-fade-bottom-length) * 0.8),
+        rgb(0 0 0 / 0.976) calc(var(--chat-fade-bottom-length) * 0.9),
+        #000 var(--chat-fade-bottom-length)
+    );
+  mask-composite: add, intersect, intersect;
+  mask-size: 0.75rem 100%, 100% 100%, 100% 100%;
+  mask-position: right top, 0 0, 0 0;
+  mask-repeat: no-repeat;
+}
+@supports (animation-timeline: scroll()) {
+  .chat-fade {
+    animation:
+      chat-fade-top linear both,
+      chat-fade-bottom linear both;
+    animation-timeline: scroll(self block), scroll(self block);
+    animation-range:
+      calc(100% - 3rem) 100%,
+      0 3rem;
+  }
+}

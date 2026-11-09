@@ -11,6 +11,7 @@ import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { ChatLayout } from '@/layouts/ChatLayout'
 
 export const Route = createFileRoute('/gallery')({
   component: Gallery,
@@ -151,16 +152,30 @@ function Gallery() {
         </div>
       </Section>
       <Section title="MessageBubble, ThinkingIndicator">
-        <div className="flex w-full flex-col gap-1">
+        <div className="flex w-full flex-col gap-2">
           <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
+          <MessageBubble role="user">Make it dark</MessageBubble>
+          <MessageBubble role="user">And add a chart of open tickets per week, with the team split out</MessageBubble>
           <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
           <MessageBubble role="assistant">Missing implementation</MessageBubble>
+          <MessageBubble role="error">Something went wrong</MessageBubble>
           <ThinkingIndicator />
         </div>
       </Section>
       <Section title="Composer">
         <div className="w-full">
           <Composer onSend={() => {}} />
+        </div>
+      </Section>
+      <Section title="ChatLayout (header and composer float over the scrolling messages)">
+        <div className="flex h-96 w-full flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
+          <ChatLayout header={<Button>Refactor conditional rendering logic</Button>} composer={<Composer onSend={() => {}} />}>
+            {Array.from({ length: 12 }, (_, i) => (
+              <MessageBubble key={i} role={i % 2 ? 'assistant' : 'user'}>
+                {i % 2 ? 'I’ll build a personal Jira dashboard with your stats.' : 'Create a dashboard showcasing my jira stats'}
+              </MessageBubble>
+            ))}
+          </ChatLayout>
         </div>
       </Section>
       <Section title="Borders: line (input) and hairline (checkbox)">
