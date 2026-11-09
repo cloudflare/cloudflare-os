@@ -510,7 +510,7 @@ export default function AdminPage() {
           )
       )}
 
-      {/* Admin audit log, workspace access and retention */}
+      {/* Admin audit log, inspection access and retention */}
       {activeTab === 'audit' && auditSettings !== null && (
         <AdminAuditPanel
           admin={admin.api}

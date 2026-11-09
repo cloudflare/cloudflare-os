@@ -22,8 +22,8 @@ type SensitivityChoice = AuditSensitivity | typeof ANY_SENSITIVITY
 
 /**
  * The Audit tab's filters. The admin and the target user (the owner of a workspace an admin called
- * into) are typed, with `adminSuggestions` and `targetSuggestions` offered, and apply on Enter or
- * once a suggestion is picked. The action is
+ * into, or the user whose account one inspected) are typed, with `adminSuggestions` and
+ * `targetSuggestions` offered, and apply on Enter or once a suggestion is picked. The action is
  * searched by typing, and the sensitivity chosen; both apply at once. The workspace filter is set
  * from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
  * it.

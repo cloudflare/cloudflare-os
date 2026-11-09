@@ -13,6 +13,7 @@ import type {
   AdminAuditRecord,
   AdminAuditStats,
   AdminSettingRecord,
+  AdminUserAccessRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import type { AuditFilter } from './auditFilter'
@@ -77,6 +78,7 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
 
 const SETTING_AT = new Date('2026-10-21T08:00:00Z')
 const ACCESS_AT = new Date('2026-10-21T09:15:00Z')
+const USER_AT = new Date('2026-10-21T10:30:00Z')
 
 const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord => ({
   kind: 'workspace',
@@ -94,6 +96,22 @@ const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord
   access: 'metadata',
   exposed: 'metadata',
   refused: 'ADMIN_CONTENT_WITHHELD',
+  ...patch,
+})
+
+const userRecord = (patch: Partial<AdminUserAccessRecord> = {}): AdminUserAccessRecord => ({
+  kind: 'user',
+  at: USER_AT,
+  admin: 'admin',
+  sessionId: 'session-3',
+  via: 'cli',
+  userId: 'user@example.test',
+  method: 'listConnectedAccounts',
+  args: {},
+  reason: 'Cannot sign in',
+  requested: 'full',
+  access: 'metadata',
+  exposed: 'metadata',
   ...patch,
 })
 
@@ -236,7 +254,7 @@ describe('AdminAuditPanel', () => {
     if (!element) throw new Error(`no select in ${title}`)
     return element
   }
-  const accessSelect = () => selectIn('Workspace access')
+  const accessSelect = () => selectIn('Inspection access')
   // The log's one select; its other comboboxes are text fields.
   const sensitivitySelect = () => {
     const element = [...card('Activity log').querySelectorAll<HTMLElement>('[role="combobox"]')]
@@ -535,7 +553,7 @@ describe('AdminAuditPanel', () => {
       expect(document.activeElement).toBe(adminField)
       expect(adminField.value).toBe('second-admin')
 
-      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
+      await click(within(logRows()[0], 'Show only calls targeting owner@example.test'))
       expect(document.activeElement).toBe(ownerField)
       expect(ownerField.value).toBe('owner@example.test')
     })
@@ -741,6 +759,41 @@ describe('AdminAuditPanel', () => {
       expect(details.textContent).toContain('ws-untitled')
     })
 
+    it('shows a call into a user’s account: its sensitivity and its user, and in its details the account, reason, access and arguments, with no workspace', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        userRecord({ method: 'inspectUser', args: { expiresAt: '2026-10-21T11:30:00.000Z' } }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
+      expect(cells.slice(1)).toEqual([
+        formatFullTimestamp(USER_AT), 'admin', 'inspectUser', 'User metadata', 'user@example.test',
+      ])
+      const details = await expand()
+      expect([...details.querySelectorAll('dt')].map((term) => term.textContent))
+        .toEqual(['Account', 'Reason', 'Access', 'Arguments', 'Via'])
+      expect([...details.querySelectorAll('dd')].map((value) => value.textContent)).toEqual([
+        'user@example.test', 'Cannot sign in', 'Metadata only (Full requested)',
+        'expiresAt: 2026-10-21T11:30:00.000Z', 'CLI',
+      ])
+      // Only a workspace's details filter by it.
+      expect(details.querySelector('button')).toBeNull()
+    })
+
+    it('marks a content read of a user’s account as one, and a refused call into one as refused', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        userRecord({ exposed: 'content', access: 'full' }),
+        userRecord({ method: 'describe', access: 'off', refused: 'ADMIN_WORKSPACE_ACCESS_OFF' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const sensitivities = logRows().map((row) => row.querySelectorAll('td')[4].textContent)
+      expect(sensitivities).toEqual(['Content read', 'User metadataRefused'])
+      expect((await expand(1)).textContent).toContain('Off (Full requested) · refused: Access off')
+    })
+
     it('filters by sensitivity: a content read by what it exposed, a setting change by its kind', async () => {
       const { listAdminAudit, onFilterChange } = await render()
 
@@ -750,6 +803,18 @@ describe('AdminAuditPanel', () => {
 
       await choose(sensitivitySelect(), 'Setting change')
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
+    })
+
+    it('filters metadata by the kind it is of: a workspace’s, or a user account’s', async () => {
+      const { listAdminAudit, onFilterChange } = await render()
+
+      await choose(sensitivitySelect(), 'Workspace metadata')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ sensitivity: 'metadata' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'workspace', exposed: 'metadata' }))
+
+      await choose(sensitivitySelect(), 'User metadata')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ sensitivity: 'userMetadata' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'user', exposed: 'metadata' }))
     })
 
     it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {
@@ -777,7 +842,7 @@ describe('AdminAuditPanel', () => {
       ]))
       const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
 
-      await click(within(logRows()[1], 'Show only calls into workspaces linus owns'))
+      await click(within(logRows()[1], 'Show only calls targeting linus'))
       expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus' }))
 
@@ -789,11 +854,32 @@ describe('AdminAuditPanel', () => {
         .toEqual(expect.arrayContaining(['grace', 'linus']))
     })
 
+    it('filters by the user whose account a row names, offering inspected users beside workspace owners', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        userRecord({ userId: 'ada' }), accessRecord({ workspaceOwner: 'grace' }), settingRecord(),
+      ]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(logRows()[0], 'Show only calls targeting ada'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'ada' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'ada' }))
+
+      const target = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      expect(document.activeElement).toBe(target)
+      expect(target.value).toBe('ada')
+      await type(target, '')
+      await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })) })
+      expect([...document.body.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+        .toEqual(expect.arrayContaining(['ada', 'grace']))
+    })
+
     it('filters by the owner and the workspace a record’s details name, and by the owner typed', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
       const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
-      await click(within(logRows()[0], 'Show only calls into workspaces owner@example.test owns'))
+      await click(within(logRows()[0], 'Show only calls targeting owner@example.test'))
       expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'owner@example.test' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'owner@example.test' }))
 
@@ -856,12 +942,12 @@ describe('AdminAuditPanel', () => {
     })
   })
 
-  describe('workspace access', () => {
+  describe('inspection access', () => {
     it('shows the level enforced', async () => {
       await render(settingsWith({ access: { effective: 'metadata', chosen: 'full', max: 'metadata' } }))
 
       expect(accessSelect().textContent).toContain('Metadata only')
-      expect(card('Workspace access').textContent)
+      expect(card('Inspection access').textContent)
         .toContain('The level set here is Full, which that maximum limits to Metadata only. Choose ' +
           'Metadata only to set it here, so that a higher maximum does not raise it.')
     })
@@ -869,7 +955,7 @@ describe('AdminAuditPanel', () => {
     it('says what Metadata only withholds and what it still shows', async () => {
       await render()
 
-      expect(card('Workspace access').textContent).toContain(
+      expect(card('Inspection access').textContent).toContain(
         'Metadata only withholds chat messages, attachments, file contents, commit messages, and the ' +
           'descriptions of actions, observations and hooks; titles, repository file names, commit ' +
           'authors, and the names and hashes of attachments stay, and titles and names can echo ' +
@@ -880,14 +966,14 @@ describe('AdminAuditPanel', () => {
       await render(settingsWith({ access: { max: 'metadata' } }))
 
       expect(await enabledOptions(accessSelect())).toEqual(['Off', 'Metadata only'])
-      expect(card('Workspace access').textContent).toContain('This deployment allows at most Metadata only')
+      expect(card('Inspection access').textContent).toContain('This deployment allows at most Metadata only')
     })
 
     it('leaves only Off when the deployment allows no inspection', async () => {
       await render(settingsWith({ access: { effective: 'off', chosen: 'metadata', max: 'off' } }))
 
       expect(await enabledOptions(accessSelect())).toEqual(['Off'])
-      expect(card('Workspace access').textContent).toContain('ADMIN_WORKSPACE_ACCESS_MAX allows no inspection')
+      expect(card('Inspection access').textContent).toContain('ADMIN_WORKSPACE_ACCESS_MAX allows no inspection')
     })
 
     it('sets the level chosen, then re-reads the settings and the log', async () => {
@@ -947,7 +1033,7 @@ describe('AdminAuditPanel', () => {
       await choose(accessSelect(), 'Full')
 
       expect(addToast).toHaveBeenCalledExactlyOnceWith({
-        title: 'Couldn’t update “Workspace access”',
+        title: 'Couldn’t update “Inspection access”',
         description: 'ADMIN_WORKSPACE_ACCESS_MAX allows at most "metadata"',
         variant: 'error',
       })

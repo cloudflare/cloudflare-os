@@ -26,7 +26,7 @@ type AdminAuditPanelProps = {
 }
 
 const CARD = 'bg-kumo-elevated border border-kumo-line rounded-xl p-6'
-const ACCESS_LABEL = 'Workspace access'
+const ACCESS_LABEL = 'Inspection access'
 const RETENTION_LABEL = 'Keep audit records for (days)'
 const STATS_DAYS = 7
 
@@ -251,7 +251,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
               Every change an admin makes to the deployment&rsquo;s settings, and every admin call into a
-              workspace, kept for {NUMBER.format(retention.effective)} days.
+              workspace or a user&rsquo;s account, kept for {NUMBER.format(retention.effective)} days.
             </p>
           </div>
           <Button

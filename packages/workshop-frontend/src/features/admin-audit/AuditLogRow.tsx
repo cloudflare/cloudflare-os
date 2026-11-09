@@ -5,11 +5,12 @@ import type {
   AdminAccessRecord,
   AdminAuditRecord,
   AdminSettingChange,
+  AdminUserAccessRecord,
   AdminVia,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES } from './accessNames'
-import { sensitivityOf, type AuditFilter } from './auditFilter'
+import { sensitivityOf, targetUserOf, type AuditFilter } from './auditFilter'
 import { AuditValue } from './AuditValue'
 import { SensitivityBadge } from './SensitivityBadge'
 
@@ -93,24 +94,28 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
 )
 
 const AccessDetails = ({ record, onFilterBy }: {
-  record: AdminAccessRecord
+  record: AdminAccessRecord | AdminUserAccessRecord
   onFilterBy: (filter: AuditFilter) => void
 }) => {
   const args = Object.entries(record.args)
   return (
     <dl className="space-y-2">
-      <Detail term="Workspace">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 h-auto max-w-full text-sm"
-          aria-label={`Show only calls into ${record.workspaceTitle || record.workspaceId}`}
-          onClick={() => onFilterBy({ workspace: record.workspaceId })}
-        >
-          <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
-        </Button>
-        <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
-      </Detail>
+      {record.kind === 'workspace'
+        ? (
+          <Detail term="Workspace">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-ml-2 h-auto max-w-full text-sm"
+              aria-label={`Show only calls into ${record.workspaceTitle || record.workspaceId}`}
+              onClick={() => onFilterBy({ workspace: record.workspaceId })}
+            >
+              <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
+            </Button>
+            <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
+          </Detail>
+        )
+        : <Detail term="Account">{record.userId || 'Unknown'}</Detail>}
       <Detail term="Reason">{record.reason}</Detail>
       <Detail term="Access">
         {ACCESS_LEVEL_NAMES[record.access]}
@@ -132,12 +137,13 @@ const AccessDetails = ({ record, onFilterBy }: {
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, sensitivity, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes or an access record's workspace, reason, level and arguments. An access record's target
- * user is its workspace's owner, the user the call reached. The admin's name and the target user,
- * and in an access record's details its workspace, filter the log by `onFilterBy`. Names are never
- * cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the summary
- * row as Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden or
- * not, so every summary row is an odd row to it and would never be striped.
+ * changes or an access record's workspace or account, reason, level and arguments. An access
+ * record's target user is the user the call reached: its workspace's owner, or the user whose
+ * account it was made into. The admin's name and the target user, and in a workspace record's
+ * details its workspace, filter the log by `onFilterBy`. Names are never cut: an action too long
+ * for the space left is, whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a
+ * table's even rows: Kumo counts the details row below each one, hidden or not, so every summary
+ * row is an odd row to it and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -148,6 +154,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   const [expanded, setExpanded] = useState(false)
   const detailsId = useId()
   const time = formatFullTimestamp(record.at)
+  const target = targetUserOf(record)
   return (
     <>
       <Table.Row className={shaded ? 'bg-kumo-elevated' : undefined}>
@@ -183,7 +190,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell>
           <span className="flex flex-wrap items-center gap-1.5">
             <SensitivityBadge sensitivity={sensitivityOf(record)} />
-            {record.kind === 'workspace' && record.refused && (
+            {record.kind !== 'setting' && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
@@ -197,12 +204,12 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
                 <span className="sr-only">Deployment-wide</span>
               </span>
             )
-            : record.workspaceOwner
+            : target
               ? (
                 <NameFilter
-                  name={record.workspaceOwner}
-                  label={`Show only calls into workspaces ${record.workspaceOwner} owns`}
-                  onFilter={() => onFilterBy({ owner: record.workspaceOwner })}
+                  name={target}
+                  label={`Show only calls targeting ${target}`}
+                  onFilter={() => onFilterBy({ owner: target })}
                 />
               )
               : <span className="text-sm text-kumo-subtle">Unknown</span>}
@@ -210,7 +217,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
       </Table.Row>
       <Table.Row id={detailsId} hidden={!expanded}>
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">
-          {expanded && (record.kind === 'workspace'
+          {expanded && (record.kind !== 'setting'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
             : (
               <div className="space-y-4">

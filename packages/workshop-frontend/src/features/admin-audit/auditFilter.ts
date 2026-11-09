@@ -1,5 +1,6 @@
 import {
   ADMIN_SETTING_METHODS,
+  ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
   type AdminAuditQuery,
   type AdminAuditRecord,
@@ -9,18 +10,32 @@ import {
 export type AuditMethod = AdminAuditRecord['method']
 
 /**
- * How sensitive a record is, by what it exposed: "content" for a call into a workspace whose answer
- * held content (AdminAccessRecord.exposed), "metadata" for any other call into a workspace, and
- * "setting" for a change to the deployment's settings.
+ * How sensitive a record is, by what it exposed: "content" for a call into a workspace or a user's
+ * account whose answer held content (AdminAccessRecord.exposed, AdminUserAccessRecord.exposed),
+ * "metadata" for any other call into a workspace, "userMetadata" for any other call into a user's
+ * account, and "setting" for a change to the deployment's settings.
  */
-export type AuditSensitivity = 'content' | 'metadata' | 'setting'
+export type AuditSensitivity = 'content' | 'metadata' | 'userMetadata' | 'setting'
 
-/** The sensitivities, most sensitive first. */
-export const AUDIT_SENSITIVITIES: readonly AuditSensitivity[] = ['content', 'metadata', 'setting']
+/** The sensitivities, most sensitive first; the two kinds of metadata rank alike. */
+export const AUDIT_SENSITIVITIES: readonly AuditSensitivity[] = ['content', 'metadata', 'userMetadata', 'setting']
 
 /** How sensitive `record` is (see AuditSensitivity). */
-export const sensitivityOf = (record: AdminAuditRecord): AuditSensitivity =>
-  record.kind === 'setting' ? 'setting' : record.exposed
+export const sensitivityOf = (record: AdminAuditRecord): AuditSensitivity => {
+  if (record.kind === 'setting') return 'setting'
+  if (record.exposed === 'content') return 'content'
+  return record.kind === 'user' ? 'userMetadata' : 'metadata'
+}
+
+/**
+ * The user `record` targets, as the owner filter matches them: the owner of the workspace a call was
+ * made into, or the user whose account it was made into. Undefined for a workspace whose owner is
+ * not known and for a setting change, which reaches every user.
+ */
+export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
+  if (record.kind === 'setting') return undefined
+  return (record.kind === 'user' ? record.userId : record.workspaceOwner) || undefined
+}
 
 /**
  * The Audit tab's filters, kept in the admin page's URL as search parameters of these names, so a
@@ -35,13 +50,18 @@ export type AuditFilter = {
   sensitivity?: AuditSensitivity
   /** Only records of access to this workspace, by id. */
   workspace?: string
-  /** Only records of access to workspaces this user owns, by canonical user id. */
+  /** Only records of access to this user's data: the workspaces they own and their account, by
+   * canonical user id. */
   owner?: string
 }
 
-/** The methods the Audit tab offers as filters, grouped as its Action filter lists them. */
+/**
+ * The methods the Audit tab offers as filters, grouped as its Action filter lists them. A workspace's
+ * view and a user account's share method names (describe, say), and a filter by one lists both
+ * views' calls to it, so their methods are one group that names each once.
+ */
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
-  { label: 'Workspace calls', methods: ADMIN_WORKSPACE_METHODS },
+  { label: 'Inspection calls', methods: [...new Set([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS])] },
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS },
 ]
 
@@ -70,8 +90,17 @@ export const auditFilterOf = (search: Record<string, unknown>): AuditFilter => {
 /** Whether any filter is set. */
 export const isFiltered = (filter: AuditFilter) => Object.values(filter).some((value) => value !== undefined)
 
-/** The listAdminAudit() query for `filter`: a sensitivity is what the records exposed, or their kind. */
+// What listAdminAudit() is asked for each sensitivity. A content read is one of either view, so it
+// names no kind.
+const SENSITIVITY_QUERIES: Record<AuditSensitivity, Pick<AdminAuditQuery, 'kind' | 'exposed'>> = {
+  content: { exposed: 'content' },
+  metadata: { kind: 'workspace', exposed: 'metadata' },
+  userMetadata: { kind: 'user', exposed: 'metadata' },
+  setting: { kind: 'setting' },
+}
+
+/** The listAdminAudit() query for `filter`: a sensitivity is what the records exposed, their kind, or both. */
 export const auditQueryOf = ({ sensitivity, ...filter }: AuditFilter): AdminAuditQuery => ({
   ...filter,
-  ...(sensitivity === 'setting' ? { kind: 'setting' } : sensitivity ? { exposed: sensitivity } : {}),
+  ...(sensitivity && SENSITIVITY_QUERIES[sensitivity]),
 })

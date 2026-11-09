@@ -4,7 +4,7 @@ import { CaretLeft, CaretRight } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { AdminApi, AdminAuditPage } from '@gadgets/workshop-shared/api'
 import { logRpcFailure } from '../../rpcErrors'
-import { auditQueryOf, isFiltered, type AuditFilter } from './auditFilter'
+import { auditQueryOf, isFiltered, targetUserOf, type AuditFilter } from './auditFilter'
 import { AuditFilters } from './AuditFilters'
 import { AUDIT_LOG_COLUMNS, AuditLogRow } from './AuditLogRow'
 import { ColumnResizeHandle } from './ColumnResizeHandle'
@@ -100,8 +100,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
     filters.current?.querySelector<HTMLInputElement>(`[data-filter-field="${field}"] input[role="combobox"]`)
       ?.focus()
   }
-  const targetSuggestions = [...new Set(page?.records.flatMap((record) =>
-    record.kind === 'workspace' && record.workspaceOwner ? [record.workspaceOwner] : []))]
+  const targetSuggestions = [...new Set(page?.records.flatMap((record) => targetUserOf(record) ?? []))]
   const workspaceRecord = page?.records.find((record) =>
     record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
   const workspaceLabel = workspace === undefined ? undefined
