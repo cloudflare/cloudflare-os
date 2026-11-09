@@ -50,9 +50,20 @@ through logs and errors, then everything else.
   a call whose record cannot be written returns nothing. The record follows the read because
   `exposed` must describe the answer actually returned. Flag a path that returns workspace data to
   an admin without these, or that sets `exposed` from anything but that answer.
-- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
-  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
-  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
+- `OverseerDurableObject.applyAdminWrite()` stays reachable only over the Durable Object binding
+  and is called only by `AdminApiImpl.approveWorkspaceWrite()`, after `AdminSettings` has verified
+  a passkey assertion over that request's challenge and claimed the request. It appends its
+  `"approved"` record to the deployment-wide log before any effect, so that a write whose record
+  cannot be written does not happen, and enters the write in the workspace's action log. Flag a
+  path that changes a workspace for an admin without these, any code that reads
+  `ADMIN_WORKSPACE_WRITES` other than through `adminWorkspaceWritesEnabled()`, any move of passkeys
+  into `AdminConfig`, any passkey check that trusts a request header for the origin, any way to
+  remove or use a passkey without an assertion, and any way to remove or use another admin's
+  passkey.
+- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS` and `ADMIN_WORKSPACE_WRITES` are
+  env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
+  enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without
+  `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the

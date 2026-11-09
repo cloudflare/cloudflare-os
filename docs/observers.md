@@ -147,6 +147,22 @@ The compensating controls are:
   record cannot be written fails, returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
 
+An approved admin write (`AdminApi.requestWorkspaceWrite()`, run by
+`OverseerDurableObject.applyAdminWrite()`) also runs without the admin being verified as an
+observer or registered with the workspace's gatekeepers. Unlike an inspection it is not silent and
+not confined to the read cap. It does what its operation does for a member, calls to gatekeepers
+and agent turns included. The workspace's owner and its `build` collaborators see it in the
+workspace's activity, with the admin's reason; a collaborator who only uses a gadget sees no
+activity, and a completed deletion leaves none. And `ADMIN_WORKSPACE_ACCESS_MAX` does not bound
+it: an admin write can make the admin a collaborator, who is then verified as an observer with
+their own accounts like any other and reads what a collaborator reads. Its compensating controls
+are its own:
+
+- `ADMIN_WORKSPACE_WRITES`, off by default and out of an admin session's reach;
+- the passkey approval of each request;
+- the record written before the effect, in the deployment-wide audit log;
+- the entry in the workspace's action log.
+
 [admin-access.md](admin-access.md) is the design record.
 
 ---
