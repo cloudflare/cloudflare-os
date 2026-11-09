@@ -292,25 +292,8 @@ async function readBoundedText(
   return chunks.join("");
 }
 
-/** A 206's `Content-Range`: where its bytes start, and the whole file's size unless `*`. */
-const CONTENT_RANGE = /^bytes (\d+)-\d+\/(\d+|\*)$/;
-
-/** Up to `length` bytes from the start of `response`'s body; whatever follows is cancelled unread. */
-async function readPrefix(response: Response, length: number): Promise<ArrayBuffer> {
-  if (!response.body) return new ArrayBuffer(0);
-  let reader = response.body.getReader();
-  let bytes = new Uint8Array(length);
-  let filled = 0;
-  while (filled < length) {
-    let { done, value } = await reader.read();
-    if (done) return bytes.slice(0, filled).buffer;
-    let take = Math.min(value.byteLength, length - filled);
-    bytes.set(value.subarray(0, take), filled);
-    filled += take;
-  }
-  await reader.cancel();
-  return bytes.buffer;
-}
+/** A 206's `Content-Range`: where its bytes start and end, and the whole file's size unless `*`. */
+const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
 
 function googleErrorReasonFromText(text: string): string | undefined {
   try {
@@ -759,22 +742,37 @@ export class DriveApi {
    * body through, and cancels it to stop the download.
    */
   async openDownload(fileId: string): Promise<ReadableStream<Uint8Array>> {
-    let response = await this.#fetchMedia(fileId);
+    let response = await this.#fetchMedia(fileId, {}, DOWNLOAD_TIMEOUT_MS);
     return response.body ?? new ReadableStream({ start: controller => controller.close() });
   }
 
   /**
-   * Up to `length` bytes of one file's content from `offset`, all read before this resolves, or
-   * fewer when the file ends first. Never more, and never from anywhere else: a whole-file answer
-   * to a range from the start is cut to the range, and any other misplaced answer is refused.
-   * `fileSize` is the size of the file the bytes came from, when Drive says.
+   * One file's content from `offset`, as a stream nothing has yet been read from: this resolves
+   * once Drive begins its answer, and nothing is buffered. Never from anywhere else: a whole-file
+   * answer is taken only for a range from the start, and any other misplaced answer is refused.
+   * The answer can run past the range, as a whole-file one does, so the caller takes the bytes it
+   * asked for. `length` is how many a ranged answer says it carries, and `fileSize` the size of
+   * the file they come from, when Drive says.
+   *
+   * Only the wait for the answer to begin is timed. Its body is read at the caller's pace, for as
+   * long as a file of any size takes, so the caller times a body that stalls and cancels it to
+   * stop the download.
    */
   async downloadRange(
     fileId: string, offset: number, length: number,
-  ): Promise<{ content: ArrayBuffer; fileSize?: number }> {
-    let response = await this.#fetchMedia(fileId, {
-      headers: { Range: `bytes=${offset}-${offset + length - 1}` },
-    });
+  ): Promise<{ content: ReadableStream<Uint8Array>; length?: number; fileSize?: number }> {
+    let begin = new AbortController();
+    let timer = setTimeout(
+      () => begin.abort(new DOMException("Google Drive did not answer in time.", "TimeoutError")),
+      DOWNLOAD_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.#fetchMedia(fileId, {
+        headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal: begin.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     let range = response.status === 206
       ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
       : undefined;
@@ -783,20 +781,27 @@ export class DriveApi {
       await response.body?.cancel();
       throw new Error("Google Drive did not return the requested byte range.");
     }
-    let content = await readPrefix(response, length);
+    let content = response.body ?? new ReadableStream({ start: controller => controller.close() });
     // A whole-file answer's length is the file's size, unless it was encoded in transit.
-    let total = range ? range[2]
+    let total = range ? range[3]
       : response.headers.has("Content-Encoding") ? null : response.headers.get("Content-Length");
-    return total == null || total === "*" ? { content } : { content, fileSize: Number(total) };
+    return {
+      content,
+      ...range ? { length: Number(range[2]) - offset + 1 } : {},
+      ...total == null || total === "*" ? {} : { fileSize: Number(total) },
+    };
   }
 
-  /** Drive's successful answer to a download of one file's content; any other is thrown. */
-  async #fetchMedia(fileId: string, init: RequestInit = {}): Promise<Response> {
+  /**
+   * Drive's successful answer to a download of one file's content; any other is thrown. With
+   * `timeoutMs`, the whole answer is timed, its body included.
+   */
+  async #fetchMedia(fileId: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
     if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
-      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+      this.getAccessToken, timeoutMs === undefined ? {} : { timeoutMs });
     if (!response.ok) throw await driveError(response);
     return response;
   }

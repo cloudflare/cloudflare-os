@@ -143,28 +143,32 @@ export type DrivePdfText = {
 export type DriveFileReadOptions = {
   /** Where to start, in bytes from the start of the file. Defaults to 0. */
   offset?: number;
-  /** How many bytes to read, from 1 to 4,000,000. Defaults to 4,000,000. */
+  /** How many bytes to read, at least 1. Defaults to the rest of the file. */
   length?: number;
 };
 
-/** One range of a Drive file's content. */
+/** A Drive file's content, or one range of it, streamed. */
 export type DriveFileBytes = {
   /** The file's MIME type, as `DriveEntry.mimeType` gives it. */
   mimeType: string;
-  /** The whole file's size in bytes: it has been read to its end once `offset + content.byteLength` reaches this. */
+  /** The whole file's size in bytes. */
   size: number;
-  /** When the file was last modified. Ranges reporting different times were read from different versions of it. */
+  /** When the file was last modified. Reads reporting different times read different versions of it. */
   modifiedTime: Date;
   /** Where `content` starts, in bytes from the start of the file. */
   offset: number;
+  /** How many bytes `content` carries: those asked for, fewer where the file ends, and none from its end. */
+  length: number;
   /**
-   * The bytes read: `length` of them, fewer where the file ends, and none from its end. A range
-   * can end partway through a multi-byte character, so decode text read in several ranges with
-   * one `TextDecoder`, calling `decoder.decode(content, { stream: true })` for each range and
-   * `decoder.decode()` at the end, or join the ranges' bytes before decoding; decoding each range
-   * on its own corrupts the characters split between them.
+   * The bytes, read from Google as you read them, so a file of any size never has to be held in
+   * memory. Pass it to a worktree's `writeBytes()` to save the file, read it whole with
+   * `await new Response(content).arrayBuffer()` (or `.text()`), or use a reader to stop early.
+   * Read it straight away, and cancel it if you will not: a stream left unread for a minute is
+   * ended. A stream that fails partway, whatever its error says, did not deliver the file: it was
+   * left unread, Google stopped answering or the file changed while it was being read, so read
+   * the file again.
    */
-  content: ArrayBuffer;
+  content: ReadableStream<Uint8Array>;
 };
 
 /**
@@ -214,14 +218,15 @@ export interface GoogleDriveReadSession {
   readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
-   * Read bytes of an in-scope file's own content: a CSV, image, PDF, Office or any other uploaded
-   * file, whatever its type. One call returns at most 4,000,000 bytes from `offset`; read a larger
-   * file in several, advancing `offset` by each `content.byteLength` until it reaches `size`.
-   * Google Docs, Sheets and Slides are refused naming the method that opens them, as are folders,
-   * shortcuts and other Google-native files (MIME types starting `application/vnd.google-apps.`),
-   * which have no content to download. Fails when Google does not let the account download the
-   * file, and asks to reconnect when the account was connected before Drive bindings could read
-   * file content. A binding runs at most three reads at once; further calls wait their turn.
+   * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
+   * other uploaded file, whatever its type or size. `options` selects part of it; omitted, the
+   * whole file. Google Docs, Sheets and Slides are refused naming the method that opens them, as
+   * are folders, shortcuts and other Google-native files (MIME types starting
+   * `application/vnd.google-apps.`), which have no content to download. Fails when Google does not
+   * let the account download the file, and asks to reconnect when the account was connected before
+   * Drive bindings could read file content. A binding has at most five of these streams open at
+   * once, so finish or cancel each before reading a sixth file: a further call waits up to 30
+   * seconds for one to end, then fails.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 }
@@ -260,7 +265,7 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
   readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
-   * Read bytes of a live direct child's own content, at most 4,000,000 per call, as
+   * Read a live direct child's own content as a stream of bytes, as
    * `GoogleDriveReadSession.readFile()` does.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;

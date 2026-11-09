@@ -62,6 +62,7 @@ function batchResponse(results: { status: number; body?: string; contentId?: str
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1345,6 +1346,8 @@ describe("openDownload", () => {
 
 describe("downloadRange", () => {
   const BYTES = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const bytesOf = async (content: ReadableStream<Uint8Array>) =>
+    new Uint8Array(await new Response(content).arrayBuffer());
 
   /** A 206 for `bytes=start-end` of {@link BYTES}, as Drive answers a range it honours. */
   function partial(start: number, end: number, total = BYTES.byteLength): Response {
@@ -1357,9 +1360,10 @@ describe("downloadRange", () => {
   it("asks alt=media across all drives for exactly the requested bytes", async () => {
     let calls = stubFetch([partial(3, 6)]);
 
-    let { content, fileSize } = await api().downloadRange("file-1_A", 3, 4);
+    let { content, length, fileSize } = await api().downloadRange("file-1_A", 3, 4);
 
-    expect(new Uint8Array(content)).toEqual(new Uint8Array([3, 4, 5, 6]));
+    expect(await bytesOf(content)).toEqual(new Uint8Array([3, 4, 5, 6]));
+    expect(length).toBe(4);
     expect(fileSize).toBe(10);
     expect(calls[0].url.origin + calls[0].url.pathname)
       .toBe("https://www.googleapis.com/drive/v3/files/file-1_A");
@@ -1369,28 +1373,31 @@ describe("downloadRange", () => {
     expect(calls[0].headers.get("Authorization")).toBe("Bearer tok");
   });
 
-  it("returns what there is when the file ends inside the range", async () => {
-    stubFetch([partial(8, 9)]);
-    expect(new Uint8Array((await api().downloadRange("file-1", 8, 5)).content))
-      .toEqual(new Uint8Array([8, 9]));
-  });
-
   it("reports no file size when Drive does not give one", async () => {
     stubFetch([new Response(BYTES.slice(0, 2), {
       status: 206, headers: { "Content-Range": "bytes 0-1/*" },
     })]);
-    expect(await api().downloadRange("file-1", 0, 2)).toEqual({ content: expect.any(ArrayBuffer) });
+    expect((await api().downloadRange("file-1", 0, 2)).fileSize).toBeUndefined();
   });
 
-  it("keeps only the requested bytes of a whole-file answer to a range from the start", async () => {
+  // The caller can then refuse the answer on its headers, before reading any of it.
+  it("reports how many bytes a range that ends early says it carries", async () => {
+    stubFetch([partial(3, 5)]);
+
+    expect(await api().downloadRange("file-1", 3, 4)).toEqual(
+      expect.objectContaining({ length: 3, fileSize: 10 }));
+  });
+
+  it("opens a whole-file answer to a range from the start, reading none of it", async () => {
     let { body, state } = countedBody(4);
     stubFetch([new Response(body)]);
 
-    let { content, fileSize } = await api().downloadRange("file-1", 0, 6);
+    let { content, length, fileSize } = await api().downloadRange("file-1", 0, 6);
+    expect(length).toBeUndefined();
 
-    expect(content.byteLength).toBe(6);
     expect(fileSize).toBeUndefined();
-    expect(state.pulls).toBeLessThanOrEqual(3);
+    expect(state.pulls).toBe(0);
+    await content.cancel();
     expect(state.cancelled).toBe(true);
   });
 
@@ -1404,10 +1411,31 @@ describe("downloadRange", () => {
     expect((await api().downloadRange("file-1", 0, 4)).fileSize).toBeUndefined();
   });
 
-  it("never returns more than was asked for, whatever Drive sends", async () => {
-    stubFetch([partial(2, 9)]);
-    expect(new Uint8Array((await api().downloadRange("file-1", 2, 3)).content))
-      .toEqual(new Uint8Array([2, 3, 4]));
+  // The body of a file of any size is read at the caller's pace, so only Drive's wait to begin
+  // answering can be timed: a timer still running would cut a long download short.
+  it("times the wait for Drive to begin its answer, and nothing after it", async () => {
+    vi.useFakeTimers();
+    let signals: AbortSignal[] = [];
+    let answers = [() => new Promise<Response>(() => {}), async () => partial(0, 9)];
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      let signal = init.signal!;
+      signals.push(signal);
+      return Promise.race([
+        answers.shift()!(),
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+        }),
+      ]);
+    });
+
+    let silent = api().downloadRange("file-1", 0, 10).catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await silent).toMatchObject({ name: "TimeoutError" });
+
+    let { content } = await api().downloadRange("file-1", 0, 10);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(signals[1].aborted).toBe(false);
+    expect(await bytesOf(content)).toEqual(BYTES);
   });
 
   it.each([

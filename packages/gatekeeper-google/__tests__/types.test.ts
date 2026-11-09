@@ -323,27 +323,22 @@ const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated
 `)).toEqual([]);
   });
 
-  it("lets an agent page a file's bytes from both Drive sessions and decode them", () => {
+  it("streams a file's bytes from both Drive sessions, whole or by range", () => {
     expect(compileAgentTypes(driveBundle() + `
 declare const drive: GoogleDriveReadSession;
 declare const folder: GoogleDriveFolderSession;
+declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
 async function readCsv(): Promise<string> {
-  const decoder = new TextDecoder();
-  let text = "";
-  let offset = 0;
-  for (;;) {
-    const { content, size } = await drive.readFile("file-1", { offset });
-    text += decoder.decode(content, { stream: true });
-    offset += content.byteLength;
-    if (offset >= size || content.byteLength === 0) break;
-  }
-  text += decoder.decode();
-  const first = await folder.readFile("file-2", { length: 1024 });
+  const whole = await drive.readFile("file-1");
+  const text = await new Response(whole.content).text();
+  const first = await folder.readFile("file-2", { offset: 16, length: 1024 });
+  const rest: boolean = first.offset + first.length < first.size;
   const changed: boolean = first.modifiedTime.getTime() > 0;
-  return text + first.mimeType + changed;
+  await worktree.writeBytes("data/file-2.bin", first.content);
+  return text + first.mimeType + rest + changed;
 }
-// @ts-expect-error A range is bytes, not text.
-const text: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new Date(), offset: 0, content: "a" };
+// @ts-expect-error The content is a stream, not the bytes themselves.
+const held: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new Date(), offset: 0, length: 1, content: new Uint8Array(1) };
 `)).toEqual([]);
   });
 });

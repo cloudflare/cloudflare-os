@@ -6,9 +6,11 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
-import type { DriveBindingScope } from "../../src/drive-session";
-import { MAX_CONCURRENT_FILE_READS } from "../../src/drive-file-read";
+import {
+  FILE_READ_IDLE_MS, FILE_READ_WAIT_MS, FILE_READS_BUSY, MAX_OPEN_FILE_READS,
+} from "../../src/drive-file-read";
 import { Semaphore } from "../../src/mutex";
+import type { DriveBindingScope } from "../../src/drive-session";
 import type { PdfConverter } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
@@ -71,6 +73,11 @@ async function readText(result: DrivePdfText): Promise<{ text: string; hasText: 
   return { text: await new Response(result.text).text(), hasText: result.hasText };
 }
 
+/** Everything a file read's stream carries. */
+async function bytesOf(read: { content: ReadableStream<Uint8Array> }): Promise<Uint8Array> {
+  return new Uint8Array(await new Response(read.content).arrayBuffer());
+}
+
 function isDownload(url: string): boolean {
   return new URL(url).searchParams.get("alt") === "media";
 }
@@ -104,11 +111,8 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();
-  /** Titles whose authorization waits for the promise mapped to them. */
-  readonly holds = new Map<string, Promise<void>>();
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
-    await this.holds.get(description.title);
     if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
   }
@@ -248,7 +252,7 @@ function newSession(
       new GoogleSheetsApi(getAccessToken),
       new GoogleSlidesApi(getAccessToken),
       convertPdf,
-      new Semaphore(MAX_CONCURRENT_FILE_READS),
+      new Semaphore(MAX_OPEN_FILE_READS),
       scope,
       queueStub,
     )),
@@ -495,11 +499,14 @@ describe("Drive file reads", () => {
     "This Google account was connected before Drive bindings could read file content. Reconnect " +
     "it in Workshop to read Drive files.";
 
-  type ProviderFile = { mimeType: string; content?: Uint8Array; canDownload?: boolean };
+  /** The size of a file too large to be worth holding, served only as a stream a test supplies. */
+  const BIG = 64 * 1024 * 1024;
+  type ProviderFile = { mimeType: string; content?: Uint8Array; size?: number; canDownload?: boolean };
   const FILES: Record<string, ProviderFile> = {
     "csv-1": { mimeType: "text/csv", content: CSV_BYTES },
     "empty-1": { mimeType: "text/plain", content: new Uint8Array() },
     "big-1": { mimeType: "application/octet-stream", content: new Uint8Array(4_000_010) },
+    "stream-1": { mimeType: "application/octet-stream", size: BIG },
     "locked-1": { mimeType: "text/csv", content: CSV_BYTES, canDownload: false },
     "doc-1": { mimeType: DOC_MIME },
     "sheet-1": { mimeType: SHEET_MIME },
@@ -546,6 +553,7 @@ describe("Drive file reads", () => {
         mimeType: file.mimeType,
         modifiedTime: "2026-08-20T12:00:00Z",
         ...file.content ? { size: String(file.content.byteLength) } : {},
+        ...file.size === undefined ? {} : { size: String(file.size) },
         ...file.canDownload === undefined ? {} : { capabilities: { canDownload: file.canDownload } },
       });
     }));
@@ -556,20 +564,21 @@ describe("Drive file reads", () => {
     providerUrls = installFileProvider();
   });
 
-  it("reads a whole small file, authorizing the read before returning it", async () => {
+  it("streams a whole small file, authorizing the read before returning it", async () => {
     const { queue, session } = newSession();
     using owned = session;
 
     const read = await owned.readFile("csv-1");
 
-    expect(new TextDecoder().decode(read.content)).toBe("region,amount\nEMEA,120\nAPAC,95\n");
     expect(read).toEqual({
       mimeType: "text/csv",
       size: CSV_BYTES.byteLength,
       modifiedTime: new Date("2026-08-20T12:00:00Z"),
       offset: 0,
-      content: expect.any(ArrayBuffer),
+      length: CSV_BYTES.byteLength,
+      content: expect.any(ReadableStream),
     });
+    expect(await new Response(read.content).text()).toBe("region,amount\nEMEA,120\nAPAC,95\n");
     expect(downloads).toEqual([`bytes=0-${CSV_BYTES.byteLength - 1}`]);
     expect(queue.observations.map(({ title, description, subresources }) =>
       ({ title, description, subresources }))).toEqual([
@@ -587,16 +596,17 @@ describe("Drive file reads", () => {
     ]);
   });
 
-  it("reads a large file in ranges, clamping the last one to the end of the file", async () => {
+  it("reads a range of a file, clamping one that runs past its end", async () => {
     using session = newSession().session;
     const size = CSV_BYTES.byteLength;
 
     const middle = await session.readFile("csv-1", { offset: 7, length: 6 });
     const last = await session.readFile("csv-1", { offset: size - 4, length: 100 });
 
-    expect(new Uint8Array(middle.content)).toEqual(CSV_BYTES.slice(7, 13));
-    expect(middle.offset).toBe(7);
-    expect(new Uint8Array(last.content)).toEqual(CSV_BYTES.slice(size - 4));
+    expect(middle).toEqual(expect.objectContaining({ offset: 7, length: 6 }));
+    expect(await bytesOf(middle)).toEqual(CSV_BYTES.slice(7, 13));
+    expect(last.length).toBe(4);
+    expect(await bytesOf(last)).toEqual(CSV_BYTES.slice(size - 4));
     expect(downloads).toEqual(["bytes=7-12", `bytes=${size - 4}-${size - 1}`]);
   });
 
@@ -606,9 +616,10 @@ describe("Drive file reads", () => {
     const atEnd = await session.readFile("csv-1", { offset: CSV_BYTES.byteLength });
     const empty = await session.readFile("empty-1");
 
-    expect(atEnd.content.byteLength).toBe(0);
-    expect(empty).toEqual(expect.objectContaining({ size: 0, offset: 0 }));
-    expect(empty.content.byteLength).toBe(0);
+    expect(atEnd.length).toBe(0);
+    expect(await bytesOf(atEnd)).toHaveLength(0);
+    expect(empty).toEqual(expect.objectContaining({ size: 0, offset: 0, length: 0 }));
+    expect(await bytesOf(empty)).toHaveLength(0);
     expect(downloads).toEqual([]);
   });
 
@@ -624,8 +635,8 @@ describe("Drive file reads", () => {
   it.each([
     [{ offset: -1 }, "offset must be a whole number of bytes, at least 0."],
     [{ offset: 1.5 }, "offset must be a whole number of bytes, at least 0."],
-    [{ length: 0 }, "length must be a whole number of bytes from 1 to 4,000,000."],
-    [{ length: 4_000_001 }, "length must be a whole number of bytes from 1 to 4,000,000."],
+    [{ length: 0 }, "length must be a whole number of bytes, at least 1."],
+    [{ length: 2.5 }, "length must be a whole number of bytes, at least 1."],
   ])("refuses the range %o before contacting Google", async (options, message) => {
     const { queue, session } = newSession();
     using owned = session;
@@ -635,14 +646,50 @@ describe("Drive file reads", () => {
     expect(queue.observations).toEqual([]);
   });
 
-  it("reads at most 4,000,000 bytes when no length is given", async () => {
+  it("reads a file of any size whole when no length is given", async () => {
     using session = newSession().session;
 
-    const first = await session.readFile("big-1");
+    const whole = await session.readFile("big-1");
 
-    expect(first.content.byteLength).toBe(4_000_000);
-    expect(first.size).toBe(4_000_010);
-    expect(downloads).toEqual(["bytes=0-3999999"]);
+    expect(whole.length).toBe(4_000_010);
+    expect(await bytesOf(whole)).toHaveLength(4_000_010);
+    expect(downloads).toEqual(["bytes=0-4000009"]);
+  });
+
+  /** An answer of `chunks` 64 KiB chunks, counting how many Drive was asked for. */
+  function chunkedAnswer(chunks: number) {
+    const state = { pulls: 0, cancelled: false };
+    const chunk = new Uint8Array(65_536);
+    const answer = () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (state.pulls++ < chunks) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    }, { highWaterMark: 0 }), {
+      status: 206, headers: { "Content-Range": `bytes 0-${BIG - 1}/${BIG}` },
+    });
+    return { state, answer };
+  }
+
+  // The file leaves Drive as the caller reads it: RPC reads a little ahead of an idle caller and
+  // then waits, so what is held here does not grow with the file.
+  it("reads little of an unread stream from Drive, and stops when it is cancelled", async () => {
+    const { state, answer } = chunkedAnswer(BIG / 65_536);
+    answerDownload = answer;
+    using session = newSession().session;
+
+    const read = await session.readFile("stream-1");
+    await scheduler.wait(100);
+    expect(state.pulls).toBeLessThan(8);
+
+    const reader = read.content.getReader();
+    expect((await reader.read()).value?.byteLength).toBeGreaterThan(0);
+    await reader.cancel();
+    await vi.waitFor(() => expect(state.cancelled).toBe(true));
+    expect(state.pulls).toBeLessThan(BIG / 65_536);
   });
 
   it.each([
@@ -704,22 +751,22 @@ describe("Drive file reads", () => {
   const shrunk = CSV_BYTES.slice(0, -1);
   const n = CSV_BYTES.byteLength;
   it.each([
-    ["the file grew, by a range's total", () => new Response(grown.slice(0, n), {
+    ["grew, by a range's total", () => new Response(grown.slice(0, n), {
       status: 206, headers: { "Content-Range": `bytes 0-${n - 1}/${grown.byteLength}` },
     })],
-    ["the file grew, by a whole-file answer's length", () => new Response(grown, {
+    ["grew, by a whole-file answer's length", () => new Response(grown, {
       headers: { "Content-Length": String(grown.byteLength) },
     })],
-    ["the file shrank, by a whole-file answer's length", () => new Response(shrunk, {
+    ["shrank, by a whole-file answer's length", () => new Response(shrunk, {
       headers: { "Content-Length": String(shrunk.byteLength) },
     })],
-    ["the file shrank, by a range of unknown total ending early", () => new Response(shrunk, {
+    ["shrank, by a range of unknown total that ends early", () => new Response(shrunk, {
       status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/*` },
     })],
-    ["Drive ends a range early", () => new Response(shrunk, {
+    ["is unchanged, of a range that ends early all the same", () => new Response(shrunk, {
       status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/${n}` },
     })],
-  ])("withholds bytes when %s", async (_name, answer) => {
+  ])("withholds every byte when Drive says the file %s", async (_name, answer) => {
     answerDownload = answer;
     const { queue, session } = newSession();
     using owned = session;
@@ -729,37 +776,134 @@ describe("Drive file reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
   });
 
-  // Each read keeps its bytes until it is authorized, so authorization holding the first three up
-  // must keep a fourth from downloading at all.
-  it("holds at most three reads at once, each until its read is authorized", async () => {
-    const { queue, session } = newSession();
-    using owned = session;
-    const authorized = Promise.withResolvers<void>();
-    queue.holds.set("Read file from Google Drive", authorized.promise);
+  // Its headers promise the whole range, so only the stream can say otherwise: it fails in place
+  // of ending short. Over RPC the failure arrives as a broken stream, without the refusal's words.
+  it("fails the stream, after the bytes it had, when the answer ends inside its range", async () => {
+    answerDownload = () => new Response(shrunk, {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 1}/${n}` },
+    });
+    using session = newSession().session;
 
-    const reads = Array.from({ length: 4 }, () => Promise.resolve(owned.readFile("csv-1")));
-    // All four have opened the file, so the fourth is waiting its turn, not merely late.
-    await vi.waitFor(() => expect(queue.observations).toHaveLength(4));
-    expect(downloads).toHaveLength(3);
+    const read = await session.readFile("csv-1");
+    expect(read.length).toBe(n);
+    const reader = read.content.getReader();
+    const delivered: number[] = [];
+    const failure = await (async () => {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) return undefined;
+        delivered.push(...chunk.value);
+      }
+    })().catch((error: unknown) => error);
 
-    authorized.resolve();
-    await Promise.all(reads);
-    expect(downloads).toHaveLength(4);
+    expect(failure).toBeInstanceOf(Error);
+    expect(new Uint8Array(delivered)).toEqual(shrunk);
   });
 
-  it("withholds the bytes when their read is not authorized", async () => {
+  it("withholds the stream when its read is not authorized, ending the download", async () => {
+    const { state, answer } = chunkedAnswer(1);
+    answerDownload = answer;
     const { queue, session } = newSession();
     using owned = session;
     queue.refuse.add("Read file from Google Drive");
 
-    await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow("Observation refused");
+    await expect(Promise.resolve(owned.readFile("stream-1"))).rejects.toThrow("Observation refused");
     expect(downloads).toHaveLength(1);
+    expect(state.cancelled).toBe(true);
+  });
+
+  /** Opens `count` reads of the stream-only file, leaving each stream unread. */
+  async function openReads(session: ReturnType<typeof newSession>["session"], count: number) {
+    const answers = Array.from({ length: count }, () => chunkedAnswer(BIG / 65_536));
+    let next = 0;
+    answerDownload = () => answers[next++]!.answer();
+    const reads = [];
+    for (let i = 0; i < count; i++) reads.push(await session.readFile("stream-1"));
+    return { answers, reads };
+  }
+
+  // Each open stream holds a download, so a binding opens only so many at once.
+  it("opens only so many downloads at once, a further read waiting for a stream to end", async () => {
+    using session = newSession().session;
+    const { answers, reads } = await openReads(session, MAX_OPEN_FILE_READS);
+    answerDownload = undefined;
+
+    const further = Promise.resolve(session.readFile("csv-1"));
+    await scheduler.wait(50);
+    expect(downloads).toHaveLength(MAX_OPEN_FILE_READS);
+
+    await reads[1]!.content.cancel();
+    expect(await bytesOf(await further)).toEqual(CSV_BYTES);
+    expect(answers.flatMap(({ state }, index) => state.cancelled ? [index] : [])).toEqual([1]);
+    for (const read of reads) await read.content.cancel();
+  });
+
+  it("refuses a read that no stream ends in time for, without downloading", async () => {
+    using session = newSession().session;
+    const { reads } = await openReads(session, MAX_OPEN_FILE_READS);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const further = Promise.resolve(session.readFile("stream-1")).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(FILE_READ_WAIT_MS);
+
+    expect(await further).toEqual(expect.objectContaining({ message: FILE_READS_BUSY }));
+    expect(downloads).toHaveLength(MAX_OPEN_FILE_READS);
+    vi.useRealTimers();
+    for (const read of reads) await read.content.cancel();
+  });
+
+  // An agent that drops a stream without cancelling it must not hold its download, or its turn.
+  it("ends a stream left unread for a minute, freeing its download and its turn", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    using session = newSession().session;
+    const { answers, reads } = await openReads(session, MAX_OPEN_FILE_READS);
+
+    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS);
+    vi.useRealTimers();
+
+    await vi.waitFor(() =>
+      expect(answers.every(({ state }) => state.cancelled)).toBe(true));
+    await expect(bytesOf(reads[0]!)).rejects.toThrow();
+    answerDownload = undefined;
+    expect(await bytesOf(await session.readFile("csv-1"))).toEqual(CSV_BYTES);
+  });
+
+  // Were a turn kept by a read that ended without a stream, one read too many would wait for it.
+  it.each([
+    ["is not authorized", (queue: TestApprovalQueue) => {
+      queue.refuse.add("Read file from Google Drive");
+    }, "Observation refused"],
+    ["is refused by Drive", () => {
+      answerDownload = () => Response.json(
+        { error: { code: 403, errors: [{ reason: "cannotDownloadAbusiveFile" }] } }, { status: 403 });
+    }, "Google identified this file as malware or spam"],
+    ["finds the file changed", () => {
+      answerDownload = () => new Response(grown, {
+        headers: { "Content-Length": String(grown.byteLength) },
+      });
+    }, "The Drive file changed while it was being read; read it again."],
+  ])("frees the turn of a read that %s", async (_name, arrange, message) => {
+    const { queue, session } = newSession();
+    using owned = session;
+    arrange(queue);
+
+    for (let i = 0; i <= MAX_OPEN_FILE_READS; i++) {
+      await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow(message);
+    }
+  });
+
+  it("frees the turn of each stream read to its end", async () => {
+    using session = newSession().session;
+
+    for (let i = 0; i <= MAX_OPEN_FILE_READS; i++) {
+      expect(await bytesOf(await session.readFile("csv-1"))).toEqual(CSV_BYTES);
+    }
   });
 
   it("reads the bound file of an exact-file binding", async () => {
     using session = newSession(undefined, { kind: "file", fileId: "csv-1" }).session;
 
-    expect(new Uint8Array((await session.readFile("csv-1")).content)).toEqual(CSV_BYTES);
+    expect(await bytesOf(await session.readFile("csv-1"))).toEqual(CSV_BYTES);
   });
 
   it("refuses any other ID in an exact-file binding before contacting Google", async () => {
@@ -954,9 +1098,10 @@ describe("folder-scoped native sessions", () => {
   }
 
   /**
-   * Answers downloads with PDF_BYTES whole, in two chunks pulled one at a time. `onLastChunk`
-   * runs just before the second is sent, so a change it makes lands while the body is still
-   * being read.
+   * Answers downloads with PDF_BYTES whole, in two chunks pulled one at a time. `onNativeRead`
+   * runs as Google is asked, so a change it makes lands before Google begins its answer;
+   * `onLastChunk` runs just before the second chunk is sent, so one it makes lands while the body
+   * is still being read.
    */
   function installFolderProvider(
     nodes: Map<string, Node>, onNativeRead?: () => void, onLastChunk?: () => void,
@@ -975,6 +1120,9 @@ describe("folder-scoped native sessions", () => {
             onLastChunk?.();
             controller.enqueue(PDF_BYTES.slice(half));
             controller.close();
+          },
+          cancel() {
+            nativeCalls.push("download cancelled");
           },
         }, { highWaterMark: 0 }), { headers: { "Content-Type": PDF_MIME } });
       }
@@ -1039,7 +1187,7 @@ describe("folder-scoped native sessions", () => {
         new GoogleSheetsApi(getAccessToken),
         new GoogleSlidesApi(getAccessToken),
         convertPdf,
-        new Semaphore(MAX_CONCURRENT_FILE_READS),
+        new Semaphore(MAX_OPEN_FILE_READS),
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
       )),
@@ -1344,7 +1492,7 @@ describe("folder-scoped native sessions", () => {
     const { queue, session } = folderSession(nodes);
     using owned = session;
 
-    expect(new Uint8Array((await owned.readFile("data-1")).content)).toEqual(PDF_BYTES);
+    expect(await bytesOf(await owned.readFile("data-1"))).toEqual(PDF_BYTES);
     expect(nativeCalls).toEqual(["download"]);
     expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
       ["Open file from Google Drive", [`drive/folder/${ROOT}`, "drive/file/data-1"]],
@@ -1353,24 +1501,27 @@ describe("folder-scoped native sessions", () => {
     ]);
   });
 
-  // The move lands while the last bytes are still on their way, so only a re-proof taken after the
-  // whole range has arrived can see it: one taken when the download merely starts would pass.
-  it("refuses bytes from a file moved out of the folder before its last byte arrived", async () => {
+  // The move lands after the file was opened, so only a re-proof taken once Drive is asked for the
+  // bytes can see it.
+  it("refuses bytes from a file moved out of the folder before Drive answered", async () => {
     const nodes = subtree();
     nodes.set("data-1", dataNode(ROOT));
-    installFolderProvider(nodes, undefined, () => nodes.set("data-1", dataNode("elsewhere")));
+    const nativeCalls = installFolderProvider(
+      nodes, () => nodes.set("data-1", dataNode("elsewhere")));
     const { queue, session } = folderSession(nodes);
     using owned = session;
 
     await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(OUTSIDE);
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+    // The answer Drive had begun is let go unread.
+    expect(nativeCalls).toEqual(["download", "download cancelled"]);
   });
 
   // Its size is unchanged, so only the modification time the re-proof reads can show the rewrite.
-  it("refuses bytes from a file rewritten at the same size during the download", async () => {
+  it("refuses bytes from a file rewritten at the same size before Drive answered", async () => {
     const nodes = subtree();
     nodes.set("data-1", dataNode(ROOT));
-    installFolderProvider(nodes, undefined, () =>
+    const nativeCalls = installFolderProvider(nodes, () =>
       nodes.set("data-1", { ...dataNode(ROOT), modifiedTime: "2026-08-21T09:00:00Z" }));
     const { queue, session } = folderSession(nodes);
     using owned = session;
@@ -1378,6 +1529,18 @@ describe("folder-scoped native sessions", () => {
     await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(
       "The Drive file changed while it was being read; read it again.");
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+    expect(nativeCalls).toEqual(["download", "download cancelled"]);
+  });
+
+  // The file was in the folder when Drive began its answer, and the answer is of the file as it
+  // was then, so the rest of it is still the folder's to read.
+  it("finishes a stream whose file leaves the folder after Drive began answering", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode(ROOT));
+    installFolderProvider(nodes, undefined, () => nodes.set("data-1", dataNode("elsewhere")));
+    using session = folderSession(nodes).session;
+
+    expect(await bytesOf(await session.readFile("data-1"))).toEqual(PDF_BYTES);
   });
 
   it("refuses a file outside the folder without downloading it", async () => {
@@ -1401,6 +1564,6 @@ describe("folder-scoped native sessions", () => {
     using session = folderSession(nodes).session;
     using child = await session.openFolder("nested");
 
-    expect(new Uint8Array((await child.readFile("data-1")).content)).toEqual(PDF_BYTES);
+    expect(await bytesOf(await child.readFile("data-1"))).toEqual(PDF_BYTES);
   });
 });
