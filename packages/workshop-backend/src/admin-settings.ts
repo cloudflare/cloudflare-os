@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminVia, AdminViewAccess, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -1500,26 +1500,40 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
         { owner: options.owner, query: options.query, cursor: options.cursor, limit });
   }
 
-  async inspectWorkspace(workspaceId: string, reason: string, options: AdminInspectOptions = {})
-      : Promise<RpcStub<AdminWorkspaceView>> {
+  /**
+   * What an open is checked for before its target is reached, in the order inspectWorkspace()
+   * documents: the reason and the lifetime, that the caller is still a deployment admin, `target`
+   * (the method's own check of the id it was given; its result is returned), and only then the
+   * deployment's level, from the committed authoritative config rather than readAdminConfig()'s KV
+   * mirror: a mirror still saying "full" after an admin lowered the level must not mint a view at
+   * the old one (the view's calls then read the mirror, which reaches them within about a minute).
+   * `access` is that level: at "off" the method records the refused open itself and throws.
+   */
+  async #openTerms<T>(reason: string, options: AdminInspectOptions, target: () => T)
+      : Promise<{ target: T; reason: string; requested: AdminViewAccess;
+                  access: AdminWorkspaceAccess; expiresAt: Date }> {
     reason = validateAdminAccessReason(reason);
     let lifetimeMs = adminViewLifetimeMs(options.lifetimeSeconds);
     let requested = options.access ?? "metadata";
     if (!isDeploymentAdmin(this.env, this.adminUserId)) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     }
-    let id: DurableObjectId;
-    try {
-      id = this.overseers.idFromString(workspaceId);
-    } catch {
-      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
-    }
-
-    // The committed authoritative config rather than readAdminConfig()'s KV mirror: a mirror still
-    // saying "full" after an admin lowered the level must not mint a view at the old one. The view's
-    // calls then read the mirror, which reaches them within about a minute.
+    let checked = target();
     let { access } = adminAccessPolicy(await this.admin.committedAdminConfig(), this.env);
     let expiresAt = new Date(Date.now() + lifetimeMs);
+    return { target: checked, reason, requested, access, expiresAt };
+  }
+
+  async inspectWorkspace(workspaceId: string, reason: string, options: AdminInspectOptions = {})
+      : Promise<RpcStub<AdminWorkspaceView>> {
+    let { target: id, reason: trimmedReason, requested, access, expiresAt } =
+        await this.#openTerms(reason, options, () => {
+          try {
+            return this.overseers.idFromString(workspaceId);
+          } catch {
+            throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+          }
+        });
     if (access === "off") {
       // Refused before any workspace is reached, so its title and owner come from the directory.
       // Appended without a retention, as a view's records are: the directory read awaits, and a
@@ -1529,8 +1543,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       await this.audits.getByName("").append({
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
         via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId, workspaceTitle,
-        method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason,
-        requested, access: "off", exposed: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+        method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() },
+        reason: trimmedReason, requested, access: "off", exposed: "metadata",
+        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
     }
@@ -1539,7 +1554,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     // the deployment allows is not refused, and every record of the view keeps what was asked.
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(id, reason, {
+    return this.#openForAdmin(id, trimmedReason, {
       via: this.via, requested, access: lowerAdminWorkspaceAccess(requested, access), expiresAt,
     });
   }

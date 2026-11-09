@@ -3,20 +3,21 @@ import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
   MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
-  type ActionLogEntry, type AdminChatState, type AiChatHistoryPage, type AiChatMetadata,
-  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type FileAtCommit,
-  type WorkpieceSummary,
+  type ActionLogEntry, type AdminChatState, type AdminWorkspaceMethod, type AiChatHistoryPage,
+  type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo,
+  type FileAtCommit, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AUDIT_EXCERPT_CONTEXT, actionHoldsContent, adminAccessPolicy, adminAuditStatsDays,
-  adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewCallAccess,
-  adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent, chatHoldsContent,
-  chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent, cutAdminAuditText,
-  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
-  minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent,
-  withholdChatStateContent, withholdCommitContent, withholdHookContent, workpieceHoldsContent,
-  type AdminViewTerms,
+  ADMIN_AUDIT_EXCERPT_CONTEXT, ADMIN_CONTENT_METHODS, actionHoldsContent, adminAccessPolicy,
+  adminAuditStatsDays, adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange,
+  adminViewCallAccess, adminViewLifetimeMs, assertAdminViewLive, blueprintHoldsContent,
+  chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent, commitHoldsContent,
+  cutAdminAuditText, fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
+  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs,
+  validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
+  withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdHookContent,
+  workpieceHoldsContent,
+  type AdminAccessPolicy, type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -163,30 +164,36 @@ describe("view calls", () => {
     expect(() => assertAdminViewLive(terms(), ADMIN, adminEnv)).not.toThrow();
   });
 
+  // A workspace view's call: ADMIN_CONTENT_METHODS says whether its method reads content alone, and
+  // adminViewCallAccess() applies the level to that.
+  const callAccess = (viewTerms: AdminViewTerms, method: AdminWorkspaceMethod,
+      policy: AdminAccessPolicy) =>
+      adminViewCallAccess(viewTerms, ADMIN_CONTENT_METHODS.has(method), policy);
+
   it("runs each call at the view's level lowered to the policy's", () => {
     let metadata = { access: "metadata", retentionDays: 90 } as const;
-    expect(adminViewCallAccess(terms(), "describe", metadata)).toEqual({ access: "metadata" });
-    expect(adminViewCallAccess(terms(), "getChat", metadata))
+    expect(callAccess(terms(), "describe", metadata)).toEqual({ access: "metadata" });
+    expect(callAccess(terms(), "getChat", metadata))
         .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
-    expect(adminViewCallAccess(terms({ access: "metadata" }), "readFile",
+    expect(callAccess(terms({ access: "metadata" }), "readFile",
         { access: "full", retentionDays: 90 }))
         .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
-    expect(adminViewCallAccess(terms(), "getChat", { access: "full", retentionDays: 90 }))
+    expect(callAccess(terms(), "getChat", { access: "full", retentionDays: 90 }))
         .toEqual({ access: "full" });
-    expect(adminViewCallAccess(terms(), "readChatAttachment", metadata))
+    expect(callAccess(terms(), "readChatAttachment", metadata))
         .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
-    expect(adminViewCallAccess(terms(), "readChatAttachment",
+    expect(callAccess(terms(), "readChatAttachment",
         { access: "full", retentionDays: 90 }))
         .toEqual({ access: "full" });
     // The chat reads that are not content run at either level.
     for (let method of ["getChatState", "listChatAttachments"] as const) {
-      expect(adminViewCallAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
+      expect(callAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
     }
     // A file read at a stored commit, or of a chat's pending content, is content as readFile() is.
     for (let method of ["readFileAtCommit", "readPendingFile"] as const) {
-      expect(adminViewCallAccess(terms(), method, metadata))
+      expect(callAccess(terms(), method, metadata))
           .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
-      expect(adminViewCallAccess(terms(), method, { access: "full", retentionDays: 90 }))
+      expect(callAccess(terms(), method, { access: "full", retentionDays: 90 }))
           .toEqual({ access: "full" });
     }
     // The history and the listings of names run at either level: a commit log withholds its
@@ -194,12 +201,31 @@ describe("view calls", () => {
     for (let method of [
       "getCommitLog", "listFilesAtCommit", "listChangedPaths", "listPendingChanges",
     ] as const) {
-      expect(adminViewCallAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
-      expect(adminViewCallAccess(terms(), method, { access: "full", retentionDays: 90 }))
+      expect(callAccess(terms(), method, metadata)).toEqual({ access: "metadata" });
+      expect(callAccess(terms(), method, { access: "full", retentionDays: 90 }))
           .toEqual({ access: "full" });
     }
-    expect(adminViewCallAccess(terms(), "describe", { access: "off", retentionDays: 90 }))
+    expect(callAccess(terms(), "describe", { access: "off", retentionDays: 90 }))
         .toEqual({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff });
+  });
+
+  it("names the workspace methods that read content alone", () => {
+    expect([...ADMIN_CONTENT_METHODS].toSorted()).toStrictEqual(
+        ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile"]);
+  });
+
+  it("refuses a call that reads content alone below full, and any call at off", () => {
+    let metadata = { access: "metadata", retentionDays: 90 } as const;
+    let full = { access: "full", retentionDays: 90 } as const;
+    expect(adminViewCallAccess(terms(), true, metadata))
+        .toEqual({ access: "metadata", refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld });
+    expect(adminViewCallAccess(terms(), true, full)).toEqual({ access: "full" });
+    expect(adminViewCallAccess(terms(), false, metadata)).toEqual({ access: "metadata" });
+    expect(adminViewCallAccess(terms(), false, full)).toEqual({ access: "full" });
+    for (let contentOnly of [true, false]) {
+      expect(adminViewCallAccess(terms(), contentOnly, { access: "off", retentionDays: 90 }))
+          .toEqual({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff });
+    }
   });
 });
 

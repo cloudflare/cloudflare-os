@@ -3,8 +3,7 @@ import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
   type AdminAccessExposure, type AdminAccessRecord, type AdminAutoApproval,
   type AdminChatAttachment, type AdminChatState, type AdminGatekeeperInfo, type AdminObserver,
   type AdminPendingChange, type AdminViewAccess, type AdminWorkspaceAccess,
@@ -63,14 +62,14 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  actionHoldsContent, adminAccessPolicy, adminCommitLogDepth, adminViewCallAccess,
-  assertAdminViewLive, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
-  chatStateHoldsContent, commitHoldsContent, cutAdminAuditText, fileHoldsContent,
-  hookHoldsContent, lowerAdminWorkspaceAccess, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
-  withholdCommitContent, withholdHookContent, workpieceHoldsContent,
+  ADMIN_CONTENT_METHODS, actionHoldsContent, adminCommitLogDepth, assertAdminViewLive,
+  blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
+  commitHoldsContent, cutAdminAuditText, fileHoldsContent, hookHoldsContent,
+  redactAdminAuditArgs, withholdActionContent, withholdBlueprintContent, withholdChatContent,
+  withholdChatStateContent, withholdCommitContent, withholdHookContent, workpieceHoldsContent,
   type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
+import { adminViewCall, assertAdminViewTerms } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
@@ -11562,25 +11561,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
 
-    let trimmedReason = validateAdminAccessReason(reason);
-    if (terms.via !== "api" && terms.via !== "cli") {
-      throw new TypeError("An admin view's via must be \"api\" or \"cli\".");
-    }
-    if (terms.access !== "metadata" && terms.access !== "full") {
-      throw new TypeError("An admin view's access must be \"metadata\" or \"full\".");
-    }
-    if (terms.requested !== "metadata" && terms.requested !== "full") {
-      throw new TypeError("An admin view's requested level must be \"metadata\" or \"full\".");
-    }
-    if (lowerAdminWorkspaceAccess(terms.access, terms.requested) !== terms.access) {
-      throw new TypeError("An admin view's access must not be above the level it asked for.");
-    }
-    let expiresAt = terms.expiresAt instanceof Date ? terms.expiresAt.getTime() : NaN;
-    if (Number.isNaN(expiresAt) ||
-        expiresAt > Date.now() + (MAX_ADMIN_VIEW_LIFETIME_SECONDS + 60) * 1000) {
-      throw new TypeError(
-          "An admin view's expiry must be a valid time within its longest lifetime.");
-    }
+    let trimmedReason = assertAdminViewTerms(reason, terms);
 
     // The terms' level is not clamped here: the open, like every call, runs at most at the
     // deployment's current level, the environment's cap included. The owner is resolved now, since
@@ -14074,53 +14055,37 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     }
   }
 
-  // Runs one call: checks the view, reads the deployment's setting, checks again, and takes the
-  // level that gives. A call that level refuses is recorded and refused, having read nothing. Any
-  // other call reads its answer with `read` (never through a connection), is checked once more,
-  // and is recorded with what that answer exposed (`holdsContent`). Only then is it
-  // answered, so nothing it read leaves the server unrecorded, and a call whose record cannot be
-  // written fails and returns nothing. A read that fails is recorded as an attempt that exposed
-  // nothing, and the call fails with the read's error.
+  // Runs one call through adminViewCall(): checks the view, reads the deployment's setting, checks
+  // again, and takes the level that gives. A call that level refuses is recorded and refused,
+  // having read nothing. Any other call reads its answer with `read` (never through a connection),
+  // is checked once more, and is recorded with what that answer exposed (`holdsContent`). Only
+  // then is it answered, so nothing it read leaves the server unrecorded, and a call whose record
+  // cannot be written fails and returns nothing. A read that fails is recorded as an attempt that
+  // exposed nothing, and the call fails with the read's error. The host is built at each call, so
+  // its audit log and logger are the Overseer's at that call, and the environment is read at each
+  // use within it.
   async #call<T>(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
       read: (access: AdminViewAccess, policy: AdminAccessPolicy) => T | Promise<T>,
       holdsContent: (answer: T) => boolean = () => false): Promise<T> {
-    this.#assertLive();
-    let config = await readAdminConfig(this.#impl.env);
-    // Checked again, with nothing awaited from here to a refusal's record: the read may have
-    // spanned the expiry, a demotion or the workspace's deletion, and a deleted workspace's storage
-    // must stay empty, with nothing appended for it deployment-wide either.
-    this.#assertLive();
-
-    let policy = adminAccessPolicy(config, this.#impl.env);
-    let {access, refused} = adminViewCallAccess(this.#terms, method, policy);
-    if (refused !== undefined || access === "off") {
-      let code = refused ?? ADMIN_ACCESS_ERROR_CODES.accessOff;
-      await this.#record(method, args, access, "metadata", code);
-      throw createAdminAccessError(code);
-    }
-
-    let answer: T;
-    try {
-      answer = await read(access, policy);
-    } catch (err) {
-      this.#assertLive();
-      await this.#record(method, args, access, "metadata");
-      throw err;
-    }
-    // Checked again, with nothing awaited before the record, for the same reasons: the read may
-    // have awaited.
-    this.#assertLive();
-    await this.#record(method, args, access, holdsContent(answer) ? "content" : "metadata");
-    return answer;
+    let impl = this.#impl;
+    return adminViewCall({
+      env: () => impl.env,
+      terms: this.#terms,
+      audits: impl.adminAudits,
+      logger: impl.logger,
+      assertLive: () => this.#assertLive(),
+      recordOf: (access, exposed, refused) =>
+          this.#recordOf(method, args, access, exposed, refused),
+    }, ADMIN_CONTENT_METHODS.has(method), read, holdsContent);
   }
 
-  // Records one call in the deployment-wide log. The record is built and sent before the first
-  // await, so that the caller's last check still holds.
-  async #record(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
+  // The record of one call, as the deployment-wide log keeps it. Synchronous: adminViewCall()
+  // builds and sends a record with nothing awaited since its last check.
+  #recordOf(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
       access: AdminWorkspaceAccess, exposed: AdminAccessExposure,
-      refused?: AdminAccessRecord["refused"]): Promise<void> {
+      refused?: AdminAccessRecord["refused"]): AdminAccessRecord {
     let impl = this.#impl;
-    let record: AdminAccessRecord = {
+    return {
       kind: "workspace",
       workspaceId: impl.ctx.id.toString(),
       workspaceOwner: this.#ownerId,
@@ -14139,15 +14104,6 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       exposed,
       ...(refused ? {refused} : {}),
     };
-    try {
-      // No retention: the policy above comes from the KV mirror, and a stale one must not prune.
-      await impl.adminAudits.getByName("").append(record);
-    } catch (err) {
-      impl.logger.warn("failed to append to the admin audit log", {
-        event: "admin.audit.append.failed", operation: method, error: err,
-      });
-      throw err;
-    }
   }
 
   // The head commit of a permanent gadget, the only workpiece with committed code to read.

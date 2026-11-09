@@ -211,14 +211,15 @@ export function assertAdminViewLive(terms: AdminViewTerms, adminId: string, env:
 }
 
 /** The level one view call runs at (the view's own lowered to `policy.access`) and the refusal that
- * level makes, if any: accessOff at "off", contentWithheld for one of ADMIN_CONTENT_METHODS at
- * "metadata". Never throws: the caller records a refused call before refusing it. */
-export function adminViewCallAccess(terms: AdminViewTerms, method: AdminWorkspaceMethod,
+ * level makes, if any: accessOff at "off", contentWithheld at "metadata" for a call that reads
+ * content alone (`contentOnly`: for a workspace view, one of ADMIN_CONTENT_METHODS). Never throws:
+ * the caller records a refused call before refusing it. */
+export function adminViewCallAccess(terms: AdminViewTerms, contentOnly: boolean,
     policy: AdminAccessPolicy)
     : { access: AdminWorkspaceAccess; refused?: AdminAccessRecord["refused"] } {
   let access = lowerAdminWorkspaceAccess(terms.access, policy.access);
   if (access === "off") return { access, refused: ADMIN_ACCESS_ERROR_CODES.accessOff };
-  if (access === "metadata" && ADMIN_CONTENT_METHODS.has(method)) {
+  if (access === "metadata" && contentOnly) {
     return { access, refused: ADMIN_ACCESS_ERROR_CODES.contentWithheld };
   }
   return { access };
