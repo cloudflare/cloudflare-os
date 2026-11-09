@@ -1532,12 +1532,13 @@ async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
     });
     // A live hook controller can't be persisted through the real storage, as above.
     let controller = { enable: async () => {}, disable: async () => {} };
+    // Records are copied in and out, as real storage does: a change takes a put() to persist.
     let hookRecords = new Map<number, { id: number }>();
     impl.storage.boundHooks = {
-      get: (id: number) => hookRecords.get(id),
-      put: (record: { id: number }) => hookRecords.set(record.id, record),
+      get: (id: number) => { let record = hookRecords.get(id); return record && { ...record }; },
+      put: (record: { id: number }) => hookRecords.set(record.id, { ...record }),
       delete: (id: number) => hookRecords.delete(id),
-      list: () => [...hookRecords.values()],
+      list: () => [...hookRecords.values()].map(record => ({ ...record })),
     };
     for (let id of GADGETS) seedGadget(impl, id);
     for (let id of CHATS) {

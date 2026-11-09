@@ -993,6 +993,11 @@ describe("decisions on a turn's staged writes, for generated sessions", () => {
   ];
 
   it("resumes a suspended turn once, when the last write it waits on is approved", async () => {
+    // Every generated turn logs a screenful, failures of the faked services and of the applies
+    // generated to fail included, which would bury a failure's report.
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation(() => {});
+    }
     await fc.assert(fc.asyncProperty(sessions, replayDecisions),
         {...PROPERTY_RUN_OPTIONS, numRuns: 50, examples});
   }, 120_000);

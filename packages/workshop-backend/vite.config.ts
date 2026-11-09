@@ -4,11 +4,6 @@ import {
   TESTS_WITH_TIMEOUT_ENV, vitestTask, withTestTimeout,
 } from '@gadgets/scripts/vitest-task'
 
-const unitTask = vitestTask([
-  { command: 'vitest run', idleSeconds: 120 },
-  'vitest run --config vitest.integration.config.ts',
-])
-
 /**
  * Codegen steps stay separate commands rather than one `&&` string so each caches on its own.
  */
@@ -86,10 +81,10 @@ export default {
        * Import-heavy unit tests need a longer idle allowance; integration uses the shared defaults.
        */
       test: {
-        ...unitTask,
-        // The property suites' seed (@gadgets/scripts/property-runs) decides which cases run, so it
-        // is passed and fingerprinted: a different seed is a cache miss, not a replayed result.
-        cache: { ...unitTask.cache, env: [...unitTask.cache.env, 'FAST_CHECK_SEED'] },
+        ...vitestTask([
+          { command: 'vitest run', idleSeconds: 120 },
+          'vitest run --config vitest.integration.config.ts',
+        ]),
         dependsOn: [
           '@gadgets/typed-storage#build', 'build:bundled-blueprints', 'build:browser-runtime',
         ],
