@@ -3,7 +3,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Switch, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
-import type { ComposerAddActions, ComposerSkill } from '@/blocks/ComposerAddMenu'
+import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
+import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
+import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { ConversationListItem } from '@/blocks/ConversationListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarConversation } from '@/blocks/Sidebar'
@@ -39,6 +41,22 @@ const previewConversations: SidebarConversation[] = [
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
 ]
+
+const AttachmentPreview = () => {
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => [
+    { id: 'image', file: new File([], 'Cloudflare.svg', { type: 'image/svg+xml' }), previewUrl: '/favicon.svg' },
+    { id: 'pdf', file: new File([], 'Project brief.pdf', { type: 'application/pdf' }) },
+    { id: 'csv', file: new File([], 'Quarterly results.csv', { type: 'text/csv' }) },
+    { id: 'code', file: new File([], 'dashboard.tsx') },
+    { id: 'long', file: new File([], 'Notes with a longer filename to check wrapping.md') },
+  ])
+
+  return (
+    <div className="w-full overflow-hidden rounded-[21px] bg-kumo-canvas ring-1 ring-kumo-line">
+      <ComposerAttachmentTray attachments={attachments} onRemove={(id) => setAttachments((items) => items.filter((item) => item.id !== id))} />
+    </div>
+  )
+}
 
 const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
   <>
@@ -115,11 +133,13 @@ const DropdownMenuPlayground = () => {
 function Gallery() {
   const [selectedConversation, setSelectedConversation] = useState('greeting')
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
-  const addActions: ComposerAddActions = {
-    onUpload: () => setMenuAction('Preview: upload files or photos selected.'),
+  const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-    skills: { items: previewSkills, onSelect: (skill) => setMenuAction(`Preview: ${skill.name} selected.`) },
+    skills: { items: previewSkills, onSelect: (skill: ComposerSkill) => setMenuAction(`Preview: ${skill.name} selected.`) },
   }
+  const previewSend = (text: string, files: File[]) => setMenuAction(
+    `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`,
+  )
 
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col gap-8 overflow-y-auto p-8">
@@ -202,20 +222,24 @@ function Gallery() {
           <p className="text-sm text-kumo-subtle">
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
+            Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
           </p>
-          <Composer onSend={() => {}} addActions={addActions} />
+          <Composer onSend={previewSend} addActions={addActions} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
-            <Composer onSend={() => {}} />
+            <Composer onSend={previewSend} />
           </div>
         </div>
+      </Section>
+      <Section title="Attachments (image, PDF, spreadsheet, code, and long filename)">
+        <AttachmentPreview />
       </Section>
       <Section title="Composer (in-place add menu)">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
             The + expands in place, keeping its anchored corner at the button while following the same curved path.
           </p>
-          <Composer onSend={() => {}} addActions={addActions} addMenuInPlace />
+          <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
         </div>
       </Section>
       <Section title="ChatLayout (header and composer float over the scrolling messages)">
