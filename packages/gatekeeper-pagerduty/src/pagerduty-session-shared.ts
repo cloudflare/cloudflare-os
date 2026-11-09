@@ -484,12 +484,6 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const opened = () => pendingIncidents(pending, resolve, you).filter(keeps);
   const injected = [...opened(), ...[...changed.values()].flatMap(simulate)].toSorted(newestFirst);
   const named = (filter?.serviceIds ? query.serviceIds ?? [] : []).map(service);
-  // Injected incidents show what staging or this call read of their services, and the cursor
-  // authorizes no page made only of them, so their services are reported before the walk serves any.
-  if (injected.length > 0) {
-    await ctx.authorize({ title: "Listed PagerDuty incidents", description: `Read ${countOf(injected.length, "incident")} as pending changes leave them.` },
-      [...named, ...injected.map(row => service(row.service.id))]);
-  }
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize,
     sources: [nothing ? empty : listing("/incidents", "incidents", params, toIncidentSummary)],
@@ -504,6 +498,8 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     overlay: simulate,
     inject: {
       items: injected,
+      // They show what staging or this call read of their services, so each is authorized as served.
+      authorize: true,
       compare: newestFirst,
       revalidate: row => {
         const read = changed.get(row.id);

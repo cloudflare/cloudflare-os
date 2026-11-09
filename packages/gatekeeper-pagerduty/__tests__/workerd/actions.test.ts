@@ -403,8 +403,8 @@ describe("simulation", () => {
     Object.assign(t.incident, wire);
     await t.run(onIncident(...step)(t.incident.id));
     expect(await t.run([["listIncidents", filter]], 5)).toMatchObject([[{ id: t.incident.id }]]);
-    // Its service is reported before the walk serves it, as for an incident waiting to be opened.
-    expect((await t.reported()).at(-2)).toEqual(new Set([sub(), sub("service", SERVICE.id)]));
+    // Its service is reported once, with the page that serves it, which also answers the listing.
+    expect(await t.reported()).toEqual([new Set([sub(), sub("service", SERVICE.id)])]);
   });
 
   it("lists an incident a pending change keeps in the filter once, though PagerDuty lists it too", async () => {
@@ -487,10 +487,8 @@ describe("simulation", () => {
     await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect([opened.service.name, existing.id]).toEqual(["Billing", t.incident.id]);
-    // Once for the pending incident before the walk serves it, then for the page PagerDuty filled.
-    expect(await t.reported()).toEqual([
-      new Set([sub(), sub("service", OTHER_SERVICE.id)]), new Set([sub(), sub("service", SERVICE.id)]),
-    ]);
+    // With the page that serves it, beside the service of the incident PagerDuty listed.
+    expect(await t.reported()).toEqual([new Set([sub(), sub("service", OTHER_SERVICE.id), sub("service", SERVICE.id)])]);
   });
 
   it.each([
@@ -516,8 +514,7 @@ describe("simulation", () => {
     await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
     const [[opened, existing]] = await t.run([["listIncidents"]], 5) as PagerDutyIncidentSummary[][];
     expect([opened.id, ids(opened.teams), existing.id]).toEqual(["~1", [TEAM.id], t.incident.id]);
-    const reported = new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)]);
-    expect(await t.reported()).toEqual([reported, reported]);
+    expect(await t.reported()).toEqual([new Set([sub(), sub("team", TEAM.id), sub("service", SERVICE.id)])]);
   });
 
   it("lists, in a team binding, an incident a pending action opens on a service the team shares", async () => {

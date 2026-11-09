@@ -429,7 +429,10 @@ export type PagerDutyIncidentFilter = PagerDutyPageOptions & PagerDutyTimeWindow
   allTime?: boolean;
 };
 
-/** Which on-call entries to list. PagerDuty lists at most the first 10000. */
+/**
+ * Which on-call entries to list. PagerDuty lists at most the first 10000. A page keeps together
+ * the pieces a pending override splits an entry into, so it can run past `pageSize`.
+ */
 export type PagerDutyOnCallWindow = PagerDutyPageOptions & PagerDutyTimeWindow & {
   /**
    * Only entries for these escalation levels (1 is the first). By default, every level.
