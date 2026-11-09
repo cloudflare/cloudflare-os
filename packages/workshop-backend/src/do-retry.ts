@@ -46,6 +46,17 @@ export function isLoopLimitError(e: unknown): boolean {
       "Subrequest depth limit exceeded. This request looped back into the Workers runtime");
 }
 
+/**
+ * True for the runtime's CPU-limit rejection ("Worker exceeded CPU time limit."), which cuts off
+ * an invocation that has used up its CPU budget. The runtime gives it no flag or code, hence the
+ * message match. A model request it cut off fails with the message as its own (see
+ * AgentTurnError), possibly prefixed, so it is matched anywhere in the message.
+ */
+export function isCpuLimitError(e: unknown): boolean {
+  return e instanceof Error && typeof e.message === "string" &&
+      e.message.includes("Worker exceeded CPU time limit");
+}
+
 /** Wraps a DO stub so every method call observes DO-reset rejections for telemetry
  * (`user_do.reset.surfaced`, with the method name as the operation) and rethrows them
  * unchanged. Otherwise transparent. Pass the caller's logger so the log attributes the reset

@@ -872,6 +872,13 @@ export type ActiveAgentRecord = {
   callbackInitiated: boolean;
   /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
   resumeAttempts?: number;
+  /** How many times this turn has been resumed after hitting the CPU time limit. */
+  cpuLimitResumes?: number;
+  /**
+   * The chat's next sequence when this turn last hit the CPU time limit. A later hit resumes the
+   * turn again only if the log has grown since, so a turn that makes no progress still fails.
+   */
+  cpuLimitSequence?: number;
 };
 
 /**

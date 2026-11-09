@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  isDoResetError, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
+  isCpuLimitError, isDoResetError, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
 } from "../src/do-retry";
+import { AgentTurnError } from "../src/ai-invoke";
 import { createWorkshopLogger } from "../src/observability";
 
 // Synthetic errors shaped like workerd's tagged rejections (jsg/util.c++). Local aborts reject
@@ -82,6 +83,35 @@ describe("isLoopLimitError", () => {
     expect(isLoopLimitError(Object.assign(new Error(), { message: undefined }))).toBe(false);
     expect(isLoopLimitError(Object.assign(new Error(), { message: [LOOP_LIMIT_MESSAGE] })))
         .toBe(false);
+  });
+});
+
+// The runtime's rejection of an invocation that used up its CPU budget, as production logs it
+// (cloudflare/cloudflare-os#603).
+const CPU_LIMIT_MESSAGE = "Worker exceeded CPU time limit.";
+
+describe("isCpuLimitError", () => {
+  it("matches the runtime's CPU-limit rejection", () => {
+    expect(isCpuLimitError(new Error(CPU_LIMIT_MESSAGE))).toBe(true);
+  });
+
+  it("matches a model request the limit cut off", () => {
+    expect(isCpuLimitError(new AgentTurnError(CPU_LIMIT_MESSAGE))).toBe(true);
+    expect(isCpuLimitError(new AgentTurnError(`Error: ${CPU_LIMIT_MESSAGE}`))).toBe(true);
+  });
+
+  it("rejects other errors", () => {
+    expect(isCpuLimitError(new Error("some app error"))).toBe(false);
+    expect(isCpuLimitError(new Error("Worker exceeded memory limit."))).toBe(false);
+    expect(isCpuLimitError(new Error(LOOP_LIMIT_MESSAGE))).toBe(false);
+    expect(isCpuLimitError(resetError(PRODUCTION_RESET))).toBe(false);
+  });
+
+  it("rejects values that are not an Error, even carrying the text", () => {
+    expect(isCpuLimitError(CPU_LIMIT_MESSAGE)).toBe(false);
+    expect(isCpuLimitError({ message: CPU_LIMIT_MESSAGE })).toBe(false);
+    expect(isCpuLimitError(null)).toBe(false);
+    expect(isCpuLimitError(Object.assign(new Error(), { message: 42 }))).toBe(false);
   });
 });
 

@@ -85,7 +85,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isCpuLimitError, isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -532,6 +532,14 @@ const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
 
+// A turn that hits the CPU time limit is resumed from its last saved step, in a later invocation
+// with a fresh CPU budget, at most this many times, and only while it keeps adding to the chat's
+// log (see #claimCpuLimitResume). The limit itself stays the default, so a turn stuck in a loop
+// still fails: raising it would make such a loop much more expensive.
+const AGENT_CPU_LIMIT_MAX_RESUMES = 5;
+// How soon after the hand-off the alarm comes back for the turn.
+const AGENT_CPU_LIMIT_RESUME_DELAY_MS = 1_000;
+
 // The agent-authored records Overseer.waitForAgent() returns (see there).
 const WAIT_FOR_AGENT_RESULT_TYPES =
     new Set(["message", "error", "action", "connectionRequest", "webFetchRequest"]);
@@ -799,6 +807,11 @@ class OverseerImpl implements AgentHooks {
   // budget lives on that row, since another concern can reschedule the shared alarm.
   #resumeErrors = new Map<number, unknown>();
 
+  // Chats whose turn hit the CPU time limit and was handed back to the alarm, to resume in a
+  // later invocation than the one that ran out (see #claimCpuLimitResume). An alarm handler skips
+  // them, and the next one clears this as it starts; a new instance resumes them on construction.
+  #cpuLimitHandoffs = new Set<number>();
+
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
   // for the connection. Held in memory only: a gatekeeper that gains a catalog in a later version
   // is asked again on the next activation, so every chat converges. Ids are never reused, so an
@@ -1039,6 +1052,23 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Whether a turn that just hit the CPU time limit may be resumed, and if so counts it on the
+  // turn's execution row, which outlives a reset. The first hit always may: until then nothing
+  // shows the turn is stuck. After that, a hit resumes only if the chat's log has grown since the
+  // last one (the turn saved a step), and at most AGENT_CPU_LIMIT_MAX_RESUMES times in all, so a
+  // turn whose single step can't fit in the budget, or that loops, still fails as before.
+  #claimCpuLimitResume(chatId: number): boolean {
+    let record = this.storage.activeAgents.get(chatId);
+    if (!record) return false;
+    let resumes = record.cpuLimitResumes ?? 0;
+    let sequence = this.nextChatSequencePeek(chatId);
+    if (resumes >= AGENT_CPU_LIMIT_MAX_RESUMES) return false;
+    if (record.cpuLimitSequence !== undefined && sequence <= record.cpuLimitSequence) return false;
+    this.storage.activeAgents.put(
+        {...record, cpuLimitResumes: resumes + 1, cpuLimitSequence: sequence});
+    return true;
+  }
+
   // This DO has one alarm, and this is its only writer: the alarm is the earliest of the times at
   // which some concern needs the handler to run, and alarm() then handles all of them. Call it
   // after changing any state a concern derives from; a concern that recomputes to the same time
@@ -1074,6 +1104,8 @@ class OverseerImpl implements AgentHooks {
       this.#agentKeepAliveTime ??= Date.now() + AGENT_KEEPALIVE_ALARM_MS;
       times.push(this.#agentKeepAliveTime);
     }
+    // A turn handed off for running out of CPU resumes in the next alarm, soon.
+    if (this.#cpuLimitHandoffs.size > 0) times.push(Date.now() + AGENT_CPU_LIMIT_RESUME_DELAY_MS);
 
     // External-message responses: a ready one is delivered as soon as possible, and delivered
     // records are swept once they age out.
@@ -1113,6 +1145,8 @@ class OverseerImpl implements AgentHooks {
   async runAlarmTasks(retryCount = 0): Promise<void> {
     this.#inAlarmHandler = true;
     this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
+    // This is a later invocation than any that handed a turn off for running out of CPU.
+    this.#cpuLimitHandoffs.clear();
     let failed = false;
     try {
       if (this.storage.deleting.get()) {
@@ -1677,6 +1711,8 @@ class OverseerImpl implements AgentHooks {
     if (this.storage.deleting.get()) return;
     for (let record of Array.from(this.storage.activeAgents.list())) {
       if (this.#runningAgents.has(record.chatId)) continue;
+      // A turn that ran out of CPU waits for a later invocation, with a fresh budget.
+      if (this.#inAlarmHandler && this.#cpuLimitHandoffs.has(record.chatId)) continue;
       if (!this.storage.chatMeta.get(record.chatId)?.activeAgent) {
         this.resumeAgentAfterDecision(record.chatId);
         continue;
@@ -7827,6 +7863,8 @@ class OverseerImpl implements AgentHooks {
     let finished = false;
     // Why the turn ended early, posted in the `finally`.
     let failure: {message: string, code?: string} | undefined;
+    // Set when the turn ran out of CPU and is to be resumed rather than failed (see the catch).
+    let cpuLimitResume = false;
     // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer).
     let lastRequest: CachedRequest | undefined;
     let startedAt = Date.now();
@@ -7921,6 +7959,18 @@ class OverseerImpl implements AgentHooks {
         failure = {message: "The user stopped the agent.", code: "stopped"};
         return;
       }
+      // The turn ran out of CPU: resume it from its last saved step in a later invocation, which
+      // gets a fresh budget, instead of failing it -- while it keeps making progress (see
+      // #claimCpuLimitResume). Steps it saved stand; the one cut off saved nothing.
+      if (isCpuLimitError(err) && this.#claimCpuLimitResume(chatId)) {
+        turnLogger.warn("agent run hit the CPU time limit; resuming from its last step", {
+          event: "agent.run.cpu_limit.resume",
+          resumes: this.storage.activeAgents.get(chatId)?.cpuLimitResumes,
+          durationMs: Date.now() - startedAt,
+        });
+        cpuLimitResume = true;
+        return;
+      }
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
       // runAgent converts them back to a throw), carrying the failing request's HTTP status when
       // one was observed.
@@ -7969,7 +8019,17 @@ class OverseerImpl implements AgentHooks {
         // step's message is by construction lost, so nothing in the log backs it. Never throws,
         // so it can't mask an error propagating out of the turn.
         await this.reconcilePendingGadgets(chatId);
-        if (owns()) {
+        if (owns() && cpuLimitResume && !liveChat.cancelController.signal.aborted &&
+            this.storage.activeAgents.get(chatId) &&
+            this.storage.chatMeta.get(chatId)?.activeAgent) {
+          // Hand the turn to the alarm, as a retryable model lookup does: the chat stays busy and
+          // keeps its execution row, so #resumeInterruptedAgents picks the turn up in the next
+          // alarm (or a new instance does), and Stop still ends it (see cancelAgent). What the
+          // cut-off request streamed was provisional; clients drop it, as for a retried request.
+          this.emitChatStreamEvent(chatId, {type: "streamReset"});
+          this.#cpuLimitHandoffs.add(chatId);
+          this.#unregisterRunningAgent(chatId, true);
+        } else if (owns()) {
           // Posted past the turn's last await, so a steer sent as the turn winds down still lands
           // before the error, which must stay last for Retry to show.
           if (failure) {
