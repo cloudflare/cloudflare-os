@@ -7,6 +7,7 @@ import type {
   ObserverBindingNeed,
   ObserverConfigCallback,
   Overseer,
+  WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import { reportIssue } from './errorReporting'
 import { linkActionLog } from './useActions'
@@ -24,6 +25,9 @@ export type WorkspaceLoadError =
 
 type ObserverConfigState = {
   needs: ObserverBindingNeed[]
+  // The gadget whose opening asked, or undefined when the workspace's did, and whether its prompt
+  // may offer a snapshot of it instead.
+  gadget?: { id: WorkpieceId; offersSnapshot: boolean }
   resolve: (choices: ObserverAccountChoice[]) => void
   reject: (error: unknown) => void
 }
@@ -58,6 +62,11 @@ export function observerOpenFailureMessage(caught: unknown, subject: 'workspace'
   return null
 }
 
+/** Whether opening something failed because the collaborator cancelled its account prompt. */
+export function isObserverConfigCancelled(caught: unknown): boolean {
+  return caught instanceof Error && caught.message.includes(OBSERVER_CANCELLED)
+}
+
 type Options = {
   id: string | undefined
   authenticatedApi: RpcStub<AuthenticatedApi>
@@ -87,10 +96,11 @@ export function useWorkspaceOpen({
   useDocumentTitle(error ? '' : metadata?.title)
 
   // A callback routing the overseer's account prompts to the picker until `signal` aborts. Gadget
-  // opens need one each, since a collaborator given individual gadgets is verified per gadget. One
-  // prompt shows at a time: a newer one supersedes an unanswered one, whose open then fails rather
-  // than holding the collaborator's admission open. Stable, as each gadget open depends on it.
-  const createObserverConfigCallback = useCallback((signal: AbortSignal) =>
+  // opens need one each, naming their `gadget`, since a collaborator given individual gadgets is
+  // verified per gadget. One prompt shows at a time: a newer one supersedes an unanswered one, whose
+  // open then fails rather than holding the collaborator's admission open. Stable, as each gadget
+  // open depends on it.
+  const createObserverConfigCallback = useCallback((signal: AbortSignal, gadget?: ObserverConfigState['gadget']) =>
     new RpcStub<ObserverConfigCallback>(new ObserverConfigTarget(needs =>
       new Promise<ObserverAccountChoice[]>((resolve, reject) => {
         if (signal.aborted) {
@@ -107,6 +117,7 @@ export function useWorkspaceOpen({
         }
         const request: ObserverConfigState = {
           needs,
+          gadget,
           resolve: choices => settle(() => resolve(choices)),
           reject: observerError => settle(() => reject(observerError)),
         }

@@ -74,6 +74,10 @@ interface ObserverConfigModalProps {
   authenticatedApi: RpcStub<AuthenticatedApi>
   onConfirm: (choices: ObserverAccountChoice[]) => void
   onCancel: () => void
+  // What is being opened: the workspace, or one gadget of it.
+  subject: 'workspace' | 'gadget'
+  // Offered when a gadget asks: open a static snapshot of it instead, verifying nothing.
+  onViewSnapshot?: () => void
 }
 
 export default function ObserverConfigModal({
@@ -81,6 +85,8 @@ export default function ObserverConfigModal({
   authenticatedApi,
   onConfirm,
   onCancel,
+  subject,
+  onViewSnapshot,
 }: ObserverConfigModalProps) {
   const toasts = useKumoToastManager()
 
@@ -315,10 +321,10 @@ export default function ObserverConfigModal({
           </Dialog.Title>
           <Text variant="secondary" size="sm" as="p">
             {isRetry
-              ? 'We couldn’t confirm your access to everything this workspace has read. Depending on ' +
+              ? `We couldn’t confirm your access to everything this ${subject} has read. Depending on ` +
                 'the reason below, re-authenticate an expired account, choose a different one, or ask ' +
-                'the workspace owner to share what your account can’t access.'
-              : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
+                `the ${subject} owner to share what your account can’t access.`
+              : `Before opening this ${subject}, confirm that your own accounts can access the connected ` +
                 'data it uses.'}
           </Text>
         </div>
@@ -497,8 +503,13 @@ export default function ObserverConfigModal({
           )}
         </div>
 
-        <div className="flex shrink-0 justify-end gap-2 border-t border-kumo-line px-6 py-4">
-          <WorkshopButton tone="secondary" onClick={onCancel}>
+        <div className="flex shrink-0 items-center gap-2 border-t border-kumo-line px-6 py-4">
+          {onViewSnapshot && (
+            <WorkshopButton tone="secondary" onClick={onViewSnapshot}>
+              View snapshot
+            </WorkshopButton>
+          )}
+          <WorkshopButton tone="secondary" className="ml-auto" onClick={onCancel}>
             Cancel
           </WorkshopButton>
           <WorkshopButton

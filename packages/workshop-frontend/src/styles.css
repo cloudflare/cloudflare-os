@@ -294,6 +294,15 @@ body {
       translate: -50% -50% !important;
     }
   }
+
+  /* A dialog hosting a `visual-viewport-fixed` overlay (the share dialog's full-screen snapshot)
+     must not be translated: a translated ancestor confines `position: fixed` to itself. The
+     overlay covers the dialog meanwhile, so where the dialog sits is moot. After the media block,
+     whose bottom-sheet `translate` this must also override. */
+  body .dialog-hosts-fullscreen {
+    translate: none !important;
+    transform: none !important;
+  }
 }
 
 ::selection {
@@ -466,13 +475,12 @@ html {
 /* Base UI positions an anchored popup by putting a `transform` on its positioner, the element that
    wraps the popup inside the portal. That transform makes the positioner a stacking context, so the
    z-index the popup carries only orders it against its own siblings and counts for nothing against
-   the page: a `z-[1]` sticky table header outranked a `z-[1100]` popover. Put the z-index where the
-   stacking context is.
+   the page: a `z-[1]` sticky table header outranked a `z-[1100]` popover, and a tooltip in a dialog
+   sat under the dialog. Put the z-index where the stacking context is.
 
    Matched on the popup Kumo puts inside, not on `[role="presentation"]` alone, which dialogs also
    use for their backdrop and viewport — raising those would bury a dialog under its own backdrop. */
-[data-base-ui-portal] > [role="presentation"]:has(> .kumo-popover-popup),
-[data-base-ui-portal] > [role="presentation"]:has(> .kumo-tooltip-popup [data-share-link-gadgets]) {
+[data-base-ui-portal] > [role="presentation"]:has(> .kumo-popover-popup, > .kumo-tooltip-popup) {
   z-index: 1100;
 }
 

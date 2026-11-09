@@ -1,7 +1,7 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Checkbox, Dialog, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
-import { Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
+import { Check, Copy, Link, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
@@ -22,6 +22,9 @@ import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
+import { useVendorBranding } from './useVendorBranding'
+import { ShareAudienceSection } from './ShareAudience'
+import { ShareSnapshotPreview } from './ShareSnapshotPreview'
 
 /**
  * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
@@ -175,63 +178,6 @@ function DependentKeepList({
   )
 }
 
-// What a recipient is asked to do before what they were given will open for them. Recipients
-// don't inherit the owner's connections: they must point their own account at each connection in
-// scope, so sharers should know that cost before they invite anyone.
-function RecipientVerification({
-  requirements,
-  failed,
-}: {
-  requirements: ObserverBindingNeed[] | null
-  failed: boolean
-}) {
-  let body: ReactNode
-  if (failed) {
-    body = (
-      <p className="px-1 text-[12px] leading-[16px] tracking-[-0.15px] text-kumo-subtle">
-        Couldn’t check which connections recipients will be asked to verify.
-      </p>
-    )
-  } else if (requirements === null || requirements.length === 0) {
-    // Still loading: stay silent rather than reserving space for an answer we don't have yet.
-    return null
-  } else {
-    body = (
-      <div className="rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 py-2.5">
-        <p className="text-[12px] leading-[16px] tracking-[-0.15px] text-kumo-subtle">
-          Recipients must prove their own account can reach:
-        </p>
-        <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
-          {requirements.map(requirement => (
-            <li key={requirement.gatekeeperId} className="min-w-0">
-              <p className="truncate text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-default">
-                {requirement.resourceTitle}
-              </p>
-              {requirement.resourceUrl && (
-                <p className="truncate font-mono text-[11px] leading-4 text-kumo-inactive">
-                  {requirement.resourceUrl}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-    )
-  }
-
-  return (
-    <section aria-labelledby="recipient-verification-heading" className="mt-4">
-      <div className="mb-2 flex items-center gap-1.5 px-1">
-        <ShieldCheck size={13} className="text-kumo-inactive" />
-        <h3 id="recipient-verification-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-          Recipient verification
-        </h3>
-      </div>
-      {body}
-    </section>
-  )
-}
-
 export default function ShareModal({ open, onClose, overseer, metadata, target, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
@@ -320,6 +266,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const [invitedLinkCopied, setInvitedLinkCopied] = useState(false)
   const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
   const [requirementsFailed, setRequirementsFailed] = useState(false)
+  const vendorBranding = useVendorBranding(authenticatedApi)
+  const [previewFullscreenRequested, setPreviewFullscreen] = useState(false)
   const [creatingLink, setCreatingLink] = useState(false)
   const [showLinkComposer, setShowLinkComposer] = useState(false)
   const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget | null>(null)
@@ -452,7 +400,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     if (!open) return
     let cancelled = false
     let requestId = 0
-    setRequirements(null)
     const refresh = () => {
       const thisRequest = ++requestId
       setRequirementsFailed(false)
@@ -470,6 +417,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     return () => {
       cancelled = true
       window.removeEventListener('focus', refresh)
+      // Cleared now rather than on the next open, whose first render would otherwise show the old
+      // answer and take a gadget snapshot only to drop it.
+      setRequirements(null)
     }
   }, [open, overseer, gadgetId])
 
@@ -491,6 +441,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         setInvitedLinkCopied(false)
         setNewLinkNote('')
         setShowLinkComposer(false)
+        setPreviewFullscreen(false)
         setConfirmationTarget(null)
         setEditingShareLinkId(null)
         setEditingShareLinkNote('')
@@ -522,10 +473,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   // Links to one gadget name it; a link naming none grants the workspace, or the several gadgets
   // it lists, which stay with the workspace since no one gadget's dialog owns them.
   const visibleShareLinks = sortedShareLinks.filter(link => link.gadgetId === gadgetId)
-  // Someone who can't invite has no recipient to verify.
-  const recipientVerification = canInvite && (requirementsFailed || requirements !== null)
-    ? <RecipientVerification requirements={requirements} failed={requirementsFailed} />
-    : null
+  // What recipients get, when that is worth saying: someone who can't invite has no recipient, and
+  // with no connections to confirm everyone simply gets it live. Still loading shows nothing
+  // rather than reserving space for an answer we don't have yet. A closed dialog shows nothing
+  // either, which releases the gadget snapshot its preview holds.
+  const audienceRequirements = !open || !canInvite ? null
+    : requirementsFailed ? 'failed' as const
+    : requirements !== null && requirements.length > 0 ? requirements : null
+  const previewGadgetId = gadgetId !== undefined && Array.isArray(audienceRequirements) ? gadgetId : undefined
+  // Derived, so a preview that goes away can't leave the dialog set up for full screen.
+  const previewFullscreen = previewFullscreenRequested && previewGadgetId !== undefined
   const removeTarget = confirmationTarget?.kind === 'remove' ? confirmationTarget : null
   const revokeTarget = confirmationTarget?.kind === 'revoke' ? confirmationTarget : null
 
@@ -915,7 +872,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog
-        className="responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none"
+        className={`responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none ${previewFullscreen ? 'dialog-hosts-fullscreen' : ''}`}
         size="lg"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
@@ -1219,7 +1176,25 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           </div>
           )}
 
-          {recipientVerification}
+          {audienceRequirements !== null && (
+            <ShareAudienceSection
+              requirements={audienceRequirements}
+              snapshotPreview={previewGadgetId !== undefined
+                ? <ShareSnapshotPreview
+                    key={previewGadgetId}
+                    overseer={overseer}
+                    gadgetId={previewGadgetId}
+                    gadgetTitle={target.kind === 'gadget' ? target.title : metadata.title}
+                    workspaceTitle={metadata.title}
+                    ownerName={ownerProfile?.name}
+                    fullscreen={previewFullscreen}
+                    onFullscreenChange={setPreviewFullscreen}
+                  />
+                : undefined}
+              ownerName={isOwner ? undefined : metadata.owner?.name}
+              vendorBranding={vendorBranding}
+            />
+          )}
 
           <section aria-labelledby="people-heading" className="mt-4">
             <div className="mb-2 px-1">

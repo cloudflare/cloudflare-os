@@ -161,7 +161,7 @@ describe('GadgetExportMenu', () => {
     await act(async () => { button('open export menu')?.click() })
     await act(async () => { button('CSV')?.click() })
 
-    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Export Gadget"]')
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Export gadget"]')
     expect(trigger?.disabled).toBe(true)
     expect(trigger?.closest('[data-tooltip]')?.getAttribute('data-tooltip')).toBe('Exporting to CSV')
 
@@ -171,7 +171,7 @@ describe('GadgetExportMenu', () => {
     })
 
     expect(trigger?.disabled).toBe(false)
-    expect(trigger?.closest('[data-tooltip]')?.getAttribute('data-tooltip')).toBe('Export Gadget')
+    expect(trigger?.closest('[data-tooltip]')?.getAttribute('data-tooltip')).toBe('Export gadget')
   })
 
   it('shows an empty state without hiding or disabling the export button', async () => {
@@ -184,14 +184,14 @@ describe('GadgetExportMenu', () => {
     await act(async () => {
       root.render(<GadgetExportMenu gadget={client} gadgetTitle="Report" />)
     })
-    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Export Gadget"]')
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Export gadget"]')
     expect(trigger).not.toBeNull()
     expect(trigger?.disabled).toBe(false)
 
     await act(async () => { button('open export menu')?.click() })
 
     expect(container.textContent).toContain('This Gadget does not support exports.')
-    expect(container.querySelector('[aria-label="Export Gadget"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Export gadget"]')).not.toBeNull()
   })
 
   it('does not render the control without a selected Gadget', async () => {
@@ -199,7 +199,7 @@ describe('GadgetExportMenu', () => {
       root.render(<GadgetExportMenu gadget={null} gadgetTitle="Gadget" />)
     })
 
-    expect(container.querySelector('[aria-label="Export Gadget"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Export gadget"]')).toBeNull()
   })
 
   it('loads fresh formats on every open and ignores a response after close', async () => {

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
@@ -107,7 +107,7 @@ const createSandboxedHtml = (jsCode: string): string => {
 }
 
 interface GadgetUIProps {
-  gadget: RpcStub<GadgetClient>
+  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
   height: string
   reloadTrigger?: number
   isVisible?: boolean
