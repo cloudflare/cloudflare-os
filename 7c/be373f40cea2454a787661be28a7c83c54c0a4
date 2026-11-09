@@ -1,0 +1,36 @@
+packages/workshop-shared/src/api.ts
+  s_452af7a93d3ba9::t_0209ddf67e1828 3787-3800,4119-4132,4210
+  s_351616a23717ae::t_d3315387c384c6 4133-4134,4211-4224
+packages/workshop-backend/__tests__/chat-list-arrangement.test.ts
+  s_452af7a93d3ba9::t_0bfa9f92073350 1-63
+packages/workshop-backend/src/overseer.ts
+  s_452af7a93d3ba9::t_7a1701fcf176a0 11794-11810,12979-13005,13698,13700
+  s_351616a23717ae::t_a5531142242864 13695-13697
+  s_351616a23717ae::t_025d53241a8962 4,13699
+packages/integration-tests/__tests__/workshop-use-role.test.ts
+  s_351616a23717ae::t_b7a235bd88297e 133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7cbe373f40cea2454a787661be28a7c83c54c0a4",
+  "prompts": {},
+  "sessions": {
+    "s_351616a23717ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d776dc67-24ab-4cbe-9900-ce747bbf939a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_452af7a93d3ba9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8e77c4c-e90f-48e9-a414-2ac14fac058b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
