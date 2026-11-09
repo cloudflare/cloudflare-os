@@ -100,12 +100,13 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
     filters.current?.querySelector<HTMLInputElement>(`[data-filter-field="${field}"] input[role="combobox"]`)
       ?.focus()
   }
-  const targetSuggestions = [...new Set(page?.records.flatMap((record) =>
-    record.kind === 'workspace' && record.workspaceOwner ? [record.workspaceOwner] : []))]
-  const workspaceRecord = page?.records.find((record) =>
-    record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
-  const workspaceLabel = workspace === undefined ? undefined
-    : (workspaceRecord?.kind === 'workspace' ? workspaceRecord.workspaceTitle : undefined)
+  // Every record but a setting record names a workspace and its owner: a call into one, and each
+  // step of a write to one.
+  const workspaceRecords = page?.records.flatMap((record) => record.kind === 'setting' ? [] : [record]) ?? []
+  const targetSuggestions = [...new Set(workspaceRecords.flatMap(({ workspaceOwner }) =>
+    workspaceOwner ? [workspaceOwner] : []))]
+  const workspaceLabel = workspaceRecords.find(({ workspaceId, workspaceTitle }) =>
+    workspaceId === workspace && workspaceTitle)?.workspaceTitle
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a
   // control that becomes disabled without giving it back. So once a turn lands there, focus moves
