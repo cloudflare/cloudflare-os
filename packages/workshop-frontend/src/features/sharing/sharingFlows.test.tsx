@@ -48,7 +48,7 @@ vi.mock('@cloudflare/kumo', async importOriginal => {
         <Radio.Provider value={onValueChange}>{children}</Radio.Provider>,
       RadioItem: ({ children, value }: { children: ReactNode; value: string }) => {
         const choose = useContext(Radio)
-        return <button role="menuitemradio" onClick={() => choose(value)}>{children}</button>
+        return <button role="menuitemradio" aria-checked={false} onClick={() => choose(value)}>{children}</button>
       },
       RadioItemIndicator: () => null,
     }),
@@ -365,7 +365,7 @@ describe('gadget sharing', () => {
     await click('Share')
     expect(api.addCollaborator).toHaveBeenCalledWith('bob', { gadgetId: 0 }, undefined)
     await click('Copy link')
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0`)
   })
 
   it('confirms the share and offers a link that opens on the gadget', async () => {
@@ -376,7 +376,7 @@ describe('gadget sharing', () => {
     expect(status?.textContent).toContain('bob can now use “My Application”.')
     const copy = [...status!.querySelectorAll('button')].find(button => button.textContent === 'Copy link')!
     await act(async () => { copy.click() })
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0`)
   })
 
   it.each([
@@ -448,7 +448,7 @@ describe('gadget sharing', () => {
     await render('gadget')
     expect(findButton('Access for Anyone in Cloudflare: No access')).toBeDefined()
     await click('Copy link')
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0`)
   })
 
   it('turns on the gadget’s one link, and copies it with its key', async () => {
@@ -458,7 +458,7 @@ describe('gadget sharing', () => {
     expect(toastAdd).toHaveBeenCalledWith({ title: 'Anyone in Cloudflare with the link can use it' })
     expect(findButton('Access for Anyone in Cloudflare: Can use')).toBeDefined()
     await click('Copy link')
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0#share=k1`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0#share=k1`)
   })
 
   it('turns every link to the gadget off, keeping the people who already opened it', async () => {
@@ -470,7 +470,7 @@ describe('gadget sharing', () => {
     await render('gadget', { api })
     expect(api.newShareLinkKey).toHaveBeenCalledWith('old')
     await click('Copy link')
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0#share=k2`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0#share=k2`)
 
     const loads = api.listCollaborators.mock.calls.length
     await click('No accessOnly people you add can open it')
@@ -486,7 +486,7 @@ describe('gadget sharing', () => {
     expect(document.body.textContent).toContain('Anyone in CloudflareNo access')
     expect(findButton('Access for Anyone in Cloudflare: No access')).toBeUndefined()
     await click('Copy link')
-    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1?w=0`)
+    expect(copyToClipboard).toHaveBeenCalledWith(`${window.location.origin}/workspace/workspace-1/app/0`)
   })
 
   it('hides sharing from members once the workspace is owner-invites-only', async () => {

@@ -655,7 +655,11 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
   ), [allGadgets, effectiveSelectedChatId])
 
   // The selected workpiece: explicit URL state wins, followed by the one open in this session
-  // (only accepted apps are persisted), then the workspace default and the first visible one.
+  // (only accepted apps are persisted), then the one last shown, then the workspace default and
+  // the first visible one. Closing the pane forgets the first two while it is still sliding shut,
+  // so without the last-shown step another app would flash into it on the way out.
+  // Keyed by workspace: workpiece ids repeat across workspaces.
+  const lastSelectedWorkpieceRef = useRef<{ workspaceId?: string; id: WorkpieceId | null }>({ id: null })
   const selectedWorkpieceId = useMemo(() => {
     if (urlWorkpieceId !== null && visibleWorkpieces.some(g => g.id === urlWorkpieceId)) {
       return urlWorkpieceId
@@ -664,12 +668,18 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
     if (storedId !== undefined && visibleWorkpieces.some(g => g.id === storedId)) {
       return storedId
     }
+    const last = lastSelectedWorkpieceRef.current
+    const lastId = last.workspaceId === id ? last.id : null
+    if (lastId !== null && visibleWorkpieces.some(g => g.id === lastId)) {
+      return lastId
+    }
     const defaultId = metadata?.defaultGadgetId
     if (defaultId !== undefined && visibleGadgets.some(g => g.id === defaultId)) {
       return defaultId
     }
     return visibleWorkpieces.length > 0 ? visibleWorkpieces[0].id : null
-  }, [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, metadata?.defaultGadgetId])
+  }, [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, metadata?.defaultGadgetId, id])
+  lastSelectedWorkpieceRef.current = { workspaceId: id, id: selectedWorkpieceId }
 
   const selectedWorkpieceSummary = selectedWorkpieceId !== null
     ? visibleWorkpieces.find(g => g.id === selectedWorkpieceId)
@@ -1873,13 +1883,6 @@ export default function GadgetEditor({ page }: { page?: EditorAppPage } = {}) {
                     chatId={previewChatId}
                     asSubmenu={{ itemClassName: MENU_ITEM, contentClassName: MENU_CONTENT }}
                   />
-                  <DropdownMenu.Item
-                    disabled={selectedGadgetSummary.chatId !== undefined}
-                    onClick={() => openShareModal(selectedGadgetSummary.id)}
-                    className={MENU_ITEM}
-                  >
-                    {selectedGadgetSummary.chatId === undefined ? 'Share app…' : 'Keep this draft to share it'}
-                  </DropdownMenu.Item>
                   <DropdownMenu.Item
                     disabled={!selectedGadgetStub}
                     onClick={() => setBlueprintModalOpen(true)}

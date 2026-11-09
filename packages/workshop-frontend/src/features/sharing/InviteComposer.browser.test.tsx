@@ -40,7 +40,7 @@ it.each([
   await act(async () => root!.render(
     <Toasty><ServerConfigContext.Provider value={{ userSearchEnabled: searchEnabled } as ServerConfig}>
       <WorkspaceInviteModal open onClose={() => {}} overseer={overseer}
-        metadata={{ id: 'workspace-1', title: 'Workspace' } as WorkspaceMetadata}
+        metadata={{ id: 'workspace-1', title: 'Workspace', kind: 'workspace' } as WorkspaceMetadata}
         currentUser={{ type: 'user', id: 'owner@example.com', name: 'Owner' }}
         authenticatedApi={authenticatedApi} />
     </ServerConfigContext.Provider></Toasty>,

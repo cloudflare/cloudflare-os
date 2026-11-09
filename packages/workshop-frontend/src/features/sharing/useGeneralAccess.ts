@@ -16,11 +16,12 @@ export type GeneralAccess =
   | { kind: 'off' }
   | { kind: 'on'; linkIds: string[]; url: string | null }
 
-// Where a recipient lands: the workspace, opened on the gadget. A key rides in the fragment,
-// which browsers never send to a server.
+/**
+ * Where a recipient lands: the app on its own page, without the workspace around it. A key rides
+ * in the fragment, which browsers never send to a server.
+ */
 export const gadgetUrl = (workspaceId: string, gadgetId: WorkpieceId, key?: string): string => {
-  const url = new URL(`/workspace/${workspaceId}`, window.location.origin)
-  url.searchParams.set('w', String(gadgetId))
+  const url = new URL(`/workspace/${workspaceId}/app/${gadgetId}`, window.location.origin)
   if (key !== undefined) url.hash = `share=${key}`
   return url.href
 }

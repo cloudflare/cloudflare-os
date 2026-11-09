@@ -48,7 +48,7 @@ export const GeneralAccessRow = ({ siteName, state, canChange, busy, onChange, c
         <DropdownMenu.Content container={container} align="end" sideOffset={6} className={`${MENU_CONTENT} !min-w-[240px]`} style={MENU_POSITIONER_STYLE}>
           <DropdownMenu.RadioGroup value={value} onValueChange={next => onChange(next === 'on')}>
             {OPTIONS.map(option => (
-              <DropdownMenu.RadioItem key={option.value} value={option.value} className={`${MENU_ITEM} gap-3`}>
+              <DropdownMenu.RadioItem key={option.value} value={option.value} closeOnClick className={`${MENU_ITEM} gap-3`}>
                 <span className="flex flex-1 flex-col">
                   <span className="font-medium">{option.label}</span>
                   <span className="text-[12px] leading-4 text-kumo-subtle">{option.hint}</span>

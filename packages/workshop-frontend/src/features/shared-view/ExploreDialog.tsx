@@ -3,11 +3,13 @@ import { Check, Info, Link as LinkIcon, Prohibit, X } from '@phosphor-icons/reac
 import type { RpcStub } from 'capnweb'
 import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import Avatar from '../../components/Avatar'
-import { WorkshopButton, WorkshopIconButton } from '../../components/WorkshopControls'
+import { roundButtonClass } from '../../components/RoundButton'
 import ObserverConfigModal from '../../ObserverConfigModal'
 import { accessRequestText, missingSourceLine } from './accessRequest'
 import ResourceList from './ResourceList'
 import type { SourceRow, SourceStatus, useExplore } from './useExplore'
+
+const PRIMARY = 'inline-flex h-[34px] cursor-pointer items-center gap-1.5 rounded-full bg-kumo-contrast px-3.5 text-[13px] font-medium text-kumo-inverse transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-40'
 
 type Props = {
   explore: ReturnType<typeof useExplore>
@@ -128,17 +130,17 @@ const ExploreDialog = ({ explore, authenticatedApi, ownerName, appName }: Props)
     )
     footer = (
       <>
-        {/* Matches the primary's height, which the secondary tone doesn't. */}
-        <WorkshopButton className="!h-9" onClick={explore.close}>Not now</WorkshopButton>
-        <WorkshopButton
-          tone="primary"
+        <button type="button" className={roundButtonClass('pill')} onClick={explore.close}>Not now</button>
+        <button
+          type="button"
+          className={PRIMARY}
           autoFocus
           onClick={() => void explore.continueWithAccounts()}
           disabled={connecting}
-          loading={connecting}
         >
+          {connecting && <Loader size="sm" />}
           {vendor ? `Continue with ${vendor}` : 'Continue'}
-        </WorkshopButton>
+        </button>
       </>
     )
   } else {
@@ -167,17 +169,18 @@ const ExploreDialog = ({ explore, authenticatedApi, ownerName, appName }: Props)
     )
     if (outcome && settled) {
       footer = phase.kind === 'success' ? (
-        <WorkshopButton tone="primary" autoFocus onClick={explore.startExploring}>
+        <button type="button" className={PRIMARY} autoFocus onClick={explore.startExploring}>
           Start using it
-        </WorkshopButton>
+        </button>
       ) : (
         <>
           {phase.kind === 'failure' && phase.missing.length > 0 && (
-            <WorkshopButton className="!h-9" icon={<LinkIcon size={14} />} onClick={copyRequest}>
+            <button type="button" className={roundButtonClass('pill')} onClick={copyRequest}>
+              <LinkIcon size={14} />
               Copy access request
-            </WorkshopButton>
+            </button>
           )}
-          <WorkshopButton tone="primary" autoFocus onClick={explore.close}>Done</WorkshopButton>
+          <button type="button" className={PRIMARY} autoFocus onClick={explore.close}>Done</button>
         </>
       )
     }
@@ -185,20 +188,23 @@ const ExploreDialog = ({ explore, authenticatedApi, ownerName, appName }: Props)
 
   return (
     <Dialog.Root open disablePointerDismissal onOpenChange={open => { if (!open) explore.close() }}>
-      <Dialog className="responsive-dialog flex flex-col rounded-2xl! p-0" size="base">
+      <Dialog className="responsive-dialog !z-[1000] flex !w-[min(440px,calc(100vw-32px))] flex-col overflow-hidden rounded-3xl bg-kumo-base p-0" size="base">
         <div className="flex items-start justify-between gap-4 px-5 pt-5">
           <div className="flex min-w-0 flex-col gap-1">
-            <Dialog.Title className="text-base font-medium leading-6 tracking-[-0.25px] text-kumo-default">
+            <Dialog.Title className="text-[15px] font-medium leading-[18px] text-kumo-default">
               {title}
             </Dialog.Title>
             {description && (
-              <Dialog.Description className="text-sm text-kumo-subtle">{description}</Dialog.Description>
+              <Dialog.Description className="text-[13px] leading-[18px] text-kumo-subtle">{description}</Dialog.Description>
             )}
           </div>
           <Dialog.Close
             aria-label="Close"
             render={props => (
-              <WorkshopIconButton {...props} aria-label="Close"><X size={16} /></WorkshopIconButton>
+              <button {...props} type="button" aria-label="Close"
+                className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default">
+                <X size={14} />
+              </button>
             )}
           />
         </div>

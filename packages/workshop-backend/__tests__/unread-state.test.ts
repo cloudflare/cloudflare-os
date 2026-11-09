@@ -469,7 +469,10 @@ describe("local counts and explicit read boundaries", () => {
       id: fixture.workspaceId, title: "Workspace", owner, role: "build", kind: "workspace", invited: true})]);
     // A second invite leaves the listing alone; opening it clears the mark.
     await reader.recordSharedWorkspaceInvite(fixture.workspaceId, "Other", owner, "use");
-    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", [], "workspace");
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build",
+      await notificationBaselines(fixture), "workspace");
+    // The first open after an invite still brings in the workspace's chats, as not yet joined.
+    expect((await reader.getChatThreads()).map(t => [t.chatId, t.unjoined])).toEqual([[1, true]]);
     const [listed] = await reader.listWorkspaces();
     expect(listed).toMatchObject({title: "Workspace", role: "build"});
     expect(listed.invited).toBeUndefined();
