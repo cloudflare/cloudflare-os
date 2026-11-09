@@ -1,4 +1,4 @@
-import {encodePktLine, FLUSH_PKT, DELIM_PKT, gitPullPath, parsePktItems, pktText} from "@gadgets/gatekeeper-kit/git-transport";
+import {encodePktLine, FLUSH_PKT, DELIM_PKT, parsePktItems, pktText} from "@gadgets/gatekeeper-kit/git-transport";
 import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
 import type {GitObjectType, GitPullHints, GitShallowInfo} from "@gadgets/workshop-shared/gatekeeper";
 import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, readGitCommitHeader,
@@ -58,6 +58,23 @@ interface FetchRequest {
 const INFINITE_DEPTH = 0x7fffffff;
 
 /**
+ * Check that `request` is one of the two read-only Git smart-HTTP requests `worktreeGitPull()`
+ * serves -- ref discovery (GET `/info/refs?service=git-upload-pack`) or fetch (POST
+ * `/git-upload-pack`), with the `Git-Protocol: version=2` header -- and return which one. Throws
+ * otherwise. Only the URL's path and query are checked: the repository is fixed by the caller.
+ */
+function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "git-upload-pack" {
+  const url = new URL(request.url);
+  if (request.headers.get("git-protocol") !== "version=2")
+    throw new Error("Git protocol version 2 is required.");
+  if (request.method === "GET" && url.pathname === "/info/refs" &&
+      url.search === "?service=git-upload-pack") return "info/refs?service=git-upload-pack";
+  if (request.method === "POST" && url.pathname === "/git-upload-pack" && !url.search &&
+      request.headers.get("content-type") === "application/x-git-upload-pack-request") return "git-upload-pack";
+  throw new Error("Only Git ref discovery and fetch are allowed.");
+}
+
+/**
  * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `ReplicableWorktree.gitPull()`.
  * The worktree's own commits are built from workspace storage, while the files of the history's
  * boundary commits are streamed through from a connection rather than loaded into the
@@ -102,9 +119,9 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
   }
   if (needsLocal && (remoteWants.length || deeper && has.size)) {
     // Serving this would mean merging a local pack with a proxied one that may contain some of
-    // the same objects, which Git rejects; see plans/git-proxy.md. A replica that fetches the
-    // worktree's head before any older history never needs both. (A clone deeper than the
-    // boundary is given less history instead, as any shallow server gives it.)
+    // the same objects, which Git rejects; see plans/tree-sync-replicas.md. A replica that
+    // fetches the worktree's head before any older history never needs both. (A clone deeper
+    // than the boundary is given less history instead, as any shallow server gives it.)
     throw new Error("This fetch needs both new commits from the workspace and older history from the " +
       "connected repository. Fetch the worktree's head first, then fetch again.");
   }

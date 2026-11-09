@@ -3095,13 +3095,8 @@ async function runAgentPass(
       // Replay tells a re-root from a re-establishment of the pin by its commit (see
       // applyReplayedPin).
       if (commit === worktreeBase(id)) throw new Error("A re-root must move the worktree's base.");
-      // Every buffered change touches one workpiece, but strip rather than drop, so a change
-      // that touched others too would keep them.
-      stepBuffer.changes = stepBuffer.changes.flatMap(entry => {
-        if (!(id in entry.change)) return [entry];
-        let {[id]: _absorbed, ...rest} = entry.change;
-        return Object.keys(rest).length > 0 ? [{...entry, change: rest}] : [];
-      });
+      // Every buffered change touches exactly one workpiece (see appendAgentEdit's callers).
+      stepBuffer.changes = stepBuffer.changes.filter(entry => !(id in entry.change));
       stepBuffer.bytes = stepBuffer.changes.reduce(
           (sum, {change}) => sum + codeChangeSerializedSize(change), 0);
       stepBuffer.reRoots.set(id, commit);

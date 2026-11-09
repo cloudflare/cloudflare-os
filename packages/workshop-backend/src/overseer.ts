@@ -48,6 +48,10 @@ import {
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
+import type { ReplicableWorktree, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
+import type { Worktree } from "./worktree-binding";
+import { worktreeGitPull } from "./worktree-git";
+import { WorktreeReplicas } from "./worktree-replica";
 import { GadgetExportsImpl } from "./exports-session";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
@@ -68,11 +72,6 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import type { ReplicableWorktree, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
-import type { Worktree } from "./worktree-binding";
-import { worktreeGitPull } from "./worktree-git";
-import { WorktreeReplicas } from "./worktree-replica";
-
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
@@ -3067,8 +3066,7 @@ class OverseerImpl implements AgentHooks {
           author,
           allowDuringTurn: true,
           change: unrowed,
-          pins: reRoots.map(({gadgetId, baseCommit, mergedCommit}) =>
-              ({gadgetId, baseCommit, ...(mergedCommit !== baseCommit ? {mergedCommit} : {})})),
+          pins: reRoots,
           createdGadgets: step.createdGadgets,
           createdWorktrees: step.createdWorktrees,
           addedBindings: step.addedBindings,

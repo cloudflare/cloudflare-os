@@ -9,6 +9,8 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Trans
 import {buildPackStream, concatBytes, decodePackStream, gitObjectOid, parseGitTree, type PackableObject}
   from "../src/git-codec";
 import {runAgent} from "../src/agent";
+import {byteStream} from "./git-cache-fixtures";
+import {worktreeGitPull} from "../src/worktree-git";
 
 const testEnv = env as Cloudflare.Env & {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -48,7 +50,8 @@ async function transfer(worktree: {gitPull(request: Request): Promise<Response>}
   }));
   const objects = [];
   const bases = new Map<string, PackableObject>();
-  for await (const object of decodePackStream(demuxGitFetchResponse(response.body!),
+  for await (const object of decodePackStream(
+      byteStream(new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer())),
     {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024, resolveBase: oid => bases.get(oid)})) {
     bases.set(object.oid, object);
     objects.push({oid: object.oid, type: object.type, binary: object.payload.includes(0)});
@@ -115,6 +118,30 @@ async function until(predicate: () => Promise<boolean>) {
   }
   throw new Error("Test barrier did not arrive");
 }
+
+describe("worktreeGitPull's request check", () => {
+  // Refused before the source is consulted, so neither the cache nor the source is needed.
+  const serve = (request: Request) => worktreeGitPull({} as never, {head: "", check() {}, trees: new Set(), remotes: []},
+    request);
+  it("accepts ref discovery", async () => {
+    const response = await serve(new Request("https://git.invalid/info/refs?service=git-upload-pack", {
+      headers: {"git-protocol": "version=2"},
+    }));
+    expect(response.headers.get("content-type")).toBe("application/x-git-upload-pack-advertisement");
+  });
+  it.each([
+    ["GET", "/info/refs?service=git-receive-pack"], ["POST", "/git-receive-pack"],
+    ["GET", "/anything"], ["POST", "/git-upload-pack?redirect=elsewhere"],
+  ])("refuses %s %s", async (method, path) => {
+    await expect(serve(new Request(`https://git.invalid${path}`, {method,
+      headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
+    }))).rejects.toThrow(/ref discovery and fetch/);
+  });
+  it("requires protocol v2", async () => {
+    await expect(serve(new Request("https://git.invalid/info/refs?service=git-upload-pack")))
+      .rejects.toThrow(/version 2/);
+  });
+});
 
 describe("mounted worktree Git fetches", () => {
   it("serves the worktree's Git head after its execution ended, but not its file methods", () => within(async (impl, f) => {

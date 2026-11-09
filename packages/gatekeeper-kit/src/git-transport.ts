@@ -41,26 +41,6 @@ const GIT_AGENT = "cloudflare-gadgets";
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
-/**
- * Check that `request` is one of the two read-only Git smart-HTTP requests a server of native
- * Git fetches accepts (e.g. `ReplicableWorktree.gitPull()`) -- ref discovery (GET
- * `/info/refs?service=git-upload-pack`) or fetch (POST `/git-upload-pack`), with the
- * `Git-Protocol: version=2` header -- and return which one. Throws otherwise.
- *
- * Only the URL's path and query are checked. Never use the rest of the URL (e.g. its host) to
- * decide which repository to read: the repository is fixed by whoever serves the request.
- */
-export function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "git-upload-pack" {
-  const url = new URL(request.url);
-  if (request.headers.get("git-protocol") !== "version=2")
-    throw new Error("Git protocol version 2 is required.");
-  if (request.method === "GET" && url.pathname === "/info/refs" &&
-      url.search === "?service=git-upload-pack") return "info/refs?service=git-upload-pack";
-  if (request.method === "POST" && url.pathname === "/git-upload-pack" && !url.search &&
-      request.headers.get("content-type") === "application/x-git-upload-pack-request") return "git-upload-pack";
-  throw new Error("Only Git ref discovery and fetch are allowed.");
-}
-
 // =======================================================================================
 // pkt-line framing
 
@@ -327,8 +307,7 @@ export function openGitFetchResponse(
     fail(error);
     throw error;
   });
-  let pack: ReadableStream<Uint8Array> = new ReadableStream({
-    type: "bytes",
+  let pack = new ReadableStream<Uint8Array>({
     async pull(controller) {
       await shallowInfo();
       try {
@@ -336,10 +315,8 @@ export function openGitFetchResponse(
         if (next.done) {
           onTerminal?.({state: "complete"});
           controller.close();
-          controller.byobRequest?.respond(0);
         } else {
-          // Byte-stream enqueue detaches its buffer; the parser may still hold sibling slices.
-          controller.enqueue(next.value!.slice());
+          controller.enqueue(next.value!);
         }
       } catch (error) {
         fail(error);

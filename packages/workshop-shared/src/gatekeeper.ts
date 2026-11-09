@@ -1159,20 +1159,21 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Each requested object must be included (unless it is reachable from `options.haves`) or the
    * stream must fail. The returned RPC capability also reports the terminal status: Workers RPC
    * can replace a stream's original exception with a generic disconnect, so consumers must check
-   * `status()` after ingestion fails to recover the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A requested blob suppressed by
-   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
+   * `status()` after ingestion fails to recover the producer's error. After draining the stream,
+   * require `complete` before accepting the transfer. Dispose the capability when finished. A
+   * requested blob suppressed by `filterBlobSize` may be omitted; cache ingestion surfaces that as
+   * an oversized-file error.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
-   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
+   * commits. This supports native Git as well as lazy cache population. Consumers own
    * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
    *
    * The workspace also pulls history it has never stored, to serve native Git in a container
    * that has mounted a worktree (see `ReplicableWorktree.gitPull()`). Such pulls pass the
    * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
-   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of one of
-   * them, with a commit-only pull (`filterTreeDepth: 0`) of the commit whose `haves` are the
-   * known commits: an empty pack means it is an ancestor.
+   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of a
+   * commit the gatekeeper is known to have, with a commit-only pull (`filterTreeDepth: 0`) of the
+   * commit whose `haves` are those known commits: an empty pack means it is an ancestor.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.

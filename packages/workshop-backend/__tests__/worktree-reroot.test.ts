@@ -1,8 +1,8 @@
 // An agent step can re-root its chat's pin for a worktree at a commit holding the result of a
 // command run there (WorktreeTurnAccess.reRoot in agent.ts), as an update from mainline re-roots
-// a gadget's pin at a merge commit. Nothing calls it yet but the tests here, which run the real
-// runAgent with pi's faux provider standing in for the model, and drive the hook from a stand-in
-// for executeCodeMode, the way the Worktree binding will.
+// a gadget's pin at a merge commit. In production WorktreeReplicas calls it when a command's
+// result is submitted. The tests here run the real runAgent with pi's faux provider standing in
+// for the model, and call the hook directly from a stand-in for executeCodeMode.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";

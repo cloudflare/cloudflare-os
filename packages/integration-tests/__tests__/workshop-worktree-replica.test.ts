@@ -16,7 +16,6 @@ beforeAll(async () => {
   harness = await startHarness({
     gatekeepers: [{binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR}],
     enableGadgetExecution: true,
-
   });
 });
 afterAll(async () => {
