@@ -1449,6 +1449,12 @@
             "AdminAuditDurableObject"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "SpaceDurableObject"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [
