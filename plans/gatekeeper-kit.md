@@ -775,6 +775,7 @@ export type ObservationScope =
   | { kind: "withholdFromObservers" }           // withhold from every admitted observer
   | { kind: "subresources"; ids: readonly string[] };  // the Workshop checks these; `[]` is accepted
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
+export type VerifyObserverAccess = NonNullable<Gatekeeper<unknown>["verifyObserverAccess"]>;
 export function observerAccessVerifier<V>(opts: Pick<ObserverTrackerOptions<V>,
   "hasCollectionAccess" | "concurrency">): VerifyObserverAccess;   // Gatekeeper.verifyObserverAccess
 export class ObservationGate {
@@ -823,7 +824,9 @@ read, and the strategy keeps `addObserver()` enforcing its baseline, the history
 conversion and every read not yet converted. `observerAccessVerifier` reuses the tracker's oracle
 shape but not its error policy: the tracker excludes an observer whose stored verifier throws, so
 one dead stub cannot fail every read, while the Workshop asks with fresh verifiers and expects a
-throw when access cannot be determined, so the throw propagates. It stores nothing, since the same
+throw when access cannot be determined, so the throw propagates. It asks no further verifier once
+one throws, and rejects with that first error only after those already asked have settled, so no
+verifier, meant for the one call, is still in use after it. It stores nothing, since the same
 observer id may arrive with another account's verifier.
 
 **A proven refusal reclaims only this read's reservations.** For withheld reads, `discard()` deletes

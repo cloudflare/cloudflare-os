@@ -774,6 +774,11 @@ restrictions. Throw when access is indeterminate (expired credentials or a provi
 The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
 since an observer may reconnect with another account.
 
+Size the oracle for up to **10,000 subresource IDs per verifier call**, not the legacy tracker's
+`maxTrackedCollections`. Split IDs to fit the provider's per-request caps while staying within the
+Worker's subrequest limit. A shared tracker oracle must also handle all persisted history: lowering
+`maxTrackedCollections` does not shrink previously recorded sets.
+
 An existing `ObservationGate` converts a read with
 `gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
 it prepares no legacy state, exclusions, or fences. New code needs no gate: its constructor demands
@@ -791,7 +796,7 @@ is a no-op), which existing code comments may still cite.
 | Strategy | Report | Verify |
 | --- | --- | --- |
 | **A — Private-only / account identity** | The actual mailbox/account or other private resource. | Deny collaborators, or require the same provider identity if that is the intended policy. |
-| **B — One access-controlled unit** | The resource whose information is disclosed, including an empty answer about it. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
+| **B — One access-controlled unit** | The resource whose information is actually disclosed. For empty answers, apply the disclosure-based guidance below. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
 | **C — Multiple access-controlled units** | Every independently required resource: returned items, query sources, and required containers or memberships. | All requirements, not any one of them; a parent ID does not imply child access. |
 | **D — Unrestricted disclosure** | `[]`. | No provider-side access requirement applies to this answer. |
 
@@ -811,18 +816,18 @@ Design these variants explicitly:
   authorize the owner's personal list, membership, or caller-specific metadata. Report an account
   requirement too when those are private. Distinguish the operator's configurator API from data
   returned to a Gadget session; a picker method is not automatically a session observation pattern.
-- **Derived results.** Report the source footprint, not just objects present in output rows. Obtain
-  dependencies from trustworthy provider analysis where available; request text alone may not reveal
-  everything a query reads. Deduplicate, but retain dependencies for zero-row and cached answers.
-  A source-free result is D only if it has no other restricted input or context.
+- **Derived results.** Report access requirements for information actually disclosed, including
+  counts, aggregates, and metadata, not just objects named in output rows. Preserve those
+  requirements on cache hits. A source-free result is D only if it has no other restricted input
+  or context.
 - **Hierarchy and compound requirements.** A folder/list may control enumeration while individual
-  children have independent ACLs. Report both where needed, including the container for an empty
-  listing. Coarsen to one parent only with a provider guarantee that the observer can see everything
-  disclosed; neither URL nesting nor common ownership proves that.
-- **Empty and failed results.** "No rows" is not "no dependencies": absence, filtered membership,
-  counts, and aggregates can be restricted. Conversely, a failed item lookup that discloses no
-  protected information need not report that item. Decide from the complete returned answer,
-  including errors and auxiliary metadata; do not mechanically add or remove a parent ID.
+  children have independent ACLs. Report both where needed. Coarsen to one parent only with a
+  provider guarantee that the observer can see everything disclosed; neither URL nesting nor
+  common ownership proves that.
+- **Empty and failed results.** There is no blanket requirement to retain every consulted source
+  for an empty result. Choose requirements from information actually disclosed, including errors
+  and auxiliary metadata. An empty or failed lookup that discloses no protected information need
+  not report that item.
 - **Stable identity.** Resolve or reject `me`, `primary`, personal `root`, mutable names, and similar
   account-relative selectors before reporting them. Canonical escaping is not identity resolution.
   Re-check the same real resource with the observer's account; never resolve an owner's alias to
