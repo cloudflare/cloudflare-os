@@ -1,0 +1,39 @@
+packages/workshop-frontend/src/features/chat-organizer/chatOrganization.ts
+  s_351616a23717ae::t_c18e2b4b00a383 3,5,8,12-13,15-18,20,22,26,28-36,38,41,46-49
+packages/workshop-frontend/src/features/chat-organizer/ChatFolderGroup.tsx
+  s_351616a23717ae::t_3dc9219a62ee8c 1,7,11-12,17-18,32-33,41-42,52,61,71,79,91
+packages/workshop-frontend/src/features/chat-organizer/FolderNameInput.tsx
+  s_351616a23717ae::t_98be2e6c3c7b99 1-44
+packages/workshop-frontend/src/features/chat-organizer/ChatListSections.tsx
+  s_351616a23717ae::t_cc4a9940214a70 2,7,11,19-20,33,35-45,47-48
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.test.tsx
+  s_351616a23717ae::t_de8d1807fbe7d8 4,7-8,10-11,16-23,25-29,32-37,40-42,44-55,57,65,72-76,78,80-82,85-87,89-93,95-98,101-109,111-114,117-130,133-141,144-153,157-158,161,164-165,167
+packages/workshop-frontend/src/features/chat-organizer/chatListFocus.ts
+  s_351616a23717ae::t_7e3b7905f56411 1-15
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_351616a23717ae::t_7129aed6052baf 127,3066-3068,3070,5437,5479
+packages/workshop-frontend/src/features/chat-organizer/useChatOrganizer.ts
+  s_351616a23717ae::t_2575518b222e27 1,3-7,9-24,26-33,36-39,41-48,50-52,55-74,76-79,81-82,85-86,90-102,104-131,133-153,155-176,180
+packages/workshop-frontend/src/features/chat-organizer/chatListViewStore.ts
+  s_351616a23717ae::t_26e4b04d883d88 1-59
+packages/workshop-frontend/src/features/chat-organizer/chatOrganization.test.ts
+  s_351616a23717ae::t_a90e494ba78d97 2,4,6-15,19-23,26-30,36-39,41,43-45
+packages/workshop-frontend/src/features/chat-organizer/ChatOrganizerMenuItems.tsx
+  s_351616a23717ae::t_5f3173020eae9d 10,19-20,26-27,30,40,42-43,46,49,52,55,58,60,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "359204271865b3cf2fdb3ead5c92918329787783",
+  "prompts": {},
+  "sessions": {
+    "s_351616a23717ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d776dc67-24ab-4cbe-9900-ce747bbf939a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
