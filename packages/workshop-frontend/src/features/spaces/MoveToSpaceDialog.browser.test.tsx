@@ -4,18 +4,37 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { MoveToSpaceDialog } from './MoveToSpaceDialog'
-import { ME, fakeApi, mount, personalSpace, teamSpace, unmountAll } from './spacesTestUtils'
+import {
+  ME,
+  fakeApi,
+  fakeSpace,
+  member,
+  mount,
+  openSpaceAmong,
+  personalSpace,
+  subspace,
+  teamSpace,
+  unmountAll,
+} from './spacesTestUtils'
 import '../../styles.css'
 
 const input = (action: () => Promise<unknown>) => act(async () => { await action() })
 
-// The dialog for a workspace in the personal space of a user in `teamSpaces` team spaces, once it
-// has come to rest where it opens.
-const render = async (teamSpaces: number, moveToSpace: Overseer['moveToSpace'] = async () => {}) => {
+// The dialog for a workspace in the personal space of a user in `teamSpaces` team spaces, the
+// first of which holds `subspaces` sub-spaces, once it has come to rest where it opens.
+const render = async (
+  teamSpaces: number,
+  moveToSpace: Overseer['moveToSpace'] = async () => {},
+  subspaces = 0,
+) => {
   const overseer = {
     moveToSpace: vi.fn<Overseer['moveToSpace']>(moveToSpace),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
+  const first = fakeSpace(teamSpace('s0', 'Space 0'), [member(ME, 'admin')], [], {
+    subspaces: Array.from({ length: subspaces }, (_, index) =>
+      subspace(`sub${index}`, `Sub ${String(index).padStart(2, '0')}`)),
+  })
   await mount(
     <MoveToSpaceDialog
       workspace={{ id: 'w1', title: 'Roadmap', spaceId: undefined }}
@@ -27,11 +46,14 @@ const render = async (teamSpaces: number, moveToSpace: Overseer['moveToSpace'] =
       onMoved={() => {}}
       onMoveFailed={async () => {}}
     />,
-    fakeApi({ openWorkspace: () => overseer }),
+    fakeApi({
+      openWorkspace: () => overseer,
+      openSpace: openSpaceAmong([first]),
+    }),
   )
   const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
   await Promise.all(dialog.getAnimations({ subtree: true }).map(animation => animation.finished))
-  return { overseer, dialog }
+  return { overseer, dialog, first }
 }
 
 const rectOf = (element: Element) => element.getBoundingClientRect()
@@ -106,6 +128,78 @@ describe('MoveToSpaceDialog in a browser', () => {
     expect(rectOf(refusal.element()).top).toBeGreaterThanOrEqual(rectOf(body).bottom - 1)
     expect(isInside(rectOf(refusal.element()), rectOf(dialog))).toBe(true)
     expect(isInside(rectOf(page.getByRole('button', { name: 'Move' }).element()), rectOf(dialog))).toBe(true)
+  })
+
+  it('keeps Move in view when a space is expanded to many sub-spaces in a short window', async () => {
+    await page.viewport(1024, 600)
+    const { overseer, dialog } = await render(1, undefined, 40)
+    const move = page.getByRole('button', { name: 'Move' })
+    const body = scrollingBodyOf(document.querySelector('[role="radiogroup"]')!)!
+    expect(body.scrollHeight).toBe(body.clientHeight)
+
+    await input(() => userEvent.click(page.getByRole('button', { name: 'Sub-spaces of Space 0', exact: true })))
+    const last = page.getByRole('radio', { name: 'Sub 39' })
+    await expect.element(last).toBeInTheDocument()
+
+    // The sub-spaces scroll inside the dialog, which stays in the window with its buttons.
+    expect(body.scrollHeight).toBeGreaterThan(body.clientHeight)
+    expect(rectOf(last.element()).top).toBeGreaterThanOrEqual(rectOf(body).bottom)
+    expect(rectOf(dialog).top).toBeGreaterThanOrEqual(0)
+    expect(rectOf(dialog).bottom).toBeLessThanOrEqual(window.innerHeight)
+    expect(isInside(rectOf(move.element()), rectOf(dialog))).toBe(true)
+
+    await input(() => userEvent.click(last))
+    expect(isInside(rectOf(last.element()), rectOf(body))).toBe(true)
+    expect(isInside(rectOf(move.element()), rectOf(dialog))).toBe(true)
+
+    await input(() => userEvent.click(move))
+    expect(overseer.moveToSpace).toHaveBeenCalledExactlyOnceWith('sub39')
+  })
+
+  it('gives the expand button the focus when another try shows the sub-spaces', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await page.viewport(1024, 768)
+    const { first } = await render(1, undefined, 2)
+    first.listSubspaces.mockRejectedValueOnce(new Error('boom'))
+    const expand = page.getByRole('button', { name: 'Sub-spaces of Space 0', exact: true })
+    await input(() => userEvent.click(expand))
+    const retry = page.getByRole('button', { name: 'Try again to load the sub-spaces of Space 0' })
+    await expect.element(retry).toBeVisible()
+
+    await input(() => userEvent.click(retry))
+
+    await expect.element(page.getByRole('radio', { name: 'Sub 00' })).toBeVisible()
+    await expect.element(expand).toHaveFocus()
+    // The dialog takes the focus a control drops once more on the frame after: the button keeps it.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    await expect.element(expand).toHaveFocus()
+    // And the keyboard goes on from there.
+    await input(() => userEvent.keyboard('{Enter}'))
+    await expect.element(expand).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('leaves the focus on a Try again that failed again', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await page.viewport(1024, 768)
+    const { first } = await render(1, undefined, 2)
+    let fail!: (err: Error) => void
+    first.listSubspaces
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+    await input(() => userEvent.click(page.getByRole('button', { name: 'Sub-spaces of Space 0', exact: true })))
+    const retry = page.getByRole('button', { name: 'Try again to load the sub-spaces of Space 0' })
+    await expect.element(retry).toBeVisible()
+
+    await input(() => userEvent.click(retry))
+    await expect.element(retry).toHaveAttribute('aria-disabled', 'true')
+    await act(async () => fail(new Error('boom')))
+
+    await expect.element(retry).not.toHaveAttribute('aria-disabled')
+    await expect.element(retry).toHaveFocus()
+    // Nothing left the row, so nothing takes the focus on the frame after either.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    await expect.element(retry).toHaveFocus()
+    expect(first.listSubspaces).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the focus on Move while the workspace is moved and when the server refuses the move', async () => {

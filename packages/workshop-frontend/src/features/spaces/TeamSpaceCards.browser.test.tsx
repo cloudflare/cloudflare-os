@@ -137,7 +137,7 @@ describe('TeamSpaceCards in a browser', () => {
     await render(width)
 
     expect(named('Platform', 'aria-describedby').textContent).toBe('Your role: Admin · 12 workspaces')
-    expect(named('Atlas', 'aria-describedby').textContent).toBe('Your role: Admin · Couldn’t load its workspaces')
+    expect(named('Atlas', 'aria-describedby').textContent).toBe('Couldn’t load its workspaces')
     expect(named('Design', 'aria-describedby').textContent).toBe('You are no longer a member of this space.')
     for (const name of ['Platform', 'Atlas', 'Design']) {
       const details = named(name, 'aria-describedby')
@@ -157,6 +157,30 @@ describe('TeamSpaceCards in a browser', () => {
     expect(name.scrollWidth).toBeGreaterThan(name.clientWidth)
     expect(isInside(name, cardOf(LONG_NAME))).toBe(true)
     expect(isInside(membersOf(LONG_NAME).element(), cardOf(LONG_NAME))).toBe(true)
+  })
+
+  it('keeps a card as tall while its listing is being read as once it has been', async () => {
+    await mountRouted(fakeApi(), {
+      at: '/workspaces',
+      chrome: (
+        // Narrow enough for one card a row, so that neither card is stretched to the other's height.
+        <div style={{ width: 428 }}>
+          <TeamSpaceCards
+            sections={[
+              { kind: 'space', space: teamSpace('platform', 'Platform'), listing: 'loading', rows: [] },
+              { kind: 'space', space: teamSpace('atlas', 'Atlas'), listing: 'ready', rows: rows(3) },
+            ]}
+            onMembersOpen={() => {}}
+            onListingReload={async () => {}}
+          />
+        </div>
+      ),
+    })
+
+    expect(cardRows()).toEqual([['platform'], ['atlas']])
+    expect(named('Platform', 'aria-describedby').textContent).toBe('')
+    expect(cardOf('Platform').getBoundingClientRect().height)
+      .toBe(cardOf('Atlas').getBoundingClientRect().height)
   })
 
   it('reaches the card’s buttons from its link by keyboard, and neither follows the other', async () => {
@@ -207,9 +231,10 @@ const openMembers = async () => {
       listWorkspaces: async () => [],
       listFeaturedBlueprints: async () => [],
       listSpaces: async () => spaces,
+      // A space the list has dropped refuses the user.
       openSpace: (id: string) => {
-        const info = spaces.find(space => space.id === id)!
-        return fakeSpace(info, [member(ME, info.role)])
+        const info = spaces.find(space => space.id === id)
+        return info ? fakeSpace(info, [member(ME, info.role)]) : fakeSpace(teamSpace(id, id), [])
       },
     }),
     {

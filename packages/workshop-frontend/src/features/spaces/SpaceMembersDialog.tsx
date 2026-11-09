@@ -21,27 +21,40 @@ type Pending =
   | { kind: 'member'; profileId: string; control: 'role' | 'remove' }
   | { kind: 'leave' }
 
+// What a member of the space itself who also holds a role above it is told once they have left.
+const LEFT_BUT_STILL_A_MEMBER =
+  'You are no longer one of this space’s own members. You still have access through a space above it.'
+
 /**
  * A team space's members and their roles, with what a role lets a member do in the workspaces
- * the space lists. Every member sees the list and can leave the space. An admin can also add a
- * person with a role, change a member's role and remove a member. The server decides each of
- * those when it is asked, so a refusal (the last admin, a user with no account) is shown where
- * the change was made. A personal space has no members besides its owner: no screen opens this
- * dialog for one, and one that is handed to it gets the list and nothing to change it with.
+ * the space lists. The list is the people added to the space itself. For a space inside
+ * another, a note says that the members of the spaces above it also have access, to a viewer
+ * who holds a role there: the space tells nobody else that it is inside one.
+ *
+ * Everyone the space counts as a member sees the list. An admin, whether or not they are in
+ * it, can also add a person with a role, change a member's role and remove a member. Only
+ * someone in the list can leave, and one who also holds a role above stays a member: the dialog
+ * stays open and says so. The server decides each change when it is asked, so a refusal (the
+ * last admin, a user with no account) is shown where the change was made. A personal space has
+ * no members besides its owner: no screen opens this dialog for one, and one that is handed to
+ * it gets the list and nothing to change it with.
  *
  * One change is made at a time, and the dialog stays open until it has settled. The control it
  * was started from stays enabled meanwhile, so that it keeps the focus; when the change takes
  * that control away, the member list takes the focus it had.
  */
 export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
-  /** The id of a team space the viewer is a member of. */
+  /** The id of a space the viewer holds a role in. */
   spaceId: string
   /**
    * The user's own role may have changed by the time this is called, and the space may have
    * stopped counting them as a member.
    */
   onClose: () => void
-  /** The user left the space. Closing the dialog is the caller's. Never called after unmount. */
+  /**
+   * The user left the space, which no longer counts them as a member. Closing the dialog is the
+   * caller's. Never called after unmount.
+   */
   onLeft: () => void
 }) => {
   const { currentUser } = useAuthenticatedApi()
@@ -52,7 +65,9 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
   // Announces a change that worked: the list it shows up in may be out of a screen reader's view.
   const [notice, setNotice] = useState('')
   const [retrying, setRetrying] = useState(false)
-  const listRef = useRef<HTMLUListElement>(null)
+  // The viewer left the space from this dialog and is a member of it still, by a role above.
+  const [leftHere, setLeftHere] = useState(false)
+  const listRef = useRef<HTMLElement>(null)
   // Gives the member list the focus of a control that has left the dialog. An open dialog takes
   // the focus the browser drops, at once and once more on the next frame, so focus on the
   // dialog itself is focus nothing in it has, and the list is given it again after that frame.
@@ -77,7 +92,14 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
 
   const ready = state.status === 'ready' ? state : null
   const isTeam = ready?.info.kind === 'team'
+  // The role the space reports, which a role held above it may raise: an admin by inheritance
+  // manages whether or not the list has them.
   const canManage = isTeam && ready.info.role === 'admin'
+  // The space names its parent only to a viewer who holds a role there, which is also how the
+  // viewer is known to be a member whatever the list says.
+  const inherits = ready?.info.parent !== undefined
+  const isDirect = ready !== null && currentUser !== null
+    && ready.members.some(({ profile }) => profile.id === currentUser.id)
 
   // Runs one change to the space, which is read again whatever the change came to.
   const runChange = async <T,>(next: Pending, action: (space: RpcStub<Space>) => Promise<T>) => {
@@ -162,10 +184,20 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
   )
 
   const leave = async (profileId: string) => {
+    // As the space said before the leave: what it says afterwards is read by then.
+    const staysMember = inherits
     await runChange({ kind: 'leave' }, space => space.removeMember(profileId))
     // A leave answered after the dialog has gone is not the caller's to act on: it would toast
     // and navigate from a page the user has left.
-    if (alive.current) onLeft()
+    if (!alive.current) return
+    // A viewer who holds a role above the space has left its list and nothing else, so there
+    // is nothing for the caller to take away: the dialog stays, and says what happened.
+    if (staysMember) {
+      setLeftHere(true)
+      setNotice(LEFT_BUT_STILL_A_MEMBER)
+    } else {
+      onLeft()
+    }
   }
 
   const handleRetry = async () => {
@@ -187,8 +219,9 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
       description={SPACE_ROLES_DESCRIPTION}
       busy={pending !== null}
       onClose={onClose}
-      // Until the viewer is known, the member who would leave is not.
-      footer={isTeam && currentUser ? (
+      // Only someone in the list has a place in it to leave. Until the viewer is known, the
+      // member who would leave is not.
+      footer={isTeam && currentUser && isDirect ? (
         <SpaceLeave
           disabled={pending !== null && pending.kind !== 'leave'}
           onLeave={() => leave(currentUser.id)}
@@ -211,6 +244,18 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
       )}
       {ready && (
         <>
+          {/* On screen as well as announced: the status line is not shown, and the viewer's row
+              and `Leave space` have just gone. */}
+          {leftHere && inherits && !isDirect && (
+            <p className="mb-3 text-[13px] leading-[18px] text-kumo-default">{LEFT_BUT_STILL_A_MEMBER}</p>
+          )}
+          {inherits && (
+            <p role="note" className="mb-3 text-[12px] leading-4 text-kumo-subtle">
+              Members of the spaces above this one also have access, with the roles they hold there
+              or higher. Only the people added to this space itself are listed. Your role here:
+              {' '}{SPACE_ROLE_LABELS[ready.info.role]}.
+            </p>
+          )}
           <SpaceMemberAdd
             canAdd={canManage}
             members={ready.members}
@@ -225,7 +270,7 @@ export const SpaceMembersDialog = ({ spaceId, onClose, onLeft }: {
             </p>
           )}
           <SpaceMemberList
-            ref={listRef}
+            ref={(list) => { listRef.current = list }}
             members={ready.members}
             currentUserId={currentUser?.id}
             manage={canManage ? {

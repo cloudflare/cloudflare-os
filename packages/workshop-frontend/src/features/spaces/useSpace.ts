@@ -41,7 +41,8 @@ const LOADING: SpaceState = { status: 'loading' }
 /**
  * Opens the space with this id for as long as the component is mounted with it, and reads its
  * info and members. The space is opened again, and the previous one disposed, when the id
- * changes. What the space lists is not read here (see `useSpaceListings`).
+ * changes. What the space lists is not read here: the workspaces page reads it with
+ * `useSpaceListings`, the space's own page with `useSpaceContents`.
  *
  * A space re-checks the user's membership on every call, so a space that opened may start
  * refusing: every read here, including the one after a `change`, turns that into `refused`.

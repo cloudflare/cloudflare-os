@@ -26,9 +26,12 @@ export type WorkspaceRow =
  *   space once the list of spaces has it.
  * - `space`: a space the user is a member of, with what it lists (see `spaceRows`). `listing` is
  *   how far the read of that listing got; until it is `ready` the rows are only the user's own
- *   workspaces. On the workspaces page these are the user's team spaces.
- * - `elsewhere`: the user's own workspaces in a team space that is not among their spaces, which
- *   is where a workspace stays when its owner leaves a space.
+ *   workspaces. On the workspaces page these are the user's team spaces. `space.role` is the
+ *   role the space itself reported once `listing` is `ready`. Until then it is the one the
+ *   user's list of spaces has, which the role they hold may exceed, so nothing shows it.
+ * - `elsewhere`: the user's own workspaces in a space that is not among their spaces: a
+ *   sub-space they reach through a space above it or created in their personal space, or a team
+ *   space they have left.
  * - `shared`: workspaces shared with the user that none of their team spaces shows.
  */
 export type WorkspaceSection = { rows: WorkspaceRow[] } & (
@@ -130,7 +133,7 @@ export const groupWorkspaces = ({ gadgets, spaces, listings, userId }: {
     const workspaces = listing.status === 'ready' ? listing.workspaces : []
     return {
       kind: 'space',
-      space,
+      space: listing.status === 'ready' ? { ...space, role: listing.role } : space,
       listing: listing.status,
       rows: spaceRows({ gadgets, space, workspaces, userId, shown }),
     }

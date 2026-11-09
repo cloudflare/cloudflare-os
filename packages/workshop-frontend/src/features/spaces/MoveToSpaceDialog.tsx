@@ -1,49 +1,53 @@
 import { useState } from 'react'
-import { Dialog, Radio } from '@cloudflare/kumo'
+import { Dialog } from '@cloudflare/kumo'
 import type { WorkspaceMetadata, SpaceInfo } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
 import { useUiFeatureFlag } from '../../FeatureFlagsContext'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
 import { BusyButton } from './BusyButton'
+import { SpaceChoices } from './SpaceChoices'
 import { SpaceDialogFrame } from './SpaceDialogFrame'
-
-// The radio value standing for the user's own personal space, which `Overseer.moveToSpace` takes
-// as null. No space id equals it: an id is made by the server, and is never a word.
-const PERSONAL_TARGET = 'personal'
+import { spaceLabel } from './spaceKinds'
+import { useSpaceInfos } from './useSpaceInfos'
 
 const isTeamSpace = (space: SpaceInfo) => space.kind === 'team'
 
 /**
  * Whether there is a space to move `workspace` to besides the one it is in: a team space among
- * `spaces`, or, for a workspace in a team space, the user's personal space.
+ * `spaces`; for a workspace in a team space, the user's personal space; or a sub-space of the
+ * personal space, which `personalHasSubspaces` says is known to exist.
  */
 export const hasMoveTarget = (
   workspace: Pick<WorkspaceMetadata, 'spaceId'>,
   spaces: SpaceInfo[],
-): boolean => workspace.spaceId !== undefined || spaces.some(isTeamSpace)
+  personalHasSubspaces: boolean,
+): boolean => workspace.spaceId !== undefined || spaces.some(isTeamSpace) || personalHasSubspaces
 
 /**
- * Moves one of the user's own workspaces to another of their spaces: their personal space, or a
- * team space they are a member of. The space the workspace is in now is marked and cannot be
- * chosen as the target, except to ask again for a move that failed. A workspace stays in a team
- * space its owner has left, so that space may not be among the targets: nothing is known of it
- * but its id, so it is not named. While the list of spaces has not loaded, a space missing from
- * the targets is not said to be missing from the user's spaces. Nothing is moved under a session
+ * Moves one of the user's own workspaces to another of their spaces: their personal space, a
+ * space of their list, or a sub-space of either, reached by expanding the space it is inside
+ * (`SpaceChoices`). The space the workspace is in now is marked wherever it is offered and
+ * cannot be chosen as the target, except to ask again for a move that failed. A space of the
+ * list or the personal space is marked from the start. Any other is asked for its name, which
+ * the dialog then says: a sub-space is offered only once the space above it is expanded. A
+ * workspace also stays in a space its owner has left, which refuses to say anything and is not
+ * named. While the list of spaces has not loaded nothing is asked, and a space missing from the
+ * targets is not said to be missing from the user's spaces. Nothing is moved under a session
  * that has not said that the `spaces` flag is on.
  */
 export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveFailed }: {
   /** A workspace the user owns, as `listWorkspaces()` reports it. */
   workspace: Pick<WorkspaceMetadata, 'id' | 'title' | 'spaceId'>
   /**
-   * The user's spaces (`useSpaces`). Only the team spaces among them are offered. Empty while the
-   * list has not loaded, or could not be: once loaded it has the user's personal space at least.
+   * The user's spaces (`useSpaces`): the top level of what is offered. Empty while the list has
+   * not loaded, or could not be: once loaded it has the user's personal space at least.
    */
   spaces: SpaceInfo[]
   onClose: () => void
   /**
-   * The workspace now belongs to the team space with this id, or with null to the user's
-   * personal space. Closing the dialog is the caller's.
+   * The workspace now belongs to the space with this id, or with null to the user's personal
+   * space. Closing the dialog is the caller's.
    */
   onMoved: (spaceId: string | null) => void
   /**
@@ -54,7 +58,8 @@ export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveF
   onMoveFailed: () => Promise<void>
 }) => {
   const { authenticatedApi } = useAuthenticatedApi()
-  const current = workspace.spaceId ?? PERSONAL_TARGET
+  // A space's id, or null for the user's own personal space, as `Overseer.moveToSpace` takes it.
+  const current = workspace.spaceId ?? null
   const [target, setTarget] = useState(current)
   const [moving, setMoving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -66,24 +71,35 @@ export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveF
   // Asking for it again is then what completes the move, so it stays a target.
   const nothingToMove = target === current && failure === null
 
-  const targets = [
-    { value: PERSONAL_TARGET, name: 'Personal' },
-    ...spaces.filter(isTeamSpace).map(space => ({ value: space.id, name: space.name })),
-  ]
-  const currentOffered = targets.some(({ value }) => value === current)
   const spacesLoaded = spaces.length > 0
+  // The space the workspace is in when it is not offered from the start: a sub-space, or a
+  // space the user has left. Its name is the space's own to tell, once the list has loaded.
+  const elsewhere = current !== null && !spaces.some(space => isTeamSpace(space) && space.id === current)
+    ? current
+    : undefined
+  const { infos } = useSpaceInfos(elsewhere !== undefined && spacesLoaded ? [elsewhere] : [])
+  const whereabouts = (() => {
+    if (elsewhere === undefined) return null
+    if (!spacesLoaded) {
+      return 'It is now in a team space. Your list of spaces has not loaded, so only your personal space is offered.'
+    }
+    const read = infos[elsewhere]
+    if (read === undefined || read.status === 'loading') return null
+    return read.status === 'ready'
+      ? `It is now in “${spaceLabel(read.info)}”.`
+      : 'It is now in a space that is not in your list of spaces.'
+  })()
 
   const handleMove = async () => {
     if (nothingToMove || moving || !sessionReady) return
     setMoving(true)
     setFailure(null)
-    const spaceId = target === PERSONAL_TARGET ? null : target
     // Not awaited: the move is pipelined on the open, and disposing the promise disposes the
     // workspace it resolves to.
     const overseer = authenticatedApi.openWorkspace(workspace.id)
     try {
-      await overseer.moveToSpace(spaceId)
-      onMoved(spaceId)
+      await overseer.moveToSpace(target)
+      onMoved(target)
     } catch (err) {
       logRpcFailure('Failed to move workspace to a space:', err)
       await onMoveFailed()
@@ -130,27 +146,16 @@ export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveF
       )}
     >
       <div className="flex flex-col gap-3">
-        {!currentOffered && (
-          <p className="text-[13px] leading-[18px] text-kumo-default">
-            {spacesLoaded
-              ? 'It is now in a space that is not in your list of spaces.'
-              : 'It is now in a team space. Your list of spaces has not loaded, so only your personal space is offered.'}
-          </p>
+        {whereabouts && (
+          <p className="text-[13px] leading-[18px] text-kumo-default">{whereabouts}</p>
         )}
-        <Radio.Group
+        <SpaceChoices
+          spaces={spaces}
           value={target}
-          onValueChange={(value) => { setTarget(value); setFailure(null) }}
+          current={current}
           disabled={moving}
-        >
-          <Radio.Legend className="sr-only">Space</Radio.Legend>
-          {targets.map(({ value, name }) => (
-            <Radio.Item
-              key={value}
-              value={value}
-              label={value === current ? `${name} (current)` : name}
-            />
-          ))}
-        </Radio.Group>
+          onValueChange={(choice) => { setTarget(choice?.id ?? null); setFailure(null) }}
+        />
       </div>
     </SpaceDialogFrame>
   )

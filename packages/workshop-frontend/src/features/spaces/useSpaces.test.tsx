@@ -130,6 +130,53 @@ describe('useSpaces', () => {
     expect(current.spaces).toEqual([PERSONAL, PLATFORM])
   })
 
+  it('settles a refresh that later ones overtook only once the latest of them has settled', async () => {
+    const answers = [deferred<SpaceInfo[]>(), deferred<SpaceInfo[]>(), deferred<SpaceInfo[]>()]
+    const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => [PERSONAL, PLATFORM])
+    await mount(<Probe />, fakeApi({ listSpaces }))
+    await settle()
+    for (const answer of answers) listSpaces.mockImplementationOnce(() => answer.promise)
+    const settled: number[] = []
+    const refresh = (nth: number) => act(async () => { void current.refresh().then(() => settled.push(nth)) })
+
+    await refresh(1)
+    await refresh(2)
+    await act(async () => answers[0].resolve([PERSONAL]))
+    await settle()
+    // Its answer is dropped, and the list it was asked for is still being read.
+    expect(settled).toEqual([])
+
+    // The refresh that overtook it is overtaken in turn.
+    await refresh(3)
+    await act(async () => answers[1].resolve([PERSONAL]))
+    await settle()
+    expect(settled).toEqual([])
+    expect(current.spaces).toEqual([PERSONAL, PLATFORM])
+
+    await act(async () => answers[2].resolve([PERSONAL, PLATFORM, teamSpace('design', 'Design')]))
+    await settle()
+    expect(settled.toSorted()).toEqual([1, 2, 3])
+    expect(current.spaces.map(space => space.name)).toEqual(['Me', 'Platform', 'Design'])
+  })
+
+  it('settles a refresh whose answer comes after the one that overtook it has settled', async () => {
+    const older = deferred<SpaceInfo[]>()
+    const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => [PERSONAL, PLATFORM])
+    await mount(<Probe />, fakeApi({ listSpaces }))
+    await settle()
+    listSpaces.mockImplementationOnce(() => older.promise)
+    const settled = vi.fn<() => void>()
+
+    await act(async () => { void current.refresh().then(settled) })
+    await act(() => current.refresh())
+    expect(settled).not.toHaveBeenCalled()
+
+    await act(async () => older.resolve([PERSONAL]))
+    await settle()
+    expect(settled).toHaveBeenCalledOnce()
+    expect(current.spaces).toEqual([PERSONAL, PLATFORM])
+  })
+
   it('drops a load that settles after the session was replaced', async () => {
     const late = deferred<SpaceInfo[]>()
     const { rerender } = await mount(<Probe />, fakeApi({ listSpaces: () => late.promise }))

@@ -12,8 +12,13 @@ import {
   click,
   deferred,
   fakeApi,
+  fakeSpace,
+  member,
   mount,
+  openSpaceAmong,
   personalSpace,
+  settle,
+  subspace,
   teamSpace,
   unmountAll,
 } from './spacesTestUtils'
@@ -24,11 +29,24 @@ const SPACES = [
   teamSpace('platform', 'Platform'),
 ]
 
+// The user's spaces as the server has them: the personal space holds Notes, and Platform holds
+// Infra, which the user is a member of through Platform alone. Any other id refuses them.
+const fakes = () => ({
+  personal: fakeSpace(SPACES[0]!, [member(ME, 'admin')], [], { subspaces: [subspace('notes', 'Notes')] }),
+  design: fakeSpace(teamSpace('design', 'Design'), [member(ME, 'use')]),
+  platform: fakeSpace(teamSpace('platform', 'Platform'), [member(ME, 'admin')], [], {
+    subspaces: [subspace('infra', 'Infra')],
+  }),
+  infra: fakeSpace(teamSpace('infra', 'Infra', 'use', 'platform'), [], [], { inherited: 'admin' }),
+})
+
 const render = async (
   spaceId: string | undefined,
   moveToSpace: Overseer['moveToSpace'] = async () => {},
   spaces: SpaceInfo[] = SPACES,
+  among = fakes(),
 ) => {
+  const openSpace = openSpaceAmong(Object.values(among))
   const overseer = {
     moveToSpace: vi.fn<Overseer['moveToSpace']>(moveToSpace),
     [Symbol.dispose]: vi.fn<() => void>(),
@@ -45,10 +63,13 @@ const render = async (
       onMoveFailed={onMoveFailed}
     />
   )
-  const { rerender } = await mount(dialog(spaceId), fakeApi({ openWorkspace }))
+  const { rerender } = await mount(dialog(spaceId), fakeApi({ openWorkspace, openSpace }))
+  await settle()
   return {
+    ...among,
     overseer,
     openWorkspace,
+    openSpace,
     onMoved,
     onMoveFailed,
     // The dialog as its caller renders it once the workspace, read again, is recorded in a space.
@@ -73,6 +94,12 @@ const targets = () => [...document.body.querySelectorAll('label')]
 const choose = (name: string) =>
   click([...document.body.querySelectorAll('label')].find(label => label.textContent === name)!)
 
+// Expands a space of the dialog to its sub-spaces, once they have been read.
+const expand = async (name: string) => {
+  await click(button(`Sub-spaces of ${name}`))
+  await settle()
+}
+
 describe('MoveToSpaceDialog', () => {
   afterEach(() => {
     unmountAll()
@@ -92,7 +119,7 @@ describe('MoveToSpaceDialog', () => {
   })
 
   it('says that the current space is not in the user’s list, without naming it', async () => {
-    // A workspace stays in a team space after its owner has left it.
+    // A workspace stays in a team space after its owner has left it, and the space refuses them.
     const { overseer } = await render('left-team')
 
     expect(document.body.textContent)
@@ -261,19 +288,120 @@ describe('MoveToSpaceDialog', () => {
     expect(overseer.moveToSpace).toHaveBeenLastCalledWith(null)
     expect(onMoved).toHaveBeenCalledExactlyOnceWith(null)
   })
+
+  it('says the same of a space that could not be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const among = fakes()
+    among.infra.getInfo.mockRejectedValue(new Error('boom'))
+    await render('infra', undefined, SPACES, among)
+
+    expect(document.body.textContent)
+      .toContain('It is now in a space that is not in your list of spaces.')
+    expect(document.body.textContent).not.toContain('“Infra”')
+  })
+
+  it('moves the workspace to a sub-space reached by expanding the space it is inside', async () => {
+    const { overseer, onMoved } = await render(undefined)
+
+    await expand('Platform')
+    expect(targets()).toEqual([
+      { name: 'Personal (current)', checked: true },
+      { name: 'Design', checked: false },
+      { name: 'Platform', checked: false },
+      { name: 'Infra', checked: false },
+    ])
+    await choose('Infra')
+    await click(button('Move'))
+
+    expect(overseer.moveToSpace).toHaveBeenCalledExactlyOnceWith('infra')
+    expect(onMoved).toHaveBeenCalledExactlyOnceWith('infra')
+  })
+
+  it('moves the workspace into a sub-space of the personal space', async () => {
+    const { overseer, onMoved, openSpace } = await render('design')
+
+    await expand('Personal')
+    expect(openSpace.mock.calls).toEqual([[SPACES[0]!.id]])
+    await choose('Notes')
+    await click(button('Move'))
+
+    expect(overseer.moveToSpace).toHaveBeenCalledExactlyOnceWith('notes')
+    expect(onMoved).toHaveBeenCalledExactlyOnceWith('notes')
+  })
+
+  it('names the sub-space the workspace is in when the user can open it, and marks it once the space above it is expanded', async () => {
+    const { overseer } = await render('infra')
+
+    expect(document.body.textContent).toContain('It is now in “Infra”.')
+    expect(document.body.textContent).not.toContain('not in your list of spaces')
+    expect(targets()).toEqual([
+      { name: 'Personal', checked: false },
+      { name: 'Design', checked: false },
+      { name: 'Platform', checked: false },
+    ])
+    expect(button('Move').disabled).toBe(true)
+
+    await expand('Platform')
+    expect(targets()[3]).toEqual({ name: 'Infra (current)', checked: true })
+    expect(button('Move').disabled).toBe(true)
+
+    await choose('Platform')
+    await choose('Infra (current)')
+    expect(button('Move').disabled).toBe(true)
+    await click(button('Move'))
+    expect(overseer.moveToSpace).not.toHaveBeenCalled()
+  })
+
+  it('asks the workspace’s space for its name only when it is not at the top level and the list has loaded', async () => {
+    const top = await render('design')
+    expect(top.openSpace).not.toHaveBeenCalled()
+    unmountAll()
+
+    const personal = await render(undefined)
+    expect(personal.openSpace).not.toHaveBeenCalled()
+    unmountAll()
+
+    // What `useSpaces` reports until its first load, and after one that failed.
+    const unloaded = await render('infra', undefined, [])
+    expect(unloaded.openSpace).not.toHaveBeenCalled()
+    unmountAll()
+
+    const below = await render('infra')
+    expect(below.openSpace.mock.calls).toEqual([['infra']])
+    expect(below.infra.getInfo).toHaveBeenCalledOnce()
+    expect(below.infra.listSubspaces).not.toHaveBeenCalled()
+    expect(below.infra[Symbol.dispose]).toHaveBeenCalledOnce()
+  })
+
+  it('says nothing of where the workspace is while that is being read', async () => {
+    const among = fakes()
+    const info = deferred<SpaceInfo>()
+    among.infra.getInfo.mockImplementation(() => info.promise)
+    await render('infra', undefined, SPACES, among)
+
+    expect(document.body.textContent).not.toContain('It is now in')
+
+    await act(async () => info.resolve(teamSpace('infra', 'Infra', 'admin', 'platform')))
+    await settle()
+    expect(document.body.textContent).toContain('It is now in “Infra”.')
+  })
 })
 
 describe('hasMoveTarget', () => {
   const [OWN, DESIGN] = SPACES
 
   it('finds none for a workspace in the personal space of a user with no team space', () => {
-    expect(hasMoveTarget({}, [OWN])).toBe(false)
-    expect(hasMoveTarget({}, [])).toBe(false)
+    expect(hasMoveTarget({}, [OWN], false)).toBe(false)
+    expect(hasMoveTarget({}, [], false)).toBe(false)
   })
 
   it('finds a team space, and for a workspace in a team space the personal one', () => {
-    expect(hasMoveTarget({}, [OWN, DESIGN])).toBe(true)
+    expect(hasMoveTarget({}, [OWN, DESIGN], false)).toBe(true)
     // A workspace stays in a team space its owner has left.
-    expect(hasMoveTarget({ spaceId: 'left-team' }, [OWN])).toBe(true)
+    expect(hasMoveTarget({ spaceId: 'left-team' }, [OWN], false)).toBe(true)
+  })
+
+  it('finds a target for a workspace in the personal space of a user with no team space once that space is known to hold a sub-space', () => {
+    expect(hasMoveTarget({}, [OWN], true)).toBe(true)
   })
 })

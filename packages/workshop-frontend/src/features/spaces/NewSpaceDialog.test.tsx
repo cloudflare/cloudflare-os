@@ -3,8 +3,8 @@
 
 import { act, StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { SpaceInfo } from '@gadgets/workshop-shared/api'
-import { NewSpaceDialog } from './NewSpaceDialog'
+import type { SpaceInfo, SubspaceInfo } from '@gadgets/workshop-shared/api'
+import { NewSpaceDialog, type NewSpaceParent } from './NewSpaceDialog'
 import {
   ME,
   alerts,
@@ -16,9 +16,11 @@ import {
   labeledInput,
   member,
   mount,
+  openSpaceAmong,
   personalSpace,
   pressEscape,
   settle,
+  subspace,
   teamSpace,
   type,
   unmountAll,
@@ -116,6 +118,23 @@ const replacement = (space = created('Field notes', 'space-2')) => {
     answerFlags: (spaces: boolean) => act(async () => flags.resolve({ spaces })),
   }
 }
+
+// What a creation inside a space that ends with no answer rejects with.
+const lost = () => new Error('Peer closed WebSocket')
+
+// The dialog's title and description, as it is named and described.
+const dialogText = (attribute: 'aria-labelledby' | 'aria-describedby') => {
+  const dialog = document.body.querySelector('[role="dialog"]')
+  return document.getElementById(dialog?.getAttribute(attribute) ?? '')?.textContent
+}
+
+// A space is created in one place: a dialog given both places does not type-check.
+const BOTH_PLACES: { spaces: Spaces; parent: NewSpaceParent } = {
+  spaces: { enabled: true, spaces: [], loading: false, failed: false, refresh: async () => {} },
+  parent: { space: teamSpace('platform', 'Platform'), subspaces: null, onReload: async () => {} },
+}
+// @ts-expect-error `spaces` and `parent` exclude each other
+void (<NewSpaceDialog spaces={BOTH_PLACES.spaces} parent={BOTH_PLACES.parent} onClose={() => {}} onCreated={() => {}} />)
 
 describe('NewSpaceDialog', () => {
   afterEach(() => {
@@ -534,6 +553,247 @@ describe('NewSpaceDialog', () => {
 
       expect(onCreated).not.toHaveBeenCalled()
       expect(refresh).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('inside a space', () => {
+    const PARENT_ID = 'platform'
+    const DEPTH_LIMIT = 'A space can be nested at most 5 levels deep.'
+
+    // The dialog as the screen that shows a space renders it: `read` is what that screen has
+    // read of the space's sub-spaces, which are `subspaces` unless the test says otherwise.
+    const renderInside = async ({
+      space = teamSpace(PARENT_ID, 'Platform'),
+      role = 'admin',
+      subspaces = [],
+      read = subspaces,
+    }: {
+      space?: SpaceInfo
+      role?: SpaceInfo['role']
+      subspaces?: SubspaceInfo[]
+      read?: SubspaceInfo[] | null
+    } = {}) => {
+      const parent = fakeSpace(space, [member(ME, role)], [], { subspaces })
+      const openSpace = openSpaceAmong([parent])
+      const createSpace = vi.fn<(name: string) => unknown>()
+      const listSpaces = vi.fn<() => Promise<SpaceInfo[]>>(async () => [personalSpace(ME)])
+      const onCreated = vi.fn<(id: string) => void>()
+      const onClose = vi.fn<() => void>()
+      const onReload = vi.fn<() => Promise<void>>(async () => {})
+      const dialog = (
+        <NewSpaceDialog
+          parent={{ space, subspaces: read, onReload }}
+          onClose={onClose}
+          onCreated={onCreated}
+        />
+      )
+      const { rerender, unmount } = await mount(dialog, fakeApi({ openSpace, createSpace, listSpaces }))
+      return {
+        parent,
+        openSpace,
+        createSpace,
+        listSpaces,
+        onCreated,
+        onClose,
+        onReload,
+        // The dialog under a session that replaces the one it was opened in.
+        replaceSession: (api: Parameters<typeof rerender>[1]) => rerender(dialog, api),
+        unmount,
+      }
+    }
+
+    it('is titled for the space it creates in and says who will be in the new space', async () => {
+      await renderInside()
+
+      expect(dialogText('aria-labelledby')).toBe('New space in Platform')
+      expect(dialogText('aria-describedby')).toBe(
+        'A space inside Platform. Everyone in Platform can open it, with at least the role they hold there, and it can have members of its own.',
+      )
+
+      unmountAll()
+      await renderInside({ space: personalSpace(ME) })
+
+      expect(dialogText('aria-labelledby')).toBe('New space in Personal')
+      expect(dialogText('aria-describedby')).toBe(
+        'A space inside your personal space, to group workspaces in. Only you are in it until you add members to it.',
+      )
+    })
+
+    it('creates the sub-space under the trimmed name on the parent, releases the parent and reports the new id', async () => {
+      const { parent, openSpace, createSpace, listSpaces, onCreated } = await renderInside()
+
+      await type(labeledInput('Name'), '  Infra ')
+      await click(button('Create'))
+
+      expect(openSpace).toHaveBeenCalledExactlyOnceWith(PARENT_ID)
+      expect(parent.createSubspace).toHaveBeenCalledExactlyOnceWith('Infra')
+      expect(parent[Symbol.dispose]).toHaveBeenCalledOnce()
+      expect(parent.subspaces()).toHaveLength(1)
+      expect(onCreated).toHaveBeenCalledExactlyOnceWith(parent.subspaces()[0].id)
+      expect(parent.listSubspaces).not.toHaveBeenCalled()
+      expect(createSpace).not.toHaveBeenCalled()
+      expect(listSpaces).not.toHaveBeenCalled()
+    })
+
+    it('shows the server’s refusal at the depth limit as it words it, and stays open', async () => {
+      quiet()
+      const { parent, onCreated, onClose } = await renderInside({ role: 'build' })
+      parent.createSubspace.mockRejectedValueOnce(new Error(DEPTH_LIMIT))
+
+      await type(labeledInput('Name'), 'Infra')
+      button('Create').focus()
+      await click(button('Create'))
+
+      expect(alerts()).toEqual([DEPTH_LIMIT])
+      expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+      expect(labeledInput('Name').value).toBe('Infra')
+      expect(document.activeElement).toBe(button('Create'))
+      expect(parent[Symbol.dispose]).toHaveBeenCalledOnce()
+      expect(onCreated).not.toHaveBeenCalled()
+      expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it('shows the refusal a use member is given as the server words it', async () => {
+      quiet()
+      const { parent, onCreated } = await renderInside({ role: 'use' })
+
+      await create('Infra')
+
+      expect(alerts()).toEqual(['Only an admin or a build member of this space can create a sub-space.'])
+      expect(parent.subspaces()).toEqual([])
+      expect(onCreated).not.toHaveBeenCalled()
+    })
+
+    it('finds the sub-space a creation with no answer made, and makes no second one', async () => {
+      quiet()
+      const { parent, openSpace, listSpaces, onCreated } = await renderInside()
+      parent.createSubspace.mockRejectedValueOnce(lost())
+      // Someone else created Design meanwhile: it is not the one this creation asked for.
+      parent.listSubspaces.mockResolvedValue([subspace('else', 'Design'), subspace('made', 'Infra')])
+
+      await create('Infra')
+      expect(alerts()).toEqual([NO_ANSWER])
+      expect(parent.listSubspaces).not.toHaveBeenCalled()
+      await click(button('Create'))
+
+      expect(parent.listSubspaces).toHaveBeenCalledOnce()
+      expect(parent.createSubspace).toHaveBeenCalledOnce()
+      expect(onCreated).toHaveBeenCalledExactlyOnceWith('made')
+      // The parent is opened for the creation and again for the look-up, and released each time.
+      expect(openSpace.mock.calls).toEqual([[PARENT_ID], [PARENT_ID]])
+      expect(parent[Symbol.dispose]).toHaveBeenCalledTimes(2)
+      expect(listSpaces).not.toHaveBeenCalled()
+    })
+
+    it('creates again when the lost creation left no sub-space', async () => {
+      quiet()
+      const { parent, onCreated } = await renderInside()
+      parent.createSubspace.mockRejectedValueOnce(lost())
+
+      await create('Infra')
+      await click(button('Create'))
+
+      expect(parent.listSubspaces).toHaveBeenCalledOnce()
+      expect(parent.createSubspace).toHaveBeenCalledTimes(2)
+      expect(onCreated).toHaveBeenCalledExactlyOnceWith(parent.subspaces()[0].id)
+    })
+
+    it('does not take a sub-space that was there before for the lost one', async () => {
+      quiet()
+      const older = subspace('old', 'Infra')
+      const { parent, onCreated } = await renderInside({ subspaces: [older, subspace('other', 'Design')] })
+      parent.createSubspace.mockRejectedValueOnce(lost())
+
+      await create('Infra')
+      await click(button('Create'))
+
+      expect(parent.listSubspaces).toHaveBeenCalledOnce()
+      expect(parent.createSubspace).toHaveBeenCalledTimes(2)
+      expect(onCreated).toHaveBeenCalledOnce()
+      expect(onCreated).not.toHaveBeenCalledWith('old')
+      expect(onCreated).not.toHaveBeenCalledWith('other')
+    })
+
+    it('creates without looking when the parent’s sub-spaces had not been read', async () => {
+      quiet()
+      const { parent, onCreated } = await renderInside({ subspaces: [subspace('old', 'Infra')], read: null })
+      parent.createSubspace.mockRejectedValueOnce(lost())
+
+      await create('Infra')
+      await click(button('Create'))
+
+      expect(parent.listSubspaces).not.toHaveBeenCalled()
+      expect(parent.createSubspace).toHaveBeenCalledTimes(2)
+      expect(onCreated).toHaveBeenCalledOnce()
+      expect(onCreated).not.toHaveBeenCalledWith('old')
+    })
+
+    it('reads the parent’s sub-spaces again, and not the list of spaces, when it closes after a creation that got no answer', async () => {
+      quiet()
+      const { parent, listSpaces, onClose, onReload } = await renderInside()
+      parent.createSubspace.mockRejectedValueOnce(lost())
+
+      await create('Infra')
+      expect(onReload).not.toHaveBeenCalled()
+      await click(button('Cancel'))
+
+      expect(onReload).toHaveBeenCalledOnce()
+      expect(onClose).toHaveBeenCalledOnce()
+      expect(onReload.mock.invocationCallOrder[0]).toBeLessThan(onClose.mock.invocationCallOrder[0])
+      expect(listSpaces).not.toHaveBeenCalled()
+    })
+
+    it('reads nothing again when it closes with no creation that got no answer', async () => {
+      quiet()
+      const { parent, onClose, onReload } = await renderInside()
+      parent.createSubspace.mockRejectedValueOnce(new Error(DEPTH_LIMIT))
+
+      await create('Infra')
+      await click(button('Cancel'))
+
+      expect(onClose).toHaveBeenCalledOnce()
+      expect(onReload).not.toHaveBeenCalled()
+    })
+
+    it('reads the parent’s sub-spaces again and reports nothing for an answer that arrives after the dialog has gone', async () => {
+      const answer = deferred<SubspaceInfo>()
+      const { parent, listSpaces, onCreated, onReload, unmount } = await renderInside()
+      parent.createSubspace.mockReturnValueOnce(answer.promise)
+
+      await create('Infra')
+      await unmount()
+      expect(onReload).not.toHaveBeenCalled()
+      answer.resolve(subspace('made', 'Infra'))
+      await settle()
+
+      expect(onCreated).not.toHaveBeenCalled()
+      expect(onReload).toHaveBeenCalledOnce()
+      expect(parent[Symbol.dispose]).toHaveBeenCalledOnce()
+      expect(listSpaces).not.toHaveBeenCalled()
+    })
+
+    it('creates nothing before the session’s own flags say the flag is on', async () => {
+      const { openSpace, onCreated, replaceSession } = await renderInside()
+      await type(labeledInput('Name'), 'Infra')
+      const flags = deferred<{ spaces: boolean }>()
+      const next = fakeSpace(teamSpace(PARENT_ID, 'Platform'), [member(ME, 'admin')])
+      const openNext = openSpaceAmong([next])
+      await replaceSession(fakeApi({ getUiFeatureFlags: () => flags.promise, openSpace: openNext }))
+
+      await click(button('Create'))
+      await act(async () => labeledInput('Name').form!.requestSubmit())
+      await settle()
+      expect(openNext).not.toHaveBeenCalled()
+      expect(labeledInput('Name').value).toBe('Infra')
+
+      await act(async () => flags.resolve({ spaces: true }))
+      await click(button('Create'))
+      await settle()
+
+      expect(openNext).toHaveBeenCalledExactlyOnceWith(PARENT_ID)
+      expect(next.createSubspace).toHaveBeenCalledExactlyOnceWith('Infra')
+      expect(onCreated).toHaveBeenCalledExactlyOnceWith(next.subspaces()[0].id)
+      expect(openSpace).not.toHaveBeenCalled()
     })
   })
 

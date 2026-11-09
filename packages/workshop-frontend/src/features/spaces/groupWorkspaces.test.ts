@@ -27,7 +27,7 @@ const sharedWithMe = (id: string): WorkspaceMetadataWithTimestamps =>
 const listedBy = (owner: AiChatAuthorInfo, id: string): SpaceWorkspaceInfo =>
   ({ id, title: id, owner, created: DAY })
 
-const ready = (...workspaces: SpaceWorkspaceInfo[]) => ({ status: 'ready', workspaces }) as const
+const ready = (...workspaces: SpaceWorkspaceInfo[]) => ({ status: 'ready', workspaces, role: 'use' }) as const
 
 const group = (gadgets: WorkspaceMetadataWithTimestamps[], listings: SpaceListings, spaces = SPACES) =>
   groupWorkspaces({ gadgets, spaces: [...spaces], listings, userId: ME.id })
@@ -37,6 +37,12 @@ const layout = (sections: WorkspaceSection[]) => Object.fromEntries(sections.map
   section.kind === 'space' ? section.space.id : section.kind,
   section.rows.map(row => `${row.kind}:${row.id}`),
 ]))
+
+// The role the section of Atlas carries, under these listings.
+const roleOf = (listings: SpaceListings) => {
+  const section = group([], listings).find(each => each.kind === 'space' && each.space.id === 'atlas')
+  return section?.kind === 'space' ? section.space.role : undefined
+}
 
 describe('groupWorkspaces', () => {
   it('gives a row from the user’s list the entry its own section’s space lists it under', () => {
@@ -167,5 +173,11 @@ describe('groupWorkspaces', () => {
     expect(shown).toEqual([
       'adas-notes', 'adas-other', 'adas-own', 'left-behind', 'moving', 'roadmap', 'solo',
     ])
+  })
+
+  it('gives a team space’s section the role the space reported once its listing is read, and the list’s until then', () => {
+    expect(roleOf({ atlas: { status: 'ready', workspaces: [], role: 'admin' } })).toBe('admin')
+    expect(roleOf({ atlas: { status: 'loading' } })).toBe('use')
+    expect(roleOf({ atlas: { status: 'failed' } })).toBe('use')
   })
 })

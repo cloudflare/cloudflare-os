@@ -21,6 +21,7 @@ import type {
   SpaceMemberInfo,
   SpaceMemberRole,
   SpaceWorkspaceInfo,
+  SubspaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { AuthProvider } from '../../AuthContext'
 import { FeatureFlagsProvider } from '../../FeatureFlagsContext'
@@ -45,12 +46,17 @@ export const member = (profile: AiChatAuthorInfo, role: SpaceMemberRole): SpaceM
   added: new Date('2026-09-01T00:00:00Z'),
 })
 
-export const teamSpace = (id: string, name: string, role: SpaceMemberRole = 'admin'): SpaceInfo => ({
+/** A team space as its info names it. `parent` is the id of the space it was created in, for a sub-space. */
+export const teamSpace = (id: string, name: string, role: SpaceMemberRole = 'admin', parent?: string): SpaceInfo => ({
   id,
   name,
   kind: 'team',
+  ...(parent === undefined ? {} : { parent }),
   role,
 })
+
+/** A sub-space as the space it is inside lists it. */
+export const subspace = (id: string, name: string): SubspaceInfo => ({ id, name })
 
 /** A user's personal space as they see it: they are its only member, and its admin. */
 export const personalSpace = (owner: AiChatAuthorInfo): SpaceInfo => ({
@@ -76,27 +82,69 @@ export function fakeApi(methods: FakeApi = {}, { spacesFlag = true } = {}): RpcS
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
+/** What a fake space holds besides its own members and its listing. */
+export type FakeSpaceOptions = {
+  /**
+   * The role `ME` holds in the spaces this one is inside. With it `ME` is a member whatever
+   * `members` says, and `getInfo()` reports the higher of the two roles and tells `info.parent`.
+   * Without it `getInfo()` leaves `parent` out, as the server does for someone added only here.
+   */
+  inherited?: SpaceMemberRole
+  /** The sub-spaces created directly in the space. */
+  subspaces?: SubspaceInfo[]
+}
+
+const ROLE_RANK: Record<SpaceMemberRole, number> = { use: 0, build: 1, admin: 2 }
+
+// The ids `createSubspace` gives out, each one once.
+let subspacesCreated = 0
+
 /**
- * A `Space` as `ME` holds it, over a member list the test can read back and a listing.
+ * A `Space` as `ME` holds it, over a member list the test can read back, a listing and the
+ * sub-spaces created in it. The role `ME` holds is the higher of the one the member list gives
+ * them and `options.inherited`, worked out on every call; with neither the space refuses them.
  * `setMemberRole` and `removeMember` apply the change and enforce no rule: a test that needs a
  * refusal replaces the method (`space.setMemberRole.mockRejectedValueOnce(...)`).
  */
-export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspaces: SpaceWorkspaceInfo[] = []) {
+export function fakeSpace(
+  info: SpaceInfo,
+  members: SpaceMemberInfo[],
+  workspaces: SpaceWorkspaceInfo[] = [],
+  options: FakeSpaceOptions = {},
+) {
   let current = [...members]
-  const roleOf = (id: string) => current.find(entry => entry.profile.id === id)?.role
+  let inside = [...(options.subspaces ?? [])]
+  const held = () => {
+    const given = current.find(entry => entry.profile.id === ME.id)?.role
+    const roles = [given, options.inherited].filter(role => role !== undefined)
+    if (roles.length === 0) throw notAMember()
+    return roles.reduce((highest, role) => (ROLE_RANK[role] > ROLE_RANK[highest] ? role : highest))
+  }
   const space = {
     getInfo: vi.fn<Space['getInfo']>(async () => {
-      const role = roleOf(ME.id)
-      if (!role) throw notAMember()
-      return { ...info, role }
+      const { parent, ...rest } = info
+      return { ...rest, ...(options.inherited && parent !== undefined ? { parent } : {}), role: held() }
     }),
     listMembers: vi.fn<Space['listMembers']>(async () => {
-      if (!roleOf(ME.id)) throw notAMember()
+      held()
       return [...current]
     }),
     listWorkspaces: vi.fn<Space['listWorkspaces']>(async () => {
-      if (!roleOf(ME.id)) throw notAMember()
+      held()
       return workspaces
+    }),
+    listSubspaces: vi.fn<Space['listSubspaces']>(async () => {
+      held()
+      return inside.toSorted((a, b) => a.name.localeCompare(b.name))
+    }),
+    createSubspace: vi.fn<Space['createSubspace']>(async (name) => {
+      if (held() === 'use') {
+        throw new Error('Only an admin or a build member of this space can create a sub-space.')
+      }
+      subspacesCreated += 1
+      const created = subspace(subspacesCreated.toString(16).padStart(64, '0'), name.trim())
+      inside = [...inside, created]
+      return created
     }),
     setMemberRole: vi.fn<Space['setMemberRole']>(async (username, role) => {
       const existing = current.find(entry => entry.profile.id === username)
@@ -113,9 +161,22 @@ export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspace
   }
   return Object.assign(space, {
     stub: space as unknown as RpcStub<Space>,
+    id: info.id,
     members: () => current,
+    subspaces: () => inside,
   })
 }
+
+/**
+ * `openSpace` over these spaces, by id: each is one object however often it is opened, and an
+ * id that is none of them opens a space that refuses `ME`, as the server refuses an id that
+ * names no space and a space above one the user was added to. The ids of these fakes are words,
+ * so the server's other refusal, of a string that could not be a space id, is not modelled: a
+ * test of it answers with `invalidSpaceId()` itself.
+ */
+export const openSpaceAmong = (spaces: ReturnType<typeof fakeSpace>[]) =>
+  vi.fn<(id: string) => unknown>(id =>
+    spaces.find(space => space.id === id) ?? fakeSpace(teamSpace(id, id), []))
 
 const mounted: { root: Root; container: HTMLElement }[] = []
 

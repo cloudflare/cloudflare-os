@@ -9,6 +9,7 @@ import type {
   ServerConfig,
   SpaceInfo,
   SpaceMemberInfo,
+  SpaceMemberRole,
   UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 import { ServerConfigContext } from '../../ServerConfigContext'
@@ -175,6 +176,47 @@ const openAsAdmin = () =>
 
 const openAsMember = () =>
   render(teamSpace('platform', 'Platform', 'use'), [member(ADA, 'admin'), member(ME, 'use')])
+
+// What the dialog of a sub-space says and shows.
+const NOTE = (role: string) =>
+  'Members of the spaces above this one also have access, with the roles they hold there or higher. '
+  + `Only the people added to this space itself are listed. Your role here: ${role}.`
+const LEFT = 'You are no longer one of this space’s own members. You still have access through a space above it.'
+const NOBODY = 'Nobody has been added to this space itself.'
+
+// Infra, inside Platform: `members` are the people added to Infra itself, and `inherited`
+// the role the viewer holds in Platform, when they hold one.
+const openSubspace = async (members: SpaceMemberInfo[], inherited?: SpaceMemberRole) => {
+  const space = fakeSpace(teamSpace('infra', 'Infra', 'use', 'platform'), members, [], { inherited })
+  const onClose = vi.fn<() => void>()
+  const onLeft = vi.fn<() => void>()
+  await mount(
+    <SpaceMembersDialog spaceId="infra" onClose={onClose} onLeft={onLeft} />,
+    fakeApi({ openSpace: () => space.stub }),
+  )
+  await settle()
+  return { space, onClose, onLeft }
+}
+
+const notes = () => [...document.body.querySelectorAll('[role="note"]')]
+
+// The line that announces a change, whether or not anybody is listed above it.
+const statusLine = () => document.body.querySelector('[role="dialog"] p[role="status"][aria-live="polite"]')
+
+// Every paragraph on screen, and not only announced, that says the viewer left the list.
+const leftShown = () => [...document.body.querySelectorAll('[role="dialog"] p')].filter(paragraph =>
+  paragraph.textContent === LEFT && !paragraph.matches('.sr-only, [role="status"]'))
+
+// The line in the list's place when nobody is listed.
+const nobodyLine = () => [...document.body.querySelectorAll('[role="dialog"] p')]
+  .find(paragraph => paragraph.textContent === NOBODY)
+
+// Leaves the space, confirming the question.
+const confirmLeave = async () => {
+  await click(button('Leave space'))
+  await click(button('Leave'))
+  await settle()
+}
 
 describe('SpaceMembersDialog', () => {
   afterEach(() => {
@@ -1160,6 +1202,170 @@ describe('SpaceMembersDialog', () => {
       await click(button('Cancel'))
       await click(button('Leave space'))
       expect(alerts()).toEqual([])
+    })
+  })
+
+  describe('for a sub-space', () => {
+    it('says once that the members of the spaces above also have access, and the role the user holds here', async () => {
+      // Given `use` in Infra itself, and an admin of Platform above it.
+      await openSubspace([member(ME, 'use'), member(ADA, 'build')], 'admin')
+
+      expect(notes().map(note => note.textContent)).toEqual([NOTE('Admin')])
+      // Above the row that adds a person, and so above the list.
+      expect(notes()[0].compareDocumentPosition(memberList()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('says nothing of spaces above for a space that reports no parent', async () => {
+      await openAsAdmin()
+      expect(notes()).toEqual([])
+      expect(document.body.textContent).not.toContain('above')
+
+      // A sub-space the user was only added to: the server does not tell them it is inside one.
+      unmountAll()
+      await openSubspace([member(ME, 'use'), member(ADA, 'admin')])
+      expect(rows()).toEqual(['Me (you)me@example.comUse', 'Adaada@example.comAdmin'])
+      expect(notes()).toEqual([])
+      expect(document.body.textContent).not.toContain('above')
+    })
+
+    it('lists only the people added to the space itself', async () => {
+      await openSubspace([member(ADA, 'build')], 'admin')
+
+      expect(rows()).toEqual(['Adaada@example.comBuild'])
+    })
+
+    it('says that nobody has been added when the space has no member of its own', async () => {
+      await openSubspace([], 'use')
+
+      expect(memberList()).toBeNull()
+      expect(nobodyLine()).toBeDefined()
+
+      // With a member the line gives way to the list.
+      unmountAll()
+      await openSubspace([member(ADA, 'build')], 'use')
+      expect(nobodyLine()).toBeUndefined()
+    })
+
+    it('lets an admin by inheritance who is not in the list add a person, change a role and remove a member', async () => {
+      const { space } = await openSubspace([member(ADA, 'use')], 'admin')
+
+      await pick(GRACE.id)
+      await add()
+      expect(space.setMemberRole).toHaveBeenCalledExactlyOnceWith(GRACE.id, 'use')
+      expect(rows()).toEqual(['Adaada@example.comUse', 'grace@example.comUse'])
+
+      await chooseRole('Role of Ada', 'Build')
+      expect(space.setMemberRole).toHaveBeenLastCalledWith(ADA.id, 'build')
+      expect(rows()).toEqual(['Adaada@example.comBuild', 'grace@example.comUse'])
+
+      await click(button('Remove Ada'))
+      await settle()
+      expect(space.removeMember).toHaveBeenCalledExactlyOnceWith(ADA.id)
+      expect(rows()).toEqual(['grace@example.comUse'])
+      expect(alerts()).toEqual([])
+    })
+
+    it('goes by the role the space reports: a member given use there who is an admin above manages', async () => {
+      await openSubspace([member(ME, 'use'), member(ADA, 'use')], 'admin')
+
+      expect(personField()).not.toBeNull()
+      expect(hasButton('Role of Me')).toBe(true)
+      expect(hasButton('Remove Ada')).toBe(true)
+    })
+
+    it('gives a use member by inheritance nothing to change the members with', async () => {
+      await openSubspace([member(ADA, 'admin')], 'use')
+
+      expect(rows()).toEqual(['Adaada@example.comAdmin'])
+      expect(personField()).toBeNull()
+      expect(hasButton('Add')).toBe(false)
+      expect(hasButton('Role of Ada')).toBe(false)
+      expect(hasButton('Remove Ada')).toBe(false)
+    })
+
+    it('offers no leave to a user who is not in the list', async () => {
+      await openSubspace([member(ADA, 'admin')], 'admin')
+
+      expect(hasButton('Leave space')).toBe(false)
+
+      // One who is in it is offered the leave, whatever they hold above.
+      unmountAll()
+      await openSubspace([member(ADA, 'admin'), member(ME, 'use')], 'admin')
+      expect(hasButton('Leave space')).toBe(true)
+    })
+
+    it('lets a member of the space itself who also holds a role above leave it, stays open, and does not report that the user left', async () => {
+      const { space, onLeft, onClose } = await openSubspace([member(ME, 'use'), member(ADA, 'admin')], 'build')
+
+      await confirmLeave()
+
+      expect(space.removeMember).toHaveBeenCalledExactlyOnceWith(ME.id)
+      expect(onLeft).not.toHaveBeenCalled()
+      expect(onClose).not.toHaveBeenCalled()
+      expect(document.body.querySelector('h2')?.textContent).toBe('Members of Infra')
+      expect(rows()).toEqual(['Adaada@example.comAdmin'])
+      expect(hasButton('Leave space')).toBe(false)
+      expect(hasButton('Leave')).toBe(false)
+      expect(notes().map(note => note.textContent)).toEqual([NOTE('Build')])
+    })
+
+    it('says on screen, and announces, that the user is no longer one of the space’s own members but still has access', async () => {
+      await openSubspace([member(ME, 'use'), member(ADA, 'admin')], 'build')
+      expect(leftShown()).toEqual([])
+      expect(statusLine()?.textContent).toBe('')
+
+      await confirmLeave()
+
+      // Once on screen, above the note, and once more in the line that is announced.
+      expect(leftShown()).toHaveLength(1)
+      expect(leftShown()[0].compareDocumentPosition(notes()[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(statusLine()?.textContent).toBe(LEFT)
+    })
+
+    it('does not say that the user left the list to one who was never in it', async () => {
+      await openSubspace([member(ADA, 'admin')], 'admin')
+
+      expect(notes()).toHaveLength(1)
+      expect(leftShown()).toEqual([])
+      expect(statusLine()?.textContent).toBe('')
+    })
+
+    it('takes that sentence away when the user is added to the space again', async () => {
+      const { space } = await openSubspace([member(ME, 'use')], 'admin')
+      await confirmLeave()
+      expect(leftShown()).toHaveLength(1)
+      expect(nobodyLine()).toBeDefined()
+
+      // An admin by inheritance, they add themself back from the add row.
+      await pick(ME.id)
+      await add()
+
+      expect(space.members().map(({ profile }) => profile.id)).toEqual([ME.id])
+      expect(rows()).toHaveLength(1)
+      expect(rows()[0]).toContain('(you)')
+      expect(hasButton('Leave space')).toBe(true)
+      expect(leftShown()).toEqual([])
+    })
+
+    it('gives the line that says nobody has been added the focus of the Remove that took the last member with it', async () => {
+      await openSubspace([member(ADA, 'use')], 'admin')
+      button('Remove Ada').focus()
+
+      await click(button('Remove Ada'))
+      await settle()
+
+      expect(hasButton('Remove Ada')).toBe(false)
+      expect(nobodyLine()).toBeDefined()
+      expect(document.activeElement).toBe(nobodyLine())
+    })
+
+    it('reports the leave of a member of a sub-space who holds no role above it', async () => {
+      const { space, onLeft } = await openSubspace([member(ADA, 'admin'), member(ME, 'use')])
+
+      await confirmLeave()
+
+      expect(space.removeMember).toHaveBeenCalledExactlyOnceWith(ME.id)
+      expect(onLeft).toHaveBeenCalledOnce()
     })
   })
 

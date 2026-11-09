@@ -10,12 +10,14 @@ const testState = vi.hoisted(() => {
   const listModels = vi.fn<() => Promise<never[]>>(async () => []);
   const newWorkspace = vi.fn<(spaceId?: string) => unknown>();
   const listSpaces = vi.fn<() => Promise<unknown[]>>(async () => []);
+  const openSpace = vi.fn<(id: string) => unknown>();
   return {
     addToast: vi.fn<(toast: unknown) => void>(),
-    authenticatedApi: { listModels, newWorkspace, listSpaces },
+    authenticatedApi: { listModels, newWorkspace, listSpaces, openSpace },
     currentUser: { id: "user-a", name: "User A" },
     listModels,
     listSpaces,
+    openSpace,
     navigate: vi.fn<(options: unknown) => void>(),
     newWorkspace,
     seeds: [] as Array<{ text?: string; nonce?: number }>,
@@ -121,12 +123,15 @@ import {
   type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import {
+  ME,
   button,
-  chooseOption,
+  click,
   deferred,
-  hasButton,
-  selectOptions,
+  fakeSpace,
+  member,
+  openSpaceAmong,
   settle,
+  subspace,
   teamSpace,
 } from "./features/spaces/spacesTestUtils";
 
@@ -172,6 +177,38 @@ const reachForWorkspace = () => act(async () => { testState.composer!.getOversee
 const loadCatalog = () => act(async () => {
   await loadSlashCommandCatalog(testState.composer!.getOverseer as OverseerSource);
 });
+
+// The space picker's button, which is named for the space chosen.
+const findPicker = () => [...document.body.querySelectorAll("button")]
+  .find((candidate) => candidate.getAttribute("aria-label")?.startsWith("Space: "));
+const hasPicker = () => findPicker() !== undefined;
+const picker = () => {
+  const found = findPicker();
+  if (!found) throw new Error("No space picker");
+  return found;
+};
+
+// The spaces the picker offers, as their radios' labels, with the picker left open.
+const offeredSpaces = async () => {
+  if (!document.body.querySelector('[role="dialog"]')) await click(picker());
+  return [...document.body.querySelectorAll("label")]
+    .filter((label) => label.querySelector('[role="radio"]'));
+};
+
+// Expands a space of the picker to its sub-spaces, once they have been read.
+const expandSpace = async (name: string) => {
+  await offeredSpaces();
+  await click(button(`Sub-spaces of ${name}`));
+  await settle();
+};
+
+// Presses a space of the picker: its label, which is what a pointer lands on.
+const chooseSpace = async (name: string) => {
+  const label = (await offeredSpaces()).find((candidate) => candidate.textContent === name);
+  if (!label) throw new Error(`No “${name}” in the space picker`);
+  await click(label);
+  await settle();
+};
 
 // An attachment and a connection the composer makes in the first workspace, which it reaches
 // for to make them, and what they leave it holding.
@@ -219,6 +256,15 @@ describe("Home space selector", () => {
   };
   const DESIGN = teamSpace("design", "Design", "use");
   const PLATFORM = teamSpace("platform", "Platform");
+  // A sub-space of Platform, which the user is a member of through Platform alone: their list
+  // of spaces does not have it.
+  const INFRA_ID = "0123456789abcdef".repeat(4);
+  const infraSpace = () =>
+    fakeSpace(teamSpace(INFRA_ID, "Infra", "use", "platform"), [], [], { inherited: "build" });
+  // The user's personal space as the server has it, holding these sub-spaces.
+  const personalWith = (...names: string[]) => fakeSpace(PERSONAL, [member(ME, "admin")], [], {
+    subspaces: names.map((name) => subspace(name.toLowerCase(), name)),
+  });
 
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -240,19 +286,22 @@ describe("Home space selector", () => {
   });
 
   // The home page for a user with these spaces. `created` holds every workspace `newWorkspace`
-  // makes, in order.
+  // makes, in order. `among` are the spaces that open for the user: by default their personal
+  // space, with no sub-space, so every other id refuses them.
   const renderHome = async (
-    { spaces = [PERSONAL, DESIGN, PLATFORM], spacesFlag = true, space, prompt }: {
+    { spaces = [PERSONAL, DESIGN, PLATFORM], spacesFlag = true, space, prompt, among = [personalWith()] }: {
       spaces?: SpaceInfo[] | Promise<SpaceInfo[]>;
       spacesFlag?: boolean;
       space?: string;
       prompt?: string;
+      among?: ReturnType<typeof fakeSpace>[];
     } = {},
   ) => {
     testState.spacesFlag = spacesFlag;
     // A session of its own: the list of spaces is kept per session.
     testState.authenticatedApi = { ...testState.authenticatedApi };
     testState.listSpaces.mockImplementation(async () => spaces);
+    testState.openSpace.mockImplementation(openSpaceAmong(among));
     const created: CreatedWorkspace[] = [];
     testState.newWorkspace.mockImplementation(() => {
       const dispose = vi.fn<() => void>();
@@ -282,25 +331,53 @@ describe("Home space selector", () => {
   it("is absent, asks for no spaces and creates in the personal space while the flag is off", async () => {
     await renderHome({ spacesFlag: false, space: "platform" });
 
-    expect(hasButton("Space")).toBe(false);
+    expect(hasPicker()).toBe(false);
     expect(testState.listSpaces).not.toHaveBeenCalled();
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+    expect(testState.openSpace).not.toHaveBeenCalled();
   });
 
   it("is absent while the user has no team space", async () => {
-    await renderHome({ spaces: [PERSONAL] });
+    const personal = personalWith();
+    await renderHome({ spaces: [PERSONAL], among: [personal] });
 
-    expect(hasButton("Space")).toBe(false);
+    expect(hasPicker()).toBe(false);
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+    // The personal space was asked, once, whether it holds a sub-space to choose.
+    expect(testState.openSpace.mock.calls).toEqual([[PERSONAL.id]]);
+    expect(personal.listSubspaces).toHaveBeenCalledOnce();
+    expect(personal[Symbol.dispose]).toHaveBeenCalledOnce();
+  });
+
+  it("offers the picker to a user with no team space whose personal space has a sub-space, and creates the workspace in the sub-space chosen", async () => {
+    await renderHome({ spaces: [PERSONAL], among: [personalWith("Notes")] });
+
+    expect(picker().getAttribute("aria-label")).toBe("Space: Personal");
+    await expandSpace("Personal");
+    await chooseSpace("Notes");
+
+    expect(picker().getAttribute("aria-label")).toBe("Space: Notes");
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([["notes"]]);
+  });
+
+  it("asks nothing about the personal space’s sub-spaces for a user with a team space", async () => {
+    await renderHome({ among: [personalWith("Notes")] });
+
+    expect(hasPicker()).toBe(true);
+    expect(testState.openSpace).not.toHaveBeenCalled();
+
+    await expandSpace("Personal");
+    expect(testState.openSpace.mock.calls).toEqual([[PERSONAL.id]]);
   });
 
   it("offers the personal space and each team space, starting on the personal one", async () => {
     await renderHome();
 
-    expect(button("Space").textContent).toBe("Personal");
-    expect((await selectOptions("Space")).map((option) => option.textContent))
+    expect(picker().textContent).toBe("Personal");
+    expect((await offeredSpaces()).map((label) => label.textContent))
       .toEqual(["Personal", "Design", "Platform"]);
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([[]]);
@@ -309,17 +386,147 @@ describe("Home space selector", () => {
   it("starts on the team space the space parameter names, and creates the workspace in it", async () => {
     await renderHome({ space: "platform" });
 
-    expect(button("Space").textContent).toBe("Platform");
+    expect(picker().textContent).toBe("Platform");
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
   });
 
   it("starts on the personal space when the parameter names a space the user is not in", async () => {
-    await renderHome({ space: "elsewhere" });
+    // The id of a space, which refuses the user.
+    const elsewhere = "f".repeat(64);
+    await renderHome({ space: elsewhere });
 
-    expect(button("Space").textContent).toBe("Personal");
+    expect(testState.openSpace.mock.calls).toEqual([[elsewhere]]);
+    expect(picker().getAttribute("aria-label")).toBe("Space: Personal");
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it("asks nothing about a parameter that could not be a space id", async () => {
+    await renderHome({ space: "elsewhere" });
+
+    expect(testState.openSpace).not.toHaveBeenCalled();
+    expect(picker().textContent).toBe("Personal");
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it("starts at once on a space of the user’s list that the parameter names, asking nothing", async () => {
+    const atlas = teamSpace("a".repeat(64), "Atlas");
+    await renderHome({ spaces: [PERSONAL, atlas], space: atlas.id });
+
+    expect(picker().textContent).toBe("Atlas");
+    expect(testState.openSpace).not.toHaveBeenCalled();
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[atlas.id]]);
+  });
+
+  it("asks nothing about a parameter that names the user’s own personal space", async () => {
+    const own = { ...PERSONAL, id: "b".repeat(64) };
+    await renderHome({ spaces: [own, DESIGN], space: own.id });
+
+    expect(picker().textContent).toBe("Personal");
+    expect(testState.openSpace).not.toHaveBeenCalled();
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it("starts on the personal space when the parameter names a personal space", async () => {
+    // A personal space that opens for the user and is not the one their list has.
+    const other = fakeSpace({ ...PERSONAL, id: "c".repeat(64) }, [member(ME, "admin")]);
+    await renderHome({ space: other.id, among: [personalWith(), other] });
+
+    expect(testState.openSpace.mock.calls).toEqual([[other.id]]);
+    expect(picker().textContent).toBe("Personal");
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it("starts on a sub-space the parameter names when the user can open it, and creates the workspace in it", async () => {
+    const infra = infraSpace();
+    await renderHome({ space: INFRA_ID, among: [personalWith(), infra] });
+
+    expect(picker().getAttribute("aria-label")).toBe("Space: Infra");
+    expect(picker().textContent).toBe("Infra");
+    expect(testState.openSpace.mock.calls).toEqual([[INFRA_ID]]);
+    expect(infra.getInfo).toHaveBeenCalledOnce();
+    expect(infra[Symbol.dispose]).toHaveBeenCalledOnce();
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[INFRA_ID]]);
+  });
+
+  it("holds a send made while the space the parameter names is being opened, and creates the workspace in that space", async () => {
+    const infra = infraSpace();
+    const info = deferred<SpaceInfo>();
+    infra.getInfo.mockImplementation(() => info.promise);
+    await renderHome({ space: INFRA_ID, among: [personalWith(), infra] });
+
+    let sent: Promise<void> | void;
+    await act(async () => { sent = testState.composer!.onSend("Hello", null); });
+    expect(testState.newWorkspace).not.toHaveBeenCalled();
+
+    await act(async () => info.resolve(teamSpace(INFRA_ID, "Infra", "build", "platform")));
+    await settle();
+    await act(async () => { await sent; });
+
+    expect(testState.newWorkspace.mock.calls).toEqual([[INFRA_ID]]);
+    expect(testState.navigate).toHaveBeenCalledWith(
+      { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
+  });
+
+  it("asks no more about the parameter once the user has chosen a space", async () => {
+    await renderHome({ space: INFRA_ID, among: [personalWith(), infraSpace()] });
+    await chooseSpace("Design");
+
+    // A session that replaces this one reads again what the page still asks about.
+    testState.authenticatedApi = { ...testState.authenticatedApi };
+    await act(async () => root!.render(<HomePageContent space={INFRA_ID} />));
+    await settle();
+
+    expect(picker().textContent).toBe("Design");
+    expect(testState.openSpace.mock.calls).toEqual([[INFRA_ID]]);
+  });
+
+  it("creates the workspace in a sub-space chosen by expanding the space it is inside", async () => {
+    const platform = fakeSpace(PLATFORM, [member(ME, "admin")], [], { subspaces: [subspace("infra", "Infra")] });
+    await renderHome({ among: [personalWith(), platform] });
+
+    await expandSpace("Platform");
+    await chooseSpace("Infra");
+
+    expect(picker().textContent).toBe("Infra");
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([["infra"]]);
+  });
+
+  it("keeps the sub-space the parameter named through a replaced session", async () => {
+    const infra = infraSpace();
+    const { created } = await renderHome({ space: INFRA_ID, among: [personalWith(), infra] });
+    await reachForWorkspace();
+
+    // A session that replaces this one, as a reconnect does, knows neither its flags nor its
+    // spaces at first, and opens the space again once it does.
+    const info = deferred<SpaceInfo>();
+    infra.getInfo.mockImplementation(() => info.promise);
+    testState.authenticatedApi = { ...testState.authenticatedApi };
+    testState.flagsLoading = true;
+    await act(async () => root!.render(<HomePageContent space={INFRA_ID} />));
+    await settle();
+    expect(picker().textContent).toBe("Infra");
+
+    testState.flagsLoading = false;
+    await act(async () => root!.render(<HomePageContent space={INFRA_ID} />));
+    await settle();
+    expect(testState.openSpace.mock.calls).toEqual([[INFRA_ID], [INFRA_ID]]);
+    expect(picker().textContent).toBe("Infra");
+    await reachForWorkspace();
+
+    await act(async () => info.resolve(teamSpace(INFRA_ID, "Infra", "build", "platform")));
+    await settle();
+    expect(picker().textContent).toBe("Infra");
+    expect(created[0].dispose).not.toHaveBeenCalled();
+    expect(testState.composerMounts).toBe(1);
+    expect(testState.newWorkspace.mock.calls).toEqual([[INFRA_ID]]);
   });
 
   it("keeps the space parameter when it clears the prompt from the route", async () => {
@@ -355,14 +562,14 @@ describe("Home space selector", () => {
     const { created } = await renderHome();
     await reachForWorkspace();
 
-    await chooseOption("Space", "Design");
+    await chooseSpace("Design");
 
-    expect(button("Space").textContent).toBe("Design");
+    expect(picker().textContent).toBe("Design");
     expect(created[0].dispose).not.toHaveBeenCalled();
     expect(testState.composerMounts).toBe(1);
     expect(testState.composer!.autoFocus).toBe(true);
 
-    await chooseOption("Space", "Personal");
+    await chooseSpace("Personal");
     await reachForWorkspace();
     expect(testState.newWorkspace.mock.calls).toEqual([[]]);
     // Only a send says which space the workspace is for, so only a send moves it.
@@ -378,23 +585,35 @@ describe("Home space selector", () => {
       const { created } = await renderHome();
       await attachAndConnect();
 
-      await chooseOption("Space", "Design");
+      await chooseSpace("Design");
 
-      expect(button("Space").textContent).toBe("Design");
+      expect(picker().textContent).toBe("Design");
       await expectKeptAndSent(created[0], "design");
+    });
+
+    it("is kept, and sent, when the user chooses a sub-space", async () => {
+      const platform = fakeSpace(PLATFORM, [member(ME, "admin")], [], { subspaces: [subspace("infra", "Infra")] });
+      const { created } = await renderHome({ among: [personalWith(), platform] });
+      await attachAndConnect();
+
+      await expandSpace("Platform");
+      await chooseSpace("Infra");
+
+      expect(picker().textContent).toBe("Infra");
+      await expectKeptAndSent(created[0], "infra");
     });
 
     it("is kept, and sent, when it was made before the list of spaces arrived and the parameter then takes effect", async () => {
       const list = deferred<SpaceInfo[]>();
       const { created } = await renderHome({ space: "platform", spaces: list.promise });
 
-      expect(hasButton("Space")).toBe(false);
+      expect(hasPicker()).toBe(false);
       await attachAndConnect();
       expect(testState.newWorkspace.mock.calls).toEqual([[]]);
       await act(async () => list.resolve([PERSONAL, DESIGN, PLATFORM]));
       await settle();
 
-      expect(button("Space").textContent).toBe("Platform");
+      expect(picker().textContent).toBe("Platform");
       expect(testState.composer!.autoFocus).toBe(true);
       await expectKeptAndSent(created[0], "platform");
     });
@@ -457,11 +676,34 @@ describe("Home space selector", () => {
       { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
   });
 
+  it("holds a send in a workspace the composer reached for while the space the parameter names is being opened, and moves it to that space", async () => {
+    const infra = infraSpace();
+    const info = deferred<SpaceInfo>();
+    infra.getInfo.mockImplementation(() => info.promise);
+    const { created } = await renderHome({ space: INFRA_ID, among: [personalWith(), infra] });
+
+    await reachForWorkspace();
+    let sent: Promise<void> | void;
+    await act(async () => { sent = testState.composer!.onSend("Hello", null); });
+    expect(created[0].moveToSpace).not.toHaveBeenCalled();
+    expect(created[0].newChat).not.toHaveBeenCalled();
+
+    await act(async () => info.resolve(teamSpace(INFRA_ID, "Infra", "build", "platform")));
+    await settle();
+    await act(async () => { await sent; });
+
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+    expect(created[0].moveToSpace.mock.calls).toEqual([[INFRA_ID]]);
+    expect(created[0].newChat).toHaveBeenCalledOnce();
+    expect(testState.navigate).toHaveBeenCalledWith(
+      { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
+  });
+
   describe("a send in a workspace created for another space", () => {
     it("moves the workspace to the space selected, and starts the chat only once it has moved", async () => {
       const { created } = await renderHome();
       await reachForWorkspace();
-      await chooseOption("Space", "Design");
+      await chooseSpace("Design");
       const moved = deferred<void>();
       created[0].moveToSpace.mockImplementationOnce(() => moved.promise);
 
@@ -484,7 +726,7 @@ describe("Home space selector", () => {
     it("moves a workspace created in a team space to the personal space as null", async () => {
       const { created } = await renderHome({ space: "platform" });
       await reachForWorkspace();
-      await chooseOption("Space", "Personal");
+      await chooseSpace("Personal");
 
       await act(async () => { await testState.composer!.onSend("Hello", null); });
 
@@ -497,8 +739,8 @@ describe("Home space selector", () => {
     it("moves nothing when the space selected is back to the one the workspace was created in", async () => {
       const { created } = await renderHome();
       await reachForWorkspace();
-      await chooseOption("Space", "Design");
-      await chooseOption("Space", "Personal");
+      await chooseSpace("Design");
+      await chooseSpace("Personal");
 
       await act(async () => { await testState.composer!.onSend("Hello", null); });
 
@@ -512,7 +754,7 @@ describe("Home space selector", () => {
       const { created } = await renderHome();
       const attachments: ChatAttachmentHandle[] = [{ id: "attachment-1" }];
       await reachForWorkspace();
-      await chooseOption("Space", "Design");
+      await chooseSpace("Design");
       created[0].newChat.mockRejectedValueOnce(new Error("boom"));
 
       await act(async () => {
@@ -531,7 +773,7 @@ describe("Home space selector", () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       const { created } = await renderHome();
       await attachAndConnect();
-      await chooseOption("Space", "Design");
+      await chooseSpace("Design");
       created[0].moveToSpace.mockRejectedValueOnce(new Error("boom"));
 
       await act(async () => {
@@ -547,7 +789,7 @@ describe("Home space selector", () => {
       expect(testState.composerMounts).toBe(1);
       expect(testState.composer!.attachments).toEqual([ATTACHMENT]);
       expect(testState.composer!.capsules).toEqual([CAPSULE]);
-      expect(button("Space").disabled).toBe(false);
+      expect(picker().disabled).toBe(false);
 
       await act(async () => { await testState.composer!.send("Hello"); });
 
@@ -587,8 +829,8 @@ describe("Home space selector", () => {
     it("keeps the workspace and the composer, and offers no other space", async () => {
       const { created, sent, settleSend } = await sendThenSpaceChanges();
 
-      expect(button("Space").textContent).toBe("Platform");
-      expect(button("Space").disabled).toBe(true);
+      expect(picker().textContent).toBe("Platform");
+      expect(picker().disabled).toBe(true);
       expect(created[0].dispose).not.toHaveBeenCalled();
       expect(testState.composerMounts).toBe(1);
 
@@ -615,7 +857,7 @@ describe("Home space selector", () => {
       });
 
       // The workspace was kept for a retry, in the space the failed send moved it to.
-      expect(button("Space").disabled).toBe(false);
+      expect(picker().disabled).toBe(false);
       expect(created[0].dispose).not.toHaveBeenCalled();
       expect(testState.composerMounts).toBe(1);
 
@@ -632,7 +874,7 @@ describe("Home space selector", () => {
   it("leaves the composer as it is when the space changes before any workspace exists", async () => {
     await renderHome();
 
-    await chooseOption("Space", "Platform");
+    await chooseSpace("Platform");
 
     expect(testState.newWorkspace).not.toHaveBeenCalled();
     expect(testState.composerMounts).toBe(1);
@@ -644,7 +886,7 @@ describe("Home space selector", () => {
     expect(promptField().value).toBe("Create a daily brief.");
 
     await reachForWorkspace();
-    await chooseOption("Space", "Design");
+    await chooseSpace("Design");
 
     expect(promptField().value).toBe("Create a daily brief.");
     expect(testState.seeds.at(-1)).toEqual({ text: "Create a daily brief.", nonce: 1 });
@@ -653,7 +895,7 @@ describe("Home space selector", () => {
 
   it("keeps the chosen space, and the workspace created in it, through a replaced session", async () => {
     const { created } = await renderHome();
-    await chooseOption("Space", "Platform");
+    await chooseSpace("Platform");
     await reachForWorkspace();
 
     // A session that replaces this one, as a reconnect does, knows neither its flags nor its
@@ -664,23 +906,94 @@ describe("Home space selector", () => {
     testState.flagsLoading = true;
     await act(async () => root!.render(<HomePageContent />));
     await settle();
-    expect(button("Space").textContent).toBe("Platform");
+    expect(picker().textContent).toBe("Platform");
 
     testState.flagsLoading = false;
     await act(async () => root!.render(<HomePageContent />));
     await settle();
-    expect(button("Space").textContent).toBe("Platform");
+    expect(picker().textContent).toBe("Platform");
 
     await act(async () => list.resolve([PERSONAL, DESIGN, PLATFORM]));
     await settle();
-    expect(button("Space").textContent).toBe("Platform");
+    expect(picker().textContent).toBe("Platform");
     expect(created[0].dispose).not.toHaveBeenCalled();
     expect(testState.composerMounts).toBe(1);
   });
 
+  it.each([
+    ["the personal space", undefined, "Space: Personal", []],
+    ["a sub-space chosen in it", "Notes", "Space: Notes", ["notes"]],
+  ])("keeps the picker of a user with no team space on %s through a replaced session, and one that cannot read the personal space’s sub-spaces", async (_, choice, named, createdIn) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const personal = personalWith("Notes");
+    await renderHome({ spaces: [PERSONAL], among: [personal] });
+    if (choice) {
+      await expandSpace("Personal");
+      await chooseSpace(choice);
+    }
+    expect(picker().getAttribute("aria-label")).toBe(named);
+
+    // A session that replaces this one, as a reconnect does, knows neither its flags nor the
+    // personal space's sub-spaces at first, and then fails to read them.
+    let fail!: (reason: Error) => void;
+    const read = new Promise<never>((_resolve, reject) => { fail = reject; });
+    personal.listSubspaces.mockImplementation(() => read);
+    testState.authenticatedApi = { ...testState.authenticatedApi };
+    testState.flagsLoading = true;
+    await act(async () => root!.render(<HomePageContent />));
+    await settle();
+    expect(picker().getAttribute("aria-label")).toBe(named);
+
+    testState.flagsLoading = false;
+    await act(async () => root!.render(<HomePageContent />));
+    await settle();
+    expect(picker().getAttribute("aria-label")).toBe(named);
+
+    await act(async () => fail(new Error("boom")));
+    await settle();
+    expect(picker().getAttribute("aria-label")).toBe(named);
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([createdIn]);
+  });
+
+  it("takes the picker away once a session that replaced another lists no team space and finds no sub-space in the personal space", async () => {
+    const personal = personalWith();
+    await renderHome({ among: [personal] });
+    expect(hasPicker()).toBe(true);
+
+    // The session that replaces this one, as a reconnect does, lists the personal space alone:
+    // the user is in no team space any more.
+    testState.authenticatedApi = { ...testState.authenticatedApi };
+    testState.listSpaces.mockImplementation(async () => [PERSONAL]);
+    await act(async () => root!.render(<HomePageContent />));
+    await settle();
+
+    // The personal space answered that it holds nothing to choose either.
+    expect(personal.listSubspaces).toHaveBeenCalledOnce();
+    expect(hasPicker()).toBe(false);
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it("offers the picker, on the sub-space of the personal space the parameter names, when the personal space’s sub-spaces could not be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const personal = personalWith();
+    personal.listSubspaces.mockRejectedValue(new Error("boom"));
+    const notes = fakeSpace(teamSpace(INFRA_ID, "Notes", "admin", PERSONAL.id), [], [], { inherited: "admin" });
+    await renderHome({ spaces: [PERSONAL], space: INFRA_ID, among: [personal, notes] });
+
+    // The workspace is created in the sub-space, so the picker says so and offers the way out,
+    // and the way back once that is taken.
+    expect(picker().getAttribute("aria-label")).toBe("Space: Notes");
+    await chooseSpace("Personal");
+    expect(picker().getAttribute("aria-label")).toBe("Space: Personal");
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
   it("creates a workspace in the chosen space while a session that replaced another has no list yet", async () => {
     await renderHome();
-    await chooseOption("Space", "Platform");
+    await chooseSpace("Platform");
 
     testState.authenticatedApi = { ...testState.authenticatedApi };
     testState.listSpaces.mockImplementation(() => new Promise<SpaceInfo[]>(() => {}));
@@ -691,11 +1004,48 @@ describe("Home space selector", () => {
     expect(testState.newWorkspace.mock.calls).toEqual([["platform"]]);
   });
 
+  it("creates in the personal space once a session says the flag is off, whatever space was chosen", async () => {
+    await renderHome();
+    await chooseSpace("Platform");
+
+    // A session that replaces this one and has the flag off: there are no spaces under it.
+    testState.authenticatedApi = { ...testState.authenticatedApi };
+    testState.spacesFlag = false;
+    await act(async () => root!.render(<HomePageContent />));
+    await settle();
+
+    expect(hasPicker()).toBe(false);
+    await reachForWorkspace();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+  });
+
+  it.each([
+    ["are still being read", () => new Promise<never>(() => {})],
+    ["could not be read", async () => { throw new Error("boom"); }],
+  ])("sends at once for a link that asks for a space when the personal space’s sub-spaces %s", async (_, listSubspaces) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const personal = personalWith();
+    personal.listSubspaces.mockImplementation(listSubspaces);
+    // The user has no team space, so the personal space is asked whether it holds a sub-space
+    // to choose. The link's space is none of theirs: nothing about it is left to learn.
+    await renderHome({ spaces: [PERSONAL], space: "platform", among: [personal] });
+    expect(personal.listSubspaces).toHaveBeenCalledOnce();
+
+    let sent: Promise<void> | void;
+    await act(async () => { sent = testState.composer!.onSend("Hello", null); });
+    await settle();
+    expect(testState.newWorkspace.mock.calls).toEqual([[]]);
+
+    await act(async () => { await sent; });
+    expect(testState.navigate).toHaveBeenCalledWith(
+      { to: "/workspace/$id", params: { id: "w0" }, search: { chat: 1 } });
+  });
+
   it("reads the slash commands once, from the workspace it keeps when the space changes", async () => {
     const { created } = await renderHome();
 
     await loadCatalog();
-    await chooseOption("Space", "Design");
+    await chooseSpace("Design");
     await loadCatalog();
 
     expect(testState.newWorkspace).toHaveBeenCalledOnce();
@@ -716,7 +1066,7 @@ describe("Home space selector", () => {
     // The attachment lives in the workspace, so it is kept for the retry.
     expect(created[0].dispose).not.toHaveBeenCalled();
 
-    await chooseOption("Space", "Design");
+    await chooseSpace("Design");
     expect(created[0].dispose).not.toHaveBeenCalled();
 
     await act(async () => {

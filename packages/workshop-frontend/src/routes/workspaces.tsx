@@ -5,31 +5,52 @@ import { Plus } from '@phosphor-icons/react'
 import GadgetList from '../components/GadgetList'
 import { takeLostFocus } from '../features/spaces/lostFocus'
 import { NewSpaceButton } from '../features/spaces/NewSpaceButton'
+import { NewSpaceDialog } from '../features/spaces/NewSpaceDialog'
 import { SpaceMembersDialog } from '../features/spaces/SpaceMembersDialog'
 import { SpaceSections } from '../features/spaces/SpaceSections'
 import { spaceLabel } from '../features/spaces/spaceKinds'
+import { useNewSpaceDialog } from '../features/spaces/useNewSpaceDialog'
+import { useSpaceListings } from '../features/spaces/useSpaceListings'
 import { useSpaces } from '../features/spaces/useSpaces'
+import { useSubspaces, type SubspaceListing } from '../features/spaces/useSubspaces'
 import { useDocumentTitle } from '../useDocumentTitle'
 
 /**
  * Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
  * the "see them all" destination linked from the rail. With the `spaces` flag on it shows the
- * workspaces of the user's personal space as rows, then their team spaces as cards that link to
- * each space's own page, and a search across all of them.
+ * user's personal space, its sub-spaces as cards and its workspaces as rows, then their team
+ * spaces as cards that link to each space's own page, and a search across all of them. A team
+ * space of the user's own is created from the header, and a space inside the personal space
+ * from its section. The page holds what is read for that, each team space's listing and the
+ * personal space's sub-spaces: the list unmounts what it lays out while it loads again, and the
+ * dialogs, which are the page's, read a space again when they close.
  */
 export const Route = createFileRoute('/workspaces')({
   component: WorkspacesPage,
 })
+
+const SUBSPACES_LOADING: SubspaceListing = { status: 'loading' }
 
 function WorkspacesPage() {
   useDocumentTitle('Workspaces')
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
   const spaces = useSpaces()
-  // Held here and not with the cards it is opened from: the list unmounts them while it loads
-  // again, and an open dialog outlasts that.
-  const [membersOf, setMembersOf] = useState<string | null>(null)
+  const teamIds = spaces.spaces.filter(space => space.kind === 'team').map(space => space.id)
+  const listings = useSpaceListings(teamIds)
+  const personal = spaces.spaces.find(space => space.kind === 'personal')
+  const { subspaces, reload: reloadSubspaces } = useSubspaces(personal ? [personal.id] : [])
+  const personalSubspaces = (personal && subspaces[personal.id]) ?? SUBSPACES_LOADING
+  const reloadPersonalSubspaces = async () => {
+    if (personal) await reloadSubspaces(personal.id)
+  }
   const headingRef = useRef<HTMLHeadingElement>(null)
+  // Both dialogs of the list are held here and not with what they are opened from, the cards
+  // and the Personal section: the list unmounts those while it loads again, and an open dialog
+  // outlasts that, with the name typed into it. The `New space` it was opened from may then be
+  // off the page when it is dismissed, and the heading takes the focus that leaves nowhere.
+  const [membersOf, setMembersOf] = useState<string | null>(null)
+  const newSpace = useNewSpaceDialog(() => takeLostFocus(headingRef.current))
 
   // A user who arrives with focus nowhere starts at the heading: one who left a space from that
   // space's own page does, the button they confirmed it with having gone with that page. The
@@ -37,14 +58,28 @@ function WorkspacesPage() {
   useEffect(() => takeLostFocus(headingRef.current), [])
 
   // The dialog may have changed the user's role in the space, or the space may have stopped
-  // counting them as a member, so the list of spaces is read again. A card that goes then takes
-  // with it the button the closing dialog hands focus back to, and so does a list that a session
-  // replaced under the dialog rendered again: the page's heading takes the focus that leaves
-  // nowhere. Focus that is back on the button, or that the user has put elsewhere while the list
-  // was read again, in a dialog opened since for one, stays where it is.
-  const closeMembers = async () => {
+  // counting them as a member, so the list of spaces is read again, and so is the listing of a
+  // team space of that list, which carries the role its card shows. A role held in a space is
+  // held in every space under it, so the listed spaces that said they are inside another are
+  // read with it, every one of them, since a listing names the space directly above it and not
+  // what that one is inside: the role on such a card may be the one that just changed above
+  // it. A space the user left is not read: it would refuse, and the list read again is what
+  // takes its card away. A card that goes then takes with it the button the closing dialog
+  // hands focus back to, and so does a list that a session replaced under the dialog rendered
+  // again: the page's heading takes the focus that leaves nowhere. Focus that is back on the
+  // button, or that the user has put elsewhere while the reads were under way, in a dialog
+  // opened since for one, stays where it is.
+  const closeMembers = async ({ left = false } = {}) => {
+    const closed = membersOf
     setMembersOf(null)
-    await spaces.refresh()
+    const changed = closed !== null && teamIds.includes(closed)
+      ? teamIds.filter((id) => {
+          if (id === closed) return !left
+          const listing = listings.listings[id]
+          return listing?.status === 'ready' && listing.parent !== undefined
+        })
+      : []
+    await Promise.all([spaces.refresh(), ...changed.map(id => listings.reload(id))])
     takeLostFocus(headingRef.current)
   }
 
@@ -52,14 +87,18 @@ function WorkspacesPage() {
   const handleLeft = (spaceId: string) => {
     const left = spaces.spaces.find(listed => listed.id === spaceId)
     if (left) toasts.add({ title: `You left ${spaceLabel(left)}`, variant: 'success' })
-    return closeMembers()
+    return closeMembers({ left: true })
   }
 
-  // A new space is shown on its own page. The list of spaces is read again for the sidebar,
-  // which that page does not wait for: it opens the space by its id.
+  // A space that was created is shown on its own page, which opens it by its id.
+  const goToSpace = (id: string) => void navigate({ to: '/spaces/$spaceId', params: { spaceId: id } })
+
+  // A team space of the user's own joins their list of spaces, which is read again for the
+  // sidebar; the space's page does not wait for it. A space created inside the personal space
+  // joins no list, so nothing is read again for one.
   const handleSpaceCreated = (id: string) => {
     void spaces.refresh()
-    void navigate({ to: '/spaces/$spaceId', params: { spaceId: id } })
+    goToSpace(id)
   }
 
   const createWorkspaceLink = (
@@ -104,8 +143,24 @@ function WorkspacesPage() {
           showHeader={false}
           sections={spaces.enabled ? {
             spaces: spaces.spaces,
+            showsListed: teamIds.length > 0,
+            personalHasSubspaces: personalSubspaces.status === 'ready' && personalSubspaces.subspaces.length > 0,
             render: (rows) => (
-              <SpaceSections {...rows} spaces={spaces} onMembersOpen={setMembersOf} />
+              <SpaceSections
+                {...rows}
+                // The list gives the search field the focus a control of these sections has
+                // lost. A user with no workspace and no team space has no field: the heading
+                // takes it then.
+                onFocusLost={() => {
+                  rows.onFocusLost()
+                  takeLostFocus(headingRef.current)
+                }}
+                spaces={spaces}
+                listings={listings}
+                personalSubspaces={{ listing: personalSubspaces, onReload: reloadPersonalSubspaces }}
+                personalNewSpace={{ onOpen: newSpace.show, buttonRef: newSpace.buttonRef }}
+                onMembersOpen={setMembersOf}
+              />
             ),
           } : undefined}
         />
@@ -116,6 +171,20 @@ function WorkspacesPage() {
           spaceId={membersOf}
           onClose={() => void closeMembers()}
           onLeft={() => void handleLeft(membersOf)}
+        />
+      )}
+      {spaces.enabled && newSpace.open && personal && (
+        <NewSpaceDialog
+          parent={{
+            space: personal,
+            subspaces: personalSubspaces.status === 'ready' ? personalSubspaces.subspaces : null,
+            onReload: reloadPersonalSubspaces,
+          }}
+          onClose={newSpace.dismiss}
+          onCreated={(id) => {
+            newSpace.close()
+            goToSpace(id)
+          }}
         />
       )}
     </div>

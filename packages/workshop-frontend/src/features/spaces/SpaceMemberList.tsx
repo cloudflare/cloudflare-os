@@ -1,4 +1,4 @@
-import type { Ref } from 'react'
+import type { RefCallback } from 'react'
 import { Trash } from '@phosphor-icons/react'
 import type { SpaceMemberInfo, SpaceMemberRole } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
@@ -25,7 +25,8 @@ export type MemberManagement = {
 }
 
 /**
- * A space's members with their roles. Read-only unless `manage` is given, which adds a role
+ * The people added to a space itself, with their roles: a space inside another may have none,
+ * and a line says so in the list's place. Read-only unless `manage` is given, which adds a role
  * select to every member and a remove button to everyone but the viewer, who leaves the space
  * from the dialog's own control instead. Until the viewer is known no row can be told from
  * theirs, so none has a remove button: on the viewer's own row it would be a leave that asks
@@ -36,8 +37,12 @@ export type MemberManagement = {
  * busy instead, and the caller ignores what is done on the control meanwhile.
  */
 export const SpaceMemberList = ({ ref, members, currentUserId, manage, failure }: {
-  /** The list itself, which can be given the focus of a control that has left it. */
-  ref?: Ref<HTMLUListElement>
+  /**
+   * The list itself, or the line that stands in for it when nobody is listed, which can be
+   * given the focus of a control that has left the dialog. A callback, since the two are
+   * elements of different kinds and a ref object is typed for one.
+   */
+  ref?: RefCallback<HTMLElement>
   members: SpaceMemberInfo[]
   /** The viewer's profile id, once known. */
   currentUserId: string | undefined
@@ -46,6 +51,17 @@ export const SpaceMemberList = ({ ref, members, currentUserId, manage, failure }
 }) => {
   const { authenticatedApi } = useAuthenticatedApi()
   const pending = manage?.pending ?? null
+  if (members.length === 0) {
+    return (
+      <p
+        ref={ref}
+        tabIndex={-1}
+        className="rounded-xl border border-kumo-line px-3 py-2.5 text-[13px] leading-[18px] text-kumo-subtle"
+      >
+        Nobody has been added to this space itself.
+      </p>
+    )
+  }
   return (
     <ul
       ref={ref}

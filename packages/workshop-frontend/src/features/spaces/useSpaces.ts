@@ -24,8 +24,8 @@ export type Spaces = {
   /** The latest load failed. */
   failed: boolean
   /**
-   * Loads the list again, resolving once it has settled. Does nothing while the flag is off, or
-   * not known yet.
+   * Loads the list again, resolving once it has settled: a load that a later one overtakes
+   * resolves when that one does. Does nothing while the flag is off, or not known yet.
    */
   refresh: () => Promise<void>
 }
@@ -69,7 +69,14 @@ const storeFor = (api: RpcStub<AuthenticatedApi>): SpacesStore => {
         logRpcFailure('Failed to load spaces:', err)
         next = { spaces: loaded?.spaces ?? null, failed: true }
       }
-      if (request !== latest) return
+      // A load that a later one overtook leaves nothing behind, and settles when that one has:
+      // its caller waits for the list, which is still being read. The load in flight is the
+      // latest, which waits on no other, so the wait ends with it; with none in flight, the
+      // latest having settled, there is nothing to wait for.
+      if (request !== latest) {
+        await inFlight
+        return
+      }
       loaded = next
       inFlight = null
       for (const listener of listeners) listener()
