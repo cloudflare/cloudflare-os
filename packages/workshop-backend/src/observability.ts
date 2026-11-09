@@ -45,6 +45,7 @@ export type WorkshopObservabilityFields = {
   resendCostUsd: number;
   sequence: number;
   size: number;
+  spaceId: string;
   status: number;
   statusCode: number;
   statusText: string;
