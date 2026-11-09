@@ -158,6 +158,17 @@ function backdate(stub: Stub, where: string, hours: number): Promise<unknown[]> 
       Date.now() - hours * HOUR_MS);
 }
 
+// `count` rows of one gadget and source written by SQL, kept `hours` ago and counting `bytes` each.
+function insertRowsKept(stub: Stub, hours: number, count: number, gadgetId: number,
+    source: "server" | "client", bytes: number): Promise<unknown[]> {
+  return sql(stub, `INSERT INTO console_logs
+      (kept_at, at, gadget_id, chat_id, source, user_id, level, text, bytes)
+      WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+      SELECT ?1, ?1, ?3, NULL, ?4, ?5, 'log', '', ?6 FROM n`,
+      Date.now() - hours * HOUR_MS, count, gadgetId, source,
+      source === "client" ? "user-1" : null, bytes);
+}
+
 type SeqRow = { seq: number; gadget_id: number; source: string; bytes: number };
 
 function seqRows(stub: Stub): Promise<SeqRow[]> {
@@ -172,6 +183,20 @@ function deleted(before: SeqRow[], after: SeqRow[]): SeqRow[] {
 
 function totalOf(usage: UsageRow[], source: string): number {
   return usage.filter(row => row.source === source).reduce((sum, row) => sum + row.bytes, 0);
+}
+
+// How many rows the one statement of a list() read.
+function rowsReadByList(stub: Stub, query: GadgetConsoleLogQuery): Promise<number> {
+  return runInDurableObject(stub, (instance: WorkspaceLogDurableObject, state) => {
+    let exec = vi.spyOn(state.storage.sql, "exec");
+    try {
+      instance.list(query);
+      expect(exec).toHaveBeenCalledTimes(1);
+      return exec.mock.results[0].value.rowsRead;
+    } finally {
+      exec.mockRestore();
+    }
+  });
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -351,6 +376,25 @@ describe("WorkspaceLogDurableObject.list", () => {
       let offset = chatId === 3 ? 0 : 1;
       expect(listed.map(entry => entry.text))
           .toEqual(Array.from({ length: 150 }, (_, i) => `entry ${298 + offset - 2 * i}`));
+    }
+  });
+
+  it("reads a page's rows and one more, from a cursor as from the start", async () => {
+    let log = workspaceLog();
+    await log.append(Array.from({ length: 500 }, () => server()));
+    // Kept a minute apart, so the entry a cursor names was kept before the ones above it.
+    await sql(log, "UPDATE console_logs SET kept_at = kept_at - (500 - seq) * 60000");
+    let { nextCursor: cursor } = await log.list();
+
+    // Every row matches each of these, so a page is its 100 rows and the one that says another
+    // page follows, read in order: nothing older is read to be sorted.
+    let queries: GadgetConsoleLogQuery[] = [
+      {}, { cursor }, { cursor, chatId: null }, { cursor, source: "server" },
+      { cursor, level: "log" }, { cursor, gadgetId: 1 },
+    ];
+    for (let query of queries) {
+      expect(await rowsReadByList(log, query), JSON.stringify(query))
+          .toBe(GADGET_CONSOLE_LOG_PAGE_SIZE + 1);
     }
   });
 
@@ -913,6 +957,40 @@ describe("WorkspaceLogDurableObject byte bounds", () => {
     expect(await rowCount(log, "gadget_id > 1")).toBe(40);
     expect(await rowCount(log, "gadget_id = 1")).toBe(1);
     expect(totalOf(await expectUsageExact(log), "server")).toBe(39_995_000 + 1421);
+  });
+
+  it("deletes expired rows past one batch of 10,000 before a row within its retention goes",
+      async () => {
+    let log = await emptyLog();
+    // More expired client rows than one batch deletes, kept before the expired server rows.
+    await insertRowsKept(log, GADGET_CONSOLE_LOG_RETENTION_HOURS + 2, 10_050, 9, "client", 150);
+    await insertRows(log, 1, "server", [2000, 2000]);
+    await backdate(log, "gadget_id = 1", GADGET_CONSOLE_LOG_RETENTION_HOURS + 1);
+    for (let gadgetId = 2; gadgetId <= 6; gadgetId++) {
+      await insertRows(log, gadgetId, "server",
+          [...Array.from({ length: 7 }, () => 1_000_000), 999_000]);
+    }
+    expect(totalOf(await expectUsageExact(log), "server")).toBe(39_999_000);
+
+    // Past the workspace's server part only while the expired server rows are counted, and the
+    // first batch holds none of them.
+    await log.append([server({ gadgetId: 1, text: "x".repeat(1000) })]);
+
+    expect(await rowCount(log, "gadget_id BETWEEN 2 AND 6")).toBe(40);
+    expect(await rowCount(log, "gadget_id = 1")).toBe(1);
+    expect(await rowCount(log, "gadget_id = 9")).toBe(0);
+    expect(totalOf(await expectUsageExact(log), "server")).toBe(39_995_000 + 1421);
+  });
+
+  it("deletes one batch of expired rows on a write that passes no bound", async () => {
+    let log = await emptyLog();
+    await insertRowsKept(log, GADGET_CONSOLE_LOG_RETENTION_HOURS + 1, 10_050, 1, "server", 100);
+
+    await log.append([server({ gadgetId: 2 })]);
+
+    expect(await rowCount(log, "gadget_id = 1")).toBe(50);
+    expect(await rowCount(log, "gadget_id = 2")).toBe(1);
+    await expectUsageExact(log);
   });
 
   it("holds the workspace's client entries to their part, leaving server rows", async () => {

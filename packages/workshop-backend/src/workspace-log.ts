@@ -29,8 +29,10 @@ export const GADGET_CONSOLE_LOG_CLIENT_BYTES_PER_GADGET = 2_000_000;
 export const GADGET_CONSOLE_LOG_PAGE_SIZE = 100;
 
 const RETENTION_MS = GADGET_CONSOLE_LOG_RETENTION_HOURS * HOUR_MS;
-// Expired rows that one append or one alarm deletes at most, so that a log left unused for long
-// is trimmed over several alarms rather than in one long write.
+// Expired rows that are deleted at a time. An alarm deletes one batch and runs again for the rest,
+// so that a log left unused for long is trimmed over several alarms rather than in one long write.
+// An append deletes one batch too, and more only while the workspace is past a bound that expired
+// rows still count toward (#holdBounds).
 const EXPIRY_BATCH = 10_000;
 
 type Source = GadgetConsoleLogEntry["source"];
@@ -201,7 +203,7 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
         sources.add(entry.source);
       }
       this.#expire(now);
-      this.#holdBounds(written);
+      this.#holdBounds(written, now);
     });
     this.#hasTable = true;
 
@@ -251,7 +253,11 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let cursor = query.cursor === undefined ? undefined : parseCursor(query.cursor);
     if (cursor !== undefined) {
-      where.push("seq < ? AND kept_at <= ?");
+      // The unary plus keeps this term out of the choice of index. A page is read by walking
+      // `seq` downwards until it is full. With a range on `kept_at` from both sides, the index on
+      // it is chosen instead: every unexpired row older than the cursor is then read and sorted
+      // for each page.
+      where.push("seq < ? AND +kept_at <= ?");
       params.push(cursor.seq, cursor.keptAt);
     }
 
@@ -340,15 +346,15 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
     END`);
   }
 
-  // Deletes up to EXPIRY_BATCH rows kept longer ago than the retention, oldest first. The batch is
-  // chosen in `kept_at` order, which the index on it (holding each row's seq) answers without
-  // reading the table.
-  #expire(now: number): void {
-    this.ctx.storage.sql.exec(
+  // Deletes up to EXPIRY_BATCH rows kept longer ago than the retention, oldest first, and says
+  // whether there was one. The batch is chosen in `kept_at` order, which the index on it (holding
+  // each row's seq) answers without reading the table.
+  #expire(now: number): boolean {
+    return this.ctx.storage.sql.exec(
       `DELETE FROM console_logs WHERE seq IN
          (SELECT seq FROM console_logs WHERE kept_at <= ? ORDER BY kept_at, seq
           LIMIT ${EXPIRY_BATCH})`,
-      now - RETENTION_MS);
+      now - RETENTION_MS).rowsWritten > 0;
   }
 
   // When the alarm should next run: at once while expired rows remain, else when the oldest row
@@ -362,8 +368,10 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Holds the byte bounds for the gadgets and sources that were just written to, which are the
-  // only ones that can have passed one.
-  #holdBounds(written: Map<WorkpieceId, Set<Source>>): void {
+  // only ones that can have passed one. A row within its retention is deleted only once no
+  // expired row is left to delete in its place. For a gadget's bound that follows from the order:
+  // its oldest rows go first, and those are its expired ones.
+  #holdBounds(written: Map<WorkpieceId, Set<Source>>, now: number): void {
     let sql = this.ctx.storage.sql;
     let sources = new Set<Source>();
     for (let [gadgetId, gadgetSources] of written) {
@@ -385,6 +393,10 @@ export class WorkspaceLogDurableObject extends DurableObject<Cloudflare.Env> {
           "SELECT SUM(bytes) AS total FROM console_log_usage WHERE source = ?", source).one();
         let excess = (total ?? 0) - workspaceBound(source);
         if (excess <= 0) break;
+        // Expired rows count until they are deleted, and append() deleted one batch of them at
+        // most. What is left goes first, a batch at a time and whichever gadget holds it, until
+        // the bound holds or nothing expired remains.
+        if (this.#expire(now)) continue;
         let largest = sql.exec<{ gadget_id: WorkpieceId }>(
           `SELECT gadget_id FROM console_log_usage WHERE source = ?
            ORDER BY bytes DESC, gadget_id LIMIT 1`, source).one();

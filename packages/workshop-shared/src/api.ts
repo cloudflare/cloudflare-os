@@ -4727,8 +4727,13 @@ export interface Overseer extends RpcTarget {
    * its entries were kept in. An entry is a console call or an uncaught exception of a gadget's
    * server code, or a console call that a session reported for a gadget's UI (see
    * reportGadgetConsoleLogs()). Of the errors that calls to a gadget's server fail with, at most
-   * 30 a minute are kept for one gadget, and a "server" entry of level "warn", worded by
-   * droppedGadgetConsoleLogsText(), says how many were not.
+   * 30 a minute are kept for one gadget. The first one dropped in a minute brings a marker: a
+   * "server" entry of level "warn", worded by droppedGadgetConsoleLogsText(), whose count is of
+   * the errors dropped since the gadget's last marker. The errors dropped after it in that
+   * minute are counted by the gadget's next marker, which is kept only if a call to the gadget
+   * fails again in a later minute, while the workspace still holds the count in memory. So a
+   * marker says that errors were dropped, and its count, often "1 entry dropped", can be far
+   * fewer than were.
    *
    * An entry is kept for 72 hours from when it was kept, whatever its own `time` says, and the
    * oldest go sooner once the entries of one gadget count past 10 MB or those of the workspace

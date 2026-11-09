@@ -270,6 +270,14 @@ the minute ends. What the limit drops is said by a marker: one `"server"` entry 
 with the same wording, at most one a minute for a gadget, kept before the exception that brought
 it and under that exception's chat. Live subscribers are sent every exception, kept or not.
 
+A marker's count is not the count of a flood. Exceptions are offered to the limiter one at a time,
+so the first one dropped in a minute brings the marker, which counts what was dropped since the
+gadget's last marker: "1 entry dropped", unless an earlier minute left drops uncounted. The
+exceptions dropped after it in that minute are counted by the gadget's next marker, which is kept
+only if a call fails again in a later minute, while the Overseer still holds the count. A gadget
+whose calls fail 100 times in one minute and then stop is listed with 30 errors and "1 entry
+dropped", and the other 69 are never said.
+
 The limit slows a flood, and no more than that:
 
 - At 30 a minute, each cut to 2,000 characters, failing calls take about an hour to turn over a
@@ -415,13 +423,18 @@ Entries are pruned on write and by alarm:
 
 - **On write.** Each `append()` deletes expired entries, of any gadget, and then holds the bounds
   of the gadgets and sources it wrote to, which are the only ones that can have passed one.
-  Expired entries go first, so none within its retention goes in their place.
+  Expired entries go first, so none within its retention goes in their place. An append deletes
+  up to 10,000 expired rows before it looks at a bound. A gadget's bound then takes that gadget's
+  oldest entries, its expired ones first. While the workspace's bound is still passed, the append
+  goes on deleting expired rows, 10,000 at a time, and takes an entry within its retention only
+  once none is left.
 - **By alarm.** A log nothing is appended to still empties: the alarm deletes expired entries and
   sets itself again for when the oldest remaining entry expires, no sooner than an hour away.
   An append sets the alarm only when none is set.
 - **An expired entry is never listed**, whether or not it has been deleted yet. It is deleted with
-  the next write or by the alarm, within about an hour of expiring. One append or one alarm
-  deletes at most 10,000 expired rows, and an alarm that leaves some runs again at once.
+  the next write or by the alarm, within about an hour of expiring. An alarm deletes at most
+  10,000 expired rows, and one that leaves some runs again at once. An append deletes as many,
+  and more only to hold a bound.
 - **An alarm that fails** is logged and tried again in an hour, not thrown: the platform retries
   an alarm that throws only a few times and then leaves none set.
 - **An alarm that finds no entry left** deletes the object's storage, schema and alarm included.
