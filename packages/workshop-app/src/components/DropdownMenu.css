@@ -14,6 +14,12 @@
   transition: opacity calc(100ms * var(--menu-time, 1)) ease-out;
 }
 
+/* In place there is no close button to fade, and the surface lifts away at once,
+   so the trigger must vanish at once too or it shows beneath. */
+.dropdown-menu-trigger[data-in-place][data-menu-morphing] {
+  transition: none;
+}
+
 /* The close button is the last to arrive, once the menu has opened, and the
    first to leave: it fades out before the content or the surface move. */
 .dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open] {
