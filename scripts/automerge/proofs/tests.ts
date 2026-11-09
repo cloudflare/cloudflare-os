@@ -110,37 +110,57 @@ export function planScope(files: FileDiff[]): TestsScope {
 const IMPORT = /(?:^|[\s;])(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|[\s;])import\s*['"]([^'"]+)['"]|(?<![\w$#.])(?:import|require)\(\s*['"]([^'"]+)['"]\s*\)/g;
 /** A type-only import or re-export, which brings no behavior with it. */
 const TYPE_ONLY = /^[\s;]*(?:import|export)\s+type\s/;
-/** Every `import` or `require` name; callFollows says which ones are calls. */
+/** Every `import` or `require` name; the next character past spaces says whether it is a call. */
 const CALL_NAME = /(?<![\w$#.])(?:import|require)(?![\w$])/g;
-
-/**
- * Whether `(` follows position `at` of `text`, past any spaces and comments: `import ("x")` and
- * `import /* c *\/ ("x")` are calls too. A linear scan, so no input can make it backtrack. An
- * unterminated comment counts as a call, so the caller reports it rather than skips it.
- */
-export function callFollows(text: string, at: number): boolean {
-  let i = at;
-  while (i < text.length) {
-    if (/\s/.test(text[i])) {
-      i++;
-    } else if (text.startsWith("/*", i)) {
-      const end = text.indexOf("*/", i + 2);
-      if (end === -1) return true;
-      i = end + 2;
-    } else if (text.startsWith("//", i)) {
-      const end = text.indexOf("\n", i + 2);
-      if (end === -1) return true;
-      i = end + 1;
-    } else {
-      return text[i] === "(";
-    }
-  }
-  return false;
-}
-
 /** The one call spelling IMPORT reads: the name, then `(` and a single string literal. */
 const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
+
+/**
+ * A source file with its comments blanked out, every position kept, so a quote or a stray
+ * `import` in a comment cannot stop or start an import pattern. One linear pass that steps over
+ * strings. It stops blanking at a string it cannot see the end of on its line (a regex literal or
+ * JSX text holding a quote reads that way) and leaves the rest as it is; imports come first in a
+ * file, so they are blanked. A block comment that never closes is a syntax error, and is returned.
+ */
+function blankComments(text: string): { code: string; unclosedComment?: number } {
+  // UTF-16 units, as string indexes count them.
+  const code = text.split("");
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (text[k] !== "\n") code[k] = " ";
+  };
+  for (let i = 0; i < text.length;) {
+    if (text.startsWith("//", i)) {
+      const end = text.indexOf("\n", i);
+      blank(i, end === -1 ? text.length : end);
+      i = end === -1 ? text.length : end;
+    } else if (text.startsWith("/*", i)) {
+      const end = text.indexOf("*/", i + 2);
+      if (end === -1) return { code: code.join(""), unclosedComment: i };
+      blank(i, end + 2);
+      i = end + 2;
+    } else if (text[i] === "'" || text[i] === '"' || text[i] === "`") {
+      const quote = text[i];
+      // A quote or backtick string ends at its own quote; a quoted one also ends, unclosed, at a newline.
+      let j = i + 1;
+      for (; j < text.length; j += text[j] === "\\" ? 2 : 1) {
+        if (text[j] === quote || (quote !== "`" && text[j] === "\n")) break;
+      }
+      if (j >= text.length || text[j] !== quote) break;
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return { code: code.join("") };
+}
+
+/** The index of the first non-space character from `at`. */
+function skipSpaces(text: string, at: number): number {
+  let i = at;
+  while (/\s/.test(text[i] ?? "")) i++;
+  return i;
+}
 
 /** The source a set of tests reaches, and the imports that could not be followed. */
 export interface SourceGraph {
@@ -208,14 +228,19 @@ export function sourceGraph(
   const name = typeof manifest.name === "string" ? manifest.name : undefined;
   const queue = [...roots];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    for (const call of next.text.matchAll(CALL_NAME)) {
-      if (!callFollows(next.text, call.index + call[0].length)) continue;
+    const { code, unclosedComment } = blankComments(next.text);
+    if (unclosedComment !== undefined) {
+      problems.push(`${next.path}: cannot read its imports past the comment at offset ${unclosedComment}, which never closes`);
+      continue;
+    }
+    for (const call of code.matchAll(CALL_NAME)) {
+      if (code[skipSpaces(code, call.index + call[0].length)] !== "(") continue;
       READABLE_CALL.lastIndex = call.index;
-      if (READABLE_CALL.test(next.text)) continue;
+      if (READABLE_CALL.test(code)) continue;
       const shown = next.text.slice(call.index, call.index + 40).split("\n")[0];
       problems.push(`${next.path}: cannot follow "${shown}", not a call with one string literal`);
     }
-    for (const match of next.text.matchAll(IMPORT)) {
+    for (const match of code.matchAll(IMPORT)) {
       const specifier = match[1] ?? match[2] ?? match[3];
       let base: string;
       if (specifier.startsWith(".")) {

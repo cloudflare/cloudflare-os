@@ -155,16 +155,33 @@ describe("proof-tests scope", () => {
     });
   });
 
-  // CodeQL on #987, round 3: a run of `*//*` after `import` must not make the call scan backtrack.
-  // The run ends in an unclosed comment, which counts as a call the proof cannot read.
-  it("scans a long run of comment markers after `import` in linear time, and fails closed on it", () => {
+  // CodeQL on #987, round 3: a run of `*//*` after `import` must not make the scan backtrack. The
+  // run ends in a block comment that never closes, a syntax error the proof reports.
+  it("scans a long run of comment markers in linear time, and fails closed on the unclosed one", () => {
     const text = `const x = import${"/*".concat("*//*".repeat(100_000))};\n`;
     const started = performance.now();
     const { sources, problems } = sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", files({}), WORKSPACE);
     assert.ok(performance.now() - started < 1000, "the scan took over a second");
     assert.deepEqual(sources, []);
     assert.equal(problems.length, 1);
-    assert.match(problems[0], /cannot follow "import\/\*/);
+    assert.match(problems[0], /past the comment at offset \d+, which never closes/);
+  });
+
+  // Bonk on #987, round 4: a quote inside a comment stopped the static-import pattern, and the
+  // declaration was skipped without a word.
+  it("reads an import or re-export whose clause holds a comment with a quote", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/feature.ts": "export const double = 1;\n" });
+    const text = [
+      'import { double /* public API\'s helper */ } from "./feature.ts";',
+      'export { a /* it\'s re-exported */ } from "./a.ts";',
+      "export const c = import.meta.url;",
+      'const s = "import x from y";',
+      "",
+    ].join("\n");
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts", "packages/p/src/feature.ts"],
+      problems: [],
+    });
   });
 
   // Clanky on #987, round 2: a weakened assertion about another workspace package's code changes no
