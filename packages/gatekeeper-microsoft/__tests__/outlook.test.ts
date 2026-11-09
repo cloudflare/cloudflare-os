@@ -753,7 +753,10 @@ describe("reading new mail by cursor", () => {
     };
     const ctx = {
       id: { name: `${USER}.${MAILBOX}` },
-      storage: { kv, getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; }, deleteAlarm: async () => { alarm = null; } },
+      storage: {
+        kv, transactionSync: <T>(callback: () => T) => callback(),
+        getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; }, deleteAlarm: async () => { alarm = null; },
+      },
       exports: { UserAccount: { idFromString: (id: string) => id, get: () => account } },
     };
     const delivered: string[] = [];
