@@ -118,7 +118,7 @@ const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
 
 /** A `/` after one of these characters, or after one of REGEX_AFTER_WORD, starts a regex literal. */
-const REGEX_AFTER = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
+const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%<>~^");
 const REGEX_AFTER_WORD = /(?:^|[^\w$])(?:return|typeof|case|do|else|in|of|new|delete|void|throw|yield|await)$/;
 
 /** The end of the regex literal that starts at `at`, or -1 when it does not end on its line. */
