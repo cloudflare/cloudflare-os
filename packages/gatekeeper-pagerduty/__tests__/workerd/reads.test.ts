@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WireIncident, WireRef } from "../../src/pagerduty-normalize";
 import type { PagerDutyIncidentDetails, PagerDutyScheduleSummary } from "../../src/types";
 import {
-  ALICE, BOB, FakePagerDuty, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE, SHIFT_SCHEDULE, TEAM,
-  bound as setup, json, sub,
+  ALICE, BOB, FakePagerDuty, OTHER_POLICY, OTHER_SCHEDULE, OTHER_SERVICE, OTHER_TEAM, POLICY, SCHEDULE, SERVICE,
+  SHIFT_SCHEDULE, TEAM, bound as setup, json, sub,
 } from "./fake-pagerduty";
 
 afterEach(() => {
@@ -103,11 +103,26 @@ describe("an account binding", () => {
   it("reports the schedules an on-call filter names and the policies and schedules its entries show", async () => {
     const t = await setup();
     t.pd.oncalls = [{ user: { id: ALICE.id, summary: "Alice" }, escalation_level: 1, escalation_policy: POLICY, schedule: SCHEDULE }];
-    expect(await t.run([["listOnCalls", { scheduleIds: [OTHER_SCHEDULE.id] }]])).toEqual([]);
-    expect(await t.run([["listOnCalls"]])).toHaveLength(1);
+    expect(await t.run([["listOnCalls", { scheduleIds: [OTHER_SCHEDULE.id] }]], 5)).toEqual([]);
+    expect(await t.run([["listOnCalls"]], 5)).toMatchObject([[{ user: { id: ALICE.id }, level: 1 }]]);
     expect(await t.reported()).toEqual([
       ids(sub("schedule", OTHER_SCHEDULE.id)),
       ids(sub("escalation_policy", POLICY.id), sub("schedule", SCHEDULE.id)),
+    ]);
+  });
+
+  it("asks PagerDuty for who is on call a page at a time, reporting what each page shows", async () => {
+    const t = await setup();
+    const alice = { user: { id: ALICE.id, summary: "Alice" }, escalation_level: 1, escalation_policy: POLICY, schedule: SCHEDULE };
+    const bob = { ...alice, user: { id: BOB.id, summary: "Bob" }, escalation_policy: OTHER_POLICY, schedule: OTHER_SCHEDULE };
+    t.pd.oncalls = [...Array.from({ length: 25 }, () => alice), bob];
+    const pages = await t.run([["listOnCalls"]], 5) as unknown[][];
+    expect(pages.map(page => page.length)).toEqual([25, 1]);
+    expect(pages[1]).toMatchObject([{ user: { id: BOB.id } }]);
+    expect(t.pd.matching("GET", /^\/oncalls/).map(({ url }) => url.searchParams.get("offset"))).toEqual(["0", "25"]);
+    expect(await t.reported()).toEqual([
+      ids(sub("escalation_policy", POLICY.id), sub("schedule", SCHEDULE.id)),
+      ids(sub("escalation_policy", OTHER_POLICY.id), sub("schedule", OTHER_SCHEDULE.id)),
     ]);
   });
 
@@ -196,8 +211,8 @@ describe("a team binding", () => {
 
   it("reports the team's escalation policies for who is on call, though nobody is, a cached answer included", async () => {
     const t = await setup(team);
-    expect(await t.run([["listOnCalls"]])).toEqual([]);
-    expect(await t.run([["listOnCalls"]])).toEqual([]);
+    expect(await t.run([["listOnCalls"]], 5)).toEqual([]);
+    expect(await t.run([["listOnCalls"]], 5)).toEqual([]);
     expect(t.pd.matching("GET", /^\/escalation_policies/)).toHaveLength(1);
     const expected = ids(sub("team", TEAM.id), sub("escalation_policy", POLICY.id));
     expect(await t.reported()).toEqual([expected, expected]);
@@ -206,7 +221,7 @@ describe("a team binding", () => {
   it("asks nothing of a team with no escalation policy, which would answer for the whole account", async () => {
     const t = await setup({ resourceKind: "team", id: "PTEAM03" });
     t.pd.teams.set("PTEAM03", { id: "PTEAM03", name: "Empty" });
-    expect(await t.run([["listOnCalls"]])).toEqual([]);
+    expect(await t.run([["listOnCalls"]], 5)).toEqual([]);
     expect(t.pd.matching("GET", /^\/oncalls/)).toHaveLength(0);
     expect(await t.reported()).toEqual([ids(sub("team", "PTEAM03"))]);
   });
@@ -236,7 +251,7 @@ describe("a service binding", () => {
     const t = await setup(service);
     await t.run([["getDetails"]]);
     expect(await t.run([["listIncidents"]], 5)).toEqual([]);
-    expect(await t.run([["listOnCalls"]])).toEqual([]);
+    expect(await t.run([["listOnCalls"]], 5)).toEqual([]);
     expect(await t.reported()).toEqual([
       ids(sub("service", SERVICE.id)),
       ids(sub("service", SERVICE.id)),

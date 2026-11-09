@@ -612,23 +612,30 @@ describe("simulation", () => {
       ["a team", { resourceKind: "team", id: TEAM.id }],
     ] as [string, Binding][])("shows %s binding a pending override's user on call now in place of whoever it covers", async (_name, binding) => {
       const t = await covered(binding);
-      expect(await t.run([["listOnCalls"]])).toMatchObject([onCallEntry(ALICE, hour(-1), hour(1))]);
+      expect(await t.run([["listOnCalls"]], 5)).toMatchObject([[onCallEntry(ALICE, hour(-1), hour(1))]]);
     });
 
     it("finds a pending override's user by a user filter, and keeps whoever it covers on call around it in a window", async () => {
       const t = await covered();
-      expect(await t.run([["listOnCalls", { users: [ALICE.email] }]])).toMatchObject([onCallEntry(ALICE, hour(-1), hour(1))]);
-      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(2) }]])).toMatchObject([
+      expect(await t.run([["listOnCalls", { users: [ALICE.email] }]], 5)).toMatchObject([[onCallEntry(ALICE, hour(-1), hour(1))]]);
+      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(2) }]], 5)).toMatchObject([[
         onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(ALICE, hour(-1), hour(1)), onCallEntry(BOB, hour(1), hour(12)),
+      ]]);
+      expect(await t.run([["listOnCalls", { since: hour(2), until: hour(3) }]], 5)).toMatchObject([[onCallEntry(BOB, hour(1), hour(12))]]);
+    });
+
+    it("pages the pieces a pending override splits an entry into", async () => {
+      const t = await covered();
+      expect(await t.run([["listOnCalls", { since: hour(-2), until: hour(2), pageSize: 2 }]], 5)).toMatchObject([
+        [onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(ALICE, hour(-1), hour(1))], [onCallEntry(BOB, hour(1), hour(12))],
       ]);
-      expect(await t.run([["listOnCalls", { since: hour(2), until: hour(3) }]])).toMatchObject([onCallEntry(BOB, hour(1), hour(12))]);
     });
 
     it("still asks PagerDuty only for a user filter's users when no pending override puts one of them on call", async () => {
       const t = await covered();
-      expect(await t.run([["listOnCalls", { users: [BOB.email], since: hour(-2), until: hour(2) }]])).toMatchObject([
+      expect(await t.run([["listOnCalls", { users: [BOB.email], since: hour(-2), until: hour(2) }]], 5)).toMatchObject([[
         onCallEntry(BOB, hour(-12), hour(-1)), onCallEntry(BOB, hour(1), hour(12)),
-      ]);
+      ]]);
       expect(t.pd.matching("GET", /^\/oncalls/).at(-1)?.url.searchParams.getAll("user_ids[]")).toEqual([BOB.id]);
     });
   });

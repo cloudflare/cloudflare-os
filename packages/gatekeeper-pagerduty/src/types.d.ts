@@ -58,9 +58,10 @@ export interface PagerDutyAccount {
 
   /**
    * Who is on call: one entry per user, escalation level and schedule. By default, right now
-   * across the whole account; see {@link PagerDutyOnCallFilter}.
+   * across the whole account, which can be thousands of entries; see {@link PagerDutyOnCallFilter}
+   * to narrow it.
    */
-  listOnCalls(filter?: PagerDutyOnCallFilter): Promise<PagerDutyOnCall[]>;
+  listOnCalls(filter?: PagerDutyOnCallFilter): Promise<Cursor<PagerDutyOnCall>>;
 
   /**
    * Looks up users (up to 50). With a `query`, matches a case-insensitive name or email
@@ -139,7 +140,7 @@ export interface PagerDutyTeam {
   getSchedule(id: string): Promise<PagerDutySchedule>;
 
   /** Who is on call for the team's escalation policies; by default, right now. */
-  listOnCalls(filter?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]>;
+  listOnCalls(filter?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>>;
 
   /** As `PagerDutyAccount.findUsers()`. */
   findUsers(query?: string): Promise<PagerDutyUser[]>;
@@ -170,7 +171,7 @@ export interface PagerDutyService {
   createIncident(options: PagerDutyCreateIncidentOptions): Promise<PagerDutyIncident>;
 
   /** Who is on call for this service's escalation policy; by default, right now. */
-  listOnCalls(filter?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]>;
+  listOnCalls(filter?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>>;
 
   /** As `PagerDutyAccount.findUsers()`. */
   findUsers(query?: string): Promise<PagerDutyUser[]>;
@@ -428,8 +429,8 @@ export type PagerDutyIncidentFilter = PagerDutyPageOptions & PagerDutyTimeWindow
   allTime?: boolean;
 };
 
-/** Which on-call entries to list. */
-export type PagerDutyOnCallWindow = PagerDutyTimeWindow & {
+/** Which on-call entries to list. PagerDuty lists at most the first 10000. */
+export type PagerDutyOnCallWindow = PagerDutyPageOptions & PagerDutyTimeWindow & {
   /**
    * Only entries for these escalation levels (1 is the first). By default, every level.
    */

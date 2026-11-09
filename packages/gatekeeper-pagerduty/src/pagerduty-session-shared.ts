@@ -19,8 +19,7 @@ import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-crede
 import type { Tenant } from "./pagerduty-env";
 import {
   toIncidentSummary, toOnCall, toPriority, toScheduleSummary, toServiceSummary, toTeam, toUser, toUserRef,
-  type Schedule, type WireIncident, type WireOnCall, type WirePriority, type WireRef, type WireSchedule, type WireService,
-  type WireUser,
+  type Schedule, type WireIncident, type WirePriority, type WireRef, type WireSchedule, type WireService, type WireUser,
 } from "./pagerduty-normalize";
 import {
   changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridingUsers, pendingIncidents,
@@ -349,20 +348,28 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   /** What a page shows, as it is served: a page it throws for is refused. */
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
   overlay?(row: T): T | null;
+  /** What a fetched page's rows become where a pending action splits one in two, which `overlay` can't. */
+  derive?(rows: T[]): T[];
   inject?: CursorInjection<T>;
   refresh?(): Promise<void>;
 }): Cursor<T> {
-  const { pageSize, sources, describe, filter = [], result, ...hooks } = options;
+  const { pageSize, sources, describe, filter = [], result, derive = rows => rows, ...hooks } = options;
   const walk = ctx.dup();
   return new TokenCursor<T>({
     ...hooks,
     pageSize,
     remotePageSize: Math.max(pageSize, DEFAULT_PAGE_SIZE),
     dispose: () => walk[Symbol.dispose](),
-    fetchPage: (token, perPage) => walk.host.read(api => chainedPage(api, sources, token, perPage)),
+    fetchPage: async (token, perPage) => {
+      const page = await walk.host.read(api => chainedPage(api, sources, token, perPage));
+      return { ...page, items: derive(page.items) };
+    },
     authorizePage: async (rows, { terminal }) => walk.authorize(describe(rows, terminal), [...filter, ...await result(rows)]),
   });
 }
+
+/** A listing known to be empty, which PagerDuty isn't asked for. */
+const empty: OffsetSource<never> = async () => ({ items: [], more: false });
 
 /** What a listing page's observation says. */
 export function listed(title: string, noun: string) {
@@ -490,7 +497,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   }
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize,
-    sources: [nothing ? async () => ({ items: [], more: false }) : listing("/incidents", "incidents", params, toIncidentSummary)],
+    sources: [nothing ? empty : listing("/incidents", "incidents", params, toIncidentSummary)],
     refresh: async () => {
       live = await servicesWithin(ctx);
       pending = host.pending();
@@ -513,43 +520,48 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
 }
 
 /**
- * Who is on call, as `GET /oncalls` answers for `params` with pending overrides applied, reporting
- * what `filter` names even when the answer is empty; only `users`, when given.
+ * Who is on call, as `GET /oncalls` answers for `params`, each page with the overrides pending as
+ * it is fetched applied, reporting what `filter` names even when the answer is empty; only
+ * `users`, when given.
  */
-export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
+export function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
   params: Query; users?: readonly string[]; filter: readonly ObjectRef[]; none?: boolean;
-}): Promise<PagerDutyOnCall[]> {
+}): Cursor<PagerDutyOnCall> {
   const levels = window?.levels;
   if (levels?.some(level => !Number.isInteger(level) || level < 1)) {
     throw new Error("levels must be whole numbers from 1.");
   }
   const { host } = ctx;
-  const pending = host.pending();
   const { resolve } = host;
+  const { users } = options;
   const since = time(window?.since, "since");
   const until = time(window?.until, "until");
   // A pending override can put a user on call where PagerDuty doesn't list them yet, and cut short
   // the entry it covers, so entries are then split and picked out here; users too, when the filter
   // names one an override puts on call, as PagerDuty would leave out the entry they cover.
-  const overriding = overridingUsers(pending, resolve);
-  const covering = options.users?.some(id => overriding.includes(id));
-  const params = { ...options.params, user_ids: covering ? undefined : options.users, since, until };
-  const rows = options.none ? [] : await host.read(api => api.all<WireOnCall>("/oncalls", "oncalls", params));
-  const fetched = rows.map(toOnCall);
-  // PagerDuty answers for the window, each end now by default, and an override can leave part of an
-  // entry outside it. An empty window is the moment `from`; an entry without a start or end is open.
-  const now = Date.now();
-  const from = since ? Date.parse(since) : now;
-  const to = Math.max(until ? Date.parse(until) : now, from + 1);
-  const simulated = overriding.length === 0 ? fetched : overlayOnCalls(fetched, pending, resolve).filter(entry =>
-    (!options.users || options.users.includes(entry.user.id))
-    && (entry.start === null || Date.parse(entry.start) < to) && (entry.end === null || Date.parse(entry.end) > from));
-  const entries = simulated.filter(entry => !levels || levels.includes(entry.level));
-  await ctx.authorize({ title: "Listed who is on call in PagerDuty", description: `Read ${countOf(entries.length, "on-call entry")}.` }, [
-    ...options.filter,
-    ...entries.flatMap(entry => [escalationPolicy(entry.escalationPolicy.id), ...(entry.schedule ? [schedule(entry.schedule.id)] : [])]),
-  ]);
-  return entries;
+  const overriding = overridingUsers(host.pending(), resolve);
+  const covering = users?.some(id => overriding.includes(id));
+  const params = { ...options.params, user_ids: covering ? undefined : users, since, until };
+  return offsetCursor<PagerDutyOnCall>(ctx, {
+    pageSize: pageSizeOf(window),
+    sources: [options.none ? empty : listing("/oncalls", "oncalls", params, toOnCall)],
+    describe: listed("Listed who is on call in PagerDuty", "on-call entry"),
+    filter: options.filter,
+    result: rows => rows.flatMap(entry =>
+      [escalationPolicy(entry.escalationPolicy.id), ...(entry.schedule ? [schedule(entry.schedule.id)] : [])]),
+    derive: fetched => {
+      const pending = host.pending();
+      // PagerDuty answers for the window, each end now by default, and an override can leave part of an
+      // entry outside it. An empty window is the moment `from`; an entry without a start or end is open.
+      const now = Date.now();
+      const from = since ? Date.parse(since) : now;
+      const to = Math.max(until ? Date.parse(until) : now, from + 1);
+      const simulated = overridingUsers(pending, resolve).length === 0 ? fetched
+        : overlayOnCalls(fetched, pending, resolve).filter(entry =>
+          (entry.start === null || Date.parse(entry.start) < to) && (entry.end === null || Date.parse(entry.end) > from));
+      return simulated.filter(entry => (!users || users.includes(entry.user.id)) && (!levels || levels.includes(entry.level)));
+    },
+  });
 }
 
 /** Binds `hook` to events on the incidents `ctx` reaches: those it is within, or the one `incidentId` names. */

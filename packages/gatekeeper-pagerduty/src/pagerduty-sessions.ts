@@ -101,11 +101,11 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
     return new PagerDutyScheduleImpl(this.ctx.opening(schedule(id)), id);
   }
 
-  async listOnCalls(filter?: PagerDutyOnCallFilter): Promise<PagerDutyOnCall[]> {
+  async listOnCalls(filter?: PagerDutyOnCallFilter): Promise<Cursor<PagerDutyOnCall>> {
     const scheduleIds = ids(filter?.scheduleIds, "scheduleIds");
     const policyIds = ids(filter?.escalationPolicyIds, "escalationPolicyIds");
     const users = filter?.users === undefined ? undefined : await usersNamed(this.ctx, filter.users, "users");
-    return await listOnCalls(this.ctx, filter, {
+    return listOnCalls(this.ctx, filter, {
       params: { schedule_ids: scheduleIds, escalation_policy_ids: policyIds },
       users: users?.map(({ id }) => id),
       filter: [...(scheduleIds ?? []).map(schedule), ...(policyIds ?? []).map(escalationPolicy)],
@@ -157,12 +157,12 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
     return new PagerDutyScheduleImpl(this.ctx.opening(schedule(id)), id);
   }
 
-  async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {
+  async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
     const policyIds = await this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
       (await this.ctx.host.read(api => api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })))
         .map(({ id }) => id));
     // With no policy to filter by, PagerDuty would answer for the whole account.
-    return await listOnCalls(this.ctx, window, {
+    return listOnCalls(this.ctx, window, {
       params: { escalation_policy_ids: policyIds }, filter: policyIds.map(escalationPolicy), none: policyIds.length === 0,
     });
   }
@@ -222,8 +222,8 @@ export class PagerDutyServiceImpl extends PagerDutyScopeImpl implements PagerDut
     return new PagerDutyIncidentImpl(ctx.dup(), ref);
   }
 
-  async listOnCalls(window?: PagerDutyOnCallWindow): Promise<PagerDutyOnCall[]> {
+  async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
     const { id } = (await this.#service()).escalation_policy;
-    return await listOnCalls(this.ctx, window, { params: { escalation_policy_ids: [id] }, filter: [escalationPolicy(id)] });
+    return listOnCalls(this.ctx, window, { params: { escalation_policy_ids: [id] }, filter: [escalationPolicy(id)] });
   }
 }
