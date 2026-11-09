@@ -2256,6 +2256,17 @@ describe("Drive sharing changes at approval", () => {
     expect(await refusedSince.apply(id)).toBe(UNCONFIRMED);
     refusedSince.refuse(WRITES_GRANT_MISSING);
     expect(await refusedSince.apply(id)).toBeNull();
+
+    // A link's role set to exactly what a parent gives, which leaves nothing on the file: found
+    // while the parent's link opens from its URL only, as the card's did.
+    let linkOnly = [owner(), link()];
+    let merged = harness(linkOnly);
+    id = await merged.submit("updatePermission", roleChangeOf(linkOnly, "anyoneWithLink", "writer"));
+    merged.api.updatePermission.mockRejectedValueOnce(unconfirmed());
+    expect(await merged.apply(id)).toBe(UNCONFIRMED);
+    merged.drive.set(FILE, [owner(), { ...link("writer"), details: [inherited("writer")] }]);
+    expect(await merged.apply(id)).toBeNull();
+    expect(merged.api.updatePermission).toHaveBeenCalledTimes(1);
   });
 
   it("sends again when the earlier send changed nothing, however often", async () => {
@@ -2294,6 +2305,10 @@ describe("Drive sharing changes at approval", () => {
       [owner(), link("reader", true)]);
     await approveAgain(linkOnly, { kind: "updatePermission", payload: roleChangeOf(linkOnly, "anyoneWithLink", "writer") },
       [owner(), link("writer", true)]);
+    // The link's role change, with a parent since shared as found by searching at the new role:
+    // Drive lists the parent's access alone, and it is not the link the card described.
+    await approveAgain(linkOnly, { kind: "updatePermission", payload: roleChangeOf(linkOnly, "anyoneWithLink", "writer") },
+      [owner(), { ...link("writer", true), details: [inherited("writer")] }]);
 
     // A role that is neither the card's nor the one it set, and access that went altogether.
     let withBob = [owner(), bob()];

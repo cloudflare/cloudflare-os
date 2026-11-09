@@ -1111,8 +1111,10 @@ async function applyRoleChange(
     let current = accessNow(permissions, payload);
     let { direct, inherited } = current ? accessOf(current) : {};
     if (current === undefined || direct === undefined) {
-      // Drive leaves nothing on the file of a role set to exactly what a parent gives.
-      let made = current !== undefined && inherited === payload.toRole;
+      // Drive leaves nothing on the file of a role set to exactly what a parent gives, as long as
+      // the parent's access is found by searching, or not, as the approval said.
+      let made = current !== undefined && inherited === payload.toRole &&
+        sameReach(current, payload);
       return {
         described: false, refusal: ACCESS_GONE, ...(made ? { made: { sent: undefined } } : {}),
       };
