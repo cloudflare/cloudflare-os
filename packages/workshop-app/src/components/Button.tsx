@@ -38,7 +38,7 @@ export const Button = ({ icon, children, variant = 'secondary', className, ...pr
       type="button"
       className={cn(
         'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium whitespace-nowrap',
-        'text-kumo-default not-data-disabled:hover:bg-kumo-tint',
+        'text-kumo-default not-data-disabled:hover:bg-kumo-tint data-disabled:opacity-50',
         variant === 'ghost' ? 'bg-transparent' : 'bg-kumo-base ring-1 ring-kumo-line',
         '[&>svg]:size-[1.125em] [&>svg]:shrink-0',
         iconOnly ? 'w-9 p-0' : iconNode ? 'pr-4 pl-3' : 'px-4',

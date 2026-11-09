@@ -1,0 +1,45 @@
+@property --composer-open {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --composer-field-height {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 20px;
+}
+
+/* One clock drives the shell, text reveal and curved path. The horizontal cubic
+   and vertical arc steer the visible field around the buttons in both directions. */
+.composer {
+  --composer-line-height: 20px;
+  --composer-sweep: calc(var(--composer-open) * var(--composer-open) * var(--composer-open));
+  --composer-lift: calc(32px * var(--composer-open) * (1 - var(--composer-open)));
+  height: calc(var(--composer-line-height) + 22px + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height) + 30px));
+  transition:
+    --composer-open 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    --composer-field-height 180ms ease-out,
+    box-shadow 100ms ease-out;
+}
+
+.composer[data-expanded] {
+  --composer-open: 1;
+}
+
+.composer-editor {
+  top: calc(11px + var(--composer-open) * 1px - var(--composer-lift));
+  left: calc(42px - 26px * var(--composer-sweep));
+  right: calc(44px - 36px * var(--composer-sweep));
+  height: calc(var(--composer-line-height) + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height)));
+}
+
+.composer-input {
+  padding-right: calc(16px * var(--composer-sweep));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer {
+    transition: none;
+  }
+}

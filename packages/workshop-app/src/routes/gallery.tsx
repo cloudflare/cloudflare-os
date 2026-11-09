@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Switch, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
+import type { ComposerAddActions, ComposerSkill } from '@/blocks/ComposerAddMenu'
 import { ConversationListItem } from '@/blocks/ConversationListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
@@ -23,6 +24,12 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
     <div className="flex flex-wrap items-center gap-2">{children}</div>
   </section>
 )
+
+const previewSkills: ComposerSkill[] = [
+  { id: 'review', name: 'Review writing', description: 'Polish a draft and make it clearer.', source: 'Writing tools' },
+  { id: 'summarize', name: 'Summarize', description: 'Turn a long document into the key takeaways.', source: 'Documents' },
+  { id: 'compact', name: 'Compact chat', description: 'Make room while keeping the important context.', source: 'Gadgets' },
+]
 
 const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
   <>
@@ -97,6 +104,13 @@ const DropdownMenuPlayground = () => {
 }
 
 function Gallery() {
+  const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
+  const addActions: ComposerAddActions = {
+    onUpload: () => setMenuAction('Preview: upload files or photos selected.'),
+    onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
+    skills: { items: previewSkills, onSelect: (skill) => setMenuAction(`Preview: ${skill.name} selected.`) },
+  }
+
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col gap-8 overflow-y-auto p-8">
       <h1 className="text-xl font-medium">Components</h1>
@@ -104,6 +118,7 @@ function Gallery() {
         <Button>Refactor conditional rendering logic</Button>
         <Button icon={CaretLeftIcon}>Back to chat</Button>
         <Button icon={CirclesFourIcon} aria-label="Apps" />
+        <Button disabled>Disabled</Button>
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
       </Section>
       <Section title="DropdownMenu (side, align, trigger and in-place toggles)">
@@ -163,13 +178,29 @@ function Gallery() {
         </div>
       </Section>
       <Section title="Composer">
-        <div className="w-full">
-          <Composer onSend={() => {}} />
+        <div className="flex w-full flex-col gap-3">
+          <p className="text-sm text-kumo-subtle">
+            Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
+            Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
+          </p>
+          <Composer onSend={() => {}} addActions={addActions} />
+          <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
+          <div className="w-80 max-w-full">
+            <Composer onSend={() => {}} />
+          </div>
+        </div>
+      </Section>
+      <Section title="Composer (in-place add menu)">
+        <div className="flex w-full flex-col gap-3">
+          <p className="text-sm text-kumo-subtle">
+            The + expands in place, keeping its anchored corner at the button while following the same curved path.
+          </p>
+          <Composer onSend={() => {}} addActions={addActions} addMenuInPlace />
         </div>
       </Section>
       <Section title="ChatLayout (header and composer float over the scrolling messages)">
         <div className="flex h-96 w-full flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
-          <ChatLayout header={<Button>Refactor conditional rendering logic</Button>} composer={<Composer onSend={() => {}} />}>
+          <ChatLayout header={<Button>Refactor conditional rendering logic</Button>} composer={<Composer onSend={() => {}} addActions={addActions} />}>
             {Array.from({ length: 12 }, (_, i) => (
               <MessageBubble key={i} role={i % 2 ? 'assistant' : 'user'}>
                 {i % 2 ? 'I’ll build a personal Jira dashboard with your stats.' : 'Create a dashboard showcasing my jira stats'}
