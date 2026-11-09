@@ -1,4 +1,4 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -104,8 +104,9 @@ export interface AgentStepChange {
 export interface WorktreeTurnAccess {
   /**
    * The base commit the worktree's overlay composes on: the chat pin's base while the worktree
-   * is pinned in this session, else its accepted commit (WorktreeRecord.pinBase) -- the same
-   * commit the first write will pin at. Undefined when the id is not a live worktree.
+   * is pinned in this session (its accepted commit, WorktreeRecord.pinBase, unless a re-root
+   * moved it; see reRoot), else its accepted commit -- the same commit the first write will pin
+   * at. Undefined when the id is not a live worktree.
    */
   getBaseCommit(worktreeId: WorkpieceId): string | undefined;
 
@@ -150,6 +151,22 @@ export interface WorktreeTurnAccess {
    * barrier drops the advancement, leaving only harmless dangling commit objects.
    */
   appendCommit(worktreeId: WorkpieceId, commit: string, previousHead: string): void;
+
+  /**
+   * Buffer a re-root of the worktree's chat pin at `commit`, which must be a commit in the
+   * workspace's Git store whose tree is the worktree's whole content: what the turn holds now
+   * (getBaseCommit plus the overlay and removals), plus whatever the caller changed, and not
+   * getBaseCommit itself, since replay tells a re-root from a re-establishment of the pin by its
+   * commit (a commit whose parent is getBaseCommit, even with the same tree, is fine). It absorbs
+   * the step's earlier buffered changes to the worktree, which that tree already holds: they
+   * leave the step's buffer, the overlay and removals empty, and the base becomes `commit`, so
+   * later changes in the step compose on it. What the model knew of the worktree's files is
+   * forgotten. Several re-roots in one step chain; the barrier declares only the last, as the
+   * pin's new `baseCommit` with the worktree's accepted commit kept as its `mergedCommit` (see
+   * commitAgentStep in overseer.ts). Like a change, it is lost if the step dies before its
+   * barrier.
+   */
+  reRoot(worktreeId: WorkpieceId, commit: string): void;
 }
 
 /**
@@ -341,6 +358,12 @@ export interface AgentHooks {
    * model re-runs the step against unmodified content. Returns whether a "changes" message was
    * written (change-ID numbering counts messages).
    *
+   * `reRoots` are the step's re-roots of worktree pins (see WorktreeTurnAccess.reRoot), at most
+   * one per worktree, and `changes` hold none of the edits they absorbed. The step's message
+   * declares each as a pin, and since that changes content without changes, the step records
+   * its changes in the message alone, with no rows, and bumps the chat's generation
+   * destructively, so clients rebuild from the log.
+   *
    * Rows and messages broadcast from inside the transaction, as every append always has: the
    * transaction protects server-side storage, not what subscribers saw before a rollback (a
    * mid-barrier exception is itself a bug; see the design note on materializeChatChanges'
@@ -361,6 +384,7 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -1612,10 +1636,11 @@ async function runAgentPass(
   // The base commit a worktree's untouched paths resolve against -- a worktree's session
   // content holds only touched/read files, and a path absent from it is read lazily from this
   // commit (hooks.readFileAtCommit): the chat pin's base while the worktree is pinned in this
-  // session, else its accepted commit, the commit the first modification will pin it at (the
-  // same commit either way; see WorktreeRecord.pinBase). Undefined for anything that is not a
-  // worktree. The pinned case must win: during replay of a closed epoch the pin's base is that
-  // epoch's, while the record already holds a later accept's.
+  // session, else its accepted commit, the commit the first modification will pin it at. (The
+  // two are the same commit unless a re-root moved the pin; see WorktreeRecord.pinBase.)
+  // Undefined for anything that is not a worktree. The pinned case must win: after a re-root,
+  // and during replay of a closed epoch, whose pin's base is that epoch's while the record
+  // already holds a later accept's.
   let worktreeBase = (id: WorkpieceId): string | undefined =>
       worktreePinBases.get(id) ?? hooks.getWorktreePinBase(id);
 
@@ -1679,6 +1704,9 @@ async function runAgentPass(
     let base = worktreeBase(worktreeId);
     if (base === undefined) return undefined;
     let text = await hooks.readFileAtCommit(base, filename);
+    // A re-root by a concurrent call of the same execution can move the base during the read,
+    // whose text is then the old base's: read the new one instead.
+    if (worktreeBase(worktreeId) !== base) return await faultWorktreeBase(worktreeId, filename);
     if (text === undefined) return undefined;
     sessionContent = new Map(sessionContent);
     let files = new Map(sessionContent.get(worktreeId));
@@ -1983,6 +2011,19 @@ async function runAgentPass(
     pendingReplayEdits = [];
   };
 
+  // Roots a worktree's session state at `base`, live (WorktreeTurnAccess.reRoot) and in replay
+  // alike: its entry restarts empty, removals with it, and what the model knew of its files is
+  // forgotten wholesale -- comparing the old and new texts would mean reading two repository
+  // trees, and the model's reads of the old base (stamped or not) no longer describe it.
+  let reRootWorktreeSession = (worktreeId: WorkpieceId, base: string) => {
+    worktreePinBases.set(worktreeId, base);
+    pinnedGadgets.add(worktreeId);
+    sessionContent = new Map(sessionContent);
+    sessionContent.set(worktreeId, new Map());
+    worktreeRemovedPaths.delete(worktreeId);
+    filesRead.delete(worktreeId);
+  };
+
   // Establishes a pin's base tree in the session content during replay and marks the gadget
   // pinned. Idempotent: commits are immutable, so re-establishing the same base is harmless --
   // which is what lets ensureReplayContentForWrite below establish a base *early*.
@@ -1991,12 +2032,19 @@ async function runAgentPass(
   // session content restarts at the new base, and what the model knows of a file whose text
   // that changed is dropped, so editFile requires a re-read rather than match against text the
   // model saw before. Returns the names of those files, sorted, for telling the model.
-  let applyReplayedPin = async (pin: ChatGadgetPin): Promise<string[]> => {
+  let applyReplayedPin = async (pin: ChatGadgetPinRecord): Promise<string[]> => {
     if (hooks.isWorktree(pin.gadgetId)) {
       // A worktree's base is a whole repository tree, so it is never materialized: the entry
-      // holds only touched/read files, resolved lazily against the pinned base (accumulated
-      // content is kept on re-establishment -- it is all base-derived or change-applied, so
-      // re-faulting would reproduce it).
+      // holds only touched/read files, resolved lazily against the pinned base. Re-establishing
+      // the base the content is rooted at keeps the entry -- it is all base-derived or
+      // change-applied, so re-faulting would reproduce it. A declaration at another commit is
+      // a re-root (see WorktreeTurnAccess.reRoot), whose base the content was not rooted at: the
+      // pinned base, or for a first pin, the accepted commit it keeps as `mergedCommit`.
+      let rootedAt = worktreePinBases.get(pin.gadgetId) ?? pin.mergedCommit ?? pin.baseCommit;
+      if (rootedAt !== pin.baseCommit) {
+        reRootWorktreeSession(pin.gadgetId, pin.baseCommit);
+        return [];
+      }
       worktreePinBases.set(pin.gadgetId, pin.baseCommit);
       if (!sessionContent.has(pin.gadgetId)) {
         sessionContent = new Map(sessionContent);
@@ -2050,7 +2098,7 @@ async function runAgentPass(
     if (pinnedGadgets.has(workpieceId)) return;
     if (unpinnedBase(workpieceId) === undefined) return;  // no committed code
 
-    let upcoming: ChatGadgetPin | "reverted" | "flushed-unpinned" | undefined;
+    let upcoming: ChatGadgetPinRecord | "reverted" | "flushed-unpinned" | undefined;
     for (let msg of chatMessages) {
       if (msg.sequence <= sequence) continue;
       if (msg.type === "merge" && msg.epochBoundary) break;
@@ -2069,7 +2117,11 @@ async function runAgentPass(
     if (upcoming === undefined || upcoming === "reverted" || upcoming === "flushed-unpinned") {
       return;
     }
-    await applyReplayedPin(upcoming);
+    // A worktree's upcoming declaration can be a re-root by a later execution of the step (one
+    // pinned live by a commit() before this read), whereas the read saw the accepted commit,
+    // which the re-root keeps as `mergedCommit`. Establish that; the declaration re-roots.
+    await applyReplayedPin(hooks.isWorktree(workpieceId) && upcoming.mergedCommit !== undefined
+        ? {gadgetId: workpieceId, baseCommit: upcoming.mergedCommit} : upcoming);
   };
 
   // Whether a tool call in the assistant message at `index` saw content the user later reverted.
@@ -2874,8 +2926,26 @@ async function runAgentPass(
   // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
   // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
   // the buffered changes' summed codeChangeSerializedSize, checked against MAX_CODE_CHANGE_SIZE
-  // at each write call (see appendAgentEdit).
-  let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
+  // at each write call (see appendAgentEdit). `reRoots` maps each worktree re-rooted this step
+  // to the commit of its last re-root (see WorktreeTurnAccess.reRoot), which absorbed the
+  // worktree's changes buffered before it.
+  let stepBuffer = {
+    changes: [] as AgentStepChange[], bytes: 0, reRoots: new Map<WorkpieceId, string>(),
+  };
+
+  // Whether an executeCode call this step changed files: buffered changes, or re-rooted a
+  // worktree. Replay re-runs no executeCode, so a file tool later in the step would replay
+  // against content without those changes; the file tools refuse to run instead (see
+  // assertNoExecutedChanges). Nothing is lost, since every tool call of a step is made before
+  // any of them runs, so such a call was made without seeing the execution's result anyway.
+  let executedCodeChangedFiles = false;
+  let assertNoExecutedChanges = () => {
+    if (executedCodeChangedFiles) {
+      throw new Error("An executeCode call earlier in this step changed files, which take " +
+          "effect when the step ends. End this response and call this tool again in your next " +
+          "step.");
+    }
+  };
 
   // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
   // creation/binding stamps and messages are committed in one barrier transaction, so replay of
@@ -3008,6 +3078,22 @@ async function runAgentPass(
     appendCommit: (id, commit, previousHead) => {
       pendingWorktreeCommits.push({worktreeId: id, commit, previousHead});
       pinWorktreeInSession(id);
+    },
+    reRoot: (id, commit) => {
+      // Replay tells a re-root from a re-establishment of the pin by its commit (see
+      // applyReplayedPin).
+      if (commit === worktreeBase(id)) throw new Error("A re-root must move the worktree's base.");
+      // Every buffered change touches one workpiece, but strip rather than drop, so a change
+      // that touched others too would keep them.
+      stepBuffer.changes = stepBuffer.changes.flatMap(entry => {
+        if (!(id in entry.change)) return [entry];
+        let {[id]: _absorbed, ...rest} = entry.change;
+        return Object.keys(rest).length > 0 ? [{...entry, change: rest}] : [];
+      });
+      stepBuffer.bytes = stepBuffer.changes.reduce(
+          (sum, {change}) => sum + codeChangeSerializedSize(change), 0);
+      stepBuffer.reRoots.set(id, commit);
+      reRootWorktreeSession(id, commit);
     },
   };
 
@@ -3253,6 +3339,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, startLine, lineCount}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let window = {startLine, lineCount};
@@ -3287,6 +3374,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, pattern, path}) => {
         try {
+          assertNoExecutedChanges();
           let {workpieceId} =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let re = new RegExp(pattern);
@@ -3319,6 +3407,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, content: newContent}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           assertMayModifyWorkpiece(resolved.workpieceId);
@@ -3390,6 +3479,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, textToReplace, replacement}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           assertMayModifyWorkpiece(resolved.workpieceId);
@@ -3830,19 +3920,27 @@ async function runAgentPass(
           // executing it in one step never worked; the error is retryable and tells the model
           // to split them. (Deliberately coarse: no per-gadget touched-set -- worktrees keep
           // the same rule.)
-          if (stepBuffer.changes.length > 0) {
+          if (stepBuffer.changes.length > 0 || stepBuffer.reRoots.size > 0) {
             throw new Error("This step already made code changes, which take effect when the " +
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
-          let output = await hooks.executeCodeMode(
-              chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
-              delta => emitStreamEvent({
-                type: "toolOutputDelta",
-                toolCallId,
-                delta,
-              }),
-              worktreeTurnAccess);
+          let output: string;
+          try {
+            output = await hooks.executeCodeMode(
+                chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+                delta => emitStreamEvent({
+                  type: "toolOutputDelta",
+                  toolCallId,
+                  delta,
+                }),
+                worktreeTurnAccess);
+          } finally {
+            // The buffer was empty when the execution started (above), so whatever it holds
+            // now is the execution's.
+            executedCodeChangedFiles =
+                stepBuffer.changes.length > 0 || stepBuffer.reRoots.size > 0;
+          }
           return toolResult(`${output}`, {output: `${output}`} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
@@ -4173,8 +4271,12 @@ async function runAgentPass(
         // the effects would be wrong.
         await persistStep(async () => {
           let stepChanges = stepBuffer.changes;
+          let reRoots = [...stepBuffer.reRoots].map(
+              ([worktreeId, baseCommit]) => ({worktreeId, baseCommit}));
           stepBuffer.changes = [];
           stepBuffer.bytes = 0;
+          stepBuffer.reRoots.clear();
+          executedCodeChangedFiles = false;
           let createdGadgets = pendingCreatedGadgets;
           pendingCreatedGadgets = [];
           let createdWorktrees = pendingCreatedWorktrees;
@@ -4187,7 +4289,7 @@ async function runAgentPass(
           pendingBlueprintMerges = [];
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
-               worktreeCommits, blueprintMerges},
+               worktreeCommits, blueprintMerges, reRoots},
               message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
             ++nextChangeId;
           }

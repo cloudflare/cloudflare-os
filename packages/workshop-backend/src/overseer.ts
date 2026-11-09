@@ -2752,7 +2752,9 @@ class OverseerImpl implements AgentHooks {
   // `options.extras` lets the agent's step barrier attach its creations/binding additions,
   // updateChatFromMainline its `mainlineMerge` record, and applyBlueprint (or the barrier, for
   // a gadget created from a blueprint) its `blueprintMerges`; a message is written when
-  // there is anything at all to record (rows, undeclared pins, or extras). `options.pins` are
+  // there is anything at all to record (rows, undeclared pins, or extras). `options.change` is
+  // recorded after the rows' composition with no row of its own: the changes of an agent step
+  // that re-roots a worktree (see commitAgentStep). `options.pins` are
   // declarations the caller is about to put into the code base, which re-root their gadgets
   // (see ChatGadgetPinRecord): updateChatFromMainline writes the message that declares them
   // ahead of the pins themselves, since clients rebuild from the log. `options.author`
@@ -2761,6 +2763,7 @@ class OverseerImpl implements AgentHooks {
   materializeChatChanges(chatId: number, meta?: AiChatMetadata, options?: {
     author?: AiChatAuthorInfo,
     allowDuringTurn?: boolean,
+    change?: CodeChange,
     createdGadgets?: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
     createdWorktrees?: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
     addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
@@ -2794,7 +2797,7 @@ class OverseerImpl implements AgentHooks {
         (options?.createdWorktrees?.length ?? 0) > 0 ||
         (options?.addedBindings?.length ?? 0) > 0 ||
         (options?.worktreeCommits?.length ?? 0) > 0 || options?.mainlineMerge !== undefined ||
-        (options?.blueprintMerges?.length ?? 0) > 0;
+        (options?.blueprintMerges?.length ?? 0) > 0 || options?.change !== undefined;
     if (rows.length === 0 && pins.length === 0 && !hasExtras) {
       return;
     }
@@ -2812,6 +2815,9 @@ class OverseerImpl implements AgentHooks {
     let change: CodeChange | undefined;
     for (let row of rows) {
       change = change === undefined ? row.change : composeCodeChange(change, row.change);
+    }
+    if (options?.change !== undefined) {
+      change = change === undefined ? options.change : composeCodeChange(change, options.change);
     }
 
     let sequence = this.nextChatSequencePeek(chatId);
@@ -2863,6 +2869,16 @@ class OverseerImpl implements AgentHooks {
   // gate to catch, never retroactively fails the turn. Worktrees the step first modifies are
   // pinned here too, derived rather than declared (see below).
   //
+  // A step that re-roots worktree pins (`step.reRoots`; see WorktreeTurnAccess.reRoot in
+  // agent.ts) changes content without changes, like updateChatFromMainline, and ends the same
+  // way: its message declares the re-roots, then the pins move with a destructive generation
+  // bump, and clients rebuild from the log. So its changes ride the message alone: a row
+  // broadcast before the bump would edit a re-rooted file in a client that still holds the old
+  // base. (No streaming preview waits on such a row: the step's writes after the re-root are the
+  // execution's own, and the file tools refuse to run after it.) A re-rooted worktree pin keeps
+  // the worktree's accepted commit as its `mergedCommit`, so the user still reviews, and
+  // accepts, everything the chat changed in it.
+  //
   // The transaction protects server-side storage only: broadcasts fire on write and ignore
   // rollback (deliberate -- rerouting the subscription path through commit is out of scope),
   // so a mid-barrier exception, itself a bug, can leak broadcasts for rolled-back rows. The
@@ -2877,11 +2893,25 @@ class OverseerImpl implements AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;  // chat deleted mid-turn
+
+    // Each re-root as the pin it declares, rooted at its commit and reviewed against the
+    // worktree's accepted commit.
+    let reRoots: ChatGadgetPinState[] = [];
+    for (let {worktreeId, baseCommit} of step.reRoots ?? []) {
+      let record = this.storage.gadgets.get(worktreeId);
+      if (record?.type !== "worktree" || record.chatId !== chatId) {
+        throw new Error(`An agent step re-rooted something other than its chat's worktree: ` +
+            `${worktreeId}`);
+      }
+      reRoots.push({gadgetId: worktreeId, baseCommit, mergedCommit: record.pinBase});
+    }
+    let reRooted = new Map(reRoots.map(pin => [pin.gadgetId, pin.baseCommit]));
 
     for (const [changeIndex, {change}] of step.changes.entries()) {
       try { validateCodeChangeSchema(change); }
@@ -2899,13 +2929,13 @@ class OverseerImpl implements AgentHooks {
     // can have, since only an accept moves it and none can run mid-turn -- so unlike a gadget's
     // head pin there is nothing for the agent to declare or the barrier to validate: the barrier
     // derives the pin from the record (the agent mirrors it in its turn state; see
-    // pinWorktreeInSession in agent.ts).
+    // pinWorktreeInSession in agent.ts). A re-rooted worktree pins at its re-root instead.
     let codeBasePins = this.chatCodeBase(meta).pins;
     let worktreePins = new Map<WorkpieceId, string>();
     for (let id of [...step.changes.flatMap(({change}) => changedGadgets(change)),
                     ...step.worktreeCommits.map(({worktreeId}) => worktreeId)]) {
       let record = this.storage.gadgets.get(id);
-      if (record?.type === "worktree" && record.chatId === chatId &&
+      if (record?.type === "worktree" && record.chatId === chatId && !reRooted.has(id) &&
           !codeBasePins.some(pin => pin.gadgetId === id)) {
         worktreePins.set(id, record.pinBase);
       }
@@ -2915,13 +2945,21 @@ class OverseerImpl implements AgentHooks {
     // the tail below requires to be current), each new gadget pin's base tree, and the base
     // texts of any worktree paths the buffered changes edit (worktree bases are lazy; see
     // seedWorktreeEditBases), resolved against the chat's worktree pins plus the ones this step
-    // establishes.
+    // establishes. A re-rooted worktree's content restarts empty at its new base, which the
+    // step's remaining changes to it compose on.
     let baseFilesByCommit = new Map<string, Map<string, string>>();
     let worktreeBases = new Map<WorkpieceId, string>();
     let worktreeSeeds = new Map<string, string | null>();
+    let applyReRoots = (content: CodeContent): CodeContent => {
+      if (reRooted.size === 0) return content;
+      let result = new Map(content);
+      for (let id of reRooted.keys()) result.set(id, new Map());
+      return result;
+    };
     if (step.changes.length > 0) {
-      let content = await this.getCurrentChatContent(chatId, meta);
-      worktreeBases = new Map([...this.worktreePinBases(meta), ...worktreePins]);
+      let content = applyReRoots(await this.getCurrentChatContent(chatId, meta));
+      worktreeBases =
+          new Map([...this.worktreePinBases(meta), ...worktreePins, ...reRooted]);
       if (worktreeBases.size > 0) {
         // The probe simulates only the changes' worktree entries: that is all the seed lookups
         // depend on (workpiece entries are independent), and gadget entries may not apply
@@ -2966,6 +3004,9 @@ class OverseerImpl implements AgentHooks {
           this.storage.chatMeta.put(fresh);
         }
 
+        // The step's changes when it re-roots, composed for its message instead of appended as
+        // rows (see above).
+        let unrowed: CodeChange | undefined;
         if (step.changes.length > 0) {
           let codeBase = this.chatCodeBase(fresh);
           let cached = this.#chatContentCache.get(chatId);
@@ -2975,7 +3016,7 @@ class OverseerImpl implements AgentHooks {
             // sibling operations assert no active turn), so a stale cache indicates a bug.
             throw new Error("Chat content changed during an agent step.");
           }
-          let content = cached.content;
+          let content = applyReRoots(cached.content);
 
           for (let {change, pin} of step.changes) {
             let newPins: ChatGadgetPinState[] = [];
@@ -3008,20 +3049,45 @@ class OverseerImpl implements AgentHooks {
             content = seeded;
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
+            if (reRooted.size === 0) {
+              this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
+            } else {
+              unrowed = unrowed === undefined ? change : composeCodeChange(unrowed, change);
+              let codeBase = this.chatCodeBase(fresh);
+              codeBase.pins.push(...newPins);
+              fresh.codeBase = codeBase;
+            }
           }
+          if (unrowed !== undefined) this.storage.chatMeta.put(fresh);
         }
 
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
-        return this.materializeChatChanges(chatId, undefined, {
+        let written = this.materializeChatChanges(chatId, undefined, {
           author,
           allowDuringTurn: true,
+          change: unrowed,
+          pins: reRoots.map(({gadgetId, baseCommit, mergedCommit}) =>
+              ({gadgetId, baseCommit, ...(mergedCommit !== baseCommit ? {mergedCommit} : {})})),
           createdGadgets: step.createdGadgets,
           createdWorktrees: step.createdWorktrees,
           addedBindings: step.addedBindings,
           worktreeCommits: step.worktreeCommits,
           blueprintMerges: step.blueprintMerges,
-        }) !== undefined;
+        });
+        if (reRoots.length > 0) {
+          // After the message, as updateChatFromMainline moves its pins.
+          let updated = this.getChatMetaOrThrow(chatId);
+          let codeBase = this.chatCodeBase(updated);
+          codeBase.pins = [
+            ...codeBase.pins.filter(pin => !reRooted.has(pin.gadgetId)), ...reRoots];
+          this.deleteAllChatChanges(chatId);
+          codeBase.generation += 1;
+          codeBase.revision = 0;
+          delete codeBase.prior;
+          updated.codeBase = codeBase;
+          this.storage.chatMeta.put(updated);
+        }
+        return written !== undefined;
       });
     } catch (err) {
       // The transaction rolled the rows back, but the append path already advanced the
@@ -4032,11 +4098,14 @@ class OverseerImpl implements AgentHooks {
     // the worktree dirty, its existing headCommit when the flattened tree happens to equal that
     // commit's (the agent committed and then made no further edits; no new commit needed), and
     // the unchanged pinBase when clean (a commit()-only epoch, or a pin from before pinning
-    // meant modification). Auto-commits parent on the old pinBase and use the accepting user's
-    // identity, which is cosmetic: they are squashed out of explicit history (reported HEAD
-    // stays the last explicit commit, and a later commit() parents on it), so this identity
-    // never appears in anything pushed. Like the gadget commits above, these are
-    // content-addressed object writes -- harmless if the accept turns out stale below.
+    // meant modification). The overlay applies to the pin's base, which a re-root may have
+    // moved off pinBase to a hidden commit already holding the paths touched before it. Either
+    // way, auto-commits parent on the old pinBase, so no hidden commit enters the worktree's
+    // history, and use the accepting user's identity, which is cosmetic: they are squashed out
+    // of explicit history (reported HEAD stays the last explicit commit, and a later commit()
+    // parents on it), so this identity never appears in anything pushed. Like the gadget
+    // commits above, these are content-addressed object writes -- harmless if the accept turns
+    // out stale below.
     let worktreeAccepts = new Map<WorkpieceId, string>();
     if (entryCodeBase.pins.some(pin => this.isWorktree(pin.gadgetId))) {
       let touchedByWorktree = this.#worktreeTouchedPaths(messages, statuses);
@@ -4044,17 +4113,18 @@ class OverseerImpl implements AgentHooks {
         let record = this.storage.gadgets.get(pin.gadgetId);
         if (record?.type !== "worktree") continue;
         let newPinBase = record.pinBase;
-        let touched = touchedByWorktree.get(pin.gadgetId);
-        if (touched !== undefined && touched.size > 0) {
-          // The epoch's overlay as a change map over pinBase: a touched path's current content,
-          // or null for one whose folded outcome is absence (a deletion). Touched-but-unchanged
-          // paths fold to identical blobs, so tree equality below still detects "clean".
+        let touched = touchedByWorktree.get(pin.gadgetId) ?? new Set<string>();
+        if (touched.size > 0 || pin.baseCommit !== record.pinBase) {
+          // The epoch's overlay as a change map over the pin's base: a touched path's current
+          // content, or null for one whose folded outcome is absence (a deletion).
+          // Touched-but-unchanged paths fold to identical blobs, so tree equality below still
+          // detects "clean".
           let files = chatContent.get(pin.gadgetId);
           let changes = new Map<string, FileContent | null>();
           for (let path of touched) changes.set(path, files?.get(path) ?? null);
           let flattened: string;
           try {
-            flattened = await this.gitStore.writeChangedTree(record.pinBase, changes);
+            flattened = await this.gitStore.writeChangedTree(pin.baseCommit, changes);
           } catch (err) {
             throw acceptWriteError(record.title, err);
           }
@@ -4276,12 +4346,13 @@ class OverseerImpl implements AgentHooks {
     return {outcome: "merged"};
   }
 
-  // The worktree paths the chat's current epoch touched, per worktree, folded from the epoch's
-  // surviving "changes" messages under the same rules buildChatContent folds content (reset at
-  // epoch boundaries, reverted messages excluded). The accept's re-pin plan needs this alongside
-  // the flattened content: content answers what a path holds now, but only the change stream
-  // knows which paths were touched at all -- a removed path is simply absent from content, and
-  // must enter the auto-commit's change map as a deletion.
+  // The worktree paths the chat's current epoch touched since each worktree's last pin
+  // declaration, per worktree, folded from the epoch's surviving "changes" messages under the
+  // same rules buildChatContent folds content (reset at epoch boundaries, and for a worktree at
+  // each declaration, which re-roots it; reverted messages excluded). The accept's re-pin plan
+  // needs this alongside the flattened content: content answers what a path holds now, but only
+  // the change stream knows which paths were touched at all -- a removed path is simply absent
+  // from content, and must enter the auto-commit's change map as a deletion.
   #worktreeTouchedPaths(messages: AiChatMessage[], statuses: Map<number, "merged" | "reverted">)
       : Map<WorkpieceId, Set<string>> {
     let touched = new Map<WorkpieceId, Set<string>>();
@@ -4293,6 +4364,7 @@ class OverseerImpl implements AgentHooks {
       if (msg.type !== "changes") continue;
       if (statuses.get(msg.sequence) === "reverted") continue;
       if (msg.conversionBoundary) touched.clear();
+      for (let pin of msg.pins ?? []) touched.delete(pin.gadgetId);
       if (msg.change === undefined) continue;
       for (let [key, entries] of Object.entries(msg.change)) {
         let id = Number(key);
@@ -5503,9 +5575,12 @@ class OverseerImpl implements AgentHooks {
     const worktree = this.#scratchWorktree(chatId);
     if (worktree) {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
-      // without loading file contents, so an upload cannot overwrite agent-created work.
-      for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
-      const content = await this.getCurrentChatContent(chatId, this.getChatMetaOrThrow(chatId));
+      // without loading file contents, so an upload cannot overwrite agent-created work. The
+      // base is the chat pin's, which a re-root may have moved off the accepted commit.
+      const meta = this.getChatMetaOrThrow(chatId);
+      const base = this.worktreePinBases(meta).get(worktree.id) ?? worktree.pinBase;
+      for (const entry of await this.gitCache.listCommitTreePaths(base)) used.add(entry.path);
+      const content = await this.getCurrentChatContent(chatId, meta);
       for (const path of content.get(worktree.id)?.keys() ?? []) used.add(path.split("/")[0]);
     }
 
@@ -6945,9 +7020,11 @@ class OverseerImpl implements AgentHooks {
           attachmentFiles, userMeta.profile);
       // Prefetch only. Workspace rows and attachment references land with the validated message.
       if (attachmentFiles.size) {
-        await this.getCurrentChatContent(chatId, this.getChatMetaOrThrow(chatId));
+        let meta = this.getChatMetaOrThrow(chatId);
+        await this.getCurrentChatContent(chatId, meta);
+        let base = this.worktreePinBases(meta).get(scratchWorktree.id) ?? scratchWorktree.pinBase;
         for (const path of attachmentFiles.keys()) {
-          await this.gitCache.assertWorktreePathWritable(scratchWorktree.pinBase, path);
+          await this.gitCache.assertWorktreePathWritable(base, path);
         }
       }
     } else {

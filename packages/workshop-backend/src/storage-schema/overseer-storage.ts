@@ -271,7 +271,8 @@ export type WorktreeRecord = {
   chatId: number;
 
   /**
-   * The commit the worktree was created at. Immutable.
+   * The commit the worktree was created at. Immutable. (Unrelated to a chat pin's
+   * `baseCommit`; see `pinBase`.)
    */
   baseCommit: string;
 
@@ -286,10 +287,14 @@ export type WorktreeRecord = {
    * The accepted commit (initially baseCommit): the worktree's content as of the chat's last
    * accept, and the worktree analog of a gadget's head. An unpinned worktree reads as this
    * commit's tree; the epoch's first modification -- a write, or a commit() -- pins the worktree
-   * in the chat at exactly this commit (so a chat pin, when present, always has
-   * `baseCommit === pinBase`), and the epoch's OT rows compose on it. Advanced only by epoch
-   * resets, to the accept's auto-commit of the dirty overlay (never by explicit commits --
-   * moving it mid-epoch would double-apply the still-live rows on replay). Published as
+   * in the chat at exactly this commit, and the epoch's OT rows compose on it. An agent step can
+   * then re-root the pin at a hidden commit holding the step's result (see
+   * WorktreeTurnAccess.reRoot in agent.ts), after which later rows compose on that commit
+   * instead. Either way the chat pin's `mergedCommit` is this commit, the one the chat's changes
+   * are reviewed against; its `baseCommit` (not this record's `baseCommit`, the creation commit)
+   * equals it until a re-root. Advanced only by epoch resets, to the accept's auto-commit of the
+   * chat's content, which parents on this commit (never by explicit commits or re-roots --
+   * either would accept the chat's changes without review). Published as
    * WorktreeSummary.pinBase: the commit the UI reads an unpinned worktree from, and the base a
    * client's pin declaration must name.
    */

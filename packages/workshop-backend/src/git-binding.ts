@@ -111,6 +111,12 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
   appendCommit(_worktreeId: unknown, commit: string): void {
     this.#head = commit;
   }
+
+  reRoot(_worktreeId: unknown, commit: string): void {
+    this.base = commit;
+    this.#files = new Map();
+    this.#removed = new Set();
+  }
 }
 
 /** The `env.GIT` binding. */
