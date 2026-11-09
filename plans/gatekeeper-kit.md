@@ -1719,7 +1719,10 @@ a provider row the refusal did not cover, such as one a dropped injected row had
 leads the next page, so it is neither lost nor slipped past the refusal.
 `overlay` followed it onto the base as `revalidate`'s counterpart for provider rows: a row can sit in
 the buffer long after its fetch, so the simulated changes are applied when it is served, and a
-refusal covers the entry behind the row, whatever `overlay` made of it. Both are synchronous, so
+refusal covers the entry behind the row, whatever `overlay` made of it. It returns rows rather than
+a row, since a simulated change can split one, as PagerDuty's pending override splits the on-call
+entry it covers; the pieces share a page, so no walk shows one split under two states of the
+journal. Both are synchronous, so
 `refresh` runs at the start of every `next()` to read asynchronously whatever they derive rows
 from, such as whether the binding still reaches a row's container.
 `retain` is the one fetch-time step for provider rows, and the ordering rule below is what keeps it

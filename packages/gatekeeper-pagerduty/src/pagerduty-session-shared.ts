@@ -347,7 +347,7 @@ export function offsetCursor<T>(ctx: SessionContext, options: {
   filter?: readonly ObjectRef[];
   /** What a page shows, as it is served: a page it throws for is refused. */
   result(rows: readonly T[]): ObjectRef[] | Promise<ObjectRef[]>;
-  overlay?(row: T): T | null;
+  overlay?(row: T): readonly T[];
   /** What a fetched page's rows become where a pending action splits one in two, which `overlay` can't. */
   derive?(rows: T[]): T[];
   inject?: CursorInjection<T>;
@@ -482,12 +482,12 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   // Whether a row, as pending actions leave it, is still on one of those services and in the filter.
   const keeps = (row: PagerDutyIncidentSummary) =>
     (!live || live.includes(row.service.id)) && matchesQuery(row, query, you);
-  const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary | null => {
+  const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary[] => {
     const simulated = overlayIncident(row, pending, resolve, you);
-    return keeps(simulated) ? simulated : null;
+    return keeps(simulated) ? [simulated] : [];
   };
   const opened = () => pendingIncidents(pending, resolve, you).filter(keeps);
-  const injected = [...opened(), ...[...changed.values()].flatMap(row => simulate(row) ?? [])].toSorted(newestFirst);
+  const injected = [...opened(), ...[...changed.values()].flatMap(simulate)].toSorted(newestFirst);
   const named = (filter?.serviceIds ? query.serviceIds ?? [] : []).map(service);
   // Injected incidents show what staging or this call read of their services, and the cursor
   // authorizes no page made only of them, so their services are reported before the walk serves any.
@@ -512,7 +512,7 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
       compare: newestFirst,
       revalidate: row => {
         const read = changed.get(row.id);
-        return read ? simulate(read) : opened().find(({ id }) => id === row.id) ?? null;
+        return (read ? simulate(read)[0] : opened().find(({ id }) => id === row.id)) ?? null;
       },
       identity: row => resolve(row.id),
     },

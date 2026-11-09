@@ -841,7 +841,7 @@ describe("injected rows", () => {
     const authorized = vi.fn(async () => {});
     const cursor = new TokenCursor<Issue>({
       fetchPage,
-      overlay: row => gone.has(row.id) ? null : issue(row.id, !closed.has(row.id)),
+      overlay: row => gone.has(row.id) ? [] : [issue(row.id, !closed.has(row.id))],
       authorizePage: authorized,
       pageSize: 1,
     });
@@ -869,7 +869,7 @@ describe("injected rows", () => {
       refresh: async () => {
         visible = latest;
       },
-      overlay: row => visible.has(row.id) ? row : null,
+      overlay: row => visible.has(row.id) ? [row] : [],
       authorizePage: async () => {},
       pageSize: 1,
     });
@@ -894,7 +894,7 @@ describe("injected rows", () => {
       refresh: async () => {
         visible = latest;
       },
-      overlay: row => visible.has(row.id) ? row : null,
+      overlay: row => visible.has(row.id) ? [row] : [],
       authorizePage: authorized,
       pageSize: 2,
     });
@@ -913,7 +913,7 @@ describe("injected rows", () => {
   it("fails a next() whose refresh throws before deriving any row, losing none", async () => {
     // One fetch buffers both rows; the refresh fails for the second page, then recovers.
     let failing = false;
-    const overlay = vi.fn((row: Issue) => row);
+    const overlay = vi.fn((row: Issue) => [row]);
     const authorized = vi.fn(async () => {});
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
@@ -944,7 +944,7 @@ describe("injected rows", () => {
     });
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
-      overlay: row => hidden.has(row.id) ? null : { ...row },
+      overlay: row => hidden.has(row.id) ? [] : [{ ...row }],
       authorizePage: authorized,
       pageSize: 2,
     });
@@ -959,6 +959,46 @@ describe("injected rows", () => {
       [[issue(1)], { terminal: false }],
       [[issue(2), issue(3)], { terminal: false }],
     ]);
+  });
+
+  it("serves the rows a provider row splits into on one page, as the overlay splits it then", async () => {
+    // One fetch buffers all three rows; a change staged after the first page splits the third.
+    const split = new Set([1]);
+    const pieces = (row: Issue) => split.has(row.id) ? [issue(row.id), issue(row.id, false)] : [row];
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
+      overlay: pieces,
+      // Pieces share their row's identity, which must not drop one for another.
+      inject: { items: [], compare: byId, identity: row => String(row.id) },
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1), issue(1, false)]);
+    split.add(3);
+    // The second row leaves room for one more, which the third's two pieces don't fit.
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(await cursor.next()).toEqual([issue(3), issue(3, false)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(1, false)], { terminal: false }],
+      [[issue(2)], { terminal: false }],
+      [[issue(3), issue(3, false)], { terminal: false }],
+    ]);
+  });
+
+  it("serves a row's pieces whole on a page too small for them", async () => {
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      overlay: row => [row, issue(row.id, false)],
+      authorizePage: async () => {},
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1), issue(1, false)]);
+    expect(await cursor.next()).toEqual([issue(2), issue(2, false)]);
+    expect(await cursor.next()).toBeNull();
   });
 
   it("serves one row per identity on a refused page's retry", async () => {

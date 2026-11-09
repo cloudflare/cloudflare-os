@@ -171,7 +171,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
       // The incident can move to another service while the walk is open, so each page reads it
       // again: refused once it has left the capability's scope, and reporting the service it is on.
       result: async () => this.#result(await this.#load()),
-      overlay: overlay && (row => overlay(row, id)),
+      overlay: overlay && (row => [overlay(row, id)]),
     });
   }
 

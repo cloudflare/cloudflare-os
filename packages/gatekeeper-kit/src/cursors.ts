@@ -73,7 +73,10 @@ export type CursorInjection<T> = {
 };
 
 type CursorShape<T> = {
-  /** How many items each `next()` returns. */
+  /**
+   * The most items each `next()` returns. Only a provider row `overlay` splits into more than
+   * that exceeds it, since a row's pieces are served together.
+   */
   pageSize: number;
   /** How many items to ask the provider for at a time. */
   remotePageSize?: number;
@@ -95,11 +98,13 @@ type CursorShape<T> = {
   inject?: CursorInjection<T>;
   /**
    * Re-derives a provider row as it is served, applying the gatekeeper's simulated changes the
-   * provider does not show yet: the row to serve, or `null` to drop it. A row can sit in the buffer
-   * long after it was fetched, so this runs at serve time, not fetch time. Must keep the row's sort
-   * position and identity. Authorization sees the row it returns.
+   * provider does not show yet: the rows to serve in its place, none to drop it and several where
+   * a change splits it. A row can sit in the buffer long after it was fetched, so this runs at
+   * serve time, not fetch time. The rows are served on one page, so no walk shows a split made
+   * under two states of the simulation; a page with no room left for them ends before the row.
+   * They must keep its sort position and share its identity. Authorization sees the rows it returns.
    */
-  overlay?(item: T): T | null;
+  overlay?(item: T): readonly T[];
   /**
    * Runs at the start of every `next()`, before its page is built from the buffer or fetched, a
    * refused page's retry included. `overlay` and `revalidate` are synchronous, so state they derive
@@ -171,7 +176,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   readonly #dispose?: () => void;
   readonly #authorizePage: CursorShape<T>["authorizePage"];
   readonly #inject: CursorInjection<T>;
-  readonly #overlay?: (item: T) => T | null;
+  readonly #overlay?: (item: T) => readonly T[];
   readonly #refresh?: () => Promise<void>;
   readonly #buffer: Entry<T>[] = [];
   readonly #servedIds = new Set<string>();
@@ -300,10 +305,12 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
         continue;
       }
       const entry = this.#buffer[page.consumed];
-      const item = this.#serve(page, entry);
-      if (held && item !== null && !entry.injected && !held.covered.has(entry)) break;
+      const rows = this.#serve(page, entry);
+      if (held && rows.length > 0 && !entry.injected && !held.covered.has(entry)) break;
+      // An entry's rows share a page, so one with no room left for them leads the next.
+      if (page.items.length > 0 && page.items.length + rows.length > this.#pageSize) break;
       page.consumed++;
-      if (item !== null) this.#admit(page, entry, item);
+      for (const row of rows) this.#admit(page, entry, row);
     }
     return page;
   }
@@ -319,16 +326,22 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   }
 
   /**
-   * The row an entry serves now, or `null` when it drops out. Re-derivation and identity run here,
-   * at serve time, so a dropped row never costs a page while the fetch window lasts.
+   * The rows an entry serves now, none when it drops out. Re-derivation and identity run here, at
+   * serve time, so a dropped row never costs a page while the fetch window lasts. An entry's rows
+   * share its identity, so each is checked against what earlier entries served, not one another.
    */
-  #serve(page: Outgoing<T>, entry: Entry<T>): T | null {
-    const derive = entry.injected ? this.#inject.revalidate : this.#overlay;
-    const item = derive ? derive(entry.item) : entry.item;
-    return item === null || this.#served(page, item) ? null : item;
+  #serve(page: Outgoing<T>, entry: Entry<T>): readonly T[] {
+    const rows = entry.injected ? this.#revalidated(entry.item) : this.#overlay?.(entry.item) ?? [entry.item];
+    return rows.filter(row => !this.#served(page, row));
   }
 
-  /** Adds the row an entry serves to the page. */
+  /** An injected row as it is served now, if it still is. */
+  #revalidated(item: T): T[] {
+    const row = this.#inject.revalidate ? this.#inject.revalidate(item) : item;
+    return row === null ? [] : [row];
+  }
+
+  /** Adds a row an entry serves to the page. */
   #admit(page: Outgoing<T>, entry: Entry<T>, item: T): void {
     if (this.#inject.identity) page.ids.push(this.#inject.identity(item));
     page.items.push(item);

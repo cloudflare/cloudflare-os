@@ -1098,7 +1098,11 @@ identity is re-read at each check, so a temporary id that became the provider's 
 The cursor's own `overlay` does for provider rows what `revalidate` does for injected ones. They
 sit in the buffer as fetched until served, so apply the simulation's changes to them there rather
 than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
-It must keep a row's sort position and identity, and authorization sees the row it returns.
+It returns the rows to serve in a row's place: none drops it, and several split it, as a pending
+override splits the on-call shift it covers. A row's pieces are served on one page, which ends
+early rather than part them, so no walk shows one split under two states of the simulation, and
+only a row that splits into more than `pageSize` exceeds it. The pieces must keep the row's sort
+position and share its identity, and authorization sees the rows it returns.
 Both run synchronously, so state they read that needs a provider call or storage, such as whether a
 row's container is still within the binding, is re-read in `refresh`, which every `next()`
 awaits before building its page; refreshing it in the fetch callback would leave buffered rows
