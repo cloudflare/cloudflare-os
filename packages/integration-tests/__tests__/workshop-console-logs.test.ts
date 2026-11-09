@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
@@ -168,11 +169,16 @@ async function fail(gadget: RpcStub<GadgetClient>, message: RegExp, chatId?: num
 
 type Line = Record<string, string>;
 
-/** The gadget.console lines `on` has logged for a workspace, each as its printed fields by name. */
+/**
+ * The gadget.console lines `on` has logged for a workspace, each as its printed fields by name.
+ * The runtime colours a printed object when colour is forced, as the task runner forces it, so
+ * the colour codes are taken out before a line is read.
+ */
 const recorded = (on: Harness, workspaceId: string): Line[] => on.server.getLogs()
-    .filter(log => log.message.includes("component: 'gadget.console'") &&
-        log.message.includes(`gadgetId: '${workspaceId}'`))
-    .map(log => Object.fromEntries([...log.message.matchAll(/^ {2}(\w+): (.*?),?$/gm)]
+    .map(log => stripVTControlCharacters(log.message))
+    .filter(message => message.includes("component: 'gadget.console'") &&
+        message.includes(`gadgetId: '${workspaceId}'`))
+    .map(message => Object.fromEntries([...message.matchAll(/^ {2}(\w+): (.*?),?$/gm)]
         .map(([, name, value]) => [name, value])));
 
 /** A string field as a line prints it. Sampled texts hold no quote, backslash or line break. */
