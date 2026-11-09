@@ -75,12 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert reads: the actions, and the console logs, live and
-// kept. Everything else must be classified below, so a new Overseer or GadgetClient method fails
-// to compile until it is.
+// What renders the gadget UI, plus the inert reads (the actions, and the console logs, live and
+// kept) and the report of that UI's console output. Everything else must be classified below, so
+// a new Overseer or GadgetClient method fails to compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
     "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs" | "listConsoleLogs";
+    "subscribeToConsoleLogs" | "listConsoleLogs" | "reportGadgetConsoleLogs";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
@@ -233,6 +233,16 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   expect(await useWs.listActions()).toEqual({ entries: [] });
   expect(await useWs.listActions({ filter: "pending" })).toEqual({ entries: [] });
+  // What the UI logged in the viewer's browser is taken for the gadget they hold, under no chat,
+  // and kept for the owner to read. The viewer reads none of it back.
+  const reported = [{ time: new Date(), level: "log" as const, text: "from the viewer" }];
+  expect(await useWs.reportGadgetConsoleLogs(gadgetId, null, reported)).toBeUndefined();
+  const underChat: Calls<RpcStub<Overseer>> = {
+    reportGadgetConsoleLogs: w => w.reportGadgetConsoleLogs(gadgetId, draft, reported),
+  };
+  expect(await outcomes(underChat, useWs)).toEqual(allDenied(underChat));
+  expect((await ws.listConsoleLogs({ gadgetId, source: "client" })).entries).toMatchObject(
+      [{ gadgetId, chatId: null, source: "client", level: "log", text: "from the viewer" }]);
   expect(await useWs.listConsoleLogs()).toEqual({ entries: [] });
   const actions = new ActionRecorder();
   using actionsStub = stubFor(actions);
