@@ -42,12 +42,13 @@ import {
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
   requireFileSubresources, SHEETS_SUBRESOURCE_NAMESPACE, SLIDES_SUBRESOURCE_NAMESPACE,
-  type FileSubresource, type NativeFileSubresource,
+  type DriveUnit, type FileSubresource, type NativeFileSubresource,
 } from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
@@ -56,8 +57,8 @@ import {
   requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
-  GoogleDriveReadSession, GoogleDriveSession,
+  DriveEntry, DriveFileBytes, DriveFileReadOptions, DriveListOptions, DrivePdfText,
+  DriveSessionSearchQuery, GoogleDriveFolderSession, GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -489,8 +490,9 @@ type AccountSubresource =
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
  * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
- * conversation, its member list or account (see parseChatSubresource), or a Drive file or folder or
- * a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any other ID.
+ * conversation, its member list or account (see parseChatSubresource), or a Drive file, its content
+ * or a folder, or a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any
+ * other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -709,7 +711,7 @@ export class UserAccount extends DurableObject<Env> {
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
-    let driveUnits = new Map<string, DriveObservation>();
+    let driveUnits = new Map<string, DriveUnit>();
     let nativeFiles = new Map<string, NativeFileSubresource>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
@@ -718,7 +720,9 @@ export class UserAccount extends DurableObject<Env> {
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
-      } else if (resource.kind === "file" || resource.kind === "folder") {
+      } else if (
+        resource.kind === "file" || resource.kind === "folder" || resource.kind === "content"
+      ) {
         driveUnits.set(subresource, resource);
       } else if ("calendarId" in resource) {
         (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
@@ -1207,11 +1211,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasSpreadsheetAccess and hasPresentationAccess do without reusing answers for addObserver,
 //     which still checks the bound file for reads made before they reported it.
 //   - Google Drive — strategy C by file, kernel-checked: reads report each file whose metadata they
-//     return as `drive/file/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each
-//     native file whose content they read as Docs, Sheets or Slides names it.
-//     checkSubresourceAccess checks a file or folder as verifyDriveObservations does (a Drive grant,
-//     then the file visible or the folder listable), which addObserver still uses, asking Drive
-//     every time, for the bound folder or file and the units recorded before reads reported them.
+//     return as `drive/file/<fileId>`, each file whose PDF text or bytes they return as
+//     `drive/content/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each native
+//     file whose content they read as Docs, Sheets or Slides names it. checkSubresourceAccess
+//     checks a file, its content or a folder as verifyDriveObservations does (a Drive grant, then
+//     the file visible, downloadable or the folder listable), which addObserver still uses, asking
+//     Drive every time, for the bound folder or file and the units recorded before reads reported
+//     them.
 //   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
 //     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
 //     hasCalendarWriterAccess also checks for the bound calendar at admission;
@@ -3388,7 +3394,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, and read PDFs' text with readPdf() in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, PDFs' text with readPdf(), and any other file's bytes with readFile() in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3397,7 +3403,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3438,7 +3444,8 @@ export class GoogleDriveGatekeeperImpl
 
   // Observers: every read reports the Drive units it depends on as subresources (see
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
-  // whose metadata it returned, each folder it listed, and each native file whose content it read,
+  // whose metadata it returned, each file whose PDF text or bytes it returned (as content, which
+  // needs leave to download), each folder it listed, and each native file whose content it read,
   // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
   // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
   // a folder binding's search reports its folders even when empty. Account-binding invisible-file
@@ -3468,15 +3475,15 @@ export class GoogleDriveGatekeeperImpl
   /**
    * Checks the Drive, Docs, Sheets and Slides subresources this binding's reads report, failing
    * the whole call for any other ID. Each observer's UserAccount answers whether their own account
-   * can see each file, list each folder and open each native file, reusing recent answers (see
-   * UserAccount.checkSubresourceAccess).
+   * can see each file, download each file's content, list each folder and open each native file,
+   * reusing recent answers (see UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
     requireFileSubresources(
-      subresources, ["file", "folder", "document", "spreadsheet", "presentation"]);
+      subresources, ["file", "content", "folder", "document", "spreadsheet", "presentation"]);
     return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
@@ -3593,9 +3600,18 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
 }
 
 /** The refusal for an account connected before Drive bindings could read file content. */
-const PDF_ACCESS_MISSING =
-  "This Google account was connected before Drive bindings could read file content. Reconnect " +
-  "it in Workshop to read PDFs.";
+function contentAccessMissing(what: string): string {
+  return "This Google account was connected before Drive bindings could read file content. " +
+    `Reconnect it in Workshop to read ${what}.`;
+}
+
+/** A failed file download as a file read reports it. */
+function fileReadError(error: unknown): unknown {
+  if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
+  // Only a file that shrank since its size was read refuses a range inside that size.
+  if (error instanceof DriveApiRequestError && error.status === 416) return new Error(FILE_CHANGED);
+  return error;
+}
 
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
@@ -3693,9 +3709,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
     let converted: DrivePdfText | undefined;
-    return core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+    return core.nativeRead(id, PDF_MIME_TYPE, {content: true})(async () => {
       let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
-        throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
+        throw lacksFileContentAccess(error) ? new Error(contentAccessMissing("PDFs")) : error;
       })).getReader();
       // The checks after this fetch must cover everything the text is converted from, so a
       // conversion that answers before the download has ended is refused.
@@ -3725,6 +3741,56 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await converted?.text.cancel().catch(() => undefined);
       throw error;
     });
+  }
+
+  async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
+    let range = fileReadRange(options);
+    // The stream needs no queue of its own, so this reads through the session's, as readPdf.
+    let core = this.#core;
+    let file = await core.openFile(fileId, "file");
+    let {mimeType, size, modifiedTime} = downloadableFile(file);
+    let {offset} = range;
+    if (offset > size) {
+      throw new Error(
+        `offset ${offset} is past the end of the Drive file, which is ${size} bytes long.`);
+    }
+    let length = Math.min(range.length, size - offset);
+    let opened: ReadableStream<Uint8Array> | undefined;
+    // The fetch ends once Drive begins its answer, with none of it read or held here. A folder
+    // binding's re-proof after it shows the file was still the folder's as that answer began, and
+    // the stream carries only that answer; a move or rewrite later in it is not looked for, on
+    // the understanding (unchecked) that Drive answers a download from one revision. The
+    // re-proof re-reads the file's metadata anyway, so a folder binding also refuses a rewrite
+    // that kept the size: its modification time moved.
+    let download = await core.nativeRead(file.id, mimeType, {
+      content: true,
+      unchanged: current => {
+        if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+      },
+    })(async () => {
+      if (length === 0) return undefined;
+      let answer = await this.#driveApi.downloadRange(file.id, offset, length)
+        .catch((error: unknown) => { throw fileReadError(error); });
+      opened = answer.content;
+      // Another size, or a range that ends inside the file, means bytes from another revision
+      // than the one described.
+      if ((answer.fileSize ?? size) !== size || (answer.length ?? length) < length) {
+        throw new Error(FILE_CHANGED);
+      }
+      return opened;
+    }, () => ({
+      title: "Read file from Google Drive",
+      description: `Read ${length} bytes of Drive file ${file.id}, from byte ${offset}.`,
+    })).catch(async (error: unknown) => {
+      // A read refused after Drive began its answer still holds the download open.
+      await opened?.cancel().catch(() => undefined);
+      throw error;
+    });
+    // Its idle wait starts only now, so one spent on authorization is not counted against it.
+    let content = download
+      ? exactRange(download, length)
+      : new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+    return {mimeType, size, modifiedTime, offset, length, content};
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

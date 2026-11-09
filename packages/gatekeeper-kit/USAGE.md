@@ -933,11 +933,14 @@ Several details prevent overly broad recipes:
   spaces have individual ACLs; Drive discovery reports each returned file instead.
   Inspect the entire response, including personal read state and membership, rather than deciding
   that every list is private or that every list is covered by returned-item IDs.
-- **Permission strength still needs review.** Drive PDF reads use `drive/file/<id>`, whose
-  oracle establishes metadata visibility, not download permission. That does not prove equivalent
-  PDF-content access. BigQuery's metadata-only probe has the analogous table-data limitation
+- **Permission strength still needs review.** A metadata oracle does not prove content access.
+  Drive's `drive/file/<id>` establishes metadata visibility, not download permission, so reads
+  that return a file's bytes or PDF text report `drive/content/<id>` instead, which an observer
+  passes only if their own account may download the file; PDF text read before that unit existed
+  keeps the metadata-only check. BigQuery's metadata-only probe still has the analogous
+  table-data limitation
   ([review discussion](https://github.com/cloudflare/cloudflare-os/pull/983#issuecomment-6619477652)).
-  Do not treat either implementation as a permission-complete content-access template.
+  Do not treat a metadata oracle as a permission-complete content-access template.
 - **Authorization machinery is reusable; migration quirks are not.** Calendar uses a typed read
   helper, Gmail decorates a shared queue with its mailbox requirement, and the Chat account queue
   enforces its account policy across child reads and hooks. Reuse those ways to avoid omissions.
