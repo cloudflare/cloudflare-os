@@ -236,12 +236,25 @@ describe("proof-tests scope", () => {
     assert.equal(selfImportPath("packages/p", manifest, "@gadgets/p/lib/zip"), "packages/p/lib/zip/zip.ts");
   });
 
-  // Bonk on #987, round 7: vitest may pick a condition other than `import`/`default`.
+  // Bonk on #987, round 7: vitest may pick a condition other than `import`/`default`. Clanky, round
+  // 8: such a condition nested under `import` must not fall back to the outer `default`.
   it("resolves no export that has a condition other than import, default or types", () => {
     const conditional = { name: "@gadgets/p", exports: { "./feature": { node: "./src/feature.node.ts", default: "./src/feature.ts" } } };
     assert.equal(selfImportPath("packages/p", conditional, "@gadgets/p/feature"), undefined);
+    const nested = { name: "@gadgets/p", exports: { "./feature": { import: { node: "./src/feature.node.ts" }, default: "./src/feature.ts" } } };
+    assert.equal(selfImportPath("packages/p", nested, "@gadgets/p/feature"), undefined);
     const plain = { name: "@gadgets/p", exports: { "./feature": { types: "./src/feature.d.ts", import: "./src/feature.ts" } } };
     assert.equal(selfImportPath("packages/p", plain, "@gadgets/p/feature"), "packages/p/src/feature.ts");
+  });
+
+  // Bonk on #987, round 8: Stryker reads each `mutate` entry as a glob.
+  it("names a source whose path Stryker would read as a glob", () => {
+    const read = files({ "packages/p/src/a.ts": "export const a = 1;\n", "packages/p/src/[feature].ts": "export const f = 1;\n" });
+    const text = 'import { a } from "./a.ts";\nimport { f } from "./[feature].ts";\n';
+    assert.deepEqual(sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE), {
+      sources: ["packages/p/src/a.ts"],
+      problems: ["packages/p/src/x.test.ts: imports packages/p/src/[feature].ts, whose name Stryker would read as a glob"],
+    });
   });
 
   it("flags edited helpers and fixtures, which unchanged tests may import", () => {

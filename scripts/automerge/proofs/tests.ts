@@ -118,6 +118,8 @@ const READABLE_CALL = /(?:import|require)\(\s*['"][^'"]+['"]\s*\)/y;
 const SOURCE = /\.[cm]?tsx?$/;
 /** JavaScript the tests can run, which this proof neither mutates nor follows. */
 const JAVASCRIPT = /\.(?:[cm]?js|jsx)$/;
+/** Characters Stryker's `mutate` list reads as a glob, so a path holding one may not name itself. */
+const GLOB_CHARACTER = /[*?[\]{}()!+@]/;
 
 /** A `/` after one of these characters, or after one of REGEX_AFTER_WORD, starts a regex literal. */
 const REGEX_AFTER = new Set("(,=:[!&|?{};+-*%<>~^");
@@ -213,7 +215,10 @@ function exportTarget(value: Json | undefined): string | undefined {
   if (typeof value === "string") return value;
   if (!isObject(value)) return undefined;
   if (Object.keys(value).some((condition) => !["import", "default", "types"].includes(condition))) return undefined;
-  return exportTarget(value.import) ?? exportTarget(value.default);
+  // An `import` entry vitest would use decides alone, so one this proof cannot read is not replaced
+  // by `default`.
+  if (value.import !== undefined) return exportTarget(value.import);
+  return exportTarget(value.default);
 }
 
 /**
@@ -318,6 +323,10 @@ export function sourceGraph(
       // Data files (JSON, text, styles) and declarations hold no mutants and import nothing.
       if (!SOURCE.test(hit.path) || hit.path.endsWith(".d.ts") || seen.has(hit.path)) continue;
       seen.add(hit.path);
+      if (GLOB_CHARACTER.test(hit.path)) {
+        problems.push(`${next.path}: imports ${hit.path}, whose name Stryker would read as a glob`);
+        continue;
+      }
       if (!TEST_PATH.test(hit.path)) sources.add(hit.path);
       queue.push({ path: hit.path, text: hit.text });
     }
