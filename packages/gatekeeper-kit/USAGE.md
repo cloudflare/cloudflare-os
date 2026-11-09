@@ -961,8 +961,9 @@ endpoint, including ordinary Git ref discovery. Never buffer a whole pack or use
 the stub with the mount: its replica methods keep working in later executions. Around each
 command, run during an agent's code execution, call `worktree.snapshot()` and check out its tree,
 then submit the tree the command left through the snapshot's handle (see
-`workshop-shared/src/worktree-replica.ts`). The gatekeeper owns command approvals and mount
-lifetime.
+`workshop-shared/src/worktree-replica.ts`, and the Git commands in `docs/worktree-replicas.md`).
+A command's edits join the agent's running step, so stop a command whose connection to the
+workspace drops. The gatekeeper owns command approvals and mount lifetime.
 
 ## Other module boundaries
 

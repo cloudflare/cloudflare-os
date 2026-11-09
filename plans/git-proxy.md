@@ -5,6 +5,21 @@ Status: implemented on the `ddr/split-worktree-replicas` branch, except for the 
 ([`docs/worktree-replicas.md`](../docs/worktree-replicas.md)). The code is `worktreeGitPull` in
 `packages/workshop-backend/src/worktree-git.ts` and the overseer's `worktreeGitPull`.
 
+> **Partly superseded** by [`plans/tree-sync-replicas.md`](tree-sync-replicas.md), which
+> replaced the live sync protocol this plan was written against. The record below is kept as it
+> was, with notes where it no longer holds:
+> - The subscriber and `setBaseCommit()` are gone. A replica learns the head from
+>   `snapshot()`, before each command, and fetches it then.
+> - The clone is no longer cut at `shallowCommit`, the commit the worktree was created at, with an
+>   "upstream base pack" of that one commit. It is cut at the history's [boundary](#policy): its
+>   commits and their files come at depth 1 from one connection that has them all, and the local
+>   half leaves out the union of their trees.
+> - "Spans both" is now a narrower refusal, and the cache fill and metadata-only merging under
+>   [Later](#later) are dropped. See the notes there.
+>
+> [`docs/worktree-replicas.md`](../docs/worktree-replicas.md#git-transport) describes the current
+> behaviour.
+
 ## Goal
 
 A container gatekeeper that mounts a worktree runs builds and tests against it, and some of those
@@ -50,6 +65,10 @@ The branch first had these gaps:
    `headCommit`, or that it moved later.
 
 ## Subscriber: deliver the file base and the Git head
+
+> Superseded: the subscriber was removed with the live sync protocol. `WorktreeState.head`
+> (from `snapshot()` and `submit()`) now carries the head, and a replica fetches it before each
+> command.
 
 `setBaseCommit()` carries both commits and is called whenever either changes:
 
@@ -135,7 +154,8 @@ sent so far, and a proxied fetch passes them on.
 Then, in order:
 
 1. **All local.** Everything the container lacks is stored in the workspace, possibly together with
-   the upstream base pack. Serve it locally, honouring the container's `have` and
+   the upstream base pack. (Now: together with the boundary commits at depth 1, streamed from one
+   connection that has all of them; see the status note.) Serve it locally, honouring the container's `have` and
    `shallow` lines so that only what's new is sent. With head notifications this is the common
    case for fetching a new head, so local negotiation is required, not an optimization.
 2. **All remote.** Everything the container lacks is remote history that passes the ancestry probe.
@@ -147,6 +167,13 @@ Then, in order:
    notifications this only happens if the head moves while a command is running Git. Refuse it with
    a clear error ("fetch the worktree's head first, then fetch again"), rather than building the
    slow path first. If real usage hits this, add the cache fill described below.
+
+   > Now narrower: since the clone is cut at the boundary rather than the created-at commit, any
+   > history beyond the head is purely remote. A fetch that needs workspace commits is refused
+   > only if it also has remote wants, or asks for history beyond the boundary when the
+   > container already has some of the history (a fetch, not a clone). A clone that needs
+   > workspace commits and reaches past the boundary (`--depth`, `--shallow-since`) is given less
+   > history instead.
 
 ### Why spanning requests need storage
 
@@ -163,6 +190,10 @@ downloads anything. The kernel can't know a proxied pack's checksum until it has
 so this doesn't help.
 
 ## Later
+
+> The first two items are dropped ([`plans/tree-sync-replicas.md`](tree-sync-replicas.md)):
+> with the clone cut at the boundary, the remaining spanning requests need the head to move while
+> a command runs Git, and the container then fetches the head first.
 
 - **Cache fill for spanning requests.** Fill the workspace's Git cache from the remote until it can
   answer the whole request, then serve it locally. Request exactly the remote part: the remote

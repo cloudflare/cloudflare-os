@@ -1,12 +1,45 @@
 # Plan: Syncing worktree replicas as Git trees, within a step
 
-Status: proposed, not implemented. Replaces the live sync protocol on the
-`ddr/split-worktree-replicas` branch (sync sessions, subscribers, revisions and OT delivery to
-the container). The proposed API is drafted on the branch `wip/tree-sync-api-draft`, as a
-rewrite of `packages/workshop-shared/src/worktree-replica.ts`, to land with commit 3 (see
-[Commits](#commits)).
+Status: implemented on the `ddr/split-worktree-replicas` branch, in the five commits under
+[Commits](#commits), with the deviations listed under
+[Implementation notes](#implementation-notes). It replaced the branch's live sync protocol (sync
+sessions, subscribers, revisions and OT delivery to the container).
+[`docs/worktree-replicas.md`](../docs/worktree-replicas.md) describes the result, and the API is
+`packages/workshop-shared/src/worktree-replica.ts`.
 Builds on [`plans/step-transactionality.md`](step-transactionality.md) and
 [`plans/git-proxy.md`](git-proxy.md).
+
+## Implementation notes
+
+Where the code differs from the design below, the code wins. The differences:
+
+- **The stored stub** (`926b2352`). What agent code passes on is the binding loopback, which
+  used to fail once its execution ended. Every call through it now resolves to the
+  `WorktreeEndpoint` of the execution that minted it: its file methods still work only during
+  that execution, while `gitPull()` works at any time and `snapshot()` serves whichever execution
+  is running in the chat. So a stub the agent passes to a gadget also keeps replica access.
+- **API types** (`926b2352`). `WorktreeSnapshot.command` is typed `WorktreeCommand` (the receiver
+  gets a stub), not `RpcStub<WorktreeCommand>`, and `WorktreeState.head` is never null.
+- **Object check on submit** (`926b2352`). Rather than every object reachable from `tree` but not
+  `from`, each object at a path where they differ must be stored or pullable, so a command can
+  move a file the workspace never loaded. Submitted trees must also be canonical, which rejects
+  names such as `..` and `sub/.git`.
+- **Retries** (`926b2352`). A failed submission frees its handle for a retry, and every call,
+  retries included, requires the execution to still be running.
+- **Merging** (`926b2352`). A mode merges on its own, so one command's `chmod` survives another's
+  edit (a binary file still takes the command's bytes), and merged changes are written deletions first, so a file replaced by a directory on one
+  side alone isn't refused.
+- **Re-root** (`560403c4`). A re-rooting step writes no chat change rows: its changes are
+  composed into its "changes" message. `executeCode` is refused after a re-root in the same step,
+  as well as the file tools (`readFile`, `grep`, `writeFile`, `editFile`).
+- **The boundary** (`d7cfef5a`). `WorktreeGitSource` has no `shallowCommit`: the boundary is the
+  union of the connections' boundary commits. The clone's shallow lines are the connection's own.
+  A boundary tree the workspace lacks is fetched blob-less a level at a time. The refusal is
+  narrower than "needs both": a fetch needing workspace commits is refused only with remote
+  wants, or with history beyond the boundary when the client has some of the history. An absolute
+  depth over several boundary commits is rebased on the nearest.
+- **Snapshot tree fetches** (`926b2352`, `d7cfef5a`) must want only snapshot trees, and for a
+  worktree from a connected repository need a `have` in the history.
 
 ## Goal
 
@@ -62,6 +95,9 @@ and more correct. Keeping the edits also costs a lot of kernel code:
 ### API
 
 On the persistent Worktree stub (`ReplicableWorktree`):
+
+As implemented, `head` is never null and `command` is typed `WorktreeCommand` (see
+[Implementation notes](#implementation-notes)).
 
 ```ts
 interface WorktreeState {
@@ -330,7 +366,8 @@ boundary commits as shallow commits.
 
 ## Open questions
 
-Re-rooting a worktree's pin mid-epoch is new. These need checking during implementation:
+Re-rooting a worktree's pin mid-epoch is new. These needed checking during implementation; 1 to
+5 were settled in `560403c4`, and symlinks and submodules (6) stay refused:
 
 1. **The `baseCommit === pinBase` invariant.** `WorktreeRecord.pinBase`'s docs say a worktree's
    chat pin always has `baseCommit === pinBase`, and that moving it mid-epoch would double-apply
