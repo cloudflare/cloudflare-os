@@ -13,6 +13,7 @@ import type {
   AdminAuditRecord,
   AdminAuditStats,
   AdminSettingRecord,
+  AdminWriteRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import type { AuditFilter } from './auditFilter'
@@ -72,11 +73,13 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
   ],
   topAdmins: [{ admin: 'admin', count: 4, contentReads: 2 }, { admin: 'second-admin', count: 1, contentReads: 0 }],
   contentReads: 2,
+  writes: 0,
   ...patch,
 })
 
 const SETTING_AT = new Date('2026-10-21T08:00:00Z')
 const ACCESS_AT = new Date('2026-10-21T09:15:00Z')
+const WRITE_AT = new Date('2026-10-21T10:30:00Z')
 
 const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord => ({
   kind: 'workspace',
@@ -105,6 +108,24 @@ const settingRecord = (patch: Partial<AdminSettingRecord> = {}): AdminSettingRec
   via: 'api',
   method: 'setSiteName',
   changes: [{ setting: 'siteName', before: 'Old name', after: 'New name' }],
+  ...patch,
+})
+
+const writeRecord = (patch: Partial<AdminWriteRecord> = {}): AdminWriteRecord => ({
+  kind: 'write',
+  at: WRITE_AT,
+  admin: 'second-admin',
+  sessionId: 'session-3',
+  via: 'api',
+  requestId: 'request-1',
+  event: 'approved',
+  workspaceId: 'ws-titled',
+  workspaceOwner: 'owner@example.test',
+  workspaceTitle: 'Quarterly report',
+  method: 'stopAgent',
+  args: { chatId: 3 },
+  reason: 'Ticket 42: agent stuck',
+  requestedBy: 'admin',
   ...patch,
 })
 
@@ -741,7 +762,26 @@ describe('AdminAuditPanel', () => {
       expect(details.textContent).toContain('ws-untitled')
     })
 
-    it('filters by sensitivity: a content read by what it exposed, a setting change by its kind', async () => {
+    it('shows a step in a write to a workspace: its sensitivity and owner, and in its details the workspace, event, reason, arguments and requester', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([writeRecord()]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
+      expect(cells.slice(1)).toEqual([
+        formatFullTimestamp(WRITE_AT), 'second-admin', 'stopAgent', 'Workspace write', 'owner@example.test',
+      ])
+      const details = await expand()
+      expect(details.textContent).toContain('Quarterly report')
+      expect(details.textContent).toContain('ws-titled')
+      expect(details.textContent).toContain('Eventapproved')
+      expect(details.textContent).toContain('Ticket 42: agent stuck')
+      expect(details.textContent).toContain('chatId: 3')
+      expect(details.textContent).toContain('Requested byadmin')
+      expect(details.textContent).toContain('ViaAPI')
+    })
+
+    it('filters by sensitivity: a content read by what it exposed, a setting change and a write by their kind', async () => {
       const { listAdminAudit, onFilterChange } = await render()
 
       await choose(sensitivitySelect(), 'Content read')
@@ -750,6 +790,9 @@ describe('AdminAuditPanel', () => {
 
       await choose(sensitivitySelect(), 'Setting change')
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
+
+      await choose(sensitivitySelect(), 'Workspace write')
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'write' }))
     })
 
     it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {

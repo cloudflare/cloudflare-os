@@ -132,12 +132,13 @@ const AccessDetails = ({ record, onFilterBy }: {
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, sensitivity, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes or an access record's workspace, reason, level and arguments. An access record's target
- * user is its workspace's owner, the user the call reached. The admin's name and the target user,
- * and in an access record's details its workspace, filter the log by `onFilterBy`. Names are never
- * cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the summary
- * row as Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden or
- * not, so every summary row is an odd row to it and would never be striped.
+ * changes, an access record's workspace, reason, level and arguments, or a write record's
+ * workspace, event, reason, arguments and requester. An access or a write record's target user is
+ * its workspace's owner, the user the call or the write reached. The admin's name and the target
+ * user, and in an access record's details its workspace, filter the log by `onFilterBy`. Names are
+ * never cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the
+ * summary row as Kumo stripes a table's even rows: Kumo counts the details row below each one,
+ * hidden or not, so every summary row is an odd row to it and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -148,6 +149,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   const [expanded, setExpanded] = useState(false)
   const detailsId = useId()
   const time = formatFullTimestamp(record.at)
+  const writeArgs = record.kind === 'write' ? Object.entries(record.args) : []
   return (
     <>
       <Table.Row className={shaded ? 'bg-kumo-elevated' : undefined}>
@@ -212,12 +214,32 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">
           {expanded && (record.kind === 'workspace'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
-            : (
-              <div className="space-y-4">
-                <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
-                <SettingChanges changes={record.changes} />
-              </div>
-            ))}
+            : record.kind === 'write'
+              ? (
+                <dl className="space-y-2">
+                  <Detail term="Workspace">
+                    {record.workspaceTitle || 'Untitled'}
+                    <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
+                  </Detail>
+                  <Detail term="Event">{record.event}</Detail>
+                  <Detail term="Reason">{record.reason}</Detail>
+                  {writeArgs.length > 0 && (
+                    <Detail term="Arguments">
+                      <span className="font-mono text-xs">
+                        {writeArgs.map(([name, value]) => `${name}: ${String(value)}`).join(' · ')}
+                      </span>
+                    </Detail>
+                  )}
+                  <Detail term="Requested by">{record.requestedBy}</Detail>
+                  <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+                </dl>
+              )
+              : (
+                <div className="space-y-4">
+                  <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+                  <SettingChanges changes={record.changes} />
+                </div>
+              ))}
         </Table.Cell>
       </Table.Row>
     </>
