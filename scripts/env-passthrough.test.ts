@@ -33,6 +33,9 @@ import { describe, it } from "node:test";
  *               task sets `NODE_ENV` before importing Vite.
  *   external  — read outside any vp task (release/dev tooling invoked directly), so vp never
  *               filters it.
+ *   untracked — in vp's default `untrackedEnv` (`CI`, `HOME`, `PATH`, ...), so every task gets it,
+ *               outside the fingerprint. Only for reads that cannot change what the task produces,
+ *               or a cached run would replay another environment's result.
  */
 interface ExpectedArea {
   /** Matched by an `env` pattern on the task that reads it. */
@@ -45,6 +48,8 @@ interface ExpectedArea {
   injected?: string[];
   /** Read outside any vp task. */
   external?: string[];
+  /** In vp's default `untrackedEnv`, and unable to change the task's result. */
+  untracked?: string[];
 }
 
 const EXPECTED: Record<string, ExpectedArea> = {
@@ -89,6 +94,11 @@ const EXPECTED: Record<string, ExpectedArea> = {
   "packages/workshop-backend": {
     uncached: ["BUNDLED_BLUEPRINTS_DIR"],
   },
+  // `src/view-host.ts` runs Chromium without its sandbox where `CI` is set, since ubuntu-latest
+  // blocks the user namespaces the sandbox needs. The sandbox changes no test's result.
+  "packages/workshop-evals": {
+    untracked: ["CI"],
+  },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
   // `build-release.ts`, `run-dev-server.ts`, `run-local.ts` and `preview/` are invoked directly,
@@ -122,7 +132,7 @@ const EXPECTED: Record<string, ExpectedArea> = {
  * exempting those variables from the check that their task declares them. Verified: before this
  * guard existed, that typo left all three assertions green.
  */
-const CATEGORIES = new Set(["forwarded", "uncached", "injected", "external", "watch"]);
+const CATEGORIES = new Set(["forwarded", "uncached", "injected", "external", "watch", "untracked"]);
 
 const SKIP = /node_modules|__tests__|\.test\.|\.wrangler|[/\\](dist|dist-app|generated)[/\\]/;
 // Vite's own compile-time constants, not process environment.
