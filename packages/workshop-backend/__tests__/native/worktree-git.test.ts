@@ -2,7 +2,7 @@ import {test, expect} from "vitest";
 import {build, buildSync} from "esbuild";
 import {Miniflare} from "miniflare";
 import {execFileSync, spawn} from "node:child_process";
-import {mkdirSync, mkdtempSync, writeFileSync, rmSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync} from "node:fs";
 import {join, resolve} from "node:path";
 import {tmpdir} from "node:os";
 import {createServer} from "node:http";
@@ -335,6 +335,27 @@ test("native Git syncs a replica's files with snapshots and submissions", async 
     expect(execFileSync("ls", [clone], {encoding: "utf8"}).split("\n")).not.toContain("junk.txt");
     expect(execFileSync("cat", ["a.txt"], {cwd: clone, encoding: "utf8"})).toBe("one\ntwo\nagent\n");
     expect(run(clone, "status", "--porcelain")).toBe("M a.txt\n M lib/b.txt\n?? new.sh");
+
+    // A file over a stored chunk's size (1 MiB), which the workspace stores chunked.
+    const lines = Array.from({length: 80_000}, (_, i) => `line ${i} ${"x".repeat(i % 50)}\n`);
+    const big = lines.join("");
+    const fourth = await snapshot();
+    writeFileSync(join(clone, "big.txt"), big);
+    const added = await submit(fourth);
+    expect(added.result).toBe(added.tree);
+    expect(await (await call("/read?path=big.txt")).text()).toBe(big);
+
+    // The command and the agent's code edit it at once: the edits merge, and the merged file is
+    // fetched back.
+    const fifth = await snapshot();
+    await call("/write?path=big.txt", [...lines.slice(0, -1), "agent's last line\n"].join(""));
+    writeFileSync(join(clone, "big.txt"), ["command's first line\n", ...lines.slice(1)].join(""));
+    const merged = await submit(fifth);
+    expect(merged.result).not.toBe(merged.tree);
+    await spawnGit(clone, ["fetch", "-q", "origin", merged.result]);
+    git(["read-tree", "-m", "-u", actualTree(), merged.result]);
+    expect(readFileSync(join(clone, "big.txt"), "utf8"))
+      .toBe(["command's first line\n", ...lines.slice(1, -1), "agent's last line\n"].join(""));
     run(clone, "fsck", "--no-reflogs");
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));

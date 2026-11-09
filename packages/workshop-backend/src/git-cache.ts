@@ -997,6 +997,28 @@ export class WorkspaceGitCache {
     return this.#wholeObject(oid, local);
   }
 
+  /**
+   * `ensureObject`, but for packing with `buildPackStream()`: a blob over MAX_BUFFERED_BLOB_SIZE
+   * comes back as its pieces, streamed from storage, and is never assembled.
+   */
+  async packEntry(oid: GitOid, expected: { type: GitObjectType, referencedBy?: GitOid })
+      : Promise<PackEntrySource> {
+    if (expected.type === "blob") {
+      let reader = this.openLocalBlob(oid);
+      if (reader === undefined) {
+        await this.ensureGitObjects([oid], this.#exactObjectHints("blob", expected.referencedBy));
+        reader = this.openLocalBlob(oid);
+      }
+      if (reader !== undefined) {
+        let opened = reader;
+        return opened.size > MAX_BUFFERED_BLOB_SIZE
+            ? { type: "blob", size: opened.size, pieces: () => opened.pieces() }
+            : { type: "blob", payload: opened.read(0, opened.size) };
+      }
+    }
+    return await this.ensureObject(oid, expected);
+  }
+
   // The pull-hint defaults for an exact-object fault: depth-1 (never deepen history), tree:0
   // alongside a commit want, and tree:1 alongside a tree want (which already excludes the
   // entries' blobs). A blob want carries no filter: a blob of any size is stored.
@@ -1736,17 +1758,7 @@ export class WorkspaceGitCache {
 
     const marks = this.#recordsMarkedFor(actionId), cache = this;
     async function* objects(): AsyncGenerator<PackEntrySource> {
-      for (const mark of marks) {
-        // A large blob streams into the pack from its reader; it is never assembled.
-        const reader = mark.type === "blob" ? cache.openLocalBlob(mark.oid) : undefined;
-        if (reader !== undefined && reader.size > MAX_BUFFERED_BLOB_SIZE) {
-          yield { type: "blob", size: reader.size, pieces: () => reader.pieces() };
-        } else if (reader !== undefined) {
-          yield { type: "blob", payload: reader.read(0, reader.size) };
-        } else {
-          yield await cache.ensureObject(mark.oid, {type: mark.type});
-        }
-      }
+      for (const mark of marks) yield await cache.packEntry(mark.oid, { type: mark.type });
     }
     return buildPackStream(marks.length, objects());
   }

@@ -21,13 +21,14 @@ export default {
     const url = new URL(request.url);
     const head = fixture.heads[Number(/^\/repo(\d*)/.exec(url.pathname)?.[1] || 0)];
     url.pathname = url.pathname.replace(/^\/repo\d*/, "");
-    return worktreeGitPull({ensureObject: async oid => {
+    const ensureObject = async (oid: string) => {
       if (fixture.forbiddenBlobs.includes(oid)) throw new Error("Remote blob faulted into DO cache.");
       if (fixture.unstoredTrees.includes(oid) && !pulledTrees.has(oid)) throw new Error("Boundary tree faulted in alone.");
       const object = fixture.objects[oid];
       if (!object) throw new Error(`Unknown fixture object ${oid}`);
-      return {oid, type: object.type, payload: Uint8Array.from(object.bytes)};
-    }, ensureGitObjects: async (oids, hints) => {
+      return {type: object.type, payload: Uint8Array.from(object.bytes)};
+    };
+    return worktreeGitPull({ensureObject, packEntry: ensureObject, ensureGitObjects: async (oids, hints) => {
       if (hints.filterBlobSize === 0) for (const oid of oids) pulledTrees.add(oid);
     }}, {head, check() {}, trees: new Set(fixture.trees),
       remotes: fixture.boundary.length ? [{haves: fixture.boundary, pull: async (oids, hints) => {

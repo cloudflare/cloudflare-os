@@ -5,6 +5,9 @@ import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, rea
   type GitTreeEntry, type PackableObject} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
 
+/** The parts of the workspace's Git store that serving a worktree's fetches reads through. */
+type GitReads = Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects" | "packEntry">;
+
 /**
  * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer. The
  * overseer decides where each object comes from; the client (e.g. Git in a container) only ever
@@ -80,7 +83,7 @@ function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "g
  * boundary commits are streamed through from a connection rather than loaded into the
  * workspace. History beyond the boundary is proxied from a connection.
  */
-export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects">,
+export async function worktreeGitPull(cache: GitReads,
     source: WorktreeGitSource, request: Request): Promise<Response> {
   const path = gitPullPath(request);
   source.check();
@@ -145,7 +148,7 @@ export async function worktreeGitPull(cache: Pick<WorkspaceGitCache, "ensureObje
  * path. For a worktree from a connected repository, the client must have one: the rest of a
  * tree is mostly files the workspace would have to pull.
  */
-async function treeFetch(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
+async function treeFetch(cache: GitReads, source: WorktreeGitSource,
     history: Map<string, string[]>, boundary: Set<string>, fetch: FetchRequest): Promise<Response> {
   if (!fetch.wants.every(oid => source.trees.has(oid))) {
     throw new Error("Fetch a worktree's snapshot trees on their own, not together with commits.");
@@ -159,7 +162,7 @@ async function treeFetch(cache: Pick<WorkspaceGitCache, "ensureObject">, source:
   for (const oid of haves) previous.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
   const objects: PackObjects = new Map();
   for (const tree of new Set(fetch.wants)) await collectTree(read, objects, tree, previous, new Map());
-  return fetchResponse(!fetch.done, undefined, packObjects(read, objects, source.check), source.check);
+  return fetchResponse(!fetch.done, undefined, packObjects(cache, objects, source.check), source.check);
 }
 
 /**
@@ -220,7 +223,7 @@ function parseFetch(items: ReturnType<typeof parsePktItems>): FetchRequest {
  * The workspace-stored commits of the history served: everything reachable from the worktree's
  * head, back to (not including) its `boundary`. Maps each commit to its parents.
  */
-async function localHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, source: WorktreeGitSource,
+async function localHistory(cache: GitReads, source: WorktreeGitSource,
     boundary: Set<string>): Promise<Map<string, string[]>> {
   const history = new Map<string, string[]>();
   const stack = [source.head];
@@ -273,7 +276,7 @@ function reachedBoundary(history: Map<string, string[]>, boundary: Set<string>, 
  * only a connection can serve: any relative deepen, an absolute depth reaching past the nearest
  * of them, or a date no later than one's commit time.
  */
-async function wantsDeeperHistory(cache: Pick<WorkspaceGitCache, "ensureObject">, reached: Map<string, number>,
+async function wantsDeeperHistory(cache: GitReads, reached: Map<string, number>,
     fetch: FetchRequest): Promise<boolean> {
   if (!fetch.deepen || !reached.size) return false;
   if (fetch.deepen.kind === "relative") return true;
@@ -294,7 +297,7 @@ async function wantsDeeperHistory(cache: Pick<WorkspaceGitCache, "ensureObject">
  * it, and native Git rejects a pack holding an object twice. Only those trees are read, never
  * their blobs.
  */
-async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects">, source: WorktreeGitSource,
+async function localPack(cache: GitReads, source: WorktreeGitSource,
     boundary: Set<string>, bases: string[], heads: string[], has: Set<string>): Promise<ReadableStream<Uint8Array>> {
   const read = checkedRead(cache, source.check);
   const skip = new Set<string>();
@@ -330,7 +333,7 @@ async function localPack(cache: Pick<WorkspaceGitCache, "ensureObject" | "ensure
   await collect(has, false, present, skip);
   const objects: PackObjects = new Map();
   await collect(heads, true, objects, {has: oid => skip.has(oid) || present.has(oid)});
-  return packObjects(read, objects, source.check);
+  return packObjects(cache, objects, source.check);
 }
 
 /** Objects to send, by ID, with their types and the trees referring to blobs (for pull hints). */
@@ -342,7 +345,7 @@ type Known = {has(oid: string): boolean};
 /** Reads an object, faulting it in if needed, and checks access before and after. */
 type ReadObject = (oid: string, type: GitObjectType, referencedBy?: string) => Promise<PackableObject>;
 
-function checkedRead(cache: Pick<WorkspaceGitCache, "ensureObject">, requireLive: () => void): ReadObject {
+function checkedRead(cache: GitReads, requireLive: () => void): ReadObject {
   return async (oid, type, referencedBy) => {
     requireLive();
     const object = await cache.ensureObject(oid, {type, referencedBy});
@@ -377,10 +380,16 @@ async function collectTree(read: ReadObject, objects: PackObjects, oid: string, 
   }
 }
 
-/** A pack of `objects`. */
-function packObjects(read: ReadObject, objects: PackObjects, requireLive: () => void): ReadableStream<Uint8Array> {
+/** A pack of `objects`, checking access before and after each read, and at the end. */
+function packObjects(cache: GitReads, objects: PackObjects, requireLive: () => void)
+    : ReadableStream<Uint8Array> {
   async function* contents() {
-    for (const [oid, hint] of objects) yield await read(oid, hint.type, hint.referencedBy);
+    for (const [oid, hint] of objects) {
+      requireLive();
+      const entry = await cache.packEntry(oid, {type: hint.type, referencedBy: hint.referencedBy});
+      requireLive();
+      yield entry;
+    }
     requireLive();
   }
   return buildPackStream(objects.size, contents());
