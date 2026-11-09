@@ -512,8 +512,8 @@ describe("AdminApiImpl write requests", () => {
   });
 
   // A deployment whose AdminSettings stub approves `request` and settles it as the object would,
-  // the answer marked as still to be recorded, and whose workspace reports an outcome. `handlers`
-  // replace any of that.
+  // the answer marked as still to be recorded and a refusal's record still owed, and whose
+  // workspace reports an outcome. `handlers` replace any of that.
   const approvalDeployment = (request: StoredAdminWrite,
       handlers: Record<string, Record<string, Handler>> = {}) => deployment({
     vars: ON,
@@ -523,6 +523,7 @@ describe("AdminApiImpl write requests", () => {
         settleWorkspaceWrite: (_id: string, result: { outcome?: string; error?: string }) => ({
           ...request, state: "error" in result ? "failed" : "applied", ...result,
           unrecorded: true,
+          refusals: [{ admin: ADMIN, sessionId: "another session", via: "api", refusal: "challenge" }],
         }),
         ...handlers.admin,
       },
@@ -838,6 +839,7 @@ describe("AdminApiImpl write requests", () => {
       const view = await mint().approveWorkspaceWrite(REQUEST_ID, ASSERTION);
       expect(view).toMatchObject({ state: "failed", error: message });
       expect(view).not.toHaveProperty("unrecorded");
+      expect(view).not.toHaveProperty("refusals");
 
       expect(callsTo("admin", "settleWorkspaceWrite").map(call => call.args))
           .toStrictEqual([[REQUEST_ID, { error: message }]]);

@@ -399,6 +399,19 @@ describe('AdminAuditPanel', () => {
       expect(card('Admin actions, last 7 days').textContent).toContain('1,234 approved writes')
     })
 
+    it('says nothing of approved writes to a backend whose statistics lack the count', async () => {
+      const admin = fakeAdmin()
+      // As a backend older than admin writes sends them.
+      const { writes: _, ...older } = testStats()
+      admin.getAdminAuditStats.mockResolvedValue(older as AdminAuditStats)
+      await render(settingsWith(), admin)
+
+      const shown = card('Admin actions, last 7 days').textContent
+      expect(shown).toContain('2 content reads')
+      expect(shown).not.toContain('approved write')
+      expect(shown).not.toContain('NaN')
+    })
+
     it('says when the window holds no activity', async () => {
       const admin = fakeAdmin()
       admin.getAdminAuditStats.mockResolvedValue(testStats({ totalEvents: 0, topAdmins: [] }))

@@ -475,8 +475,12 @@ sent a second time, is recorded the same way and refused `requestNotPending`. It
 follow any other step, a closing one included: when a second admin loses the race to approve, or
 an approval is sent again while the first is still running, it precedes the closing record, and
 often the workspace's `"approved"` too. A refusal whose record cannot be written is still a
-refusal: nothing was approved. An attempt refused `notAdmin` or `writesOff` is not recorded:
-`AdminApiImpl` refuses it before `AdminSettings`, which holds the request, is reached (see
+refusal: nothing was approved. Its record is then owed. The request keeps it, up to ten a request,
+and the sweep writes it once the log takes records again, so its `at` is later than the attempt;
+past ten, an attempt made while the log is down is only logged for operators. An attempt refused
+`notAdmin` or `writesOff` is not recorded: `AdminApiImpl` refuses it before `AdminSettings`, which
+holds the request, is reached, and `AdminSettings` refuses it the same way, from its own
+environment, before it reads the request (see
 [Which refusals are recorded](#which-refusals-are-recorded)).
 
 ### Run
@@ -516,7 +520,7 @@ Each action runs the `OverseerImpl` operation that a member's session runs for i
 
 | Action | Arguments | Operation |
 | --- | --- | --- |
-| `stopAgent` | `chatId` | `Overseer.stopAgent(chatId)` |
+| `stopAgent` | `chatId` | `Overseer.stopAgent(chatId)`, keeping the chat's queued messages |
 | `retryAgent` | `chatId`, and `modelId`, optional | `Overseer.retryAgent(chatId, modelId)`, as the workspace's owner |
 | `restartWorkspace` | none | Ends every session on the workspace, as a revoked collaborator does |
 | `addCollaborator` | `username`, `grant`, and `note`, optional | `Overseer.addCollaborator(username, grant, note)`, as the workspace's owner |
@@ -529,8 +533,12 @@ Each action runs the `OverseerImpl` operation that a member's session runs for i
 | `removeConnection` | `gatekeeperId` | `GatekeeperClient.remove()` |
 
 Restoring a workspace after its deletion is not among them: a deletion erases the workspace's
-storage, so there is nothing to restore it from. Five of them need more said:
+storage, so there is nothing to restore it from. Six of them need more said:
 
+- **`stopAgent` keeps the messages queued for the turn.** A member's stop drops the messages sent
+  while the agent worked that it had not read yet, and the client that stops puts them back in its
+  draft. An admin's stop has no such client, so those messages go into the chat as their senders'
+  own, as when a turn fails, and the agent reads them when it next runs.
 - **`retryAgent` runs as the workspace's owner**, whoever started the turn it retries: on the
   owner's model, keys and account, so **the owner pays for it**, as if they had retried it
   themselves. Only the retry's message is the admin's. Left without a model, it takes the model of
@@ -604,8 +612,8 @@ request still `"approved"` after fifteen minutes (`ADMIN_WRITE_SETTLE_SECONDS`) 
 the fact, so it is retried until it lands, and may in rare cases appear twice.
 
 `AdminSettings` keeps all of this moving with an alarm: it expires the overdue requests, fails
-the approved ones whose answer never arrived, writes the closing records still owed, and forgets
-a request a day after it is resolved and recorded. Every write-request method but the settling
+the approved ones whose answer never arrived, writes the closing and `"refused"` records still
+owed, and forgets a request a day after it is resolved and recorded. Every write-request method but the settling
 runs the same sweep before it reads a request, so an overdue request is never read as pending.
 
 How to read the records of one request (they share its `requestId`):
@@ -642,6 +650,20 @@ Each change is a setting record, written before the change (see
 others of theirs. Every admin sees every passkey in the list (`listAdminPasskeys()`): its
 credential id, its admin, its name, when it was enrolled and when it last confirmed something.
 The public key never leaves the server.
+
+The limit is checked before a passkey is made (`beginAdminPasskeyEnrolment()` gives an admin who
+holds ten no challenge, and the panel offers them no enrolment) and again when it is enrolled.
+Together with the rule that a removal is signed by one of the admin's own passkeys, it has one
+dead end: **an admin who holds ten passkeys and can sign with none of them can neither enrol
+another nor remove one**, and no other admin can do either for them. That account approves nothing
+from then on, and its ten stay listed. So remove a passkey whose authenticator is going away while
+another can still sign for it.
+
+A passkey is bound to the host name it was enrolled on. After `PUBLIC_BASE_URL` moves to another
+host, the passkeys enrolled before it sign nothing there, a removal included, though they still
+count towards the ten: an admin with a place left enrols one on the new host and removes the old
+ones with it, and an admin who holds ten cannot until the variable points back. Remove the old
+ones before the move.
 
 **A former admin's passkeys stay stored and listed, and approve nothing.** A passkey confirms only
 through a session of the admin it belongs to, and an account outside `ADMINS` gets no admin
@@ -680,7 +702,11 @@ In this order:
 4. **Have the account's owner remove the passkey**, once the account is secure and an admin again.
    A passkey can be removed only by the admin it was enrolled under, signing with a passkey they
    hold themselves: no other admin can remove it. Removal works while writes are off. An owner
-   with no passkey of their own enrols one first, which needs writes to be on.
+   with no passkey of their own enrols one first, which needs writes to be on and a place under
+   the limit of ten.
+5. **If the account was left ten passkeys, none of them its owner's**, the owner can enrol none
+   and so remove none, and nobody else can. Keep that account out of `ADMINS` for good, and make
+   its owner an admin under another account. The ten stay stored and approve nothing.
 
 Until then the foreign passkey stays listed and does nothing. A removed account's passkeys stay
 stored and inert, and are live again only if the account is made an admin again. That is the
@@ -754,7 +780,10 @@ bounds, naming the variable; a choice stored before a bound tightened is kept bu
 `ADMIN_WORKSPACE_WRITES` has no choice under it: `getSettings()` reports it as
 `adminWorkspaceWrites`, true or false, and no setter changes it. `adminWorkspaceWritesEnabled()` is
 the only code that reads the variable: `AdminApiImpl` asks it before every write-request and
-enrolment method, and the workspace asks it again before a write runs. Writes also need
+enrolment method, `AdminSettings` asks it again before it takes a request, a denial, an approval
+or an enrolment, and the workspace asks it once more before a write runs. Each asks its own
+environment, and each checks that the caller is still in `ADMINS` the same way, so a session whose
+Worker started with an older config is held to the current one. Writes also need
 `PUBLIC_BASE_URL`, the origin of the Workshop's own pages: it is where a request is approved, and
 the origin and relying party every passkey is bound to (`originUnset` without it).
 
@@ -911,7 +940,10 @@ A write record precedes its step wherever a step can wait for it. `"requested"`,
 `"expired"` are written before the request is stored in that state, and `"approved"` by the
 workspace before it changes anything, so a step whose record cannot be written is not taken.
 `"applied"` and `"failed"` say what came of a run that has already happened, so they follow it,
-and are retried until they are written (see [How a request ends](#how-a-request-ends)). Unlike an
+and are retried until they are written (see [How a request ends](#how-a-request-ends)).
+`"refused"` says of an attempt that it was refused, which no missing record can undo, so it
+follows the attempt too: one that cannot be written is kept with the request and retried by the
+sweep, the first ten a request. Unlike an
 inspection, an approved write is also written to the workspace, as an entry of its action log
 (see [Who sees a write in the workspace](#who-sees-a-write-in-the-workspace)).
 
@@ -925,7 +957,7 @@ inspection, an approved write is also written to the workspace, as an entry of i
 | An open refused because only the workspace's KV mirror still says `"off"` | Yes | The workspace's own check refused it. |
 | A dead capability (no longer an admin), an expired view, a deleted workspace, a malformed or unknown workspace id, including a call that expiry, a demotion or a deletion overtakes while it reads | No | Nothing was reachable, or nothing the call read left the server, and recording a gone workspace would write into storage that must stay empty. |
 | A call whose arguments are rejected before it starts: a mistyped argument, `listActions()`'s invalid `beforeId`, `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH` | No | Validation refuses the call before the view's own checks run, as it refuses a mistyped argument: nothing was read, and the call asked for nothing a record could name (a depth of 0, a `beforeId` of -1). Only an argument rejected before the call starts goes unrecorded; a malformed string is checked inside the read, and is the failed read above. |
-| Any write-request or passkey method refused `notAdmin` or `writesOff`: a request, and equally a read, a denial, a begun approval or an approval of a stored request, a pending one included, and a passkey listing, enrolment or removal | No | `AdminApiImpl` refuses the call before `AdminSettings`, which holds the requests and records their steps, is reached: no request was read, and nothing changed. That includes an approval of a pending request sent after writes were turned off. |
+| Any write-request or passkey method refused `notAdmin` or `writesOff`: a request, and equally a read, a denial, a begun approval or an approval of a stored request, a pending one included, and a passkey listing, enrolment or removal | No | `AdminApiImpl` refuses the call before `AdminSettings`, which holds the requests and records their steps, is reached, and `AdminSettings` refuses a step the same way, from its own environment, before it reads a request or spends a challenge: no request was read, and nothing changed. That includes an approval of a pending request sent after writes were turned off. |
 | A write request refused before it is stored for another reason (a rejected reason or argument, `workspaceNotFound`, `originUnset`, `workspaceUnlisted`, `tooManyRequests`) | No | Nothing was stored, and no workspace was reached. |
 | A refused attempt to approve a stored request, pending or not (`passkeyRefused`, `requestNotPending`) | Yes, as a `"refused"` write record with the check that failed | An admin tried to run a write. A failed passkey check and a replayed approval are what an investigation looks for. |
 | An attempt to approve an id that names no request (`requestNotFound`) | No | There is no request to record it against. |
@@ -1113,19 +1145,22 @@ Writes add these, in the same directory. The passkey suites sign with a software
 - `admin-passkeys.test.ts`: enrolment and removal through whole ceremonies, each recorded before
   it is stored; a challenge spent by its first answer; another admin's challenge, credential and
   passkey refused; nobody removing another admin's passkey; the limit; the races with a record
-  being appended; a change whose record cannot be written; no `PUBLIC_BASE_URL`; and listing and
-  removal while writes are off.
+  being appended; a change whose record cannot be written; no `PUBLIC_BASE_URL`; listing and
+  removal while writes are off; and the object's own check of the caller and the switch.
 - `admin-write-requests.test.ts`: the request store. A request recorded before it is stored, the
   limit on pending requests, denial, expiry (by the alarm, by a read, once under concurrency, and
-  ahead of time for a demoted requester), and the alarm.
+  ahead of time for a demoted requester), the alarm, and the object's own check of the caller and
+  the switch.
 - `admin-write-approval.test.ts`: the challenge bound to the request's digest; an approval
   spending the request once; every refusal recorded (a replay, a tampered request, another
   admin's credential, a former admin's passkey, a removed passkey, a denied or expired request);
-  the races with a denial, an expiry and a second approver; settling, with a closing record owed
-  while the log cannot be written; and a workspace that never answers.
+  the races with a denial, an expiry and a second approver; a refusal's record owed while the log
+  cannot be written; settling, with a closing record owed the same way; and a workspace that
+  never answers.
 - `admin-write-apply.test.ts`: `applyAdminWrite()` on a real workspace. The refusals that write
-  nothing, each action running its one operation, a retry as the owner, a collaborator granted as
-  the owner (where only the owner may add people too, and still verified as an observer), a
+  nothing, each action running its one operation, a stop that keeps the queued messages, a retry
+  as the owner, a collaborator granted as the owner (where only the owner may add people too,
+  still verified as an observer, and not into a workspace deleted meanwhile), a
   rejected queue with its bound and a pending creation, the record before the effect, the action
   log entry as the owner reads it and as a `use` session does not, and a deletion that fails
   partway or completes.

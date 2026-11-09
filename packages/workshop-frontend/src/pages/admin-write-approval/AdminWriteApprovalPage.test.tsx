@@ -863,6 +863,24 @@ describe('a pending request whose time has passed', () => {
     expect(outcome()?.textContent).toBe('Denied by alice')
     expect(findButton('Deny')).toBeUndefined()
   })
+
+  it('shows an approval, not a reading of the request that began before it', async () => {
+    const admin = await renderRequestRunningOut()
+    const before = deferred<AdminWriteRequest>()
+    admin.getWorkspaceWrite.mockReturnValueOnce(before.promise)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(admin.getWorkspaceWrite).toHaveBeenCalledTimes(2)
+
+    await click(button('Approve with passkey'))
+
+    expect(outcome()?.textContent).toBe('Applied')
+
+    await act(async () => { before.resolve(writeRequest()) })
+
+    expect(outcome()?.textContent).toBe('Applied')
+    expect(findButton('Approve with passkey')).toBeUndefined()
+    expect(findButton('Deny')).toBeUndefined()
+  })
 })
 
 describe('loading a request', () => {

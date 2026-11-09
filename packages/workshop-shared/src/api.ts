@@ -2191,38 +2191,8 @@ export type AdminAuditStats = {
 };
 
 /**
- * What a deployment admin may do to a workspace through an approved write request (see
- * AdminApi.requestWorkspaceWrite()), each by running the operation a member would:
- *   - "stopAgent":            Overseer.stopAgent(chatId).
- *   - "retryAgent":           Overseer.retryAgent(chatId, modelId), run as the workspace's owner
- *                             whoever started the turn: on the owner's model, keys and account,
- *                             so the owner pays for it as if they had retried it themselves.
- *   - "restartWorkspace":     ends every session on the workspace, as a revoked collaborator does.
- *   - "addCollaborator":      Overseer.addCollaborator(username, grant, note), granted exactly as
- *                             if the owner had granted it, so it is made on a workspace where only
- *                             the owner may add people too (WorkspaceMetadata.ownerInvitesOnly),
- *                             and a grant the owner had already made to that person is kept or
- *                             widened, never narrowed, with its note replaced. The note names the
- *                             admin and the reason until the owner next changes the grant; the
- *                             workspace's action log keeps both. The person added is still
- *                             verified as an observer, with their own accounts, before they see
- *                             anything.
- *   - "deleteChat":           Overseer.deleteChat(chatId).
- *   - "revertChat":           Overseer.revertChanges(chatId, revertFrom).
- *   - "revertGadget":         GadgetClient.restoreVersion(commitId) of `gadgetId`.
- *   - "deleteGadget":         GadgetClient.remove() of `gadgetId`.
- *   - "deleteWorkspace":      Overseer.deleteSelf(). Once it completes, nothing in the workspace
- *                             shows it: the action log is deleted with the workspace, so only
- *                             the deployment-wide audit log says who deleted it and why.
- *   - "rejectPendingActions": Overseer.rejectAction() for each pending action, oldest first, of
- *                             connection `gatekeeperId` when given; at most
- *                             MAX_ADMIN_REJECTED_ACTIONS a request. One that cannot be rejected
- *                             is left pending and counted in the request's `outcome`, and the
- *                             rest are still rejected. A pending creation (see
- *                             ActionLogEntry.creation) is rejected as a member's rejection of it
- *                             is: its connection, not yet created, is removed, and everything
- *                             queued on that connection is rejected with it.
- *   - "removeConnection":     GatekeeperClient.remove() of `gatekeeperId`.
+ * What a deployment admin may do to a workspace through an approved write request. What each
+ * action does is said where one is requested: see AdminApi.requestWorkspaceWrite().
  */
 export const ADMIN_WRITE_ACTIONS = [
   "stopAgent", "retryAgent", "restartWorkspace", "addCollaborator", "deleteChat", "revertChat",
@@ -2328,7 +2298,7 @@ export type AdminWriteRequest = {
    * workspace the directory does not list cannot be requested. A request is run only while the
    * workspace still has this owner. */
   workspaceOwner: string;
-  /** What it would do (see ADMIN_WRITE_ACTIONS). */
+  /** What it would do (see AdminApi.requestWorkspaceWrite()). */
   action: AdminWriteAction;
   /** The action's arguments (see AdminWriteArgs). */
   args: AdminWriteArgs;
@@ -2403,7 +2373,8 @@ export type AdminPasskeyRefusal =
  * Every approved request is closed by "applied" or "failed". Those two are recorded after the
  * fact, so they are written at least once: a retry after a lost acknowledgement can repeat one.
  * A "refused" step can follow any other, a closing one included: it is how a replayed approval
- * shows.
+ * shows. It is recorded after the fact too, so one whose record could not be written when the
+ * attempt was refused is written later, at least once.
  * Unlike an AdminAccessRecord, an approved write is also shown in the workspace: as an entry of
  * its action log (see ActionLogEntry.byAdmin), which the workspace's owner and its "build"
  * collaborators read. A collaborator who only uses a gadget is given no action log, so is shown
@@ -2957,11 +2928,10 @@ export interface AdminApi {
   // their own, and every enrolment and removal is recorded.
 
   /**
-   * Ask for a write to a workspace: `action` with `args` (see ADMIN_WRITE_ACTIONS and
-   * AdminWriteArgs), for `reason`. A reason is required, as for inspectWorkspace(), but unlike an
-   * inspection's it does not stay in the admins' log: once the write is approved, everyone who
-   * reads the workspace's action log, its owner and its "build" collaborators, reads it word for
-   * word, so write it for them.
+   * Ask for a write to a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. A
+   * reason is required, as for inspectWorkspace(), but unlike an inspection's it does not stay in
+   * the admins' log: once the write is approved, everyone who reads the workspace's action log,
+   * its owner and its "build" collaborators, reads it word for word, so write it for them.
    *
    * Nothing in the workspace is read or changed: its title and owner are the deployment
    * directory's. The request is recorded ("requested") before it is stored, so a request whose
@@ -2969,10 +2939,42 @@ export interface AdminApi {
    * ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, and is run once an admin approves it at its
    * `approvalUrl`. Its arguments are checked against the workspace only then.
    *
-   * Refused `workspaceNotFound` for a malformed id, `workspaceUnlisted` for a workspace the
-   * directory does not list (see listWorkspaces()), `originUnset` while the deployment has no
-   * PUBLIC_BASE_URL, and `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects
-   * arguments the action does not take.
+   * Each action then runs the operation a member would:
+   *   - "stopAgent": Overseer.stopAgent(chatId), except that the chat's queued steers are kept:
+   *     no client stops the turn to put them in its draft, so they go into the chat as their
+   *     senders' messages (see `steered` of AiChatMessageBody).
+   *   - "retryAgent": Overseer.retryAgent(chatId, modelId), run as the workspace's owner whoever
+   *     started the turn: on the owner's model, keys and account, so the owner pays for it as if
+   *     they had retried it themselves.
+   *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *   - "addCollaborator": Overseer.addCollaborator(username, grant, note), granted exactly as if
+   *     the owner had granted it, so it is made on a workspace where only the owner may add
+   *     people too (WorkspaceMetadata.ownerInvitesOnly), and a grant the owner had already made
+   *     to that person is kept or widened, never narrowed, with its note replaced. The note names
+   *     the admin and the reason until the owner next changes the grant; the workspace's action
+   *     log keeps both. The person added is still verified as an observer, with their own
+   *     accounts, before they see anything.
+   *   - "deleteChat": Overseer.deleteChat(chatId).
+   *   - "revertChat": Overseer.revertChanges(chatId, revertFrom).
+   *   - "revertGadget": GadgetClient.restoreVersion(commitId) of `gadgetId`.
+   *   - "deleteGadget": GadgetClient.remove() of `gadgetId`.
+   *   - "deleteWorkspace": Overseer.deleteSelf(). Once it completes, nothing in the workspace
+   *     shows it: the action log is deleted with the workspace, so only the deployment-wide audit
+   *     log says who deleted it and why.
+   *   - "rejectPendingActions": Overseer.rejectAction() for each pending action, oldest first, of
+   *     connection `gatekeeperId` when given; at most MAX_ADMIN_REJECTED_ACTIONS a request. One
+   *     that cannot be rejected is left pending and counted in the request's `outcome`, and the
+   *     rest are still rejected. A pending creation (see ActionLogEntry.creation) is rejected as
+   *     a member's rejection of it is: its connection, not yet created, is removed, and
+   *     everything queued on that connection is rejected with it.
+   *   - "removeConnection": GatekeeperClient.remove() of `gatekeeperId`.
+   *
+   * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless the
+   * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on", `workspaceNotFound` for a
+   * malformed id, `workspaceUnlisted` for a workspace the directory does not list (see
+   * listWorkspaces()), `originUnset` while the deployment has no PUBLIC_BASE_URL, and
+   * `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects arguments the action
+   * does not take.
    */
   requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
                         reason: string): Promise<AdminWriteRequest>;
@@ -3013,7 +3015,8 @@ export interface AdminApi {
   listAdminPasskeys(): Promise<AdminPasskey[]>;
 
   /** Start enrolling a passkey for the caller: the challenge navigator.credentials.create() is
-   * given. Refused `originUnset`. */
+   * given. Refused `originUnset`. Throws once the caller has MAX_ADMIN_PASSKEYS enrolled, so that
+   * no authenticator makes a credential addAdminPasskey() would refuse. */
   beginAdminPasskeyEnrolment(): Promise<AdminPasskeyChallenge>;
 
   /**
@@ -4135,9 +4138,10 @@ export type WorkspaceMetadata = {
   /**
    * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
-   * fetches reach only the hosts the deployment admin trusts (none by default) or, where the admin
-   * allows it, a URL a user approves, and every action requires manual approval.
+   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them, or a deployment
+   * admin's approved write: see there), but its web fetches reach only the hosts the deployment
+   * admin trusts (none by default) or, where the admin allows it, a URL a user approves, and every
+   * action requires manual approval.
    */
   containsRestrictedData?: boolean;
 
@@ -4145,6 +4149,8 @@ export type WorkspaceMetadata = {
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
+   * A deployment admin's approved "addCollaborator" write is the one other way: it adds a
+   * collaborator as the owner's own grant (see AdminApi.requestWorkspaceWrite()).
    */
   ownerInvitesOnly?: boolean;
 
@@ -5432,7 +5438,8 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * `steered` messages. Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
@@ -5853,7 +5860,8 @@ export type AiChatMessageBody = {
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
    * reads it before its next model request, or, if the turn ended before it could and started no
-   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   * other (it failed, stopped to wait on the user's decision, or was stopped by a deployment
+   * admin's write), when the agent next runs.
    */
   steered?: true;
 } | {

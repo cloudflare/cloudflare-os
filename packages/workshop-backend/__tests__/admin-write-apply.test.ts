@@ -623,6 +623,22 @@ describe("addCollaborator, granted as the owner", () => {
     expect([...ws.impl.storage.collaborators.list()]).toStrictEqual([]);
   }));
 
+  it("grants nothing in a workspace deleted while the account to add is read",
+      () => withWorkspace(async ws => {
+    // A deletion unsets impl.ownerId, here during the read of Bob's account and no other.
+    let { getByName } = ws.impl.users;
+    ws.impl.users.getByName = (name: string) => name !== BOB.id ? getByName(name) : {
+      ...getByName(name),
+      whoamiIfExists: async () => {
+        ws.impl.ownerId = undefined;
+        return BOB;
+      },
+    };
+
+    expect(await codeOf(addBob(ws))).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect([...ws.impl.storage.collaborators.list()]).toStrictEqual([]);
+  }));
+
   it("does not skip the observer verification of the person added",
       () => withWorkspace(async ws => {
     await addBob(ws);
@@ -667,6 +683,32 @@ describe("the effect of a write", () => {
     expect(await ws.instance.applyAdminWrite(grantOf("stopAgent", { chatId: CHAT_ID })))
         .toEqual({ outcome: undefined });
     expect(await adminEntries(ws)).toMatchObject([{ state: "approved" }]);
+  }));
+
+  it("stopAgent keeps the messages queued for the turn it stops, as their senders' own",
+      () => withWorkspace(async ws => {
+    // A turn at work, with two messages the agent has not read: no client stops it, so none
+    // would put them in a draft.
+    ws.impl.storage.chatMeta.put({
+      ...ws.impl.storage.chatMeta.get(CHAT_ID),
+      activeAgent: AGENT,
+      queuedSteers: [
+        { text: "Also add a streak counter.", author: BOB },
+        { text: "And make it dark.", author: OWNER },
+      ],
+    });
+
+    await ws.instance.applyAdminWrite(grantOf("stopAgent", { chatId: CHAT_ID }));
+
+    let meta = ws.impl.storage.chatMeta.get(CHAT_ID);
+    expect(meta.queuedSteers).toBeUndefined();
+    expect(meta.activeAgent).toBeUndefined();
+    // Before the stop itself, in the order they were sent.
+    expect(messagesOf(ws).slice(0, 3)).toMatchObject([
+      { author: BOB, type: "message", message: "Also add a streak counter.", steered: true },
+      { author: OWNER, type: "message", message: "And make it dark.", steered: true },
+      { author: AGENT, type: "agentNudge" },
+    ]);
   }));
 });
 

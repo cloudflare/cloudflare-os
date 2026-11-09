@@ -50,6 +50,15 @@ const ContentReads = ({ count }: { count: number }) => (
   </Table.Cell>
 )
 
+// The window's approved writes. The router can serve this frontend beside a backend older than
+// admin writes, whose statistics count none: nothing is shown then, rather than a figure the
+// backend never gave.
+const ApprovedWrites = ({ count }: { count: unknown }) => typeof count !== 'number' ? null : (
+  <span className="block mt-1">
+    {NUMBER.format(count)} {count === 1 ? 'approved write' : 'approved writes'}
+  </span>
+)
+
 const StatsCards = ({ stats, onFilterBy }: {
   stats: AdminAuditStats
   onFilterBy: (filter: AuditFilter) => void
@@ -63,9 +72,7 @@ const StatsCards = ({ stats, onFilterBy }: {
         <span className="block mt-1">
           {NUMBER.format(stats.contentReads)} {stats.contentReads === 1 ? 'content read' : 'content reads'}
         </span>
-        <span className="block mt-1">
-          {NUMBER.format(stats.writes)} {stats.writes === 1 ? 'approved write' : 'approved writes'}
-        </span>
+        <ApprovedWrites count={stats.writes} />
       </p>
       <Table>
         <Table.Header>

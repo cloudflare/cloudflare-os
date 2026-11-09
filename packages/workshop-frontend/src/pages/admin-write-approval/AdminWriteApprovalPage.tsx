@@ -109,8 +109,8 @@ const Row = ({ label, children }: { label: string; children: ReactNode }) => (
 /**
  * Where an admin approves a write request with a passkey, or denies it. It shows what the request
  * would do, to which workspace and why, as the request states it, and what became of a request
- * that is no longer pending. A passkey ceremony runs only in a browser, so this page is the one
- * place a write is approved.
+ * that is no longer pending. It is the Workshop's one page that runs an approval's passkey
+ * ceremony; the server takes an approval from any admin session that presents a valid assertion.
  */
 const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
@@ -260,7 +260,10 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
 
   const approve = () => run('approve', async (api) => {
     const challenge = await api.beginWorkspaceWriteApproval(requestId)
-    setRequest(await api.approveWorkspaceWrite(requestId, await assertPasskey(challenge)))
+    const approved = await api.approveWorkspaceWrite(requestId, await assertPasskey(challenge))
+    // Shown as the latest reading, so that one begun before the approval cannot replace it. The
+    // approval itself is not run as a reading: one that replaced it would hide its refusal.
+    await read(() => Promise.resolve(approved))
   })
 
   const deny = () => run('deny', async (api) => {

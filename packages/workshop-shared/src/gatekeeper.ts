@@ -1534,8 +1534,9 @@ export type ObservationDescription = {
    * owner added directly keep access: share links stop granting anything (none can be created,
    * copied, or redeemed), and people who joined through a link or through another collaborator
    * lose access, restarting the gadget if any are present. After that, only the owner can add
-   * collaborators, one at a time. Those who remain are still subject to `addObserver()`
-   * verification on every open.
+   * collaborators, one at a time. Where the deployment allows admin writes, a deployment admin's
+   * approved write can add one too, as the owner's own grant. Those who remain, however added,
+   * are still subject to `addObserver()` verification on every open.
    *
    * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
    * requires each recipient to be granted access individually.

@@ -45,7 +45,8 @@ against the producing gatekeeper, and anything that widens what they must be ver
 restarts every live session. An observation that also carries **`ownerInvitesOnly`** sets that
 flag on the workspace: from then on only direct grants from the owner count, so share links admit
 nobody, people who joined through a link or another collaborator lose access, and only the owner
-can add collaborators; see `sharing.md`, "`ownerInvitesOnly`".)
+can add collaborators, or an approved admin write on the owner's behalf where the deployment turns
+those on; see `sharing.md`, "`ownerInvitesOnly`".)
 
 The check works as follows:
 

@@ -176,7 +176,7 @@ A gatekeeper whose data source requires each recipient to be granted access indi
 - **Re-adding an intermediary restores nobody else.** If Alice added Bob, Bob added Carol, and Alice removed Bob, re-adding Bob after the flag is set brings back only Bob; Carol needs her own grant from Alice. The lazy undo (see Restoring access) applies only while the flag is unset.
 - **No new links.** `createShareLink` and `newShareLinkKey` throw "Share links are disabled…".
 - **No redemption for people without owner grants.** Redeeming a still-active link throws the same message, coded `OPEN_WORKSPACE_ERROR_CODES.shareLinksDisabled`, for anyone the owner has not added directly, including people who joined through a link before the flag was set. The error page lets them retry once the owner adds them. A direct collaborator reopening an old link is let through, but no edge is added.
-- **Owner-only direct adds.** `addCollaborator` throws for non-owners, whose grants would count for nothing.
+- **Owner-only direct adds.** `addCollaborator` throws for non-owners, whose grants would count for nothing. An approved admin write (see above) is the one other way a collaborator is added, as the owner's own grant.
 
 The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `WorkspaceMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box).
 

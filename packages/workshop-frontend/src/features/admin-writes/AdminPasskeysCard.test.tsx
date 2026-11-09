@@ -9,6 +9,7 @@ import {
   ADMIN_WRITE_ERROR_CODES,
   createAdminWriteError,
   MAX_ADMIN_PASSKEY_NAME_LENGTH,
+  MAX_ADMIN_PASSKEYS,
   type AdminApi,
   type AdminPasskey,
   type AdminPasskeyAssertion,
@@ -239,6 +240,26 @@ describe('AdminPasskeysCard', () => {
 
       await type('Phone')
       expect(button('Add passkey').disabled).toBe(false)
+    })
+
+    it('offers no enrolment to an admin who holds the most passkeys one may have', async () => {
+      const held = (admin: string) => Array.from({ length: MAX_ADMIN_PASSKEYS }, (_, index) => (
+        { ...ALICES, id: `${admin}-${index}`, admin, name: `Key ${index}` }))
+      const admin = await render(held(USER.id))
+
+      expect(nameInput()).toBeUndefined()
+      expect(findButton('Add passkey')).toBeUndefined()
+      expect(container.textContent).toContain(
+        `You have enrolled ${MAX_ADMIN_PASSKEYS} passkeys, the most an admin may have.`)
+      expect(admin.beginAdminPasskeyEnrolment).not.toHaveBeenCalled()
+
+      // The limit is each admin's own: another admin's passkeys take none of the caller's places.
+      await render([ALICES, ...held('bob')])
+      expect(button('Add passkey')).toBeDefined()
+
+      // One removed leaves a place.
+      await render(held(USER.id).slice(1))
+      expect(nameInput()).toBeDefined()
     })
 
     it('enrols a passkey under the trimmed name, then lists it and clears the name', async () => {

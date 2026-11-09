@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, MAX_ADMIN_PASSKEYS,
-  MAX_ADMIN_PASSKEY_NAME_LENGTH, getAdminWriteErrorCode,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES,
+  MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, getAdminWriteErrorCode,
   type AdminPasskeyAssertion, type AdminPasskeyRegistration, type AdminSettingMethod,
 } from "@gadgets/workshop-shared/api";
 import { auditOwnerId, type AdminSettingActor } from "../src/admin-access.js";
@@ -820,12 +820,16 @@ describe("removing a passkey", () => {
 describe("the limit on an admin's passkeys", () => {
   it("refuses an enrolment past it, which counts only the admin's own passkeys", async () => {
     const harness = adminWritesHarness();
-    await seedPasskeys(harness, MAX_ADMIN_PASSKEYS);
+    await seedPasskeys(harness, MAX_ADMIN_PASSKEYS - 1);
     const [mine, theirs] = [await authenticator(), await authenticator()];
 
-    const error = await harness.inDo(async settings => rejection(settings.addAdminPasskey(
-        "One more", await mine.register(settings.beginAdminPasskeyEnrolment(ADMIN)),
-        actor(ADMIN, "addAdminPasskey"))));
+    // The challenge is given while a place is left, which is taken before it is answered.
+    const error = await harness.inDo(async settings => {
+      const registration = await mine.register(settings.beginAdminPasskeyEnrolment(ADMIN));
+      seedPasskey(harness, settings, { id: "seeded-last", admin: ADMIN });
+      return rejection(settings.addAdminPasskey(
+          "One more", registration, actor(ADMIN, "addAdminPasskey")));
+    });
     expect((error as Error).message).toBe(LIMIT);
     expect(getAdminWriteErrorCode(error)).toBeUndefined();
     expect(await storedPasskeys(harness)).toHaveLength(MAX_ADMIN_PASSKEYS);
@@ -834,6 +838,20 @@ describe("the limit on an admin's passkeys", () => {
     await enrol(harness, theirs, OTHER_ADMIN);
     expect(await storedPasskeys(harness)).toHaveLength(MAX_ADMIN_PASSKEYS + 1);
     expect(harness.appended).toHaveLength(1);
+  });
+
+  it("gives an admin who holds that many no challenge to make another passkey with", async () => {
+    const harness = adminWritesHarness();
+    await seedPasskeys(harness, MAX_ADMIN_PASSKEYS);
+
+    const error = await harness.inDo(async settings =>
+        rejection((async () => settings.beginAdminPasskeyEnrolment(ADMIN))()));
+    expect((error as Error).message).toBe(LIMIT);
+    expect(await storedChallenges(harness)).toEqual([]);
+
+    // Another admin's own count is what their challenge depends on.
+    const theirs = await harness.inDo(settings => settings.beginAdminPasskeyEnrolment(OTHER_ADMIN));
+    expect(theirs.credentialIds).toEqual([]);
   });
 
   it("holds when two enrolments race for the last place", async () => {
@@ -947,18 +965,69 @@ describe("a deployment with no PUBLIC_BASE_URL", () => {
   });
 });
 
-describe("with ADMIN_WORKSPACE_WRITES unset", () => {
-  // The switch is checked by AdminApiImpl alone, so what it lets through while writes are off
-  // (listing and removal) works here exactly as with the switch on.
-  it("still lists a passkey and removes it through the whole ceremony, recorded", async () => {
-    const harness = adminWritesHarness({ ADMIN_WORKSPACE_WRITES: undefined });
+// AdminApiImpl asks the same of the session Worker's environment before it calls. This object's
+// can be newer: a session outlives the config its Worker started with.
+describe("the object's own environment", () => {
+  const OFF = { ADMIN_WORKSPACE_WRITES: undefined };
+  const FORMER = { ADMINS: [OTHER_ADMIN] };
+
+  it("still lists a passkey and removes it through the whole ceremony while writes are off",
+      async () => {
+    const harness = adminWritesHarness();
     const passkey = await authenticator();
     await enrol(harness, passkey);
-    expect((await listed(harness)).map(listing => listing.id)).toEqual([passkey.credentialId]);
+    expect((await listed(harness, OFF)).map(listing => listing.id))
+        .toEqual([passkey.credentialId]);
 
-    await remove(harness, passkey.credentialId, passkey);
-    expect(await listed(harness)).toEqual([]);
+    await harness.inDo(async settings => settings.removeAdminPasskey(
+        passkey.credentialId,
+        await passkey.assert(await settings.beginAdminPasskeyRemoval(passkey.credentialId, ADMIN)),
+        actor(ADMIN, "removeAdminPasskey")), OFF);
+    expect(await listed(harness, OFF)).toEqual([]);
     expect(harness.appended.map(record => "method" in record && record.method))
         .toEqual(["addAdminPasskey", "removeAdminPasskey"]);
+  });
+
+  it.each([
+    ["while writes are off", OFF, ADMIN_WRITE_ERROR_CODES.writesOff],
+    ["for an admin who is no longer one", FORMER, ADMIN_ACCESS_ERROR_CODES.notAdmin],
+  ] as const)("enrols nothing %s, and leaves the challenge unspent", async (_when, vars, code) => {
+    const harness = adminWritesHarness();
+    const passkey = await authenticator();
+    // Answered while ADMIN could still enrol.
+    const registration = await harness.inDo(
+        async settings => passkey.register(settings.beginAdminPasskeyEnrolment(ADMIN)));
+    const challenges = await storedChallenges(harness);
+
+    const begun = await harness.inDo(async settings =>
+        rejection((async () => settings.beginAdminPasskeyEnrolment(ADMIN))()), vars);
+    expect(begun).toMatchObject({ code });
+    const added = await harness.inDo(settings => rejection(
+        settings.addAdminPasskey("Laptop", registration, actor(ADMIN, "addAdminPasskey"))), vars);
+    expect(added).toMatchObject({ code });
+
+    expect(await storedPasskeys(harness)).toEqual([]);
+    expect(await storedChallenges(harness)).toStrictEqual(challenges);
+    expect(harness.appended).toEqual([]);
+  });
+
+  it("lets a former admin remove no passkey, their own included", async () => {
+    const harness = adminWritesHarness();
+    const passkey = await authenticator();
+    await enrol(harness, passkey);
+    // Answered while ADMIN was still an admin.
+    const assertion = await removalAssertion(harness, passkey.credentialId, passkey);
+    const challenges = await storedChallenges(harness);
+
+    const begun = await harness.inDo(settings => rejection(
+        settings.beginAdminPasskeyRemoval(passkey.credentialId, ADMIN)), FORMER);
+    expect(begun).toMatchObject({ code: ADMIN_ACCESS_ERROR_CODES.notAdmin });
+    const removed = await refusedRemoval(harness, passkey.credentialId, assertion, ADMIN, FORMER);
+    expect(removed).toMatchObject({ code: ADMIN_ACCESS_ERROR_CODES.notAdmin });
+
+    expect((await listed(harness, FORMER)).map(listing => listing.id))
+        .toEqual([passkey.credentialId]);
+    expect(await storedChallenges(harness)).toStrictEqual(challenges);
+    expect(harness.appended).toHaveLength(1);
   });
 });

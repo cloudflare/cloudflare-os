@@ -778,15 +778,26 @@ it("runs the writes that need a connection or a model", async () => {
       .toEqual(["First answer.", "Second answer."]);
   expect(await adminEntries(ws)).toEqual(shown);
 
-  // A turn whose model never answers, stopped: the chat goes idle, its turn ended as stopped.
+  // A turn whose model never answers, stopped: the chat goes idle, its turn ended as stopped. A
+  // message the owner sent meanwhile, which the agent never read, stays in the chat as theirs: no
+  // client stopped the turn to put it back in a draft.
   const stuck = await ws.newChat("Never answered", SCRIPTED_MODEL_ID);
+  const stuckChat = async () => (await ws.listChats()).find(chat => chat.id === stuck);
   await waitFor("the unanswered model request", async () => model.requests.length === 3 || null);
-  expect((await ws.listChats()).find(chat => chat.id === stuck)?.activeAgent).toBeDefined();
+  expect((await stuckChat())?.activeAgent).toBeDefined();
+  await ws.sendChatMessage(stuck, "Also add a streak counter.", SCRIPTED_MODEL_ID);
+  await waitFor("the queued message", async () =>
+    (await stuckChat())?.queuedSteers?.length === 1 || null);
   shown.unshift((await runWrite(id, "stopAgent", { chatId: stuck },
       `Stop the agent in chat ${stuck}`)).entry);
   await waitForIdleChat(ws, stuck);
-  expect((await loadAllChatHistory(before => ws.getChatHistory(stuck, before))).at(-1))
-      .toMatchObject({ type: "error", code: "stopped" });
+  const stopped = await loadAllChatHistory(before => ws.getChatHistory(stuck, before));
+  expect(stopped.at(-1)).toMatchObject({ type: "error", code: "stopped" });
+  expect(stopped).toContainEqual(expect.objectContaining({
+    type: "message", message: "Also add a streak counter.", steered: true,
+    author: expect.objectContaining({ type: "user" }),
+  }));
+  expect((await stuckChat())?.queuedSteers).toBeUndefined();
   expect(await adminEntries(ws)).toEqual(shown);
 
   shown.unshift((await runWrite(id, "removeConnection", { gatekeeperId: connectionId },

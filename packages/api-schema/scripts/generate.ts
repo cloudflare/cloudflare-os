@@ -65,8 +65,9 @@ export const AGENT_ROOT = "AuthenticatedApi";
 /**
  * Methods an agent never calls. It is handed an already-authenticated stub, so the ways to obtain
  * or change credentials are left out of its surface, with whatever only they reach; and
- * `AdminApi`'s passkey ceremony methods are each half of a WebAuthn exchange that only a browser on
- * the Workshop's own origin finishes.
+ * `AdminApi`'s passkey ceremony methods are each half of a WebAuthn exchange with an authenticator,
+ * which an agent does not drive. Leaving those six out is a convenience: the server does not refuse
+ * them from an agent's session.
  */
 export const AGENT_OMIT = ["authenticate", "authenticateFromCfAccess", "createAccount", "login", "changePassword",
   "beginAdminPasskeyEnrolment", "addAdminPasskey", "beginAdminPasskeyRemoval", "removeAdminPasskey",
