@@ -106,14 +106,17 @@ export function HomePageContent({ prompt, space }: HomeSearch) {
     persistSelectedModel(value);
   }, []);
 
-  // The space the workspace is created in: a team space's id, or null for the user's personal
-  // space, which is all it ever is while the `spaces` flag is off.
+  // The space the workspace is created in: a space of the user's list or a sub-space reached
+  // from one, or null for the user's personal space, which is all it ever is while the `spaces`
+  // flag is off.
   const {
-    teamSpaces,
-    spaceId,
+    spaces: ownSpaces,
+    hasChoice: hasSpaceChoice,
+    space: workspaceSpace,
     chooseSpace,
     whenSettled: whenSpaceSettled,
   } = useNewWorkspaceSpace(space);
+  const spaceId = workspaceSpace?.id ?? null;
   // A send is made for the space selected when it began, so that space is held as the
   // workspace's until the send has settled. A selection that changes meanwhile (a link's
   // space that only then proves to be one of the user's) applies afterwards: to the next
@@ -265,13 +268,14 @@ export function HomePageContent({ prompt, space }: HomeSearch) {
             : undefined}
         />
 
-        {/* Where the workspace is created, once the user has a team space to choose. Pulled up
-            under the composer's own controls. */}
-        {teamSpaces.length > 0 && (
+        {/* Where the workspace is created, once the user has a space to choose besides their
+            personal one: a team space, or a sub-space of the personal space. Pulled up under
+            the composer's own controls. */}
+        {hasSpaceChoice && (
           <div className="-mt-6 flex justify-end px-1">
             <NewWorkspaceSpaceSelect
-              teamSpaces={teamSpaces}
-              value={spaceId}
+              spaces={ownSpaces}
+              value={workspaceSpace}
               disabled={sending}
               onValueChange={chooseSpace}
             />

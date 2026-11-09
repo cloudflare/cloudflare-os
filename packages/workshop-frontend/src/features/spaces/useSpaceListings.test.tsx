@@ -12,6 +12,7 @@ import {
   invalidSpaceId,
   member,
   mount,
+  notAMember,
   person,
   settle,
   teamSpace,
@@ -51,8 +52,8 @@ describe('useSpaceListings', () => {
     await settle()
 
     expect(current.listings).toEqual({
-      design: { status: 'ready', workspaces: [] },
-      platform: { status: 'ready', workspaces: [workspace('w-plan')] },
+      design: { status: 'ready', workspaces: [], role: 'use' },
+      platform: { status: 'ready', workspaces: [workspace('w-plan')], role: 'use' },
     })
     expect(openSpace.mock.calls).toEqual([['design'], ['platform']])
     for (const each of Object.values(opened)) expect(each[Symbol.dispose]).toHaveBeenCalledOnce()
@@ -76,7 +77,7 @@ describe('useSpaceListings', () => {
     expect(current.listings).toEqual({
       broken: { status: 'failed' },
       left: { status: 'refused' },
-      platform: { status: 'ready', workspaces: [workspace('w-plan')] },
+      platform: { status: 'ready', workspaces: [workspace('w-plan')], role: 'use' },
     })
     expect(broken[Symbol.dispose]).toHaveBeenCalledOnce()
   })
@@ -91,7 +92,7 @@ describe('useSpaceListings', () => {
     listed = [workspace('w-next'), workspace('w-plan')]
     await act(() => current.reload('platform'))
 
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: listed })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: listed, role: 'use' })
     expect(openSpace.mock.calls).toEqual([['design'], ['platform'], ['platform']])
   })
 
@@ -109,11 +110,11 @@ describe('useSpaceListings', () => {
     await act(async () => older.resolve([workspace('w-old')]))
     await settle()
 
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], role: 'use' })
     expect(first[Symbol.dispose]).toHaveBeenCalledOnce()
   })
 
-  it('reads a space again when the set changes before it has been read, and drops the read begun for the set before', async () => {
+  it('keeps the read under way of a space that stays in the set when another joins it', async () => {
     const before = deferred<SpaceWorkspaceInfo[]>()
     const first = space('platform', [])
     first.listWorkspaces.mockImplementation(() => before.promise)
@@ -126,13 +127,84 @@ describe('useSpaceListings', () => {
 
     await rerender(<Probe ids={['platform', 'design']} />, api)
     await settle()
+    expect(current.listings).toEqual({ design: { status: 'ready', workspaces: [], role: 'use' } })
     await act(async () => before.resolve([workspace('w-old')]))
     await settle()
 
+    expect(openSpace.mock.calls).toEqual([['platform'], ['design']])
     expect(current.listings).toEqual({
-      platform: { status: 'ready', workspaces: [workspace('w-new')] },
-      design: { status: 'ready', workspaces: [] },
+      platform: { status: 'ready', workspaces: [workspace('w-old')], role: 'use' },
+      design: { status: 'ready', workspaces: [], role: 'use' },
     })
+    expect(first[Symbol.dispose]).toHaveBeenCalledOnce()
+  })
+
+  it('drops the read under way of a space that has left the set', async () => {
+    const before = deferred<SpaceWorkspaceInfo[]>()
+    const first = space('platform', [])
+    first.listWorkspaces.mockImplementation(() => before.promise)
+    const openSpace = vi.fn<(id: string) => unknown>(id => (id === 'platform' ? first : space(id, [])))
+    const api = fakeApi({ openSpace })
+    const { rerender } = await mount(<Probe ids={['platform']} />, api)
+    await settle()
+
+    await rerender(<Probe ids={['design']} />, api)
+    await settle()
+    await act(async () => before.resolve([workspace('w-old')]))
+    await settle()
+
+    expect(current.listings).toEqual({ design: { status: 'ready', workspaces: [], role: 'use' } })
+    expect(first[Symbol.dispose]).toHaveBeenCalledOnce()
+  })
+
+  it('reports the role the space says the user holds, not the one they were given there', async () => {
+    const inherited = fakeSpace(teamSpace('platform', 'platform'), [member(ME, 'use')], [], { inherited: 'admin' })
+    await mount(<Probe ids={['platform']} />, fakeApi({ openSpace: () => inherited }))
+    await settle()
+
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [], role: 'admin' })
+  })
+
+  it('reads the role on the open that reads the listing', async () => {
+    const platform = space('platform', [])
+    const openSpace = vi.fn<(id: string) => unknown>(() => platform)
+    await mount(<Probe ids={['platform']} />, fakeApi({ openSpace }))
+    await settle()
+
+    expect(openSpace).toHaveBeenCalledExactlyOnceWith('platform')
+    expect(platform.listWorkspaces).toHaveBeenCalledOnce()
+    expect(platform.getInfo).toHaveBeenCalledOnce()
+    expect(platform[Symbol.dispose]).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['listWorkspaces', 'getInfo'],
+    ['getInfo', 'listWorkspaces'],
+  ] as const)('asks for the listing and the role together: %s unanswered, %s is asked all the same', async (unanswered, other) => {
+    const platform = space('platform', [])
+    platform[unanswered].mockImplementation(() => new Promise<never>(() => {}))
+    await mount(<Probe ids={['platform']} />, fakeApi({ openSpace: () => platform }))
+    await settle()
+
+    expect(platform[unanswered]).toHaveBeenCalledOnce()
+    expect(platform[other]).toHaveBeenCalledOnce()
+    // The space is held for as long as one of its answers is awaited.
+    expect(platform[Symbol.dispose]).not.toHaveBeenCalled()
+    expect(current.listings).toEqual({})
+  })
+
+  it.each([
+    ['failed', () => new Error('boom')],
+    ['refused', notAMember],
+  ] as const)('reports a listing as %s when the space’s info cannot be read for that reason', async (status, failure) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const platform = space('platform', [workspace('w-plan')])
+    platform.getInfo.mockRejectedValue(failure())
+    await mount(<Probe ids={['platform']} />, fakeApi({ openSpace: () => platform }))
+    await settle()
+
+    expect(current.listings.platform).toEqual({ status })
+    expect(platform[Symbol.dispose]).toHaveBeenCalledOnce()
   })
 
   it('reads the spaces that join the set and one that could not be read, and not again one that stays in it', async () => {
@@ -151,8 +223,8 @@ describe('useSpaceListings', () => {
     await settle()
 
     expect(openSpace.mock.calls).toEqual([['broken'], ['platform']])
-    expect(current.listings.design).toEqual({ status: 'ready', workspaces: [] })
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [] })
+    expect(current.listings.design).toEqual({ status: 'ready', workspaces: [], role: 'use' })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [], role: 'use' })
   })
 
   it('reads again a space that left the set and is back in it', async () => {
@@ -191,7 +263,7 @@ describe('useSpaceListings', () => {
     await act(async () => flags.resolve({ spaces: true }))
     await settle()
     expect(openSpace.mock.calls).toEqual([['platform']])
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [], role: 'use' })
   })
 
   it('asks about a space under the string it was given, whatever that holds', async () => {
@@ -221,7 +293,7 @@ describe('useSpaceListings', () => {
       fakeApi({ openSpace: () => space('platform', [workspace('w-old')]) }),
     )
     await settle()
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-old')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-old')], role: 'use' })
 
     const next = space('platform', [])
     next.listWorkspaces.mockImplementation(() => late.promise)
@@ -231,6 +303,24 @@ describe('useSpaceListings', () => {
 
     await act(async () => late.resolve([workspace('w-new')]))
     await settle()
-    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')] })
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], role: 'use' })
+  })
+
+  it('reads again under a session that replaces one whose read was under way, and drops that read', async () => {
+    const before = deferred<SpaceWorkspaceInfo[]>()
+    const first = space('platform', [])
+    first.listWorkspaces.mockImplementation(() => before.promise)
+    const { rerender } = await mount(<Probe ids={['platform']} />, fakeApi({ openSpace: () => first }))
+    await settle()
+
+    const openSpace = vi.fn<(id: string) => unknown>(() => space('platform', [workspace('w-new')]))
+    await rerender(<Probe ids={['platform']} />, fakeApi({ openSpace }))
+    await settle()
+    expect(openSpace.mock.calls).toEqual([['platform']])
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], role: 'use' })
+
+    await act(async () => before.resolve([workspace('w-old')]))
+    await settle()
+    expect(current.listings.platform).toEqual({ status: 'ready', workspaces: [workspace('w-new')], role: 'use' })
   })
 })

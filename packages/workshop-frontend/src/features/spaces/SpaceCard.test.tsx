@@ -18,10 +18,11 @@ import {
   mountRouted,
   person,
   settle,
+  subspace,
   teamSpace,
   unmountAll,
 } from './spacesTestUtils'
-import { TeamSpaceCard } from './TeamSpaceCard'
+import { SpaceCard } from './SpaceCard'
 import type { SpaceListing } from './useSpaceListings'
 
 type SpaceCardSection = Extract<WorkspaceSection, { kind: 'space' }>
@@ -52,7 +53,7 @@ const renderCard = async (
     at: '/workspaces',
     chrome: (
       <ul>
-        <TeamSpaceCard section={section} onMembersOpen={onMembersOpen} onListingReload={onListingReload} />
+        <SpaceCard section={section} onMembersOpen={onMembersOpen} onListingReload={onListingReload} />
       </ul>
     ),
   })
@@ -65,7 +66,7 @@ const ReloadableCard = ({ onReload }: { onReload: () => Promise<SpaceListing['st
   const [listing, setListing] = useState<SpaceListing['status']>('failed')
   return (
     <ul>
-      <TeamSpaceCard
+      <SpaceCard
         section={{ kind: 'space', space: PLATFORM, listing, rows: [] }}
         onMembersOpen={() => {}}
         onListingReload={async () => setListing(await onReload())}
@@ -81,7 +82,7 @@ const details = () => document.getElementById(cardLink().getAttribute('aria-desc
 const textOf = (element: Element, attribute: string) =>
   document.getElementById(element.getAttribute(attribute) ?? '')?.textContent
 
-describe('TeamSpaceCard', () => {
+describe('SpaceCard', () => {
   afterEach(() => {
     unmountAll()
     vi.restoreAllMocks()
@@ -113,11 +114,12 @@ describe('TeamSpaceCard', () => {
     expect(details().textContent).toBe(text)
   })
 
-  it('counts nothing while the listing is loading', async () => {
-    // The user's own workspace in the space is all that is known of it then.
+  it('counts nothing and names no role while the listing is loading', async () => {
+    // The user's own workspace in the space is all that is known of it then, and the role the
+    // section carries is the one the list of spaces has.
     await renderCard({ kind: 'space', space: PLATFORM, listing: 'loading', rows: [ownRow('w-mine')] })
 
-    expect(details().textContent).toBe('Your role: Admin')
+    expect(details().textContent).toBe('')
     expect(hasButton('Try again to load Platform')).toBe(false)
   })
 
@@ -126,7 +128,7 @@ describe('TeamSpaceCard', () => {
       { kind: 'space', space: PLATFORM, listing: 'failed', rows: [ownRow('w-mine')] },
     )
 
-    expect(details().textContent).toBe('Your role: Admin · Couldn’t load its workspaces')
+    expect(details().textContent).toBe('Couldn’t load its workspaces')
     const retry = button('Try again to load Platform')
     expect(cardLink().contains(retry)).toBe(false)
     await click(retry)
@@ -215,5 +217,56 @@ describe('TeamSpaceCard', () => {
     await act(async () => read.resolve('ready'))
     expect(hasButton('Try again to load Platform')).toBe(false)
     expect(document.activeElement).toBe(cardLink())
+  })
+
+  it('says the role the section carries only once the listing has been read', async () => {
+    await renderCard({ kind: 'space', space: PLATFORM, listing: 'loading', rows: [] })
+    expect(document.body.textContent).not.toContain('Your role')
+    unmountAll()
+
+    await renderCard({ kind: 'space', space: PLATFORM, listing: 'ready', rows: [] })
+    expect(details().textContent).toBe('Your role: Admin · No workspaces yet')
+  })
+
+  describe('of a sub-space', () => {
+    const ID = 'c'.repeat(64)
+
+    const renderSubspaceCard = async () => {
+      const onMembersOpen = vi.fn<(spaceId: string) => void>()
+      const { router } = await mountRouted(fakeApi(), {
+        at: '/workspaces',
+        chrome: (
+          <ul>
+            <SpaceCard subspace={subspace(ID, 'Infra')} onMembersOpen={onMembersOpen} />
+          </ul>
+        ),
+      })
+      return { onMembersOpen, router }
+    }
+
+    it('shows a sub-space by its name alone, linking to its page', async () => {
+      await renderSubspaceCard()
+
+      const links = document.body.querySelectorAll('a')
+      expect(links).toHaveLength(1)
+      expect(textOf(cardLink(), 'aria-labelledby')).toBe('Infra')
+      expect(cardLink().getAttribute('href')).toBe(`/spaces/${ID}`)
+      expect(cardLink().hasAttribute('aria-describedby')).toBe(false)
+      expect(cardLink().textContent).toBe('Infra')
+      expect(document.body.textContent).not.toMatch(/Your role/)
+      expect(hasButton('Try again')).toBe(false)
+    })
+
+    it('opens a sub-space’s members from its button, without following the link', async () => {
+      const { onMembersOpen, router } = await renderSubspaceCard()
+
+      const members = button('Members of Infra')
+      expect(cardLink().contains(members)).toBe(false)
+      await click(members)
+      await settle()
+
+      expect(onMembersOpen).toHaveBeenCalledExactlyOnceWith(ID)
+      expect(router.state.location.pathname).toBe('/workspaces')
+    })
   })
 })

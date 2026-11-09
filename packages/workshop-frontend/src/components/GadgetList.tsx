@@ -244,11 +244,25 @@ export default function GadgetList({ showHeader = true, sections }: {
   showHeader?: boolean
   /**
    * Lays the list out by space instead of flat, and adds 'Move to space' to the rows of the
-   * user's own workspaces. `spaces` is what that action offers; `render` returns what is shown,
-   * the workspaces page's sections and team space cards or one space's rows, and decides what a
-   * search shows in their place.
+   * user's own workspaces that have somewhere to go. `spaces` is the user's list of spaces, the
+   * top level of what that action offers, each of which expands to its sub-spaces; `render`
+   * returns what is shown, the workspaces page's sections and team space cards or one space's
+   * rows, and decides what a search shows in their place.
    */
-  sections?: { spaces: SpaceInfo[]; render: (rows: GadgetListRows) => ReactNode }
+  sections?: {
+    spaces: SpaceInfo[]
+    /**
+     * Whether what is laid out includes what team spaces list besides the user's own workspaces:
+     * there can then be rows to search while the user has no workspace of their own.
+     */
+    showsListed: boolean
+    /**
+     * Whether the user's personal space is known to hold a sub-space: for a user with no team
+     * space, the one place a workspace of their personal space can be moved to.
+     */
+    personalHasSubspaces: boolean
+    render: (rows: GadgetListRows) => ReactNode
+  }
 } = {}) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -456,7 +470,7 @@ export default function GadgetList({ showHeader = true, sections }: {
       onTogglePin={handleTogglePin}
       onRename={handleRename}
       onNotificationMuteChange={handleNotificationMuteChange}
-      onMove={sections && hasMoveTarget(gadget, sections.spaces)
+      onMove={sections && hasMoveTarget(gadget, sections.spaces, sections.personalHasSubspaces)
         ? () => setMoveTargetId(gadget.id)
         : undefined}
       menuButtonRef={sections ? (button) => {
@@ -471,10 +485,9 @@ export default function GadgetList({ showHeader = true, sections }: {
     return (g.title || '').toLowerCase().includes(search.toLowerCase())
   })
 
-  // Laid out under spaces, the list also has what the user's team spaces list, so there can be
-  // rows to search while the user has no gadget of their own.
-  const searchable = gadgets.length > 0
-    || (!loadError && sections?.spaces.some((space) => space.kind === 'team') === true)
+  // The caller that lays the list out says whether that includes what team spaces list: there
+  // can then be rows to search while the user has no gadget of their own.
+  const searchable = gadgets.length > 0 || (!loadError && sections?.showsListed === true)
 
   return (
     <div className="flex flex-col h-full">

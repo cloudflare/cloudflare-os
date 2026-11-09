@@ -73,7 +73,7 @@ describe('useSpace', () => {
       info: teamSpace('platform', 'Platform'),
       members: space.members(),
     })
-    // What the space lists is `useSpaceListings`' to read, for the page that shows it.
+    // What the space lists is the page's to read: the space's own page does, with `useSpaceContents`.
     expect(space.listWorkspaces).not.toHaveBeenCalled()
     expect(space[Symbol.dispose]).not.toHaveBeenCalled()
 

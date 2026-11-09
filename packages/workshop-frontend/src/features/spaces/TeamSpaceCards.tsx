@@ -1,6 +1,6 @@
 import { useId } from 'react'
 import type { WorkspaceSection } from './groupWorkspaces'
-import { TeamSpaceCard } from './TeamSpaceCard'
+import { SPACE_CARD_GRID_CLASS_NAME, SpaceCard } from './SpaceCard'
 
 /**
  * The user's team spaces as cards under a heading of their own, side by side where the list is
@@ -24,9 +24,9 @@ export const TeamSpaceCards = ({ sections, onMembersOpen, onListingReload }: {
       </h2>
       {/* The columns follow the room the list has, of which the window's width says little: the
           sidebar and the page's margins take their share of it first. */}
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-2 px-3">
+      <ul className={SPACE_CARD_GRID_CLASS_NAME}>
         {sections.map(section => (
-          <TeamSpaceCard
+          <SpaceCard
             key={section.space.id}
             section={section}
             onMembersOpen={onMembersOpen}

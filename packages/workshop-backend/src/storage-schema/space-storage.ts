@@ -4,22 +4,29 @@
 // of a space shows up as a change here. See overseer-storage.ts for the conventions.
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
-import type { SpaceInfo, SpaceMemberInfo, SpaceWorkspaceInfo } from "@gadgets/workshop-shared/api";
+import type {
+  SpaceInfo, SpaceMemberInfo, SpaceWorkspaceInfo, SubspaceInfo,
+} from "@gadgets/workshop-shared/api";
 
 /**
  * A space as stored: its `SpaceInfo` without `id`, which is the id of the Durable Object that
- * stores it, and without `role`, which is derived per caller on read.
+ * stores it, and without `role` and `parent`, which are derived per caller on read. A sub-space
+ * stores its `ancestors` instead: the ids of the spaces it is inside, nearest first, from its
+ * parent to the one inside no other. They are written once, by the parent that creates it, and
+ * are the spaces it asks which role a profile inherits.
  */
-export type SpaceRecord = Omit<SpaceInfo, "id" | "role">;
+export type SpaceRecord = Omit<SpaceInfo, "id" | "role" | "parent"> & { ancestors?: string[] };
 
 /**
  * A role the space gave out: it answered that member `profile` holds a role on workspace
- * `workspace`, whose Overseer may since have a session of theirs open through it.
+ * `workspace`, whose Overseer may since have a session of theirs open through it, or that they
+ * hold one in this space to `space`, a space below it, which may since have given them one on a
+ * workspace of its own.
  */
-export type SpaceLease = { workspace: string; profile: string };
+export type SpaceLease = { profile: string } & ({ workspace: string } | { space: string });
 
 /**
- * A lease the space took back, until the workspace's Overseer has been told. `seq` is the order
+ * A lease the space took back, until its workspace or space has been told. `seq` is the order
  * it was queued in, and never reused. `due` is when it is next attempted, a time in
  * milliseconds that is 0 until an attempt has failed, and `retryMs` how long it then waited, 0
  * likewise.
@@ -35,7 +42,7 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       nextRevocation: 0,
     },
     collections: {
-      // The authority on who belongs to the space and in what role. A personal space's owner is
+      // The space's own members, each with the role given here. A personal space's owner is
       // stored here too, as its only admin and its only member.
       members: collection<SpaceMemberInfo>()({
         primaryKey: record => record.profile.id,
@@ -48,18 +55,26 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
       workspaces: collection<SpaceWorkspaceInfo>()({
         primaryKey: "id",
       }),
+      // The sub-spaces created in this space (see SpaceDurableObject.createSubspace()), for its
+      // members to find. Nothing is decided from an entry: a sub-space's own record says which
+      // spaces it is inside.
+      children: collection<SubspaceInfo>()({
+        primaryKey: "id",
+      }),
       // Every (workspace, member) the space has answered with a role and not taken back since
       // (see SpaceModel.workspaceRole()): the sessions that a change to its members or to its
       // listing may have to end. Keyed workspace first, an id with no ":" in it, so that one
-      // workspace's leases are a key prefix.
+      // workspace's leases are a key prefix. A (space below it, member) it answered likewise
+      // (see SpaceModel.lend()) is keyed under "space:", which no workspace's id starts with.
       leases: collection<SpaceLease>()({
-        primaryKey: lease => `${lease.workspace}:${lease.profile}`,
+        primaryKey: lease => "space" in lease
+            ? `space:${lease.space}:${lease.profile}` : `${lease.workspace}:${lease.profile}`,
         nonUniqueIndexes: {
           byProfile(lease: SpaceLease) { return lease.profile; },
         },
       }),
       // The leases taken back and not yet delivered: each is one call to its workspace's
-      // Overseer, which the space's alarm makes and repeats until it is answered (see
+      // Overseer or to its space, which the alarm makes and repeats until it is answered (see
       // SpaceDurableObject.alarm()). The index is the order they are attempted in: by when each
       // is due and, among those due together, as queued.
       revocations: collection<SpaceRevocation>()({

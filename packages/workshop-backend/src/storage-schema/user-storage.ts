@@ -298,9 +298,10 @@ export function makeUserStorage(storage: DurableObjectStorage) {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
       }),
-      // The spaces this user is a member of, mirrored here by each space so listing them is one
-      // read of the user's own DO, like the record of a workspace shared with them. Presentation
-      // only: a space's own member list is the authority, and nothing is authorized from this.
+      // The spaces this user was given a role in, mirrored here by each space so listing them is
+      // one read of the user's own DO, like the record of a workspace shared with them.
+      // Presentation only: the spaces' member lists are the authority, and nothing is authorized
+      // from this.
       spaces: collection<SpaceInfo>()({
         primaryKey: "id",
       }),

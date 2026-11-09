@@ -30,13 +30,16 @@ import {
   member,
   mountRouted,
   notAMember,
+  openSpaceAmong,
   person,
   personalSpace,
   pressEscape,
   settle,
+  subspace,
   teamSpace,
   type,
   unmountAll,
+  type FakeSpaceOptions,
 } from '../../features/spaces/spacesTestUtils'
 
 // The members dialog's avatars load when scrolled into view, which jsdom has no observer for.
@@ -53,6 +56,22 @@ const PLATFORM = teamSpace(idOf('a'), 'Platform')
 // The id of the space the suite's `createSpace` makes.
 const CREATED_ID = idOf('c')
 const SPACES = [PERSONAL, DESIGN, PLATFORM]
+// Sub-spaces, which the user's list of spaces does not have: Infra is inside Platform and Ops
+// inside Infra; Archive is inside the personal space.
+const INFRA = teamSpace(idOf('e'), 'Infra', 'admin', PLATFORM.id)
+const OPS = teamSpace(idOf('f'), 'Ops', 'admin', INFRA.id)
+const ARCHIVE = teamSpace(idOf('b'), 'Archive', 'admin', PERSONAL.id)
+// A space as the space it is inside lists it.
+const listedIn = (info: SpaceInfo) => subspace(info.id, info.name)
+// Platform with Infra inside it, and Ops inside Infra, which the user reaches from Platform.
+const NESTED: { others: SpaceInfo[]; inside: Record<string, FakeSpaceOptions> } = {
+  others: [INFRA, OPS],
+  inside: {
+    [PLATFORM.id]: { subspaces: [listedIn(INFRA)] },
+    [INFRA.id]: { inherited: 'admin', subspaces: [listedIn(OPS)] },
+    [OPS.id]: { inherited: 'admin' },
+  },
+}
 
 const DAY = new Date('2026-09-01T00:00:00Z')
 
@@ -85,22 +104,27 @@ type FakeApiMethods = Parameters<typeof fakeApi>[0]
  * The app with the space page and the workspaces page, at `at`, for a user with the spaces and
  * workspaces above. Each space is one object however often it is opened, so a change made
  * through one open is what the next one reads. `strangerTo` is a space that does not count the
- * user as a member. `chrome` is rendered beside the page, as the sidebar is. `session` is the
- * same user's session again, as a reconnect replaces it, with the methods it is given in place
- * of its own.
+ * user as a member. `others` are spaces the user's list does not have, and `inside` is what a
+ * space holds besides its members and its listing, by space id: its sub-spaces, and the role
+ * the user holds above it, with which they are a member of it without having been added to it.
+ * `chrome` is rendered beside the page, as the sidebar is. `session` is the same user's session
+ * again, as a reconnect replaces it, with the methods it is given in place of its own.
  */
-const renderAt = async (at: string, { spacesFlag = true, strangerTo, api, chrome }: {
+const renderAt = async (at: string, { spacesFlag = true, strangerTo, others = [], inside = {}, api, chrome }: {
   spacesFlag?: boolean
   strangerTo?: string
+  others?: SpaceInfo[]
+  inside?: Record<string, FakeSpaceOptions>
   api?: FakeApiMethods
   chrome?: ReactNode
 } = {}) => {
   let spaces = SPACES
   const opened = new Map<string, ReturnType<typeof fakeSpace>>()
   const openSpace = vi.fn<(id: string) => unknown>((id) => {
-    const info: SpaceInfo = spaces.find(space => space.id === id)!
+    const info: SpaceInfo = [...spaces, ...others].find(space => space.id === id)!
+    const added = id !== strangerTo && !inside[id]?.inherited
     const space = opened.get(id)
-      ?? fakeSpace(info, id === strangerTo ? [] : [member(ME, info.role)], LISTED[id])
+      ?? fakeSpace(info, added ? [member(ME, info.role)] : [], LISTED[id], inside[id])
     opened.set(id, space)
     return space
   })
@@ -134,13 +158,13 @@ const renderAt = async (at: string, { spacesFlag = true, strangerTo, api, chrome
     ],
   })
   await settle()
-  return { ...mounted, openSpace, listSpaces, session }
+  return { ...mounted, openSpace, listSpaces, session, opened }
 }
 
 // One space the test holds, which every open answers: for a test that sets what the space's
 // reads answer, or asks which of them were made.
-const heldSpace = (info: SpaceInfo) => {
-  const space = fakeSpace(info, [member(ME, info.role)], LISTED[info.id])
+const heldSpace = (info: SpaceInfo, options?: FakeSpaceOptions) => {
+  const space = fakeSpace(info, [member(ME, info.role)], LISTED[info.id], options)
   return { space, openSpace: vi.fn<(id: string) => unknown>(() => space) }
 }
 
@@ -172,7 +196,30 @@ const shown = async (present: () => boolean) => {
   expect(present()).toBe(true)
 }
 
+// Answers a read as the app sees it answered: not under `act`, so React renders what the answer
+// set in a later task than the one the answer arrived in. Waits, within a bound, for `settled`.
+const answerOutsideAct = async (answer: () => void, settled: () => boolean) => {
+  const react = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  react.IS_REACT_ACT_ENVIRONMENT = false
+  try {
+    answer()
+    for (let turn = 0; turn < 100 && !settled(); turn++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  } finally {
+    react.IS_REACT_ACT_ENVIRONMENT = true
+  }
+}
+
 const searchField = () => document.body.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!
+
+// The list of the sub-spaces of the space called `label`, when the page shows one.
+const subspaceList = (label: string) =>
+  document.body.querySelector(`ul[aria-label="Sub-spaces of ${label}"]`)
+
+// Each sub-space card of the space called `label`, as its name and where it leads.
+const subspaceCards = (label: string) => [...(subspaceList(label)?.querySelectorAll('li a') ?? [])]
+  .map(card => [card.textContent, card.getAttribute('href')])
 
 const rowTitles = () => [...document.body.querySelectorAll('h3')].map(title => title.textContent)
 
@@ -186,9 +233,62 @@ const link = (name: string) => {
   return found
 }
 
+// The page's way up, when it shows one.
+const breadcrumb = () => document.body.querySelector('nav[aria-label="Breadcrumb"]')
+
+// Each link of the way up, as its text and where it leads.
+const crumbs = () => [...(breadcrumb()?.querySelectorAll('a') ?? [])]
+  .map(crumb => [crumb.textContent, crumb.getAttribute('href')])
+
+// Whether the page offers a space inside any space.
+const offersNewSpace = () => [...document.body.querySelectorAll('button')].some(candidate =>
+  candidate.textContent?.trim() === 'New space' || candidate.getAttribute('aria-label')?.startsWith('New space in'))
+
+// The title of the dialog on show.
+const dialogTitle = () =>
+  document.getElementById(openDialog()?.getAttribute('aria-labelledby') ?? '')?.textContent
+
+// Platform, held by the test, and every space created inside it, which the user reaches with
+// the role they hold in Platform. Any other id opens a space that refuses the user.
+const platformWithCreations = () => {
+  const platform = fakeSpace(PLATFORM, [member(ME, PLATFORM.role)], LISTED[PLATFORM.id])
+  const created = new Map<string, ReturnType<typeof fakeSpace>>()
+  const openSpace = vi.fn<(id: string) => unknown>((id) => {
+    if (id === PLATFORM.id) return platform
+    const listed = platform.subspaces().find(inside => inside.id === id)
+    if (!listed) return fakeSpace(teamSpace(id, id), [])
+    const space = created.get(id)
+      ?? fakeSpace(teamSpace(id, listed.name, 'admin', PLATFORM.id), [], [], { inherited: 'admin' })
+    created.set(id, space)
+    return space
+  })
+  return { platform, openSpace }
+}
+
+// Platform as above, whose first creation makes the sub-space and gets no answer, as when the
+// connection is lost under it.
+const platformLosingAnAnswer = () => {
+  vi.spyOn(console, 'debug').mockImplementation(() => {})
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  const held = platformWithCreations()
+  const create = held.platform.createSubspace.getMockImplementation()!
+  held.platform.createSubspace.mockImplementationOnce(async (name) => {
+    await create(name)
+    throw new Error('Peer closed WebSocket')
+  })
+  return held
+}
+
+const NO_ANSWER = 'Couldn’t create the space. Try again.'
+
+const DEPTH_LIMIT = 'A space can be nested at most 5 levels deep.'
+
 // What each status line on show says.
 const statuses = () =>
   [...document.body.querySelectorAll('[role="status"]')].map(status => status.textContent)
+
+// The dialog on show.
+const openDialog = () => document.body.querySelector('[role="dialog"]')
 
 // What the dialog on show says.
 const moveDialog = () => document.body.querySelector('[role="dialog"]')?.textContent
@@ -218,6 +318,23 @@ const offersBlueprints = () => document.body.textContent?.includes('Start from a
 // What the app shows at a URL no route matches.
 const showsNotFound = () =>
   [...document.body.querySelectorAll('p')].some(paragraph => paragraph.textContent === 'Not Found')
+
+// Archive, a sub-space of the user's personal space, which lists a workspace of another
+// member's, whom the user added to it.
+const archiveSpace = () =>
+  fakeSpace(ARCHIVE, [], [listedBy(ADA, 'w-brief', 'Brief')], { inherited: 'admin' })
+
+// Archive's page, for a user with no workspace and no space in their list but their personal one.
+const renderArchive = async (archive = archiveSpace()) => {
+  await renderAt(`/spaces/${ARCHIVE.id}`, {
+    api: {
+      listSpaces: async () => [PERSONAL],
+      listWorkspaces: async () => [],
+      openSpace: openSpaceAmong([archive]),
+    },
+  })
+  expect(heading()).toBe('Archive')
+}
 
 describe('a space’s page', () => {
   afterEach(() => {
@@ -493,6 +610,19 @@ describe('a space’s page', () => {
     // The row went with the workspace, and with it the menu the move was chosen from.
     expect(rowTitles()).toEqual(['Brief'])
     expect(document.activeElement).toBe(searchField())
+  })
+
+  it('offers the move on the personal space’s page to a user with no team space when the space has a sub-space, and not when it has none', async () => {
+    await renderAt(`/spaces/${PERSONAL.id}`, { api: { listSpaces: async () => [PERSONAL] } })
+    expect(await rowActions('Solo notes')).not.toContain('Move to space')
+    unmountAll()
+
+    await renderAt(`/spaces/${PERSONAL.id}`, {
+      api: { listSpaces: async () => [PERSONAL] },
+      others: [ARCHIVE],
+      inside: { [PERSONAL.id]: { subspaces: [listedIn(ARCHIVE)] } },
+    })
+    expect(await rowActions('Solo notes')).toContain('Move to space')
   })
 
   it('keeps the page, with what the user typed and opened in its list, through a replaced session', async () => {
@@ -793,6 +923,374 @@ describe('a space’s page', () => {
     expect(heading()).toBeUndefined()
   })
 
+  it('reads a team space’s sub-spaces with what it lists, on one open, and its info once', async () => {
+    const platform = heldSpace(PLATFORM, { subspaces: [listedIn(INFRA)] })
+    await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace: platform.openSpace } })
+
+    expect(subspaceCards('Platform')).toHaveLength(1)
+    // One open for the space's info and members, one for what is in it.
+    expect(platform.openSpace).toHaveBeenCalledTimes(2)
+    expect(platform.space.getInfo).toHaveBeenCalledOnce()
+    expect(platform.space.listWorkspaces).toHaveBeenCalledOnce()
+    expect(platform.space.listSubspaces).toHaveBeenCalledOnce()
+  })
+
+  it('shows the sub-spaces directly inside a team space as cards above its workspaces, each linking to its page', async () => {
+    const { openSpace } = await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+
+    expect(subspaceCards('Platform')).toEqual([['Infra', `/spaces/${INFRA.id}`]])
+    const firstRow = document.body.querySelector('h3')!
+    expect(firstRow.textContent).toBe('Roadmap')
+    expect(subspaceList('Platform')!.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy()
+    // Only what is directly inside the space, and nothing is asked of a sub-space to show its card.
+    expect(document.body.textContent).not.toContain('Ops')
+    expect(openSpace.mock.calls.map(([id]) => id)).toEqual([PLATFORM.id, PLATFORM.id])
+  })
+
+  it('shows the sub-spaces of the user’s personal space on its page', async () => {
+    await renderAt(`/spaces/${PERSONAL.id}`, {
+      others: [ARCHIVE],
+      inside: { [PERSONAL.id]: { subspaces: [listedIn(ARCHIVE)] } },
+    })
+
+    expect(subspaceCards('Personal')).toEqual([['Archive', `/spaces/${ARCHIVE.id}`]])
+    const firstRow = document.body.querySelector('h3')!
+    expect(firstRow.textContent).toBe('Solo notes')
+    expect(subspaceList('Personal')!.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy()
+  })
+
+  it.each([
+    ['a team space', PLATFORM],
+    ['the personal space', PERSONAL],
+  ])('shows no sub-space section for %s with none', async (_, space) => {
+    const { opened } = await renderAt(`/spaces/${space.id}`)
+
+    expect(opened.get(space.id)!.listSubspaces).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('ul[aria-label^="Sub-spaces of"]')).toBeNull()
+    expect(sectionHeadings()).toEqual([])
+    expect(alerts()).toEqual([])
+  })
+
+  it('goes to a sub-space’s page from its card, which starts afresh', async () => {
+    await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+    expect(rowTitles()).toContain('Roadmap')
+
+    await click(subspaceList('Platform')!.querySelector('a')!)
+    await pageNamed('Infra')
+    await settle()
+
+    expect(rowTitles()).toEqual([])
+    expect(subspaceList('Platform')).toBeNull()
+    // The page of the sub-space shows what is inside that one.
+    expect(subspaceCards('Infra')).toEqual([['Ops', `/spaces/${OPS.id}`]])
+  })
+
+  it('opens a sub-space’s members from its card, and the page’s own from the header', async () => {
+    const { opened } = await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+
+    await click(button('Members of Infra'))
+    await settle()
+    expect(openDialog()?.textContent).toContain('Members of Infra')
+    expect(openDialog()?.textContent).not.toContain('Members of Platform')
+    const reads = opened.get(PLATFORM.id)!.getInfo.mock.calls.length
+
+    await click(button('Close'))
+    await settle()
+    expect(openDialog()).toBeNull()
+    // The page's space is read again when a dialog it opened closes.
+    expect(opened.get(PLATFORM.id)!.getInfo).toHaveBeenCalledTimes(reads + 1)
+    expect(heading()).toBe('Platform')
+
+    await click(button('Members of Platform'))
+    await settle()
+    expect(openDialog()?.textContent).toContain('Members of Platform')
+    expect(openDialog()?.textContent).not.toContain('Members of Infra')
+  })
+
+  it('hands the focus back to the card’s button when a sub-space’s members close', async () => {
+    await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+    const members = button('Members of Infra')
+    members.focus()
+    await click(members)
+    await settle()
+
+    await click(button('Close'))
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(document.activeElement).toBe(members)
+  })
+
+  it('gives the page’s heading the focus when a sub-space’s members close over cards a replaced session rendered again', async () => {
+    const { router, rerender, session } = await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+    const members = button('Members of Infra')
+    members.focus()
+    await click(members)
+    await settle()
+    await rerender(<RouterProvider router={router} />, session())
+    await settle()
+    // The list was rendered again under the open dialog: the card is another element.
+    expect(members.isConnected).toBe(false)
+    expect(hasButton('Members of Infra')).toBe(true)
+
+    await click(button('Close'))
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(document.activeElement).toBe(document.body.querySelector('h1'))
+  })
+
+  it('gives Try again the focus when a sub-space’s members close over a read of the space that still fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { router, rerender, session, opened } = await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+    await click(button('Members of Infra'))
+    await settle()
+
+    // The session that replaces the first cannot read the space, and neither can the read made
+    // when the dialog closes: the header is gone, and the card the dialog was opened from.
+    opened.get(PLATFORM.id)!.getInfo.mockRejectedValue(new Error('boom'))
+    await rerender(<RouterProvider router={router} />, session())
+    await settle()
+    expect(heading()).toBeUndefined()
+    expect(openDialog()?.textContent).toContain('Members of Infra')
+
+    await click(button('Close'))
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(document.activeElement).toBe(button('Try again'))
+  })
+
+  it('gives Try again the focus when the read of the space made as the members close fails, and takes away the header the focus was back in', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const platform = heldSpace(PLATFORM)
+    await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace: platform.openSpace } })
+    const members = button('Members of Platform')
+    members.focus()
+    await click(members)
+    await settle()
+
+    const read = failing<SpaceInfo>()
+    platform.space.getInfo.mockReturnValueOnce(read.promise)
+    await click(button('Close'))
+    await settle()
+    // The list of spaces has been read again and the space has not: the header is still there,
+    // and its button has the focus back.
+    expect(openDialog()).toBeNull()
+    expect(heading()).toBe('Platform')
+    expect(document.activeElement).toBe(members)
+
+    await answerOutsideAct(
+      () => read.fail(new Error('boom')),
+      () => hasButton('Try again') && document.activeElement === button('Try again'),
+    )
+
+    // The button went with the header only now, in the render that followed the read.
+    expect(heading()).toBeUndefined()
+    expect(document.activeElement).toBe(button('Try again'))
+  })
+
+  it('stays on the page, and says nothing of leaving it, when the user leaves a sub-space from its card', async () => {
+    // The user was also added to Infra itself, which is what they leave: Platform still has them.
+    const platform = fakeSpace(PLATFORM, [member(ME, 'admin')], LISTED[PLATFORM.id], { subspaces: [listedIn(INFRA)] })
+    const infra = fakeSpace(INFRA, [member(ME, 'use')], [], { inherited: 'admin' })
+    const { router } = await renderAt(`/spaces/${PLATFORM.id}`, {
+      api: { openSpace: openSpaceAmong([platform, infra]) },
+    })
+
+    await click(button('Members of Infra'))
+    await settle()
+    await click(button('Leave space'))
+    await click(button('Leave'))
+    await settle()
+
+    expect(infra.removeMember).toHaveBeenCalledExactlyOnceWith(ME.id)
+    expect(router.state.location.pathname).toBe(`/spaces/${PLATFORM.id}`)
+    expect(heading()).toBe('Platform')
+    expect(document.body.textContent).not.toContain('You left Platform')
+  })
+
+  it('stays on the page, and says nothing of leaving it, when the sub-space the user left from its card no longer counts them as a member', async () => {
+    // Infra counts the user for the role it gave them alone, as when the space above has
+    // dropped them since the page read it: once they leave, Infra refuses them.
+    const platform = fakeSpace(PLATFORM, [member(ME, 'admin')], LISTED[PLATFORM.id], { subspaces: [listedIn(INFRA)] })
+    const infra = fakeSpace(INFRA, [member(ME, 'use')])
+    const { router } = await renderAt(`/spaces/${PLATFORM.id}`, {
+      api: { openSpace: openSpaceAmong([platform, infra]) },
+    })
+
+    await click(button('Members of Infra'))
+    await settle()
+    await click(button('Leave space'))
+    await click(button('Leave'))
+    await settle()
+
+    expect(infra.removeMember).toHaveBeenCalledExactlyOnceWith(ME.id)
+    expect(openDialog()).toBeNull()
+    // The page is Platform's, which the user has not left.
+    expect(router.state.location.pathname).toBe(`/spaces/${PLATFORM.id}`)
+    expect(heading()).toBe('Platform')
+    expect(document.body.textContent).not.toContain('You left')
+  })
+
+  it('hides the sub-space cards while the list is searched', async () => {
+    await renderAt(`/spaces/${PLATFORM.id}`, NESTED)
+    expect(subspaceList('Platform')).not.toBeNull()
+
+    await type(searchField(), 'Road')
+    expect(rowTitles()).toEqual(['Roadmap'])
+    expect(subspaceList('Platform')).toBeNull()
+    expect(hasButton('Members of Infra')).toBe(false)
+
+    await type(searchField(), '')
+    expect(subspaceList('Platform')).not.toBeNull()
+  })
+
+  it('asks nothing more of a space that refuses the user and is not in their list', async () => {
+    const elsewhere = fakeSpace(teamSpace(idOf('9'), 'Elsewhere'), [])
+    const openSpace = vi.fn<(id: string) => unknown>(() => elsewhere)
+    await renderAt(`/spaces/${idOf('9')}`, { api: { openSpace } })
+
+    expect(showsNotFound()).toBe(true)
+    expect(openSpace).toHaveBeenCalledExactlyOnceWith(idOf('9'))
+    expect(elsewhere.listSubspaces).not.toHaveBeenCalled()
+    expect(elsewhere.listWorkspaces).not.toHaveBeenCalled()
+  })
+
+  it('says once that a team space could not be read, and shows its sub-spaces with its workspaces on another try', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const platform = heldSpace(PLATFORM, { subspaces: [listedIn(INFRA)] })
+    platform.space.listSubspaces.mockRejectedValueOnce(new Error('boom'))
+    await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace: platform.openSpace } })
+
+    expect(alerts()).toEqual(['Couldn’t load this space’s workspaces.Try again'])
+    expect(subspaceList('Platform')).toBeNull()
+    expect(rowTitles()).toEqual(['Roadmap'])
+
+    await click(button('Try again to load Platform'))
+    await settle()
+
+    expect(alerts()).toEqual([])
+    expect(subspaceCards('Platform')).toEqual([['Infra', `/spaces/${INFRA.id}`]])
+    expect(rowTitles()).toEqual(['Roadmap', 'Ada’s plan', 'Untitled Workspace'])
+  })
+
+  it('says that the personal space’s sub-spaces could not be read, and gives the first card’s link the focus once another try shows them', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const personal = heldSpace(PERSONAL, { subspaces: [listedIn(ARCHIVE)] })
+    personal.space.listSubspaces.mockRejectedValueOnce(new Error('boom'))
+    await renderAt(`/spaces/${PERSONAL.id}`, { api: { openSpace: personal.openSpace } })
+
+    expect(alerts()).toEqual(['Couldn’t load the sub-spaces of Personal.Try again'])
+    // The user's workspaces are their own records, which the failure leaves as they are.
+    expect(rowTitles()).toEqual(['Solo notes'])
+
+    const retry = button('Try again to load the sub-spaces of Personal')
+    retry.focus()
+    await click(retry)
+    await settle()
+
+    expect(alerts()).toEqual([])
+    const first = subspaceList('Personal')!.querySelector('a')!
+    expect(first.textContent).toBe('Archive')
+    // The card's link, and not the search field the page also has.
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('gives the search field the focus when another try finds that the personal space has no sub-space', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const personal = heldSpace(PERSONAL)
+    personal.space.listSubspaces.mockRejectedValueOnce(new Error('boom'))
+    await renderAt(`/spaces/${PERSONAL.id}`, { api: { openSpace: personal.openSpace } })
+
+    const retry = button('Try again to load the sub-spaces of Personal')
+    retry.focus()
+    await click(retry)
+    await settle()
+
+    // The button went with the alert, and nothing of the cards took its place.
+    expect(alerts()).toEqual([])
+    expect(subspaceList('Personal')).toBeNull()
+    expect(searchField()).not.toBeNull()
+    expect(document.activeElement).toBe(searchField())
+  })
+
+  it('gives New space the focus when another try finds no sub-space and the personal space’s page has no search field', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const personal = heldSpace(PERSONAL)
+    personal.space.listSubspaces.mockRejectedValueOnce(new Error('boom'))
+    // A user with no workspace has no search field on this page for the focus to go to.
+    await renderAt(`/spaces/${PERSONAL.id}`, {
+      api: { openSpace: personal.openSpace, listWorkspaces: async () => [] },
+    })
+    expect(searchField()).toBeNull()
+
+    const retry = button('Try again to load the sub-spaces of Personal')
+    retry.focus()
+    await click(retry)
+    await settle()
+
+    expect(alerts()).toEqual([])
+    expect(subspaceList('Personal')).toBeNull()
+    expect(document.activeElement).toBe(button('New space in Personal'))
+  })
+
+  it('says that no workspace was found, and nothing of incomplete results, when a search of the personal space matches nothing and its sub-spaces could not be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const personal = heldSpace(PERSONAL)
+    personal.space.listSubspaces.mockRejectedValue(new Error('boom'))
+    await renderAt(`/spaces/${PERSONAL.id}`, { api: { openSpace: personal.openSpace } })
+    expect(alerts()).toEqual(['Couldn’t load the sub-spaces of Personal.Try again'])
+
+    await type(searchField(), 'zzz')
+
+    // Every workspace of this page was searched: they are the user's own records.
+    expect(document.body.textContent).toContain('No workspaces found')
+    expect(document.body.textContent).not.toContain('the results may be incomplete')
+  })
+
+  describe('for a user with no workspace and no team space in their list, on a sub-space of their personal space', () => {
+    it('offers a search of what a team space lists to a user with no workspace and no team space in their list', async () => {
+      await renderArchive()
+
+      expect(searchField()).not.toBeNull()
+      await type(searchField(), 'bri')
+      expect(rowTitles()).toEqual(['Brief'])
+
+      await type(searchField(), 'zzz')
+      expect(rowTitles()).toEqual([])
+      expect(document.body.textContent).toContain('No workspaces found')
+    })
+
+    it('gives the search field of such a page the focus when what the space lists is read on another try', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const archive = archiveSpace()
+      archive.listWorkspaces.mockRejectedValueOnce(new Error('boom'))
+      await renderArchive(archive)
+      expect(alerts()).toEqual(['Couldn’t load this space’s workspaces.Try again'])
+
+      const retry = button('Try again to load Archive')
+      retry.focus()
+      await click(retry)
+      await settle()
+
+      expect(alerts()).toEqual([])
+      expect(rowTitles()).toEqual(['Brief'])
+      expect(searchField()).not.toBeNull()
+      expect(document.activeElement).toBe(searchField())
+    })
+  })
+
+  it('offers no search on the personal space’s page to a user with no workspace', async () => {
+    // The user's list has team spaces, whose workspaces are not this page's to show.
+    await renderAt(`/spaces/${PERSONAL.id}`, { api: { listWorkspaces: async () => [] } })
+
+    expect(heading()).toBe('Personal')
+    expect(searchField()).toBeNull()
+  })
+
   describe('for a user with no workspace, on a deployment that features blueprints', () => {
     const api = { listWorkspaces: async () => [], listFeaturedBlueprints: async () => FEATURED }
 
@@ -821,12 +1319,291 @@ describe('a space’s page', () => {
     })
   })
 
+  it('says under the name the role the space reports, where the user’s list has a lower one', async () => {
+    // The user's list has them as a `use` member of Design; they are an admin of a space above it.
+    const { space, openSpace } = heldSpace(DESIGN, { inherited: 'admin' })
+    const info = deferred<SpaceInfo>()
+    space.getInfo.mockReturnValueOnce(info.promise)
+    await renderAt(`/spaces/${DESIGN.id}`, { api: { openSpace } })
+
+    // Nothing says a role before the space has: the list's is not shown meanwhile.
+    expect(document.body.textContent).not.toContain('Your role')
+
+    await act(async () => { info.resolve({ ...DESIGN, role: 'admin' }) })
+    await pageNamed('Design')
+    expect(document.body.textContent).toContain('Your role: Admin')
+    expect(document.body.textContent).not.toContain('Your role: Use')
+  })
+
+  it('shows the way up when the space reports a parent: a link to each space above that the user can open, outermost first', async () => {
+    await renderAt(`/spaces/${OPS.id}`, NESTED)
+
+    expect(heading()).toBe('Ops')
+    expect(crumbs()).toEqual([
+      ['Platform', `/spaces/${PLATFORM.id}`],
+      ['Infra', `/spaces/${INFRA.id}`],
+    ])
+    // The way up comes before the name.
+    const title = document.body.querySelector('h1')!
+    expect(breadcrumb()!.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it.each<[string, SpaceInfo, { others?: SpaceInfo[] }]>([
+    ['a team space that is inside no other', PLATFORM, {}],
+    // The user was added to Infra itself and holds no role in Platform, which Infra is inside.
+    ['a sub-space the user was only added to', INFRA, { others: [INFRA] }],
+  ])('shows no way up, and opens no other space, for a space that reports no parent: %s', async (_case, space, options) => {
+    const { openSpace } = await renderAt(`/spaces/${space.id}`, options)
+
+    expect(heading()).toBe(space.name)
+    expect(breadcrumb()).toBeNull()
+    // No line is kept for a way up either: the name is the first thing in the header.
+    expect(document.body.querySelector('header')!.firstElementChild!.firstElementChild)
+      .toBe(document.body.querySelector('h1'))
+    expect(new Set(openSpace.mock.calls.map(([id]) => id))).toEqual(new Set([space.id]))
+  })
+
+  it('shows the way up as far as the server lets the user open it', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Infra names Platform as the space it is inside, and Platform has dropped the user since.
+    const { openSpace } = await renderAt(`/spaces/${OPS.id}`, { ...NESTED, strangerTo: PLATFORM.id })
+
+    expect(crumbs()).toEqual([['Infra', `/spaces/${INFRA.id}`]])
+    expect(openSpace).toHaveBeenCalledWith(PLATFORM.id)
+    // Nothing says that there is more above.
+    expect(document.body.querySelector('header')!.textContent).not.toContain('…')
+    expect(breadcrumb()!.querySelectorAll('li')).toHaveLength(1)
+    expect(logged).not.toHaveBeenCalled()
+  })
+
+  it('calls the user’s personal space Personal in the way up', async () => {
+    await renderAt(`/spaces/${ARCHIVE.id}`, { others: [ARCHIVE], inside: { [ARCHIVE.id]: { inherited: 'admin' } } })
+
+    expect(heading()).toBe('Archive')
+    expect(crumbs()).toEqual([['Personal', `/spaces/${PERSONAL.id}`]])
+  })
+
+  it('goes to the space above from its crumb', async () => {
+    const { router } = await renderAt(`/spaces/${OPS.id}`, NESTED)
+
+    await click(breadcrumb()!.querySelectorAll('a')[1])
+    await pageNamed('Infra')
+
+    expect(router.state.location.pathname).toBe(`/spaces/${INFRA.id}`)
+    expect(crumbs()).toEqual([['Platform', `/spaces/${PLATFORM.id}`]])
+  })
+
+  it.each(['admin', 'build'] as const)('offers a member whose role is %s a new space inside the space, named for it', async (role) => {
+    const lab = teamSpace(idOf('9'), 'Lab', role)
+    await renderAt(`/spaces/${lab.id}`, { others: [lab] })
+
+    expect(heading()).toBe('Lab')
+    expect(button('New space in Lab').textContent).toBe('New space')
+    // Between the space's members and a workspace in it.
+    const entries = [...document.body.querySelectorAll('header button, header a')]
+      .map(entry => entry.getAttribute('aria-label'))
+    expect(entries).toEqual(['Members of Lab', 'New space in Lab', 'New workspace in Lab'])
+  })
+
+  it('offers a use member no new space', async () => {
+    await renderAt(`/spaces/${DESIGN.id}`)
+
+    expect(document.body.textContent).toContain('Your role: Use')
+    expect(offersNewSpace()).toBe(false)
+    expect(hasButton('Members of Design')).toBe(true)
+  })
+
+  it('goes by the role the space reports: a member given use there who is an admin above is offered a new space', async () => {
+    const { openSpace } = heldSpace(DESIGN, { inherited: 'admin' })
+    await renderAt(`/spaces/${DESIGN.id}`, { api: { openSpace } })
+
+    expect(hasButton('New space in Design')).toBe(true)
+  })
+
+  it('offers the owner of a personal space a new space inside it', async () => {
+    await renderAt(`/spaces/${PERSONAL.id}`)
+
+    await click(button('New space in Personal'))
+
+    expect(dialogTitle()).toBe('New space in Personal')
+  })
+
+  it('creates a sub-space from a name alone and goes to its page, whose heading takes the focus', async () => {
+    const { platform, openSpace } = platformWithCreations()
+    const { router, listSpaces } = await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+
+    await click(button('New space in Platform'))
+    expect(dialogTitle()).toBe('New space in Platform')
+    expect([...openDialog()!.querySelectorAll('input, textarea, select')]).toEqual([labeledInput('Name')])
+    await type(labeledInput('Name'), '  Field notes ')
+    await click(button('Create'))
+    await pageNamed('Field notes')
+
+    expect(platform.createSubspace).toHaveBeenCalledExactlyOnceWith('Field notes')
+    expect(router.state.location.pathname).toBe(`/spaces/${platform.subspaces()[0].id}`)
+    expect(openDialog()).toBeNull()
+    expect(crumbs()).toEqual([['Platform', `/spaces/${PLATFORM.id}`]])
+    expect(document.activeElement).toBe(document.body.querySelector('h1'))
+    // A sub-space joins nobody's list of spaces, which is not read again.
+    expect(listSpaces).toHaveBeenCalledOnce()
+  })
+
+  it('hands the focus back to New space when the space inside this one is not created', async () => {
+    await renderAt(`/spaces/${PLATFORM.id}`)
+    const newSpace = button('New space in Platform')
+    newSpace.focus()
+
+    await click(newSpace)
+    expect(document.activeElement).toBe(labeledInput('Name'))
+    await pressEscape()
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(document.activeElement).toBe(newSpace)
+  })
+
+  it('keeps the space being named inside a space through a replaced session', async () => {
+    const { router, rerender, session } = await renderAt(`/spaces/${PLATFORM.id}`)
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+
+    // The new session answers neither its flags nor its workspaces yet.
+    const flags = deferred<{ spaces: boolean }>()
+    const gadgets = deferred<WorkspaceMetadataWithTimestamps[]>()
+    await rerender(<RouterProvider router={router} />, session({
+      getUiFeatureFlags: () => flags.promise,
+      listWorkspaces: () => gadgets.promise,
+    }))
+    await settle()
+    expect(labeledInput('Name').value).toBe('Field notes')
+    expect(hasButton('New space in Platform')).toBe(true)
+
+    await act(async () => {
+      flags.resolve({ spaces: true })
+      gadgets.resolve(GADGETS)
+    })
+    await settle()
+    expect(labeledInput('Name').value).toBe('Field notes')
+    expect(dialogTitle()).toBe('New space in Platform')
+  })
+
+  it('keeps the space being named inside a space over a read of the space that failed, and still creates it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { platform, openSpace } = platformWithCreations()
+    const { router, rerender, session } = await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+
+    // The session that replaces the first cannot read the space.
+    platform.getInfo.mockRejectedValueOnce(new Error('boom'))
+    await rerender(<RouterProvider router={router} />, session())
+    await settle()
+    expect(alerts()).toEqual(['Couldn’t load this space.Try again'])
+    expect(heading()).toBeUndefined()
+    expect(dialogTitle()).toBe('New space in Platform')
+    expect(labeledInput('Name').value).toBe('Field notes')
+
+    await click(button('Create'))
+    await pageNamed('Field notes')
+    expect(platform.createSubspace).toHaveBeenCalledExactlyOnceWith('Field notes')
+    expect(openDialog()).toBeNull()
+  })
+
+  it('gives Try again the focus when the space being named is dismissed over a read of the space that failed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { platform, openSpace } = platformWithCreations()
+    const { router, rerender, session } = await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+    await click(button('New space in Platform'))
+
+    // The session that replaces the first cannot read the space: the header goes, and the
+    // button the dialog was opened from with it.
+    platform.getInfo.mockRejectedValueOnce(new Error('boom'))
+    await rerender(<RouterProvider router={router} />, session())
+    await settle()
+    expect(hasButton('New space in Platform')).toBe(false)
+    expect(dialogTitle()).toBe('New space in Platform')
+
+    await pressEscape()
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(document.activeElement).toBe(button('Try again'))
+  })
+
+  it('takes the space being named away with the page of a space that refuses the user, and does not bring it back', async () => {
+    const { router, rerender, session } = await renderAt(`/spaces/${PLATFORM.id}`)
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+
+    // The session that replaces the first finds that the space has dropped the user.
+    await rerender(<RouterProvider router={router} />, session({ openSpace: () => fakeSpace(PLATFORM, []) }))
+    await shown(showsNotFound)
+    expect(openDialog()).toBeNull()
+
+    // The one after it finds them a member again.
+    await rerender(<RouterProvider router={router} />, session())
+    await pageNamed('Platform')
+    expect(openDialog()).toBeNull()
+  })
+
+  it('goes to the sub-space a creation with no answer made, and makes no second one, when it is created again', async () => {
+    const { platform, openSpace } = platformLosingAnAnswer()
+    const { router } = await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+    await click(button('Create'))
+    await settle()
+    expect(alerts()).toEqual([NO_ANSWER])
+    await click(button('Create'))
+    await pageNamed('Field notes')
+
+    expect(platform.createSubspace).toHaveBeenCalledOnce()
+    expect(platform.subspaces()).toHaveLength(1)
+    expect(router.state.location.pathname).toBe(`/spaces/${platform.subspaces()[0].id}`)
+  })
+
+  it('shows the card of the sub-space a creation with no answer made once the dialog is closed', async () => {
+    const { platform, openSpace } = platformLosingAnAnswer()
+    await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+    await click(button('Create'))
+    await settle()
+    expect(subspaceCards('Platform')).toEqual([])
+    await click(button('Cancel'))
+    await settle()
+
+    expect(openDialog()).toBeNull()
+    expect(subspaceCards('Platform')).toEqual([['Field notes', `/spaces/${platform.subspaces()[0].id}`]])
+  })
+
+  it('shows the server’s refusal at the depth limit in the dialog, and stays on the page', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { space, openSpace } = heldSpace(PLATFORM)
+    space.createSubspace.mockRejectedValueOnce(new Error(DEPTH_LIMIT))
+    const { router } = await renderAt(`/spaces/${PLATFORM.id}`, { api: { openSpace } })
+
+    await click(button('New space in Platform'))
+    await type(labeledInput('Name'), 'Field notes')
+    await click(button('Create'))
+    await settle()
+
+    expect(alerts()).toEqual([DEPTH_LIMIT])
+    expect(dialogTitle()).toBe('New space in Platform')
+    expect(router.state.location.pathname).toBe(`/spaces/${PLATFORM.id}`)
+    expect(heading()).toBe('Platform')
+  })
+
   it('is not found, and makes no spaces call, while the flag is off', async () => {
     // An id the route would ask about, so that it is the flag that stops the calls.
     const { openSpace, listSpaces } = await renderAt(`/spaces/${PLATFORM.id}`, { spacesFlag: false })
 
     expect(showsNotFound()).toBe(true)
     expect(heading()).toBeUndefined()
+    expect(breadcrumb()).toBeNull()
+    expect(offersNewSpace()).toBe(false)
     expect(openSpace).not.toHaveBeenCalled()
     expect(listSpaces).not.toHaveBeenCalled()
   })

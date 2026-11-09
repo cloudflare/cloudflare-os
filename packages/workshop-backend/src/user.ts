@@ -1842,17 +1842,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Records that this user is a member of a space, as `info` describes it for them. Pushed by the
-   * space when their membership changes and whenever they open it. Presentation only, like
-   * recordSharedWorkspaceOpen(): the space's member list stays the authority.
+   * Records that this user was given a role in a space, as `info` describes it for them. Pushed
+   * by the space when that role changes and whenever they open it. Presentation only, like
+   * recordSharedWorkspaceOpen(): the spaces' member lists stay the authority.
    */
   async recordSpaceMembership(info: SpaceInfo): Promise<void> {
     this.storage.spaces.put(info);
   }
 
   /**
-   * Drops a space from this user's listing: they were removed from it, or it refused to open for
-   * them. Like forgetSharedWorkspace(), it grants and revokes nothing.
+   * Drops a space from this user's listing: they were removed from it, or they opened it with
+   * no role given in it. Like forgetSharedWorkspace(), it grants and revokes nothing.
    */
   async forgetSpace(id: string): Promise<void> {
     this.storage.spaces.delete(id);

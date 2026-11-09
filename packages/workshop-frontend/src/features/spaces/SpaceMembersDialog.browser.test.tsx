@@ -268,6 +268,47 @@ describe('SpaceMembersDialog in a browser', () => {
     await expect.element(page.getByRole('button', { name: 'Leave', exact: true })).toHaveFocus()
   })
 
+  it('gives the member list the focus when a leave that leaves the user a member takes Leave away, and shows what happened', async () => {
+    // Infra, inside Platform: the user was added to Infra itself and holds a role in Platform.
+    const space = fakeSpace(
+      teamSpace('infra', 'Infra', 'use', 'platform'),
+      [member(ME, 'use'), member(ADA, 'admin')],
+      [],
+      { inherited: 'build' },
+    )
+    const onLeft = vi.fn<() => void>()
+    await mount(
+      <SpaceMembersDialog spaceId="infra" onClose={() => {}} onLeft={onLeft} />,
+      fakeApi({ openSpace: () => space.stub }),
+    )
+    await expect.element(memberList()).toBeVisible()
+    const leaveSpace = page.getByRole('button', { name: 'Leave space' })
+    const leave = page.getByRole('button', { name: 'Leave', exact: true })
+
+    // By keyboard alone: the question takes the focus to Cancel, and Leave is next.
+    await act(async () => (leaveSpace.element() as HTMLElement).focus())
+    await input(() => userEvent.keyboard('{Enter}'))
+    await expect.element(page.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await input(() => userEvent.tab())
+    await expect.element(leave).toHaveFocus()
+    await input(() => userEvent.keyboard('{Enter}'))
+
+    await expect.element(leave).not.toBeInTheDocument()
+    await expect.element(leaveSpace).not.toBeInTheDocument()
+    // Leave went with the user's place in the list, and the list has the focus it had.
+    await expect.element(memberList()).toHaveFocus()
+    expect(space.members().map(({ profile }) => profile.id)).toEqual([ADA.id])
+    expect(onLeft).not.toHaveBeenCalled()
+
+    // What happened is on screen, in the dialog's body above the list, and not only announced.
+    const shown = page.getByText('You are no longer one of this space’s own members.', { exact: false }).first()
+    await expect.element(shown).toBeVisible()
+    expect(shown.element().matches('.sr-only, [role="status"]')).toBe(false)
+    expect(rectOf(shown.element()).width).toBeGreaterThan(200)
+    expect(isInside(rectOf(shown.element()), rectOf(scrollingBodyOf(memberList().element())!))).toBe(true)
+    expect(rectOf(shown.element()).bottom).toBeLessThanOrEqual(rectOf(memberList().element()).top)
+  })
+
   it.each([
     ['somebody else', [{ id: 'carol.b@example.com', name: 'Carol B' }]],
     ['nobody', []],
