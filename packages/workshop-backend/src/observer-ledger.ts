@@ -14,7 +14,7 @@
 //   never replace it: an observation omitting `subresources` is checked by nothing here, and
 //   admission runs every connection's addObserver() as well as the checks here.
 
-import type { WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { CollaboratorAccess, WorkpieceId } from "@gadgets/workshop-shared/api";
 import type {
   Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -128,6 +128,13 @@ export interface ObserverLedgerHost {
    * and any gadget that reaches it through an agent spawner.
    */
   gadgetsReaching(gadgetId: WorkpieceId): WorkpieceId[];
+
+  /**
+   * `graph`, the access the sharing graph gives `profileId`, joined with the role the Overseer
+   * remembers giving them as a member of the workspace's space (see OverseerImpl.#spaceRoles).
+   */
+  accessWithSpaceRole(profileId: string, graph: CollaboratorAccess | undefined)
+      : CollaboratorAccess | undefined;
 }
 
 /**
@@ -277,6 +284,8 @@ export class ObserverLedger {
   // Everyone who can see what `context` reads: "build" collaborators always, anyone with access
   // for a workspace read (which every chat and gadget includes), and for a gadget's read, those
   // whose access includes a gadget that reaches it -- whether or not they have opened that gadget.
+  // Access counts the space role the Overseer remembers of a member, as it does of everyone who
+  // holds a session through one (see ObserverLedgerHost.accessWithSpaceRole).
   //
   // Observers without a choice for this connection have had no session holding anything whose
   // verification scope it entered since (every widening restarts the sessions holding what
@@ -293,7 +302,8 @@ export class ObserverLedger {
     let audience: ObservationRecipient[] = [];
     // Listed up front: resolving readers lists other collections, which would end this listing.
     for (let observer of Array.from(this.#storage.observers.list())) {
-      let access = effective.get(observer.profileId);
+      let access = this.host.accessWithSpaceRole(
+          observer.profileId, effective.get(observer.profileId));
       let accountId = observer.accountChoices[gatekeeperId];
       if (access === undefined || accountId === undefined) continue;
       if (access.role !== "build" && context.type !== "workspace") {

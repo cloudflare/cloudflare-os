@@ -748,6 +748,14 @@ export function sanitizeMessageFormatRefs(
 // collaborator roles.
 type SessionKind = CollaboratorRole | "owner";
 
+// Joins the access the sharing graph gives a profile with the role their membership of the
+// workspace's space does: "build" there opens the whole workspace and "use" every gadget of it.
+function joinSpaceRole(graph: CollaboratorAccess | undefined, role: CollaboratorRole | undefined)
+    : CollaboratorAccess | undefined {
+  if (!role || graph?.role === "build") return graph;
+  return role === "build" ? {role} : {role, gadgetIds: "all"};
+}
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -5743,7 +5751,7 @@ class OverseerImpl implements AgentHooks {
                              hookId?: number): Promise<void> {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
-    // observer could reach it -- either they have lost access in the sharing graph, or this
+    // observer could reach it -- either they have lost access, a space role's included, or this
     // connection is outside their access's forward reach. See docs/observers.md, Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
@@ -6230,6 +6238,28 @@ class OverseerImpl implements AgentHooks {
   // gatekeeperVendorId because observerVendorId throws on a legacy record without creationSpec.
   async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
+    // Access, here and above, joins the space role remembered (see "Space roles"), so the space is
+    // asked first about every named observer not yet at "build", and again about whoever the graph
+    // drops during a wait: the classification below then awaits nothing.
+    let accessOf = (profileId: string) =>
+        this.accessWithSpaceRole(profileId, sharing.getEffectiveAccess(profileId));
+    let asked = new Set<string>();
+    for (;;) {
+      let unresolved = observerIds.flatMap(observerId => {
+        let profileId = this.storage.observers.byObserverId.get(observerId)?.profileId;
+        return profileId === undefined || asked.has(profileId) ||
+            accessOf(profileId)?.role === "build" ? [] : [profileId];
+      });
+      if (unresolved.length === 0) break;
+      await Promise.all(unresolved.map(profileId => {
+        asked.add(profileId);
+        return this.#lookUpSpaceRole(profileId);
+      })).catch(() => {
+        throw new Error(
+            "This observation was blocked because it could not be confirmed that everyone it " +
+            "must be kept from is unable to reach this workspace. Please retry.");
+      });
+    }
     let vendorless = !gatekeeperVendorId(this.storage.gatekeepers.get(gatekeeperId));
     let reachingGadgets: WorkpieceId[] | undefined;
 
@@ -6238,7 +6268,7 @@ class OverseerImpl implements AgentHooks {
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
       if (!observer) continue;  // not an active observer -> ignore
-      let access = sharing.getEffectiveAccess(observer.profileId);
+      let access = accessOf(observer.profileId);
       if (!access) {
         unauthorized.push(observer);
         continue;
@@ -10414,8 +10444,14 @@ class OverseerImpl implements AgentHooks {
   // so a stale one grants nothing on its own. See observers-implementation-plan.md §5 Step 6.
   async tearDownLostObservers(affected: AffectedCollaborator[]): Promise<void> {
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
-    for (let entry of affected) {
-      if (entry.newAccess !== null) continue;  // narrowed but still has access -> keep record
+    // Whoever the space still gives a role, or may (see "Space roles"), can still open the
+    // workspace and keeps the record, with the account choices in it. All are asked about at once,
+    // since a restart is a moment away (see removeCollaborator()).
+    let lost = affected.filter(entry =>
+        entry.newAccess === null && this.storage.observers.get(entry.profile.id));
+    let kept = await Promise.all(lost.map(entry =>
+        this.#lookUpSpaceRole(entry.profile.id).then(role => !!role, () => true)));
+    for (let entry of lost.filter((_, nth) => !kept[nth])) {
       let observer = this.storage.observers.get(entry.profile.id);
       if (!observer) continue;
       this.storage.observers.delete(observer.profileId);
@@ -10457,6 +10493,109 @@ class OverseerImpl implements AgentHooks {
     await work;
   }
 
+  // --- Space roles ---
+  //
+  // A member of the space this workspace belongs to holds a role on it, "build" or "use", while
+  // that space lists it (see docs/spaces.md). It is joined with the access the sharing graph
+  // gives them (joinSpaceRole()) wherever this object decides what a non-owner can reach: what
+  // they may open (#accessToOpen()), whether they can reach what the workspace has read
+  // (#enforceExcludeObservers(), tearDownLostObservers()) and whether a read is checked against
+  // them (accessWithSpaceRole()). It never counts toward what they may share, which SharingManager
+  // decides from the graph alone, nor toward their own record of the workspace (see open()).
+  //
+  // None of it is stored here. The owner's User DO is asked, which asks the one space its record
+  // of the workspace points at, and that space tells this object when a role it gave out no
+  // longer holds (revokeSpaceRole()). Nobody is asked about a profile the graph already gives
+  // "build", the most either can. What no answer means is for each of the three askers to say:
+  // an open goes by the graph alone; a collaborator the graph dropped keeps their observer record,
+  // which is harmless left over; an observation that excludes observers is blocked, since there
+  // it must never read as "cannot reach".
+
+  // The highest space role each profile has been given since space roles were last taken from
+  // them. Whoever holds a session through a space role, or anything such a session handed out,
+  // has an entry, so taking an entry away is what restarts the workspace (revokeSpaceRole()),
+  // and with no entry there is nothing to end. An entry also stands for the space's answer where
+  // none can be awaited (accessWithSpaceRole()). That errs toward the higher role until the space
+  // says otherwise, except that the space does not tell this object of a member it raised, so
+  // #enforceExcludeObservers() asks again about an entry of "use".
+  #spaceRoles = new Map<string, CollaboratorRole>();
+
+  // The lookups in flight, each with the profile it is for.
+  #spaceRoleLookups = new Set<{ profileId: string }>();
+
+  // How many times space roles have been taken away. A lookup in flight across one may carry an
+  // answer given before it, so it is not trusted.
+  #spaceRolesTaken = 0;
+
+  // ObserverLedgerHost: `graph` joined with the space role remembered of `profileId`.
+  accessWithSpaceRole(profileId: string, graph: CollaboratorAccess | undefined)
+      : CollaboratorAccess | undefined {
+    return joinSpaceRole(graph, this.#spaceRoles.get(profileId));
+  }
+
+  // Asks which role membership of the workspace's space gives `profileId`, and remembers one it
+  // is given. A workspace with no owner gives none, with nobody asked: the owner's record is what
+  // places a workspace in a space. Throws, having logged it, if the lookup fails or if roles were
+  // taken away while it was in flight. With `askAgain`, an answer overtaken that way is first
+  // asked for once more, from the top: the roles taken are usually someone else's.
+  async #lookUpSpaceRole(profileId: string, askAgain = false)
+      : Promise<CollaboratorRole | undefined> {
+    if (!this.ownerId) return undefined;
+    let taken = this.#spaceRolesTaken;
+    let id = this.ctx.id.toString();
+    let lookup = { profileId };
+    this.#spaceRoleLookups.add(lookup);
+    let role: CollaboratorRole | null;
+    try {
+      role = await retryOnDoReset(
+          () => this.ownerUserDo().workspaceRoleInSpace(id, profileId), this.logger)
+          .finally(() => this.#spaceRoleLookups.delete(lookup));
+      if (taken !== this.#spaceRolesTaken && !askAgain) {
+        throw new Error("This workspace's space roles changed while one was being looked up.");
+      }
+    } catch (error) {
+      this.logger.warn("space role lookup failed", {event: "space.role.lookup.failed", error});
+      throw error;
+    }
+    if (taken !== this.#spaceRolesTaken) return this.#lookUpSpaceRole(profileId);
+    if (!role) return undefined;
+    let known = this.#spaceRoles.get(profileId);
+    if (known !== "build") this.#spaceRoles.set(profileId, role);
+    return role;
+  }
+
+  // The space took back the role it gave `profileId` (see OverseerDurableObject
+  // .revokeSpaceAccess()). Every open asks the space afresh, so all there is to end is what this
+  // object did with the role: a lookup of it in flight is not trusted, and if one was given, the
+  // workspace restarts, as when a collaborator is removed, and each client reopens and is
+  // authorized again. That does not go by which sessions are counted live: a client can keep
+  // what a session handed out after closing it. A revocation of a role this object neither
+  // remembers nor is asking for changes nothing: a space that stops listing the workspace sends
+  // one for every lease it holds on it, and those must neither restart the workspace nor
+  // overtake another's lookup. Nor does any change a workspace being deleted, which has no owner:
+  // a restart would cut short the removals deleteSelf() awaits before ending every session.
+  revokeSpaceRole(profileId: string): void {
+    if (!this.ownerId) return;
+    let given = this.#spaceRoles.delete(profileId);
+    let asking = [...this.#spaceRoleLookups].some(lookup => lookup.profileId === profileId);
+    if (!given && !asking) return;
+    this.#spaceRolesTaken++;
+    if (given) {
+      this.scheduleAccessRestart(
+          "Gadget restarted because a member's access through its space changed.");
+    }
+  }
+
+  // What `profileId` may open: the graph's access, read once the space has answered, joined with
+  // the role it answered. Not with the one remembered: a member the space lowered or removed
+  // opens with what is left to them, whether or not its revocation has arrived.
+  async #accessToOpen(profileId: string): Promise<CollaboratorAccess | undefined> {
+    let sharing = await this.getSharingManager();
+    let spaceRole = sharing.getEffectiveAccess(profileId)?.role === "build" ? undefined
+        : await this.#lookUpSpaceRole(profileId, true).catch(() => undefined);
+    return joinSpaceRole(sharing.getEffectiveAccess(profileId), spaceRole);
+  }
+
   // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
   // pass through: resolve the caller's effective access, then verify a "build" collaborator as an
   // observer of everything this workspace has read. Returns null for no access; verification
@@ -10476,8 +10615,7 @@ class OverseerImpl implements AgentHooks {
         configureCb?: RpcStub<ObserverConfigCallback>;
         requireBuild?: boolean;
       } = {}): Promise<CollaboratorAccess | null> {
-    let sharing = await this.getSharingManager();
-    let access = sharing.getEffectiveAccess(profileId);
+    let access = await this.#accessToOpen(profileId);
     if (!access || (opts.requireBuild && access.role !== "build")) return null;
     if (access.role !== "build") return access;
 
@@ -10512,7 +10650,7 @@ class OverseerImpl implements AgentHooks {
       clientUser: DurableObjectStub<UserDurableObject>,
       gadgetId: WorkpieceId,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<boolean> {
-    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
+    let access = await this.#accessToOpen(profileId);
     if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
       return false;
     }
@@ -11029,6 +11167,17 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Tells this workspace that `profileId` no longer holds the role a space gave them on it: they
+   * were removed from the space or lowered in it, or the space no longer lists the workspace.
+   * Called by that space, which keeps calling until this returns (`SpaceDurableObject.alarm`),
+   * and never by a client. It can only end sessions, by restarting the workspace: no role is
+   * taken from the sharing graph, and every open asks the space again.
+   */
+  async revokeSpaceAccess(profileId: string): Promise<void> {
+    this.impl.revokeSpaceRole(profileId);
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
@@ -11119,7 +11268,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // the observer snapshot so every capability exposed to this collaborator has an observer.
       await ensureCapsules;
 
-      // Check authorization: compute the caller's effective access from the permission graph,
+      // Check authorization: compute the caller's effective access, their space role's included,
       // then verify a "build" collaborator may observe everything this Gadget has read through its
       // in-scope gatekeepers, configuring their connected accounts if needed. Observer
       // verification runs only after valid access is confirmed, so it never reveals gatekeeper or
@@ -11135,10 +11284,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       }
       access = effectiveAccess;
-      let role = access.role;
+      let role = sharing.getEffectiveAccess(profileId)?.role;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
-      // (or is refreshed on) their home page.
+      // (or is refreshed on) their home page, in the role the sharing graph gives them: that
+      // record is only ever brought up to date by a change to the graph, so a role held through
+      // the space would outlast the membership there. Someone who opens the gadget as a member
+      // of its space alone is no collaborator and gets no record: the space lists it for them.
       let title = this.impl.storage.title.get();
       let gadgetId = this.impl.ctx.id.toString();
       // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
@@ -11151,7 +11303,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         headUpdatedAt: meta.lastActive,
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
-      void (async () => {
+      if (role) void (async () => {
         try {
           const ownerProfile = await owner.whoami();
           await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role, notificationBaselines);
@@ -11999,6 +12151,15 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async setTitle(title: string): Promise<void> {
     this.impl.storage.title.put(title);
     await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
+  }
+
+  // Which space a workspace belongs to is recorded by its owner's User DO, which asks the space
+  // whether the owner may add to it. This object stores nothing about spaces.
+  async moveToSpace(spaceId: string | null): Promise<void> {
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can move it to another space.");
+    }
+    await this.#owner.setWorkspaceSpace(this.impl.ctx.id.toString(), spaceId);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -13554,6 +13715,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
+  async moveToSpace(_spaceId: string | null): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
