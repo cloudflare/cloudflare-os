@@ -1501,13 +1501,18 @@ class OverseerImpl implements AgentHooks {
       return;
     }
     if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
+      this.logger.warn("agent resume budget exhausted", {
+        event: "agent.resume.exhausted", chatId: record.chatId,
+      });
       this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
-          "The agent could not be resumed because its model lookup was interrupted too many times.");
+          "The agent could not be resumed because it was interrupted too many times without " +
+          "making progress.");
       finish();
       return;
     }
-    // Count before I/O, so an eviction during lookup cannot reset the budget. Successful
-    // preparation clears it: this budget never retries inference or external effects.
+    // Count before I/O, so a reset during the lookup or the resumed turn cannot reset the budget.
+    // Only the turn's next persisted step clears it (see commitAgentStep): a turn that resets
+    // the object before then would otherwise be resumed by every new instance.
     let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
     record = {...record, resumeAttempts};
     this.storage.activeAgents.put(record);
@@ -1561,8 +1566,6 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
-    delete record.resumeAttempts;
-    this.storage.activeAgents.put(record);
     await this.#runAgentTurn(
         record.chatId, aiModel, record.initiator, record.initiatorUserId, record.callbackInitiated,
         liveChat);
@@ -3408,6 +3411,13 @@ class OverseerImpl implements AgentHooks {
             content = applyCodeChange(content, change);
             this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
           }
+        }
+
+        // A persisted step is progress: the resume budget counts only resets since the last one.
+        let execution = this.storage.activeAgents.get(chatId);
+        if (execution?.resumeAttempts) {
+          delete execution.resumeAttempts;
+          this.storage.activeAgents.put(execution);
         }
 
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
