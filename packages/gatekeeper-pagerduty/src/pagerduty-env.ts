@@ -27,10 +27,14 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
 export const AUTHORIZE_URL = "https://identity.pagerduty.com/oauth/authorize";
 /** The token endpoint, for code exchange and refresh. PagerDuty documents no revocation endpoint. */
 export const TOKEN_URL = "https://identity.pagerduty.com/oauth/token";
-/** Who signs the ID tokens that say which user, account and region a grant belongs to. */
-export const ID_TOKEN_ISSUER = "https://identity.pagerduty.com/global/oauth/anonymous";
-/** The issuer's signing keys. */
-export const ID_TOKEN_JWKS_URL = `${ID_TOKEN_ISSUER}/jwks`;
+/**
+ * Who signs the ID tokens that say which user, account and region a grant belongs to: the
+ * discovery document's `issuer`. PagerDuty's ID-token page names `identity.pagerduty.com`, but its
+ * tokens and discovery document say `app.pagerduty.com`.
+ */
+export const ID_TOKEN_ISSUER = "https://app.pagerduty.com/global/oauth/anonymous";
+/** The issuer's signing keys: the discovery document's `jwks_uri`, on another host than the issuer. */
+export const ID_TOKEN_JWKS_URL = "https://identity.pagerduty.com/global/oauth/anonymous/jwks";
 
 /** The two regions an account can live in; each has its own REST and web hosts. */
 export type Region = "us" | "eu";
