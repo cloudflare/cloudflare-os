@@ -448,6 +448,76 @@ describe("agent tracing", () => {
     expect(reachedNext).not.toHaveBeenCalled();
   });
 
+  // Setup logs nothing as it goes, so a turn that sits in it says which step it is waiting in.
+  it.each<{ held: SetupCallName, step: string }>([
+    { held: "prepareChatBindings", step: "bindings" },
+    { held: "getChatAttachmentData", step: "replay" },
+    { held: "listConnectableVendors", step: "prompt" },
+  ])("warns that setup is slow while $held holds it, naming the $step step", async ({ held, step }) => {
+    let warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let slow = () => warnings.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+        .filter(entry => entry.event === "agent.setup.slow");
+    let entered = Promise.withResolvers<void>();
+    let answer = Promise.withResolvers<void>();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      let turn = startTurn([() => anthropicResponse([{ type: "text", text: "Done." }], "end_turn",
+          { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 })], { seed: impl => {
+        impl.storage.chats.put({
+          chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
+          author: OWNER, type: "message", message: "Please look.",
+          attachments: [{ id: crypto.randomUUID(), name: "a.txt", mimeType: "text/plain", size: 1 }],
+        });
+        let heldCall = impl[held].bind(impl);
+        impl[held] = async (...args) => {
+          entered.resolve();
+          await answer.promise;
+          return heldCall(...args);
+        };
+      } });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(slow()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(slow()).toMatchObject([
+        { chatId: CHAT_ID, step, durationMs: 30_000 },
+        { chatId: CHAT_ID, step, durationMs: 60_000 },
+      ]);
+      expect(slow()[0].executionId).toEqual(expect.any(String));
+
+      // The warning ends with setup: the model request that follows may take as long as it likes.
+      answer.resolve();
+      await turn.requested;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(slow()).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+      turn.release();
+      await turnSpans(turn);
+    } finally {
+      vi.useRealTimers();
+      warnings.mockRestore();
+    }
+  });
+
+  it("stops the slow-setup warning when setup throws", async () => {
+    let entered = Promise.withResolvers<void>();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let turn = startTurn([], { seed: impl => {
+        impl.prepareChatBindings = async () => {
+          entered.resolve();
+          throw new Error("no bindings");
+        };
+      } });
+      await entered.promise;
+      let spans = await turnSpans(turn);
+      expect(spans[0].attributes["error.type"]).toBe("Error");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("traces approval of actions an agent submits", async () => {
     let workspace = `agent-tracing-${crypto.randomUUID()}`;
     let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
