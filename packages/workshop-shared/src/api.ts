@@ -3686,6 +3686,14 @@ export interface Overseer extends RpcTarget {
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
 
   /**
+   * List the chat's connections: each gatekeeper bound in its agent's `env`, whether the chat
+   * started with it or gained it through a message, with what the agent did through it in this
+   * chat. Reading changes nothing, so a chat lists its starting connections only once its first
+   * turn has begun, and a pasted resource only once that turn has named it.
+   */
+  listChatBindings(chatId: number): Promise<ChatBindingInfo[]>;
+
+  /**
    * Subscribe to all new chat messages (across all threads), the agent's replies among them.
    *
    * If `startAt` is given, it must be a date in the past. All messages starting from that date
@@ -5948,11 +5956,11 @@ export interface WorkpiecesSubscriber {
 }
 
 /**
- * Information about one of a gadget's bindings, for display in the Connections tab. Returned by
- * GadgetClient.listBindings().
+ * A binding to a connection, for display: what GadgetBindingInfo and ChatBindingInfo have in
+ * common.
  */
-export type GadgetBindingInfo = {
-  /** The binding name, as it appears in the gadget worker's `env`. */
+export type ResourceBindingInfo = {
+  /** The binding name, as it appears in `env`. */
   name: string;
 
   /** The workpiece that the binding points at. */
@@ -5961,7 +5969,13 @@ export type GadgetBindingInfo = {
   /** Denormalized display info about the target. */
   resourceTitle: string;
   vendorId?: string;
+};
 
+/**
+ * Information about one of a gadget's bindings, for display in the Connections tab. Returned by
+ * GadgetClient.listBindings().
+ */
+export type GadgetBindingInfo = ResourceBindingInfo & {
   /**
    * If present, this binding is still provisional to the given chat (which is necessarily the
    * `chatId` passed to listBindings(); edges pending in other chats are never listed). It becomes
@@ -5969,6 +5983,36 @@ export type GadgetBindingInfo = {
    * is deleted if those changes are reverted.
    */
   chatId?: number;
+};
+
+/**
+ * One of a chat's connections: a gatekeeper bound in its agent's `env`. Returned by
+ * Overseer.listChatBindings().
+ */
+export type ChatBindingInfo = ResourceBindingInfo & {
+  /**
+   * The resource's browser URL, when known. A resource this chat's agent created has none until
+   * its creation is approved.
+   */
+  resourceUrl?: string;
+
+  /**
+   * The `urlPattern` of the vendor's SupportedResource for this resource's type, which names the
+   * type for display. Absent for always-available resources, whose vendors declare no types.
+   */
+  typeUrlPattern?: string;
+
+  /**
+   * The resource is one the agent can always use without requesting it (see
+   * AlwaysAvailableResource), such as Web Search, rather than a connection to someone's account.
+   */
+  alwaysAvailable: boolean;
+
+  /** This chat's agent created the resource, with createExternalResource. */
+  created: boolean;
+
+  /** An action this chat's agent queued through this connection has been approved. */
+  changed: boolean;
 };
 
 /**

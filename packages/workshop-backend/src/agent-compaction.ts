@@ -330,10 +330,24 @@ export function buildCompactionState(
     previous: CompactionCheckpoint | undefined)
     : Omit<CompactionCheckpoint, "chatId" | "compactedTo" | "summary"> {
   let compacted = messages.filter(message => message.sequence < compactedTo);
-  let chatBindings = new Map([...initialBindings, ...previous?.chatBindings ?? []]);
-  let nextChangeId = previous?.nextChangeId ?? 0;
+  return {
+    chatBindings: [...replayChatBindings(compacted, initialBindings, previous?.chatBindings)],
+    nextChangeId: (previous?.nextChangeId ?? 0) +
+        compacted.filter(message => message.type === "changes").length,
+    ...foldCompactedCode(messages, compactedTo, previous),
+  };
+}
 
-  for (let message of compacted) {
+/**
+ * The named bindings of a chat's env: the seed layer `seeds`, then an earlier checkpoint's
+ * `checkpointBindings` (which wins a name both hold), then what `messages` add. Shared by
+ * compaction and listChatBindings().
+ */
+export function replayChatBindings(
+    messages: AiChatMessage[], seeds: [string, ChatBindingEntry][],
+    checkpointBindings: [string, ChatBindingEntry][] = []): Map<string, ChatBindingEntry> {
+  let chatBindings = new Map([...seeds, ...checkpointBindings]);
+  for (let message of messages) {
     if (message.type === "message") {
       for (let capsule of message.capsules ?? []) {
         if (capsule.bindingName !== undefined && !chatBindings.has(capsule.bindingName)) {
@@ -374,15 +388,9 @@ export function buildCompactionState(
           chatBindings.set(bindingName, {type: "workpiece", id: worktreeId});
         }
       }
-      ++nextChangeId;
     }
   }
-
-  return {
-    chatBindings: [...chatBindings],
-    nextChangeId,
-    ...foldCompactedCode(messages, compactedTo, previous),
-  };
+  return chatBindings;
 }
 
 /**

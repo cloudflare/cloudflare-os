@@ -1297,6 +1297,26 @@ describe("connections blocked pending restart", () => {
     expect(names).not.toContain("blocked");
   }));
 
+  it("a blocked connection is left out of the chat's connections",
+      () => withImpl(async (impl) => {
+    joinSession(impl);
+    stubFacets(impl);
+    seedGatekeeper(impl, 1);
+    let blocked = await (await impl.addGatekeeper({}, CONNECTION_SPEC)).getId();
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    impl.storage.chatContext.put({ chatId: 1, bindings: { USABLE: 1, BLOCKED: blocked } });
+    let client = await openFakeOverseer(
+        { gatekeepers: impl.storage.gatekeepers, actions: impl.storage.actions },
+        { impl: {
+          loadChatHistory: (chatId: number) => impl.loadChatHistory(chatId),
+          getChatAgentContext: (chatId: number) => impl.getChatAgentContext(chatId),
+          gatekeeperUsable: (id: number) => impl.gatekeeperUsable(id),
+        } });
+
+    expect((await client.listChatBindings(1)).map(binding => binding.name)).toEqual(["USABLE"]);
+  }));
+
   it("usable ambient catalogs retry and refresh while blocked connections stay skipped",
       () => withImpl(async (impl) => {
     joinSession(impl);
