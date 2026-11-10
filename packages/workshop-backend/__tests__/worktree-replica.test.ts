@@ -8,6 +8,7 @@ import {buildPackStream, concatBytes, decodePackStream, encodeGitTree, gitObject
   type PackableObject} from "../src/git-codec";
 import {runAgent} from "../src/agent";
 import {byteStream} from "./git-cache-fixtures";
+import {deflateSync} from "node:zlib";
 import type {GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
 import type {WorktreeGitPullHints} from "@gadgets/workshop-shared/worktree-replica";
 
@@ -545,6 +546,73 @@ describe("worktree commands", () => {
     expect(parseGitTree(impl.gitCache.readLocalObject(dir.oid)!.payload)[0].mode).toBe("100755");
   }));
 
+  it("keeps a mode-only change against a deletion, as a conflict", () => withCommands(async (impl, id) => {
+    let result!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator) => {
+        const snapshots = await Promise.all([1, 2, 3, 4].map(() => replicator.snapshot()));
+        const from = snapshots[0].tree;
+        // b.txt: the command deletes what the workspace made executable; dir/c.txt the reverse.
+        const results = [
+          await commandResult(impl, from, {"b.txt": {mode: "100755", text: "bee\n"}}, true),
+          await commandResult(impl, from, {"b.txt": null}, true),
+          await commandResult(impl, from, {"dir/c.txt": null}, true),
+          await commandResult(impl, from, {"dir/c.txt": {mode: "100755", text: "sea\n"}}, true),
+        ];
+        for (const [i, {tree, pack}] of results.entries()) result = (await snapshots[i].command.submit(tree, pack())).tree;
+        return "ran";
+      },
+    });
+    const [output] = await turn(impl, [[execute("command")]]);
+    expect(await treeFiles(impl, result)).toEqual({"a.txt": BASE["a.txt"], "b.txt": "bee\n", "dir/c.txt": "sea\n"});
+    const modes = async (tree: string, prefix = ""): Promise<Record<string, string>> => {
+      const out: Record<string, string> = {};
+      for (const entry of parseGitTree(impl.gitCache.readLocalObject(tree)!.payload)) {
+        if (entry.mode === "40000") Object.assign(out, await modes(entry.oid, `${prefix}${entry.name}/`));
+        else out[prefix + entry.name] = entry.mode;
+      }
+      return out;
+    };
+    expect(await modes(result)).toEqual({"a.txt": "100644", "b.txt": "100755", "dir/c.txt": "100755"});
+    expect(output).toMatch(/conflicts in: [^\n]*b\.txt/);
+    expect(output).toMatch(/conflicts in: [^\n]*dir\/c\.txt/);
+  }));
+
+  it("refuses objects outside its pack and the snapshot, though the workspace holds them", () => withCommands(async (impl, id) => {
+    const refused: unknown[] = [];
+    let moved!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator) => {
+        const snapshot = await replicator.snapshot();
+        const secret = (await impl.gitCache.writeBlob(enc("secret\n"))).oid;
+        const submit = (tree: string, objects: PackableObject[]) => snapshot.command.submit(tree,
+          buildPackStream(objects.length, (async function* () { yield* objects; })())).catch((error: Error) => error.message);
+        const object = (oid: string) => impl.gitCache.readLocalObject(oid)!;
+        // Another worktree's tree, by its ID alone.
+        const other = await impl.gitCache.writeChangedTreeOf(snapshot.tree, new Map([["s.txt", "secret\n"]]));
+        refused.push(await submit(other, []));
+        // A tree in the pack naming a blob the workspace holds.
+        refused.push(await submit(other, [object(other)]));
+        // A thin pack, with a delta against that blob.
+        const delta = deflateSync(new Uint8Array([7, 6, 0x90, 6]));
+        const body = concatBytes([enc("PACK"), new Uint8Array([0, 0, 0, 2, 0, 0, 0, 1, (7 << 4) | 4]),
+          Uint8Array.from(secret.match(/../g)!, byte => parseInt(byte, 16)), delta]);
+        const thin = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
+        refused.push(await snapshot.command.submit(other, byteStream(thin)).catch((error: Error) => error.message));
+        // A file moved within the snapshot needs nothing but the new trees.
+        const b = parseGitTree(object(snapshot.tree).payload).find(entry => entry.name === "b.txt")!;
+        const tree = await impl.gitCache.writeChangedTreeOf(snapshot.tree,
+          new Map<string, {mode: "100644", oid: string} | null>([["b.txt", null], ["moved.txt", {mode: "100644", oid: b.oid}]]));
+        moved = (await submit(tree, [object(tree)]) as {tree: string}).tree;
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(refused).toEqual([expect.stringMatching(/neither in its pack nor in the snapshot/),
+      expect.stringMatching(/neither in its pack nor in the snapshot/), expect.stringMatching(/delta base .* is unavailable/)]);
+    expect(await treeFiles(impl, moved)).toEqual({"a.txt": BASE["a.txt"], "dir/c.txt": "sea\n", "moved.txt": "bee\n"});
+  }));
+
   it("installs nothing if the execution ends during the submission", () => withCommands(async (impl, id, base) => {
     let submitting!: Promise<unknown>;
     let finish!: () => void;
@@ -671,7 +739,7 @@ describe("worktree commands", () => {
     });
     await turn(impl, [[execute("command")]]);
     expect(refused).toEqual([expect.stringMatching(/symlinks and submodules/), expect.stringMatching(/\.git entry/),
-      expect.stringMatching(/\.git entry/), expect.stringMatching(/neither its pack nor the workspace holds/),
+      expect.stringMatching(/\.git entry/), expect.stringMatching(/neither in its pack nor in the snapshot/),
       expect.stringMatching(/is malformed/)]);
     expect(pins(impl)).toEqual([]);
   }));

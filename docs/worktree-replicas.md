@@ -165,11 +165,13 @@ nothing, so it may be retried.
 A worktree's submissions run one at a time. Each one:
 
 1. **Ingests the pack** into the Git cache. Files of any size are accepted: one over 1 MiB is
-   streamed into storage in chunks rather than held whole.
+   streamed into storage in chunks rather than held whole. A delta must be against an object of
+   the same pack (no thin packs).
 2. **Checks the submitted tree.** It diffs the snapshot's tree against the submitted one,
    descending only into subtrees whose IDs differ. Every object at a changed path must have come
-   in the pack, or be one the workspace has or can pull (for example a file the command moved
-   that the workspace never loaded). Each submitted tree must be canonical, as Git would write
+   in the pack, or be reachable from the snapshot's tree (for example a file the command moved).
+   The Git cache holds other worktrees' objects too, so a tree naming one, or a delta against
+   one, is refused: it would hand the submitter that object's content. Each submitted tree must be canonical, as Git would write
    it, which rejects invalid names such as `..`. A `.git` entry is refused, and so is a changed
    symlink or submodule, as the file tools refuse them.
 3. **Merges.** If the worktree hasn't changed since the snapshot, the result is the submitted
@@ -180,7 +182,7 @@ A worktree's submissions run one at a time. Each one:
    writing through the Worktree binding while the command ran, or two commands running in
    parallel.
    - Conflicting hunks get diff3-style conflict markers. A file deleted on one side and changed
-     on the other keeps the change.
+     on the other keeps the change, even if the change was only to its mode.
    - A binary file changed on both sides keeps the command's bytes, unless the command deleted
      it, even if the command changed only its mode.
    - All of these are reported as conflicts.

@@ -84,9 +84,9 @@ export class WorktreeReplicas {
                 pack: ReadableStream<Uint8Array>): Promise<WorktreeState> {
     validateGitOid(tree);
     this.requireLive();
-    await this.host.gitCache.consumePackFromGatekeeper(null, pack);
+    let packed = new Set(await this.host.gitCache.consumePackFromGatekeeper(null, pack, true));
     this.requireLive();
-    let submitted = await this.#diff(from, tree, true);
+    let submitted = await this.#diff(from, tree, packed);
     for (;;) {
       let current = await this.#currentTree(worktreeId);
       let result = current.tree === from ? { tree, conflicts: [] }
@@ -144,13 +144,21 @@ export class WorktreeReplicas {
     let conflicts: string[] = [];
     let sides = [new Map<string, string>(), new Map<string, string>(), new Map<string, string>()];
     let texts: { path: string, mode: FileEntry["mode"] }[] = [];
-    for (let [path, ours] of await this.#diff(from, current, false)) {
+    for (let [path, ours] of await this.#diff(from, current)) {
       let theirs = submitted.get(path);
       if (theirs === undefined) {
         changes.set(path, ours.to ? fileEntry(ours.to) : null);
         continue;
       }
       if (theirs.to?.oid === ours.to?.oid && theirs.to?.mode === ours.to?.mode) continue;
+      let kept = theirs.to ?? ours.to!;
+      if ((theirs.to === undefined || ours.to === undefined) && kept.oid === ours.from?.oid) {
+        // One side deleted the file and the other changed only its mode, which the text merge
+        // can't see: keep the change, as against any deletion.
+        changes.set(path, fileEntry(kept));
+        conflicts.push(path);
+        continue;
+      }
       // A mode merges on its own: one side's change of it survives the other's edit.
       let mode = theirs.to?.mode === ours.from?.mode ? ours.to?.mode ?? theirs.to?.mode
           : theirs.to?.mode ?? ours.to!.mode;
@@ -202,23 +210,30 @@ export class WorktreeReplicas {
 
   // The file paths that differ between trees `a` and `b`, descending only into subtrees that
   // differ, and faulting in trees the store lacks, as reads do. A changed symlink or submodule is
-  // refused, as the file tools refuse them, and so is a `.git` entry in `b`. If `submitted`, `b`
-  // is a submitted tree, and each object `b` has that `a` lacks at the same path must be one the
-  // pack stored, or one the workspace has or can pull (e.g. a file the command moved).
-  async #diff(a: GitOid, b: GitOid, submitted: boolean): Promise<Map<string, DiffChange>> {
+  // refused, as the file tools refuse them, and so is a `.git` entry in `b`. If `packed` is
+  // given, `b` is a submitted tree and `packed` the objects its pack held: each object `b` has
+  // that `a` lacks at the same path must be one of them, or else reachable from `a` (e.g. a file
+  // the command moved). The workspace holds other worktrees' objects too, so a submission
+  // naming one is refused, or it would hand the submitter that object's content.
+  async #diff(a: GitOid, b: GitOid, packed?: ReadonlySet<GitOid>)
+      : Promise<Map<string, DiffChange>> {
+    let submitted = packed !== undefined;
     let changes = new Map<string, DiffChange>();
     let cache = this.host.gitCache;
     let missing = new Set<GitOid>();
+    // Read only if the pack leaves something out, which needs every tree of `a`.
+    let reachable: Promise<Set<GitOid>> | undefined;
+    let require = async (oid: GitOid) => {
+      if (packed?.has(oid) || (await (reachable ??= this.#treeObjects(a))).has(oid)) return;
+      throw new Error(
+          `The submitted tree refers to ${oid}, which is neither in its pack nor in the snapshot.`);
+    };
     let entries = async (oid: GitOid | undefined, referencedBy: GitOid | undefined,
                          checked: boolean) => {
       if (oid === undefined) return new Map<string, GitTreeEntry>();
-      let tree;
-      try {
-        tree = await cache.ensureObject(
-            oid, { type: "tree", ...(referencedBy && { referencedBy }), eagerTree: true });
-      } catch (error) {
-        throw checked ? lacks(oid, error) : error;
-      }
+      if (checked) await require(oid);
+      let tree = await cache.ensureObject(
+          oid, { type: "tree", ...(referencedBy && { referencedBy }), eagerTree: true });
       let parsed = parseGitTree(tree.payload, oid);
       // A tree from a pack must be well formed: no entry names a tree can't hold (`..`, `a/b`),
       // and nothing else that writing its entries again wouldn't reproduce.
@@ -254,28 +269,35 @@ export class WorktreeReplicas {
         let change = { from: file(x, aTree), to: file(y, bTree) };
         if (change.from === undefined && change.to === undefined) continue;
         if (submitted && change.to !== undefined) {
+          await require(change.to.oid);
           // A stored blob's type is checked without reading it (blobSize throws for another
-          // type); the rest are pulled together below.
+          // type); the rest, from the snapshot, are pulled together below.
           if (cache.blobSize(change.to.oid) === undefined) missing.add(change.to.oid);
         }
         changes.set(path, change);
       }
     };
     await walk(a, b, "");
-    try {
-      await cache.ensureBlobs(missing);
-    } catch (error) {
-      throw lacks([...missing].find(oid => !cache.hasLocalObject(oid)) ?? "a blob", error);
-    }
+    await cache.ensureBlobs(missing);
     return changes;
   }
-}
 
-// The error for an object a submitted tree refers to that is nowhere to be had.
-function lacks(oid: GitOid, error: unknown): Error {
-  return new Error(
-      `The submitted tree refers to ${oid}, which neither its pack nor the workspace holds.`,
-      { cause: error });
+  // Every object reachable from tree `root`, reading only trees.
+  async #treeObjects(root: GitOid): Promise<Set<GitOid>> {
+    let objects = new Set([root]);
+    let stack: { oid: GitOid, referencedBy?: GitOid }[] = [{ oid: root }];
+    while (stack.length > 0) {
+      let { oid, referencedBy } = stack.pop()!;
+      let tree = await this.host.gitCache.ensureObject(
+          oid, { type: "tree", ...(referencedBy && { referencedBy }), eagerTree: true });
+      for (let entry of parseGitTree(tree.payload, oid)) {
+        if (entry.mode === "160000" || objects.has(entry.oid)) continue;
+        objects.add(entry.oid);
+        if (entry.mode === "40000") stack.push({ oid: entry.oid, referencedBy: oid });
+      }
+    }
+    return objects;
+  }
 }
 
 // Whether `payload` is the tree git itself would write for `entries`.

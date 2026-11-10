@@ -798,22 +798,27 @@ export class WorkspaceGitCache {
    * one throws, but in production it nearly doubled a vscode-size mount's CPU.
    *
    * A delta's base comes from the held objects, else from the store: whole if inline, or by
-   * range from a chunked blob (which includes one this pack streamed in earlier).
+   * range from a chunked blob (which includes one this pack streamed in earlier). If
+   * `selfContained`, the base must be an object of this pack, so that a pack can't borrow the
+   * content of objects its sender has no access to.
    *
    * A null `gatekeeperId` stores the objects attributed to no remote, as `importObjects` does
    * (for a replica's submission, see worktree-replica.ts).
    */
   async consumePackFromGatekeeper(gatekeeperId: WorkpieceId | null,
-                                  pack: ReadableStream<Uint8Array>)
+                                  pack: ReadableStream<Uint8Array>, selfContained = false)
       : Promise<GitOid[]> {
     let held = new Map<GitOid, PackableObject>();
     let stored: GitOid[] = [];
+    let inPack = new Set<GitOid>();
+    let usable = (oid: GitOid) => !selfContained || inPack.has(oid);
     let objects = decodePackStream(pack, {
       resolveBase: oid => {
+        if (!usable(oid)) return undefined;
         let object = held.get(oid) ?? this.#readLocalShallow(oid);
         return object?.payload === undefined ? undefined : object;
       },
-      resolveLargeBase: oid => this.openLocalBlob(oid),
+      resolveLargeBase: oid => usable(oid) ? this.openLocalBlob(oid) : undefined,
       openBlobSink: size => {
         if (size <= CHUNK_MAX_SIZE) return undefined;
         let writer = new BlobWriter(this.storage.gitObjects, size);
@@ -829,6 +834,7 @@ export class WorkspaceGitCache {
       },
     });
     for await (let { oid, ...object } of objects) {
+      inPack.add(oid);
       if (object.stored) {
         stored.push(oid);
       } else if (object.type === "blob") {
