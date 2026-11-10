@@ -9,16 +9,14 @@ import type {WorkspaceGitCache} from "./git-cache";
 type GitReads = Pick<WorkspaceGitCache, "ensureObject" | "ensureGitObjects" | "packEntry">;
 
 /**
- * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer. The
- * overseer decides where each object comes from; the client (e.g. Git in a container) only ever
- * sees one smart-HTTP repository.
+ * What `worktreeGitPull()` needs to know about one worktree, supplied by the overseer, which
+ * checks access before each pull. The overseer decides where each object comes from; the client
+ * (e.g. Git in a container) only ever sees one repository.
  */
 export interface WorktreeGitSource {
   /** The worktree's latest commit (WorktreeRecord.headCommit): advertised as HEAD. */
   head: string;
 
-  /** Throws if access has ended (e.g. the worktree or its chat was deleted). Called repeatedly. */
-  check(): void;
 
   /**
    * The trees that may be fetched by ID: those the running execution handed out (see
@@ -70,7 +68,6 @@ function checkHints(oids: string[], hints: WorktreeGitPullHints): void {
 export async function worktreeGitPull(cache: GitReads, source: WorktreeGitSource,
     oids: string[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
   checkHints(oids, hints);
-  source.check();
   const {pack, shallow} = await servePull(cache, source, {...hints, wants: oids,
     haves: hints.haves ?? [], shallow: hints.shallow ?? []});
   return gitPullTransferOf(pack, shallow);
@@ -133,12 +130,12 @@ async function treeFetch(cache: GitReads, source: WorktreeGitSource,
   if (boundary.size && !haves.length) {
     throw new Error("Fetch the worktree's head before fetching a snapshot tree.");
   }
-  const read = checkedRead(cache, source.check);
+  const read = objectReader(cache);
   const previous: string[] = [];
   for (const oid of haves) previous.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
   const objects: PackObjects = new Map();
   for (const tree of new Set(fetch.wants)) await collectTree(read, objects, tree, previous, new Map());
-  return {pack: packObjects(cache, objects, source.check), shallow: {shallow: [], unshallow: []}};
+  return {pack: packObjects(cache, objects), shallow: {shallow: [], unshallow: []}};
 }
 
 /**
@@ -152,9 +149,7 @@ async function localHistory(cache: GitReads, source: WorktreeGitSource,
   while (stack.length) {
     const oid = stack.pop()!;
     if (boundary.has(oid) || history.has(oid)) continue;
-    source.check();
     const commit = parseGitCommitRefs((await cache.ensureObject(oid, {type: "commit"})).payload);
-    source.check();
     history.set(oid, commit.parents);
     if (history.size > 100_000) throw new Error("Worktree history exceeds its object budget.");
     stack.push(...commit.parents);
@@ -222,7 +217,7 @@ async function wantsDeeperHistory(cache: GitReads, reached: Map<string, number>,
  */
 async function localPack(cache: GitReads, source: WorktreeGitSource,
     boundary: Set<string>, bases: string[], heads: string[], has: Set<string>): Promise<ReadableStream<Uint8Array>> {
-  const read = checkedRead(cache, source.check);
+  const read = objectReader(cache);
   const skip = new Set<string>();
   let level: string[] = [];
   for (const oid of bases) level.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
@@ -256,7 +251,7 @@ async function localPack(cache: GitReads, source: WorktreeGitSource,
   await collect(has, false, present, skip);
   const objects: PackObjects = new Map();
   await collect(heads, true, objects, {has: oid => skip.has(oid) || present.has(oid)});
-  return packObjects(cache, objects, source.check);
+  return packObjects(cache, objects);
 }
 
 /** Objects to send, by ID, with their types and the trees referring to blobs (for pull hints). */
@@ -265,16 +260,11 @@ type PackObjects = Map<string, {type: GitObjectType; referencedBy?: string}>;
 /** Objects to leave out of a pack, by ID. */
 type Known = {has(oid: string): boolean};
 
-/** Reads an object, faulting it in if needed, and checks access before and after. */
+/** Reads an object, faulting it in if needed. */
 type ReadObject = (oid: string, type: GitObjectType, referencedBy?: string) => Promise<PackableObject>;
 
-function checkedRead(cache: GitReads, requireLive: () => void): ReadObject {
-  return async (oid, type, referencedBy) => {
-    requireLive();
-    const object = await cache.ensureObject(oid, {type, referencedBy});
-    requireLive();
-    return object;
-  };
+function objectReader(cache: GitReads): ReadObject {
+  return (oid, type, referencedBy) => cache.ensureObject(oid, {type, referencedBy});
 }
 
 function addObject(objects: PackObjects, oid: string, type: GitObjectType, referencedBy?: string): void {
@@ -303,17 +293,10 @@ async function collectTree(read: ReadObject, objects: PackObjects, oid: string, 
   }
 }
 
-/** A pack of `objects`, checking access before and after each read, and at the end. */
-function packObjects(cache: GitReads, objects: PackObjects, requireLive: () => void)
-    : ReadableStream<Uint8Array> {
+/** A pack of `objects`. */
+function packObjects(cache: GitReads, objects: PackObjects): ReadableStream<Uint8Array> {
   async function* contents() {
-    for (const [oid, hint] of objects) {
-      requireLive();
-      const entry = await cache.packEntry(oid, {type: hint.type, referencedBy: hint.referencedBy});
-      requireLive();
-      yield entry;
-    }
-    requireLive();
+    for (const [oid, hint] of objects) yield await cache.packEntry(oid, {type: hint.type, referencedBy: hint.referencedBy});
   }
   return buildPackStream(objects.size, contents());
 }
@@ -337,7 +320,6 @@ async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remote
         refused = true;
         continue;
       }
-      source.check();
       const history = fetch.commitHistory;
       return await remote.pull([...remoteWants, ...bases], {
         type: "commit",

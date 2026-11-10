@@ -252,7 +252,8 @@ the Worktree endpoint for the execution that minted it:
 
 So passing a Worktree stub hands lasting access to that one worktree. A gatekeeper should store
 the stub with the replica, and can then mount in one turn and run commands in later turns,
-across workspace restarts. Deleting the worktree or its chat ends access. The stub is scoped to
+across workspace restarts. Deleting the worktree or its chat ends access (a fetch already
+streaming finishes). The stub is scoped to
 its worktree by the kernel, so it grants nothing beyond it; but a stub the agent passes to a
 gadget, not only to a gatekeeper, also keeps replica access.
 
@@ -309,8 +310,7 @@ history, so its clones and fetches then fail on the missing objects.
   proxied whole from a connection, rebased on the boundary. A commit wanted by ID is served only
   after the connection confirms it is in the head's history, with a commit-only fetch that claims
   the boundary commits as `have`s. This trusts the connection, since the data it protects is its
-  own repository. Nothing is stored in the workspace, and removing the connection cancels its
-  streams.
+  own repository. Nothing is stored in the workspace.
 - **Refused.** A fetch that needs both workspace commits and remote history (for example the
   head moved while a command was running Git) is refused, with an error telling the guest to
   fetch the worktree's head first. Merging a local pack with a proxied one risks duplicate

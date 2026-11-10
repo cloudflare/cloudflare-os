@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -1643,8 +1643,7 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.subscribe({
       add: () => this.markOutputsDirty(),
       update: () => this.markOutputsDirty(),
-      // Subscribers run before the row is deleted, so revoke once it is gone.
-      remove: () => { this.markOutputsDirty(); queueMicrotask(() => this.#revokeGitTransfers()); },
+      remove: () => this.markOutputsDirty(),
     });
 
     this.ctx.blockConcurrencyWhile(async () => {
@@ -5667,7 +5666,6 @@ class OverseerImpl implements AgentHooks {
 
     this.ctx.facets.delete(`gatekeeper${id}`);
     this.storage.gatekeepers.delete(id);
-    this.#revokeGitTransfers();
     this.#rebroadcastChatMeta(affectedChats);
   }
 
@@ -6940,43 +6938,29 @@ class OverseerImpl implements AgentHooks {
 
   async worktreeGitPull(chatId: number, worktreeId: number, oids: string[],
       hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
-    const check = () => this.#requireWorktreeAccess(chatId, worktreeId);
     const head = this.worktreeGitHead(chatId, worktreeId);
     const execution = this.#activeExecutions.get(chatId);
-    // Pull from a connection, ending the stream if worktree access ends or the connection is
-    // removed.
+    // Pull from a connection. Access is checked when a pull starts, not while its pack streams.
     const pullFrom = async (source: WorkpieceId, pulled: string[], pullHints: GitPullHints) => {
-      const live = () => {
-        check();
-        if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
-        this.assertGatekeeperUsable(source);
-      };
-      live();
+      this.assertGatekeeperUsable(source);
       const facet = await this.getGatekeeperFacet(source) as unknown as
           Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
-      live();
       const transfer = await facet.gitPull(pulled, pullHints);
-      // Revocation must also end a response that stalls before its pack starts.
-      const preamble = {check: live, abort: new AbortController()};
-      this.#gitTransfers.add(preamble);
+      let shallow: GitShallowInfo, pack: ReadableStream<Uint8Array>;
       try {
-        // Access may have ended while gitPull() was pending, before revocation could see this.
-        live();
-        const aborted = new Promise<never>((_, reject) => preamble.abort.signal.addEventListener("abort",
-          () => reject(preamble.abort.signal.reason), {once: true}));
-        const shallow = await Promise.race([transfer.shallowInfo(), aborted]);
-        const pack = await transfer.stream();
-        live();
-        return {shallow, pack: this.#checkedGitStream(pack, live, async () => {
-          const status = await transfer.status();
-          if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
-        }, () => transfer[Symbol.dispose]())};
+        shallow = await transfer.shallowInfo();
+        pack = await transfer.stream();
       } catch (error) {
         transfer[Symbol.dispose]();
         throw error;
-      } finally {
-        this.#gitTransfers.delete(preamble);
       }
+      // Pipe the pack through, failing its end unless the provider reports it complete.
+      const relay = new TransformStream<Uint8Array, Uint8Array>({async flush() {
+        const status = await transfer.status();
+        if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
+      }});
+      pack.pipeTo(relay.writable).catch(() => {}).finally(() => transfer[Symbol.dispose]());
+      return {shallow, pack: relay.readable};
     };
     // Mounting a worktree permits fetching any commit in its head's history. Each connection
     // with provenance for the history's remote-backed boundary commits can serve the rest of it
@@ -6985,7 +6969,7 @@ class OverseerImpl implements AgentHooks {
     const remotes = new Map<WorkpieceId, string[]>();
     for (const [commit, ids] of this.#remoteHistoryBoundaries(head))
       for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
-    return worktreeGitPull(this.gitCache, {head, check,
+    return worktreeGitPull(this.gitCache, {head,
       trees: execution?.replicas?.fetchableTrees(worktreeId) ?? new Set(),
       remotes: [...remotes].map(([id, haves]) => ({haves, pull: (pulled, pullHints) => pullFrom(id, pulled, pullHints)})),
     }, oids, hints);
@@ -7016,44 +7000,6 @@ class OverseerImpl implements AgentHooks {
       if (local?.type === "commit") stack.push(...parseGitCommitRefs(local.payload).parents);
     }
     return boundaries;
-  }
-
-  #gitTransfers = new Set<{check(): void; abort: AbortController}>();
-
-  #revokeGitTransfers(): void {
-    for (const transfer of this.#gitTransfers) {
-      try { transfer.check(); } catch (error) { transfer.abort.abort(error); }
-    }
-  }
-
-  #checkedGitStream(stream: ReadableStream<Uint8Array>, check: () => void,
-      complete?: () => Promise<void>, release?: () => void): ReadableStream<Uint8Array> {
-    const reader = stream.getReader();
-    const entry = {check, abort: new AbortController()};
-    this.#gitTransfers.add(entry);
-    const cancel = () => { void reader.cancel(entry.abort.signal.reason).catch(() => {}); };
-    entry.abort.signal.addEventListener("abort", cancel, {once: true});
-    let released = false;
-    const done = () => {
-      if (released) return;
-      released = true;
-      entry.abort.signal.removeEventListener("abort", cancel);
-      this.#gitTransfers.delete(entry);
-      release?.();
-    };
-    return new ReadableStream({
-      async pull(controller) {
-        try {
-          check(); entry.abort.signal.throwIfAborted();
-          const item = await reader.read();
-          check(); entry.abort.signal.throwIfAborted();
-          if (item.done) {
-            await complete?.(); check(); done(); controller.close();
-          } else controller.enqueue(item.value);
-        } catch (error) { done(); controller.error(error); await reader.cancel(error).catch(() => {}); }
-      },
-      async cancel(reason) { done(); await reader.cancel(reason); },
-    }, {highWaterMark: 0});
   }
 
   // Sessions are authorized and verified only when they open what they hold (the workspace, or

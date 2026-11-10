@@ -33,7 +33,7 @@ export default {
     const gitPull = (wants: string[], wantHints: WorktreeGitPullHints) => worktreeGitPull({ensureObject,
       packEntry: ensureObject, ensureGitObjects: async (oids, hints) => {
         if (hints.filterBlobSize === 0) for (const oid of oids) pulledTrees.add(oid);
-      }}, {head, check() {}, trees: new Set(fixture.trees),
+      }}, {head, trees: new Set(fixture.trees),
       remotes: fixture.boundary.length ? [{haves: fixture.boundary, pull: async (oids, hints) => {
         const {pack, shallowInfo} = await openGitPull(body => env.UPSTREAM.fetch("https://upstream.invalid/", {
           method: "POST", body}), oids, hints);

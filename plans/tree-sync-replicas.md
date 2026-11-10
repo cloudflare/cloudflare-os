@@ -287,9 +287,10 @@ Each commit keeps the backend separate from tests and docs where it can, for ker
   with the step's transcript or lost before its barrier, tree fetches only during the execution,
   stored stubs, retries, parallel submissions and writes, mode merging, an execution ending
   mid-submission, stale handles, file-versus-directory refusals, symlinks, `.git` entries and
-  missing objects) and fetches (the request check, the ancestry probe and its fallback to the
+  missing objects) and fetches (the pull's checks, the ancestry probe and its fallback to the
   next connection, deepens, the boundary pull from one connection, shallower clones, the
-  spanning refusal, and stream cancellation on removal and deletion).
+  spanning refusal, and refusal after deletion). Access is checked when a pull starts; a pack
+  already streaming is not cut off when access ends.
 - **`__tests__/native/worktree-git.test.ts`** runs native Git against workerd with a real
   `git upload-pack` upstream (`uploadpack.allowFilter` on, as GitHub and GitLab have): a clone
   shallow at a pushed commit then deepened, a clone with a merged-in second boundary, and the

@@ -273,32 +273,24 @@ export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
   async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
   /** A commit the history check reports as outside the worktree's history. */
   setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
-  /** Make later pulls stall before their pack starts. */
-  setStalled(): void { this.ctx.storage.kv.put("stalled", true); }
   /** The protocol-v2 fetch requests the pulls received, in order. */
   requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
   async gitPull(oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer> {
     return startGitPull(async request => {
       const body = new TextDecoder().decode(request);
       this.ctx.storage.kv.put("requests", [...this.requests(), body]);
-      if (hints.filterTreeDepth === 0) {
-        const unrelated = this.ctx.storage.kv.get<string>("unrelated");
-        // Only the pack header's object count matters to the check.
-        const header = new Uint8Array(12);
-        header.set(new TextEncoder().encode("PACK"));
-        new DataView(header.buffer).setUint32(4, 2);
-        new DataView(header.buffer).setUint32(8, unrelated && oids.includes(unrelated) ? 1 : 0);
-        const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
-        const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
-        return new Response(new Blob([encodePktLine("packfile"), band, FLUSH_PKT]));
-      }
-      if (this.ctx.storage.kv.get("stalled")) return new Response(new ReadableStream());
-      return new Response(new ReadableStream({start(controller) {
-        controller.enqueue(encodePktLine("shallow-info"));
-        for (const oid of oids) controller.enqueue(encodePktLine(`shallow ${oid}`));
-        controller.enqueue(DELIM_PKT);
-        controller.enqueue(encodePktLine("packfile"));
-      }}));
+      // A pack holding one object for a history check of an unrelated commit, else none.
+      const unrelated = this.ctx.storage.kv.get<string>("unrelated");
+      const count = hints.filterTreeDepth === 0 && unrelated && oids.includes(unrelated) ? 1 : 0;
+      const header = new Uint8Array(12);
+      header.set(new TextEncoder().encode("PACK"));
+      new DataView(header.buffer).setUint32(4, 2);
+      new DataView(header.buffer).setUint32(8, count);
+      const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
+      const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
+      const shallow = hints.filterTreeDepth === 0 ? [] :
+        [encodePktLine("shallow-info"), ...oids.map(oid => encodePktLine(`shallow ${oid}`)), DELIM_PKT];
+      return new Response(new Blob([...shallow, encodePktLine("packfile"), band, FLUSH_PKT]));
     }, oids, hints);
   }
 }

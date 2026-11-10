@@ -37,7 +37,7 @@ export default {
         const head = worktree.getWorktreeRecord().headCommit;
         return await serveGitUploadPack(new Request(url, request), {gitHead: async () => head,
           gitPull: (oids, hints) => worktreeGitPull(worktree.gitCache,
-            {head, check() {}, trees: replicas.fetchableTrees(0), remotes: []}, oids, hints)});
+            {head, trees: replicas.fetchableTrees(0), remotes: []}, oids, hints)});
       }
       switch (url.pathname) {
         case "/snapshot": {
