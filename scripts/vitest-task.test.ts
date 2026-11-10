@@ -301,6 +301,7 @@ describe("backend watchdog allowance", () => {
     assert.deepEqual(commands, [
       "gadgets-with-timeout --idle 120 --max 600 -- vitest run --reporter=default --no-fsModuleCache",
       "gadgets-with-timeout --idle 60 --max 600 -- vitest run --config vitest.integration.config.ts --reporter=default --no-fsModuleCache",
+      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --config vitest.native.config.ts --reporter=default --no-fsModuleCache",
     ]);
   });
 });
