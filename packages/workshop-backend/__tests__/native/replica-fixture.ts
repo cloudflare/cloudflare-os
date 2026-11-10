@@ -1,7 +1,8 @@
 // A worktree's replica endpoints as the overseer serves them, minus the overseer, for native Git:
 // a worktree whose history is all in the workspace, held by an InMemoryWorktree (which is its
 // turn as well as its host) over mock storage, and the replica state of one execution that never
-// ends. HTTP stands in for RPC: `/repo/...` is gitPull(), `/snapshot` and `/submit` are
+// ends. HTTP stands in for RPC: `/repo/...` is native Git's fetch, through the kit's
+// serveGitUploadPack() over gitHead() and gitPull(), `/snapshot` and `/submit` are
 // snapshot() and a command's submit(), and `/write` and `/read` are the agent's code using the
 // Worktree binding meanwhile.
 
@@ -9,6 +10,7 @@ import {WorkspaceGitCache} from "../../src/git-cache";
 import {InMemoryWorktree} from "../../src/git-binding";
 import {makeOverseerStorage} from "../../src/storage-schema/overseer-storage";
 import {worktreeGitPull} from "../../src/worktree-git";
+import {serveGitUploadPack} from "@gadgets/gatekeeper-kit/git-upload-pack";
 import {WorktreeReplicas} from "../../src/worktree-replica";
 import type {WorktreeCommand} from "@gadgets/workshop-shared/worktree-replica";
 import {makeMockStorage} from "../mock-storage";
@@ -32,8 +34,10 @@ export default {
     try {
       if (url.pathname.startsWith("/repo/")) {
         url.pathname = url.pathname.slice("/repo".length);
-        return await worktreeGitPull(worktree.gitCache, {head: worktree.getWorktreeRecord().headCommit,
-          check() {}, trees: replicas.fetchableTrees(0), remotes: []}, new Request(url, request));
+        const head = worktree.getWorktreeRecord().headCommit;
+        return await serveGitUploadPack(new Request(url, request), {gitHead: async () => head,
+          gitPull: (oids, hints) => worktreeGitPull(worktree.gitCache,
+            {head, check() {}, trees: replicas.fetchableTrees(0), remotes: []}, oids, hints)});
       }
       switch (url.pathname) {
         case "/snapshot": {

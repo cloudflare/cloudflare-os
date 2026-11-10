@@ -12,13 +12,18 @@ import {once} from "node:events";
 const worker = buildSync({entryPoints: [resolve(import.meta.dirname, "git-fixture.ts")], bundle: true,
   write: false, format: "esm", target: "es2022", external: ["cloudflare:*", "node:*"]}).outputFiles[0].text;
 const run = (cwd: string, ...args: string[]) => execFileSync("git", args, {cwd, encoding: "utf8"}).trim();
-const spawnGit = async (cwd: string, args: string[], succeeds = true) => {
+// Run Git, expecting it to succeed, or with `refusal`, to fail printing that remote error.
+const spawnGit = async (cwd: string, args: string[], refusal?: string) => {
   const process = spawn("git", ["-c", "protocol.version=2", ...args], {cwd, stdio: ["ignore", "pipe", "pipe"]});
   let stderr = "";
   process.stderr.on("data", chunk => { stderr += chunk; });
   process.stdout.resume();
   const [code] = await once(process, "close");
-  if (succeeds) expect(code, stderr).toBe(0); else expect(code, stderr).not.toBe(0);
+  if (refusal === undefined) expect(code, stderr).toBe(0);
+  else {
+    expect(code, stderr).not.toBe(0);
+    expect(stderr).toContain(`remote error: ${refusal}`);
+  }
 };
 
 // A repository standing in for both the worktree's history and the connected repository's:
@@ -142,7 +147,7 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       expect(run(clone, "show", "-s", "--format=%s", "FETCH_HEAD")).toBe("ancestor");
       expect(run(clone, "rev-parse", "HEAD")).toBe(head);
       run(clone, "fsck", "--no-reflogs");
-      await spawnGit(clone, ["fetch", "--depth=1", "origin", unrelated], false);
+      await spawnGit(clone, ["fetch", "--depth=1", "origin", unrelated], "Only commits in the worktree's history");
 
       // More history beyond the boundary, for the head the clone already has.
       for (const args of [["--deepen=1"], ["--unshallow"]]) {
@@ -165,7 +170,7 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
       const fresh = join(dir, "fresh");
       run(dir, "init", "-q", fresh);
       // A snapshot tree needs a commit to leave out what it shares with.
-      await spawnGit(fresh, ["fetch", "-q", url, repo.snapshot], false);
+      await spawnGit(fresh, ["fetch", "-q", url, repo.snapshot], "Fetch the worktree's head before");
       await spawnGit(fresh, ["fetch", "-q", url, base, head]);
       run(fresh, "checkout", "-q", base);
       writeFileSync(join(fresh, "changed.txt"), "pending\n");
@@ -176,7 +181,7 @@ test.each([false, true])("native Git clones a %s upstream/local worktree with co
     // The head moves: a fetch that would need both its new commit and older history is refused,
     // and fetching it sends only the new commit's objects.
     run(clone, "remote", "set-url", "origin", `${url}1`);
-    if (remote) await spawnGit(clone, ["fetch", "--deepen=1"], false);
+    if (remote) await spawnGit(clone, ["fetch", "--deepen=1"], "This fetch needs both new commits");
     await spawnGit(clone, ["fetch", "origin"]);
     expect(run(clone, "rev-parse", "origin/HEAD")).toBe(next);
     expect(server.state.served).toBe(3);

@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -48,7 +48,7 @@ import {
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
-import type { ReplicableWorktree, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
+import type { ReplicableWorktree, WorktreeGitPullHints, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
 import type { Worktree } from "./worktree-binding";
 import { worktreeGitPull } from "./worktree-git";
 import { WorktreeReplicas } from "./worktree-replica";
@@ -6930,16 +6930,22 @@ class OverseerImpl implements AgentHooks {
       throw new Error("Worktree access ended.");
   }
 
-  async worktreeGitPull(chatId: number, worktreeId: number, request: Request): Promise<Response> {
+  // As for the Worktree binding, a replica's HEAD includes a commit() buffered earlier in the
+  // running step.
+  worktreeGitHead(chatId: number, worktreeId: number): string {
+    this.#requireWorktreeAccess(chatId, worktreeId);
+    return this.#activeExecutions.get(chatId)?.worktree?.getBufferedHead(worktreeId) ??
+      this.getWorktreeRecord(worktreeId).headCommit;
+  }
+
+  async worktreeGitPull(chatId: number, worktreeId: number, oids: string[],
+      hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
     const check = () => this.#requireWorktreeAccess(chatId, worktreeId);
-    check();
-    const piece = this.getWorktreeRecord(worktreeId);
-    // As for the Worktree binding, HEAD includes a commit() buffered earlier in the running step.
+    const head = this.worktreeGitHead(chatId, worktreeId);
     const execution = this.#activeExecutions.get(chatId);
-    const head = execution?.worktree?.getBufferedHead(worktreeId) ?? piece.headCommit;
     // Pull from a connection, ending the stream if worktree access ends or the connection is
     // removed.
-    const pullFrom = async (source: WorkpieceId, oids: string[], hints: GitPullHints) => {
+    const pullFrom = async (source: WorkpieceId, pulled: string[], pullHints: GitPullHints) => {
       const live = () => {
         check();
         if (!this.storage.gatekeepers.get(source)) throw new Error("Git source removed.");
@@ -6949,7 +6955,7 @@ class OverseerImpl implements AgentHooks {
       const facet = await this.getGatekeeperFacet(source) as unknown as
           Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
       live();
-      const transfer = await facet.gitPull(oids, hints);
+      const transfer = await facet.gitPull(pulled, pullHints);
       // Revocation must also end a response that stalls before its pack starts.
       const preamble = {check: live, abort: new AbortController()};
       this.#gitTransfers.add(preamble);
@@ -6981,8 +6987,8 @@ class OverseerImpl implements AgentHooks {
       for (const id of ids) remotes.set(id, [...remotes.get(id) ?? [], commit]);
     return worktreeGitPull(this.gitCache, {head, check,
       trees: execution?.replicas?.fetchableTrees(worktreeId) ?? new Set(),
-      remotes: [...remotes].map(([id, haves]) => ({haves, pull: (oids, hints) => pullFrom(id, oids, hints)})),
-    }, request);
+      remotes: [...remotes].map(([id, haves]) => ({haves, pull: (pulled, pullHints) => pullFrom(id, pulled, pullHints)})),
+    }, oids, hints);
   }
 
   // Connections with recorded provenance for `oid` that still exist.
@@ -14472,8 +14478,11 @@ class WorktreeEndpoint extends NativeRpcTarget implements Worktree, ReplicableWo
   async snapshot(): Promise<WorktreeSnapshot> {
     return this.impl.worktreeSnapshot(this.props.chatId, this.props.worktreeId);
   }
-  async gitPull(request: Request): Promise<Response> {
-    return this.impl.worktreeGitPull(this.props.chatId, this.props.worktreeId, request);
+  async gitHead(): Promise<string> {
+    return this.impl.worktreeGitHead(this.props.chatId, this.props.worktreeId);
+  }
+  async gitPull(oids: string[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
+    return this.impl.worktreeGitPull(this.props.chatId, this.props.worktreeId, oids, hints);
   }
   async listFiles(...args: Parameters<Worktree["listFiles"]>): ReturnType<Worktree["listFiles"]> {
     return this.impl.getActiveWorktreeSession(this.props.chatId, this.props.worktreeId, this.props.executionId).listFiles(...args);

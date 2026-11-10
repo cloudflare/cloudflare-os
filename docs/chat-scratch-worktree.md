@@ -43,7 +43,7 @@ the blob before appending its whole-file OT. Both stream: `readBytes()` reads a 
 range of it) a chunk at a time, and `writeBytes()` also accepts a `ReadableStream`. There is no
 staged/resumable upload protocol. Containers consume the same canonical worktree rather than
 needing a separate attachment download path: a container gatekeeper clones the scratch worktree
-with native Git through `ReplicableWorktree.gitPull()` (see
+with native Git through `ReplicableWorktree.gitPull()` and gatekeeper-kit's `serveGitUploadPack()` (see
 [`worktree-replicas.md`](worktree-replicas.md)), which streams files without decoding them as
 text. This attachment ingress does not require a container.
 

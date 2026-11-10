@@ -1,6 +1,8 @@
 import {worktreeGitPull} from "../../src/worktree-git";
+import {serveGitUploadPack} from "@gadgets/gatekeeper-kit/git-upload-pack";
 import {openGitPull} from "@gadgets/gatekeeper-kit/git-transport";
 import type {GitObjectType} from "@gadgets/workshop-shared/gatekeeper";
+import type {WorktreeGitPullHints} from "@gadgets/workshop-shared/worktree-replica";
 
 interface Fixture {
   heads: string[];
@@ -28,9 +30,10 @@ export default {
       if (!object) throw new Error(`Unknown fixture object ${oid}`);
       return {type: object.type, payload: Uint8Array.from(object.bytes)};
     };
-    return worktreeGitPull({ensureObject, packEntry: ensureObject, ensureGitObjects: async (oids, hints) => {
-      if (hints.filterBlobSize === 0) for (const oid of oids) pulledTrees.add(oid);
-    }}, {head, check() {}, trees: new Set(fixture.trees),
+    const gitPull = (wants: string[], wantHints: WorktreeGitPullHints) => worktreeGitPull({ensureObject,
+      packEntry: ensureObject, ensureGitObjects: async (oids, hints) => {
+        if (hints.filterBlobSize === 0) for (const oid of oids) pulledTrees.add(oid);
+      }}, {head, check() {}, trees: new Set(fixture.trees),
       remotes: fixture.boundary.length ? [{haves: fixture.boundary, pull: async (oids, hints) => {
         const {pack, shallowInfo} = await openGitPull(body => env.UPSTREAM.fetch("https://upstream.invalid/", {
           method: "POST", body}), oids, hints);
@@ -38,6 +41,7 @@ export default {
         return {shallow: await shallowInfo(), pack: pack.pipeThrough(new TransformStream({transform(chunk, controller) {
           for (let offset = 0; offset < chunk.length; offset += 7) controller.enqueue(chunk.slice(offset, offset + 7));
         }}))};
-      }}] : []}, new Request(url, request));
+      }}] : []}, wants, wantHints);
+    return serveGitUploadPack(new Request(url, request), {gitHead: async () => head, gitPull});
   },
 };

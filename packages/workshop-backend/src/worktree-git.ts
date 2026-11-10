@@ -1,6 +1,6 @@
-import {encodePktLine, FLUSH_PKT, DELIM_PKT, parsePktItems, pktText} from "@gadgets/gatekeeper-kit/git-transport";
-import {readBytesCapped} from "@gadgets/gatekeeper-kit/response-body";
-import type {GitObjectType, GitPullHints, GitShallowInfo} from "@gadgets/workshop-shared/gatekeeper";
+import {gitPullTransferOf} from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import type {GitObjectType, GitPullHints, GitPullTransfer, GitShallowInfo} from "@gadgets/workshop-shared/gatekeeper";
+import type {WorktreeGitPullHints} from "@gadgets/workshop-shared/worktree-replica";
 import {buildPackStream, mergePackStreams, parseGitCommitRefs, parseGitTree, readGitCommitHeader,
   type GitTreeEntry, type PackableObject} from "./git-codec";
 import type {WorkspaceGitCache} from "./git-cache";
@@ -47,63 +47,39 @@ export interface RemotePack {
   shallow: GitShallowInfo;
 }
 
-/** The parts of a protocol-v2 `fetch` request that `worktreeGitPull()` understands. */
-interface FetchRequest {
-  wants: string[];
-  haves: string[];
-  shallow: string[];
-  deepen?: {kind: "depth"; depth: number} | {kind: "relative"; depth: number} | {kind: "since"; since: number};
-  filter: Pick<GitPullHints, "filterBlobSize" | "filterTreeDepth">;
-  done: boolean;
-}
-
 /** Git's depth for "all history", as sent by `git fetch --unshallow`. */
 const INFINITE_DEPTH = 0x7fffffff;
 
-/**
- * Check that `request` is one of the two read-only Git smart-HTTP requests `worktreeGitPull()`
- * serves -- ref discovery (GET `/info/refs?service=git-upload-pack`) or fetch (POST
- * `/git-upload-pack`), with the `Git-Protocol: version=2` header -- and return which one. Throws
- * otherwise. Only the URL's path and query are checked: the repository is fixed by the caller.
- */
-function gitPullPath(request: Request): "info/refs?service=git-upload-pack" | "git-upload-pack" {
-  const url = new URL(request.url);
-  if (request.headers.get("git-protocol") !== "version=2")
-    throw new Error("Git protocol version 2 is required.");
-  if (request.method === "GET" && url.pathname === "/info/refs" &&
-      url.search === "?service=git-upload-pack") return "info/refs?service=git-upload-pack";
-  if (request.method === "POST" && url.pathname === "/git-upload-pack" && !url.search &&
-      request.headers.get("content-type") === "application/x-git-upload-pack-request") return "git-upload-pack";
-  throw new Error("Only Git ref discovery and fetch are allowed.");
+/** Throws unless `hints` hold only object IDs and whole, positive depths. */
+function checkHints(oids: string[], hints: WorktreeGitPullHints): void {
+  if (!oids.length) throw new Error("The Git pull wants nothing.");
+  for (const oid of [...oids, ...hints.haves ?? [], ...hints.shallow ?? []])
+    if (!/^[0-9a-f]{40}$/.test(oid)) throw new Error("Invalid object ID in Git pull.");
+  const history = hints.commitHistory;
+  if ((history.kind === "depth" || history.kind === "relative") &&
+      !(Number.isSafeInteger(history.depth) && history.depth > 0)) throw new Error("Invalid depth in Git pull.");
+  if (history.kind === "since" && Number.isNaN(history.since.getTime())) throw new Error("Invalid date in Git pull.");
 }
 
 /**
- * Serve Git smart-HTTP requests (protocol v2) for one worktree; see `ReplicableWorktree.gitPull()`.
- * The worktree's own commits are built from workspace storage, while the files of the history's
- * boundary commits are streamed through from a connection rather than loaded into the
- * workspace. History beyond the boundary is proxied from a connection.
+ * Serve a Git pull of one worktree; see `ReplicableWorktree.gitPull()`. The worktree's own
+ * commits are built from workspace storage, while the files of the history's boundary commits
+ * are streamed through from a connection rather than loaded into the workspace. History beyond
+ * the boundary is proxied from a connection.
  */
-export async function worktreeGitPull(cache: GitReads,
-    source: WorktreeGitSource, request: Request): Promise<Response> {
-  const path = gitPullPath(request);
+export async function worktreeGitPull(cache: GitReads, source: WorktreeGitSource,
+    oids: string[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
+  checkHints(oids, hints);
   source.check();
-  const response = (lines: Uint8Array[]) => new Response(new Blob(lines), {headers: {
-    "content-type": path.startsWith("info/") ? "application/x-git-upload-pack-advertisement" : "application/x-git-upload-pack-result",
-  }});
-  if (request.method === "GET") return response([
-    encodePktLine("version 2"), encodePktLine("ls-refs"), encodePktLine("fetch=shallow filter"), FLUSH_PKT,
-  ]);
-  const body = await readBytesCapped(request, 1024 * 1024);
-  source.check();
-  const items = parsePktItems(body);
-  const lines = items.flatMap(item => item.kind === "data" ? [pktText(item.data)] : []);
-  if (lines.includes("command=ls-refs")) return response([
-    encodePktLine(`${source.head} HEAD symref-target:refs/heads/worktree`),
-    encodePktLine(`${source.head} refs/heads/worktree`), FLUSH_PKT,
-  ]);
-  if (!lines.includes("command=fetch")) throw new Error("Only Git ls-refs and fetch are supported.");
-  const fetch = parseFetch(items);
+  const {pack, shallow} = await servePull(cache, source, {...hints, wants: oids,
+    haves: hints.haves ?? [], shallow: hints.shallow ?? []});
+  return gitPullTransferOf(pack, shallow);
+}
 
+/** A pull's hints, with its wants and the lists it may leave out. */
+type FetchRequest = WorktreeGitPullHints & {wants: string[]; haves: string[]; shallow: string[]};
+
+async function servePull(cache: GitReads, source: WorktreeGitSource, fetch: FetchRequest): Promise<RemotePack> {
   // Decide by what the client lacks, not by what it names: e.g. `git fetch --deepen=1` wants
   // the head the client already has, and lacks only history beyond the shallow boundary.
   const boundary = new Set(source.remotes.flatMap(remote => remote.haves));
@@ -133,13 +109,13 @@ export async function worktreeGitPull(cache: GitReads,
   // lacks, at depth 1 from a connection.
   let pack = await localPack(cache, source, boundary, [...reached.keys()], fetch.wants, has);
   const lacking = [...reached.keys()].filter(oid => !has.has(oid));
-  let shallow: GitShallowInfo | undefined;
+  let shallow: GitShallowInfo = {shallow: [], unshallow: []};
   if (lacking.length) {
     const upstream = await pullBoundary(source, lacking);
     pack = await mergePackStreams([upstream.pack, pack]);
     shallow = upstream.shallow;
   }
-  return fetchResponse(!fetch.done, shallow, pack, source.check);
+  return {pack, shallow};
 }
 
 /**
@@ -149,7 +125,7 @@ export async function worktreeGitPull(cache: GitReads,
  * tree is mostly files the workspace would have to pull.
  */
 async function treeFetch(cache: GitReads, source: WorktreeGitSource,
-    history: Map<string, string[]>, boundary: Set<string>, fetch: FetchRequest): Promise<Response> {
+    history: Map<string, string[]>, boundary: Set<string>, fetch: FetchRequest): Promise<RemotePack> {
   if (!fetch.wants.every(oid => source.trees.has(oid))) {
     throw new Error("Fetch a worktree's snapshot trees on their own, not together with commits.");
   }
@@ -162,61 +138,7 @@ async function treeFetch(cache: GitReads, source: WorktreeGitSource,
   for (const oid of haves) previous.push(parseGitCommitRefs((await read(oid, "commit")).payload).tree);
   const objects: PackObjects = new Map();
   for (const tree of new Set(fetch.wants)) await collectTree(read, objects, tree, previous, new Map());
-  return fetchResponse(!fetch.done, undefined, packObjects(cache, objects, source.check), source.check);
-}
-
-/**
- * Parse a fetch command, accepting only the capabilities and arguments `worktreeGitPull()`
- * understands. Anything sent on to a connection is re-encoded from the result, never forwarded
- * as is.
- */
-function parseFetch(items: ReturnType<typeof parsePktItems>): FetchRequest {
-  const delim = items.findIndex(item => item.kind === "delim");
-  const text = (from: number, to: number) => items.slice(from, to)
-    .flatMap(item => item.kind === "data" ? [pktText(item.data)] : []);
-  for (const line of text(0, delim < 0 ? items.length : delim)) {
-    if (line === "command=fetch" || line === "object-format=sha1" || /^(agent|session-id)=/.test(line)) continue;
-    throw new Error(`Unsupported Git fetch capability: ${line.split("=")[0]}`);
-  }
-  const fetch: FetchRequest = {wants: [], haves: [], shallow: [], filter: {}, done: false};
-  let relative = false;
-  const oid = (value: string) => {
-    if (!/^[0-9a-f]{40}$/.test(value)) throw new Error("Invalid object ID in Git fetch.");
-    return value;
-  };
-  const number = (value: string) => {
-    if (!/^\d{1,10}$/.test(value)) throw new Error("Invalid number in Git fetch.");
-    return Number(value);
-  };
-  const setDeepen = (deepen: FetchRequest["deepen"]) => {
-    if (fetch.deepen) throw new Error("Only one Git deepen option is supported.");
-    fetch.deepen = deepen;
-  };
-  for (const line of text(delim < 0 ? items.length : delim + 1, items.length)) {
-    const [keyword, value = ""] = line.split(/ (.*)/s);
-    if (keyword === "want") fetch.wants.push(oid(value));
-    else if (keyword === "have") fetch.haves.push(oid(value));
-    else if (keyword === "shallow") fetch.shallow.push(oid(value));
-    else if (keyword === "deepen") setDeepen({kind: "depth", depth: number(value)});
-    else if (keyword === "deepen-since") setDeepen({kind: "since", since: number(value)});
-    else if (line === "deepen-relative") relative = true;
-    else if (keyword === "filter") {
-      const limit = /^blob:limit=(\d{1,15})$/.exec(value);
-      if (value === "blob:none") fetch.filter = {filterBlobSize: 0};
-      else if (limit) fetch.filter = {filterBlobSize: Number(limit[1])};
-      else if (value === "tree:0") fetch.filter = {filterTreeDepth: 0};
-      else throw new Error("Unsupported Git fetch filter.");
-    } else if (line === "done") fetch.done = true;
-    // Harmless: this server never sends thin packs, tags or progress.
-    else if (["ofs-delta", "thin-pack", "no-progress", "include-tag"].includes(line)) continue;
-    else throw new Error(`Unsupported Git fetch argument: ${keyword}`);
-  }
-  if (relative) {
-    if (fetch.deepen?.kind !== "depth") throw new Error("deepen-relative requires a depth.");
-    fetch.deepen = {kind: "relative", depth: fetch.deepen.depth};
-  }
-  if (!fetch.wants.length) throw new Error("Git fetch wants nothing.");
-  return fetch;
+  return {pack: packObjects(cache, objects, source.check), shallow: {shallow: [], unshallow: []}};
 }
 
 /**
@@ -278,13 +200,14 @@ function reachedBoundary(history: Map<string, string[]>, boundary: Set<string>, 
  */
 async function wantsDeeperHistory(cache: GitReads, reached: Map<string, number>,
     fetch: FetchRequest): Promise<boolean> {
-  if (!fetch.deepen || !reached.size) return false;
-  if (fetch.deepen.kind === "relative") return true;
-  if (fetch.deepen.kind === "depth") return fetch.deepen.depth > Math.min(...reached.values());
+  const history = fetch.commitHistory;
+  if (history.kind === "full" || !reached.size) return false;
+  if (history.kind === "relative") return true;
+  if (history.kind === "depth") return history.depth > Math.min(...reached.values());
   for (const oid of reached.keys()) {
     const commit = (await cache.ensureObject(oid, {type: "commit"})).payload;
     const time = /(\d+) [+-]\d{4}$/.exec(readGitCommitHeader(commit, "committer")[0] ?? "");
-    if (!time || Number(time[1]) >= fetch.deepen.since) return true;
+    if (!time || Number(time[1]) * 1000 >= history.since.getTime()) return true;
   }
   return false;
 }
@@ -403,7 +326,7 @@ function packObjects(cache: GitReads, objects: PackObjects, requireLive: () => v
  * data it protects is the connection's own repository.
  */
 async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remoteWants: string[], bases: string[],
-    has: string[], depth: number | undefined): Promise<Response> {
+    has: string[], depth: number | undefined): Promise<RemotePack> {
   let cause: unknown;
   let refused = false;
   for (const remote of remotesWith(source, bases)) {
@@ -415,19 +338,18 @@ async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remote
         continue;
       }
       source.check();
-      const result = await remote.pull([...remoteWants, ...bases], {
+      const history = fetch.commitHistory;
+      return await remote.pull([...remoteWants, ...bases], {
         type: "commit",
-        commitHistory: !fetch.deepen ? {kind: "full"}
-          : fetch.deepen.kind === "since" ? {kind: "since", since: new Date(fetch.deepen.since * 1000)}
-          : fetch.deepen.kind === "depth" && depth !== undefined && !remoteWants.length && fetch.deepen.depth < INFINITE_DEPTH
+        commitHistory: history.kind === "depth" && depth !== undefined && !remoteWants.length && history.depth < INFINITE_DEPTH
           // An absolute depth counts from the client's wants, which the connection doesn't have.
-          ? {kind: "depth", depth: fetch.deepen.depth - depth + 1}
-          : fetch.deepen,
+          ? {kind: "depth", depth: history.depth - depth + 1}
+          : history,
         haves: [...new Set([...fetch.haves, ...has])],
         shallow: fetch.shallow,
-        ...fetch.filter,
+        filterBlobSize: fetch.filterBlobSize,
+        filterTreeDepth: fetch.filterTreeDepth,
       });
-      return fetchResponse(!fetch.done, result.shallow, result.pack, source.check);
     } catch (error) {
       cause = error;
     }
@@ -461,59 +383,6 @@ function remotesWith(source: WorktreeGitSource, bases: string[]): WorktreeGitSou
       "has all of it, so it can't be fetched.");
   }
   return remotes;
-}
-
-/**
- * The response to a fetch: a pack and the client's new shallow boundary. A fetch the client
- * hasn't finished negotiating (`ready`) is answered at once, as if it had: the local path
- * already knows what to leave out from the `have`s sent so far, and a proxied fetch passes them
- * on, so that negotiation takes a single round.
- */
-function fetchResponse(ready: boolean, shallow: GitShallowInfo | undefined, pack: ReadableStream<Uint8Array>,
-    check: () => void): Response {
-  const reader = pack.getReader();
-  async function* result() {
-    try {
-      if (ready) {
-        yield encodePktLine("acknowledgments");
-        yield encodePktLine("ready");
-        yield DELIM_PKT;
-      }
-      if (shallow?.shallow.length || shallow?.unshallow.length) {
-        yield encodePktLine("shallow-info");
-        for (const oid of shallow.shallow) yield encodePktLine(`shallow ${oid}`);
-        for (const oid of shallow.unshallow) yield encodePktLine(`unshallow ${oid}`);
-        yield DELIM_PKT;
-      }
-      yield encodePktLine("packfile");
-      for (;;) {
-        check();
-        const next = await reader.read();
-        check();
-        if (next.done) break;
-        // Sideband packets have a 16-bit length, including their header and channel byte.
-        for (let offset = 0; offset < next.value.length; offset += 65515) {
-          const part = next.value.subarray(offset, offset + 65515);
-          const packet = new Uint8Array(part.length + 5);
-          packet.set(new TextEncoder().encode(packet.length.toString(16).padStart(4, "0")));
-          packet[4] = 1; packet.set(part, 5);
-          check();
-          yield packet;
-        }
-      }
-      yield FLUSH_PKT;
-    } finally { await reader.cancel(); reader.releaseLock(); }
-  }
-  const iterator = result();
-  const stream = new ReadableStream({
-    type: "bytes",
-    async pull(controller) {
-      const next = await iterator.next();
-      if (next.done) controller.close(); else controller.enqueue(next.value.slice());
-    },
-    async cancel() { await reader.cancel(); await iterator.return(undefined); },
-  }, {highWaterMark: 0});
-  return new Response(stream, {headers: {"content-type": "application/x-git-upload-pack-result"}});
 }
 
 /**

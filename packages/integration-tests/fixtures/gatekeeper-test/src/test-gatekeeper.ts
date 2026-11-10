@@ -36,8 +36,6 @@ import type {
 } from "@gadgets/workshop-shared/external-message-gateway";
 
 import type {ReplicableWorktree} from "@gadgets/workshop-shared/worktree-replica";
-import {buildGitFetchRequest, DELIM_PKT, demuxGitFetchResponse, encodePktLine, FLUSH_PKT}
-  from "@gadgets/gatekeeper-kit/git-transport";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -472,10 +470,7 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   /** Fetches the worktree's head, as `git clone` would, and keeps the stub for runCommand(). */
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
     this.ctx.storage.kv.put("mounted-worktree", worktree);
-    const refs = await (await worktreeFetch(worktree,
-      new Blob([encodePktLine("command=ls-refs"), DELIM_PKT, FLUSH_PKT]))).text();
-    const head = /([0-9a-f]{40}) HEAD/.exec(refs)?.[1];
-    if (!head) throw new Error("No worktree HEAD advertised");
+    const head = await worktree.gitHead();
     await fetchPack(worktree, head);
     return `worktree pack received for ${head}`;
   }
@@ -504,17 +499,10 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 }
 
-function worktreeFetch(worktree: RpcStub<ReplicableWorktree>, body: BodyInit): Promise<Response> {
-  return worktree.gitPull(new Request("https://git.invalid/git-upload-pack", {
-    method: "POST", body,
-    headers: {"git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request"},
-  }));
-}
-
 // Fetches `oid` from the worktree, checking that a raw Git pack arrives.
 async function fetchPack(worktree: RpcStub<ReplicableWorktree>, oid: string): Promise<void> {
-  const response = await worktreeFetch(worktree, buildGitFetchRequest([oid], {type: "commit", commitHistory: {kind: "full"}}));
-  const bytes = new Uint8Array(await new Response(demuxGitFetchResponse(response.body!)).arrayBuffer());
+  using transfer = await worktree.gitPull([oid], {commitHistory: {kind: "full"}});
+  const bytes = new Uint8Array(await new Response(await transfer.stream()).arrayBuffer());
   if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
 }
 

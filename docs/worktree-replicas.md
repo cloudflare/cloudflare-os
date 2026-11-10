@@ -18,7 +18,9 @@ the mount at `/workspace/<mountName>` in the guest.
 The design record, including the Git fetch policy, is
 [`plans/tree-sync-replicas.md`](../plans/tree-sync-replicas.md). The kernel code is
 `packages/workshop-backend/src/worktree-replica.ts` (snapshots and submissions) and
-`packages/workshop-backend/src/worktree-git.ts` (`gitPull`).
+`packages/workshop-backend/src/worktree-git.ts` (`gitPull`). Native Git's smart-HTTP requests
+are translated into `gitHead()` and `gitPull()` calls by gatekeeper-kit's `serveGitUploadPack()`
+(`packages/gatekeeper-kit/src/git-upload-pack.ts`), in the container gatekeeper.
 
 ## Scenarios
 
@@ -64,15 +66,18 @@ interface WorktreeCommand extends RpcTarget {
   submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
 }
 interface ReplicableWorktree extends RpcTarget {
-  snapshot(): Promise<WorktreeSnapshot>;     // only during an agent's code execution
-  gitPull(request: Request): Promise<Response>;  // at any time
+  snapshot(): Promise<WorktreeSnapshot>;  // only during an agent's code execution
+  gitHead(): Promise<GitOid>;             // at any time
+  gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer>;  // at any time
 }
+// GitPullHints without `type` and `referencedBy`: `commitHistory`, `haves`, `shallow`, filters.
+type WorktreeGitPullHints = Omit<GitPullHints, "type" | "referencedBy">;
 ```
 
 ## A command, from the container's side
 
 Initial setup is an ordinary `git clone` of a made-up remote URL whose requests the gatekeeper
-forwards to `gitPull()` (see [Git transport](#git-transport)). The clone is shallow where the
+answers with `serveGitUploadPack(request, worktree)` (see [Git transport](#git-transport)). The clone is shallow where the
 history reaches a connected repository, with no special flags.
 
 The replica keeps a private index for syncing, separate from the real one, so that the real index
@@ -242,7 +247,7 @@ the Worktree endpoint for the execution that minted it:
 - **The file methods** (`readFile()`, `writeFile()`, `commit()`, ...) work only while that
   execution runs, since a worktree's uncommitted content lives in its turn.
 - **The replica methods** keep working afterwards, for as long as the worktree belongs to the
-  chat and the chat exists. `gitPull()` works at any time, and `snapshot()` serves whichever
+  chat and the chat exists. `gitHead()` and `gitPull()` work at any time, and `snapshot()` serves whichever
   execution is running in the chat at the time.
 
 So passing a Worktree stub hands lasting access to that one worktree. A gatekeeper should store
@@ -255,20 +260,31 @@ The receiving gatekeeper owns command approvals and the mount's lifetime.
 
 ## Git transport
 
-`gitPull()` accepts read-only Git protocol v2 smart-HTTP requests and streams raw responses. The
-gatekeeper invents a guest-local origin URL and forwards the requests `git` makes to it,
-stripping the URL's own path; the kernel registers no URLs. The kernel parses every request and
-accepts only the fetch arguments it understands; nothing the guest sends is forwarded as is.
+`gitPull(oids, hints)` has the shape of `Gatekeeper.gitPull()`: it returns a `GitPullTransfer`,
+whose `status()` keeps a failure's message even where Workers RPC replaces a stream's error, and
+whose `shallowInfo()` reports how the pack changes the guest's shallow boundary. The kernel
+checks the object IDs and depths, and re-encodes whatever it forwards to a connection from the
+hints.
+
+Native Git reaches it through gatekeeper-kit's `serveGitUploadPack(request, worktree)`. The
+gatekeeper invents a guest-local origin URL and passes it the requests `git` makes to it,
+stripping the URL's own path; the kernel registers no URLs. The helper serves read-only Git
+protocol v2 smart HTTP: ref discovery and `ls-refs` from `gitHead()`, and `fetch` from
+`gitPull()`, accepting only the fetch arguments the hints can express (`want`, `have`,
+`shallow`, `deepen`, `deepen-since`, `deepen-relative`, and `filter` as `blob:none`,
+`blob:limit=<n>` or `tree:0`) and ignoring harmless ones such as `ofs-delta`. A refusal, or a
+pack that fails partway, reaches Git as a remote error, which it prints.
 
 The repository has a single branch, whose head is the worktree's Git head (`headCommit`, or a
 `commit()` buffered earlier in the running step). Workspace-created commits are real Git objects.
-A fetch is judged by what the guest lacks, from its `have` and `shallow` lines, so fetching a new
-head sends only the commits and objects the guest doesn't have. Negotiation takes one round.
+A fetch is judged by what the guest lacks, from its `haves` and `shallow` commits, so fetching a
+new head sends only the commits and objects the guest doesn't have. Negotiation takes one round:
+the helper answers a fetch at once, as if Git had sent `done`.
 
 Besides commits, `gitPull()` serves the trees `snapshot()` and `submit()` handed out to the
 running execution, by ID and on their own, never together with commits. Such a fetch leaves out
 what the guest's commits' trees hold at the same paths. For a worktree from a connected
-repository, the guest must send a `have` from the head's history (any fetch from a clone does).
+repository, the guest must have a commit from the head's history (any fetch from a clone does).
 
 ### The shallow boundary
 

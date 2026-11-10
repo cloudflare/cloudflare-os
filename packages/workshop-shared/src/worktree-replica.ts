@@ -11,7 +11,8 @@
 // command, and each sync is a Git tree:
 // 1. The gatekeeper receives a Worktree stub (e.g. through a call like
 //    `mountWorktree(env.REPO, "repo")`) and stores it. The stub is persistent, so the mount can
-//    outlast the agent turn and Durable Object restarts. It clones the worktree with `gitPull()`.
+//    outlast the agent turn and Durable Object restarts. It clones the worktree with `gitPull()`,
+//    which native Git reaches through gatekeeper-kit's `serveGitUploadPack()`.
 // 2. Before running a command, it calls `snapshot()`. The workspace writes a Git tree of the
 //    worktree's current files, including uncommitted edits, and returns its ID along with a
 //    handle for this command. If the replica's files already have that tree, they are in sync.
@@ -35,15 +36,15 @@
 // do to keep its replica correct.
 
 import type { RpcTarget } from "cloudflare:workers";
-import type { GitOid } from "./gatekeeper";
+import type { GitOid, GitPullHints, GitPullTransfer } from "./gatekeeper";
 
 /** The worktree's state: its current files, and its Git head. */
 export interface WorktreeState {
   /**
    * A Git tree of the worktree's files: the chat's accepted content plus its uncommitted edits,
    * including edits made earlier in the current execution. Fetch it with
-   * `ReplicableWorktree.gitPull()` (`git fetch origin <tree>`) during the execution that received
-   * it, and update the files to it from the tree they actually have, not the last tree synced (a
+   * `ReplicableWorktree.gitPull()` (natively, `git fetch origin <tree>`) during the execution that
+   * received it, and update the files to it from the tree they actually have, not the last tree synced (a
    * command cut off by a restart may have left them changed). docs/worktree-replicas.md gives the
    * Git commands.
    */
@@ -124,33 +125,46 @@ export interface ReplicableWorktree extends RpcTarget {
   snapshot(): Promise<WorktreeSnapshot>;
 
   /**
-   * Fetch the worktree's Git objects, using Git's smart-HTTP protocol (version 2, read-only).
-   * The intended client is native Git: point a remote at a made-up URL, forward the requests
-   * `git fetch` makes to this method, and pass the responses back unchanged. Each request's URL
-   * path must be exactly `/info/refs?service=git-upload-pack` (GET) or `/git-upload-pack`
-   * (POST), so strip the made-up remote's own path first; the host is ignored. Requests must
-   * carry the `Git-Protocol: version=2` header. Unlike `snapshot()`, this works at any time.
-   * Use `git clone`.
-   *
-   * The repository has a single branch, whose head (HEAD) is the worktree's Git head (its latest
-   * explicit commit), including commits created in the workspace that haven't been pushed
-   * anywhere. If the worktree came from a connected repository, it is served as a shallow clone,
-   * with history cut off where it reaches commits that repository has: the commit the worktree
-   * was created at, or a later one that was pushed or merged in. Those commits' files are
-   * streamed from the repository's provider rather than stored in the workspace.
-   *
-   * The trees returned by `snapshot()` and `WorktreeCommand.submit()` can be fetched by ID
-   * (`git fetch origin <tree>`) during the execution that received them; no other tree can. Fetch
-   * such trees on their own, from a replica that holds some commit of the head's history (e.g.
-   * after the clone): the pack leaves out what that commit's tree already has.
-   *
-   * Passing a Worktree stub permits fetching any commit in its head's history, including
-   * history beyond the shallow cutoff (e.g. a build script running
-   * `git fetch --depth=1 origin <sha>`, or `git fetch --deepen=10`): such a fetch is served by
-   * a connected repository that has the history, once it confirms the commit is in it. Other
-   * refs and commits are refused. So is a single fetch that needs both commits only the
-   * workspace has and more history from a connected repository; fetching the current head first
-   * avoids that. (A `git clone --depth` deeper than the cutoff is given less history instead.)
+   * The worktree's Git head (its latest explicit commit), which a clone checks out. Like
+   * `gitPull()`, this works at any time.
    */
-  gitPull(request: Request): Promise<Response>;
+  gitHead(): Promise<GitOid>;
+
+  /**
+   * Fetch the worktree's Git objects: a pack of `oids` and what they reach, leaving out what
+   * `hints.haves` reach, as `Gatekeeper.gitPull()` returns one. Unlike `snapshot()`, this works at
+   * any time. Native Git is served by gatekeeper-kit's `serveGitUploadPack()`, which translates
+   * its smart-HTTP requests into calls to this and `gitHead()`.
+   *
+   * The repository has a single branch, whose head is `gitHead()`, including commits created in
+   * the workspace that haven't been pushed anywhere. If the worktree came from a connected
+   * repository, it is served as a shallow clone, with history cut off where it reaches commits
+   * that repository has: the commit the worktree was created at, or a later one that was pushed
+   * or merged in. Those commits' files are streamed from the repository's provider rather than
+   * stored in the workspace. So `commitHistory` of kind `full` means the history down to that
+   * cutoff, as a clone without `--depth` gets.
+   *
+   * The trees returned by `snapshot()` and `WorktreeCommand.submit()` can be fetched by ID during
+   * the execution that received them; no other tree can. Fetch such trees on their own, from a
+   * replica that holds some commit of the head's history (e.g. after the clone), passing that
+   * commit in `haves`: the pack leaves out what its tree already has.
+   *
+   * Passing a Worktree stub permits fetching any commit in its head's history, including history
+   * beyond the cutoff (e.g. a build script running `git fetch --depth=1 origin <sha>`, or
+   * `git fetch --deepen=10`): such a fetch is served by a connected repository that has the
+   * history, once it confirms the commit is in it. Other commits are refused. So is a single
+   * fetch that needs both commits only the workspace has and more history from a connected
+   * repository; fetching the current head first avoids that. (A clone deeper than the cutoff is
+   * given less history instead.)
+   *
+   * Filters may be ignored: the pack may hold more than they ask for.
+   */
+  gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer>;
 }
+
+/**
+ * What `ReplicableWorktree.gitPull()` should send, as for `Gatekeeper.gitPull()`, less what only
+ * the workspace's own cache uses: the type of the objects wanted (a native Git client doesn't
+ * know it) and the object that referenced them.
+ */
+export type WorktreeGitPullHints = Omit<GitPullHints, "type" | "referencedBy">;

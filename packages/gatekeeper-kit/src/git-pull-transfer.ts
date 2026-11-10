@@ -53,3 +53,32 @@ export async function startGitPull(
   });
   return new GitPullTransferImpl(pack, () => status, shallowInfo);
 }
+
+/**
+ * Offer `pack`, an already-open pack stream, as a transfer whose status follows it: `complete`
+ * once it ends, `failed` with its error's message, or `canceled`.
+ */
+export function gitPullTransferOf(pack: ReadableStream<Uint8Array>, shallow: GitShallowInfo): GitPullTransfer {
+  let status: GitPullStatus = {state: "streaming"};
+  const settle = (terminal: GitPullStatus) => { if (status.state === "streaming") status = terminal; };
+  const reader = pack.getReader();
+  const tracked = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          settle({state: "complete"});
+          controller.close();
+        } else controller.enqueue(next.value);
+      } catch (error) {
+        settle({state: "failed", message: error instanceof Error ? error.message : String(error)});
+        throw error;
+      }
+    },
+    async cancel(reason) {
+      settle({state: "canceled"});
+      await reader.cancel(reason);
+    },
+  }, {highWaterMark: 0});
+  return new GitPullTransferImpl(tracked, () => status, async () => shallow);
+}

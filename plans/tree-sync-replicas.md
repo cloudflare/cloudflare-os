@@ -93,8 +93,12 @@ The docs describe the behaviour; these are the mechanisms behind it.
 
 ## Git fetches
 
-`gitPull()` is `worktreeGitPull` in `packages/workshop-backend/src/worktree-git.ts`, fed by the
-overseer's `worktreeGitPull` and `#remoteHistoryBoundaries`.
+`ReplicableWorktree.gitPull()` is `worktreeGitPull` in
+`packages/workshop-backend/src/worktree-git.ts`, fed by the overseer's `worktreeGitPull` and
+`#remoteHistoryBoundaries`. It takes the same structured arguments as `Gatekeeper.gitPull()`
+(less `type` and `referencedBy`, which a native client doesn't know) and returns a
+`GitPullTransfer`. Native Git's smart HTTP is translated by gatekeeper-kit's
+`serveGitUploadPack()` in the container gatekeeper, so the kernel parses no Git protocol.
 
 ### Policy
 
@@ -135,18 +139,19 @@ filterTreeDepth: 0, haves: boundaries})` whose pack header the kernel inspects.
 
 ### Request handling
 
-The kernel parses every request. Ref discovery is local. For `fetch` it extracts the fields it
-understands (`want`, `have`, `shallow`, `deepen`, `deepen-since`, `deepen-relative`, `filter` as
-`blob:none`, `blob:limit=<n>` or `tree:0`, `done`, and harmless arguments such as `ofs-delta`,
-`thin-pack`, `no-progress` and `include-tag`) and refuses anything else. An upstream request is
-always re-encoded from these checked fields: an allowlist, never the container's own bytes.
+`serveGitUploadPack()` parses each request. Ref discovery and `ls-refs` come from `gitHead()`.
+For `fetch` it extracts the fields the hints can express (`want`, `have`, `shallow`, `deepen`,
+`deepen-since`, `deepen-relative`, `filter` as `blob:none`, `blob:limit=<n>` or `tree:0`, `done`,
+and harmless arguments such as `ofs-delta`, `thin-pack`, `no-progress` and `include-tag`) and
+refuses anything else. The kernel checks the hints' object IDs and depths, and an upstream request
+is always re-encoded from them: never the container's own bytes.
 
 A fetch is classified by what the container lacks, not by its `want` lines. For example,
 `git fetch --deepen=N` sends `want <head>`, `have <head>`, `shallow <boundary>` and `deepen N`:
 the head is local, but the container already has it, and what it lacks is purely remote. A
 deepen reaches past the boundary if it is relative, if its depth exceeds the boundary's depth
 from the wanted commits, or if its date is no later than the boundary's commit time. Negotiation
-takes one round: a request without `done` is answered at once with `ready` and the pack.
+takes one round: the helper answers a request without `done` at once with `ready` and the pack.
 
 Then the fetch is served locally (with the boundary commits at depth 1 from one connection),
 proxied whole to a connection that confirmed the wanted commits, or refused if it needs both;
