@@ -1,6 +1,8 @@
+import * as fc from "fast-check";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DELIVERED_RETENTION_MS, DeliveryTimeout, HookDeliveryQueue, MAX_DELIVERIES_PER_RUN, MAX_DELIVERY_ATTEMPTS,
+  DELIVERED_RETENTION_MS, DeliveryTimeout, HookDeliveryQueue, MAX_DELIVERY_ATTEMPTS,
   disposeStubs, type Deliver, type RunReport,
 } from "../src/hook-delivery-queue";
 import { fakeKv, type FakeKv } from "./fake-kv";
@@ -8,6 +10,12 @@ import { fakeKv, type FakeKv } from "./fake-kv";
 const MINUTE = 60_000;
 /** How long the queue waits on one attempt (T_kit). */
 const T_KIT = 4 * MINUTE;
+/** How long a run keeps starting deliveries. */
+const START_BUDGET = 2 * MINUTE;
+/** The queue's pool: attempts in flight at once, per hook once it has delivered, and per run. */
+const [MAX_IN_FLIGHT, MAX_PER_HOOK, MAX_STARTS_PER_RUN] = [20, 4, 200];
+/** Due entries one run reads, the passed-over rows a hung hook keeps, and the rows one run trims. */
+const [READ_BUDGET, BACKLOG_KEEP, MAX_TRIMMED_PER_RUN] = [50_000, 1_000, 2_000];
 /** Set once the queue has indexed its rows (see the module's storage notes). */
 const INDEXED = "queue:indexed";
 /** What a finished `m1` leaves: its row, and the index entry by which it is forgotten a day later. */
@@ -21,8 +29,25 @@ const entry = (index: "due" | "finished", time: number, row: string) =>
 /** The hook and message of each call, without the signal. */
 const calls = (deliver: { mock: { calls: unknown[][] } }) => deliver.mock.calls.map(call => call.slice(0, 2));
 const hang = () => new Promise<never>(() => {});
-const report = (counts: Partial<RunReport>): RunReport =>
-  ({ started: 0, delivered: 0, failed: 0, dispatchTimeouts: 0, deliverTimeouts: 0, dropped: 0, ...counts });
+/** Settles after `ms` on the fake clock, rejecting with `error` if given. */
+const after = (ms: number, error?: unknown) =>
+  new Promise<void>((resolve, reject) => setTimeout(() => error === undefined ? resolve() : reject(error), ms));
+const report = (counts: Partial<RunReport>): RunReport => ({
+  started: 0, delivered: 0, failed: 0, dispatchTimeouts: 0, deliverTimeouts: 0, dropped: 0, trimmed: 0,
+  readBudgetReached: false, ...counts,
+});
+/** Advances the fake clock until `running` settles. */
+async function settled<T>(running: Promise<T>): Promise<T> {
+  let done = false;
+  running.then(() => { done = true; }, () => { done = true; });
+  // eslint-disable-next-line no-unmodified-loop-condition -- running's callbacks raise this.
+  while (!done) await vi.advanceTimersByTimeAsync(MINUTE);
+  return running;
+}
+/** `count` rows for `hook`, oldest first, named `m00000` on in the order they were queued. */
+function backlog(queue: HookDeliveryQueue<string>, hook: string, count: number): void {
+  for (let i = 0; i < count; i++) queue.enqueue(hook, `m${String(i).padStart(5, "0")}`, `${hook}${i}`, Date.now() - count + i);
+}
 
 /** `fakeKv`, whose next put of a key matching `failNext()`'s pattern throws, as a full database does. */
 function faultyKv() {
@@ -251,11 +276,12 @@ describe("HookDeliveryQueue", () => {
     queue.enqueue("a", "m1", "message", Date.now());
     queue.enqueue("b", "m1", "message", Date.now());
     const other = Promise.withResolvers<void>();
-    // The count is the row's first write in a run, and a failed attempt's retry its second.
-    if (stage === "counting") failNext(/^msg:a:/);
+    // The count is the row's first write in a run, and a failed attempt's retry its second. `a` is
+    // started first, so it is in flight when `b`'s write throws.
+    if (stage === "counting") failNext(/^msg:b:/);
     const running = queue.run(Date.now(), async hook => {
-      if (hook === "b") return other.promise;
-      failNext(/^msg:a:/);
+      if (hook === "a") return other.promise;
+      failNext(/^msg:b:/);
       throw new Error("the gadget failed");
     });
     let rejected = false;
@@ -265,7 +291,7 @@ describe("HookDeliveryQueue", () => {
     expect(rejected).toBe(false);
     other.resolve();
     await expect(running).rejects.toThrow("storage is full");
-    expect(kv.get("msg:b:m1")).toEqual({ deliveredAt: Date.now() });
+    expect(kv.get("msg:a:m1")).toEqual({ deliveredAt: Date.now() });
     // A run with a failed delivery is reported before the throw.
     expect(reports).toHaveLength(stage === "settling" ? 1 : 0);
   });
@@ -339,16 +365,290 @@ describe("HookDeliveryQueue", () => {
     ]);
   });
 
-  it("starts at most MAX_DELIVERIES_PER_RUN deliveries, oldest first", async () => {
-    const queue = newQueue<number>();
-    for (let i = MAX_DELIVERIES_PER_RUN; i >= 0; i--) queue.enqueue("hook", `m${i}`, i, Date.now() - i);
-    const delivered: number[] = [];
+  describe("the pool", () => {
+    it("delivers a backlog and many single-row hooks in one run, the backlog's slots growing after its first delivery", async () => {
+      const queue = newQueue();
+      backlog(queue, "big", 40);
+      for (let i = 0; i < 20; i++) queue.enqueue(`small${i}`, "m1", `small${i}`, Date.now());
+      const inFlight = new Map<string, number>();
+      const bigInFlight: number[] = [];
+      let most = 0;
+      const delivered: string[] = [];
 
-    await queue.run(Date.now(), async (_hook, message) => { delivered.push(message); });
+      await settled(queue.run(Date.now(), async (hook, message) => {
+        inFlight.set(hook, (inFlight.get(hook) ?? 0) + 1);
+        if (hook === "big") bigInFlight.push(inFlight.get(hook)!);
+        most = Math.max(most, [...inFlight.values()].reduce((sum, n) => sum + n));
+        await after(1_000);
+        inFlight.set(hook, inFlight.get(hook)! - 1);
+        delivered.push(message);
+      }));
 
-    expect(delivered).toHaveLength(MAX_DELIVERIES_PER_RUN);
-    expect(delivered).not.toContain(0);
-    expect(queue.nextDue()).toBe(Date.now());
+      expect(delivered.toSorted()).toEqual([
+        ...Array.from({ length: 40 }, (_, i) => `big${i}`), ...Array.from({ length: 20 }, (_, i) => `small${i}`),
+      ].toSorted());
+      expect(bigInFlight[0]).toBe(1);
+      expect(Math.max(...bigInFlight)).toBe(MAX_PER_HOOK);
+      expect(most).toBe(MAX_IN_FLIGHT);
+    });
+
+    it("keeps healthy hooks flowing while hung hooks hold one slot each", async () => {
+      const queue = newQueue();
+      for (let i = 0; i < 5; i++) backlog(queue, `hung${i}`, 10);
+      for (let i = 0; i < 100; i++) queue.enqueue(`healthy${i}`, "m1", "healthy", Date.now());
+      const deliver = vi.fn(async (hook: string) => hook.startsWith("hung") ? hang() : after(1_000));
+
+      await settled(queue.run(Date.now(), deliver));
+
+      const called = deliver.mock.calls.map(([hook]) => hook);
+      expect(called.filter(hook => hook.startsWith("healthy"))).toHaveLength(100);
+      expect(called.filter(hook => hook.startsWith("hung")).toSorted()).toEqual(["hung0", "hung1", "hung2", "hung3", "hung4"]);
+    });
+
+    // Only a dispatch timeout can pause a hook within its run: T_kit always passes after the start
+    // window has closed.
+    it("starts nothing more for a hook whose firing timed out, and one in the next run", async () => {
+      const queue = newQueue();
+      backlog(queue, "slow", 3);
+      const deliver = vi.fn(() => after(30_000, new DeliveryTimeout("dispatch")));
+
+      // A firing that never came frees its slot at 30 s, which the hook doesn't get back.
+      await settled(queue.run(Date.now(), deliver));
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(queue.nextDue()).toBeLessThanOrEqual(Date.now());
+
+      deliver.mockImplementation(hang);
+      await settled(queue.run(Date.now(), deliver));
+      expect(deliver).toHaveBeenCalledTimes(2);
+    });
+
+    it("reaches a healthy hook behind a hung hook's backlog of 10,000 rows in the same run", async () => {
+      const queue = newQueue();
+      backlog(queue, "hung", 10_000);
+      queue.enqueue("healthy", "m1", "healthy", Date.now());
+      const delivered: string[] = [];
+
+      const running = queue.run(Date.now(), async hook => {
+        if (hook === "hung") return hang();
+        delivered.push(hook);
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(delivered).toEqual(["healthy"]);
+      await settled(running);
+    });
+
+    describe("trimming a hung hook's backlog", () => {
+      const row = (i: number) => `msg:hung:m${String(i).padStart(5, "0")}`;
+
+      it.each([
+        ["beyond its newest rows", 1 + BACKLOG_KEEP + 50, 50],
+        ["up to the run's limit", 1 + BACKLOG_KEEP + MAX_TRIMMED_PER_RUN + 500, MAX_TRIMMED_PER_RUN],
+      ])("drops rows %s once its delivery times out", async (_, count, trimmed) => {
+        const kv = fakeKv();
+        const reports: RunReport[] = [];
+        const queue = newQueue(kv, r => reports.push(r));
+        backlog(queue, "hung", count);
+
+        await settled(queue.run(Date.now(), hang));
+
+        expect(reports).toEqual([report({ started: 1, deliverTimeouts: 1, trimmed })]);
+        // The oldest go, never tried, so their rows are deleted.
+        expect(kv.get(row(trimmed))).toBeUndefined();
+        expect(kv.get(row(trimmed + 1))).toMatchObject({ attempts: 0 });
+        expect(kv.keys().filter(key => key.startsWith("queue:due:"))).toHaveLength(count - trimmed);
+      });
+
+      it("drops nothing when the firing never came", async () => {
+        const kv = fakeKv();
+        const reports: RunReport[] = [];
+        const queue = newQueue(kv, r => reports.push(r));
+        backlog(queue, "hung", 1 + BACKLOG_KEEP + 50);
+
+        await settled(queue.run(Date.now(), () => after(30_000, new DeliveryTimeout("dispatch"))));
+
+        expect(reports).toEqual([report({ started: 1, dispatchTimeouts: 1 })]);
+        expect(kv.keys().filter(key => key.startsWith("queue:due:"))).toHaveLength(1 + BACKLOG_KEEP + 50);
+      });
+
+      it("neither finishes nor counts a passed-over row deleted or finished meanwhile", async () => {
+        const kv = fakeKv();
+        const reports: RunReport[] = [];
+        const queue = newQueue(kv, r => reports.push(r));
+        backlog(queue, "hung", 1 + BACKLOG_KEEP + 50);
+
+        const running = queue.run(Date.now(), hang);
+        await vi.advanceTimersByTimeAsync(0);
+        kv.delete(row(1));
+        const finished = { deliveredAt: Date.now() - MINUTE };
+        kv.put(row(2), finished);
+        await settled(running);
+
+        expect(reports).toEqual([report({ started: 1, deliverTimeouts: 1, trimmed: 48 })]);
+        expect(kv.get(row(1))).toBeUndefined();
+        expect(kv.get(row(2))).toEqual(finished);
+      });
+
+      it("forgets a row it never tried, and remembers one it did", async () => {
+        const kv = fakeKv();
+        const queue = newQueue(kv);
+        backlog(queue, "hung", 1 + BACKLOG_KEEP + 2);
+        kv.put(row(1), { message: "tried", attempts: 1, at: Date.now() - BACKLOG_KEEP - 2 });
+
+        await settled(queue.run(Date.now(), hang));
+        expect(kv.get(row(1))).toEqual({ deliveredAt: Date.now() });
+        expect(kv.get(row(2))).toBeUndefined();
+
+        // A duplicate push of the tried one is ignored, and the untried one queued again.
+        queue.enqueue("hung", "m00001", "again", Date.now());
+        queue.enqueue("hung", "m00002", "again", Date.now());
+        expect(kv.get(row(1))).toEqual({ deliveredAt: Date.now() });
+        expect(kv.get(row(2))).toEqual({ message: "again", attempts: 0, at: Date.now() });
+      });
+
+      it("leaves the timed-out row refiled when a trim write throws", async () => {
+        const { kv, failNext } = faultyKv();
+        const queue = newQueue(kv);
+        backlog(queue, "hung", 1 + BACKLOG_KEEP + 2);
+        // Tried, so the trim finishes it: its first write is the finished entry.
+        kv.put(row(1), { message: "tried", attempts: 1, at: Date.now() - BACKLOG_KEEP - 2 });
+        failNext(/^queue:finished:/);
+
+        await expect(settled(queue.run(Date.now(), hang))).rejects.toThrow("storage is full");
+
+        expect(kv.get(row(0))).toEqual({ message: "hung0", attempts: 1, at: Date.now() + MINUTE });
+      });
+    });
+
+    describe("waking on enqueue()", () => {
+      it("starts a row queued mid-run at once", async () => {
+        const queue = newQueue();
+        queue.enqueue("hung", "m1", "hung", Date.now());
+        const delivered: string[] = [];
+        const running = queue.run(Date.now(), async (hook, message) => {
+          if (hook === "hung") return hang();
+          delivered.push(message);
+        });
+        await vi.advanceTimersByTimeAsync(1);
+
+        queue.enqueue("late", "m1", "late", Date.now());
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(delivered).toEqual(["late"]);
+        await settled(running);
+      });
+
+      it("leaves a row queued behind the scan's position to the next run", async () => {
+        const queue = newQueue();
+        queue.enqueue("zz", "m1", "hung", Date.now());
+        const deliver = vi.fn(async (hook: string) => hook === "zz" ? hang() : undefined);
+        const running = queue.run(Date.now(), deliver);
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The scan has read its millisecond up to `zz`.
+        queue.enqueue("aa", "m1", "early", Date.now());
+        await settled(running);
+        expect(calls(deliver)).toEqual([["zz", "hung"]]);
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(calls(deliver)).toEqual([["zz", "hung"], ["aa", "early"]]);
+      });
+
+      it("leaves a retry that comes due while the pool is full to the next run", async () => {
+        const kv = fakeKv();
+        const queue = newQueue(kv);
+        for (let i = 0; i < MAX_IN_FLIGHT; i++) queue.enqueue(`hung${i}`, "m1", "hung", Date.now());
+        kv.put("msg:retry:m1", { message: "retry", attempts: 1, at: Date.now() + MINUTE });
+        kv.put(entry("due", Date.now() + MINUTE, "retry:m1"), true);
+        const deliver = vi.fn(async (hook: string) => hook.startsWith("hung") ? hang() : undefined);
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(deliver).toHaveBeenCalledTimes(MAX_IN_FLIGHT);
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(calls(deliver).slice(MAX_IN_FLIGHT)).toEqual([["retry", "retry"]]);
+      });
+    });
+
+    describe("budgets", () => {
+      it("starts nothing once the start window has closed, and leaves the rest to the next run", async () => {
+        const queue = newQueue();
+        for (let i = 0; i < MAX_IN_FLIGHT + 5; i++) queue.enqueue(`hook${i}`, "m1", "message", Date.now());
+        const deliver = vi.fn(() => after(START_BUDGET + MINUTE));
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(deliver).toHaveBeenCalledTimes(MAX_IN_FLIGHT);
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(deliver).toHaveBeenCalledTimes(MAX_IN_FLIGHT + 5);
+      });
+
+      it("starts at most MAX_STARTS_PER_RUN, and leaves the rest to the next run", async () => {
+        const queue = newQueue();
+        for (let i = 0; i < MAX_STARTS_PER_RUN + 50; i++) queue.enqueue(`hook${i}`, "m1", "message", Date.now());
+        const deliver = vi.fn(async () => {});
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(deliver).toHaveBeenCalledTimes(MAX_STARTS_PER_RUN);
+        expect(queue.nextDue()).toBeLessThanOrEqual(Date.now());
+
+        await settled(queue.run(Date.now(), deliver));
+        expect(deliver).toHaveBeenCalledTimes(MAX_STARTS_PER_RUN + 50);
+      });
+
+      it("reports a scan that stopped at READ_BUDGET", async () => {
+        const reports: RunReport[] = [];
+        const queue = newQueue(fakeKv(), r => reports.push(r));
+        backlog(queue, "hung", READ_BUDGET);
+        queue.enqueue("unreached", "m1", "unreached", Date.now());
+        const deliver = vi.fn(async (hook: string) => hook === "hung" ? hang() : undefined);
+
+        await settled(queue.run(Date.now(), deliver));
+
+        expect(calls(deliver).map(([hook]) => hook)).toEqual(["hung"]);
+        expect(reports).toEqual([expect.objectContaining({ readBudgetReached: true })]);
+      });
+    });
+
+    it("always starts something in the run after one that leaves a row due", async () => {
+      type Behavior = "delivers" | "fails" | "hangs" | "dispatch" | "slow";
+      const behavior = fc.constantFrom<Behavior>("delivers", "fails", "hangs", "dispatch", "slow");
+      const act: Record<Behavior, () => Promise<void>> = {
+        delivers: async () => {},
+        fails: async () => { throw new Error("the gadget failed"); },
+        hangs: hang,
+        dispatch: () => after(30_000, new DeliveryTimeout("dispatch")),
+        slow: () => after(3 * MINUTE),
+      };
+      await fc.assert(fc.asyncProperty(
+        fc.array(fc.record({
+          rows: fc.integer({ min: 1, max: 40 }),
+          attempts: fc.integer({ min: 0, max: MAX_DELIVERY_ATTEMPTS }),
+          first: behavior,
+          later: behavior,
+        }), { minLength: 1, maxLength: 30 }),
+        async hooks => {
+          const kv = fakeKv();
+          const reports: RunReport[] = [];
+          const queue = newQueue(kv, r => reports.push(r));
+          hooks.forEach(({ rows, attempts }, h) => {
+            for (let i = 0; i < rows; i++) {
+              kv.put(`msg:h${h}:m${i}`, { message: "message", attempts, at: Date.now() - i });
+              kv.put(entry("due", Date.now() - i, `h${h}:m${i}`), true);
+            }
+          });
+          kv.put(INDEXED, true);
+          const behaving = (pick: "first" | "later") => (hook: string) => act[hooks[Number(hook.slice(1))][pick]]();
+
+          await settled(queue.run(Date.now(), behaving("first")));
+          const next = queue.nextDue();
+          if (next === undefined || next > Date.now()) return;
+          const deliver = vi.fn(behaving("later"));
+          reports.length = 0;
+          await settled(queue.run(Date.now(), deliver));
+          expect(deliver.mock.calls.length + (reports[0]?.dropped ?? 0)).toBeGreaterThan(0);
+        },
+      ), { ...PROPERTY_RUN_OPTIONS, numRuns: 40 });
+    });
   });
 
   it("forgets finished messages once the dedupe window has passed", async () => {

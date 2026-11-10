@@ -15,11 +15,21 @@ const HOUR_MS = 60 * MINUTE_MS;
 export const MAX_DELIVERY_ATTEMPTS = 8;
 /** Duplicate pushes of a message that needs no further delivery are ignored for this long. */
 export const DELIVERED_RETENTION_MS = 24 * HOUR_MS;
-/**
- * Deliveries one run starts together; the rest stay due, so the alarm a driver reschedules for the
- * past takes them next.
- */
-export const MAX_DELIVERIES_PER_RUN = 20;
+/** Attempts a run has in flight at once. */
+const MAX_IN_FLIGHT = 20;
+/** Attempts in flight for a hook that has delivered this run; one before it has, none after a timeout. */
+const MAX_PER_HOOK = 4;
+/** How long a run keeps starting attempts; it then waits only for those in flight. */
+const START_BUDGET_MS = 2 * MINUTE_MS;
+/** Attempts one run starts: each is a few subrequests. */
+const MAX_STARTS_PER_RUN = 200;
+/** Due entries one run reads, a page at a time, so a slow hook that keeps succeeding is never trimmed. */
+const READ_BUDGET = 50_000;
+const PAGE_SIZE = 200;
+/** The passed-over rows a hook keeps once its delivery times out with no success in the run. */
+const BACKLOG_KEEP = 1_000;
+/** Rows one run trims, which bounds the writes it spends on drops. */
+const MAX_TRIMMED_PER_RUN = 2_000;
 /** Finished messages one run forgets once their dedupe window has passed; the rest stay due. */
 const MAX_FORGOTTEN_PER_RUN = 500;
 /**
@@ -56,16 +66,59 @@ export type RunReport = {
   deliverTimeouts: number;
   /** Rows dropped after `MAX_DELIVERY_ATTEMPTS`. */
   dropped: number;
+  /** Rows dropped from the backlog of a hook that hung: never tried, or tried and still due. */
+  trimmed: number;
+  /** The run read as many due entries as it may: hooks behind them weren't reached. */
+  readBudgetReached: boolean;
 };
 
-const newReport = (): RunReport =>
-  ({ started: 0, delivered: 0, failed: 0, dispatchTimeouts: 0, deliverTimeouts: 0, dropped: 0 });
-/** A clean run reports nothing. */
-const eventful = (report: RunReport) =>
-  report.failed + report.dispatchTimeouts + report.deliverTimeouts + report.dropped > 0;
+const newReport = (): RunReport => ({
+  started: 0, delivered: 0, failed: 0, dispatchTimeouts: 0, deliverTimeouts: 0, dropped: 0, trimmed: 0,
+  readBudgetReached: false,
+});
+/** A clean run reports nothing. A slow hook's backlog nearing the read budget is reported even so. */
+const eventful = (report: RunReport) => report.readBudgetReached ||
+  report.failed + report.dispatchTimeouts + report.deliverTimeouts + report.dropped + report.trimmed > 0;
 
 /** How an attempt ended. Tagged, so no value `deliver` rejects with can read as a delivery. */
 type Outcome = { ok: true } | { ok: false; error: unknown };
+
+/** One run's pool of attempts. */
+type RunState = {
+  /** The rows with an attempt in flight. */
+  inFlight: Set<string>;
+  /** Attempts in flight, per hook. */
+  perHook: Map<string, number>;
+  /** Hooks with a delivery this run. */
+  proven: Set<string>;
+  /** Hooks with a timeout of either stage this run, which start nothing more. */
+  timedOut: Set<string>;
+  /** Per hook, the due entries passed over at its cap, oldest first. */
+  skipped: Map<string, string[]>;
+  /** The one forward pass over the due index: the last entry read, and how many. */
+  scan: { position?: string; read: number };
+  /** The start window is open. */
+  starting: boolean;
+  report: RunReport;
+  /** What storage threw, rethrown once everything in flight has settled. */
+  failure?: { error: unknown };
+  /** Lets the run look for room again: a slot freed, a row was queued, or the window closed. */
+  wake(): void;
+  nextWake(): Promise<void>;
+};
+
+function newRunState(): RunState {
+  let woken = Promise.withResolvers<void>();
+  return {
+    inFlight: new Set(), perHook: new Map(), proven: new Set(), timedOut: new Set(), skipped: new Map(),
+    scan: { read: 0 }, starting: true, report: newReport(),
+    wake: () => woken.resolve(),
+    nextWake: async () => {
+      await woken.promise;
+      woken = Promise.withResolvers<void>();
+    },
+  };
+}
 
 /** A queued delivery of `message` to one hook, when it is next tried, and how many attempts started. */
 type Pending<Message> = { message: Message; attempts: number; at: number };
@@ -107,9 +160,11 @@ const through = (index: string, time: number) => `${index}${timeKey(time + 1)}`;
  * alarm: it calls `run()` from it, and sets it for `nextDue()` afterwards. A driver may delete what
  * the queue stores, as on disconnecting: an index entry whose row is gone is dropped when read.
  *
- * Each attempt is counted before its call and bounded by T_kit (4 minutes), so a hook that hangs
- * can hold a run no longer than that, and a call cut off by a reset still uses up an attempt. The
- * gadget's call isn't cancelled: a hook can be called again while an earlier call still runs.
+ * A run keeps a pool of attempts in flight, refilled as each settles, so one hook that hangs holds
+ * back only its own messages: a hook gets one slot until it delivers in the run, then
+ * `MAX_PER_HOOK`, and none after a timeout. Each attempt is counted before its call and given up on
+ * after T_kit (4 minutes), so a call cut off by a reset still uses up an attempt. The gadget's call
+ * isn't cancelled: a hook can be called again while an earlier call still runs.
  *
  * @example
  * ```ts
@@ -133,12 +188,15 @@ const through = (index: string, time: number) => `${index}${timeKey(time + 1)}`;
 export class HookDeliveryQueue<Message> {
   readonly #kv: KvScannable;
   readonly #onRunReport: (report: RunReport) => void;
+  /** The run in flight, which `enqueue()` wakes. */
+  #active?: RunState;
 
   /**
    * @param kv The driver's `ctx.storage.kv`.
    * @param options.onRunReport Called once at the end of a run in which an attempt failed or timed
-   * out or a message was dropped, with its counts. A clean run reports nothing. It is given no
-   * error, since a hook's exception can quote the private message it failed on.
+   * out, a message was dropped or trimmed, or the read budget ran out, with its counts. A clean run
+   * reports nothing. It is given no error, since a hook's exception can quote the private message
+   * it failed on.
    */
   constructor(kv: KvScannable, { onRunReport }: { onRunReport: (report: RunReport) => void }) {
     this.#kv = kv;
@@ -146,7 +204,8 @@ export class HookDeliveryQueue<Message> {
   }
 
   /**
-   * Queue `message` for the hook unless it is pending or finished within the dedupe window.
+   * Queue `message` for the hook unless it is pending or finished within the dedupe window. A run
+   * in flight is woken to start it.
    * @param hookKey The hook to deliver to.
    * @param messageId The provider's id for the message, which a duplicate push repeats.
    * @param message What `run()` hands the delivery callback.
@@ -155,7 +214,9 @@ export class HookDeliveryQueue<Message> {
   enqueue(hookKey: string, messageId: string, message: Message, now: number): void {
     this.#index();
     const key = rowKey(hookKey, messageId);
-    if (this.#kv.get(key) === undefined) this.#putPending(key, { message, attempts: 0, at: now });
+    if (this.#kv.get(key) !== undefined) return;
+    this.#putPending(key, { message, attempts: 0, at: now });
+    this.#active?.wake();
   }
 
   /**
@@ -178,24 +239,45 @@ export class HookDeliveryQueue<Message> {
   }
 
   /**
-   * Forget finished rows whose dedupe window has passed, then attempt up to
-   * `MAX_DELIVERIES_PER_RUN` due rows, oldest `at` first, concurrently, and wait for them all. Each
-   * attempt is counted before `deliver` is called, and given up on after T_kit. A row is finished
-   * once `deliver` resolves, retried with backoff when it throws or times out, and dropped once
-   * `MAX_DELIVERY_ATTEMPTS` have started.
-   * @param now The current time.
+   * Forget finished rows whose dedupe window has passed, then deliver due rows through a pool of
+   * up to 20 attempts, refilled as each settles, for up to 2 minutes and at most 200 attempts, and
+   * wait for those in flight: about 6 minutes at most. Each attempt is counted before `deliver` is
+   * called, and given up on after T_kit. A row is finished once `deliver` resolves, retried with
+   * backoff when it throws or times out, and dropped once `MAX_DELIVERY_ATTEMPTS` have started. A
+   * hook whose `deliver` times out with no delivery in the run keeps only its newest
+   * `BACKLOG_KEEP` (1,000) passed-over rows.
+   * @param now The current time, which finished rows are forgotten by. What is due is read against
+   * the clock as the run goes, since a run lasts minutes.
    * @param deliver Delivers one message to one hook.
-   * @throws What storage threw, once every attempt has settled and the run is reported.
+   * @throws What storage threw, once everything in flight has settled and the run is reported.
    */
   async run(now: number, deliver: Deliver<Message>): Promise<void> {
     this.#index();
     this.#forgetExpired(now);
-    const report = newReport();
-    const listed = [...this.#kv.list<true>({ prefix: DUE, end: through(DUE, now), limit: MAX_DELIVERIES_PER_RUN })];
-    const results = await Promise.allSettled(listed.map(([entry]) => this.#tryStart(entry, deliver, report)));
-    if (eventful(report)) this.#onRunReport(report);
-    const failure = results.find(result => result.status === "rejected");
-    if (failure) throw failure.reason;
+    const run = newRunState();
+    this.#active = run;
+    const window = setTimeout(() => {
+      run.starting = false;
+      run.wake();
+    }, START_BUDGET_MS);
+    try {
+      for (;;) {
+        if (!run.failure && run.starting) {
+          try {
+            this.#fill(run, deliver);
+          } catch (error) {
+            run.failure ??= { error };
+          }
+        }
+        if (run.inFlight.size === 0) break;
+        await run.nextWake();
+      }
+    } finally {
+      clearTimeout(window);
+      this.#active = undefined;
+    }
+    if (eventful(run.report)) this.#onRunReport(run.report);
+    if (run.failure) throw run.failure.error;
   }
 
   /**
@@ -224,11 +306,39 @@ export class HookDeliveryQueue<Message> {
     }
   }
 
-  /**
-   * Count an attempt at the row due entry `entry` stands for, and make it. Async, so a storage
-   * throw rejects this attempt alone while others are in flight.
-   */
-  async #tryStart(entry: string, deliver: Deliver<Message>, report: RunReport): Promise<void> {
+  /** Start what the run has room for: passed-over rows first, then on along the due index. */
+  #fill(run: RunState, deliver: Deliver<Message>): void {
+    // Slow-start: one slot until the hook delivers this run, then MAX_PER_HOOK; none after a timeout.
+    const cap = (hook: string) => run.timedOut.has(hook) ? 0 : run.proven.has(hook) ? MAX_PER_HOOK : 1;
+    const room = () => run.starting && run.inFlight.size < MAX_IN_FLIGHT && run.report.started < MAX_STARTS_PER_RUN;
+    const fits = (hook: string) => (run.perHook.get(hook) ?? 0) < cap(hook);
+    for (const [hook, entries] of run.skipped) {
+      while (room() && entries.length > 0 && fits(hook)) this.#tryStart(run, entries.shift()!, deliver);
+      if (entries.length === 0) run.skipped.delete(hook);
+    }
+    // One forward pass, its end recomputed per page so rows queued meanwhile are found.
+    while (room() && run.scan.read < READ_BUDGET) {
+      const page = [...this.#kv.list<true>({
+        prefix: DUE, startAfter: run.scan.position, end: through(DUE, Date.now()), limit: PAGE_SIZE,
+      })];
+      if (page.length === 0) return;
+      for (const [entry] of page) {
+        run.scan.position = entry;
+        run.scan.read++;
+        const { key } = entryRow(DUE, entry);
+        const hook = hookOf(key); // from the entry: no row read for a row passed over
+        if (run.inFlight.has(key)) continue;
+        if (fits(hook)) this.#tryStart(run, entry, deliver);
+        else if (run.skipped.has(hook)) run.skipped.get(hook)!.push(entry);
+        else run.skipped.set(hook, [entry]);
+        if (!room()) return;
+      }
+    }
+    if (run.scan.read >= READ_BUDGET) run.report.readBudgetReached = true;
+  }
+
+  /** Count an attempt at the row due entry `entry` stands for, and start it. */
+  #tryStart(run: RunState, entry: string, deliver: Deliver<Message>): void {
     const { key, time } = entryRow(DUE, entry);
     const row = this.#kv.get<Row<Message>>(key);
     if (!row || "deliveredAt" in row || row.at !== time) {
@@ -238,33 +348,55 @@ export class HookDeliveryQueue<Message> {
     if (row.attempts >= MAX_DELIVERY_ATTEMPTS) {
       // Its last attempt started and never reported back.
       this.#finish(key, row.at);
-      report.dropped++; // after #finish, so a failed write reports no drop
+      run.report.dropped++; // after #finish, so a failed write reports no drop
       return;
     }
     // Stored before the call goes out, as the output gate holds it until then. `at` stays, so a
     // row cut off by a reset is due again at once.
     const counted = { ...row, attempts: row.attempts + 1 };
     this.#kv.put<Pending<Message>>(key, counted);
-    report.started++;
-    await this.#attempt(key, counted, deliver, report);
+    run.report.started++;
+    const hook = hookOf(key);
+    run.inFlight.add(key);
+    run.perHook.set(hook, (run.perHook.get(hook) ?? 0) + 1);
+    void this.#attempt(run, key, hook, counted, deliver)
+      .catch((error: unknown) => { run.failure ??= { error }; })
+      .finally(() => {
+        run.inFlight.delete(key);
+        run.perHook.set(hook, run.perHook.get(hook)! - 1);
+        run.wake();
+      });
   }
 
-  #attempt(key: string, counted: Pending<Message>, deliver: Deliver<Message>, report: RunReport): Promise<void> {
+  #attempt(run: RunState, key: string, hook: string, counted: Pending<Message>, deliver: Deliver<Message>): Promise<void> {
     const giveUp = new AbortController();
     const timer = setTimeout(() => giveUp.abort(new DeliveryTimeout("deliver")), DELIVERY_TIMEOUT_MS);
     // Called in a callback, so a synchronous throw is a failed attempt.
-    const attempt = Promise.resolve().then(() => deliver(hookOf(key), counted.message, giveUp.signal));
+    const attempt = Promise.resolve().then(() => deliver(hook, counted.message, giveUp.signal));
     // Raced here as well, so T_kit holds whatever `deliver` does with its signal.
     return untilAborted(attempt, giveUp.signal)
       .then((): Outcome => ({ ok: true }), (error: unknown): Outcome => ({ ok: false, error }))
-      .then(outcome => this.#settle(key, counted, outcome, report))
+      .then(outcome => {
+        this.#settle(run, key, hook, counted, outcome);
+        // After the refile, so a trim write that throws still leaves this row refiled. A dispatch
+        // timeout trims nothing: that is the kernel stalling, not the hook.
+        const hung = !outcome.ok && outcome.error instanceof DeliveryTimeout && outcome.error.stage === "deliver";
+        if (hung && !run.proven.has(hook)) this.#trim(run, hook);
+      })
       .finally(() => clearTimeout(timer));
   }
 
-  #settle(key: string, counted: Pending<Message>, outcome: Outcome, report: RunReport): void {
-    if (outcome.ok) report.delivered++;
-    else if (outcome.error instanceof DeliveryTimeout) report[`${outcome.error.stage}Timeouts`]++;
-    else report.failed++;
+  #settle(run: RunState, key: string, hook: string, counted: Pending<Message>, outcome: Outcome): void {
+    const { report } = run;
+    if (outcome.ok) {
+      report.delivered++;
+      run.proven.add(hook);
+    } else if (outcome.error instanceof DeliveryTimeout) {
+      report[`${outcome.error.stage}Timeouts`]++;
+      run.timedOut.add(hook);
+    } else {
+      report.failed++;
+    }
     const row = this.#kv.get<Row<Message>>(key);
     if (!row) {
       // Deleted meanwhile, as a driver forgetting every hook does, which it stays.
@@ -281,6 +413,31 @@ export class HookDeliveryQueue<Message> {
     } else {
       this.#refile(key, counted.at, { ...counted, at: Date.now() + backoff(counted.attempts) });
     }
+  }
+
+  /** Keep only the newest `BACKLOG_KEEP` of the rows `hook`'s run passed over. */
+  #trim(run: RunState, hook: string): void {
+    const entries = run.skipped.get(hook) ?? [];
+    let next = 0;
+    while (entries.length - next > BACKLOG_KEEP && run.report.trimmed < MAX_TRIMMED_PER_RUN) {
+      const entry = entries[next++]; // oldest first
+      const { key, time } = entryRow(DUE, entry);
+      if (run.inFlight.has(key)) continue;
+      const row = this.#kv.get<Row<Message>>(key);
+      if (!row || "deliveredAt" in row || row.at !== time) {
+        this.#kv.delete(entry); // outlived by its row: not a drop
+        continue;
+      }
+      if (row.attempts === 0) {
+        // Never tried, so forgotten: the row first, as an entry without one is dropped when read.
+        this.#kv.delete(key);
+        this.#kv.delete(entry);
+      } else {
+        this.#finish(key, row.at); // tried, so it may have reached the gadget: remembered
+      }
+      run.report.trimmed++;
+    }
+    entries.splice(0, next); // one splice, not a shift per entry: a list can hold 50,000
   }
 
   /** When row `key` finished, if it is a finished row. */

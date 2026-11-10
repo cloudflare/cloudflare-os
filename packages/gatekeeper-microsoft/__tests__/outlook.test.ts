@@ -731,7 +731,9 @@ describe("reading new mail by cursor", () => {
       get: (key: string) => store.get(key),
       put: (key: string, value: unknown) => { store.set(key, value); },
       delete: (key: string) => { store.delete(key); },
-      list: ({ prefix }: { prefix: string }) => [...store.entries()].filter(([key]) => key.startsWith(prefix)).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      list: ({ prefix, startAfter, end, limit }: { prefix: string; startAfter?: string; end?: string; limit?: number }) => [...store.entries()]
+        .filter(([key]) => key.startsWith(prefix) && (startAfter === undefined || key > startAfter) && (end === undefined || key < end))
+        .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, limit),
     };
     let alarm: number | null = null;
     const reads: string[] = [];

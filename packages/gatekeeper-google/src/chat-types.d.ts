@@ -685,7 +685,8 @@ export interface ChatMessageHook {
    * two: after 4 minutes the call counts as failed and the message is retried, while the first
    * call may still be running. So a message may arrive more than once, even twice at once, or out
    * of order: key any work on `entry.info.id` to keep it idempotent. One this throws for is retried
-   * with backoff, eight attempts in all. Disabling the hook ends its retries.
+   * with backoff, eight attempts in all, and one that keeps hanging loses its older messages.
+   * Disabling the hook ends its retries.
    */
   receiveMessage(entry: ChatNewMessageEntry): Promise<void>;
 }
