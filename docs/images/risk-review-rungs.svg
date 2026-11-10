@@ -7,13 +7,13 @@
 
   <!-- One bar, 880px = 708 PRs -->
   <g font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">
-    <rect x="40" y="104" width="26.1" height="40" fill="#D97706"/>
-    <text x="53.1" y="129">21</text>
-    <rect x="66.1" y="104" width="264.7" height="40" fill="#7C3AED"/>
-    <text x="198.5" y="129">213</text>
-    <rect x="330.8" y="104" width="51" height="40" fill="#2563EB"/>
-    <text x="356.3" y="129">41</text>
-    <rect x="381.8" y="104" width="310.7" height="40" fill="#93C5FD"/>
+    <rect x="40" y="104" width="19.9" height="40" fill="#D97706"/>
+    <text x="49.9" y="129" font-size="12">16</text>
+    <rect x="59.9" y="104" width="271" height="40" fill="#7C3AED"/>
+    <text x="195.4" y="129">218</text>
+    <rect x="330.9" y="104" width="51" height="40" fill="#2563EB"/>
+    <text x="356.4" y="129">41</text>
+    <rect x="381.9" y="104" width="310.6" height="40" fill="#93C5FD"/>
     <text x="537.2" y="129" fill="#1E3A8A">250</text>
     <rect x="692.5" y="104" width="227.5" height="40" fill="#94A3B8"/>
     <text x="806.3" y="129">183</text>
@@ -45,16 +45,16 @@
     <rect x="40" y="246" width="12" height="12" rx="2" fill="#D97706"/>
     <text x="60" y="257" font-weight="600">Rung 1 · Proven</text>
     <text x="250" y="257">A fixed check proves the change safe; no AI decides</text>
-    <text x="690" y="257" text-anchor="end">21</text>
-    <text x="770" y="257" text-anchor="end">3%</text>
-    <text x="920" y="257" text-anchor="end" font-weight="600">3%</text>
+    <text x="690" y="257" text-anchor="end">16</text>
+    <text x="770" y="257" text-anchor="end">2%</text>
+    <text x="920" y="257" text-anchor="end" font-weight="600">2%</text>
     <line x1="24" y1="272" x2="936" y2="272" stroke="#F1F5F9" stroke-width="1.5"/>
 
     <rect x="40" y="288" width="12" height="12" rx="2" fill="#7C3AED"/>
     <text x="60" y="299" font-weight="600">Rung 2 · AI-scored</text>
     <text x="250" y="299">Outside the kernel: Bonk (Sol) and Opus both clear the bar</text>
-    <text x="690" y="299" text-anchor="end">213</text>
-    <text x="770" y="299" text-anchor="end">30%</text>
+    <text x="690" y="299" text-anchor="end">218</text>
+    <text x="770" y="299" text-anchor="end">31%</text>
     <text x="920" y="299" text-anchor="end" font-weight="600">33%</text>
     <line x1="24" y1="314" x2="936" y2="314" stroke="#F1F5F9" stroke-width="1.5"/>
 

@@ -20,7 +20,7 @@
   <!-- Pull request -->
   <rect x="40" y="248" width="150" height="76" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
   <text x="115" y="280" font-size="14" font-weight="600" fill="#334155" text-anchor="middle">Pull request</text>
-  <text x="115" y="301" font-size="13" fill="#64748B" text-anchor="middle">each push is a new head</text>
+  <text x="115" y="301" font-size="12" fill="#64748B" text-anchor="middle">each push: a new head</text>
 
   <!-- Producers -->
   <g font-size="13" fill="#334155">
@@ -41,8 +41,8 @@
     <text x="256" y="370">Eval results, report-only for now</text>
 
     <rect x="240" y="396" width="310" height="58" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
-    <text x="256" y="420" font-size="14" font-weight="600">Relay</text>
-    <text x="256" y="440">Reviews, comments, merge groups, CI</text>
+    <text x="256" y="420" font-size="14" font-weight="600">Wake-ups</text>
+    <text x="256" y="440">Review relay, comments, CI finishing</text>
   </g>
 
   <!-- Pull request to producers -->
