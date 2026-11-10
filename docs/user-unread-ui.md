@@ -42,19 +42,33 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 - Failed read commands display an error without pretending the state advanced. An inbox query
   failure retains its previous rows and offers retry; it does not present an empty inbox as caught up.
 
-`UnreadStateBridge` releases its live callback while hidden, and refreshes on return or transport/DO
-reset. Unread support therefore adds no hidden-tab callback keeping the User DO resident. Background native badges use the
-separate push-service path; hidden windows never issue automatic read receipts.
-`NotificationBridge` also releases its independent alert subscription while hidden so unavailable
-tabs cannot delay mobile push. Receiving an unread snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
+`UnreadStateBridge` releases its live callback while hidden in ordinary browsers and legacy native
+views, and refreshes on return or transport/DO reset. A verified native bridge implementing
+`unreadStateChanged` keeps its subscription while hidden so the host can update system badges.
+Push covers OS-suspended or terminated apps; hidden windows never issue automatic read receipts.
+`NotificationBridge` releases its independent alert subscription while hidden so unavailable
+tabs cannot delay mobile push. Receiving an unread snapshot does not acknowledge an alert or
+replay one. The WebSocket reconnects independently of
 page visibility.
 
-## Native integration scope
+## Native contract and scope
 
-This layer exposes unread state to the web UI, but does not forward snapshots to native hosts.
-Native badge forwarding and its bridge contract are a separate consumer layer. Native clients
-must use complete absolute totals rather than message increments; an unavailable total or
-disconnect is stale/unknown, not zero.
+The first-party native bridge can optionally implement:
+
+```ts
+cloudflareOSNative.unreadStateChanged(state: { unreadMessageCount: number }): void;
+cloudflareOSNative.sessionEnded(): void;
+```
+
+The bridge forwards the authenticated session's total, including from hidden native views. The native host
+must associate it with its verified first-party main frame and saved instance/user, never a claimed
+instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
+counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that
+instance's native badge. Do not log chat titles.
+
+`sessionEnded()` is called on explicit logout, not on a transient reconnect. It lets the host remove
+that instance's contribution. Both callbacks are optional;
+a native bridge failure must not prevent browser logout.
 
 The Electron callback implementation, OS badge/alert presentation and permissions, and retaining
 instance webviews when the window closes to the tray are separate desktop-shell work. This bridge

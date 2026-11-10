@@ -135,8 +135,9 @@ export async function fetchWithAuthRetry(
         ...(signal ? { signal } : {}),
       });
     } catch (error) {
-      // Network error or timeout: ambiguous, so retry only when the request is safe to replay.
-      if (replayable && idempotent && attempt < retries - 1) {
+      // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
+      // and never once the caller's own signal has aborted it.
+      if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
         await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
         attempt++;
         continue;

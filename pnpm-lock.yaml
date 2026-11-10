@@ -24,6 +24,9 @@ catalogs:
     diff:
       specifier: ^9.0.0
       version: 9.0.0
+    fast-check:
+      specifier: ^4.10.2
+      version: 4.10.2
     miniflare:
       specifier: 5.20261023.1-beta
       version: 5.20261023.1-beta
@@ -685,6 +688,9 @@ importers:
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -861,6 +867,49 @@ importers:
         specifier: 'catalog:'
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
     devDependencies:
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:../../scripts
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-playwright@5.0.5)(@vitest/browser-preview@5.0.5)(@vitest/ui@5.0.5)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.154.0(@cloudflare/workers-types@5.20261027.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-pagerduty:
+    dependencies:
+      '@gadgets/configurator-ui':
+        specifier: workspace:*
+        version: link:../configurator-ui
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@gadgets/workshop-shared':
+        specifier: workspace:*
+        version: link:../workshop-shared
+      capnweb:
+        specifier: 'catalog:'
+        version: 0.12.0
+      capnweb-validate:
+        specifier: 'catalog:'
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
+      jose:
+        specifier: ^6.2.13
+        version: 6.2.13
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 'catalog:'
+        version: 1.4.9(@cloudflare/workers-types@5.20261027.1)(@types/node@26.1.0)(vitest@5.0.5)
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20261027.1
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts
@@ -1208,6 +1257,9 @@ importers:
       capnweb-validate:
         specifier: 'catalog:'
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1407,6 +1459,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1444,6 +1499,9 @@ importers:
       chess.js:
         specifier: 1.4.0
         version: 1.4.0
+      playwright:
+        specifier: 'catalog:'
+        version: 1.64.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1610,6 +1668,9 @@ importers:
       fast-diff:
         specifier: ^1.3.0
         version: 1.3.0
+      mdast-util-from-markdown:
+        specifier: ^2.0.3
+        version: 2.0.3(supports-color@10.2.2)
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -3014,7 +3075,9 @@ packages:
   '@smithy/core@3.34.1':
     resolution: {integrity: sha512-dLcOUxz8YCv1RZUMKq6GbyUf95pLbrqh34bPvpCZ1+CByFF31BEAFewZjsGCnVsZTKdThNENfGyAgk2TJqVwSw==}
     engines: {node: '>=18.0.0'}
-    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.4.16':
     resolution: {integrity: sha512-QfuLWAkLzptffFW980AFeHZFdqds2B64rpEd3uJ6lgs3xVn9QegGMUgUcj+4d7dRrAsya3r58ZKpku97WcFb4w==}
@@ -4138,6 +4201,10 @@ packages:
     engines: {node: '>= 10.17.0'}
     hasBin: true
 
+  fast-check@4.10.2:
+    resolution: {integrity: sha512-iK2f+YrcmoeGqk6fA0ea2bptcu/itMIm4NfEozq6N25+aG6h7s5HZbB/k1aV7b5w5sFLMCbbtRUsTVR+BgC3xw==}
+    engines: {node: '>=12.17.0'}
+
   fast-diff@1.3.0:
     resolution: {integrity: sha512-VxPP4NqbUjj6MaAOafWeUn2cXWLcCtljklUtZf0Ind4XQ+QPtmA0b18zZy0jIQx+ExRVCR/ZQpBmik5lXshNsw==}
 
@@ -5059,6 +5126,9 @@ packages:
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
+
+  pure-rand@8.4.2:
+    resolution: {integrity: sha512-vvuOGgcuPJAirlHvuQw1TrOiw7ptaIXXmIbNuiNOY6lNGJJH49PQ1Kj4nd783nPdQhQdicgOjVI2yI/9BD6/Ng==}
 
   react-day-picker@9.14.0:
     resolution: {integrity: sha512-tBaoDWjPwe0M5pGrum4H0SR6Lyk+BO9oHnp9JbKpGKW2mlraNPgP9BMfsg5pWpwrssARmeqk7YBl2oXutZTaHA==}
@@ -7521,19 +7591,6 @@ snapshots:
       - utf-8-validate
       - vite
 
-  '@vitest/browser-preview@5.0.5(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))(vitest@5.0.5)':
-    dependencies:
-      '@testing-library/dom': 10.4.2
-      '@testing-library/user-event': 14.6.7(@testing-library/dom@10.4.2)
-      '@vitest/browser': 5.0.5(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))(vitest@5.0.5)
-      vitest: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-playwright@5.0.5)(@vitest/browser-preview@5.0.5)(@vitest/ui@5.0.5)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
-    transitivePeerDependencies:
-      - bufferutil
-      - msw
-      - utf-8-validate
-      - vite
-    optional: true
-
   '@vitest/browser@5.0.5(@voidzero-dev/vite-plus-core@1.4.0(@types/node@26.1.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(typescript@7.0.2)(yaml@2.9.1))(vitest@5.0.5)':
     dependencies:
       '@blazediff/core': 1.10.0
@@ -8155,6 +8212,10 @@ snapshots:
       '@types/yauzl': 2.10.3
     transitivePeerDependencies:
       - supports-color
+
+  fast-check@4.10.2:
+    dependencies:
+      pure-rand: 8.4.2
 
   fast-diff@1.3.0: {}
 
@@ -9271,6 +9332,8 @@ snapshots:
 
   punycode@2.3.1: {}
 
+  pure-rand@8.4.2: {}
+
   react-day-picker@9.14.0(react@19.3.1):
     dependencies:
       '@date-fns/tz': 1.5.0
@@ -9950,7 +10013,7 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@types/node': 26.1.0
       '@vitest/browser-playwright': 5.0.5(playwright@1.64.1)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))(vitest@5.0.5)
-      '@vitest/browser-preview': 5.0.5(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))(vitest@5.0.5)
+      '@vitest/browser-preview': 5.0.5(@voidzero-dev/vite-plus-core@1.4.0(@types/node@26.1.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(typescript@7.0.2)(yaml@2.9.1))(vitest@5.0.5)
       '@vitest/ui': 5.0.5(vitest@5.0.5)
       jsdom: 26.1.0(supports-color@10.2.2)
     transitivePeerDependencies:

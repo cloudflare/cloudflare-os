@@ -1,8 +1,10 @@
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
+import * as fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
-import type { AiChatAuthorInfo, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
+import type { AiChatAuthorInfo, ChatReadState, UnreadStateSubscriber, UnreadSummaryUpdate, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { UserDurableObject, type ChatMessageProgress } from "../src/user.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
@@ -1308,4 +1310,292 @@ describe("source authorization and removal", () => {
     expect(await reader.getUnreadSummary()).toEqual({workspaces: [], unreadChatCount: 0, unreadMessageCount: 0});
     expect(await reader.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property: unread counts while two people and the agent use three chats in two workspaces, and
+// the platform loses, repeats and delays the workspaces' handoffs to the users. fast-check
+// generates the steps (see `step`). After each one, for both users, every stored row has
+// `unreadCount = latestVisibleSequence - readThroughVisibleSequence` with the model's values, the
+// queries list those counts, the summaries are their sums, and a subscriber that folded the
+// deltas holds what a snapshot would. A stuck or wrong badge is the first thing every user sees.
+//
+// The model is docs/user-unread-state.md. A workspace counts each chat's visible messages. A user
+// has, per chat, the highest count a handoff or read command brought them and how many of those
+// they read. A handoff carries the count rather than a difference, so a repeated or older one
+// changes nothing, and the only message that reads itself is a caught-up user's own next one. A
+// read command goes through the workspace, so it brings the current count; a bulk read knows only
+// what the user already received. Once a user is told a chat is deleted, it stays deleted.
+// Scenarios a seed might miss are pinned as `examples`.
+describe("unread counts property", () => {
+  // What became of one handoff: acknowledged, lost on the way, delivered with its ACK lost, or
+  // held up past the handoff limit until a "land" step picks it.
+  type Fate = "ack" | "lost" | "noAck" | "late";
+  const user = fc.nat({max: 1}), workspace = fc.nat({max: 1}), chat = fc.constantFrom(0, 0, 1, 2);
+  const fate = fc.constantFrom<Fate>("ack", "ack", "ack", "ack", "lost", "noAck", "late"), fates = fc.tuple(fate, fate);
+  // `user`, `chat` and `workspace` index the lists in replay(); the first chat gets half the steps.
+  // A message is `by` a user or the agent, whose "tool" records are not visible. `at` and `pick`
+  // choose, modulo the count, among what is there when the step runs: for "read" any record on
+  // screen, for "unread" a message. Without `at` the command is the thread menu's, which names no
+  // record; "readAll" without `workspace` reads everything. "retry" is a workspace's alarm retrying
+  // its failed handoffs. Resets and evictions are the slow steps, so they are the rare ones.
+  const step = fc.oneof(
+    {weight: 8, arbitrary: fc.record({kind: fc.constant("post" as const), chat, fates,
+      by: fc.constantFrom<number | "agent" | "tool">(0, 1, "agent", "agent", "tool")})},
+    {weight: 2, arbitrary: fc.record({kind: fc.constant("delete" as const), chat, fates})},
+    {weight: 6, arbitrary: fc.record({kind: fc.constantFrom("read" as const, "unread" as const), user, chat,
+      at: fc.nat({max: 7})}, {requiredKeys: ["kind", "user", "chat"]})},
+    {weight: 2, arbitrary: fc.record({kind: fc.constant("readAll" as const), user, workspace}, {requiredKeys: ["kind", "user"]})},
+    {weight: 1, arbitrary: fc.record({kind: fc.constant("resetUser" as const), user})},
+    {weight: 3, arbitrary: fc.record({kind: fc.constant("retry" as const), workspace})},
+    {weight: 1, arbitrary: fc.record({kind: fc.constant("evictWorkspace" as const), workspace})},
+    {weight: 3, arbitrary: fc.record({kind: fc.constant("land" as const), pick: fc.nat({max: 7})})},
+  );
+  type Step = typeof step extends fc.Arbitrary<infer T> ? T : never;
+  // A handoff's content: the chat's visible count and which user, if any, wrote its latest visible
+  // message. Null once the chat is deleted.
+  type Packet = {head: number; author?: number} | null;
+  // `records` says which raw sequences are visible. A run numbers its records across chats, as
+  // `write` derives a workspace-unique timestamp from the sequence, so each chat has gaps.
+  type Chat = {workspace: number; chatId: number; records: boolean[]; author?: number; deleted?: true; failed: Set<number>};
+  type Row = {head: number; read: number; deleted?: true};
+
+  class Folded extends RpcTarget implements UnreadStateSubscriber {
+    state?: UserUnreadState;
+    first = Promise.withResolvers<void>();
+    async updated(state: UserUnreadState) { this.state = state; this.first.resolve(); }
+    async summaryUpdated({workspace, ...totals}: UnreadSummaryUpdate) {
+      const others = this.state!.workspaces.filter(row => row.workspaceId !== workspace.workspaceId);
+      this.state = {...this.state!, ...totals, workspaces: workspace.unreadChatCount ? [...others, workspace] : others};
+    }
+    async chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null, summary: UnreadSummaryUpdate) {
+      const others = this.state!.chats.filter(row => row.workspaceId !== workspaceId || row.chatId !== chatId);
+      this.state = {...this.state!, chats: chat ? [...others, chat] : others};
+      await this.summaryUpdated(summary);
+    }
+  }
+  const unordered = (state: UserUnreadState) => ({...state, chats: new Set(state.chats), workspaces: new Set(state.workspaces)});
+  const sum = (counts: number[]) => ({unreadChatCount: counts.filter(Boolean).length,
+    unreadMessageCount: counts.reduce((total, count) => total + count, 0)});
+
+  async function replay(steps: Step[]) {
+    const first = await setup(), {reader, owner, profile} = await addReader(first), second = await setup(first.user);
+    // A second chat in the first workspace, and the collaborator in the second workspace too.
+    await withImpl(first.workspace, async impl => {
+      impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(), lastActive: new Date()});
+      await impl.deliverDirtyChats();
+    });
+    await withImpl(second.workspace, async impl => {
+      impl.storage.collaborators.put({profile, addedBy: [{type: "user", sharer: owner.id, role: "build", created: new Date()}]});
+    });
+    await reader.recordSharedWorkspaceOpen(second.workspaceId, "Workspace", owner, "build", await notificationBaselines(second));
+    const workspaces = [first, second], users = [first.user, reader], authors = [owner, profile];
+    // The owner watches the first workspace's chat list and the collaborator the inbox.
+    const scopes = [{workspaceId: first.workspaceId}, "unread"] as const;
+    const chats: Chat[] = [[0, 1], [0, 2], [1, 1]].map(([workspace, chatId]) => ({workspace, chatId, records: [], failed: new Set()}));
+    const rows = users.map(() => chats.map((): Row => ({head: 0, read: 0})));
+    const late: {user: number; chat: number; packet: Packet; args: Parameters<UserDurableObject["messageArrived"]>}[] = [];
+    let nextSequence = 0;
+    const key = (chat: Chat) => `${workspaces[chat.workspace].workspaceId}:${chat.chatId}`;
+    // How many of a chat's records through raw sequence `through` are visible.
+    const visible = (chat: Chat, through = chat.records.length - 1) => chat.records.slice(0, through + 1).filter(Boolean).length;
+    const packetFor = (chat: Chat): Packet => chat.deleted ? null : {head: visible(chat), author: chat.author};
+    const receive = (user: number, chat: number, packet: Packet) => {
+      const row = rows[user][chat];
+      if (row.deleted) return;
+      if (!packet) { row.deleted = true; return; }
+      const caughtUp = row.head === row.read;
+      row.head = Math.max(row.head, packet.head);
+      if (caughtUp && row.head === row.read + 1 && packet.author === user) row.read = row.head;
+    };
+
+    const subscribe = async (user: number) => {
+      const folded = new Folded(), callback = new RpcStub(folded);
+      const subscription = await users[user].subscribeToUnreadState(scopes[user], callback);
+      await folded.first.promise;
+      return {folded, [Symbol.dispose]() { subscription[Symbol.dispose](); callback[Symbol.dispose](); }};
+    };
+    const subscriptions = [await subscribe(0), await subscribe(1)];
+
+    // Make a change in a chat's workspace and fan it out, each user's handoff meeting its fate.
+    // As after any write, failures parked on the workspace's other chats wait for the alarm.
+    const fanOut = async (chat: Chat, fates: Fate[], change: (impl: Impl) => void) => {
+      const index = chats.indexOf(chat), packet = packetFor(chat);
+      await withImpl(workspaces[chat.workspace].workspace, async impl => {
+        const restore = interceptDelivery(impl, async (stub, ...args) => {
+          const user = users.findIndex(candidate => candidate.id.toString() === stub.id.toString());
+          if (fates[user] === "late") late.push({user, chat: index, packet, args});
+          else if (fates[user] !== "lost") await stub.messageArrived(...args);
+          if (fates[user] !== "ack") throw new Error("Handoff failed");
+        });
+        try {
+          change(impl);
+          await impl.deliverDirtyChats({retryFailures: false})
+            .catch(error => { if (fates.every(fate => fate === "ack")) throw error; });
+        } finally { restore(); }
+      });
+      fates.forEach((fate, user) => {
+        if (fate === "ack" || fate === "noAck") receive(user, index, packet);
+        if (fate === "ack") chat.failed.delete(user); else chat.failed.add(user);
+      });
+    };
+
+    const run = async (step: Step) => {
+      switch (step.kind) {
+        case "post": {
+          const chat = chats[step.chat], shown = step.by !== "tool", author = typeof step.by === "number" ? step.by : undefined;
+          if (chat.deleted) break;
+          const sequence = nextSequence++;
+          chat.records[sequence] = shown;
+          if (shown) chat.author = author;
+          await fanOut(chat, shown ? step.fates : [], impl => write(impl, sequence, shown ? "Hello" : "", chat.chatId,
+            author === undefined ? undefined : authors[author]));
+          break;
+        }
+        case "delete": {
+          const chat = chats[step.chat];
+          if (chat.deleted) break;
+          chat.deleted = true;
+          await fanOut(chat, step.fates, impl => { impl.storage.chatMeta.delete(chat.chatId); });
+          break;
+        }
+        case "read": case "unread": {
+          const chat = chats[step.chat], row = rows[step.user][step.chat], rewind = step.kind === "unread";
+          const messages = chat.records.flatMap((shown, sequence) => shown ? [sequence] : []);
+          const offered = rewind ? messages : chat.records.flatMap((_, sequence) => [sequence]);
+          const at = step.at === undefined ? undefined : offered[step.at % offered.length];
+          await setRead({...workspaces[chat.workspace], user: users[step.user]}, at, rewind, chat.chatId);
+          const boundary = at ?? messages.at(-1) ?? -1;
+          if (chat.deleted || (rewind && boundary < 0)) break;
+          row.read = rewind ? visible(chat, boundary - 1) : Math.max(row.read, visible(chat, boundary));
+          row.head = Math.max(row.head, visible(chat));
+          break;
+        }
+        case "readAll":
+          await (step.workspace === undefined ? users[step.user].markAllRead()
+            : users[step.user].markWorkspaceRead(workspaces[step.workspace].workspaceId));
+          for (const [index, row] of rows[step.user].entries()) {
+            if (step.workspace === undefined || chats[index].workspace === step.workspace) row.read = row.head;
+          }
+          break;
+        // A subscribed client pins its user's object, so it goes away only by a reset.
+        case "resetUser":
+          subscriptions[step.user][Symbol.dispose]();
+          await expect(runInDurableObject(users[step.user], (_instance, ctx) => ctx.abort("Reset"))).rejects.toThrow("Reset");
+          users[step.user] = env.TEST_USER.get(users[step.user].id);
+          subscriptions[step.user] = await subscribe(step.user);
+          break;
+        // An evicted workspace with failed handoffs is next woken by the alarm that retries them.
+        case "retry": case "evictWorkspace": {
+          if (step.kind === "evictWorkspace") await evictDurableObject(workspaces[step.workspace].workspace);
+          const pending = chats.filter(chat => chat.workspace === step.workspace && chat.failed.size);
+          const armed = await runDurableObjectAlarm(workspaces[step.workspace].workspace);
+          if (pending.length) expect(armed, "failed handoffs keep the workspace's alarm armed").toBe(true);
+          for (const chat of pending) {
+            for (const user of chat.failed) receive(user, chats.indexOf(chat), packetFor(chat));
+            chat.failed.clear();
+          }
+          break;
+        }
+        case "land": {
+          if (!late.length) break;
+          const [handoff] = late.splice(step.pick % late.length, 1);
+          await users[handoff.user].messageArrived(...handoff.args);
+          receive(handoff.user, handoff.chat, handoff.packet);
+          break;
+        }
+      }
+    };
+
+    const check = async (label: string) => {
+      for (const [user, stub] of users.entries()) {
+        const {stored, summary, listed} = await runInDurableObject(stub, async (instance, ctx) => ({
+          stored: chats.map(chat => makeUserStorage(ctx.storage).chatReadCursors.get(key(chat))),
+          summary: await instance.getUnreadSummary(),
+          listed: (await Promise.all(workspaces.map(({workspaceId}) => instance.getWorkspaceUnreadState(workspaceId)))).flat(),
+        }));
+        const counts = rows[user].map(row => row.deleted ? 0 : row.head - row.read);
+        const rollups = workspaces.map(({workspaceId}, workspace) =>
+          ({workspaceId, ...sum(counts.filter((_, index) => chats[index].workspace === workspace))}));
+        expect({
+          // Per chat: latest, read, unread, and the visible count through the raw read position,
+          // which ties the divider the UI draws there to the count.
+          stored: stored.map((cursor, chat) => cursor?.deleted ? `deleted, ${cursor.unreadCount} unread` :
+            [cursor?.latestVisibleSequence ?? 0, cursor?.readThroughVisibleSequence ?? 0, cursor?.unreadCount ?? 0,
+              visible(chats[chat], cursor?.readThroughSequence ?? -1)]),
+          listed: Object.fromEntries(listed.map(state => [`${state.workspaceId}:${state.chatId}`, state.unreadMessageCount])),
+          summary: unordered({...summary, chats: []}),
+        }, `${label}: user ${user}`).toEqual({
+          stored: rows[user].map((row, chat) => row.deleted ? "deleted, 0 unread" : [row.head, row.read, counts[chat], row.read]),
+          // The queries list every tracked chat that is not deleted, read ones included.
+          listed: Object.fromEntries(chats.flatMap((chat, index) =>
+            stored[index] && !rows[user][index].deleted ? [[key(chat), counts[index]]] : [])),
+          summary: unordered({...sum(counts), workspaces: rollups.filter(rollup => rollup.unreadChatCount), chats: []}),
+        });
+        const scope = scopes[user], inScope = (state: ChatReadState) =>
+          scope === "unread" ? state.unreadMessageCount > 0 : state.workspaceId === scope.workspaceId;
+        await vi.waitFor(() => expect(unordered(subscriptions[user].folded.state!), `${label}: user ${user}'s folded deltas`)
+          .toEqual(unordered({...summary, chats: listed.filter(inScope)})), {interval: 2});
+      }
+    };
+
+    try {
+      await check("start");
+      for (const [index, step] of steps.entries()) {
+        await run(step);
+        await check(`step ${index} ${JSON.stringify(step)}`);
+      }
+      // Once the retries are through, everything still on its way is old news.
+      await run({kind: "retry", workspace: 0}); await run({kind: "retry", workspace: 1});
+      while (late.length) await run({kind: "land", pick: 0});
+      await check("settled");
+      for (const [user, {folded}] of subscriptions.entries()) {
+        using fresh = await subscribe(user);
+        expect(unordered(folded.state!), `user ${user}'s folded deltas`).toEqual(unordered(fresh.folded.state!));
+      }
+    } finally { for (const subscription of subscriptions) subscription[Symbol.dispose](); }
+  }
+
+  const [OWNER, READER] = [0, 1], acked: [Fate, Fate] = ["ack", "ack"];
+  const examples: [Step[]][] = [
+    // Redelivery after mark-unread. The owner's message read itself when it arrived; they mark it
+    // unread, and the workspace, which missed the ACK, hands it over again. It stays unread.
+    [[
+      {kind: "post", chat: 0, by: OWNER, fates: ["noAck", "ack"]},
+      {kind: "unread", user: OWNER, chat: 0},
+      {kind: "retry", workspace: 0},
+    ]],
+    // A reset between a fan-out and a read, and an older handoff landing after a newer one. The
+    // owner's first handoff is held up, the second brings both messages, and they read through the
+    // tool record between the two: one message is left, whenever the first handoff lands. The
+    // collaborator reads everything; reading through an earlier record then takes nothing back.
+    [[
+      {kind: "post", chat: 0, by: "agent", fates: ["late", "ack"]},
+      {kind: "post", chat: 0, by: "tool", fates: acked},
+      {kind: "post", chat: 0, by: READER, fates: acked},
+      {kind: "resetUser", user: OWNER},
+      {kind: "read", user: OWNER, chat: 0, at: 1},
+      {kind: "land", pick: 0},
+      {kind: "read", user: READER, chat: 0},
+      {kind: "read", user: READER, chat: 0, at: 0},
+    ]],
+    // A chat deleted during a pending retry. The collaborator is told at once, so their held-up
+    // handoff from before the deletion changes nothing, even after a reset. The owner is not, and
+    // goes on counting the message until the evicted workspace's retry brings the deletion.
+    [[
+      {kind: "post", chat: 1, by: "agent", fates: ["noAck", "late"]},
+      {kind: "post", chat: 0, by: "agent", fates: acked},
+      {kind: "delete", chat: 1, fates: ["lost", "ack"]},
+      {kind: "resetUser", user: READER},
+      {kind: "land", pick: 0},
+      {kind: "unread", user: OWNER, chat: 1},
+      {kind: "evictWorkspace", workspace: 0},
+    ]],
+  ];
+
+  it("keeps every user's counts, summaries and subscribers on what the workspaces handed over and the user read", async () => {
+    using _warnings = vi.spyOn(console, "warn").mockImplementation(() => {}); // One per failed handoff.
+    await fc.assert(fc.asyncProperty(fc.array(step, {minLength: 1, maxLength: 24, size: "max"}), replay),
+      {...PROPERTY_RUN_OPTIONS, numRuns: 60, examples});
+  }, 120_000);
 });

@@ -112,10 +112,12 @@ export default function AdminPage() {
   const [reloadAuditSettings] = useState(() =>
     latestReads<AdminSettingsView>((view) => setAuditSettings(auditSettingsOf(view))))
 
-  // The tab lives in the URL so the notice can link to one; changing it replaces the history entry
-  // on the same route, which keeps this component and its drafts.
+  // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters;
+  // changing either replaces the history entry on the same route, which keeps this component and
+  // its drafts.
   const navigate = useNavigate()
-  const activeTab = resolveAdminTab(useSearch({ from: '/admin' }).tab, {
+  const { tab: requestedTab, ...auditFilter } = useSearch({ from: '/admin' })
+  const activeTab = resolveAdminTab(requestedTab, {
     updatesAvailable: updateStatus === 'pending' ? 'pending' : updateStatus !== null,
     auditAvailable: auditSettings !== null,
   })
@@ -514,6 +516,8 @@ export default function AdminPage() {
           admin={admin.api}
           settings={auditSettings}
           onSettingsChanged={() => reloadAuditSettings(() => admin.api.getSettings())}
+          filter={auditFilter}
+          onFilterChange={(filter) => void navigate({ to: '/admin', search: { tab: 'audit', ...filter }, replace: true })}
         />
       )}
 

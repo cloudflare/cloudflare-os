@@ -1,6 +1,6 @@
 // Structured Google Drive API client shared by configurators, sessions, and observer verification.
 
-import type { DriveObservation } from "./drive-observers";
+import type { DriveUnit } from "./file-subresources";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { obsContext } from "./observability";
 
@@ -46,7 +46,7 @@ export type DriveFile = {
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
   trashed?: boolean;
-  capabilities?: { canListChildren?: boolean };
+  capabilities?: { canListChildren?: boolean; canDownload?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -63,11 +63,17 @@ export type DriveScopeNode = {
   driveId?: string;
   trashed?: boolean;
   canListChildren?: boolean;
+  /** Present only when asked for, as observer checks do; a scope proof never needs it. */
+  canDownload?: boolean;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS =
   "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)";
+
+/** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
+const DRIVE_OBSERVATION_FIELDS =
+  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canDownload)";
 
 /**
  * Whether these facts describe a folder a binding may stand on: a live native folder whose
@@ -96,7 +102,7 @@ export function isListableFolderFile(file: DriveFile): boolean {
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
-  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren)",
+  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren,canDownload)",
   "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
 
@@ -241,6 +247,11 @@ const ACCOUNT_WIDE_403_REASONS = new Set([
 const REASON_EXPLANATIONS: Record<string, string> = {
   teamDriveMembershipRequired:
     "the connected account is not a member of the shared drive this item belongs to",
+  cannotDownloadFile:
+    "the connected account is not allowed to download this file; its owner or administrator " +
+    "has restricted downloading it",
+  cannotDownloadAbusiveFile:
+    "Google identified this file as malware or spam, so only its owner can download it",
 };
 
 function googleErrorReason(value: unknown): string | undefined {
@@ -280,6 +291,9 @@ async function readBoundedText(
   chunks.push(decoder.decode());
   return chunks.join("");
 }
+
+/** A 206's `Content-Range`: where its bytes start and end, and the whole file's size unless `*`. */
+const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
 
 function googleErrorReasonFromText(text: string): string | undefined {
   try {
@@ -350,10 +364,15 @@ function optionalParents(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function optionalCanListChildren(value: unknown): boolean | undefined {
+function optionalCapabilities(value: unknown): DriveFile["capabilities"] {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
-  return optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canListChildren = optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canDownload = optionalBoolean(value.canDownload, "file capabilities.canDownload");
+  return {
+    ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
+  };
 }
 
 function parseDriveFile(value: unknown): DriveFile {
@@ -373,11 +392,7 @@ function parseDriveFile(value: unknown): DriveFile {
     if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
     shortcutDetails = optionalFields(value.shortcutDetails, ["targetId", "targetMimeType"]);
   }
-  let capabilities: DriveFile["capabilities"];
-  if (value.capabilities !== undefined) {
-    let canListChildren = optionalCanListChildren(value.capabilities);
-    capabilities = canListChildren === undefined ? {} : { canListChildren };
-  }
+  let capabilities = optionalCapabilities(value.capabilities);
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
   return {
@@ -518,13 +533,16 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   }
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
-  let canListChildren = optionalCanListChildren(value.capabilities);
+  let capabilities = optionalCapabilities(value.capabilities);
+  let canListChildren = capabilities?.canListChildren;
+  let canDownload = capabilities?.canDownload;
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
   };
 }
 
@@ -724,13 +742,68 @@ export class DriveApi {
    * body through, and cancels it to stop the download.
    */
   async openDownload(fileId: string): Promise<ReadableStream<Uint8Array>> {
+    let response = await this.#fetchMedia(fileId, {}, DOWNLOAD_TIMEOUT_MS);
+    return response.body ?? new ReadableStream({ start: controller => controller.close() });
+  }
+
+  /**
+   * One file's content from `offset`, as a stream nothing has yet been read from: this resolves
+   * once Drive begins its answer, and nothing is buffered. Never from anywhere else: a whole-file
+   * answer is taken only for a range from the start, and any other misplaced answer is refused.
+   * The answer can run past the range, as a whole-file one does, so the caller takes the bytes it
+   * asked for. `length` is how many a ranged answer says it carries, and `fileSize` the size of
+   * the file they come from, when Drive says.
+   *
+   * Only the wait for the answer to begin is timed. Its body is read at the caller's pace, for as
+   * long as a file of any size takes, so the caller times a body that stalls and cancels it to
+   * stop the download.
+   */
+  async downloadRange(
+    fileId: string, offset: number, length: number,
+  ): Promise<{ content: ReadableStream<Uint8Array>; length?: number; fileSize?: number }> {
+    let begin = new AbortController();
+    let timer = setTimeout(
+      () => begin.abort(new DOMException("Google Drive did not answer in time.", "TimeoutError")),
+      DOWNLOAD_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.#fetchMedia(fileId, {
+        headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal: begin.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    let range = response.status === 206
+      ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
+      : undefined;
+    let start = response.status === 206 ? range?.[1] : "0";
+    if (start === undefined || Number(start) !== offset) {
+      await response.body?.cancel();
+      throw new Error("Google Drive did not return the requested byte range.");
+    }
+    let content = response.body ?? new ReadableStream({ start: controller => controller.close() });
+    // A whole-file answer's length is the file's size, unless it was encoded in transit.
+    let total = range ? range[3]
+      : response.headers.has("Content-Encoding") ? null : response.headers.get("Content-Length");
+    return {
+      content,
+      ...range ? { length: Number(range[2]) - offset + 1 } : {},
+      ...total == null || total === "*" ? {} : { fileSize: Number(total) },
+    };
+  }
+
+  /**
+   * Drive's successful answer to a download of one file's content; any other is thrown. With
+   * `timeoutMs`, the whole answer is timed, its body included.
+   */
+  async #fetchMedia(fileId: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
     if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
-      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, {},
-      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
+      this.getAccessToken, timeoutMs === undefined ? {} : { timeoutMs });
     if (!response.ok) throw await driveError(response);
-    return response.body ?? new ReadableStream({ start: controller => controller.close() });
+    return response;
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */
@@ -884,16 +957,20 @@ export class DriveApi {
     return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
   }
 
-  /** Fresh access checks for typed file and folder disclosure units. */
-  async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
+  /**
+   * Fresh access checks for typed disclosure units. Content needs leave to download it, which Drive
+   * withholds from viewers when downloading is restricted; an omitted answer counts as no leave.
+   */
+  async checkObservations(observations: readonly DriveUnit[]): Promise<boolean[]> {
     return this.#batchGetFiles(
       observations.map(observation => observation.fileId),
-      DRIVE_SCOPE_NODE_FIELDS,
+      DRIVE_OBSERVATION_FIELDS,
       (part, _fileId, index) => {
         if (!batchPartAllowed(part)) return false;
         let observation = observations[index];
         if (observation.kind === "file") return true;
-        return isListableFolderNode(parseDriveScopeNode(part.body, observation.fileId));
+        let node = parseDriveScopeNode(part.body, observation.fileId);
+        return observation.kind === "content" ? node.canDownload === true : isListableFolderNode(node);
       },
     );
   }

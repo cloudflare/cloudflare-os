@@ -136,6 +136,31 @@ describe("AdminAuditDurableObject.list", () => {
     await expectRejection(log.list({ limit: 2, admin: "a".repeat(1001) }, RETENTION),
         "Audit filters must be at most 1000 characters.");
   });
+
+  it("filters by method through its index, paging within the filter", async () => {
+    let log = auditLog();
+    let names = Array.from({ length: 3 }, (_, i) => setting({ admin: i === 1 ? "grace" : "ada" }));
+    let signups = setting({ method: "setSignupsEnabled",
+      changes: [{ setting: "signupsEnabled", before: "true", after: "false" }] });
+    for (let record of [names[0], signups, names[1], names[2]]) {
+      await log.append(record, RETENTION);
+    }
+
+    let first = await log.list({ limit: 2, method: "setSiteName" }, RETENTION);
+    expect(first.records).toEqual([names[2], names[1]]);
+    let second = await log.list(
+        { limit: 2, method: "setSiteName", cursor: first.nextCursor }, RETENTION);
+    expect(second.records).toEqual([names[0]]);
+    expect(second.nextCursor).toBeUndefined();
+    expect((await log.list({ limit: 50, method: "setSignupsEnabled" }, RETENTION)).records)
+        .toEqual([signups]);
+    expect((await log.list({ limit: 50, method: "setSiteName", admin: "grace" }, RETENTION))
+        .records).toEqual([names[1]]);
+
+    let plan = await sql<{ detail: string }>(log, `EXPLAIN QUERY PLAN SELECT seq FROM admin_audit
+        WHERE json_extract(record, '$.method') = 'setSiteName' ORDER BY seq DESC`);
+    expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_method");
+  });
 });
 
 describe("AdminAuditDurableObject retention", () => {

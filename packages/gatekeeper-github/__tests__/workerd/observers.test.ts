@@ -61,6 +61,8 @@ class FakeGitHub {
   readonly formerNames = new Map<string, number>();
   /** The repositories each token can read; the binding's own account reads them all. */
   readonly readable = new Map<string, Set<number>>([["owner-token", new Set([REPO_ID, OTHER_ID])]]);
+  /** The repositories that are public; every other one is private. */
+  readonly publicRepos = new Set<number>();
   /** What a token's `GET /repositories/<id>` is answered with instead, as for a rate limit. */
   readonly refusals = new Map<string, () => Response>();
   /** The status `GET /repos/<owner>/<name>` fails with, while set. */
@@ -75,8 +77,19 @@ class FakeGitHub {
   /** Runs as a git request reaches GitHub, before it is answered. */
   onGit: (() => void) | undefined;
 
+  /**
+   * Runs once the answer to a request made with `token` is computed and before it is returned, as
+   * the time an answer spends in flight: what it changes isn't reflected in that answer.
+   */
+  onAnswered: ((token: string) => void) | undefined;
+
   constructor() {
-    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => this.#handle(new Request(input, init)));
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const response = this.#handle(request);
+      this.onAnswered?.(request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
+      return response;
+    });
   }
 
   /** The requests made with `token`, by path. */
@@ -97,7 +110,8 @@ class FakeGitHub {
       return new Response(uploadPackResponse(), { headers: { "Content-Type": "application/x-git-upload-pack-result" } });
     }
     const notFound = Response.json({ message: "Not Found" }, { status: 404 });
-    const canRead = (id: number) => this.repos.has(id) && (this.readable.get(token)?.has(id) ?? false);
+    const canRead = (id: number) => this.repos.has(id) &&
+      (this.publicRepos.has(id) || (this.readable.get(token)?.has(id) ?? false));
 
     if (url.pathname === "/user") return Response.json({ id: 9, login: "someone" });
     const byName = /^\/repos\/([^/]+)\/([^/]+)$/.exec(url.pathname);
@@ -165,9 +179,10 @@ class FakeGitHub {
 
   #repository(id: number): Row {
     const { owner, name } = this.repos.get(id)!;
+    const visibility = this.publicRepos.has(id) ? "public" : "private";
     return {
       id, name, full_name: `${owner}/${name}`, owner: { login: owner }, html_url: `https://github.com/${owner}/${name}`,
-      description: null, visibility: "public", private: false, default_branch: "main",
+      description: null, visibility, private: visibility === "private", default_branch: "main",
     };
   }
 }
@@ -522,6 +537,95 @@ describe("verifyObserverAccess", () => {
 
     expect(await gk.verify({ alice }, [SUBRESOURCE, id])).toEqual({ error: expect.any(String) });
     expect(github.requests).toEqual([]);
+  });
+
+  describe("of a public repository", () => {
+    it("allows every observer on the owner's word, asking none of their accounts", async () => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      const [alice, bob] = await Promise.all([account("alice-token"), account("bob-token")]);
+      // Alice's account is confirmed dead: asked, it could only fail the check.
+      const aliceAccount = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(alice));
+      expect(await aliceAccount.reportTokenRejected("alice-token")).toBe("expired");
+      const gk = await binding({ pinned: true });
+
+      expect(await gk.verify({ alice, bob })).toEqual({ ok: { allowedObserverIds: ["alice", "bob"] } });
+      expect(github.requestsWith("alice-token")).toEqual([]);
+      expect(github.requestsWith("bob-token")).toEqual([]);
+      expect(github.requestsWith("owner-token")).toEqual([`/repositories/${REPO_ID}`]);
+    });
+
+    it("reuses the owner's answer for 15 minutes, then follows the repository going private", async () => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      const bob = await account("bob-token");
+      const gk = await binding({ pinned: true });
+      const start = Date.now();
+
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
+      github.publicRepos.delete(REPO_ID);
+      vi.setSystemTime(start + 14 * MINUTE);
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
+      expect(github.requestsWith("owner-token")).toHaveLength(1);
+
+      // Asked again, the owner finds it private, so bob's own account decides: he can't read it.
+      vi.setSystemTime(start + 16 * MINUTE);
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
+      expect(github.requestsWith("owner-token")).toHaveLength(2);
+      expect(github.requestsWith("bob-token")).toEqual([`/repositories/${REPO_ID}`]);
+    });
+
+    it("dates the owner's answer from when it asked, so a late public answer can't outlast it", async () => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      const bob = await account("bob-token");
+      const gk = await binding({ pinned: true });
+      const start = Date.now();
+      // GitHub answers public, then the repository goes private while the answer is in flight, and
+      // the answer arrives 20 minutes after it was asked for.
+      github.onAnswered = token => {
+        if (token !== "owner-token") return;
+        github.onAnswered = undefined;
+        github.publicRepos.delete(REPO_ID);
+        vi.setSystemTime(start + 20 * MINUTE);
+      };
+
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
+
+      // Already older than 15 minutes when it landed, it isn't reused: asked again, the owner finds
+      // the repository private, and bob's own account denies him.
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: [] } });
+      expect(github.requestsWith("owner-token")).toHaveLength(2);
+    });
+
+    it.each([
+      ["a rate limit", rateLimited],
+      ["an outage", () => Response.json({ message: "Server Error" }, { status: 500 })],
+    ])("leaves observers to their own accounts when %s keeps the owner from answering", async (_, answer) => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      github.refusals.set("owner-token", answer);
+      const [alice, bob] = await Promise.all([account("alice-token"), account("bob-token")]);
+      github.refusals.set("bob-token", () => Response.json({ message: "Not Found" }, { status: 404 }));
+      const gk = await binding({ pinned: true });
+
+      // The unanswered owner check is not remembered as private: bob is denied by his own answer.
+      expect(await gk.verify({ alice, bob })).toEqual({ ok: { allowedObserverIds: ["alice"] } });
+      expect(github.requestsWith("alice-token")).toEqual([`/repositories/${REPO_ID}`]);
+      github.refusals.delete("owner-token");
+      expect(await gk.verify({ bob })).toEqual({ ok: { allowedObserverIds: ["bob"] } });
+    });
+
+    it("asks the owner nothing for a binding not yet pinned", async () => {
+      const github = new FakeGitHub();
+      github.publicRepos.add(REPO_ID);
+      const alice = await account("alice-token");
+      const gk = await binding();
+
+      expect(await gk.verify({ alice })).toEqual({ ok: { allowedObserverIds: ["alice"] } });
+      expect(github.requestsWith("owner-token")).toEqual([]);
+      expect(github.requestsWith("alice-token")).toEqual([`/repositories/${REPO_ID}`]);
+    });
   });
 });
 

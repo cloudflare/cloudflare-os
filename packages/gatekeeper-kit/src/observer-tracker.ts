@@ -133,7 +133,9 @@ function settleSets(
 }
 
 /**
- * Internal: maps with bounded concurrency, preserving result order.
+ * Maps with bounded concurrency, preserving result order. Once a call fails it starts no
+ * more, and rejects with that first error only after the calls already running have settled, so
+ * none of them outlives the map.
  * @param items Inputs.
  * @param limit Most calls in flight at once.
  * @param fn Per-item work.
@@ -146,12 +148,19 @@ export async function mapLimit<In, Out>(
 ): Promise<Out[]> {
   const results: Out[] = [];
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    for (let index = next++; index < items.length; index = next++) {
-      results[index] = await fn(items[index]!);
+    while (failure === undefined && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  if (failure !== undefined) throw failure.error;
   return results;
 }
 

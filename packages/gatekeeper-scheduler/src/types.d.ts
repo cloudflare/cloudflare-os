@@ -5,6 +5,16 @@
 // Registration creates a disabled hook. The user must enable it in Connections before it can run or
 // appear in `list()`. Keep the returned schedule ID as the immediate registration receipt.
 //
+// Where the user finds a schedule in the Workshop, to tell them exactly (describe no other place):
+//
+// - The chat shows the registration as a "Hook: <title>" card with an Enabled/Disabled toggle;
+//   turning it on there enables the schedule.
+// - The gadget whose `[restore]()` receives the callback lists it in its Connections tab, under
+//   Hooks, with the same toggle and a Delete button.
+// - Once enabled, it appears on the Scheduled page in the Workshop's sidebar, which lists the
+//   account's schedules across all workspaces under All, Active, Needs attention, and Finished.
+//   That page is read-only: enabling, disabling, and deleting happen on the hook itself.
+//
 // Choose the entry point by how the user described the cadence:
 //
 // - `every()` uses elapsed UTC time, preserves its registration-time phase, and is appropriate for

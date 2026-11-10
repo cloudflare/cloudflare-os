@@ -284,6 +284,25 @@ it("filters the log by kind", async () => {
   }
 });
 
+it("filters the log by method, and refuses a method that is not audited", async () => {
+  await admin.setSiteName("Method filter check");
+  try {
+    await admin.setSignupsEnabled(false);
+    await admin.setSignupsEnabled(true);
+    const methods = async (method: AdminAuditRecord["method"]) =>
+      (await admin.listAdminAudit({ method, limit: 200 })).records.map(record => record.method);
+    const siteNames = await methods("setSiteName");
+    expect(siteNames.length).toBeGreaterThan(0);
+    expect(new Set(siteNames)).toEqual(new Set(["setSiteName"]));
+    expect((await methods("setSignupsEnabled")).length).toBeGreaterThanOrEqual(2);
+    await expect(admin.listAdminAudit(
+      { method: "listAdminAudit" } as unknown as Parameters<AdminApi["listAdminAudit"]>[0]))
+        .rejects.toThrow();
+  } finally {
+    await admin.setSiteName("");
+  }
+});
+
 /** How much each named entry of `after` grew since `before`. */
 function growth<T>(before: T[], after: T[], key: (entry: T) => string, count: (entry: T) => number)
     : Map<string, number> {

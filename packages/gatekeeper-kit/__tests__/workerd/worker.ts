@@ -1,6 +1,7 @@
 // Fixture for the suites that need real Durable Object storage rather than the cloning Node fake.
 
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import { HookRegistry } from "../../src/hook-registry";
 import { ObserverTracker } from "../../src/observers";
 export { ConformanceAccount, ConformanceResource, ConformanceVerifier } from "./conformance/gatekeeper";
 
@@ -65,6 +66,66 @@ export class TrackerHost extends DurableObject {
   /** Proves the stub survived the write: re-read from storage and call it. */
   async askStored(id: string, collectionIds: string[]): Promise<boolean[] | undefined> {
     return await this.ctx.storage.kv.get<Verifier>(`observer:${id}`)?.hasSets(collectionIds);
+  }
+}
+
+/** The hook a firing calls, which tells its `HookHost` what it received. */
+class FixtureHook extends RpcTarget {
+  readonly #host: DurableObjectStub<HookHost>;
+
+  constructor(host: DurableObjectStub<HookHost>) {
+    super();
+    this.#host = host;
+  }
+
+  async receive(message: string): Promise<void> {
+    await this.#host.received(message);
+  }
+}
+
+class FixtureApprovalQueue extends RpcTarget {}
+
+/** Starts a firing as the Workshop's `HookInitiator` does, behind a persistent stub. */
+export class FixtureHookInitiator extends WorkerEntrypoint<unknown, { host: string }> {
+  async startHook() {
+    const host = this.ctx.exports.HookHost.getByName(this.ctx.props.host);
+    return { callback: new FixtureHook(host), approvalQueue: new FixtureApprovalQueue() };
+  }
+}
+
+/** A binding's delivery stub, which admits every message. */
+export class FixtureHookDelivery extends WorkerEntrypoint {
+  async deliver(callback: RpcStub<FixtureHook>, _approvalQueue: unknown, message: string): Promise<void> {
+    await callback.receive(message);
+  }
+}
+
+/** A driver's registry over a real DO's storage, which hands back a fresh stub on every read. */
+export class HookHost extends DurableObject {
+  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, () => {});
+  readonly #received: string[] = [];
+
+  /** Enables `key` in a transaction, with a registration storage refuses unless `storable`. */
+  enable(key: string, storable = true): void {
+    this.ctx.storage.transactionSync(() => this.#hooks.set(key, storable ? "registration" : () => {}, {
+      delivery: this.ctx.exports.FixtureHookDelivery({}),
+      initiator: this.ctx.exports.FixtureHookInitiator({ props: { host: this.ctx.id.name! } }),
+    } as never));
+  }
+
+  holdsStubs(key: string): boolean {
+    return this.ctx.storage.kv.get(`caps:${key}`) !== undefined;
+  }
+
+  /** Queues and runs `message`, and reports everything the hook has received. */
+  async deliver(key: string, message: string): Promise<string[]> {
+    this.#hooks.enqueue(key, message, message, Date.now());
+    await this.#hooks.run(Date.now());
+    return this.#received;
+  }
+
+  received(message: string): void {
+    this.#received.push(message);
   }
 }
 
