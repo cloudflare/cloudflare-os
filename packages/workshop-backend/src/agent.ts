@@ -71,7 +71,9 @@ export function agentCodeChangeShape(change: CodeChange) {
  * produce more decides for itself how to stay under it in a way the model can read -- readFile
  * returns a window of whole lines with a continuation note, grep drops whole matches and says how
  * many, webFetch cuts its body and says so in the frontmatter -- rather than any tool's output
- * being spliced blindly. Tools not listed are small by construction.
+ * being spliced blindly. Tools not listed are small by construction. The same limit bounds what the
+ * user puts in front of the model: a text attachment is inlined, and a user change's diff shown,
+ * only within it; past it the file is named instead, for readFile to window.
  */
 export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 
@@ -1806,12 +1808,15 @@ async function runAgentPass(
   // the map) is "not already removed", and for a complete entry is "present in the map". (A
   // `set` of a base path a sparse entry hasn't loaded renders as an addition, since the previous
   // text isn't at hand; the shipped clients emit `set` only for new or re-created files, so this
-  // is cosmetic and left alone.)
+  // is cosmetic and left alone.) The observation is one tool result, so its diffs share
+  // MAX_TOOL_RESULT_CHARS; a file whose diff doesn't fit is named instead, and the model's
+  // knowledge of it dropped, so editFile makes it read the file first.
   let applyReplayedChange = (change: CodeChange, includeDiff: boolean): string | undefined => {
     let before = sessionContent;
     sessionContent = applyCodeChange(sessionContent, change);
 
     let diffParts: string[] = [];
+    let diffBudget = MAX_TOOL_RESULT_CHARS;
     for (let [key, entries] of includeDiff ? Object.entries(change) : []) {
       let id = Number(key);
       let envName = chatNameFor(id);
@@ -1838,9 +1843,14 @@ async function runAgentPass(
         }
         let diff = formatUnifiedDiff(
             filename, oldContent ?? "", newContent ?? "", oldContent !== undefined, true);
-        if (diff) {
-          fileDiffParts.push(diff);
+        if (!diff) continue;
+        if (diff.length > diffBudget) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; the diff is too large to show, so read the file`);
+          continue;
         }
+        diffBudget -= diff.length;
+        fileDiffParts.push(diff);
       }
 
       if (fileDiffParts.length > 0) {
@@ -2280,11 +2290,22 @@ async function runAgentPass(
                     data: data.toBase64(),
                     mimeType: attachment.mimeType,
                   }];
-                } else if (text !== undefined) {
+                } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
                     text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
                         text,
+                  }];
+                } else if (text !== undefined) {
+                  // Inlined, it would be resent on every turn, and could alone exceed the model's
+                  // window, which compaction cannot fix.
+                  return [{
+                    type: "text",
+                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
+                        "bytes, too large to inline. " + (workspaceLocation
+                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                              "workspace file.]"
+                            : "It is not in the workspace yet, so its contents are unavailable.]"),
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {
