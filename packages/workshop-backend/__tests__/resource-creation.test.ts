@@ -81,6 +81,34 @@ describe("independent creation and connection discovery", () => {
     }
   });
 
+  it("lists a vendor that never answers as unavailable, and the others intact", async () => {
+    const description: VendorDescription = { displayName: "Example", url: "https://example.com" };
+    const never = new Promise<never>(() => {});
+    const vars = { ...env,
+      GATEKEEPER_EXAMPLE: { describe: async () => description, getSupportedResources: async () => [EXISTING] },
+      // One of its two calls answers, so the bound has to cover the pair.
+      GATEKEEPER_STALLED: { describe: async () => description, getSupportedResources: () => never },
+      BLUEPRINTS: { get: async () => "{}", put: async () => {} },
+    } as unknown as Cloudflare.Env;
+    const stub = env.TEST_USER.getByName(`resource-creation-${++counter}`);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const vendors = await runInDurableObject(stub, async (_host, state) => {
+        const listing = new UserDurableObject(state, vars).listGatekeeperVendors();
+        await vi.advanceTimersByTimeAsync(10_000);
+        return listing;
+      });
+      expect(vendors).toMatchObject([
+        { id: "example", description, supportedResources: [EXISTING] },
+        { id: "stalled", unavailable: true, supportedResources: [] },
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows advertised creation without any connectable types", async () => {
     const { inUser, createResource } = fixture();
     expect(await inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build")))
