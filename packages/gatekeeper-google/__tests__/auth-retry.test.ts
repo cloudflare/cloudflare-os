@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
 import { getGoogleAccountProfile } from "../src/google-api";
+import { timeoutsOnFakeClock } from "./fake-timeouts";
 
 /** A stub authority recording every request, answering with whatever token it currently holds. */
 function authority(initial: string) {
@@ -52,6 +53,8 @@ describe("AccessTokenCache", () => {
 describe("fetchWithAuthRetry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   // Unlike a stream, a byte-array body survives being sent and can be replayed after a 401.
@@ -130,5 +133,26 @@ describe("fetchWithAuthRetry", () => {
         ? Response.json({sub: "original-account"}) : new Response(null, {status: 401}));
     expect(await getGoogleAccountProfile(provider)).toEqual({sub: "original-account"});
     expect(provider).toHaveBeenLastCalledWith({forceRefresh: true, staleToken: "stale"});
+  });
+
+  // Chat's hook delivery checks the account through this, so it must not hang on Google.
+  it("abandons each attempt at a profile read Google never answers after 10 seconds", async () => {
+    vi.useFakeTimers();
+    timeoutsOnFakeClock();
+    let requests = 0;
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      requests++;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+    });
+
+    let profile = expect(getGoogleAccountProfile(async () => "token")).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(requests).toBe(1);
+    // Its three attempts, and at most 1.5 s of backoff between them.
+    await vi.advanceTimersByTimeAsync(20_001 + 1_500);
+    await profile;
+    expect(requests).toBe(3);
   });
 });

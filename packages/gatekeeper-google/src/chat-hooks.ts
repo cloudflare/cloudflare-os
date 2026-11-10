@@ -81,6 +81,11 @@ const RENEW_RETRY_MS = 15 * MINUTE_MS;
  * disconnect failed to drop stay until then, when it answers no.
  */
 const TRACKING_RECHECK_MS = 24 * HOUR_MS;
+/**
+ * How long a Workspace Events call waits on the account for a token, which nothing else bounds, so
+ * that every renewal and every #subscribe ends, and with it the flight that enables join.
+ */
+const TOKEN_TIMEOUT_MS = 30_000;
 
 type Registration = Omit<ChatHookProps, "key" | "delivery">;
 type Capabilities = HookCapabilities<ChatMessageHookTarget, ChatMessageRaw>;
@@ -262,7 +267,8 @@ export class ChatHookDriver extends DurableObject<Env> {
 
   #tokens(userObjectId: string): AccessTokenProvider {
     const account = this.#account(userObjectId);
-    return async opts => (await account.getAccessToken(opts)).token;
+    return async opts => (await within(account.getAccessToken(opts), TOKEN_TIMEOUT_MS,
+      "Timed out waiting for the Google account's access token.")).token;
   }
 
   #account(userObjectId: string) {
@@ -291,6 +297,8 @@ export class ChatHookDriver extends DurableObject<Env> {
 const EVENTS_API_BASE = "https://workspaceevents.googleapis.com/v1";
 const MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
 const MESSAGES_CREATED = "google.workspace.chat.message.v1.batchCreated";
+/** Per attempt, and safe to abandon: a lost create is adopted, and a renewal reads the subscription afresh. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 type SubscriptionRaw = {
   name: string; authority: string; state: string; expireTime: string;
@@ -363,9 +371,20 @@ class WorkspaceEventsApi {
   async #request<T>(operation: string, path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetchWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
       ...init, headers: { "Content-Type": "application/json" },
-    }, this.getAccessToken);
+    }, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS });
     if (!response.ok) await chatApiFailure(operation, response);
     return response.json<T>();
+  }
+}
+
+/** `promise`, unless `ms` pass first. */
+async function within<T>(promise: PromiseLike<T>, ms: number, message: string): Promise<T> {
+  const expired = Promise.withResolvers<never>();
+  const timer = setTimeout(() => expired.reject(new Error(message)), ms);
+  try {
+    return await Promise.race([promise, expired.promise]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
