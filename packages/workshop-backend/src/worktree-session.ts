@@ -22,7 +22,7 @@
 // diff likewise (a "(cannot diff ...)" note).
 
 import { RpcTarget } from "cloudflare:workers";
-import { validateRpc } from "capnweb-validate";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { structuredPatch } from "diff";
 import type {
   DiffFile, DiffFileKind, DiffHunk, DiffLine, StructuredDiffResult, StructuredGrepResult, Worktree,
@@ -412,6 +412,13 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
     return files;
   }
 
+  /**
+   * Unvalidated: validation would wrap the returned stub in a Proxy, which the runtime exports as
+   * a new capability of its own, one that isn't persistent (so the gatekeeper couldn't store it)
+   * and whose methods it can't find. It takes no arguments, and WorktreeReplicatorImpl validates
+   * its own.
+   */
+  @skipRpcValidation()
   async getReplicator(): Promise<WorktreeReplicator> {
     if (!this.host.getWorktreeReplicator) throw new Error("This worktree can't be replicated.");
     return this.host.getWorktreeReplicator(this.worktreeId);

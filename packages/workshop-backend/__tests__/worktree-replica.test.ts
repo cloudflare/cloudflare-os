@@ -307,7 +307,10 @@ function runCode(impl: Impl, id: number, code: Record<string, Code>) {
       const execution = executionId;
       let output: string | void = "";
       try {
-        const repo = await impl.startGatekeeperSession({type: "worktree", id, executionId: execution}, {from: "agent", chatId: 1});
+        // Over RPC, as the loopback resolves it, so what the binding hands out crosses an RPC
+        // boundary as it would on its way to a gatekeeper.
+        const overseer = testEnv.TEST_OVERSEER.get(impl.ctx.id) as unknown as {startGatekeeperSession: Impl["startGatekeeperSession"]};
+        const repo = await overseer.startGatekeeperSession({type: "worktree", id, executionId: execution}, {from: "agent", chatId: 1});
         output = await code[worker.modules["agent.js"]](repo, await repo.getReplicator(), execution);
       } finally {
         await impl.deliverCodeModeTrace(execution, {logs: output ? [{message: [output]}] : []} as never);
@@ -457,10 +460,12 @@ describe("worktree commands", () => {
   }));
 
   it("keeps working through a replicator an earlier execution handed out, unlike its binding", () => withCommands(async (impl, id) => {
-    let kept!: Replicator, first!: string, refused!: string;
+    let first!: string, refused!: string;
     runCode(impl, id, {
-      mount: async (_, replicator, execution) => { kept = replicator; first = execution; },
+      // As a gatekeeper would, it stores the replicator, which it can only if it's persistent.
+      mount: async (_, replicator, execution) => { impl.ctx.storage.kv.put("kept", replicator); first = execution; },
       command: async () => {
+        const kept = impl.ctx.storage.kv.get<Replicator>("kept")!;
         // As a gatekeeper that stored the earlier execution's binding would: it no longer resolves.
         refused = await (async () => impl.startGatekeeperSession({type: "worktree", id, executionId: first},
           {from: "agent", chatId: 1}))().then(() => "", (error: Error) => error.message);
@@ -472,7 +477,8 @@ describe("worktree commands", () => {
     await turn(impl, [[execute("mount")], [execute("command")]]);
     expect(refused).toMatch(/no longer live/);
     expect(await turn(impl, [[read("b.txt")]])).toEqual(["submitted\n"]);
-    expect(await transfer(kept, impl.getWorktreeRecord(id).headCommit)).not.toEqual([]);
+    expect(await transfer(impl.ctx.storage.kv.get<Replicator>("kept")!, impl.getWorktreeRecord(id).headCommit))
+      .not.toEqual([]);
   }));
 
   it("returns the first result on a retry, even after a conflicting merge, and refuses another", () => withCommands(async (impl, id) => {
