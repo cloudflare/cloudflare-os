@@ -26,10 +26,11 @@ the review relay finishes) and `issue_comment`, and never checks out or runs pul
 [`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
 group events to it; the gate decides a merge group only when the merge queue lists its commit.
 Producer workflows (reviewer verdicts, rung 1 proofs, band evidence) upload one JSON artifact each
-and post nothing. They are not in this tree yet: `review-verdict.yml` lands in #972,
-`automerge-proofs.yml` in #987, and `automerge-evidence.yml` in #988. Until then the gate finds no
-run of them and counts every input they would give as absent, so every pull request goes to a
-person. The gate accepts an artifact only from a successful `pull_request` run of the
+and post nothing. The two verdicts are Bonk's (`bonk-pr.yml`, run "Bonk PR Review", artifact
+`automerge-verdict-bonk`) and our Opus runner's (`review-verdict.yml`, `automerge-verdict-opus`).
+Bonk's verdict artifact and `review-verdict.yml` land in #972, `automerge-proofs.yml` in #987, and
+`automerge-evidence.yml` in #988. Until then the gate finds no run of them and counts every input they
+would give as absent, so every pull request goes to a person. The gate accepts an artifact only from a successful `pull_request` run of the
 expected workflow file on the pull request's head, in this repository, and the run whose latest
 attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
 their smoke runs in workerd, without secrets, in Automerge evidence. A rung 1 proof also counts only
@@ -37,13 +38,24 @@ for the commit the pull request would land on (its base, or the queue's commit u
 group): `proof-actions` and `proof-deps` only while the files they read at their base (the touched
 workflows; `pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable blobs there, and
 `proof-equivalence` and `proof-tests` only when made against that commit with a head that contains
-it.
+it. No proof admits a change to text that people or agents read (any Markdown file, `docs/`,
+`plans/`, `.agents/`): it leaves the build byte-identical, so it can only be AI-scored. Edits under
+`.agents/skills/` are scored like code; a symlink there, and every other instruction file
+(`REVIEW.md`, any `AGENTS.md`, the rest of `.agents/`), always needs a person. The escape raise
+ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
 
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
 mirrors today's rule (`reviewDecision` is `APPROVED`), is not required, and records the decision it
-would have made as JSON at the top of its output.
+would have made as JSON at the top of its output, including both reviewers' scores whenever their
+verdicts' own conditions hold (`eligible_scores`).
 [`scripts/risk-review-report.ts`](../../scripts/risk-review-report.ts) rebuilds the calibration
-table from those records. In `enforce` mode the check reports the gate's own rule, and for an open
+table from those records. With `--calibrate` it reads every record on every head of each merged pull
+request and prints, for each area, band, reviewer configuration and threshold from 10 to 1, the
+pull requests the gate would have merged, the misses among them (a maintainer comment or
+non-approving review followed by a commit, a change request, or a revert or a pull request naming it
+within 14 days), and the run of clean ones since the last miss. A band opens at threshold 10, and
+only once that run reaches 60; the threshold is then lowered a step at a time as the record
+supports it, and a change to either reviewer's configuration starts the run again. In `enforce` mode the check reports the gate's own rule, and for an open
 band the App approves (when `app_approvals_count` is true) and enqueues the pull request. A change to
 any of these files, or to anything else under `.github/`, always needs a person, with one exception:
 a Dependabot Actions bump that only modifies workflows the gate does not read (none of the producer
@@ -77,8 +89,23 @@ An organization owner, or a GitHub App manager, does this once.
    ruleset counts it, then set `app_approvals_count`. Stale-approval dismissal is not needed: the
    gate counts only approvals of the head commit. Bonk need not become a required check: the gate
    reads both reviewers' verdicts itself, and an AI-scored band merges nothing unless both are
-   present, `ok`, from the band's reviewer configuration, free of P0 and P1 findings and
-   `NEEDS-A-PERSON`, and at or above its threshold. Rung 1 merges only on proofs.
+   present, `ok`, from the band's reviewer configuration (model, opencode, `REVIEW.md`, prompt and
+   action), free of P0 and P1 findings and `NEEDS-A-PERSON`, and at or above its threshold. Rung 1
+   merges only on proofs.
+
+### Known limits
+
+- Bonk's verdict comes from a job that runs the pull request's code next to secrets, so it rests on
+  a maintainer author and uncompromised dependencies. The Opus verdict, which no pull request code
+  reaches, is required as well.
+- Medium and high bands require `evidence-consumer-build`, held until the GitLab tokens exist and
+  the gadgets-internal patch merges. Until then those bands cannot open; the report still lists
+  their records.
+- A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
+  until the next push, which sends the pull request to a person.
+- The report counts a fix as a miss only when it names the pull request or reverts it within 14
+  days; fixes on GitLab, or ones that name nothing, go uncounted. Maintainers are those on the
+  default branch's list today, and deleted comments are not seen.
 4. **Actions settings.** Leave *Allow GitHub Actions to create and approve pull requests* off;
    otherwise a pull request's own workflow could approve it.
 

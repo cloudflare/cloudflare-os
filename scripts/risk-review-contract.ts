@@ -18,15 +18,16 @@ export interface Producer {
   workflow: string;
 }
 
+/** Our Opus runner. Bonk's verdict comes from its own workflow, `bonk-pr.yml`. */
 const VERDICTS = ".github/workflows/review-verdict.yml";
 /** Proofs that run no pull request code, so nothing in the head can write their artifacts. */
 const PROOFS = ".github/workflows/automerge-proofs.yml";
 /** Producers that build or run the head; their artifacts rest on a maintainer author. */
 const EVIDENCE = ".github/workflows/automerge-evidence.yml";
 
-/** Every producer the gate reads, by name. The artifact is `automerge-<name>`. */
+/** Every producer the gate reads, by name. Its artifact is {@link artifactName}. */
 export const PRODUCERS = {
-  sol: { kind: "verdict", workflow: VERDICTS },
+  bonk: { kind: "verdict", workflow: ".github/workflows/bonk-pr.yml" },
   opus: { kind: "verdict", workflow: VERDICTS },
   "proof-deps": { kind: "proof", workflow: PROOFS },
   "proof-actions": { kind: "proof", workflow: PROOFS },
@@ -51,7 +52,12 @@ export function isProducerName(name: string): name is ProducerName {
 }
 
 /** The two reviewers whose verdicts rung 2 and rung 3 need. */
-export const VERDICT_NAMES = ["sol", "opus"] as const satisfies readonly ProducerName[];
+export const VERDICT_NAMES = ["bonk", "opus"] as const satisfies readonly ProducerName[];
+
+/** The artifact a producer uploads, which holds one file of the same name plus `.json`. */
+export function artifactName(name: ProducerName): string {
+  return PRODUCERS[name].kind === "verdict" ? `automerge-verdict-${name}` : `automerge-${name}`;
+}
 
 /** A reviewer verdict's configuration, which an open band pins. */
 export interface Fingerprint {
@@ -61,6 +67,8 @@ export interface Fingerprint {
   review_md: string;
   /** SHA-256 of the prompt. */
   prompt: string;
+  /** The reviewer harness's pinned action (Bonk's `uses:` SHA), or `null` for our own runner. */
+  action: string | null;
 }
 
 /** A finding in a verdict. */
@@ -127,10 +135,11 @@ function parseFinding(value: Json): Finding | undefined {
 /** Parses a reviewer fingerprint, or returns `undefined` when any field is missing. */
 export function parseFingerprint(value: Json | undefined): Fingerprint | undefined {
   const fingerprint = asObject(value);
-  const { model, opencode, review_md, prompt } = fingerprint ?? {};
+  const { model, opencode, review_md, prompt, action } = fingerprint ?? {};
   if (typeof model !== "string" || typeof opencode !== "string") return undefined;
   if (typeof review_md !== "string" || typeof prompt !== "string") return undefined;
-  return { model, opencode, review_md, prompt };
+  if (action !== null && typeof action !== "string") return undefined;
+  return { model, opencode, review_md, prompt, action };
 }
 
 /**

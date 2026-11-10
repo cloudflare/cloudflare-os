@@ -17,7 +17,7 @@ import { BASE, HEAD, verdictJson, zip } from "./risk-review-fixtures/artifacts.t
 
 const OTHER = "c".repeat(40);
 
-const expected: { name: ProducerName; headSha: string; baseSha: string } = { name: "sol", headSha: HEAD, baseSha: BASE };
+const expected: { name: ProducerName; headSha: string; baseSha: string } = { name: "bonk", headSha: HEAD, baseSha: BASE };
 
 describe("parseProducerArtifact", () => {
   it("accepts a well-formed verdict for this head and base", () => {
@@ -88,7 +88,7 @@ describe("bindingError", () => {
   });
 
   it("rejects a run from another workflow file, head, repository or event", () => {
-    assert.match(bindingError(recorded, { ...binding, producer: PRODUCERS.sol }) ?? "", /not \.github\/workflows\/review-verdict\.yml/);
+    assert.match(bindingError(recorded, { ...binding, producer: PRODUCERS.opus }) ?? "", /not \.github\/workflows\/review-verdict\.yml/);
     assert.match(bindingError(recorded, { ...binding, headSha: HEAD }) ?? "", /another head/);
     assert.match(bindingError({ ...recorded, head_repository: { full_name: "someone/cloudflare-os" } }, binding) ?? "", /another repository/);
     assert.match(bindingError({ ...recorded, event: "pull_request_target" }, binding) ?? "", /pull_request_target/);
@@ -122,33 +122,33 @@ describe("newestRun", () => {
 });
 
 function artifact(overrides: Partial<Artifact>): Artifact {
-  return { id: 1, name: "automerge-sol", size_in_bytes: 500, expired: false, created_at: "2026-11-02T16:00:00Z", ...overrides };
+  return { id: 1, name: "automerge-verdict-bonk", size_in_bytes: 500, expired: false, created_at: "2026-11-02T16:00:00Z", ...overrides };
 }
 
 describe("pickArtifact", () => {
   const run = { ...recorded, run_started_at: "2026-11-02T15:30:00Z" };
 
   it("picks the newest artifact of the name made during the latest attempt", () => {
-    assert.equal(pickArtifact([artifact({ id: 1 }), artifact({ id: 2, created_at: "2026-11-02T16:05:00Z" })], "automerge-sol", run)?.id, 2);
+    assert.equal(pickArtifact([artifact({ id: 1 }), artifact({ id: 2, created_at: "2026-11-02T16:05:00Z" })], "automerge-verdict-bonk", run)?.id, 2);
   });
 
   it("ignores an earlier attempt's artifact, an expired one, another name and an oversized one", () => {
-    assert.equal(pickArtifact([artifact({ created_at: "2026-11-02T15:00:00Z" })], "automerge-sol", run), undefined);
-    assert.equal(pickArtifact([artifact({ expired: true })], "automerge-sol", run), undefined);
-    assert.equal(pickArtifact([artifact({ name: "automerge-opus" })], "automerge-sol", run), undefined);
-    assert.equal(pickArtifact([artifact({ size_in_bytes: 2_000_000 })], "automerge-sol", run), undefined);
+    assert.equal(pickArtifact([artifact({ created_at: "2026-11-02T15:00:00Z" })], "automerge-verdict-bonk", run), undefined);
+    assert.equal(pickArtifact([artifact({ expired: true })], "automerge-verdict-bonk", run), undefined);
+    assert.equal(pickArtifact([artifact({ name: "automerge-verdict-opus" })], "automerge-verdict-bonk", run), undefined);
+    assert.equal(pickArtifact([artifact({ size_in_bytes: 2_000_000 })], "automerge-verdict-bonk", run), undefined);
   });
 });
 
 describe("readArtifactFile", () => {
   it("reads the one file in a deflated or stored archive", () => {
-    assert.deepEqual(readArtifactFile(zip({ "automerge-sol.json": verdictJson() }), "automerge-sol.json"), { text: verdictJson() });
-    assert.deepEqual(readArtifactFile(zip({ "automerge-sol.json": "{}" }, 0), "automerge-sol.json"), { text: "{}" });
+    assert.deepEqual(readArtifactFile(zip({ "automerge-verdict-bonk.json": verdictJson() }), "automerge-verdict-bonk.json"), { text: verdictJson() });
+    assert.deepEqual(readArtifactFile(zip({ "automerge-verdict-bonk.json": "{}" }, 0), "automerge-verdict-bonk.json"), { text: "{}" });
   });
 
   it("rejects another file, several files, and bytes that are not an archive", () => {
-    assert.ok("absent" in readArtifactFile(zip({ "verdict.json": "{}" }), "automerge-sol.json"));
-    assert.ok("absent" in readArtifactFile(zip({ "automerge-sol.json": "{}", "extra.json": "{}" }), "automerge-sol.json"));
-    assert.ok("absent" in readArtifactFile(new Uint8Array(Buffer.from("not a zip")), "automerge-sol.json"));
+    assert.ok("absent" in readArtifactFile(zip({ "verdict.json": "{}" }), "automerge-verdict-bonk.json"));
+    assert.ok("absent" in readArtifactFile(zip({ "automerge-verdict-bonk.json": "{}", "extra.json": "{}" }), "automerge-verdict-bonk.json"));
+    assert.ok("absent" in readArtifactFile(new Uint8Array(Buffer.from("not a zip")), "automerge-verdict-bonk.json"));
   });
 });

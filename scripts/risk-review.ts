@@ -18,8 +18,8 @@
 // - Whether it could merge without a person: its area and band are open in
 //   `.github/automerge-bands.json`, it touches no policy path, a maintainer wrote it (or Dependabot,
 //   for rung 1's dependency proof only), no maintainer commented after the last push, and either a
-//   rung 1 proof holds or both reviewers' verdicts clear the band's threshold, with the band's
-//   evidence passing.
+//   rung 1 proof holds (never for text people or agents read) or both reviewers' verdicts (Bonk's
+//   and our Opus runner's) clear the band's threshold, with the band's evidence passing.
 // - Otherwise a maintainer from `.github/maintainers` must approve the head commit, and a pull
 //   request an agent opened needs its human assignee's approval.
 //
@@ -30,7 +30,7 @@
 // token. Every missing, stale or malformed input counts as absent, which sends the pull request to a
 // person.
 
-import { basename } from "node:path/posix";
+import { basename, dirname } from "node:path/posix";
 
 import {
   AREAS,
@@ -38,6 +38,7 @@ import {
   addedClassDeletions,
   addedDependencies,
   isCatalogVersionBump,
+  isSkillPath,
   asObject,
   classifyChangeset,
   needsContents,
@@ -56,6 +57,7 @@ import {
 import {
   PRODUCERS,
   VERDICT_NAMES,
+  artifactName,
   bindingError,
   identityError,
   isProducerName,
@@ -323,6 +325,11 @@ export interface PullDecision {
   gate: { passes: boolean; reason: string };
   /** Whether it could merge without a person, through which area, and every reason it cannot. */
   would: { decision: "auto" | "person"; area: Area | null; reasons: string[] };
+  /**
+   * Both reviewers' scores when their verdicts' own conditions hold, whatever the band, threshold,
+   * evidence, holds and change requests; `null` otherwise. The calibration report reads these.
+   */
+  eligible_scores: Scores | null;
 }
 
 /**
@@ -403,7 +410,47 @@ function holding(input: ProducerInput | undefined): boolean {
 }
 
 function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
-  return a.model === b.model && a.opencode === b.opencode && a.review_md === b.review_md && a.prompt === b.prompt;
+  return a.model === b.model && a.opencode === b.opencode && a.review_md === b.review_md && a.prompt === b.prompt &&
+    a.action === b.action;
+}
+
+/** A score per reviewer. */
+export type Scores = Record<(typeof VERDICT_NAMES)[number], number>;
+
+/**
+ * Checks both verdicts' own conditions: present, `ok`, a full review (not diff-only), no P0 or P1
+ * finding, no `NEEDS-A-PERSON`, and a score. These are what the AI said, so they hold or fail the
+ * same whatever the band, its threshold, the evidence, holds or change requests.
+ *
+ * @returns Every failed condition, and both scores when none failed.
+ */
+function verdictConditions(inputs: PullInputs): { failures: string[]; scores: Scores | null } {
+  const failures: string[] = [];
+  const scores: Partial<Scores> = {};
+  for (const name of VERDICT_NAMES) {
+    const input = inputs.producers[name] ?? { absent: "no run" };
+    if ("absent" in input) {
+      failures.push(`${name} verdict absent: ${input.absent}`);
+      continue;
+    }
+    const { artifact } = input;
+    if (artifact.kind !== "verdict") {
+      failures.push(`${name} is not a verdict`);
+      continue;
+    }
+    if (artifact.status !== "ok") failures.push(`${name} verdict status is ${artifact.status}`);
+    // A diff-only re-review did not look again at what earlier rounds found.
+    if (artifact.review_from_sha !== null) {
+      failures.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
+    }
+    const blocking = artifact.findings.filter(({ severity }) => severity === "P0" || severity === "P1");
+    if (blocking.length > 0) failures.push(`${name} found ${blocking.length} P0 or P1 issues`);
+    for (const need of artifact.needs_person) failures.push(`${name}: needs a person: ${need}`);
+    if (artifact.merge_confidence === null) failures.push(`${name} gave no merge confidence`);
+    else scores[name] = artifact.merge_confidence;
+  }
+  const { bonk, opus } = scores;
+  return { failures, scores: failures.length === 0 && bonk !== undefined && opus !== undefined ? { bonk, opus } : null };
 }
 
 /** Every reason the merge rule fails for one area and band; empty when it holds. */
@@ -411,35 +458,17 @@ function mergeRuleFailures(area: Area, band: Band, inputs: PullInputs, rule: Ban
   const reasons: string[] = [];
   if (!rule.open) reasons.push(`the ${area} area's ${band} band is closed`);
   if (area !== "proven") {
-    const scores: number[] = [];
+    const { failures, scores } = verdictConditions(inputs);
+    reasons.push(...failures);
     for (const name of VERDICT_NAMES) {
-      const input = inputs.producers[name] ?? { absent: "no run" };
-      if ("absent" in input) {
-        reasons.push(`${name} verdict absent: ${input.absent}`);
-        continue;
-      }
-      const { artifact } = input;
-      if (artifact.kind !== "verdict") {
-        reasons.push(`${name} is not a verdict`);
-        continue;
-      }
-      if (artifact.status !== "ok") reasons.push(`${name} verdict status is ${artifact.status}`);
-      // A diff-only re-review did not look again at what earlier rounds found.
-      if (artifact.review_from_sha !== null) {
-        reasons.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
-      }
+      const input = inputs.producers[name];
       const pinned = rule.reviewerFingerprint?.[name];
-      if (pinned && !sameFingerprint(pinned, artifact.fingerprint)) {
+      if (pinned && input && "artifact" in input && input.artifact.kind === "verdict" && !sameFingerprint(pinned, input.artifact.fingerprint)) {
         reasons.push(`${name} ran with a configuration other than the band's, which closes the band for this pull request`);
       }
-      const blocking = artifact.findings.filter(({ severity }) => severity === "P0" || severity === "P1");
-      if (blocking.length > 0) reasons.push(`${name} found ${blocking.length} P0 or P1 issues`);
-      for (const need of artifact.needs_person) reasons.push(`${name}: needs a person: ${need}`);
-      if (artifact.merge_confidence === null) reasons.push(`${name} gave no merge confidence`);
-      else scores.push(artifact.merge_confidence);
     }
-    const lowest = Math.min(...scores);
-    if (scores.length === VERDICT_NAMES.length && rule.threshold !== null && lowest < rule.threshold) {
+    const lowest = scores && Math.min(scores.bonk, scores.opus);
+    if (lowest !== null && rule.threshold !== null && lowest < rule.threshold) {
       reasons.push(`lower merge confidence ${lowest} is below the band's ${rule.threshold}`);
     }
   }
@@ -483,9 +512,11 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   if (touchesWorkerConfig && !holding(inputs.producers["proof-migrations"])) {
     common.push("changes a Worker config, and the migration proof does not hold");
   }
-  const proven = dependabotAuthor
+  // No proof judges text that people or agents read; such a change can only be AI-scored.
+  const provable = classification.readText.length === 0;
+  const proven = provable && (dependabotAuthor
     ? dependabot && (depsProven || classification.workflowBump)
-    : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name]));
+    : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name])));
   const candidates: Area[] = [];
   if (proven) candidates.push("proven");
   if (maintainer) candidates.push(classification.area);
@@ -521,6 +552,7 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
     today: { review_decision: inputs.reviewDecision, passes: inputs.reviewDecision === "APPROVED" },
     gate: gateRule(inputs, { approvers, blockers, autoApproves: would.decision === "auto" && policy.bands.appApprovalsCount }),
     would,
+    eligible_scores: verdictConditions(inputs).scores,
   };
 }
 
@@ -617,6 +649,7 @@ type Page = { per_page: number; page: number };
 /** A file or directory entry from `repos.getContent`. */
 interface ContentEntry {
   type: string;
+  name?: string;
   /** The blob SHA, for a file. */
   sha?: string;
   content?: string;
@@ -824,15 +857,27 @@ function contentsKind(file: ChangedFile): ContentsKind | undefined {
 }
 
 async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest, files: ChangedFile[]): Promise<ContentFacts> {
-  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
+  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] };
   const needed = files.filter((file) => contentsKind(file) !== undefined);
-  if (needed.length === 0) return facts;
+  const skills = files.filter((file) => [file.filename, file.previous_filename].some((path) => path !== undefined && isSkillPath(path)));
+  if (needed.length === 0 && skills.length === 0) return facts;
   const { data } = await github.rest.repos.compareCommitsWithBasehead({
     ...repo,
     basehead: `${pull.base.sha}...${pull.head.sha}`,
     per_page: 1,
   });
   const mergeBase = data.merge_base_commit.sha;
+  for (const file of skills) {
+    // Each side that exists must be a plain file: a symlink would make edits to its target read as
+    // skill edits, or point a skill at anything in the repository.
+    const sides = [
+      ...(file.status === "added" ? [] : [{ path: file.previous_filename ?? file.filename, ref: mergeBase }]),
+      ...(file.status === "removed" ? [] : [{ path: file.filename, ref: pull.head.sha }]),
+    ];
+    for (const { path, ref } of sides) {
+      if (await entryType(github, repo, path, ref) !== "file") facts.skillSymlinks.push(path);
+    }
+  }
   for (const file of needed) {
     const added = file.status === "added";
     const removed = file.status === "removed";
@@ -862,6 +907,20 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
     }
   }
   return facts;
+}
+
+/**
+ * A path's entry type at a commit (`file`, `dir`, `symlink` or `submodule`), read from its parent
+ * directory's listing: the contents API follows a symlink to a file and reports the file.
+ */
+async function entryType(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.getContent({ ...repo, path: dirname(path), ref });
+    return Array.isArray(data) ? data.find((entry) => entry.name === basename(path))?.type : undefined;
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
 }
 
 /** When the head was pushed: the earliest check suite GitHub created for it. */
@@ -933,12 +992,12 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
   if (!run) return { absent: "no run" };
   const error = bindingError(run, expected);
   if (error) return { absent: error };
-  const artifactName = `automerge-${name}`;
-  const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifactName, per_page: PER_PAGE });
-  const artifact = pickArtifact(data.artifacts, artifactName, run);
-  if (!artifact) return { absent: "the run's latest attempt uploaded no usable artifact" };
-  const zip = await github.rest.actions.downloadArtifact({ ...repo, artifact_id: artifact.id, archive_format: "zip" });
-  const file = readArtifactFile(new Uint8Array(zip.data), `automerge-${name}.json`);
+  const artifact = artifactName(name);
+  const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifact, per_page: PER_PAGE });
+  const picked = pickArtifact(data.artifacts, artifact, run);
+  if (!picked) return { absent: "the run's latest attempt uploaded no usable artifact" };
+  const zip = await github.rest.actions.downloadArtifact({ ...repo, artifact_id: picked.id, archive_format: "zip" });
+  const file = readArtifactFile(new Uint8Array(zip.data), `${artifact}.json`);
   if ("absent" in file) return file;
   return parseProducerArtifact(file.text, { name, headSha: pull.head.sha, baseSha: pull.base.sha });
 }

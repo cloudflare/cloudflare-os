@@ -5,8 +5,8 @@ name: Risk review
 # .github/automerge-bands.json sets whether the check mirrors today's rule (shadow) or reports the
 # gate's own decision (enforce).
 #
-# The gate is the only publisher. Producer workflows (Review verdict, Automerge proofs, Automerge
-# evidence, Workshop eval comparison) upload one JSON artifact each and post nothing; the
+# The gate is the only publisher of `risk-review`. Producer workflows (Bonk PR Review, Review verdict,
+# Automerge proofs, Automerge evidence, Workshop eval comparison) upload one JSON artifact each; the
 # gate reads an artifact only from a run bound to the pull request's head. Their completion, and the
 # review relay, wake this workflow through `workflow_run`; maintainer comments wake it through
 # `issue_comment`. Both run this file and check out the script from the default branch, never the
@@ -25,7 +25,7 @@ on:
   workflow_run:
     # CI runs the required checks: when it finishes last, the gate tries again the enqueue GitHub
     # refused while they were running.
-    workflows: [Risk review trigger, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, CI]
+    workflows: [Risk review trigger, Bonk PR Review, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, CI]
     types: [completed]
   issue_comment:
     types: [created, deleted]

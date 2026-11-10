@@ -12,11 +12,12 @@ import {
   pathFloor,
   type ChangedFile,
   type ContentFacts,
+  type EscapeEntry,
   type EscapeSnapshot,
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
-const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] };
+const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] };
 const NO_ESCAPES: EscapeSnapshot = { windowDays: 90, files: [] };
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
@@ -85,9 +86,14 @@ describe("pathFloor", () => {
   });
 });
 
+/** An escape snapshot entry for `path`, inside the window. */
+function entry(path: string): EscapeEntry {
+  return { path, fixed: "2026-11-04", culprit: "#894", fix: "#1001" };
+}
+
 describe("classifyChangeset bands", () => {
   it("rates a small docs change low", () => {
-    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], area: "scored", workflowBump: false });
+    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], area: "scored", workflowBump: false, readText: ["docs/a.md"] });
   });
 
   it("rates more than 400 changed lines high", () => {
@@ -128,6 +134,19 @@ describe("classifyChangeset bands", () => {
     assert.equal(classify([file("packages/workshop-frontend/src/App.tsx")], { escapes, now: new Date("2027-02-01") }).band, "low");
   });
 
+  it("ignores escape entries for lockfiles and for Markdown, docs and plans outside .agents/", () => {
+    const ignored = ["pnpm-lock.yaml", "packages/gatekeeper-x/pnpm-lock.yaml", "packages/gatekeeper-kit/USAGE.md", "docs/observers.md", "plans/kernel-observer-tracking.md"];
+    const escapes: EscapeSnapshot = { windowDays: 90, files: ignored.map(entry) };
+    for (const path of ignored) {
+      const result = classify([file(path)], { escapes });
+      assert.doesNotMatch(result.bandReasons.join("\n"), /escaped defect/, path);
+    }
+    const skill = ".agents/skills/write-gatekeeper/SKILL.md";
+    const raised = classify([file(skill)], { escapes: { windowDays: 90, files: [entry(skill)] } });
+    assert.equal(raised.band, "high");
+    assert.match(raised.bandReasons.join("\n"), /escaped defect/);
+  });
+
   it("raises one band when the escape list is unreadable", () => {
     assert.equal(classify([file("docs/a.md")], { escapes: undefined }).band, "medium");
   });
@@ -147,6 +166,21 @@ describe("classifyChangeset bands", () => {
 });
 
 describe("classifyChangeset NEVER_AUTO", () => {
+  it("scores edits under .agents/skills/ at the medium floor instead of always sending them to a person", () => {
+    for (const path of [".agents/skills/write-gatekeeper/SKILL.md", ".agents/skills/frontend-conventions/references/forms.md"]) {
+      const result = classify([file(path)]);
+      assert.deepEqual(result.neverAuto, [], path);
+      assert.equal(result.band, "medium", path);
+    }
+    const renamed = file(".agents/skills/x/SKILL.md", { status: "renamed", previous_filename: "AGENTS.md" });
+    assert.notDeepEqual(classify([renamed]).neverAuto, []);
+  });
+
+  it("sends a symlink under .agents/skills/ to a person", () => {
+    const result = classify([file(".agents/skills/x/SKILL.md")], { facts: { ...NO_FACTS, skillSymlinks: [".agents/skills/x/SKILL.md"] } });
+    assert.match(result.neverAuto.join("\n"), /symlink/);
+  });
+
   it("covers all of .github, gate and judge code, reviewer instructions, auth, .npmrc and release", () => {
     for (const path of [
       ".github/workflows/ci.yml",
@@ -162,7 +196,7 @@ describe("classifyChangeset NEVER_AUTO", () => {
       "AGENTS.md",
       "packages/gatekeeper-x/AGENTS.md",
       "CLAUDE.md",
-      ".agents/skills/write-gatekeeper/SKILL.md",
+      ".agents/README.md",
       "packages/gatekeeper-x/.agents/skills/a.md",
       "packages/x/.npmrc",
       "opencode.jsonc",

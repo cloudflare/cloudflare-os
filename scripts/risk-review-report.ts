@@ -1,17 +1,25 @@
-// Rebuilds the risk-review calibration table from what GitHub already stores: the decision JSON at
-// the top of each `risk-review` check run, the reviews people gave, and revert pull requests. One row
-// per pull request merged into the default branch in the window: band, area, both reviewer scores and
-// findings, what the gate would have done, what people did, and any revert within 14 days.
+// Rebuilds the risk-review calibration tables from what GitHub already stores: the decision JSON at
+// the top of each `risk-review` check run, what people did, and later pull requests.
 //
-//   GITHUB_TOKEN=… node scripts/risk-review-report.ts --app <app slug> --since 2026-11-01 [--until 2026-12-01]
+//   GITHUB_TOKEN=… node scripts/risk-review-report.ts --app <app slug> --since 2026-11-01 [--until 2026-12-01] [--calibrate]
+//
+// Without `--calibrate`: one row per pull request merged into the default branch in the window, from
+// the record on its merged head: band, area, both reviewer scores and findings, what the gate would
+// have done, what people did, and any revert within 14 days.
+//
+// With `--calibrate`: for each area, band, reviewer configuration and threshold from 10 to 1, which
+// pull requests the gate would have merged, how many of those people later caught something in, and
+// the run of clean ones since the last miss (see {@link calibrate}). A band opens only when that run
+// reaches 60, and the threshold is lowered a step at a time as the record supports it.
 //
 // GITHUB_REPOSITORY defaults to cloudflare/cloudflare-os. The table goes to stdout as Markdown.
 
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
-import { CHECK_NAME } from "./risk-review.ts";
+import { BANDS, asObject, parseJson, parseMaintainers, type Json } from "./risk-review-policy.ts";
+import { CHECK_NAME, POLICY_FILES, parseBands } from "./risk-review.ts";
 
 /** A revert counts if it merged within this long after the pull request. */
 export const REVERT_WINDOW_DAYS = 14;
@@ -46,7 +54,7 @@ export interface ReportRow {
   merged: string;
   band: string;
   area: string;
-  sol: VerdictCell | undefined;
+  bonk: VerdictCell | undefined;
   opus: VerdictCell | undefined;
   would: string;
   person: string;
@@ -72,17 +80,15 @@ function verdictCell(value: Json | undefined): VerdictCell | undefined {
  * @returns The band, area, verdicts and would-decision, or `undefined` when the summary has none.
  */
 export function readDecision(summary: string, number: number):
-  Pick<ReportRow, "band" | "area" | "sol" | "opus" | "would"> | undefined {
-  const match = /^```json\n(.*)\n```/s.exec(summary);
-  const record = asObject(match?.[1] === undefined ? undefined : parseJson(match[1]));
-  const pulls = record?.pulls;
-  if (record?.schema !== 1 || !Array.isArray(pulls)) return undefined;
+  Pick<ReportRow, "band" | "area" | "bonk" | "opus" | "would"> | undefined {
+  const pulls = recordOf(summary)?.pulls;
+  if (!Array.isArray(pulls)) return undefined;
   const pull = pulls.map(asObject).find((entry) => entry?.number === number);
   const { band, area } = pull ?? {};
   const would = asObject(pull?.would)?.decision;
   if (typeof band !== "string" || typeof area !== "string" || typeof would !== "string") return undefined;
   const inputs = asObject(pull?.inputs);
-  return { band, area, would, sol: verdictCell(inputs?.sol), opus: verdictCell(inputs?.opus) };
+  return { band, area, would, bonk: verdictCell(inputs?.bonk), opus: verdictCell(inputs?.opus) };
 }
 
 /** What people did: the strongest human review other than the author's. */
@@ -96,17 +102,24 @@ export function personAction(reviews: ReportReview[], author: string | undefined
   return "no review";
 }
 
-/** The first pull request that reverted `pull` within {@link REVERT_WINDOW_DAYS} of its merge. */
-export function findRevert(pull: MergedPull, merged: MergedPull[], repository: string): number | undefined {
-  if (!pull.merged_at) return undefined;
+/** The pull requests merged within {@link REVERT_WINDOW_DAYS} after `pull` whose title or body names it. */
+export function followUps(pull: MergedPull, merged: MergedPull[], repository: string): { number: number; revert: boolean }[] {
+  if (!pull.merged_at) return [];
   const start = Date.parse(pull.merged_at);
   const end = start + REVERT_WINDOW_DAYS * 86_400_000;
   const mention = new RegExp(`(?:${repository.replace("/", "\\/")})?#${pull.number}(?!\\d)`);
-  return merged.find((other) => {
+  return merged.flatMap((other) => {
     const at = other.merged_at ? Date.parse(other.merged_at) : Number.NaN;
-    return at > start && at <= end && /^Revert\b/i.test(other.title) &&
-      (mention.test(other.title) || mention.test(other.body ?? ""));
-  })?.number;
+    const names = mention.test(other.title) || mention.test(other.body ?? "");
+    return other.number !== pull.number && at > start && at <= end && names
+      ? [{ number: other.number, revert: /^Revert\b/i.test(other.title) }]
+      : [];
+  });
+}
+
+/** The first pull request that reverted `pull` within {@link REVERT_WINDOW_DAYS} of its merge. */
+export function findRevert(pull: MergedPull, merged: MergedPull[], repository: string): number | undefined {
+  return followUps(pull, merged, repository).find(({ revert }) => revert)?.number;
 }
 
 function cell(verdict: VerdictCell | undefined): string {
@@ -115,9 +128,9 @@ function cell(verdict: VerdictCell | undefined): string {
 
 /** Renders the rows as a Markdown table. */
 export function renderTable(rows: ReportRow[]): string {
-  const header = "| PR | Merged | Band | Area | Sol (P0/P1/P2/P3) | Opus (P0/P1/P2/P3) | Gate would | People | Revert ≤14 days |";
+  const header = "| PR | Merged | Band | Area | Bonk (P0/P1/P2/P3) | Opus (P0/P1/P2/P3) | Gate would | People | Revert ≤14 days |";
   const lines = rows.map((row) =>
-    `| #${row.number} | ${row.merged} | ${row.band} | ${row.area} | ${cell(row.sol)} | ${cell(row.opus)} | ` +
+    `| #${row.number} | ${row.merged} | ${row.band} | ${row.area} | ${cell(row.bonk)} | ${cell(row.opus)} | ` +
     `${row.would} | ${row.person} | ${row.revert === undefined ? "no" : `#${row.revert}`} |`);
   return [header, "|---|---|---|---|---|---|---|---|---|", ...lines].join("\n");
 }
@@ -162,13 +175,23 @@ function asPull(value: Json): MergedPull | undefined {
   };
 }
 
-/** Builds the report's rows for pull requests merged in `[since, until)`. */
-export async function buildReport(get: GitHubGet, { repository, app, since, until }: {
-  repository: string;
-  app: string;
-  since: Date;
-  until: Date;
-}): Promise<ReportRow[]> {
+/** Every page of a listing endpoint that returns a JSON array. */
+async function listPages(get: GitHubGet, path: string): Promise<Json[]> {
+  const all: Json[] = [];
+  for (let page = 1; ; page++) {
+    const listed = await get(`${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+    if (!Array.isArray(listed)) throw new Error(`${path} is not a list`);
+    all.push(...listed);
+    if (listed.length < 100) return all;
+  }
+}
+
+/**
+ * The pull requests merged into the default branch from `since` to {@link REVERT_WINDOW_DAYS} after
+ * `until`, which holds every follow-up of those merged in the window, and those merged in the window.
+ */
+async function listMerged(get: GitHubGet, { repository, since, until }: { repository: string; since: Date; until: Date }):
+  Promise<{ merged: MergedPull[]; inWindow: MergedPull[] }> {
   const horizon = until.getTime() + REVERT_WINDOW_DAYS * 86_400_000;
   const defaultBranch = asObject(await get(`/repos/${repository}`))?.default_branch;
   if (typeof defaultBranch !== "string") throw new Error(`cannot read ${repository}'s default branch`);
@@ -177,7 +200,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
     const listed = await get(`/repos/${repository}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
     const pulls = Array.isArray(listed) ? listed.map(asPull) : [];
     for (const pull of pulls) {
-      // Only the default branch is gated, so only it gives calibration samples and reverts.
+      // Only the default branch is gated, so only it gives calibration samples and follow-ups.
       if (pull?.merged_at && pull.base.ref === defaultBranch && Date.parse(pull.merged_at) <= horizon) merged.push(pull);
     }
     const last = pulls.at(-1);
@@ -187,6 +210,24 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
   const inWindow = merged
     .filter(({ merged_at }) => merged_at && Date.parse(merged_at) >= since.getTime() && Date.parse(merged_at) < until.getTime())
     .toSorted((a, b) => a.number - b.number);
+  return { merged, inWindow };
+}
+
+/** The decision record JSON a `risk-review` check run's summary leads with. */
+function recordOf(summary: Json | undefined): { [key: string]: Json } | undefined {
+  const match = typeof summary === "string" ? /^```json\n(.*)\n```/s.exec(summary) : null;
+  const record = asObject(match?.[1] === undefined ? undefined : parseJson(match[1]));
+  return record?.schema === 1 ? record : undefined;
+}
+
+/** Builds the report's rows for pull requests merged in `[since, until)`. */
+export async function buildReport(get: GitHubGet, { repository, app, since, until }: {
+  repository: string;
+  app: string;
+  since: Date;
+  until: Date;
+}): Promise<ReportRow[]> {
+  const { merged, inWindow } = await listMerged(get, { repository, since, until });
 
   const rows: ReportRow[] = [];
   for (const pull of inWindow) {
@@ -197,13 +238,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
       asObject(entry?.app)?.slug === app && entry?.status === "completed");
     const summary = asObject(run?.output)?.summary;
     const decision = typeof summary === "string" ? readDecision(summary, pull.number) : undefined;
-    const reviewsJson: Json[] = [];
-    for (let page = 1; ; page++) {
-      const listed = await get(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100&page=${page}`);
-      if (!Array.isArray(listed)) throw new Error(`#${pull.number}'s reviews are not a list`);
-      reviewsJson.push(...listed);
-      if (listed.length < 100) break;
-    }
+    const reviewsJson = await listPages(get, `/repos/${repository}/pulls/${pull.number}/reviews`);
     const reviews = reviewsJson.flatMap((value) => {
       const review = asObject(value);
       const user = asObject(review?.user);
@@ -217,7 +252,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
       merged: pull.merged_at?.slice(0, 10) ?? "",
       band: decision?.band ?? "no record",
       area: decision?.area ?? "",
-      sol: decision?.sol,
+      bonk: decision?.bonk,
       opus: decision?.opus,
       would: decision?.would ?? "",
       person: personAction(reviews, pull.user?.login),
@@ -227,22 +262,320 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
   return rows;
 }
 
+/** The thresholds the calibration report tries, highest first. A band opens at 10. */
+const THRESHOLDS = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+
+/** One `risk-review` decision record for one pull request, as calibration reads it. */
+export interface CalibrationRecord {
+  /** When the check run completed. */
+  at: number;
+  /** The head commit it decided. */
+  head: string;
+  area: string;
+  band: string;
+  /** Whether a policy rule, an unlisted file or a non-maintainer author ruled out any AI decision. */
+  ruledOut: boolean;
+  /** Both reviewers' scores when their verdicts' own conditions held, else `null`. */
+  scores: { bonk: number; opus: number } | null;
+  /** The producers whose input held. */
+  holding: ReadonlySet<string>;
+  /** A short hash of both reviewers' fingerprints, or `null` when either verdict was absent. */
+  reviewers: string | null;
+}
+
+/** A maintainer's comment or review on the pull request, other than the author's. */
+export interface MaintainerEvent {
+  at: number;
+  login: string;
+  /** `comment` for an issue or review comment; a review's state otherwise. */
+  kind: "comment" | "APPROVED" | "COMMENTED" | "CHANGES_REQUESTED" | "DISMISSED";
+}
+
+/** What calibration reads about one merged pull request. */
+export interface CalibrationPull {
+  number: number;
+  mergedAt: number;
+  records: CalibrationRecord[];
+  events: MaintainerEvent[];
+  /**
+   * When each head was pushed, as best GitHub shows it: the latest of its committer date, a force
+   * push that left it, and its first check suite. Erring late only makes more comments count as
+   * followed by a commit, which fails toward misses.
+   */
+  pushes: { head: string; at: number }[];
+  followUps: { number: number; revert: boolean }[];
+}
+
+/** One calibration row: an area, band, reviewer configuration and threshold. */
+export interface CalibrationRow {
+  area: string;
+  band: string;
+  reviewers: string;
+  threshold: number;
+  /** Admitted pull requests with no miss, 14 days or more after merge. */
+  clean: number[];
+  /** Admitted pull requests a person or a later fix caught something in, with why. */
+  misses: { number: number; why: string[] }[];
+  /** Admitted pull requests with no miss yet, under 14 days after merge. */
+  pending: number[];
+  /** Consecutive clean pull requests, by merge time, since the last miss in this row. */
+  streak: number;
+}
+
+function min(scores: { bonk: number; opus: number }): number {
+  return Math.min(scores.bonk, scores.opus);
+}
+
+/**
+ * Why `pull` is a miss at a threshold, given its would-merge point; empty when it is not.
+ *
+ * A person's catch counts after the point, when the gate would already have merged. Before the
+ * point it counts too, unless the record in force at the time shows the reviewers themselves were
+ * not satisfied (no eligible scores, or a lower score under the threshold): a head the reviewers
+ * passed and only a missing proof, a hold or a missing record kept from merging is still one a
+ * person had to catch.
+ */
+function missReasons(pull: CalibrationPull, point: CalibrationRecord, threshold: number): string[] {
+  const reasons: string[] = [];
+  const reviewersPassed = (at: number) => {
+    if (at > point.at) return true;
+    // The record in force is the latest one on the head the person was looking at; a head no record
+    // had judged yet counts as passed.
+    const head = pull.pushes.filter((push) => push.at <= at).toSorted((a, b) => a.at - b.at).at(-1)?.head;
+    const before = pull.records.filter((record) => record.at <= at && (head === undefined || record.head === head)).at(-1);
+    return before === undefined || (before.scores !== null && min(before.scores) >= threshold);
+  };
+  const pushedAfter = (at: number) => pull.pushes.some((push) => push.at > at);
+  for (const { at, login, kind } of pull.events) {
+    if (at >= pull.mergedAt || !reviewersPassed(at)) continue;
+    // A dismissed review keeps no record of what it was, so it counts as a change request.
+    if (kind === "CHANGES_REQUESTED" || kind === "DISMISSED") reasons.push(`@${login} requested changes`);
+    else if (kind !== "APPROVED" && pushedAfter(at)) reasons.push(`@${login} commented, then a commit followed`);
+  }
+  for (const { number, revert } of pull.followUps) reasons.push(revert ? `reverted by #${number}` : `#${number} names it`);
+  return reasons;
+}
+
+/**
+ * Builds the calibration rows. For each threshold T from 10 to 1, a pull request's would-merge
+ * point is its earliest record that no policy rule rules out, whose band's evidence held and whose
+ * lower eligible score is at least T; its row is that record's area, band and reviewers. A miss
+ * counts as soon as it is seen; a pull request with none counts as clean only 14 days after merge.
+ *
+ * @param input The merged pull requests; each band's required evidence, keyed `<area> <band>`; and
+ *     the time of the report.
+ */
+export function calibrate(pulls: CalibrationPull[], { evidence, now }: {
+  evidence: ReadonlyMap<string, readonly string[]>;
+  now: number;
+}): CalibrationRow[] {
+  const rows = new Map<string, CalibrationRow & { order: { mergedAt: number; clean: boolean }[] }>();
+  for (const pull of pulls.toSorted((a, b) => a.mergedAt - b.mergedAt)) {
+    const records = pull.records.toSorted((a, b) => a.at - b.at);
+    for (const threshold of THRESHOLDS) {
+      const point = records.find((record) =>
+        !record.ruledOut && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
+        (evidence.get(`${record.area} ${record.band}`) ?? ["unknown band"]).every((name) => record.holding.has(name)));
+      if (!point?.reviewers) continue;
+      const key = `${point.area} ${point.band} ${point.reviewers} ${threshold}`;
+      const row = rows.get(key) ?? {
+        area: point.area, band: point.band, reviewers: point.reviewers, threshold,
+        clean: [], misses: [], pending: [], streak: 0, order: [],
+      };
+      rows.set(key, row);
+      const why = missReasons({ ...pull, records }, point, threshold);
+      if (why.length > 0) {
+        row.misses.push({ number: pull.number, why });
+        row.order.push({ mergedAt: pull.mergedAt, clean: false });
+      } else if (now - pull.mergedAt >= REVERT_WINDOW_DAYS * 86_400_000) {
+        row.clean.push(pull.number);
+        row.order.push({ mergedAt: pull.mergedAt, clean: true });
+      } else {
+        row.pending.push(pull.number);
+      }
+    }
+  }
+  return [...rows.values()].map(({ order, ...row }) => {
+    const lastMiss = order.findLastIndex(({ clean }) => !clean);
+    return { ...row, streak: order.length - lastMiss - 1 };
+  }).toSorted((a, b) =>
+    a.area.localeCompare(b.area) || bandOrder(a) - bandOrder(b) || a.reviewers.localeCompare(b.reviewers) ||
+    b.threshold - a.threshold);
+}
+
+function bandOrder(row: CalibrationRow): number {
+  return BANDS.findIndex((name) => name === row.band);
+}
+
+function numbered(numbers: number[]): string {
+  return numbers.length === 0 ? "0" : `${numbers.length} (${numbers.map((n) => `#${n}`).join(", ")})`;
+}
+
+/** Renders the calibration rows as a Markdown table. */
+export function renderCalibration(rows: CalibrationRow[]): string {
+  const header = "| Area | Band | Reviewers | Threshold | Clean | Misses | Pending | Clean run (of 60) |";
+  const lines = rows.map((row) =>
+    `| ${row.area} | ${row.band} | ${row.reviewers} | ${row.threshold} | ${numbered(row.clean)} | ` +
+    `${row.misses.length === 0 ? "0" : `${row.misses.length} (${row.misses.map(({ number, why }) => `#${number}: ${why.join("; ")}`).join(", ")})`} | ` +
+    `${numbered(row.pending)} | ${row.streak} |`);
+  return [header, "|---|---|---|---|---|---|---|---|", ...lines].join("\n");
+}
+
+/** A short, stable name for one reviewer configuration pair. */
+function reviewersKey(inputs: { [key: string]: Json } | undefined): string | null {
+  const prints = ["bonk", "opus"].map((name) => asObject(asObject(inputs?.[name])?.fingerprint));
+  if (prints.some((print) => print === undefined)) return null;
+  const fields = ["model", "opencode", "review_md", "prompt", "action"];
+  const canonical = JSON.stringify(prints.map((print) => fields.map((field) => print?.[field] ?? null)));
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+}
+
+/** Reads one pull request's calibration record from a check run, or `undefined` when it has none. */
+export function readCalibrationRecord(summary: Json | undefined, number: number, at: number, head: string):
+  CalibrationRecord | undefined {
+  const pulls = recordOf(summary)?.pulls;
+  const pull = Array.isArray(pulls) ? pulls.map(asObject).find((entry) => entry?.number === number) : undefined;
+  const { area, band, never_auto, author, eligible_scores, inputs } = pull ?? {};
+  const scores = asObject(eligible_scores);
+  const inputObject = asObject(inputs);
+  const maintainer = asObject(author)?.maintainer;
+  if (typeof area !== "string" || typeof band !== "string" || !Array.isArray(never_auto) || typeof maintainer !== "boolean") {
+    return undefined;
+  }
+  if (eligible_scores === undefined || (eligible_scores !== null && !scores) || !inputObject) return undefined;
+  const { bonk, opus } = scores ?? {};
+  const holding = new Set(Object.entries(inputObject).flatMap(([name, value]) => {
+    const input = asObject(value);
+    return input?.status === "ok" && input.holds === true ? [name] : [];
+  }));
+  return {
+    at,
+    head,
+    area,
+    band,
+    ruledOut: never_auto.length > 0 || !maintainer,
+    scores: typeof bonk === "number" && typeof opus === "number" ? { bonk, opus } : null,
+    holding,
+    reviewers: reviewersKey(inputObject),
+  };
+}
+
+async function readText(get: GitHubGet, repository: string, path: string): Promise<string | undefined> {
+  const content = asObject(await get(`/repos/${repository}/contents/${path}`))?.content;
+  return typeof content === "string" ? Buffer.from(content, "base64").toString("utf8") : undefined;
+}
+
+/** Gathers every record, maintainer event, push and follow-up of each pull request merged in the window. */
+export async function buildCalibration(get: GitHubGet, { repository, app, since, until, now }: {
+  repository: string;
+  app: string;
+  since: Date;
+  until: Date;
+  now: Date;
+}): Promise<CalibrationRow[]> {
+  const maintainers = parseMaintainers(await readText(get, repository, POLICY_FILES.maintainers));
+  if (maintainers.size === 0) throw new Error(`${POLICY_FILES.maintainers} is missing or malformed on the default branch`);
+  const { config, problem } = parseBands(await readText(get, repository, POLICY_FILES.bands));
+  if (problem) throw new Error(`${POLICY_FILES.bands}: ${problem}`);
+  const evidence = new Map(Object.entries(config.areas).flatMap(([area, bands]) =>
+    Object.entries(bands).map(([band, rule]): [string, readonly string[]] => [`${area} ${band}`, rule.evidence])));
+
+  const { merged, inWindow } = await listMerged(get, { repository, since, until });
+  const pulls: CalibrationPull[] = [];
+  for (const pull of inWindow) {
+    const base = `/repos/${repository}`;
+    const [commits, timeline, comments, reviewComments, reviews] = await Promise.all([
+      listPages(get, `${base}/pulls/${pull.number}/commits`),
+      listPages(get, `${base}/issues/${pull.number}/timeline`),
+      listPages(get, `${base}/issues/${pull.number}/comments`),
+      listPages(get, `${base}/pulls/${pull.number}/comments`),
+      listPages(get, `${base}/pulls/${pull.number}/reviews`),
+    ]);
+    // Every head seen: the commits now on the branch, and each head a force push left. A head a
+    // force push replaced and that no event names has no visible record; a catch before the first
+    // record then counts as a miss.
+    const pushedAt = new Map<string, number>();
+    for (const value of commits) {
+      const commit = asObject(value);
+      const date = asObject(asObject(commit?.commit)?.committer)?.date;
+      if (typeof commit?.sha === "string" && typeof date === "string") pushedAt.set(commit.sha, Date.parse(date));
+    }
+    for (const value of timeline) {
+      const event = asObject(value);
+      if (event?.event === "head_ref_force_pushed" && typeof event.commit_id === "string" && typeof event.created_at === "string") {
+        pushedAt.set(event.commit_id, Math.max(pushedAt.get(event.commit_id) ?? 0, Date.parse(event.created_at)));
+      }
+    }
+    // The commits listing stops at 250, so a longer pull request's pushes are not all known; any
+    // comment then counts as followed by a commit.
+    if (commits.length >= 250) pushedAt.set("unlisted", Number.POSITIVE_INFINITY);
+    const records: CalibrationRecord[] = [];
+    for (const sha of [...pushedAt.keys()].filter((key) => key !== "unlisted")) {
+      // GitHub creates a head's first check suite when it is pushed (later ones come from check runs
+      // apps add); a commit pushed under a later head has none, and that head's push covers it.
+      const suites = asObject(await get(`${base}/commits/${sha}/check-suites?per_page=100`))?.check_suites;
+      const created = (Array.isArray(suites) ? suites : []).flatMap((value) => {
+        const at = asObject(value)?.created_at;
+        return typeof at === "string" ? [Date.parse(at)] : [];
+      });
+      if (created.length > 0) pushedAt.set(sha, Math.max(pushedAt.get(sha) ?? 0, Math.min(...created)));
+      const runs = asObject(await get(`${base}/commits/${sha}/check-runs?check_name=${CHECK_NAME}&filter=all&per_page=100`))?.check_runs;
+      for (const value of Array.isArray(runs) ? runs : []) {
+        const run = asObject(value);
+        const completed = run?.completed_at;
+        if (asObject(run?.app)?.slug !== app || run?.status !== "completed" || typeof completed !== "string") continue;
+        const record = readCalibrationRecord(asObject(run?.output)?.summary, pull.number, Date.parse(completed), sha);
+        if (record) records.push(record);
+      }
+    }
+    const author = pull.user?.login.toLowerCase();
+    const events: MaintainerEvent[] = [];
+    const byMaintainer = (user: Json | undefined) => {
+      const { login, type } = asObject(user) ?? {};
+      return typeof login === "string" && type === "User" && login.toLowerCase() !== author && maintainers.has(login.toLowerCase())
+        ? login
+        : undefined;
+    };
+    for (const value of [...comments, ...reviewComments]) {
+      const comment = asObject(value);
+      const login = byMaintainer(comment?.user);
+      if (login && typeof comment?.created_at === "string") events.push({ at: Date.parse(comment.created_at), login, kind: "comment" });
+    }
+    for (const value of reviews) {
+      const review = asObject(value);
+      const login = byMaintainer(review?.user);
+      const { state, submitted_at } = review ?? {};
+      if (!login || typeof submitted_at !== "string") continue;
+      if (state === "APPROVED" || state === "COMMENTED" || state === "CHANGES_REQUESTED" || state === "DISMISSED") {
+        events.push({ at: Date.parse(submitted_at), login, kind: state });
+      }
+    }
+    pulls.push({
+      number: pull.number,
+      mergedAt: Date.parse(pull.merged_at ?? ""),
+      records,
+      events,
+      pushes: [...pushedAt].map(([head, at]) => ({ head, at })),
+      followUps: followUps(pull, merged, repository),
+    });
+  }
+  return calibrate(pulls, { evidence, now: now.getTime() });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { values } = parseArgs({
-    options: { app: { type: "string" }, since: { type: "string" }, until: { type: "string" } },
+    options: { app: { type: "string" }, since: { type: "string" }, until: { type: "string" }, calibrate: { type: "boolean" } },
   });
   const token = process.env.GITHUB_TOKEN;
   if (!token || !values.app || !values.since) {
-    throw new Error("usage: GITHUB_TOKEN=… node scripts/risk-review-report.ts --app <slug> --since YYYY-MM-DD [--until YYYY-MM-DD]");
+    throw new Error("usage: GITHUB_TOKEN=… node scripts/risk-review-report.ts --app <slug> --since YYYY-MM-DD [--until YYYY-MM-DD] [--calibrate]");
   }
   const since = new Date(values.since);
   const until = values.until ? new Date(values.until) : new Date();
   if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) throw new Error("--since and --until must be dates");
-  const rows = await buildReport(githubGet(token), {
-    repository: process.env.GITHUB_REPOSITORY ?? "cloudflare/cloudflare-os",
-    app: values.app,
-    since,
-    until,
-  });
-  process.stdout.write(`${renderTable(rows)}\n`);
+  const options = { repository: process.env.GITHUB_REPOSITORY ?? "cloudflare/cloudflare-os", app: values.app, since, until };
+  const table = values.calibrate
+    ? renderCalibration(await buildCalibration(githubGet(token), { ...options, now: new Date() }))
+    : renderTable(await buildReport(githubGet(token), options));
+  process.stdout.write(`${table}\n`);
 }

@@ -116,7 +116,10 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
  * names its reason for the decision record. The one exception is a proven Actions bump (see
  * {@link classifyChangeset}); no AI decides that either.
  */
-const NEVER_AUTO_PATHS: { reason: string; globs: string[] }[] = [
+/** Skills, which coding agents read; edits here are AI-scored. */
+const SKILLS = ".agents/skills/**";
+
+const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[] = [
   { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
   {
     reason: "gate or judge code",
@@ -133,11 +136,26 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[] }[] = [
       "**/opencode.jsonc",
       "**/.opencode/**",
     ],
+    // Skills are scored like code: the reviewers read the base version of every instruction file,
+    // so a skill edit cannot steer its own review (decision 2026-11-10). A symlink there can.
+    except: [SKILLS],
   },
   { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
   { reason: "supply-chain policy", globs: ["**/.npmrc"] },
   { reason: "release pipeline", globs: ["scripts/release/**"] },
 ];
+
+/**
+ * Text that people or agents read, which no rung 1 proof can judge: a skill or a doc it links
+ * leaves the build byte-identical, so `proof-equivalence` would admit it with no reader.
+ */
+const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
+
+/**
+ * Files an escape snapshot entry does not raise the band for: lockfiles and prose outside
+ * `.agents/`, which nearly every pull request touches and which no reviewer judges by their past.
+ */
+const ESCAPE_IGNORED = { globs: ["**/pnpm-lock.yaml", "docs/**", "plans/**", "**/*.md"], except: ["**/.agents/**"] };
 
 /** Worker configs, which carry the Durable Object migrations. */
 const WORKER_CONFIGS = ["**/cloudflare.config.ts", "**/wrangler.jsonc"];
@@ -205,6 +223,15 @@ function matchesAny(filename: string, globs: readonly string[]): boolean {
   return globs.some((glob) => matchesPath(filename, glob));
 }
 
+function matchesRule(filename: string, { globs, except = [] }: { globs: readonly string[]; except?: readonly string[] }): boolean {
+  return matchesAny(filename, globs) && !matchesAny(filename, except);
+}
+
+/** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
+export function isSkillPath(filename: string): boolean {
+  return matchesPath(filename, SKILLS);
+}
+
 /** Both paths of a changed file: a rename away from a path counts as changing it. */
 function pathsOf({ filename, previous_filename }: ChangedFile): string[] {
   return previous_filename === undefined ? [filename] : [previous_filename, filename];
@@ -263,6 +290,8 @@ export interface ContentFacts {
   newDependencies: string[];
   /** `path: class` for each Durable Object class a Worker config newly deletes, or `path: unreadable`. */
   deletedClasses: string[];
+  /** Paths under `.agents/skills/` that are a symlink at base or head, or whose type is unreadable. */
+  skillSymlinks: string[];
 }
 
 /** The band, area and policy reasons of one change. */
@@ -275,6 +304,8 @@ export interface Classification {
   area: Exclude<Area, "proven">;
   /** Whether the change is a proven Actions bump, exempt from the `.github/**` policy rule. */
   workflowBump: boolean;
+  /** Changed files people or agents read, which bar every rung 1 proof. */
+  readText: string[];
 }
 
 /** A workflow file GitHub runs: directly under `.github/workflows/`. */
@@ -328,7 +359,8 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
   } else {
     const since = now.getTime() - escapes.windowDays * 86_400_000;
     const hits = escapes.files.filter((entry) =>
-      Date.parse(entry.fixed) >= since && files.some((file) => pathsOf(file).includes(entry.path)));
+      Date.parse(entry.fixed) >= since && !matchesRule(entry.path, ESCAPE_IGNORED) &&
+      files.some((file) => pathsOf(file).includes(entry.path)));
     if (hits.length > 0) {
       band = raiseOne(band);
       const shown = [...new Set(hits.map(({ path, culprit }) => `${path} (${culprit})`))].slice(0, 3).join(", ");
@@ -340,11 +372,12 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
     files.every(({ filename, previous_filename, status }) =>
       status === "modified" && previous_filename === undefined && WORKFLOW_FILE.test(filename) &&
       !provenActionsBump.gateInputs.has(filename));
-  for (const { reason, globs } of NEVER_AUTO_PATHS) {
-    if (workflowBump && globs.includes(".github/**")) continue;
-    const matched = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, globs)));
-    if (matched.length > 0) neverAuto.push(`${reason} (${names(matched)})`);
+  for (const rule of NEVER_AUTO_PATHS) {
+    if (workflowBump && rule.globs.includes(".github/**")) continue;
+    const matched = files.filter((file) => pathsOf(file).some((path) => matchesRule(path, rule)));
+    if (matched.length > 0) neverAuto.push(`${rule.reason} (${names(matched)})`);
   }
+  if (facts.skillSymlinks.length > 0) neverAuto.push(`a symlink under .agents/skills/ (${facts.skillSymlinks.join(", ")})`);
   if (files.some((file) => pathsOf(file).includes(WORKSPACE_FILE)) && !facts.workspaceCatalogOnly) {
     neverAuto.push(`supply-chain policy (${WORKSPACE_FILE} beyond catalog versions)`);
   }
@@ -352,7 +385,8 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
     neverAuto.push(`deletes Durable Object classes (${facts.deletedClasses.join(", ")})`);
   }
 
-  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0), workflowBump };
+  const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
+  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0), workflowBump, readText };
 }
 
 function areaOf(files: ChangedFile[], band: Band, lines: number, seam: boolean): Classification["area"] {

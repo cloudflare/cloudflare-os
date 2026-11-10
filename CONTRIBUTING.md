@@ -17,7 +17,8 @@ those from forks.
 
 [`risk-review.yml`](.github/workflows/risk-review.yml) posts a `risk-review` check on your pull
 request. It rates the change from the paths and lines it touches, and records whether the
-auto-merge rules would let it merge without a person. For now that record changes nothing: the
+auto-merge rules would let it merge without a person, with both AI reviewers' scores (Bonk's and an
+Opus review's). For now that record changes nothing: the
 check only mirrors whether the pull request is approved, and it is not required. It never runs your
 code.
 

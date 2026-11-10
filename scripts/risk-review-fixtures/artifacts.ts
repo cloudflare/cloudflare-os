@@ -54,7 +54,7 @@ export function verdictJson(overrides: Record<string, Json | undefined> = {}): s
   return JSON.stringify({
     schema: 1,
     kind: "verdict",
-    name: "sol",
+    name: "bonk",
     head_sha: HEAD,
     base_sha: BASE,
     status: "ok",
@@ -64,7 +64,7 @@ export function verdictJson(overrides: Record<string, Json | undefined> = {}): s
     merge_confidence: 8,
     round: 1,
     review_from_sha: null,
-    fingerprint: { model: "openai/gpt-6.1-sol", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64) },
+    fingerprint: { model: "openai/gpt-6.1-sol", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64), action: null },
     ...overrides,
   });
 }

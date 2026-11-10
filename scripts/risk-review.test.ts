@@ -38,7 +38,8 @@ const PUSHED = "2026-11-02T10:00:00Z";
 const POLICY_SHA = "f".repeat(40);
 const APP = { id: 4242, login: "risk-review[bot]" };
 const MAINTAINERS = "ndisidore\nMaximo-Guk\nAshishKumar4\nmaxwellpeterson\ndcartertwo\nkentonv\nderegtd\nFBalint\n";
-const FINGERPRINT = { model: "openai/gpt-6.1-sol", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64) };
+const FINGERPRINT = { model: "anthropic/claude-opus-5.5", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64), action: null };
+const BONK_FINGERPRINT = { ...FINGERPRINT, model: "openai/gpt-6.1-sol", action: "14a1af226388b15b389a0c1b7df9168a940165b6" };
 const NO_ESCAPES = JSON.stringify({ schema: 1, window_days: 90, files: [] });
 
 function bandsJson(mode: "shadow" | "enforce", appApprovalsCount: boolean, open: { area: string; band: string; evidence?: string[] }[]): string {
@@ -49,7 +50,7 @@ function bandsJson(mode: "shadow" | "enforce", appApprovalsCount: boolean, open:
     bands.areas[area][band] = {
       open: true,
       threshold: area === "proven" ? null : 7,
-      reviewer_fingerprint: area === "proven" ? null : { sol: FINGERPRINT, opus: FINGERPRINT },
+      reviewer_fingerprint: area === "proven" ? null : { bonk: BONK_FINGERPRINT, opus: FINGERPRINT },
       evidence,
     };
   }
@@ -112,14 +113,18 @@ interface ProducerRun {
   archived?: Record<string, string>;
 }
 
-function verdicts(overrides: { sol?: Record<string, Json | undefined>; opus?: Record<string, Json | undefined> } = {}): ProducerRun {
-  return {
-    run: run(PRODUCERS.sol.workflow),
-    artifacts: {
-      "automerge-sol": verdictJson({ name: "sol", fingerprint: FINGERPRINT, ...overrides.sol }),
-      "automerge-opus": verdictJson({ name: "opus", fingerprint: FINGERPRINT, ...overrides.opus }),
+/** Bonk's run and our Opus runner's run on the test head, each with a passing verdict. */
+function verdicts(overrides: { bonk?: Record<string, Json | undefined>; opus?: Record<string, Json | undefined> } = {}): ProducerRun[] {
+  return [
+    {
+      run: run(PRODUCERS.bonk.workflow),
+      artifacts: { "automerge-verdict-bonk": verdictJson({ name: "bonk", fingerprint: BONK_FINGERPRINT, ...overrides.bonk }) },
     },
-  };
+    {
+      run: run(PRODUCERS.opus.workflow),
+      artifacts: { "automerge-verdict-opus": verdictJson({ name: "opus", fingerprint: FINGERPRINT, ...overrides.opus }) },
+    },
+  ];
 }
 
 /** What the gate did through the fake client. */
@@ -153,6 +158,8 @@ interface HarnessOptions {
   enqueueRefused?: true;
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
+  /** Directory listings by `<ref>:<dir>`, as the contents API returns them. */
+  dirs?: Record<string, { name: string; type: string }[]>;
   lastPush?: string | undefined;
   mergeQueue?: Json;
   /** Check runs another run created on the commit after this one, to test the takeover check. */
@@ -215,6 +222,8 @@ function harness(options: HarnessOptions = {}) {
       },
       repos: {
         getContent: async ({ path, ref }) => {
+          const entries = options.dirs?.[`${ref}:${path}`];
+          if (entries) return { data: entries };
           const text = contents.get(`${ref}:${path}`);
           if (text === undefined) throw notFound();
           const sha = createHash("sha1").update(text).digest("hex");
@@ -343,7 +352,7 @@ function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
   return {
     pull: pullRequest(),
     files: [file("docs/automerge.md")],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] },
     reviews: [],
     comments: [],
     lastPush: PUSHED,
@@ -366,11 +375,12 @@ function policyWith(bands: string, maintainers = parseMaintainers(MAINTAINERS)):
 
 const OPEN_SCORED = policyWith(bandsJson("enforce", true, [{ area: "scored", band: "low" }]));
 
-function verdictInput(name: "sol" | "opus", overrides: Record<string, Json | undefined> = {}) {
-  return { artifact: { ...JSON.parse(verdictJson({ name, fingerprint: FINGERPRINT, ...overrides })), name } };
+function verdictInput(name: "bonk" | "opus", overrides: Record<string, Json | undefined> = {}) {
+  const fingerprint = name === "bonk" ? BONK_FINGERPRINT : FINGERPRINT;
+  return { artifact: { ...JSON.parse(verdictJson({ name, fingerprint, ...overrides })), name } };
 }
 
-const PERFECT = { sol: verdictInput("sol"), opus: verdictInput("opus") };
+const PERFECT = { bonk: verdictInput("bonk"), opus: verdictInput("opus") };
 
 function actions(holds: boolean) {
   return { artifact: { ...JSON.parse(proofJson("proof-actions", "proof", holds)), name: "proof-actions" } };
@@ -438,7 +448,7 @@ describe("decide", () => {
   it("counts a missing, failed or malformed verdict as absent", () => {
     for (const producers of [
       {},
-      { sol: PERFECT.sol },
+      { bonk: PERFECT.bonk },
       { ...PERFECT, opus: { absent: "malformed merge_confidence" } },
       { ...PERFECT, opus: verdictInput("opus", { status: "error", merge_confidence: null }) },
     ]) {
@@ -454,19 +464,19 @@ describe("decide", () => {
   });
 
   it("sends a P0 or P1 finding, a NEEDS-A-PERSON line, a missing score or a score under the threshold to a person", () => {
-    for (const sol of [
+    for (const bonk of [
       { findings: [{ severity: "P1", title: "Missing await", path: "a.ts", line: 1 }] },
       { needs_person: ["changes the RPC API"] },
       { merge_confidence: null },
       { merge_confidence: 6 },
     ]) {
-      assert.equal(decide(inputs({ producers: { ...PERFECT, sol: verdictInput("sol", sol) } }), OPEN_SCORED, NOW).would.decision, "person", JSON.stringify(sol));
+      assert.equal(decide(inputs({ producers: { ...PERFECT, bonk: verdictInput("bonk", bonk) } }), OPEN_SCORED, NOW).would.decision, "person", JSON.stringify(bonk));
     }
   });
 
   it("sends a diff-only re-review to a person", () => {
-    const sol = verdictInput("sol", { round: 3, review_from_sha: "c".repeat(40) });
-    const decision = decide(inputs({ producers: { ...PERFECT, sol } }), OPEN_SCORED, NOW);
+    const bonk = verdictInput("bonk", { round: 3, review_from_sha: "c".repeat(40) });
+    const decision = decide(inputs({ producers: { ...PERFECT, bonk } }), OPEN_SCORED, NOW);
     assert.equal(decision.would.decision, "person");
     assert.match(decision.would.reasons.join("\n"), /only the diff since ccccccc/);
   });
@@ -591,6 +601,42 @@ describe("decide", () => {
     });
   });
 
+  it("never proves a change to text people or agents read, which can only be AI-scored", () => {
+    const policy = policyWith(bandsJson("enforce", true, ["low", "medium", "high"].map((band) => ({ area: "proven", band }))));
+    const equivalence = { artifact: { ...JSON.parse(proofJson("proof-equivalence", "proof", true)), name: "proof-equivalence" } };
+    assert.deepEqual(decide(inputs({ files: [file("packages/workshop-frontend/src/App.tsx")], producers: { "proof-equivalence": equivalence } }), policy, NOW).would,
+      { decision: "auto", area: "proven", reasons: [] });
+    for (const path of ["README.md", "packages/gatekeeper-kit/USAGE.md", "docs/observers.md", "plans/kernel-observer-tracking.md", ".agents/skills/write-gatekeeper/SKILL.md"]) {
+      const decision = decide(inputs({ files: [file(path)], producers: { "proof-equivalence": equivalence } }), policy, NOW);
+      assert.equal(decision.would.decision, "person", path);
+      assert.notEqual(decision.would.area, "proven", path);
+    }
+  });
+
+  it("closes the band for a verdict whose fingerprint differs only in its action", () => {
+    const bonk = verdictInput("bonk", { fingerprint: { ...BONK_FINGERPRINT, action: "0".repeat(40) } });
+    const decision = decide(inputs({ producers: { ...PERFECT, bonk } }), OPEN_SCORED, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.match(decision.would.reasons.join("\n"), /bonk ran with a configuration other than the band's/);
+  });
+
+  it("records eligible scores whatever the holds, change requests, band, threshold and evidence", () => {
+    const closed = policyWith(read(POLICY_FILES.bands));
+    const blocked = inputs({
+      files: [file("packages/gatekeeper-x/src/index.ts", { additions: 300, deletions: 200 })],
+      producers: { bonk: verdictInput("bonk", { merge_confidence: 3 }), opus: verdictInput("opus", { merge_confidence: 9 }) },
+      reviews: [review("deregtd", "CHANGES_REQUESTED")],
+      comments: [{ user: { login: "kentonv", type: "User" }, created_at: "2026-11-02T11:00:00Z" }],
+      pull: pullRequest({ user: { login: "FBalint", type: "User" } }),
+    });
+    const decision = decide(blocked, closed, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.deepEqual(decision.eligible_scores, { bonk: 3, opus: 9 });
+    const finding = verdictInput("opus", { findings: [{ severity: "P1", title: "Race", path: null, line: null }] });
+    assert.equal(decide({ ...blocked, producers: { ...blocked.producers, opus: finding } }, closed, NOW).eligible_scores, null);
+    assert.equal(decide({ ...blocked, producers: { bonk: blocked.producers.bonk } }, closed, NOW).eligible_scores, null);
+  });
+
   it("requires a human assignee's approval on a pull request an agent opened", () => {
     const pull = pullRequest({ user: { login: "ask-bonk[bot]", type: "Bot" }, assignees: [{ login: "kentonv", type: "User" }] });
     assert.match(decide(inputs({ pull, reviews: [review("deregtd", "APPROVED")] }), OPEN_SCORED, NOW).gate.reason, /@kentonv/);
@@ -623,7 +669,7 @@ describe("runRiskReview in shadow mode", () => {
   it("cannot approve or enqueue, even when a band is open and every input passes", async () => {
     const { calls, evaluate } = harness({
       policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) },
-      runs: [verdicts()],
+      runs: verdicts(),
     });
     await evaluate("workflow_run", producerCompleted());
     assert.equal(lastRecord(calls).pulls[0]?.would.decision, "auto");
@@ -750,30 +796,32 @@ describe("runRiskReview producer binding", () => {
   const open = { policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) } };
 
   it("reads both verdicts from a bound run", async () => {
-    const { calls, evaluate } = harness({ ...open, runs: [verdicts()] });
+    const { calls, evaluate } = harness({ ...open, runs: verdicts() });
     await evaluate("workflow_run", producerCompleted());
-    const sol = lastRecord(calls).pulls[0]?.inputs.sol;
-    assert.equal(sol && "status" in sol ? sol.status : undefined, "ok");
+    const bonk = lastRecord(calls).pulls[0]?.inputs.bonk;
+    assert.equal(bonk && "status" in bonk ? bonk.status : undefined, "ok");
     assert.equal(lastRecord(calls).pulls[0]?.would.decision, "auto");
   });
 
   it("lets a newer failed attempt beat an older success", async () => {
-    const failed = { run: run(PRODUCERS.sol.workflow, { created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
-    const { calls, evaluate } = harness({ ...open, runs: [verdicts(), failed] });
+    const failed = { run: run(PRODUCERS.bonk.workflow, { created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
+    const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), failed] });
     await evaluate("workflow_run", producerCompleted());
-    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.sol, { absent: "concluded failure" });
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "concluded failure" });
   });
 
   it("rejects a verdict from a fork, or one made for another head or base", async () => {
     for (const runs of [
-      [{ ...verdicts(), run: run(PRODUCERS.sol.workflow, { head_repository: { full_name: "someone/cloudflare-os" } }) }],
-      [verdicts({ sol: { head_sha: "c".repeat(40) } })],
-      [verdicts({ sol: { base_sha: "c".repeat(40) } })],
+      verdicts().map((entry) => entry.run.path === PRODUCERS.bonk.workflow
+        ? { ...entry, run: { ...entry.run, head_repository: { full_name: "someone/cloudflare-os" } } }
+        : entry),
+      verdicts({ bonk: { head_sha: "c".repeat(40) } }),
+      verdicts({ bonk: { base_sha: "c".repeat(40) } }),
     ]) {
       const { calls, evaluate } = harness({ ...open, runs });
       await evaluate("workflow_run", producerCompleted());
       const record = lastRecord(calls);
-      assert.ok(record.pulls[0]?.inputs.sol && "absent" in record.pulls[0].inputs.sol);
+      assert.ok(record.pulls[0]?.inputs.bonk && "absent" in record.pulls[0].inputs.bonk);
       assert.equal(record.pulls[0]?.would.decision, "person");
     }
   });
@@ -823,6 +871,11 @@ describe("runRiskReview preview smoke", () => {
   });
 });
 
+/** The write-gatekeeper skill's directory listing, with `SKILL.md` as `type`. */
+function listing(type: string): { name: string; type: string }[] {
+  return [{ name: "SKILL.md", type }, { name: "references", type: "dir" }];
+}
+
 describe("runRiskReview content rules", () => {
   const workspace = read("scripts/risk-review-fixtures/pnpm-workspace.yaml");
 
@@ -835,6 +888,24 @@ describe("runRiskReview content rules", () => {
     assert.match(age.never_auto.join("\n"), /supply-chain/);
     const unread = await decideFiles(files, { [`${BASE}:pnpm-workspace.yaml`]: workspace });
     assert.match(unread.never_auto.join("\n"), /supply-chain/);
+  });
+
+  it("scores a skill edit, and sends a symlink under .agents/skills/ to a person", async () => {
+    const skill = ".agents/skills/write-gatekeeper/SKILL.md";
+    const dir = ".agents/skills/write-gatekeeper";
+    const decideSkill = async (base: string, head: string) => {
+      const { calls, evaluate } = harness({ files: { 7: [file(skill)] }, dirs: { [`${BASE}:${dir}`]: listing(base), [`${HEAD}:${dir}`]: listing(head) } });
+      await evaluate("workflow_run", producerCompleted());
+      const pull = lastRecord(calls).pulls[0];
+      assert.ok(pull);
+      return pull;
+    };
+    assert.deepEqual((await decideSkill("file", "file")).never_auto, []);
+    assert.match((await decideSkill("file", "symlink")).never_auto.join("\n"), /symlink under \.agents\/skills\//);
+    assert.match((await decideSkill("symlink", "file")).never_auto.join("\n"), /symlink/);
+    const { calls, evaluate } = harness({ files: { 7: [file(skill)] } });
+    await evaluate("workflow_run", producerCompleted());
+    assert.match(lastRecord(calls).pulls[0]?.never_auto.join("\n") ?? "", /symlink/);
   });
 
   it("sends a Worker config that newly deletes a Durable Object class to a person", async () => {
@@ -992,7 +1063,7 @@ describe("runRiskReview proof freshness", () => {
 describe("runRiskReview in enforce mode", () => {
   it("keeps the published check when GitHub refuses the enqueue, and tries again when CI finishes", async () => {
     const bands = bandsJson("enforce", true, [{ area: "scored", band: "low" }]);
-    const options: HarnessOptions = { policy: { bands }, runs: [verdicts()], enqueueRefused: true };
+    const options: HarnessOptions = { policy: { bands }, runs: verdicts(), enqueueRefused: true };
     const { calls, evaluate } = harness(options);
     await assert.rejects(evaluate("workflow_run", producerCompleted()), /required status checks are pending/);
     assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success"]);
@@ -1006,7 +1077,7 @@ describe("runRiskReview in enforce mode", () => {
   });
 
   it("approves the head and enqueues it for an open band when App approvals count", async () => {
-    const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, [{ area: "scored", band: "low" }]) }, runs: [verdicts()] });
+    const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, [{ area: "scored", band: "low" }]) }, runs: verdicts() });
     await evaluate("workflow_run", producerCompleted());
     assert.equal(calls.updates.at(-1)?.conclusion, "success");
     assert.deepEqual(calls.approvals, [HEAD]);
@@ -1015,11 +1086,11 @@ describe("runRiskReview in enforce mode", () => {
 
   it("enqueues only after a maintainer approves when App approvals do not count", async () => {
     const bands = bandsJson("enforce", false, [{ area: "scored", band: "low" }]);
-    const waiting = harness({ policy: { bands }, runs: [verdicts()] });
+    const waiting = harness({ policy: { bands }, runs: verdicts() });
     await waiting.evaluate("workflow_run", producerCompleted());
     assert.equal(waiting.calls.updates.at(-1)?.conclusion, "failure");
     assert.deepEqual(waiting.calls.enqueued, []);
-    const approved = harness({ policy: { bands }, runs: [verdicts()], reviews: { 7: [review("deregtd", "APPROVED")] } });
+    const approved = harness({ policy: { bands }, runs: verdicts(), reviews: { 7: [review("deregtd", "APPROVED")] } });
     await approved.evaluate("workflow_run", producerCompleted());
     assert.deepEqual(approved.calls.approvals, []);
     assert.equal(approved.calls.enqueued.length, 1);
@@ -1089,7 +1160,10 @@ describe("risk-review workflows", () => {
   });
 
   it("gives no producer workflow checks: write, so only the gate publishes", () => {
-    for (const workflow of new Set(Object.values(PRODUCERS).map(({ workflow: path }) => path))) {
+    // Bonk keeps its own permissions (decision 2026-11-10); the gate reads only its artifact, never a
+    // check run, so a check Bonk posts cannot stand in for the gate's.
+    const producers = Object.values(PRODUCERS).map(({ workflow: path }) => path).filter((path) => path !== PRODUCERS.bonk.workflow);
+    for (const workflow of new Set(producers)) {
       if (existsSync(new URL(workflow, ROOT))) assert.doesNotMatch(read(workflow), /checks: write|write-all/, workflow);
     }
     assert.doesNotMatch(relayWorkflow, /checks: write|write-all/);
