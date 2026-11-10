@@ -57,6 +57,8 @@ import ChatInterface, {
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import ShareModal from './ShareModal'
+import { DeleteGadgetDialog } from './features/gadget-deletion/DeleteGadgetDialog'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
@@ -247,10 +249,13 @@ function PaneWorkpieceTabs({
   gadgets,
   activeId,
   onSelect,
+  onDelete,
 }: {
   gadgets: WorkpieceSummary[]
   activeId: WorkpieceId | null
   onSelect: (id: WorkpieceId) => void
+  // Asks to delete a gadget, from its tab's right-click menu; the caller confirms it.
+  onDelete: (gadget: GadgetSummary) => void
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
@@ -296,7 +301,7 @@ function PaneWorkpieceTabs({
     >
       {gadgets.map(gadget => {
         const active = gadget.id === activeId
-        return (
+        const tab = (
           <button
             key={gadget.id}
             ref={active ? activeRef : undefined}
@@ -308,7 +313,7 @@ function PaneWorkpieceTabs({
             className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
               active
                 ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
-                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default'
+                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default data-[popup-open]:bg-kumo-tint/50 data-[popup-open]:text-kumo-default'
             }`}
           >
             <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
@@ -320,6 +325,10 @@ function PaneWorkpieceTabs({
             )}
           </button>
         )
+        // A worktree is the chat's own and goes with it.
+        return gadget.type === 'gadget'
+          ? <GadgetContextMenu key={gadget.id} trigger={tab} onDelete={() => onDelete(gadget)} />
+          : tab
       })}
     </div>
   )
@@ -1445,6 +1454,22 @@ export default function GadgetEditor() {
     }
   }, [overseer, toasts])
 
+  // ── gadget deletion ─────────────────────────────────────────────────────────────
+  const [gadgetToDelete, setGadgetToDelete] = useState<GadgetSummary | null>(null)
+
+  // The subscription drops the deleted gadget, and the selection falls back past it on its own.
+  const handleDeleteGadget = async (workpieceId: WorkpieceId) => {
+    if (!overseer) return
+    const target = overseer.stub.getGadget(workpieceId)
+    try {
+      await target.remove()
+    } catch {
+      toasts.add({ title: 'Failed to delete gadget', variant: 'error' })
+    } finally {
+      target[Symbol.dispose]()
+    }
+  }
+
   // ── console log subscription ──────────────────────────────────────────────────
   useEffect(() => {
     if (!overseer) return
@@ -2066,6 +2091,7 @@ export default function GadgetEditor() {
                   gadgets={visibleWorkpieces}
                   activeId={selectedWorkpieceId}
                   onSelect={handleSelectWorkpiece}
+                  onDelete={setGadgetToDelete}
                 />
               ) : selectedWorkpieceSummary && (
                 <PaneLabel
@@ -2272,6 +2298,7 @@ export default function GadgetEditor() {
               onExpandedChange={handleWorkpieceRailExpandedChange}
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
+              onDelete={setGadgetToDelete}
               pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
@@ -2353,6 +2380,14 @@ export default function GadgetEditor() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}
       />
+      {gadgetToDelete && (
+        <DeleteGadgetDialog
+          key={gadgetToDelete.id}
+          gadget={gadgetToDelete}
+          onDelete={handleDeleteGadget}
+          onClosed={() => setGadgetToDelete(null)}
+        />
+      )}
       {observerConfigModal}
 
     </div>
