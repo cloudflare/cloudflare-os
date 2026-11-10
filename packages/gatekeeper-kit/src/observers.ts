@@ -21,6 +21,7 @@ import { requirePositiveInt } from "./positive-int";
 
 export {
   asVerifier,
+  mapLimit,
   OBSERVER_ATTEMPT_LIFETIME_MS,
   OBSERVER_DENIED,
   OBSERVER_WITHHELD,

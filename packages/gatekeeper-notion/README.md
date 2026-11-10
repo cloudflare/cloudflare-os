@@ -51,6 +51,45 @@ property (Notion loads those URLs by itself, so they could carry page content ou
 wait for a person. `describeAction` in `src/notion-actions.ts` assigns them;
 tags are never renamed, because stored rules key on them.
 
+## Observers
+
+Every observation reports the subresources it depends on (`src/notion-subresources.ts`), which the
+Workshop checks through each gatekeeper's `verifyObserverAccess()`:
+
+| Binding | Reported on every read | Plus |
+| --- | --- | --- |
+| Page or database | `workspace/<workspaceId>/item/<itemId>` (the bound item) | nothing narrower: child pages and rows inherit its sharing |
+| Whole workspace | `workspace/<workspaceId>` (membership) | `workspace/<workspaceId>/item/<itemId>` for each page/database the read reveals (search results, a listed child, a read page or queried database, a new page's parent) |
+
+`workspaceId` is the binding owner's workspace id. A connection made before it was stored asks
+Notion (`GET /v1/users/me`, whose bot user names `workspace_id`) with its own token and stores the
+answer, unless a reconnect or revoke replaced its credentials meanwhile; if Notion names none, reads
+fail closed until the owner reconnects. Item ids are normalized (no dashes, lowercase), and
+provisional pages are never reported, though a pending row's properties report its database, whose
+columns they show. `listChildPages` gathers the children once but reports each served chunk alone:
+the parent plus that chunk's children. `verifyObserverAccess()` refuses any ID of another kind, and
+on an item binding anything but the bound item; it accepts whichever workspace an ID was recorded
+under, so a reconnect into another workspace doesn't invalidate recorded requirements. Each
+observer's own `UserAccount` answers through `checkSubresourceAccess()`: membership compares its own
+workspace id, asked of Notion the same way if it has none stored; an item is retrieved with its own
+token, one at a time (Notion allows an integration about three requests a second), answers cached
+under `cache:@access:` for 15 minutes when allowed and 15 seconds when denied, partitioned by
+`credentialsId` (a UUID named on every credential install, including a committed reconnect, but not
+on a token refresh). Errors other than a definite 404/403/`restricted_resource`/`validation_error`
+throw and are not cached, and a check a reconnect lands in fails rather than combining two
+connections' answers.
+
+`addObserver()` keeps enforcing legacy history: an item binding checks the bound item; a workspace
+binding checks membership and every item recorded under `observedItem:<id>` before subresources were
+reported, and stores admitted verifiers under `observer:<id>`. Reads no longer add to either.
+`getHistoricalSubresources()` exports what those checks require, named under the owner's stored
+workspace id and without asking Notion: an item binding's bound item; a workspace binding's
+membership plus each recorded item, pending or observed. While the owner has no stored
+workspace id it exports nothing, since no existing ID can name the history without one. Such a
+binding is not covered by the migration: once the Workshop imports history in place of legacy
+admission, nothing it disclosed before reads reported subresources stays protected, a deliberate
+loosening of its sharing controls.
+
 ## Data sources
 
 Notion's newer model splits a database into one or more **data sources**. Database `query`,
