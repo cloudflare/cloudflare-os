@@ -56,7 +56,8 @@ import ChatInterface, {
 } from './ChatInterface'
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
-import ShareModal from './ShareModal'
+import { WorkspaceInviteModal } from './features/sharing/WorkspaceInviteModal'
+import { GadgetShareModal } from './features/sharing/GadgetShareModal'
 import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
@@ -2296,20 +2297,27 @@ export default function GadgetEditor() {
         </div>
       )}
 
-      {/* Share modal. Kept mounted while closed, so an invite still in flight reports back when
-          it is reopened; keyed by what it shares, so nothing carries over between targets. */}
+      {/* Share modals, keyed by what they share so nothing carries over between targets. */}
       {overseer && metadata && (
         <>
-          {(sharedGadgetId === null || sharedGadget) && (
-            <ShareModal
-              key={`${metadata.id}:${sharedGadgetId ?? 'workspace'}`}
+          {sharedGadgetId === null ? (
+            <WorkspaceInviteModal
+              key={metadata.id}
               open={shareModalOpen}
               onClose={() => setShareModalOpen(false)}
               overseer={overseer.stub}
               metadata={metadata}
-              target={sharedGadget
-                ? { kind: 'gadget', gadgetId: sharedGadget.id, title: sharedGadget.title }
-                : { kind: 'workspace' }}
+              currentUser={userInfo}
+              authenticatedApi={authenticatedApi}
+            />
+          ) : sharedGadget && (
+            <GadgetShareModal
+              key={`${metadata.id}:${sharedGadget.id}`}
+              open={shareModalOpen}
+              onClose={() => setShareModalOpen(false)}
+              overseer={overseer.stub}
+              metadata={metadata}
+              gadget={sharedGadget}
               currentUser={userInfo}
               authenticatedApi={authenticatedApi}
             />
