@@ -152,7 +152,7 @@ cursor page included (an empty or simulated one too), reports the resources it d
 
 Content a Gadget has staged but Confluence has not created (a `~` ID) is never reported, but
 its reads report what its creation read, the parent page whose space it names and the space a
-site binding opened it in, from whichever session reaches it by its handle. Sessions
+site binding opened it in, from whichever session reaches it, by its handle, a listing or a search. Sessions
 opened through a binding (a space or content session from a site binding, say) keep reporting that
 binding's resource. A space session opened by a site binding's `getSpace()` also reports that
 space, `site/<cloudId>/space/<spaceId>`, on every read, as do the content sessions opened through

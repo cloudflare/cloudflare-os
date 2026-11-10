@@ -1207,7 +1207,7 @@ class SpaceSessionImpl extends RpcTarget implements ConfluenceSpaceSession {
         ...observation(
           `List Confluence ${type === "blogpost" ? "blog posts" : "pages"}`,
           `List the ${type === "blogpost" ? "blog posts" : "pages"} in space ${this.#spaceKey}.`),
-        subresources: this.#subresources.of(contentSets(items.map(item => item.id))),
+        subresources: this.#subresources.of(revealedSets(this.#store, items.map(item => item.id))),
       });
       return { items, nextCursor };
     });
@@ -1284,18 +1284,7 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
   #isProvisional(): boolean { return ConfluenceStore.isProvisional(this.#store.resolveId(this.#contentId)); }
   #pending() { return this.#store.pendingForContent(this.#contentId); }
   #ref(): string { return this.#store.resolveId(this.#contentId); }
-  /**
-   * The content this session's reads reveal. A pending creation's are the gatekeeper's own staging,
-   * but they show what its creating session read for it (the space key of the space or parent page
-   * it was created in), and its handle can reach it from a session that never read those, so they
-   * report the sources its creation recorded.
-   */
-  #sets(): ConfluenceObservedSet[] {
-    const ref = this.#ref();
-    if (!ConfluenceStore.isProvisional(ref)) return contentSets([ref]);
-    const create = this.#store.createActionFor(this.#contentId)?.action;
-    return create?.type === "createContent" ? [...create.sources ?? []] : [];
-  }
+  #sets(): ConfluenceObservedSet[] { return revealedSets(this.#store, [this.#contentId]); }
 
   async #base(): Promise<ContentResponse | null> {
     return this.#isProvisional() ? null : await this.#store.getContentResponse(this.#contentId);
@@ -1374,7 +1363,8 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
       items = overlayChildPages(items, this.#store, this.#contentId, !cursor);
       await authorizeRead(this.#approvalQueue, {
         ...observation("List Confluence child pages", `List the child pages of Confluence content ${this.#ref()}.`),
-        subresources: this.#subresources.of([...this.#sets(), ...contentSets(items.map(item => item.id))]),
+        subresources: this.#subresources.of(
+          [...this.#sets(), ...revealedSets(this.#store, items.map(item => item.id))]),
       });
       return { items, nextCursor };
     }));
@@ -1530,6 +1520,21 @@ function resolveHandle(store: ConfluenceStore, idOrUrl: string): string {
   return parseConfluenceContentId(idOrUrl);
 }
 
+/**
+ * What a read showing the content `ids` reveals: each page or blog post Confluence holds, and for a
+ * pending creation, the sources its creation recorded. The staged content is the gadget's own, but
+ * the space key it shows was read from those, and a session reaching it by its handle, a listing
+ * or a search may never have read them.
+ */
+function revealedSets(store: ConfluenceStore, ids: string[]): ConfluenceObservedSet[] {
+  return [...new Set(ids.flatMap(id => {
+    const ref = store.resolveId(id);
+    if (!ConfluenceStore.isProvisional(ref)) return contentSets([ref]);
+    const create = store.createActionFor(id)?.action;
+    return create?.type === "createContent" ? create.sources ?? [] : [];
+  }))];
+}
+
 function searchCursor(
   store: ConfluenceStore, approvalQueue: RpcStub<ApprovalQueue>, subresources: BindingSubresources,
   options: SearchOptions | undefined, spaceKey?: string,
@@ -1541,7 +1546,7 @@ function searchCursor(
     const items = overlaySearch(results, store, !cursor, options?.type);
     await authorizeRead(approvalQueue, {
       ...observation("Search Confluence", `Search Confluence for “${options?.cql ?? options?.text ?? ""}”.`),
-      subresources: subresources.of(contentSets(items.map(item => item.id))),
+      subresources: subresources.of(revealedSets(store, items.map(item => item.id))),
     });
     return { items, nextCursor };
   });

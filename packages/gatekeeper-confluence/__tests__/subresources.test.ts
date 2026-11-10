@@ -184,6 +184,8 @@ describe("subresources reported by reads", () => {
       { results: [{ id: "10", key: "ENG", name: "Eng" }] });
     answer(`${API}/pages/300?body-format=storage`,
       { id: "300", title: "Merger", _links: { webui: "/spaces/ENG/pages/300" } });
+    routes.unshift(url => url.startsWith("https://api.atlassian.com/ex/confluence/cloud-1/wiki/rest/api/search?")
+      ? Response.json({ results: [] }) : undefined);
     const binding = gatekeeper(ConfluenceSiteGatekeeperImpl);
     const creator = await binding.startSession(makeQueue() as never);
     const child = await (await creator.getContent("300")).createChildPage({ title: "Plan" });
@@ -192,18 +194,22 @@ describe("subresources reported by reads", () => {
     expect([await child.getMetadata(), await post.getMetadata(), await grandchild.getMetadata()]
       .map(meta => meta.id)).toEqual(["~1", "~2", "~3"]);
 
-    // Another session reaching the drafts by handle never read the parent page or opened the space.
+    // Another session reaching the drafts by handle or a search never read the parent page or
+    // opened the space.
     const queue = makeQueue();
     const reader = await binding.startSession(queue as never);
     const childMeta = await (await reader.getContent("~1")).getMetadata();
     await (await reader.getContent("~2")).getMetadata();
     await (await reader.getContent("~3")).getMetadata();
+    const found = await (await reader.search({ text: "a" })).next();
 
     expect(childMeta.spaceKey).toBe("ENG");
+    expect(found?.map(item => [item.id, item.spaceKey])).toEqual([["~1", "ENG"], ["~2", "ENG"], ["~3", "ENG"]]);
     expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
       ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/content/300"],
       ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/space/10"],
       ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/content/300"],
+      ["site/cloud-1", "site/cloud-1/content/300", "site/cloud-1/space/10"],
     ]);
   });
 });
