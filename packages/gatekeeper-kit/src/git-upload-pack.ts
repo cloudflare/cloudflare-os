@@ -17,6 +17,15 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 /** Sideband data per packet: pkt-lines have a 16-bit length, including the header and band byte. */
 const MAX_SIDEBAND_DATA = 65515;
 
+/** `request`'s body, decompressed: Git gzips a large one, as a long list of `have` lines makes it. */
+function decodedBody(request: Request): Request | Response {
+  const encoding = request.headers.get("content-encoding")?.trim().toLowerCase();
+  if (encoding === undefined || encoding === "identity") return request;
+  if (encoding !== "gzip" && encoding !== "x-gzip") throw new Error(`Unsupported Content-Encoding: ${encoding}.`);
+  // The cap applies to the decompressed bytes.
+  return new Response(request.body?.pipeThrough(new DecompressionStream("gzip")));
+}
+
 /**
  * Answer one of native Git's smart-HTTP requests (protocol v2, read-only) from `source`. The
  * request's URL path must be exactly `/info/refs?service=git-upload-pack` (GET) or
@@ -33,7 +42,7 @@ export async function serveGitUploadPack(request: Request, source: GitUploadPack
   let items: PktItem[];
   try {
     path = requestPath(request);
-    items = path === "info/refs" ? [] : parsePktItems(await readBytesCapped(request, MAX_REQUEST_BYTES));
+    items = path === "info/refs" ? [] : parsePktItems(await readBytesCapped(decodedBody(request), MAX_REQUEST_BYTES));
   } catch (error) {
     return new Response(message(error), {status: 400});
   }

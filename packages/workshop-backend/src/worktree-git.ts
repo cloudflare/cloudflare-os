@@ -329,8 +329,8 @@ async function proxyFetch(source: WorktreeGitSource, fetch: FetchRequest, remote
           : history,
         haves: [...new Set([...fetch.haves, ...has])],
         shallow: fetch.shallow,
-        filterBlobSize: fetch.filterBlobSize,
-        filterTreeDepth: fetch.filterTreeDepth,
+        // No filters: Git would fetch what they leave out by ID, and an ID other than a commit's
+        // can't be confirmed to be in the worktree's history.
       });
     } catch (error) {
       cause = error;

@@ -198,8 +198,9 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
     return blobByteStream(reader, checkByteRange(range, reader.size), () => this.#pinBase());
   }
   async writeBytes(path: string, content: Uint8Array | ReadableStream<Uint8Array>): Promise<void> {
+    let base = this.#pinBase();
     try {
-      await this.host.gitCache.assertWorktreePathWritable(this.#pinBase(), path);
+      await this.host.gitCache.assertWorktreePathWritable(base, path);
       this.#pinBase();
     } catch (err) {
       if (!(content instanceof Uint8Array)) await content.cancel(err).catch(() => {});
@@ -210,7 +211,12 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
         : await this.host.gitCache.writeBlobStream(content);
     const change = {setBytes: value};
     validateCodeChangeSchema({[this.worktreeId]: [[path, change]]});
-    this.#pinBase();
+    // A command's submission may have re-rooted the worktree meanwhile (WorktreeTurnAccess.reRoot),
+    // perhaps making the path a directory: check it again against the new base.
+    for (let now = this.#pinBase(); now !== base; now = this.#pinBase()) {
+      base = now;
+      await this.host.gitCache.assertWorktreePathWritable(base, path);
+    }
     this.turn.appendChange(this.worktreeId, path, change);
   }
   async writeFile(path: string, text: string): Promise<void> {
@@ -232,6 +238,9 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
         if (!(err instanceof UnreadableContentError)) throw err;
       }
     }
+    // A command's submission may have re-rooted the worktree meanwhile (WorktreeTurnAccess.reRoot),
+    // so that neither the checks nor `before` hold: start again against the new base.
+    if (this.#pinBase() !== base) return this.writeFile(path, text);
     if (before === text) return;  // no-op: nothing to record
 
     // A readable existing file gets a minimal diffed edit (fast-diff via diffFiles), keeping
@@ -258,6 +267,8 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
       if (await this.host.gitCache.pathEntryAtCommit(base, path) === undefined) {
         throw new Error(`${path}: no such file`);
       }
+      // As in writeFile: a re-root meanwhile invalidates the checks.
+      if (this.#pinBase() !== base) return this.deleteFile(path);
     }
     this.turn.appendChange(this.worktreeId, path, { remove: true });
   }

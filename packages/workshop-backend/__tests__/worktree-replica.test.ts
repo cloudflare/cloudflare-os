@@ -178,6 +178,22 @@ describe("mounted worktree Git fetches", () => {
     expect(forwarded).toContain("deepen 2\n");
   }));
 
+  it("proxies a filtered clone without its filter, whose omissions it couldn't serve", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    dispose(await pull(impl, f.tree.id, [f.commit], {...depth(2), filterBlobSize: 0}));
+    const [forwarded] = await source.requests();
+    expect(forwarded).toContain("deepen 2\n");
+    expect(forwarded).not.toContain("filter");
+  }));
+
+  it("ends a proxied pack that fails partway with the connection's error", () => within(async (impl, f) => {
+    const [source] = await connectGitSource(impl, f.commit);
+    await source.setFailing("upstream refused");
+    using pulled = await pull(impl, f.tree.id, [f.commit], depth(2));
+    const read = await new Response(await pulled.stream()).arrayBuffer().then(() => "", (error: Error) => error.message);
+    expect(read).toContain("upstream refused");
+  }));
+
   it("proxies a fresh fetch of the base together with an ancestor", () => within(async (impl, f) => {
     const [source] = await connectGitSource(impl, f.commit);
     dispose(await pull(impl, f.tree.id, [f.commit, ANCESTOR]));
@@ -550,6 +566,32 @@ describe("worktree commands", () => {
       {"a.txt": BASE["a.txt"], "b.txt/inner": "in\n", "dir/c.txt": "sea\nedited\n"});
     const dir = parseGitTree(impl.gitCache.readLocalObject(result)!.payload).find(entry => entry.name === "dir")!;
     expect(parseGitTree(impl.gitCache.readLocalObject(dir.oid)!.payload)[0].mode).toBe("100755");
+  }));
+
+  it.each([
+    ["writeBytes", (repo: Binding) => repo.writeBytes("b.txt", new Blob(["bytes"]).stream())],
+    ["writeFile", (repo: Binding) => repo.writeFile("b.txt", "written\n")],
+    ["deleteFile", (repo: Binding) => repo.deleteFile("b.txt")],
+  ] as const)("checks a %s again when a submission re-roots the worktree during it", (_, write) => withCommands(async (impl, id) => {
+    let refusal!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator) => {
+        const snapshot = await replicator.snapshot();
+        const {tree, pack} = await commandResult(impl, snapshot.tree, {"b.txt": null, "b.txt/inner": "in\n"}, true);
+        // The command's result arrives once the write has checked its path against the old base.
+        const check = impl.gitCache.assertWorktreePathWritable.bind(impl.gitCache);
+        let submitted = false;
+        impl.gitCache.assertWorktreePathWritable = async (...args) => {
+          await check(...args);
+          if (!submitted) { submitted = true; await snapshot.command.submit(tree, pack()); }
+        };
+        refusal = await write(repo).then(() => "", (error: Error) => error.message);
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(refusal).toBe("b.txt is a directory");
+    expect(await turn(impl, [[read("b.txt/inner")]])).toEqual(["in\n"]);
   }));
 
   it("keeps a mode-only change against a deletion, as a conflict", () => withCommands(async (impl, id) => {

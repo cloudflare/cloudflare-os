@@ -82,6 +82,16 @@ describe("serveGitUploadPack", () => {
     expect(new Uint8Array(await new Response(pack).arrayBuffer())).toEqual(PACK);
   });
 
+  it("reads a gzipped request, as Git sends a long one", async () => {
+    const {served, pulls} = source();
+    const plain = fetch([`want ${HEAD}`, `have ${HAVE}`, "done"]);
+    const response = await serveGitUploadPack(new Request(plain.url, {method: "POST",
+      headers: {...Object.fromEntries(plain.headers), "content-encoding": "gzip"},
+      body: plain.body!.pipeThrough(new CompressionStream("gzip")), duplex: "half"} as RequestInit), served);
+    expect(response.status).toBe(200);
+    expect(pulls).toEqual([{oids: [HEAD], hints: {haves: [HAVE], shallow: [], commitHistory: {kind: "full"}}}]);
+  });
+
   it("answers a fetch that hasn't finished negotiating at once", async () => {
     const response = await serveGitUploadPack(fetch([`want ${HEAD}`, `have ${HAVE}`]), source().served);
     expect(await text(response)).toMatch(/^[0-9a-f]{4}acknowledgments\n[0-9a-f]{4}ready\n0001[0-9a-f]{4}packfile\n/);

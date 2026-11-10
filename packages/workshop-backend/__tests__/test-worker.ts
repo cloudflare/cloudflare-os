@@ -273,6 +273,8 @@ export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
   async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
   /** A commit the history check reports as outside the worktree's history. */
   setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
+  /** An error the pulls' packs end with partway, sent on Git's error band. */
+  setFailing(message: string): void { this.ctx.storage.kv.put("failing", message); }
   /** The protocol-v2 fetch requests the pulls received, in order. */
   requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
   async gitPull(oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer> {
@@ -290,6 +292,13 @@ export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
       const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
       const shallow = hints.filterTreeDepth === 0 ? [] :
         [encodePktLine("shallow-info"), ...oids.map(oid => encodePktLine(`shallow ${oid}`)), DELIM_PKT];
+      const failing = this.ctx.storage.kv.get<string>("failing");
+      if (failing !== undefined) {
+        const sideband = (n: number, data: Uint8Array) =>
+          new Uint8Array([...new TextEncoder().encode((data.length + 5).toString(16).padStart(4, "0")), n, ...data]);
+        return new Response(new Blob([...shallow, encodePktLine("packfile"), sideband(1, header),
+          sideband(3, new TextEncoder().encode(failing))]));
+      }
       return new Response(new Blob([...shallow, encodePktLine("packfile"), band, FLUSH_PKT]));
     }, oids, hints);
   }

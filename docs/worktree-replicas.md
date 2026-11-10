@@ -276,8 +276,11 @@ stripping the URL's own path; the kernel registers no URLs. The helper serves re
 protocol v2 smart HTTP: ref discovery and `ls-refs` from `gitHead()`, and `fetch` from
 `gitPull()`, accepting only the fetch arguments the hints can express (`want`, `have`,
 `shallow`, `deepen`, `deepen-since`, `deepen-relative`, and `filter` as `blob:none`,
-`blob:limit=<n>` or `tree:0`) and ignoring harmless ones such as `ofs-delta`. A refusal, or a
-pack that fails partway, reaches Git as a remote error, which it prints.
+`blob:limit=<n>` or `tree:0`) and ignoring harmless ones such as `ofs-delta`. Git's gzipped
+request bodies are decompressed. Filters are accepted but not applied to commits, so a partial
+clone gets every blob: Git would later fetch the omitted ones by ID, and only commits can be
+checked against the worktree's history. A refusal, or a pack that fails partway, reaches Git as
+a remote error, which it prints.
 
 The repository has a single branch, whose head is the worktree's Git head (`headCommit`, or a
 `commit()` buffered earlier in the running step). Workspace-created commits are real Git objects.

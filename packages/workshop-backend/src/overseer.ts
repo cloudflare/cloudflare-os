@@ -6955,7 +6955,12 @@ class OverseerImpl implements AgentHooks {
         const status = await transfer.status();
         if (status.state !== "complete") throw new Error(status.state === "failed" ? status.message : "Incomplete Git pack.");
       }});
-      pack.pipeTo(relay.writable).catch(() => {}).finally(() => transfer[Symbol.dispose]());
+      pack.pipeTo(relay.writable, {preventAbort: true}).catch(async error => {
+        // A stream exception crossing Workers RPC can turn into "Network connection lost".
+        // The provider records its real protocol error before rejecting the stream.
+        const status = await transfer.status().catch(() => undefined);
+        await relay.writable.abort(status?.state === "failed" ? new Error(status.message, {cause: error}) : error);
+      }).catch(() => {}).finally(() => transfer[Symbol.dispose]());
       return {shallow, pack: relay.readable};
     };
     // Mounting a worktree permits fetching any commit in its head's history. Each connection
