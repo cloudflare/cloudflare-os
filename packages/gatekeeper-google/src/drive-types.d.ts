@@ -33,7 +33,8 @@ export type DriveSuggestEditOptions = {
  * A write needs the connected account to be able to comment on the file, and a new comment makes
  * Google email the file's owner. An email address written after `@` or `+` in the text mentions
  * that person: Google emails them the text, whether or not they can open the file. `fileId` names
- * an in-scope file, as it does for `listComments()`. A comment or reply holds at most 4096 bytes
+ * an in-scope file, as it does for `listComments()`, and not a folder, which takes no comments. A
+ * comment or reply holds at most 4096 bytes
  * of UTF-8, counting what `quote` or `suggestEdit()` adds to it. A write also fails, saying what
  * to ask the user for, when the Google account does not allow changes to Drive files, and on a
  * read-only binding, whose `getScope()` reports `access: "read"`.

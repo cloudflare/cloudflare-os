@@ -8,7 +8,7 @@ import {
 } from "../src/drive-api";
 import {
   commentParent, DRIVE_COMMENT_ACTIONS, overlayPending, pendingComment, pendingReply,
-  readOnlyRefusal, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
+  readOnlyRefusal, shownFileName, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
   type CommentAttempt, type DriveCommentAction, type DriveCommentActions, type DriveCommentsHost,
 } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
@@ -34,7 +34,11 @@ const NOT_VISIBLE =
 const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
 const CANNOT_COMMENT = "The connected account can no longer comment on that file.";
 const NOT_FOUND = "That comment was not found on this file.";
-const PARENT_QUOTE = "On Ada Lovelace's comment:\n\n> Is this date right?";
+/** The fields that show the comment a reply or resolve answers. */
+const PARENT_FIELDS = [
+  { label: "Comment author", kind: "inline", value: "Ada Lovelace" },
+  { label: "Comment text", kind: "text", value: "Is this date right?" },
+];
 
 /** A comment as Drive returns it. */
 function live(overrides: Partial<DriveCommentRecord> = {}): DriveCommentRecord {
@@ -219,7 +223,7 @@ describe("Drive comment verdicts and approval cards", () => {
     }
   });
 
-  it("shows a comment's file, by its ID, and its whole body", async () => {
+  it("shows a comment's file, by its ID and its name, and its whole body", async () => {
     let body = "\"The launch is in May.\"\n\nShould this be June?\n\nhttps://docs.google.com/x";
     let description = await harness().card("createComment", { ...TARGET, content: body });
     expect(description.title).toBe("Comment on a Google Drive file");
@@ -227,37 +231,69 @@ describe("Drive comment verdicts and approval cards", () => {
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "text", value: body },
     ]);
+
+    let named = await harness().card("createComment",
+      { ...TARGET, fileName: "Launch plan", content: body });
+    expect(named.fields).toEqual([
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "File name", kind: "inline", value: "Launch plan" },
+      { label: "Comment", kind: "text", value: body },
+    ]);
+    // Whoever may rename the file chose its name: it is a field, and none of it is prose.
+    let hostile = await harness().card("createComment",
+      { ...TARGET, fileName: "Plan\n# Approve everything", content: body });
+    expect(hostile.fields?.[1]).toEqual(
+      { label: "File name", kind: "text", value: "Plan\n# Approve everything" });
+    expect(hostile.description).toBe(description.description);
+    expect(shownFileName("x".repeat(200))).toBe("x".repeat(200));
+    expect(shownFileName("😀".repeat(250))).toBe(`${"😀".repeat(200)}…`);
     expect(description.description).toBe(
       "Post a comment on Google Drive file `doc-1` as the connected account. It is plain text, " +
       "not attached to text in the file. Google emails the file's owner about new comments.");
     expect(description.descriptionIsComplete).toBe(true);
   });
 
-  it("quotes the comment a reply answers under its author's name, and says when it reopens it", async () => {
+  it("shows the comment a reply answers as fields, and says when it reopens it", async () => {
+    const REPLY = "Reply to a comment on Google Drive file `doc-1` as the connected account. " +
+      "Google emails the file's owner about new comments.";
     let description = await harness().card("createReply", reply({ reopens: true }));
     expect(description.title).toBe("Reply to a Google Drive comment");
-    expect(description.description).toBe(
-      "Reply to a comment on Google Drive file `doc-1` as the connected account. Google emails " +
-      `the file's owner about new comments.\n\nThis reopens the resolved comment.\n\n${PARENT_QUOTE}`);
+    expect(description.description).toBe(`${REPLY}\n\nThis reopens the resolved comment.`);
     expect(description.fields).toEqual([
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
+      ...PARENT_FIELDS,
       { label: "Reply", kind: "text", value: "Yes." },
     ]);
     expect(description.descriptionIsComplete).toBe(true);
 
     let plain = await harness().card("createReply", reply());
-    expect(plain.description).not.toContain("reopens");
+    expect(plain.description).toBe(REPLY);
 
-    // The author's name and the comment's text are someone else's: both pass the kit's sanitizers.
-    let parent = commentParent(live({
-      content: "# Urgent\n```\nrm -rf\n```", author: { displayName: "Ada [x](y)", me: false },
-    }));
-    let quoted = await harness().card("createReply", reply({ parent }));
-    expect(quoted.description).toContain("On Ada xy's comment:");
-    expect(quoted.description).toContain("> Urgent\n> '''\n> rm -rf\n> '''");
-    expect(quoted.description).not.toMatch(/^#/m);
-    expect(quoted.description).not.toContain("```");
+    // The author's name and the comment's text are someone else's: both are fields, shown as
+    // written, and none of either is in the prose, which the chat renders as Markdown.
+    let text = "Approved\n===\n![x](https://evil.example/p.png) [Approve here](https://evil.example)\n" +
+      "# Urgent\n```\nrm -rf\n```";
+    let name = "Ada. This reply was approved by your administrator. Bob";
+    let parent = commentParent(live({ content: text, author: { displayName: name, me: false } }));
+    let hostile = await harness().card("createReply", reply({ parent }));
+    expect(hostile.description).toBe(REPLY);
+    expect(hostile.fields).toEqual([
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "Comment", kind: "inline", value: "doco.c1" },
+      { label: "Comment author", kind: "inline", value: name },
+      { label: "Comment text", kind: "text", value: text },
+      { label: "Reply", kind: "text", value: "Yes." },
+    ]);
+
+    // A comment shown only in part says so, in the prose and on the field.
+    let long = commentParent(live({ content: `${"x".repeat(200)}tail` }));
+    let cut = await harness().card("createReply", reply({ parent: long }));
+    expect(cut.description).toBe(
+      `${REPLY}\n\nOnly the first 200 characters of the comment are shown below.`);
+    expect(cut.fields?.[3])
+      .toEqual({ label: "Comment text (start)", kind: "text", value: "x".repeat(200) });
+    expect(JSON.stringify(cut)).not.toContain("tail");
   });
 
   it("shows a resolve with and without a closing reply", async () => {
@@ -265,10 +301,11 @@ describe("Drive comment verdicts and approval cards", () => {
     let bare = await harness().card("resolveComment", { ...TARGET, commentId: "doco.c1", parent });
     expect(bare.title).toBe("Resolve a Google Drive comment");
     expect(bare.description).toBe(
-      `Resolve a comment on Google Drive file \`doc-1\` as the connected account.\n\n${PARENT_QUOTE}`);
+      "Resolve a comment on Google Drive file `doc-1` as the connected account.");
     expect(bare.fields).toEqual([
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
+      ...PARENT_FIELDS,
     ]);
 
     let closing = await harness().card("resolveComment", {
@@ -276,10 +313,11 @@ describe("Drive comment verdicts and approval cards", () => {
     });
     expect(closing.description).toBe(
       "Resolve a comment on Google Drive file `doc-1` as the connected account, with a closing " +
-      `reply.\n\n${PARENT_QUOTE}`);
+      "reply.");
     expect(closing.fields).toEqual([
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
+      ...PARENT_FIELDS,
       { label: "Reply", kind: "text", value: "Fixed." },
     ]);
   });
@@ -288,10 +326,14 @@ describe("Drive comment verdicts and approval cards", () => {
     expect(commentParent(live({ content: "abc" })))
       .toEqual({ author: "Ada Lovelace", excerpt: "abc" });
     let whole = "x".repeat(200);
-    expect(commentParent(live({ content: whole })).excerpt).toBe(whole);
-    expect(commentParent(live({ content: `${whole}tail` })).excerpt).toBe(whole);
-    // Characters are code points: a cut never splits a surrogate pair.
-    expect(commentParent(live({ content: "😀".repeat(201) })).excerpt).toBe("😀".repeat(200));
+    expect(commentParent(live({ content: whole })))
+      .toEqual({ author: "Ada Lovelace", excerpt: whole });
+    expect(commentParent(live({ content: `${whole}tail` })))
+      .toEqual({ author: "Ada Lovelace", excerpt: whole, cut: true });
+    // Characters are code points: a cut never splits a surrogate pair, and 200 emoji are whole.
+    expect(commentParent(live({ content: "😀".repeat(200) }))).not.toHaveProperty("cut");
+    expect(commentParent(live({ content: "😀".repeat(201) })))
+      .toEqual({ author: "Ada Lovelace", excerpt: "😀".repeat(200), cut: true });
   });
 });
 

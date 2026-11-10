@@ -16,7 +16,7 @@ import {
   type JournalEntry, type TaggedAction,
 } from "@gadgets/gatekeeper-kit/actions";
 import {
-  buildDescription, codeSpan, plainInline, quoteUntrusted, type ActionDescriptionBuilder,
+  buildDescription, codeSpan, type ActionDescriptionBuilder,
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -125,12 +125,33 @@ const RECONCILE_WINDOW_MS = Math.max(5 * 60 * 1000, 2 * COMMENT_WRITE_MAX_MS);
 /** Most pages one look for a posted comment reads. */
 const MAX_RECONCILE_PAGES = 50;
 
+/** Longest part of a file's name its approval shows, in characters. */
+const FILE_NAME_CHARS = 200;
+
+/**
+ * What a write's approval shows of the file's name: all of it, or its first 200 characters and
+ * an ellipsis.
+ */
+export function shownFileName(name: string): string {
+  let characters = [...name];
+  return characters.length > FILE_NAME_CHARS
+    ? `${characters.slice(0, FILE_NAME_CHARS).join("")}…` : name;
+}
+
 /** The comment a reply or resolve answers, as it stood when queued, for the approver. */
-export type CommentParent = { author: string; excerpt: string };
+export type CommentParent = {
+  author: string;
+  /** The comment's text, or the first 200 characters of a longer one. */
+  excerpt: string;
+  /** The comment's text is longer than `excerpt`, which the approval then says. */
+  cut?: true;
+};
 
 /** What every Drive comment write carries about the file it is on. */
 export type CommentTargetPayload = {
   fileId: string;
+  /** The file's name when the write was queued, as {@link shownFileName} cuts it, for the approver. */
+  fileName?: string;
   /** For a folder binding, the path from the bound root to the file's parent, proven at apply. */
   folderIds?: string[];
   /** RFC 3339, shown as the pending item's creation time. */
@@ -225,9 +246,11 @@ export async function readLiveComment(
 
 /** What the approval of a reply or resolve shows of the comment it answers. */
 export function commentParent(comment: DriveCommentRecord): CommentParent {
+  let characters = [...comment.content];
   return {
     author: comment.author.displayName,
-    excerpt: [...comment.content].slice(0, PARENT_EXCERPT_CHARS).join(""),
+    excerpt: characters.slice(0, PARENT_EXCERPT_CHARS).join(""),
+    ...(characters.length > PARENT_EXCERPT_CHARS ? { cut: true as const } : {}),
   };
 }
 
@@ -568,15 +591,28 @@ async function post(
 
 function fileLine(builder: ActionDescriptionBuilder, payload: CommentTargetPayload): void {
   builder.inline("File", payload.fileId);
+  // Whoever may rename the file chose its name, so it is a field, never prose.
+  if (payload.fileName !== undefined) builder.inline("File name", payload.fileName);
 }
 
+/** Said on an approval that shows only the start of the comment it answers. */
+const PARENT_CUT =
+  `Only the first ${PARENT_EXCERPT_CHARS} characters of the comment are shown below.`;
+
+/**
+ * The file and the comment a reply or resolve answers. Someone else on Drive wrote the comment
+ * and chose its author's name, so both are fields, which are shown as written and never as
+ * Markdown.
+ */
 function parentLines(
   builder: ActionDescriptionBuilder, payload: DriveCommentActions["createReply" | "resolveComment"],
 ): void {
-  builder.prose(`On ${plainInline(payload.parent.author)}'s comment:\n\n${
-    quoteUntrusted(payload.parent.excerpt, PARENT_EXCERPT_CHARS)}`);
+  let { author, excerpt, cut } = payload.parent;
+  if (cut) builder.prose(PARENT_CUT);
   fileLine(builder, payload);
   builder.inline("Comment", payload.commentId);
+  builder.inline("Comment author", author);
+  builder.verbatim(cut ? "Comment text (start)" : "Comment text", excerpt);
 }
 
 const EMAILED = "Google emails the file's owner about new comments.";

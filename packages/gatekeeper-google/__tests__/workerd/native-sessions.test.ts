@@ -1645,8 +1645,9 @@ describe("Drive comment actions", () => {
   /** Google Drive's files, comments and replies as far as these tests need them, and one Doc. */
   class CommentsProvider {
     readonly files = new Map<string, FakeFile>([
-      [ROOT, { mimeType: FOLDER_MIME, parents: ["above"], canComment: false }],
-      ["inner", { mimeType: FOLDER_MIME, parents: [ROOT], canComment: false }],
+      // Drive says a folder can be commented on, and then answers the comment with a server error.
+      [ROOT, { mimeType: FOLDER_MIME, parents: ["above"], canComment: true }],
+      ["inner", { mimeType: FOLDER_MIME, parents: [ROOT], canComment: true }],
       ["doc-1", { mimeType: DOC_MIME, parents: [ROOT], canComment: true }],
       ["sheet-1", { mimeType: SHEET_MIME, parents: [ROOT], canComment: true }],
       ["nested-doc", { mimeType: DOC_MIME, parents: ["inner"], canComment: true }],
@@ -2125,6 +2126,22 @@ describe("Drive comment actions", () => {
       expect(posts()).toEqual([]);
     });
 
+    it("refuses to comment on a folder, which Drive would answer with a server error", async () => {
+      const REFUSED = "A Google Drive folder cannot take comments.";
+      let account = await binding().call("comment", "inner", "Looks good.");
+      expect(account.error).toBe(REFUSED);
+      expect(account.actionId).toBeUndefined();
+      // Only the scope proof's observation: the account is never asked whether it can comment.
+      expect(account.reports).toEqual([
+        { title: "Open Google Drive comments", subresources: ["drive/file/inner"] },
+      ]);
+
+      let folder = await binding({ kind: "folder", folderId: ROOT }).call("comment", "inner", "Hi");
+      expect(folder.error).toBe(REFUSED);
+      expect(folder.actionId).toBeUndefined();
+      expect(posts()).toEqual([]);
+    });
+
     it.each([
       ["an empty comment", ["doc-1", "   "], "The comment is empty."],
       ["a comment over Google's limit", ["doc-1", "é".repeat(2049)],
@@ -2186,6 +2203,8 @@ describe("Drive comment actions", () => {
         autoApprovable: true,
         fields: [
           { label: "File", kind: "inline", value: "doc-1" },
+          // The fake names a file by its ID.
+          { label: "File name", kind: "inline", value: "doc-1" },
           { label: "Comment", kind: "text", value: body },
         ],
       });
@@ -2220,8 +2239,17 @@ describe("Drive comment actions", () => {
         createdTime: expect.any(Date), action: "reopen", pending: true,
       });
       expect(queued.action?.description).toContain("This reopens the resolved comment.");
-      expect(queued.action?.description).toContain("Ada Lovelace");
-      expect(queued.action?.description).toContain("> Is this date right?");
+      // The answered comment is someone else's text: it is shown in fields, never in the prose.
+      expect(queued.action?.description).not.toContain("Ada Lovelace");
+      expect(queued.action?.description).not.toContain("Is this date right?");
+      expect(queued.action?.fields).toEqual([
+        { label: "File", kind: "inline", value: "doc-1" },
+        { label: "File name", kind: "inline", value: "doc-1" },
+        { label: "Comment", kind: "inline", value: comment.id },
+        { label: "Comment author", kind: "inline", value: "Ada Lovelace" },
+        { label: "Comment text", kind: "text", value: "Is this date right?" },
+        { label: "Reply", kind: "text", value: "Still wrong." },
+      ]);
     });
   });
 

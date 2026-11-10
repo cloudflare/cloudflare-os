@@ -988,7 +988,7 @@ describe("positioned Drive folder session", () => {
     });
 
     await expect(session.commentTarget("D0")).resolves
-      .toEqual({ fileId: "D0", mimeType: docMime, folderIds: ["R"] });
+      .toEqual({ fileId: "D0", name: "D0", mimeType: docMime, folderIds: ["R"] });
     expect(authorizations).toHaveLength(1);
     expect(authorizations[0]).toMatchObject({
       title: "Open Google Drive comments",
@@ -1013,7 +1013,8 @@ describe("positioned Drive folder session", () => {
       });
 
     const target = await session.commentTarget("D1");
-    expect(target).toEqual({ fileId: "D1", mimeType: docMime, folderIds: ["R", "A"] });
+    expect(target)
+      .toEqual({ fileId: "D1", name: "D1", mimeType: docMime, folderIds: ["R", "A"] });
     expect(authorizations).toHaveLength(1);
     expectReported(authorizations[0], ["drive/folder/A", "drive/file/D1"]);
 
@@ -1025,7 +1026,7 @@ describe("positioned Drive folder session", () => {
     // The path is the caller's own copy: changing it moves nothing in the core.
     target.folderIds?.push("elsewhere");
     await expect(session.commentTarget("D1")).resolves
-      .toEqual({ fileId: "D1", mimeType: docMime, folderIds: ["R", "A"] });
+      .toEqual({ fileId: "D1", name: "D1", mimeType: docMime, folderIds: ["R", "A"] });
     expectReported(authorizations[2], ["drive/folder/A", "drive/file/D1"]);
   });
 
@@ -1122,7 +1123,7 @@ describe("Drive comment listing", () => {
     });
 
     await expect(session.commentTarget("file-1")).resolves
-      .toEqual({ fileId: "file-1", mimeType: "application/pdf" });
+      .toEqual({ fileId: "file-1", name: "Quarterly plan", mimeType: "application/pdf" });
     let pager = session.commentPager("file-1", plainPages);
     expect(listComments).not.toHaveBeenCalled();
     await expect(pager.next()).resolves.toEqual([shown(record("c1"))]);
@@ -1191,7 +1192,8 @@ describe("Drive comment listing", () => {
     let { session, authorizations } =
       core({ getFile: async id => file({ id, mimeType: undefined }) });
 
-    await expect(session.commentTarget("file-1")).resolves.toStrictEqual({ fileId: "file-1" });
+    await expect(session.commentTarget("file-1")).resolves
+      .toStrictEqual({ fileId: "file-1", name: "Quarterly plan" });
     expect(authorizations).toHaveLength(1);
     expectReported(authorizations[0], ["drive/file/file-1"]);
   });

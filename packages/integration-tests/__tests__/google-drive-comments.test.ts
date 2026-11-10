@@ -182,7 +182,10 @@ it.concurrent("a read-only Drive connection refuses to comment, and a read and w
     title: "Comment on a Google Drive file",
     actionKind: { tag: "driveComments", label: "Drive comments" },
     autoApprovable: true,
-    fields: expect.arrayContaining([{ label: "File", kind: "inline", value: fileId }]),
+    fields: expect.arrayContaining([
+      { label: "File", kind: "inline", value: fileId },
+      expect.objectContaining({ label: "File name" }),
+    ]),
   });
   // Only the queued write opened the file's comments: the refused call observed nothing.
   const { entries: observations } = await ws.listActions({ filter: "observation" });

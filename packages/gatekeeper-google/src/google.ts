@@ -42,7 +42,8 @@ import {
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
 import {
-  DriveApi, DriveApiRequestError, isDriveCommentId, lacksFileContentAccess, MAX_BATCH_FILES,
+  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, isDriveCommentId, lacksFileContentAccess,
+  MAX_BATCH_FILES,
 } from "./drive-api";
 import {
   composeComment, composeReply, composeResolve, composeSuggestion, headingLink, locateQuote,
@@ -51,7 +52,7 @@ import {
 import {
   ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentAttempts, commentParent, DRIVE_COMMENT_ACTIONS,
   isPendingCommentId, overlayPending, PENDING_COMMENT_REFUSED, pendingComment, pendingReply,
-  readLiveComment, toDriveComment, writeRefusal,
+  readLiveComment, shownFileName, toDriveComment, writeRefusal,
   type CommentTargetPayload, type DriveCommentAction, type DriveCommentActions,
   type DriveCommentQueue,
 } from "./drive-comments";
@@ -3784,6 +3785,9 @@ function requirePostedCommentId(commentId: string): void {
   if (!isDriveCommentId(commentId)) throw new Error("Not a Google Drive comment ID.");
 }
 
+/** The refusal for a comment write on a folder: Drive answers one with a server error, every time. */
+const FOLDER_COMMENT_REFUSED = "A Google Drive folder cannot take comments.";
+
 /** The refusal for an account connected before Drive bindings could read file content. */
 function contentAccessMissing(what: string): string {
   return "This Google account was connected before Drive bindings could read file content. " +
@@ -4077,8 +4081,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Checks and queues one comment write: the file is in scope and the connected account can
-   * comment on it, both before `prepare` builds the payload, and nothing is queued until it has.
+   * Checks and queues one comment write: the file is in scope, is not a folder, and the connected
+   * account can comment on it, all before `prepare` builds the payload, and nothing is queued
+   * until it has.
    */
   async #queueComment<K extends keyof DriveCommentActions>(
     fileId: string,
@@ -4087,9 +4092,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
   ): Promise<{ id: number; payload: DriveCommentActions[K] }> {
     let core = this.#core;
     let target = await core.commentTarget(fileId);
+    // Before the account is asked whether it can comment: of a folder, Drive says it can.
+    if (target.mimeType === FOLDER_MIME_TYPE) throw new Error(FOLDER_COMMENT_REFUSED);
     await core.requireCommentable(target.fileId);
     let payload = await prepare(target, {
       fileId: target.fileId,
+      fileName: shownFileName(target.name),
       ...(target.folderIds ? { folderIds: target.folderIds } : {}),
       queuedAt: new Date().toISOString(),
     });

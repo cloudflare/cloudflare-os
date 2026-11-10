@@ -158,6 +158,8 @@ export type DriveCore = DriveSessionCore | DriveFolderSessionCore;
 /** An in-scope file comments are read or written on, as its scope check found it. */
 export type CommentTarget = {
   fileId: string;
+  /** The file's current name, which a write's approval shows beside its ID. */
+  name: string;
   mimeType?: string;
   /** For a folder binding, the path from the bound root to the file's parent. */
   folderIds?: string[];
@@ -610,7 +612,7 @@ export class DriveSessionCore extends DriveCoreBase {
     if (file.id !== fileId) outsideScope();
     await this.authorizeFiles([file.id], "Open Google Drive comments",
       `Check current metadata for Drive file ${file.id} to work with its comments.`);
-    return {fileId: file.id, ...(file.mimeType ? {mimeType: file.mimeType} : {})};
+    return {fileId: file.id, name: file.name, ...(file.mimeType ? {mimeType: file.mimeType} : {})};
   }
 
   /** A {@link commentTarget}'s comments, page by page. */
@@ -797,6 +799,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
       `Check current metadata for Drive file ${file.id} to work with its comments.`);
     return {
       fileId: file.id,
+      name: file.name,
       ...(file.mimeType ? {mimeType: file.mimeType} : {}),
       folderIds: [...this.#location.folderIds],
     };
