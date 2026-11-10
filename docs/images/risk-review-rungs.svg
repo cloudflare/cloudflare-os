@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect x="0.75" y="0.75" width="958.5" height="558.5" rx="12" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+
+  <text x="40" y="46" font-size="20" font-weight="600" fill="#334155">Where 708 past pull requests would go</text>
+  <text x="40" y="68" font-size="13" fill="#64748B">Every PR merged on GitHub (2026-07-30 to 11-09) and in the GitLab gadgets repo (2025-11-19 to 2026-08-05),</text>
+  <text x="40" y="86" font-size="13" fill="#64748B">each counted once, in the first rung it fits. The five parts add up to all 708.</text>
+
+  <!-- One bar, 880px = 708 PRs -->
+  <g font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">
+    <rect x="40" y="104" width="26.1" height="40" fill="#D97706"/>
+    <text x="53.1" y="129">21</text>
+    <rect x="66.1" y="104" width="264.7" height="40" fill="#7C3AED"/>
+    <text x="198.5" y="129">213</text>
+    <rect x="330.8" y="104" width="51" height="40" fill="#2563EB"/>
+    <text x="356.3" y="129">41</text>
+    <rect x="381.8" y="104" width="310.7" height="40" fill="#93C5FD"/>
+    <text x="537.2" y="129" fill="#1E3A8A">250</text>
+    <rect x="692.5" y="104" width="227.5" height="40" fill="#94A3B8"/>
+    <text x="806.3" y="129">183</text>
+  </g>
+  <rect x="40" y="104" width="880" height="40" rx="3" fill="none" stroke="#CBD5E1" stroke-width="1"/>
+
+  <!-- Running total under the bar -->
+  <g stroke="#64748B" stroke-width="1.5">
+    <line x1="40" y1="152" x2="40" y2="164"/>
+    <line x1="692.5" y1="152" x2="692.5" y2="164"/>
+    <line x1="40" y1="158" x2="692.5" y2="158"/>
+    <line x1="920" y1="152" x2="920" y2="164"/>
+    <line x1="692.5" y1="158" x2="920" y2="158" stroke-dasharray="3 3"/>
+  </g>
+  <text x="366.3" y="180" font-size="13" fill="#334155" text-anchor="middle">525 PRs (74%) could merge without a person once every rung is open</text>
+  <text x="806.3" y="180" font-size="13" fill="#334155" text-anchor="middle">183 (26%) always need one</text>
+
+  <!-- Table -->
+  <g font-size="12" font-weight="600" fill="#64748B">
+    <text x="40" y="220">Rung</text>
+    <text x="250" y="220">What lets it merge without a person</text>
+    <text x="690" y="220" text-anchor="end">PRs</text>
+    <text x="770" y="220" text-anchor="end">Share</text>
+    <text x="920" y="220" text-anchor="end">Running total</text>
+  </g>
+  <line x1="24" y1="230" x2="936" y2="230" stroke="#E5E7EB" stroke-width="1.5"/>
+
+  <g font-size="13" fill="#334155">
+    <rect x="40" y="246" width="12" height="12" rx="2" fill="#D97706"/>
+    <text x="60" y="257" font-weight="600">Rung 1 · Proven</text>
+    <text x="250" y="257">A fixed check proves the change safe; no AI decides</text>
+    <text x="690" y="257" text-anchor="end">21</text>
+    <text x="770" y="257" text-anchor="end">3%</text>
+    <text x="920" y="257" text-anchor="end" font-weight="600">3%</text>
+    <line x1="24" y1="272" x2="936" y2="272" stroke="#F1F5F9" stroke-width="1.5"/>
+
+    <rect x="40" y="288" width="12" height="12" rx="2" fill="#7C3AED"/>
+    <text x="60" y="299" font-weight="600">Rung 2 · AI-scored</text>
+    <text x="250" y="299">Outside the kernel: Bonk (Sol) and Opus both clear the bar</text>
+    <text x="690" y="299" text-anchor="end">213</text>
+    <text x="770" y="299" text-anchor="end">30%</text>
+    <text x="920" y="299" text-anchor="end" font-weight="600">33%</text>
+    <line x1="24" y1="314" x2="936" y2="314" stroke="#F1F5F9" stroke-width="1.5"/>
+
+    <rect x="40" y="330" width="12" height="12" rx="2" fill="#2563EB"/>
+    <text x="60" y="341" font-weight="600">Rung 3 · Small kernel</text>
+    <text x="250" y="341">The same, plus a test that fails without the fix</text>
+    <text x="690" y="341" text-anchor="end">41</text>
+    <text x="770" y="341" text-anchor="end">6%</text>
+    <text x="920" y="341" text-anchor="end" font-weight="600">39%</text>
+    <line x1="24" y1="356" x2="936" y2="356" stroke="#F1F5F9" stroke-width="1.5"/>
+
+    <rect x="40" y="372" width="12" height="12" rx="2" fill="#93C5FD"/>
+    <text x="60" y="383" font-weight="600">Rung 3 · Later areas</text>
+    <text x="250" y="383">Agent-facing APIs, kernel features: each once its owner agrees</text>
+    <text x="690" y="383" text-anchor="end">250</text>
+    <text x="770" y="383" text-anchor="end">35%</text>
+    <text x="920" y="383" text-anchor="end" font-weight="600">74%</text>
+    <line x1="24" y1="398" x2="936" y2="398" stroke="#F1F5F9" stroke-width="1.5"/>
+
+    <rect x="40" y="414" width="12" height="12" rx="2" fill="#94A3B8"/>
+    <text x="60" y="425" font-weight="600">Always a person</text>
+    <text x="250" y="425">CI, the gate, auth, release, AGENTS.md, REVIEW.md</text>
+    <text x="690" y="425" text-anchor="end">183</text>
+    <text x="770" y="425" text-anchor="end">26%</text>
+    <text x="920" y="425" text-anchor="end" fill="#94A3B8">no</text>
+  </g>
+  <line x1="24" y1="440" x2="936" y2="440" stroke="#E5E7EB" stroke-width="1.5"/>
+  <g font-size="13" font-weight="600" fill="#334155">
+    <text x="60" y="462">Total</text>
+    <text x="690" y="462" text-anchor="end">708</text>
+    <text x="770" y="462" text-anchor="end">100%</text>
+  </g>
+
+  <!-- Footer -->
+  <rect x="24" y="480" width="912" height="60" rx="8" fill="#F8FAFC" stroke="#E5E7EB" stroke-width="1.5"/>
+  <text x="40" y="504" font-size="12.5" fill="#334155"><tspan font-weight="600">Today every rung is closed, so none of these would merge without a person.</tspan> Counted from paths, so</text>
+  <text x="40" y="524" font-size="12.5" fill="#334155">these are upper bounds: the gate also reads size, seams, new dependencies and file contents, and sends more PRs to people.</text>
+</svg>

@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect x="0.75" y="0.75" width="958.5" height="638.5" rx="12" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+
+  <text x="40" y="46" font-size="20" font-weight="600" fill="#334155">How the risk-review gate decides a pull request</text>
+  <text x="40" y="68" font-size="13" fill="#64748B">It runs main's copy of itself, trusts only inputs bound to the pull request's head, and posts one check run</text>
+
+  <!-- Column labels -->
+  <g font-size="12" font-weight="600" fill="#64748B">
+    <text x="40" y="104">Pull request</text>
+    <text x="240" y="104">Producers: one JSON artifact each, they post nothing</text>
+    <text x="600" y="104">The gate (this PR)</text>
+  </g>
+
+  <!-- Pull request -->
+  <rect x="40" y="248" width="150" height="76" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
+  <text x="115" y="280" font-size="14" font-weight="600" fill="#334155" text-anchor="middle">Pull request</text>
+  <text x="115" y="301" font-size="13" fill="#64748B" text-anchor="middle">each push is a new head</text>
+
+  <!-- Producers -->
+  <g font-size="13" fill="#334155">
+    <rect x="240" y="116" width="310" height="58" rx="10" fill="#F5F3FF" stroke="#7C3AED" stroke-width="1.5"/>
+    <text x="256" y="140" font-size="14" font-weight="600" fill="#4C1D95">Review verdicts</text>
+    <text x="256" y="160">Bonk (Sol) and Opus score it 0 to 10 (#972)</text>
+
+    <rect x="240" y="186" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
+    <text x="256" y="210" font-size="14" font-weight="600" fill="#78350F">Automerge proofs</text>
+    <text x="256" y="230">Rung 1 checks that run no PR code (#987)</text>
+
+    <rect x="240" y="256" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
+    <text x="256" y="280" font-size="14" font-weight="600" fill="#78350F">Automerge evidence</text>
+    <text x="256" y="300">Builds the PR, holds no secret (#987)</text>
+
+    <rect x="240" y="326" width="310" height="58" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
+    <text x="256" y="350" font-size="14" font-weight="600">Workshop eval comparison</text>
+    <text x="256" y="370">Eval results, report-only for now</text>
+
+    <rect x="240" y="396" width="310" height="58" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="256" y="420" font-size="14" font-weight="600">Relay</text>
+    <text x="256" y="440">Reviews, comments, merge groups, CI</text>
+  </g>
+
+  <!-- Pull request to producers -->
+  <g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+    <path d="M190,286 C214,286 214,145 238,145"/>
+    <path d="M190,286 C214,286 214,215 238,215"/>
+    <path d="M190,286 C214,286 214,285 238,285"/>
+    <path d="M190,286 C214,286 214,355 238,355"/>
+    <path d="M190,286 C214,286 214,425 238,425" stroke-dasharray="4 3"/>
+  </g>
+
+  <!-- Producers to gate -->
+  <g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+    <path d="M550,145 C575,145 575,268 598,268"/>
+    <path d="M550,215 C575,215 575,276 598,276"/>
+    <path d="M550,285 C575,285 575,284 598,284"/>
+    <path d="M550,355 C575,355 575,292 598,292"/>
+    <path d="M550,425 C575,425 575,300 598,300" stroke-dasharray="4 3"/>
+  </g>
+
+  <!-- Gate -->
+  <rect x="600" y="116" width="320" height="338" rx="12" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.5"/>
+  <text x="616" y="142" font-size="14" font-weight="600" fill="#1E3A8A">risk-review</text>
+  <text x="616" y="160" font-size="12" fill="#1E40AF">runs from main, never checks out PR code</text>
+  <g font-size="13" fill="#334155">
+    <rect x="616" y="172" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
+    <text x="630" y="195" font-weight="600">1  Read policy at the base commit</text>
+    <text x="648" y="215" fill="#64748B">maintainers, bands, recent escapes</text>
+
+    <rect x="616" y="242" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
+    <text x="630" y="265" font-weight="600">2  Rate the change</text>
+    <text x="648" y="285" fill="#64748B">paths, size, seams, new dependencies</text>
+
+    <rect x="616" y="312" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
+    <text x="630" y="335" font-weight="600">3  Accept only bound inputs</text>
+    <text x="648" y="355" fill="#64748B">this head, this workflow, newest run</text>
+
+    <rect x="616" y="382" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
+    <text x="630" y="405" font-weight="600">4  Decide: could it merge alone?</text>
+    <text x="648" y="425" fill="#64748B">CI, gate, auth, release: always a person</text>
+  </g>
+
+  <!-- Gate to results -->
+  <line x1="680" y1="454" x2="680" y2="490" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="840" y1="454" x2="840" y2="490" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+  <!-- Results -->
+  <rect x="600" y="492" width="155" height="104" rx="10" fill="#F0FDF4" stroke="#16A34A" stroke-width="1.5"/>
+  <text x="677" y="516" font-size="13" font-weight="600" fill="#15803D" text-anchor="middle">Ships: shadow</text>
+  <g font-size="12" fill="#334155" text-anchor="middle">
+    <text x="677" y="538">Passes when a person</text>
+    <text x="677" y="555">approved, as today.</text>
+    <text x="677" y="572">Records what it</text>
+    <text x="677" y="589">would have done.</text>
+  </g>
+
+  <rect x="765" y="492" width="155" height="104" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="842" y="516" font-size="13" font-weight="600" fill="#64748B" text-anchor="middle">Later, per band</text>
+  <g font-size="12" fill="#64748B" text-anchor="middle">
+    <text x="842" y="538">The App approves and</text>
+    <text x="842" y="555">queues the PR; the</text>
+    <text x="842" y="572">merge queue decides</text>
+    <text x="842" y="589">again before merging.</text>
+  </g>
+
+  <!-- Footer -->
+  <rect x="40" y="492" width="510" height="104" rx="10" fill="#F8FAFC" stroke="#E5E7EB" stroke-width="1.5"/>
+  <text x="56" y="518" font-size="13" font-weight="600" fill="#334155">Fails toward a person</text>
+  <g font-size="12" fill="#64748B">
+    <text x="56" y="540">A missing, stale or malformed input counts as absent.</text>
+    <text x="56" y="558">A gate error fails its check run. Policy files read at the base,</text>
+    <text x="56" y="576">so a pull request cannot change the rules it is judged by.</text>
+  </g>
+</svg>
