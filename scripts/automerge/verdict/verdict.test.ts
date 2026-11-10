@@ -99,9 +99,11 @@ describe("fetchReviewedHeads", () => {
   });
 });
 
-describe("readyAt", () => {
-  const change = (event: string, at: string): Json => ({ event, created_at: at });
+function change(event: string, at: string): Json {
+  return { event, created_at: at };
+}
 
+describe("readyAt", () => {
   it("follows draft changes, starting from the state before the first one", () => {
     const ready = readyAt([change("labeled", "2026-11-01T00:00:00Z"), change("ready_for_review", "2026-11-01T05:00:00Z"),
       change("convert_to_draft", "2026-11-01T08:00:00Z")], true);
