@@ -18,7 +18,7 @@ const dialogButton = (label: string) => [...dialog()?.querySelectorAll('button')
   .find(button => button.textContent === label)
 
 // Mounts the dialog while there is a target and drops it once closed, as GadgetEditor does.
-const Harness = ({ onDelete }: { onDelete: (id: number) => Promise<void> }) => {
+const Harness = ({ onDelete }: { onDelete: (id: number) => Promise<boolean> }) => {
   const [gadget, setGadget] = useState<GadgetSummary | null>(GADGET)
   return gadget && (
     <DeleteGadgetDialog gadget={gadget} onDelete={onDelete} onClosed={() => setGadget(null)} />
@@ -34,7 +34,7 @@ describe('DeleteGadgetDialog', () => {
     host?.remove()
   })
 
-  async function render(onDelete: (id: number) => Promise<void>) {
+  async function render(onDelete: (id: number) => Promise<boolean>) {
     host = document.createElement('div')
     document.body.append(host)
     root = createRoot(host)
@@ -42,7 +42,7 @@ describe('DeleteGadgetDialog', () => {
   }
 
   it('deletes the gadget once confirmed', async () => {
-    const onDelete = vi.fn<(id: number) => Promise<void>>(async () => {})
+    const onDelete = vi.fn<(id: number) => Promise<boolean>>(async () => true)
     await render(onDelete)
 
     expect(dialog()?.textContent).toContain('Delete “Ordinary”?')
@@ -55,8 +55,8 @@ describe('DeleteGadgetDialog', () => {
   })
 
   it('stays open and busy until the deletion settles', async () => {
-    const { promise, resolve } = Promise.withResolvers<void>()
-    await render(vi.fn<(id: number) => Promise<void>>(() => promise))
+    const { promise, resolve } = Promise.withResolvers<boolean>()
+    await render(vi.fn<(id: number) => Promise<boolean>>(() => promise))
 
     await act(async () => dialogButton('Delete')!.click())
 
@@ -64,13 +64,30 @@ describe('DeleteGadgetDialog', () => {
     expect(dialogButton('Delete')?.disabled).toBe(true)
     expect(dialogButton('Cancel')?.disabled).toBe(true)
 
-    await act(async () => resolve())
+    await act(async () => resolve(true))
 
     expect(dialog()).toBeNull()
   })
 
+  it('stays open to retry when the deletion fails', async () => {
+    const onDelete = vi.fn<(id: number) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    await render(onDelete)
+
+    await act(async () => dialogButton('Delete')!.click())
+
+    expect(dialog()?.textContent).toContain('Delete “Ordinary”?')
+    expect(dialogButton('Delete')?.disabled).toBe(false)
+
+    await act(async () => dialogButton('Delete')!.click())
+
+    expect(onDelete).toHaveBeenCalledTimes(2)
+    expect(dialog()).toBeNull()
+  })
+
   it('deletes nothing when cancelled', async () => {
-    const onDelete = vi.fn<(id: number) => Promise<void>>(async () => {})
+    const onDelete = vi.fn<(id: number) => Promise<boolean>>(async () => true)
     await render(onDelete)
 
     await act(async () => dialogButton('Cancel')!.click())

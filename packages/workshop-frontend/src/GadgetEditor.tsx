@@ -226,7 +226,7 @@ function PaneLabel({
     <div
       {...props}
       title={title}
-      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default"
+      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
       {LabelIcon
         ? <LabelIcon size={14} weight="bold" className="flex-shrink-0" />
@@ -1471,12 +1471,15 @@ export default function GadgetEditor() {
 
   // The subscription drops the deleted gadget, and the selection falls back past it on its own.
   const handleDeleteGadget = async (workpieceId: WorkpieceId) => {
-    if (!overseer) return
+    if (!overseer) return false
     const target = overseer.stub.getGadget(workpieceId)
     try {
       await target.remove()
-    } catch {
+      return true
+    } catch (err) {
+      console.error('Failed to delete gadget:', err)
       toasts.add({ title: 'Failed to delete gadget', variant: 'error' })
+      return false
     } finally {
       target[Symbol.dispose]()
     }
@@ -2108,7 +2111,9 @@ export default function GadgetEditor() {
               ) : selectedGadgetSummary ? (
                 <GadgetContextMenu
                   trigger={(
+                    // Focusable, so that the keyboard's menu key reaches it as it does a tab.
                     <PaneLabel
+                      tabIndex={0}
                       workpiece={selectedGadgetSummary}
                       title={selectedGadgetSummary.title}
                       badge={selectedGadgetSummary.chatId !== undefined ? 'Draft' : undefined}

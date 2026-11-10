@@ -181,7 +181,7 @@ vi.mock('./features/gadget-deletion/GadgetContextMenu', () => ({
 vi.mock('./features/gadget-deletion/DeleteGadgetDialog', () => ({
   DeleteGadgetDialog: ({ gadget, onDelete }: {
     gadget: GadgetSummary
-    onDelete: (id: WorkpieceId) => Promise<void>
+    onDelete: (id: WorkpieceId) => Promise<boolean>
   }) => <button type="button" onClick={() => void onDelete(gadget.id)}>confirm deleting {gadget.title}</button>,
 }))
 
@@ -520,6 +520,11 @@ describe('GadgetEditor, deleting a gadget', () => {
   // The pane names a lone gadget rather than tabbing it.
   it('offers the menu on the open gadget when it is the only one', async () => {
     await openWorkspace('trips', ['Itinerary'])
+
+    // The keyboard's menu key opens the menu of whatever has focus.
+    const name = container.querySelector<HTMLElement>('[title="Itinerary"]')!
+    act(() => name.focus())
+    expect(document.activeElement).toBe(name)
 
     await click('delete Itinerary')
     await click('confirm deleting Itinerary')

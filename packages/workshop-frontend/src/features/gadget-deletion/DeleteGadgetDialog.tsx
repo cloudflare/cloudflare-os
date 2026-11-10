@@ -15,10 +15,10 @@ export const DeleteGadgetDialog = ({
 }: {
   gadget: GadgetSummary
   /**
-   * Settles once the deletion has finished or failed, reporting a failure itself; the dialog
-   * stays open, busy, until then.
+   * Resolves to whether the gadget was deleted, reporting a failure itself. The dialog stays open,
+   * busy, until then, and stays open after a failure so the deletion can be retried.
    */
-  onDelete: (id: WorkpieceId) => Promise<void>
+  onDelete: (id: WorkpieceId) => Promise<boolean>
   onClosed: () => void
 }) => {
   const [open, setOpen] = useState(true)
@@ -28,10 +28,9 @@ export const DeleteGadgetDialog = ({
     if (busy) return
     setBusy(true)
     try {
-      await onDelete(gadget.id)
+      if (await onDelete(gadget.id)) setOpen(false)
     } finally {
       setBusy(false)
-      setOpen(false)
     }
   }
 
