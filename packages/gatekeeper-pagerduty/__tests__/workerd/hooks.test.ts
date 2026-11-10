@@ -3,6 +3,8 @@
 // webhook deliveries arrive through the worker's own fetch handler.
 
 import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { DELIVERED_RETENTION_MS } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { HookRegistry } from "@gadgets/gatekeeper-kit/hook-registry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiOrigin } from "../../src/pagerduty-env";
 import type { WireIncident } from "../../src/pagerduty-normalize";
@@ -347,6 +349,41 @@ describe("PagerDuty event hooks", () => {
       expect(await deliver(webhookEvent("incident.triggered", incident))).toBe(404);
     } finally {
       shared.PAGERDUTY_WEBHOOK_SECRET = SECRET;
+    }
+  });
+
+  it("leaves its alarm for forgetting its oldest delivered event, and none once it has forgotten them all", async () => {
+    const pd = new FakePagerDuty().install();
+    await subscribe(pd, { resourceKind: "account" });
+    expect(await deliver(webhookEvent("incident.triggered", pd.incident(SERVICE)))).toBe(204);
+    await settled();
+
+    await runDurableObjectAlarm(driver());
+    const scheduled = await runInDurableObject(driver(), async (_instance, state) => ({
+      alarm: await state.storage.getAlarm(),
+      delivered: [...state.storage.kv.list<{ deliveredAt?: number }>({ prefix: "msg:" })].flatMap(([, row]) => row.deliveredAt ?? []),
+    }));
+    // Not the fallback a minute out.
+    expect(scheduled.alarm).toBe(Math.min(...scheduled.delivered) + DELIVERED_RETENTION_MS);
+
+    await after(2 * DELIVERED_RETENTION_MS);
+    expect(await runInDurableObject(driver(), (_instance, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it("logs an alarm that fails, and runs it again a minute later", async () => {
+    const failing = vi.spyOn(HookRegistry.prototype, "run").mockRejectedValue(new Error("Storage is full."));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInDurableObject(driver(), (_instance, state) => state.storage.setAlarm(Date.now() + DELIVERED_RETENTION_MS));
+      const before = Date.now();
+      expect(await runDurableObjectAlarm(driver())).toBe(true);
+      const alarm = await runInDurableObject(driver(), (_instance, state) => state.storage.getAlarm());
+      expect(alarm).toBeGreaterThanOrEqual(before + 60_000);
+      expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);
+      expect(logged.mock.calls.map(([entry]) => entry)).toContainEqual(expect.objectContaining({ event: "hooks.alarm.failed" }));
+    } finally {
+      failing.mockRestore();
+      logged.mockRestore();
     }
   });
 });

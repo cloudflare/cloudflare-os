@@ -4,6 +4,7 @@
 
 import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { HookRegistry } from "@gadgets/gatekeeper-kit/hook-registry";
 import type { HookDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, expect, it, vi } from "vitest";
 import type { GitHubSubscribeOptions } from "../../src/types";
@@ -1806,4 +1807,42 @@ it("deletes a disconnected account's webhooks and delivers nothing more", async 
   expect(await github.deliver("issues", issues("opened", 42))).toEqual([404]);
   await expect(triage.enable()).rejects.toThrow("This GitHub account has been disconnected.");
   expect((await triage.read()).received).toEqual([]);
+});
+
+it("leaves its alarm at its next hourly check, and none once it has nothing to do", async () => {
+  const _github = new FakeGitHub(); // answers GitHub's API from here on
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  await after(HOUR, account);
+  const scheduled = await runInDurableObject(driver(account), async (_instance, state) =>
+    ({ alarm: await state.storage.getAlarm(), checkAt: state.storage.kv.get<number>("checkAt") }));
+  // Not the fallback a minute out.
+  expect(scheduled.alarm).toBe(scheduled.checkAt);
+  expect(scheduled.alarm).toBeGreaterThan(Date.now() + HOUR);
+
+  await triage.disable();
+  await runInDurableObject(driver(account), (_instance, state) => state.storage.setAlarm(Date.now() + HOUR));
+  await runDurableObjectAlarm(driver(account));
+  expect(await runInDurableObject(driver(account), (_instance, state) => state.storage.getAlarm())).toBeNull();
+});
+
+it("logs an alarm that fails, and runs it again a minute later", async () => {
+  const account = await connectAccount();
+  const failing = vi.spyOn(HookRegistry.prototype, "run").mockRejectedValue(new Error("Storage is full."));
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await runInDurableObject(driver(account), (_instance, state) => state.storage.setAlarm(Date.now() + HOUR));
+    const before = Date.now();
+    expect(await runDurableObjectAlarm(driver(account))).toBe(true);
+    const alarm = await runInDurableObject(driver(account), (_instance, state) => state.storage.getAlarm());
+    expect(alarm).toBeGreaterThanOrEqual(before + 60_000);
+    expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);
+    expect(logged.mock.calls.map(([entry]) => entry)).toContainEqual(expect.objectContaining({ event: "hooks.alarm.failed" }));
+  } finally {
+    failing.mockRestore();
+    logged.mockRestore();
+  }
 });

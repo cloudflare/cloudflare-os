@@ -4,6 +4,7 @@
 
 import {env} from "cloudflare:workers";
 import {SELF, runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
+import {HookRegistry} from "@gadgets/gatekeeper-kit/hook-registry";
 import {SignJWT, exportJWK, generateKeyPair} from "jose";
 import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GmailGatekeeperImplProps} from "../../src/gmail";
@@ -729,4 +730,38 @@ it.each([
 
   expect(await receivedIds(ada)).toEqual([message]);
   expect(await receivedIds(bob)).toEqual([message]);
+});
+
+const alarmTime = () => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => state.storage.getAlarm());
+
+it("leaves its alarm at its next history read, and none once its watch has lapsed unused", async () => {
+  mockGmail();
+  const ada = await connect();
+  await enable(ada);
+
+  await runDurableObjectAlarm(driver());
+  // The hourly read, not the fallback a minute out.
+  expect(await alarmTime()).toBe(await driverStorage<number>("syncAt"));
+  expect(await alarmTime()).toBeGreaterThan(Date.now() + 30 * MINUTE);
+
+  await ada.hooks.chatDisableHook();
+  await later(8 * 24 * HOUR);
+  expect(await alarmTime()).toBeNull();
+});
+
+it("logs an alarm that fails, and runs it again a minute later", async () => {
+  mockGmail();
+  const failing = vi.spyOn(HookRegistry.prototype, "run").mockRejectedValue(new Error("Storage is full."));
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => state.storage.setAlarm(Date.now() + HOUR));
+    const before = Date.now();
+    expect(await runDurableObjectAlarm(driver())).toBe(true);
+    expect(await alarmTime()).toBeGreaterThanOrEqual(before + MINUTE);
+    expect(await alarmTime()).toBeLessThanOrEqual(Date.now() + MINUTE);
+    expect(logged.mock.calls.map(([entry]) => entry)).toContainEqual(expect.objectContaining({event: "gmail.hooks.alarm.failed"}));
+  } finally {
+    failing.mockRestore();
+    logged.mockRestore();
+  }
 });

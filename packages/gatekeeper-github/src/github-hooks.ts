@@ -91,6 +91,7 @@ const WEBHOOK_EVENTS: Record<GitHubEventKind, string[]> = {
 
 const DISCONNECTED = "This GitHub account has been disconnected.";
 
+const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 /** How often the driver checks its webhooks on GitHub (see #checkWebhook). */
 const CHECK_INTERVAL_MS = HOUR_MS;
@@ -308,9 +309,14 @@ export class GitHubHookDriver extends DurableObject<Env> {
    * - delivering each queued event whose (re)try time has come, and forgetting finished ones.
    */
   async alarm(): Promise<void> {
-    if ((this.ctx.storage.kv.get<number>("checkAt") ?? Infinity) <= Date.now()) await this.#checkWebhooks();
-    await this.#hooks.run(Date.now());
-    await this.#reschedule();
+    await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+    try {
+      if ((this.ctx.storage.kv.get<number>("checkAt") ?? Infinity) <= Date.now()) await this.#checkWebhooks();
+      await this.#hooks.run(Date.now());
+      await this.#reschedule();
+    } catch (error) {
+      logger.error("GitHub hook driver alarm failed", { event: "hooks.alarm.failed", error }); // the fallback alarm stands
+    }
   }
 
   /**
