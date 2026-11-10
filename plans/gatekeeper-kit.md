@@ -2443,7 +2443,7 @@ export interface HookDelivery<Hook extends RpcTarget, Message> extends RpcTarget
 export type HookCapabilities<Hook extends RpcTarget, Message> = {
   delivery: RpcStub<HookDelivery<Hook, Message>>; initiator: Fetcher<HookInitiator<Hook>> };
 export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
-  constructor(kv: KvScannable, onDrop: () => void);
+  constructor(kv: KvScannable, options: { onRunReport: (report: RunReport) => void });
   set(key: string, registration: Registration, capabilities: HookCapabilities<Hook, Message>): void;
   remove(key: string): Registration | undefined;
   entries(): [key: string, registration: Registration][];
@@ -2457,8 +2457,10 @@ The drivers that queue provider pushes (GitHub, Gmail, Chat, Outlook) each kept 
 things by hand: a `reg:{key}` record the driver filters events by, a `caps:{key}` record holding the
 hook's stubs, and one delivery — start a firing through the `HookInitiator`, hand it with the
 message to the binding's delivery stub, dispose what was read. `HookRegistry` is that copy made
-once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, bounded runs)
-the same drivers already shared. The keys are the ones they wrote, so the ports migrated nothing.
+once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, and attempts
+counted before the call, with a 30 s dispatch cutoff and a 4-minute deadline; see
+[`docs/hook-delivery.md`](../docs/hook-delivery.md)) the same drivers already shared. The keys are
+the ones they wrote, so the ports migrated nothing.
 Each now aliases its delivery interface to `HookDelivery`, calls `set()` inside
 `ctx.storage.transactionSync()`, and keeps its own alarm.
 
