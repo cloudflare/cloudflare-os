@@ -156,18 +156,23 @@ export interface WorktreeReplicator extends RpcTarget {
    * stored in the workspace. So `commitHistory` of kind `full` means the history down to that
    * cutoff, as a clone without `--depth` gets.
    *
+   * A pull of commits only the workspace has always reaches exactly that cutoff, whatever
+   * `commitHistory` asks for: a shallower request (e.g. `git clone --depth=1`) still gets all of
+   * them, and a deeper one gets no more. Keeping the replica's shallow boundary at the cutoff lets
+   * later fetches of older history be served whole by the connected repository. The transfer's
+   * `shallowInfo()` reports the boundary the client got, as Git's `shallow-info` does.
+   *
    * The trees returned by `snapshot()` and `WorktreeCommand.submit()` can be fetched by ID during
    * the execution that received them; no other tree can. Fetch such trees on their own, from a
    * replica that holds some commit of the head's history (e.g. after the clone), passing that
    * commit in `haves`: the pack leaves out what its tree already has.
    *
-   * Passing a Worktree stub permits fetching any commit in its head's history, including history
-   * beyond the cutoff (e.g. a build script running `git fetch --depth=1 origin <sha>`, or
-   * `git fetch --deepen=10`): such a fetch is served by a connected repository that has the
-   * history, once it confirms the commit is in it. Other commits are refused. So is a single
-   * fetch that needs both commits only the workspace has and more history from a connected
-   * repository; fetching the current head first avoids that. (A clone deeper than the cutoff is
-   * given less history instead.)
+   * Any commit in the head's history can be fetched, including history beyond the cutoff (e.g. a
+   * build script running `git fetch --depth=1 origin <sha>`, or `git fetch --deepen=10`): such a
+   * fetch is served by a connected repository that has the history, once it confirms the commit
+   * is in it. Other commits are refused. So is a single fetch that needs both commits only the
+   * workspace has and more history from a connected repository; fetching the current head first
+   * avoids that.
    *
    * Filters may be ignored: the pack may hold more than they ask for.
    */
