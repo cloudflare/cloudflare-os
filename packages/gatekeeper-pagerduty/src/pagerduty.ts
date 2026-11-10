@@ -399,6 +399,7 @@ export class UserAccount extends DurableObject<Env> {
       // `oauthClient()` refused to exchange the code without a client ID.
       identity = await fetchUser(grant.accessToken, await verifyIdToken(tokens.idToken, this.env.CLIENT_ID!));
     } catch (error) {
+      logger.error("could not verify who authorized a PagerDuty connection", { event: "pagerduty.oauth.identity.failed", error });
       throw new Error("Could not read which PagerDuty user authorized this connection. Please try again.",
         { cause: error });
     }

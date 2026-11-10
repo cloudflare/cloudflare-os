@@ -10,7 +10,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { SignJWT, base64url, type JWK } from "jose";
 import { vi } from "vitest";
 import { identityOf } from "../../src/pagerduty-credentials";
-import { ID_TOKEN_ISSUER, SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
+import { SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
 import type {
   WireAlert, WireAssignment, WireIncident, WireLogEntry, WireNote, WireOnCall, WireOverride, WirePriority, WireRef, WireSchedule,
   WireService, WireShift, WireShiftOverride, WireTeam, WireUser,
@@ -19,6 +19,8 @@ import SIGNING_JWK from "./id-token-key.json";
 import type { GatekeeperProps, Outcome, Step } from "./worker";
 
 export const IDENTITY = "https://identity.pagerduty.com";
+/** The `iss` PagerDuty's ID tokens carry. Spelled out, so a wrong `ID_TOKEN_ISSUER` fails the suite. */
+const ISSUER = "https://app.pagerduty.com/global/oauth/anonymous";
 
 // A fixed RS256 signing key, as PagerDuty signs with, so the gatekeeper's cached key set stays valid
 // across every suite.
@@ -224,7 +226,7 @@ export class FakePagerDuty {
     const claims = this.claims(who, {
       user_id: who.id, account_id: who.account.id, subdomain: who.account.subdomain,
       region: who.account.region === "eu" ? "EU" : "UnitedStates",
-      iss: ID_TOKEN_ISSUER, aud: [apiOrigin(who.account.region), "test-client-id"], iat: now, exp: now + 3600,
+      iss: ISSUER, aud: [apiOrigin(who.account.region), "test-client-id"], iat: now, exp: now + 3600,
     });
     const idToken = await new SignJWT(claims)
       .setProtectedHeader({ alg: "RS256", kid: SIGNING_KEY.kid })
