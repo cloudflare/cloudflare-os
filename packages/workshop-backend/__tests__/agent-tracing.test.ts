@@ -48,9 +48,19 @@ interface OverseerInternals {
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
   drainAutoApprovals(gatekeeperId: number): Promise<void>;
   getGatekeeperFacet(): Promise<{ applyAction(): Promise<void> }>;
+  // Calls a turn's setup waits on before its first model request.
+  prepareChatBindings: SetupCall;
+  getChatAttachmentData: SetupCall;
+  getInstanceInstructions: SetupCall;
+  describeStandardFormats: SetupCall;
+  listConnectableVendors: SetupCall;
   applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
       : Promise<void>;
 }
+
+type SetupCall = (...args: unknown[]) => Promise<unknown>;
+type SetupCallName = { [K in keyof OverseerInternals]: OverseerInternals[K] extends SetupCall
+  ? SetupCall extends OverseerInternals[K] ? K : never : never }[keyof OverseerInternals];
 
 interface AiModel {
   profile: AiChatAuthorInfo;
@@ -168,6 +178,8 @@ interface TurnOptions {
   usageLimited?: boolean;
   // Who starts the turn: the owner by default, or a gadget, as for a spawned agent.
   initiator?: AiChatAuthorInfo;
+  // Seeds the chat's messages in place of the owner's one question, and may replace hooks.
+  seed?: (impl: OverseerInternals) => void;
 }
 
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
@@ -176,6 +188,10 @@ function startTurn(responses: (() => Response)[], {
   config = { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
   usageLimited = false,
   initiator = OWNER,
+  seed = impl => impl.storage.chats.put({
+    chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
+    author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
+  }),
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
   let notifications: [string, UserNotification][] = [];
@@ -203,10 +219,7 @@ function startTurn(responses: (() => Response)[], {
       id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
       activeAgent: MODEL,
     });
-    impl.storage.chats.put({
-      chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
-      author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
-    });
+    seed(impl);
     impl.startAgent(CHAT_ID, { profile: MODEL, config }, initiator, INITIATOR_USER_ID);
     await impl.waitForAllAgentsToComplete();
   });
@@ -386,6 +399,53 @@ describe("agent tracing", () => {
       expect(span.attributes["cloudflare.agents.canceled"]).toBe(true);
       expect(span.attributes["error.type"]).toBeUndefined();
     }
+  });
+
+  // Setup has no model request for Stop to abort, so the turn reads the signal between its steps.
+  // Each case holds one step, stops the turn, lets the step answer, and names the next call the
+  // turn would have made.
+  it.each<{ held: SetupCallName, next: SetupCallName, messages: number }>([
+    // With nothing to replay, the next call after the bindings is the prompt's first.
+    { held: "prepareChatBindings", next: "getInstanceInstructions", messages: 0 },
+    { held: "getChatAttachmentData", next: "getInstanceInstructions", messages: 2 },
+    { held: "describeStandardFormats", next: "listConnectableVendors", messages: 1 },
+  ])("stops a turn held in $held before it calls $next", async ({ held, next, messages }) => {
+    let entered = Promise.withResolvers<void>();
+    let answer = Promise.withResolvers<void>();
+    let reachedNext = vi.fn();
+    let turn = startTurn([], { seed: impl => {
+      for (let index = 0; index < messages; index++) {
+        impl.storage.chats.put({
+          chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(index),
+          author: OWNER, type: "message", message: "Please look.",
+          // The first message's attachment is what its replay loads.
+          attachments: index === 0
+            ? [{ id: crypto.randomUUID(), name: "a.txt", mimeType: "text/plain", size: 1 }]
+            : undefined,
+        });
+      }
+      let heldCall = impl[held].bind(impl);
+      impl[held] = async (...args) => {
+        entered.resolve();
+        await answer.promise;
+        return heldCall(...args);
+      };
+      let nextCall = impl[next].bind(impl);
+      impl[next] = (...args) => {
+        reachedNext();
+        return nextCall(...args);
+      };
+    } });
+    await entered.promise;
+    await inOverseer(turn.workspace, impl => impl.cancelAgent(CHAT_ID));
+    answer.resolve();
+
+    // No chat span: the turn made no model request (one would also fail, with no response stubbed).
+    let spans = await turnSpans(turn);
+    expect(spans.map(span => span.name)).toEqual(["invoke_agent workshop-agent"]);
+    expect(spans[0].attributes["cloudflare.agents.canceled"]).toBe(true);
+    expect(spans[0].attributes["error.type"]).toBeUndefined();
+    expect(reachedNext).not.toHaveBeenCalled();
   });
 
   it("traces approval of actions an agent submits", async () => {

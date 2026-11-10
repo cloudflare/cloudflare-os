@@ -2138,6 +2138,10 @@ async function runAgentPass(
   // the prompt doesn't list (see below), so the prompt content derived from it stays in the
   // cacheable prefix; chat-local bindings accumulate on top during replay.
   let seedBindings = await hooks.prepareChatBindings(chatId, chatMessages);
+  // Setup waits on other objects and nothing below reads the signal until the first model
+  // request, so Stop is honored between its steps: here, per replayed message, and before the
+  // vendor list.
+  abortSignal.throwIfAborted();
   for (let seed of seedBindings) {
     if (!chatBindings.has(seed.name)) {
       chatBindings.set(seed.name, {type: "workpiece", id: seed.target});
@@ -2198,6 +2202,7 @@ async function runAgentPass(
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
   for (let [msgIndex, msg] of chatMessages.entries()) {
+    abortSignal.throwIfAborted();
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
     switch (msg.type) {
@@ -3228,6 +3233,7 @@ async function runAgentPass(
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
     // vendor's resource URL patterns on demand via listConnectableResources.
+    abortSignal.throwIfAborted();
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
