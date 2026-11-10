@@ -748,6 +748,10 @@ export function sanitizeMessageFormatRefs(
 // collaborator roles.
 type SessionKind = CollaboratorRole | "owner";
 
+// Who a gadget UI connection belongs to, as the gadget's startSession() receives it (see
+// OverseerImpl.getGadgetFacet). `id` is the profile ID and `name` the display name.
+type GadgetViewer = {id: string, name: string, role: CollaboratorRole | "owner"};
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -5062,10 +5066,14 @@ class OverseerImpl implements AgentHooks {
   // mints; omitted for the owner's and for internal callers (binding loopbacks already live
   // inside a counted session).
   //
+  // `viewer` is whose UI connection the stub is, passed only by the connectToGadget mints. The
+  // gadget's startSession() receives it (null without one) in place of whatever the caller
+  // passed, and no other stub reaches a Gadget's methods by name, so a gadget can trust it.
+  //
   // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
   // look like an RpcTarget instead.
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind)
-      : Promise<RpcStub<any>> {
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind,
+      viewer?: GadgetViewer): Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
 
@@ -5102,6 +5110,7 @@ class OverseerImpl implements AgentHooks {
         //   possibly a runtime bug which needs investigation.
         // TODO: Fix exception reporting it tail workers so we can remove this hack.
         return (...args: any[]) => {
+          if (prop === "startSession") args = [viewer ?? null];
           let result: Promise<any> = Reflect.apply(method, target, args);
           return result.catch((err: any) => {
             let msg = err;
@@ -13758,9 +13767,11 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       chat_id: chatId,
       interaction_type: "gadget_ui_connected",
     });
+    let {id, name} = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     // The facet stub counts exactly as this capability does (joinedAs): it can outlive this
     // object, and it is the very stub a hook-enable widening's data flows through.
-    return this.impl.getGadgetFacet(this.id, chatId, this.joinedAs);
+    return this.impl.getGadgetFacet(this.id, chatId, this.joinedAs,
+        {id, name, role: this.clientUserId === this.impl.ownerId ? "owner" : "build"});
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
@@ -14038,9 +14049,10 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       user_id: this.#clientUser.id.toString(),
       interaction_type: "gadget_ui_connected",
     });
+    let {id, name} = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     // The facet stub counts as a "use" session for its own lifetime, like this interface: it can
     // outlive this object, and it is the very stub a hook-enable widening's data flows through.
-    return this.impl.getGadgetFacet(this.id, undefined, "use");
+    return this.impl.getGadgetFacet(this.id, undefined, "use", {id, name, role: "use"});
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
