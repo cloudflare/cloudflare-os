@@ -48,7 +48,9 @@ When a change needs human judgment, add a standalone line to the review summary 
 
 - a design choice: a new mechanism, abstraction, pattern or public API shape;
 - capability semantics: authority, ambience, approval, sharing;
-- text that agents read: `types.d.ts`, tool descriptions, prompts;
+- text that agents read at runtime: `types.d.ts`, tool descriptions, prompts. An edit under
+  `.agents/skills/` is not in this item: review it like code (it must match the code it describes),
+  and write `NEEDS-A-PERSON` for it only when it changes capability or approval behavior;
 - a fact or decision the diff cannot settle: whether a migration has shipped, whether stored records
   in an older shape still exist, or whether to drop handling for them (no release history in this
   repository tells you);
@@ -134,17 +136,28 @@ Report a failure in these areas at P1, or P0 for data loss or a security hole.
 
 ## Gatekeepers
 
-Beyond correctness, pressure-test the agent-facing API
-(`packages/gatekeeper-*/src/*types.d.ts`): does the shape make sense, does it cover the most common
-user stories, what would you do differently? Check that the seams (resource granularities, bindings,
-sessions) partition authority along the lines users grant. The checklist is "Reviewing a
-gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
+### Reviewing a gatekeeper
 
-- Check every action's `autoApprovable` verdict against that skill's "Action kinds and
-  auto-approval" policy.
-- A new gatekeeper meets that checklist's "Observer protocol" items, including a read-only
-  `getHistoricalSubresources()` that returns `[]`. The `Gatekeeper` interface enforces none of them,
-  so code that type-checks can still break them.
+Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
+
+- **Shape.** Read `types.d.ts` as the agent does, as its only documentation. Does the shape make sense? What would you do differently?
+- **User stories.** List the most common things a user would ask an agent to do with this service and walk each through the API. Flag any that are impossible, need sequential round trips that promise pipelining can't remove, or need knowledge the JSDoc doesn't give. Flag dead ends too: anything the grant includes that the agent can't navigate to, such as child pages it can list but not open.
+- **Seams.** Check that resource types, bindings and sessions partition authority along the lines users actually grant:
+  - Each `getSupportedResources()` granularity is a grant a user would make, and together they cover the common ones (broad and narrow).
+  - A narrow binding's session reaches nothing outside its resource: sub-resources come from stubs on their parent, and no method or option field (`parentId`, `projectId`) takes an ID that escapes the binding.
+  - Each method sits on the object whose authority it needs. A cross-resource operation (move, copy, link) must not quietly require, or grant, a broader binding than the user picked.
+  - Each binding's types expose only what that binding can do and stay small, and its reported resources and verifier checks fit that partition (see [Choosing a strategy](.agents/skills/write-gatekeeper/SKILL.md#choosing-a-strategy-per-resource-type--binding)).
+
+- **Observer protocol.** For new gatekeepers, reject any of the following omissions even if the code type-checks:
+  - Every read that returns information to its caller explicitly reports its dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. [Simulated](.agents/skills/write-gatekeeper/SKILL.md#simulation) reads report every real resource their data came from plus the containers the simulated view places it in; only caller-written values and provisional IDs add none, pending permission changes relax nothing, and each read authorizes through the reading session's own queue.
+  - No access requirement exists only in `addObserver()`; `verifyObserverAccess()` handles every reported kind, checks all IDs per observer, denies unauthorized accounts, and propagates indeterminate failures.
+  - Grant scope, disclosure dependencies, and oracle strength are reviewed separately. Account discovery, item/member reads, derived results, and descendant capabilities may need different strategies within one binding; metadata visibility must not stand in for content access.
+  - `getHistoricalSubresources()` exists and returns `[]` without reading or keeping any observer state; `addObserver(id, verifier)` and `removeObserver(id)` are no-ops.
+  - No new observer rosters, stored verifier tracking, observed-set logs, `excludeObservers`, or legacy trackers.
+  - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
+  - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
+  - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
+- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 - An existing gatekeeper's migration keeps the old enforcement until every affected read reports
   complete requirements and a shipped kernel importer has written the complete historical
   requirements from `getHistoricalSubresources()` to the observer ledger. The kernel does not read
@@ -152,6 +165,32 @@ gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
 - A fan-out where one failed item must not fail the rest (a catalog, a menu, a list built from many
   sources) uses `Promise.allSettled`, not `Promise.all` (P2; P1 when one failing source empties the
   list for all users).
+
+### Action kinds and auto-approval
+
+Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. Nothing auto-applies until the user enables a rule for the kind; the verdict says whether honoring it is safe for *this* action.
+
+**The default is `true`.** Use `false` only when the action:
+
+1. deletes or removes content (its restore counterpart is true);
+2. sends content as the user to people outside the bound resource;
+3. spends money or billed credits;
+4. runs arbitrary code, queries or service calls where one kind covers both benign and destructive effects;
+5. passes a governance gate (merge, approving review, push to a default or protected branch, deploy, publish);
+6. is barred from automation by provider policy;
+7. changes permissions, sharing or membership.
+
+Exceptions, kept `true` by decision although a rule covers them; add one only with the maintainers' agreement:
+
+- Gmail's trash, spam, draft delete and label delete (rule 1): routine mailbox upkeep, and trash and spam are undone in Gmail.
+- GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
+- X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
+
+Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
+
+Where the verdict depends on the payload, compute it instead of a blanket `false`: per payload in a hand-built `ActionDescription` (`autoApprovalOf` in `packages/gatekeeper-github/src/github.ts`), or in the kit as sibling definitions, one `true` and one `false`, that the session picks between at submit (`editSheetValues` and `updateSpreadsheet` in `packages/gatekeeper-google/src/sheets-actions.ts`). The existing definition keeps its name, since stored records resolve by it. When the facts behind a `true` can change before apply (an event gaining attendees), re-check at apply time.
+
+A newly `true` action gets a new tag, never one that already has a `true` action: users' stored rules would silently start covering it.
 
 ## Logging, errors and secrets
 
