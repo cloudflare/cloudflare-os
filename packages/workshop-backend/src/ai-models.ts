@@ -763,6 +763,7 @@ function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | 
 // becoming U+FFFD. pi strips lone surrogates from the text it sends but not from tool-call
 // arguments, and a provider rejects a request holding one. A model can emit one in its arguments,
 // and every later request of the chat (compaction's too) resends them as stored.
+// TODO: remove once pi sanitizes tool-call arguments (earendil-works/pi#12014).
 function wellFormedToolCalls(message: Message): Message {
   if (message.role !== "assistant") return message;
   return {...message, content: message.content.map(block => block.type !== "toolCall" ? block
