@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ComponentProps, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
@@ -208,13 +208,15 @@ const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
 ]
 
 // Names what the pane is showing. `icon` is for the workspace-level views (Activity); a workpiece
-// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon.
+// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon. Other
+// props go to its element, so that a gadget's label can open the gadget's menu.
 function PaneLabel({
   icon: LabelIcon,
   workpiece,
   title,
   badge,
-}: {
+  ...props
+}: Omit<ComponentProps<'div'>, 'title'> & {
   icon?: Icon
   workpiece?: WorkpieceSummary
   title: string
@@ -222,6 +224,7 @@ function PaneLabel({
 }) {
   return (
     <div
+      {...props}
       title={title}
       className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default"
     >
@@ -2102,13 +2105,20 @@ export default function GadgetEditor() {
                   onSelect={handleSelectWorkpiece}
                   onDelete={requestGadgetDeletion}
                 />
-              ) : selectedWorkpieceSummary && (
-                <PaneLabel
-                  workpiece={selectedWorkpieceSummary}
-                  title={selectedWorkpieceSummary.title}
-                  badge={selectedWorkpieceSummary.type === 'gadget' &&
-                      selectedWorkpieceSummary.chatId !== undefined ? 'Draft' : undefined}
+              ) : selectedGadgetSummary ? (
+                <GadgetContextMenu
+                  trigger={(
+                    <PaneLabel
+                      workpiece={selectedGadgetSummary}
+                      title={selectedGadgetSummary.title}
+                      badge={selectedGadgetSummary.chatId !== undefined ? 'Draft' : undefined}
+                    />
+                  )}
+                  onDelete={() => requestGadgetDeletion(selectedGadgetSummary)}
                 />
+              ) : selectedWorkpieceSummary && (
+                // A worktree, which is its chat's own and goes with it.
+                <PaneLabel workpiece={selectedWorkpieceSummary} title={selectedWorkpieceSummary.title} />
               )}
             </div>
 

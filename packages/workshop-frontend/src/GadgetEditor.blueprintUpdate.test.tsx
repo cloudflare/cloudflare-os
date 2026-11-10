@@ -468,15 +468,16 @@ describe('GadgetEditor, deleting a gadget', () => {
   const original = workspace.overseer
   let removed: string[]
 
-  // Workspaces number their gadgets alike, so each of these has a gadget 1 and a gadget 2.
-  function overseerFor(workspaceId: string, titles: [string, string]): typeof original {
+  // Workspaces number their gadgets alike, from 1, so these share ids.
+  function overseerFor(workspaceId: string, titles: string[]): typeof original {
     const disposable = { [Symbol.dispose]() {} }
     return {
       stub: {
         ...original.stub,
         subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
-          await subscriber.entry({ id: 1, type: 'gadget', title: titles[0], commitId: 'head' })
-          await subscriber.entry({ id: 2, type: 'gadget', title: titles[1], commitId: 'head' })
+          for (const [index, title] of titles.entries()) {
+            await subscriber.entry({ id: index + 1, type: 'gadget', title, commitId: 'head' })
+          }
           await subscriber.ready()
           return disposable
         },
@@ -488,7 +489,7 @@ describe('GadgetEditor, deleting a gadget', () => {
     }
   }
 
-  async function openWorkspace(workspaceId: string, titles: [string, string]) {
+  async function openWorkspace(workspaceId: string, titles: string[]) {
     mocks.workspaceId = workspaceId
     workspace.overseer = overseerFor(workspaceId, titles)
     await openEditor('desktop')
@@ -514,6 +515,16 @@ describe('GadgetEditor, deleting a gadget', () => {
     await click('confirm deleting Packing')
 
     expect(removed).toEqual(['trips:2'])
+  })
+
+  // The pane names a lone gadget rather than tabbing it.
+  it('offers the menu on the open gadget when it is the only one', async () => {
+    await openWorkspace('trips', ['Itinerary'])
+
+    await click('delete Itinerary')
+    await click('confirm deleting Itinerary')
+
+    expect(removed).toEqual(['trips:1'])
   })
 
   // Back, or a notification's "Open task", moves the editor to another workspace without
