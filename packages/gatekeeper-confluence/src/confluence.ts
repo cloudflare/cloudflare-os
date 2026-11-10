@@ -1025,12 +1025,13 @@ function disposeQueue(stub: RpcStub<ApprovalQueue>): void {
  */
 class BindingSubresources {
   readonly #baseline: ConfluenceSubresource;
-  readonly #opened: ConfluenceObservedSet[];
+  /** The spaces this one was opened through, which its every read depends on. */
+  readonly opened: readonly ConfluenceObservedSet[];
   readonly #required: string[];
 
-  constructor(baseline: ConfluenceSubresource, opened: ConfluenceObservedSet[] = []) {
+  constructor(baseline: ConfluenceSubresource, opened: readonly ConfluenceObservedSet[] = []) {
     this.#baseline = baseline;
-    this.#opened = opened;
+    this.opened = opened;
     this.#required = [
       formatConfluenceSubresource(baseline),
       ...opened.map(set => observedSetSubresource(baseline.cloudId, set)),
@@ -1042,7 +1043,7 @@ class BindingSubresources {
    * on it too, even one revealing nothing narrower.
    */
   within(opened: ConfluenceObservedSet[]): BindingSubresources {
-    return new BindingSubresources(this.#baseline, [...this.#opened, ...opened]);
+    return new BindingSubresources(this.#baseline, [...this.opened, ...opened]);
   }
 
   /** The subresources of a read that reveals `revealed`: the baseline first, then each one. */
@@ -1251,6 +1252,7 @@ class SpaceSessionImpl extends RpcTarget implements ConfluenceSpaceSession {
       : { type: "space", spaceKey: this.#spaceKey };
     await stageAction(this.#store, this.#approvalQueue, {
       type: "createContent", provisionalId, kind, parent, title, content, status: status ?? "current",
+      sources: [...this.#subresources.opened],
     });
     return new ContentSessionImpl(
       this.#store, this.#approvalQueue.dup(), this.#webBase, provisionalId, this.#subresources);
@@ -1282,7 +1284,18 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
   #isProvisional(): boolean { return ConfluenceStore.isProvisional(this.#store.resolveId(this.#contentId)); }
   #pending() { return this.#store.pendingForContent(this.#contentId); }
   #ref(): string { return this.#store.resolveId(this.#contentId); }
-  #sets(): ConfluenceObservedSet[] { return contentSets([this.#ref()]); }
+  /**
+   * The content this session's reads reveal. A pending creation's are the gatekeeper's own staging,
+   * but they show what its creating session read for it (the space key of the space or parent page
+   * it was created in), and its handle can reach it from a session that never read those, so they
+   * report the sources its creation recorded.
+   */
+  #sets(): ConfluenceObservedSet[] {
+    const ref = this.#ref();
+    if (!ConfluenceStore.isProvisional(ref)) return contentSets([ref]);
+    const create = this.#store.createActionFor(this.#contentId)?.action;
+    return create?.type === "createContent" ? [...create.sources ?? []] : [];
+  }
 
   async #base(): Promise<ContentResponse | null> {
     return this.#isProvisional() ? null : await this.#store.getContentResponse(this.#contentId);
@@ -1383,6 +1396,7 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
       type: "createContent", provisionalId, kind: "page",
       parent: { type: "page", parentId: this.#contentId, spaceKey },
       title: options.title, content: options.content, status: options.status ?? "current",
+      sources: [...new Set([...this.#subresources.opened, ...this.#sets()])],
     });
     return new ContentSessionImpl(
       this.#store, this.#approvalQueue.dup(), this.#webBase, provisionalId, this.#subresources);

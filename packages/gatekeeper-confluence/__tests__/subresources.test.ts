@@ -178,6 +178,34 @@ describe("subresources reported by reads", () => {
       ["site/cloud-1/content/200"],
     ]);
   });
+
+  it("reports what a pending creation's parent revealed, from whichever session reaches it", async () => {
+    answer(`${API}/spaces?keys=ENG&limit=1&include-icon=true`,
+      { results: [{ id: "10", key: "ENG", name: "Eng" }] });
+    answer(`${API}/pages/300?body-format=storage`,
+      { id: "300", title: "Merger", _links: { webui: "/spaces/ENG/pages/300" } });
+    const binding = gatekeeper(ConfluenceSiteGatekeeperImpl);
+    const creator = await binding.startSession(makeQueue() as never);
+    const child = await (await creator.getContent("300")).createChildPage({ title: "Plan" });
+    const post = await (await creator.getSpace("ENG")).createBlogPost({ title: "News" });
+    const grandchild = await child.createChildPage({ title: "Detail" });
+    expect([await child.getMetadata(), await post.getMetadata(), await grandchild.getMetadata()]
+      .map(meta => meta.id)).toEqual(["~1", "~2", "~3"]);
+
+    // Another session reaching the drafts by handle never read the parent page or opened the space.
+    const queue = makeQueue();
+    const reader = await binding.startSession(queue as never);
+    const childMeta = await (await reader.getContent("~1")).getMetadata();
+    await (await reader.getContent("~2")).getMetadata();
+    await (await reader.getContent("~3")).getMetadata();
+
+    expect(childMeta.spaceKey).toBe("ENG");
+    expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
+      ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/content/300"],
+      ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/space/10"],
+      ["site/cloud-1"], ["site/cloud-1", "site/cloud-1/content/300"],
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
