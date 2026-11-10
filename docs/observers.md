@@ -967,10 +967,12 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
   recorded as requirements on the audit record. A denial or failed check refuses the read and
   records nothing.
 - **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
-- **`[GLOBAL_SUBRESOURCE_ID]` (`["global"]`):** the gatekeeper verifies that the observer's chosen
-  account for the vendor can read everything disclosed on the one service instance the deployed
-  Worker's configuration fixes. The kernel treats it as an ordinary requirement. See the kit's
-  [connection-only recipe](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
+- **`GLOBAL_SUBRESOURCE_ID` (`"global"`):** the gatekeeper verifies the observer's own baseline
+  access to the one service instance fixed by the deployed Worker's configuration. Report it
+  alone only when instance access covers the whole disclosure; otherwise add the resource,
+  field, or private-account IDs that restrict the answer. The kernel treats it as an ordinary
+  requirement: `global` AND every additional requirement must pass, never an allow shortcut.
+  See the kit's [instance-wide access recipe](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
 runs first).

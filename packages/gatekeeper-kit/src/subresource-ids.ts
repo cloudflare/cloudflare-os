@@ -1,15 +1,16 @@
-/** The global connection requirement and canonical, structured resource IDs. */
+/** The global instance-access requirement and canonical, structured resource IDs. */
 
 const SEPARATOR = "/";
 
 /**
- * Connection-only requirement, for a gatekeeper whose deployed Worker configuration fixes the one
- * service instance every account connects to: `verifyObserverAccess()` must establish that the
- * observer's own account can read everything disclosed there. When accounts choose their instance,
- * report a structured instance ID instead. Report it on every such disclosure; `[]` means
- * unrestricted. It is not a wildcard or grant and cannot replace independent membership, resource
- * ACLs, or private-account checks. Compare it directly before {@link parseSubresourceId}, which
- * rejects it.
+ * Instance-wide access requirement for the one service instance fixed by the deployed Worker's
+ * configuration. `verifyObserverAccess()` checks the observer's own live instance-access
+ * entitlement. Report it alone only when that entitlement covers the whole disclosure; otherwise
+ * combine it with resource, field, or private-account IDs. Every reported requirement must pass:
+ * this sentinel is not a wildcard or grant and never replaces those independent checks.
+ * When accounts choose their instance, report a structured instance ID instead. Report the
+ * requirement on every disclosure depending on instance access; `[]` adds no requirement.
+ * Compare it directly before {@link parseSubresourceId}, which rejects it.
  */
 export const GLOBAL_SUBRESOURCE_ID = "global";
 

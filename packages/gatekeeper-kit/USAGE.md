@@ -733,9 +733,9 @@ legacy observer methods:
   ones an earlier read already reported, simulated reads included. Workshop records requirements
   per chat or gadget, not per binding.
 - `[]` adds **no requirement**; requirements already recorded stay in force. It never means a
-  binding/admission baseline was already checked. Report membership requirements explicitly; when
-  any account on a deployment-fixed service instance may read everything returned, use
-  [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), not `[]`.
+  binding/admission baseline was already checked. Report instance access on a deployment-fixed
+  service as [`GLOBAL_SUBRESOURCE_ID`](#connection-only-access-global), alongside every additional
+  resource, field, or private-account requirement governing the disclosure.
 - Private-only reads report the actual mailbox, account, document, or other resource ID;
   `verifyObserverAccess()` denies observers who may not read it. Neither `[]` nor a synthetic
   `private` policy marker expresses that requirement.
@@ -841,10 +841,13 @@ and limits of the existing implementations.
 
 ### Connection-only access (`global`)
 
-Use `GLOBAL_SUBRESOURCE_ID` only when the deployed Worker's configuration fixes the one service
-instance every account of this vendor connects to, and any account connected to it may read
-everything disclosed. This is strategy B, not unrestricted D (`[]`). Per-resource ACLs, role or scope
-differences that change read visibility, and private account data in the answer disqualify it.
+Use `GLOBAL_SUBRESOURCE_ID` for the observer's baseline access to the one service instance fixed
+by the deployed Worker's configuration. It is a connection-only **requirement**, not a claim that
+the entire service or disclosure has no finer access rules. Report it alone when instance access
+suffices for the whole disclosure (strategy B); combine it with more specific subresources when
+the answer also depends on resource ACLs, role-dependent field visibility, or private-account
+restrictions (strategy C). **Every reported requirement must pass**: `global` AND each specific
+requirement. Neither form is unrestricted D (`[]`), and `global` grants no resource access itself.
 
 `"global"` names no instance; the deployment supplies its meaning. When accounts choose their
 instance (a self-hosted URL, a cloud or site ID, an Access team domain, a directory tenant), report
@@ -866,16 +869,40 @@ await queue.authorizeObservation({
 });
 ```
 
-Report it on every read that returns information, including empty results, cache hits, cursor
-pages, simulated reads, and hooks. Bindings still enforce their project/item scope; observer access
-does not expand the caller's grant.
+For a catalog with role-restricted fields, keep the same instance requirement and add the fields
+disclosed. Role-dependent visibility does not disqualify `global`; it makes `global` alone
+insufficient:
 
-The observer's verifier delegates to its own account. Check a fixed, deployment-defined catalog-read
-entitlement, not whether the observer's grant matches the owner's. That entitlement must cover every
-read reporting `global`; if different reads need different entitlements, use distinct resource kinds
-instead. Because every account here connects to the `env`-fixed origin, the account's oracle checks
-its own grant, using `getCredentials()` from the
-[credential sequence](#2-expose-the-account-rpc-methods):
+```ts
+import {
+  GLOBAL_SUBRESOURCE_ID, formatSubresourceId,
+} from "@gadgets/gatekeeper-kit/subresource-ids";
+
+await queue.authorizeObservation({
+  title: "Read catalog notes",
+  description: "Read the catalog's restricted notes.",
+  subresources: [
+    GLOBAL_SUBRESOURCE_ID,
+    formatSubresourceId({ fragments: [{ name: "field", id: "restricted_notes" }] }),
+  ],
+});
+```
+
+The verifier checks the observer's own instance access **and** permission to read that field.
+Resource ACLs and private-account requirements compose the same way; never drop them because
+the observer passed the instance check.
+
+Report the instance requirement on every read whose answer depends on it, including empty
+results, cache hits, cursor pages, simulated reads, and hooks, together with any additional
+requirements. Bindings still enforce their project/item scope; observer access does not expand
+the caller's grant.
+
+The observer's verifier delegates to its own account. Check a fixed, deployment-defined
+instance-access entitlement, not whether the observer's grant matches the owner's role or scopes.
+Its meaning stays the same across disclosures; additional entitlements belong in additional
+resource kinds, each with its own check. In the connection-only catalog example above, instance
+access suffices for every read, so its oracle checks only that grant using `getCredentials()` from
+the [credential sequence](#2-expose-the-account-rpc-methods):
 
 ```ts
 async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
@@ -888,6 +915,10 @@ async checkSubresourceAccess(ids: string[]): Promise<boolean[]> {
   return ids.map(() => grantCoversCatalogReads(creds));
 }
 ```
+
+That verifier intentionally accepts only `global`. A verifier for the field-restricted example
+must also recognize and independently check the field IDs; do not return the instance verdict for
+every ID or short-circuit an allow after checking `global`.
 
 `getCredentials()` refreshes only when the access token expires, so this oracle notices an
 observer's removal from the instance no sooner than that: within one token lifetime if refresh
@@ -1131,8 +1162,8 @@ workspace its sharing until the kernel distinguishes the two.
 
 ### Subresource IDs name resources
 
-Use `GLOBAL_SUBRESOURCE_ID` directly for [connection-only access](#connection-only-access-global)
-on a deployment-fixed instance.
+Use `GLOBAL_SUBRESOURCE_ID` directly for [instance-wide access](#connection-only-access-global)
+on a deployment-fixed instance, alone or alongside finer-grained requirements.
 Build every **structured resource** ID with `formatSubresourceId()` from `./subresource-ids`, and
 read it back in `verifyObserverAccess()` with `parseSubresourceId()`:
 

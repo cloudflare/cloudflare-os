@@ -342,16 +342,19 @@ use the same explicit-`subresources` protocol:
 - **C — Multiple access-controlled units.** Report the union of the disclosure's requirements, including independently required container/tenant membership. Variants include a list spanning ACLs, a query derived from several data sets, and a hierarchical read requiring both a folder and independently protected children. Choose dependencies from the information actually disclosed, not every source consulted. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
 - **D — Unrestricted disclosure.** Report `[]` only when no provider-side access requirement restricts the answer. This can be a public read, a local echo of supplied configuration, or a source-free computation inside an otherwise restricted binding. "Low-stakes", "no results", and "no newly observed resources" do not establish D. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
 
-**Connection-only access is B, not D.** When the deployed Worker's configuration fixes the one
-service instance every account connects to, and any account connected to it may read everything
-disclosed, report `[GLOBAL_SUBRESOURCE_ID]` from `@gadgets/gatekeeper-kit/subresource-ids`, not `[]`.
+**Instance-wide access is a requirement, not a wildcard.** When the deployed Worker's configuration
+fixes the one service instance every account connects to, report `GLOBAL_SUBRESOURCE_ID` from
+`@gadgets/gatekeeper-kit/subresource-ids` for the observer's baseline instance access. Report it
+alone only when that entitlement covers the whole disclosure (B, not unrestricted D). When the
+answer also needs resource ACLs, role-dependent field visibility, or private-account checks,
+report those IDs alongside `global` (C): **every requirement must pass**. Those additional rules
+do not disqualify `global`; they make it insufficient alone.
 When accounts choose their instance, report a structured instance ID and compare it with the
-observer's instance instead. Check a fixed, deployment-defined read entitlement covering every
-disclosure reported as `global`, not the owner's role or scopes; use distinct resource kinds when
-reads need different entitlements. Check that the grant is live and document how long a removal
-from the instance goes unnoticed. Per-resource ACLs, role differences affecting read visibility,
-or private account data need stronger checks. See the kit's
-[connection-only recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
+observer's instance instead. Check a fixed, deployment-defined instance-access entitlement with
+the observer's own credentials, not the owner's role or scopes, and independently verify every
+additional requirement. Check that the grant is live and document how long a removal from the
+instance goes unnoticed. See the kit's
+[instance-wide access recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 Keep three decisions separate: **what the binding grants**, **what this answer discloses**, and
 **what the observer oracle proves**. A table grant may report its dataset; a label-scoped mailbox
@@ -375,7 +378,7 @@ for scope-specific examples and implementation caveats.
 Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` JSDoc for ID limits and answer shape, and this skill for the access model: no restriction may depend on admission.
 
 1. **Report every dependency on every read that returns information to its caller**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. There is no blanket requirement to retain every consulted source for an empty result; report requirements for information actually disclosed.
-2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
+2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the instance-wide `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
 3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
