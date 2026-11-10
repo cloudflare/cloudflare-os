@@ -1,4 +1,4 @@
-// The steps of .github/workflows/review-verdict.yml, one reviewer per job:
+// The steps of .github/workflows/review-verdict.yml, the Opus reviewer:
 //   node scripts/automerge/verdict/verdict.ts prepare    (no secrets) review copy, inputs, round
 //   node scripts/automerge/verdict/verdict.ts review     (AI Gateway secrets) runs opencode
 //   node scripts/automerge/verdict/verdict.ts finalize   (no secrets) parses, writes the artifact
@@ -10,28 +10,21 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { field, list, parseJson, type Json } from "./json.ts";
-import { parseReview, type Finding } from "./parse-review.ts";
+import { parseReview, REPORT_FORMAT, type Finding } from "./parse-review.ts";
 import { buildReviewCopy } from "./review-copy.ts";
-import { fetchReviewedHeads, githubJson, planRound, ROUND_LIMIT, type RoundPlan } from "./rounds.ts";
+import { fetchReviewedHeads, githubJson, planRound, ROUND_LIMIT, roundLimitReasons, type RoundPlan } from "./rounds.ts";
 
-export type ModelName = "sol" | "opus";
+/** The two verdicts' producers: this runner, and Bonk's job in bonk-pr.yml (bonk.ts). */
+export type ReviewerName = "opus" | "bonk";
 
-/** The reviewers' opencode model ids, by the name their artifact carries. */
-export const MODELS: Record<ModelName, string> = {
-  sol: "cloudflare-ai-gateway/openai/gpt-6.1-sol",
-  opus: "cloudflare-ai-gateway/anthropic/claude-opus-5.5",
-};
-
-export function isModelName(value: string): value is ModelName {
-  return value === "sol" || value === "opus";
-}
+const MODEL = "cloudflare-ai-gateway/anthropic/claude-opus-5.5";
 
 const WORKFLOW_FILE = "review-verdict.yml";
 const VARIANT = "xhigh";
 /**
- * Read-only tools, no directory outside the review copy but the inputs, and both models declared:
- * opencode's bundled catalog lacks Sol, and without a declaration it offers a model no variants and
- * silently ignores `--variant` (the same declaration Bonk's workflows carry).
+ * Read-only tools, no directory outside the review copy but the inputs, and the model declared:
+ * without a declaration opencode offers a model its bundled catalog lacks no variants and silently
+ * ignores `--variant` (the same declaration Bonk's workflows carry).
  */
 function openCodeConfig(inputsDir: string): string {
   return JSON.stringify({
@@ -47,7 +40,6 @@ function openCodeConfig(inputsDir: string): string {
     provider: {
       "cloudflare-ai-gateway": {
         models: {
-          "openai/gpt-6.1-sol": { reasoning: true, release_date: "2026-09-29" },
           "anthropic/claude-opus-5.5": { reasoning: true, release_date: "2026-09-22" },
         },
       },
@@ -57,7 +49,7 @@ function openCodeConfig(inputsDir: string): string {
 
 /**
  * Head config, plugins and instruction discovery stay off even though the review copy already
- * holds base versions; models come from the version's bundled catalog plus the declarations above,
+ * holds base versions; models come from the version's bundled catalog plus the declaration above,
  * so the fingerprint's opencode version pins them; autocompaction stays off so a review that
  * outgrows the context fails rather than continuing on a summary of the diff.
  */
@@ -102,22 +94,7 @@ for every directory the diff touches.
 
 Reply with the review only, in exactly this shape:
 
-## Findings
-
-### [P1] One-line title
-\`path/to/file.ts:123\`
-What happens, the sequence that leads to it, and its result.
-
-## Summary
-
-A short summary, then any NEEDS-A-PERSON lines, then the MERGE-CONFIDENCE line last.
-
-Each finding is one "###" entry whose title starts with exactly one of [P0], [P1], [P2] or [P3],
-with its file and line alone on the next line. With no findings, write "None." under
-"## Findings". Use no other headings: every heading under "## Findings" counts as a finding,
-and any other section makes the review invalid. Write the words NEEDS-A-PERSON and
-MERGE-CONFIDENCE only on those lines.
-`;
+${REPORT_FORMAT}`;
 
 /**
  * The runner's own code: the prompt, opencode config, review copy and parser all live in this
@@ -135,13 +112,12 @@ function fill(template: string, values: Record<string, string>): string {
   return template.replaceAll(/\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match);
 }
 
-function git(repo: string, args: string[]): string {
+export function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
 }
 
 /** What prepare records for review and finalize. */
 interface Meta {
-  name: ModelName;
   head_sha: string;
   base_sha: string;
   round: number;
@@ -188,13 +164,11 @@ function paths(workDir: string) {
  * historical bases may predate REVIEW.md. From round {@link ROUND_LIMIT} on there is no review to
  * run, and only the metadata is written. Returns whether a model review should run.
  */
-export function prepareInputs(repo: string, workDir: string, name: ModelName, pr: PullRequest, plan: RoundPlan,
-  policySha: string): boolean {
+export function prepareInputs(repo: string, workDir: string, pr: PullRequest, plan: RoundPlan, policySha: string): boolean {
   const files = paths(workDir);
   mkdirSync(files.inputs, { recursive: true });
   mkdirSync(files.review, { recursive: true });
   const meta: Meta = {
-    name,
     head_sha: pr.headSha,
     base_sha: pr.baseSha,
     round: plan.round,
@@ -250,7 +224,7 @@ export interface GatewayEnv {
  * values and a home, config and data directory of its own, so no user or runner config reaches it.
  * Returns opencode's exit status.
  */
-export function runReview(workDir: string, name: ModelName, opencodeBin: string, gateway: GatewayEnv): number {
+export function runReview(workDir: string, opencodeBin: string, gateway: GatewayEnv): number {
   const files = paths(workDir);
   mkdirSync(files.home, { recursive: true });
   const openCodeEnv = {
@@ -271,7 +245,7 @@ export function runReview(workDir: string, name: ModelName, opencodeBin: string,
   try {
     const result = spawnSync(opencodeBin, [
       "run", readFileSync(files.prompt, "utf8"),
-      "--pure", "--dir", files.review, "--model", MODELS[name], "--variant", VARIANT,
+      "--pure", "--dir", files.review, "--model", MODEL, "--variant", VARIANT,
       "--format", "json", "--title", "review", "--file", files.diff, "--file", files.pullRequest,
     // stderr stays in the work directory: provider error bodies reach it, and job logs are public.
     ], { env: openCodeEnv, stdio: ["ignore", events, stderr] });
@@ -340,11 +314,21 @@ export function readEvents(stream: string): { text: string; tokens: Tokens } | {
   return { text, tokens };
 }
 
+/** What a verdict was produced with; a band closes for a pull request when any value differs. */
+export interface Fingerprint {
+  model: string;
+  opencode: string | null;
+  review_md: string | null;
+  prompt: string | null;
+  /** The pinned action that ran the reviewer, or null when no action did (this runner). */
+  action: string | null;
+}
+
 /** The producer artifact, per the contract in the auto-merge build plan. */
 export interface Verdict {
   schema: 1;
   kind: "verdict";
-  name: ModelName;
+  name: ReviewerName;
   head_sha: string;
   base_sha: string;
   status: "ok" | "error";
@@ -362,13 +346,12 @@ export interface Verdict {
   merge_confidence: number | null;
   round: number | null;
   review_from_sha: string | null;
-  fingerprint: { model: string; opencode: string | null; review_md: string | null; prompt: string };
+  fingerprint: Fingerprint;
 }
 
 function readMeta(file: string): Meta | null {
   if (!existsSync(file)) return null;
   const value = parseJson(readFileSync(file, "utf8"));
-  const name = field(value, "name");
   const head = field(value, "head_sha");
   const base = field(value, "base_sha");
   const round = field(value, "round");
@@ -376,7 +359,7 @@ function readMeta(file: string): Meta | null {
   const reviewMd = field(value, "review_md");
   const prompt = field(value, "prompt");
   const strings = (key: string) => list(field(value, key)).filter(item => typeof item === "string");
-  if (typeof name !== "string" || !isModelName(name) || typeof head !== "string" || typeof base !== "string" ||
+  if (typeof head !== "string" || typeof base !== "string" ||
     typeof round !== "number" || (from !== null && typeof from !== "string") || typeof reviewMd !== "string" ||
     typeof prompt !== "string") {
     throw new Error(`${file} is malformed`);
@@ -386,7 +369,7 @@ function readMeta(file: string): Meta | null {
     const bytes = field(item, "bytes");
     return typeof path === "string" && typeof bytes === "number" ? [{ path, bytes }] : [];
   });
-  return { name, head_sha: head, base_sha: base, round, review_from_sha: from, review_md: reviewMd, prompt,
+  return { head_sha: head, base_sha: base, round, review_from_sha: from, review_md: reviewMd, prompt,
     head_instruction_paths: strings("head_instruction_paths"), skipped_paths: strings("skipped_paths"),
     binary_files: binaryFiles };
 }
@@ -395,13 +378,13 @@ function readMeta(file: string): Meta | null {
  * The verdict for one reviewer from whatever the earlier steps left in `workDir`. Anything missing
  * or malformed is an `error` verdict, which the gate treats as no verdict.
  */
-export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequest, "headSha" | "baseSha">): Verdict {
+export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | "baseSha">): Verdict {
   const files = paths(workDir);
   const verdict: Verdict = {
-    schema: 1, kind: "verdict", name, head_sha: pr.headSha, base_sha: pr.baseSha, status: "error", holds: null,
+    schema: 1, kind: "verdict", name: "opus", head_sha: pr.headSha, base_sha: pr.baseSha, status: "error", holds: null,
     details: { review_text: null, reason: null, tokens: null, head_instruction_paths: [], skipped_paths: [], binary_files: [] },
     findings: [], needs_person: [], merge_confidence: null, round: null, review_from_sha: null,
-    fingerprint: { model: MODELS[name], opencode: null, review_md: null, prompt: PROMPT_HASH },
+    fingerprint: { model: MODEL, opencode: null, review_md: null, prompt: PROMPT_HASH, action: null },
   };
   const fail = (reason: string): Verdict => ({ ...verdict, details: { ...verdict.details, reason } });
 
@@ -413,8 +396,8 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
     return fail(error instanceof Error ? error.message : String(error));
   }
   if (meta === null) return fail("the prepare step left no metadata");
-  if (meta.name !== name || meta.head_sha !== pr.headSha || meta.base_sha !== pr.baseSha || meta.prompt !== PROMPT_HASH) {
-    return fail("the prepare step's metadata is for another reviewer, commit or prompt");
+  if (meta.head_sha !== pr.headSha || meta.base_sha !== pr.baseSha || meta.prompt !== PROMPT_HASH) {
+    return fail("the prepare step's metadata is for another commit or prompt");
   }
   verdict.round = meta.round;
   verdict.review_from_sha = meta.review_from_sha;
@@ -422,7 +405,7 @@ export function buildVerdict(workDir: string, name: ModelName, pr: Pick<PullRequ
   verdict.details.head_instruction_paths = meta.head_instruction_paths;
   verdict.details.skipped_paths = meta.skipped_paths;
   verdict.details.binary_files = meta.binary_files;
-  if (meta.round >= ROUND_LIMIT) return { ...verdict, status: "ok", needs_person: ["round limit"] };
+  if (meta.round >= ROUND_LIMIT) return { ...verdict, status: "ok", needs_person: roundLimitReasons(meta.round) };
 
   if (existsSync(files.opencodeVersion)) verdict.fingerprint.opencode = readFileSync(files.opencodeVersion, "utf8").trim();
   if (!existsSync(files.events)) return fail("the review step left no opencode output");
@@ -464,14 +447,14 @@ export function canReviewSince(repo: string, previousSha: string, pr: Pick<PullR
     ok(["diff", "--quiet", pr.baseSha, previousSha, "--", `.github/workflows/${WORKFLOW_FILE}`]);
 }
 
-function env(name: string): string {
+export function env(name: string): string {
   const value = process.env[name];
   if (value === undefined || value === "") throw new Error(`${name} is not set`);
   return value;
 }
 
 /** The pull request fields the workflow's `pull_request` event payload carries. */
-function eventPullRequest(): PullRequest & { number: number; headRef: string } {
+export function eventPullRequest(): PullRequest & { number: number; headRef: string } {
   const pull = field(parseJson(readFileSync(env("GITHUB_EVENT_PATH"), "utf8")), "pull_request");
   const number = field(pull, "number");
   const headSha = field(field(pull, "head"), "sha");
@@ -486,15 +469,8 @@ function eventPullRequest(): PullRequest & { number: number; headRef: string } {
   return { number, headSha, headRef, baseSha, title, body: body ?? "" };
 }
 
-function modelFromEnv(): ModelName {
-  const name = env("MODEL");
-  if (!isModelName(name)) throw new Error(`unknown MODEL ${JSON.stringify(name)}`);
-  return name;
-}
-
 async function main(command: string | undefined): Promise<void> {
   const workDir = join(env("RUNNER_TEMP"), "review-verdict");
-  const name = modelFromEnv();
   if (command === "prepare") {
     const repo = env("REPO_DIR");
     const pr = eventPullRequest();
@@ -507,12 +483,12 @@ async function main(command: string | undefined): Promise<void> {
       jobName: env("JOB_NAME"),
     }, path => githubJson(path, token));
     const plan = planRound(pr.headSha, reviewed, sha => canReviewSince(repo, sha, pr));
-    const review = prepareInputs(repo, workDir, name, pr, plan, pr.baseSha);
+    const review = prepareInputs(repo, workDir, pr, plan, pr.baseSha);
     appendFileSync(env("GITHUB_OUTPUT"), `review=${review}\n`);
     return;
   }
   if (command === "review") {
-    process.exitCode = runReview(workDir, name, env("OPENCODE_BIN"), {
+    process.exitCode = runReview(workDir, env("OPENCODE_BIN"), {
       CLOUDFLARE_ACCOUNT_ID: env("CLOUDFLARE_ACCOUNT_ID"),
       CLOUDFLARE_GATEWAY_ID: env("CLOUDFLARE_GATEWAY_ID"),
       CLOUDFLARE_API_TOKEN: env("CLOUDFLARE_API_TOKEN"),
@@ -520,9 +496,9 @@ async function main(command: string | undefined): Promise<void> {
     return;
   }
   if (command === "finalize") {
-    const verdict = buildVerdict(workDir, name, eventPullRequest());
-    writeFileSync(join(env("RUNNER_TEMP"), `automerge-${name}.json`), `${JSON.stringify(verdict, null, 2)}\n`);
-    console.log(`${name}: ${verdict.status}${verdict.details.reason ? ` (${verdict.details.reason})` : ""}, ` +
+    const verdict = buildVerdict(workDir, eventPullRequest());
+    writeFileSync(join(env("RUNNER_TEMP"), "automerge-verdict-opus.json"), `${JSON.stringify(verdict, null, 2)}\n`);
+    console.log(`opus: ${verdict.status}${verdict.details.reason ? ` (${verdict.details.reason})` : ""}, ` +
       `round ${verdict.round}, confidence ${verdict.merge_confidence}, ${verdict.findings.length} findings, ` +
       `needs a person: ${JSON.stringify(verdict.needs_person)}`);
     // A failed job is how later rounds tell a reviewed head from one that was not.

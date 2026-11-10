@@ -4,8 +4,13 @@ import { field, list, parseJson, type Json } from "./json.ts";
 
 /** The first round that reviews only the changes since the previous reviewed head. */
 export const DIFF_ONLY_ROUND = 3;
-/** The first round that sends the pull request to a person without a model review. */
+/** The first round that sends the pull request to a person. */
 export const ROUND_LIMIT = 4;
+
+/** The NEEDS-A-PERSON reason every verdict carries from round {@link ROUND_LIMIT} on. */
+export function roundLimitReasons(round: number): string[] {
+  return round >= ROUND_LIMIT ? ["round limit"] : [];
+}
 
 /** A head commit this reviewer reviewed, with when the review ran. */
 export interface ReviewedHead {

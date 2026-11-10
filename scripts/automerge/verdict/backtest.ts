@@ -1,5 +1,6 @@
-// Replays the verdict runner over the regression set and past merged pull requests:
-//   node scripts/automerge/verdict/backtest.ts [--past <n>] [--no-regression] [--models sol,opus]
+// Replays the Opus verdict runner over the regression set and past merged pull requests. Bonk's
+// verdict comes only from a live Bonk job, so it has no replay here.
+//   node scripts/automerge/verdict/backtest.ts [--past <n>] [--no-regression]
 //       [--out <file.jsonl>] [--ref <ref>] [--policy-ref <ref>] [--confirm-spend]
 // Without --confirm-spend it prints a token and cost estimate and calls no model. With it, it needs
 // OPENCODE_BIN and the CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID and CLOUDFLARE_API_TOKEN values,
@@ -11,7 +12,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { field, list, parseJson } from "./json.ts";
-import { buildVerdict, isModelName, prepareInputs, runReview, type ModelName } from "./verdict.ts";
+import { buildVerdict, prepareInputs, runReview } from "./verdict.ts";
 
 interface Case {
   id: string;
@@ -23,12 +24,8 @@ interface Case {
   catchable: boolean | null;
 }
 
-/** USD per million tokens, from models.dev's `cloudflare-ai-gateway` entries on 2026-11-02. */
-const PRICES: Record<ModelName, { input: number; output: number; cacheRead: number; longInput: number; longOutput: number; longCacheRead: number; longAbove: number }> = {
-  // Sol bills a higher tier once the context passes 272k tokens.
-  sol: { input: 2, output: 10, cacheRead: 0.1, longInput: 4, longOutput: 15, longCacheRead: 0.2, longAbove: 272_000 },
-  opus: { input: 4, output: 20, cacheRead: 0.2, longInput: 4, longOutput: 20, longCacheRead: 0.2, longAbove: Infinity },
-};
+/** Opus's USD per million tokens, from models.dev's `cloudflare-ai-gateway` entry on 2026-11-02. */
+const PRICE = { input: 4, output: 20, cacheRead: 0.2 };
 
 // Assumptions, not measurements: each verdict artifact records `details.tokens`, so replace these
 // with the medians of the first live reviews.
@@ -78,16 +75,13 @@ function pastCases(repo: string, ref: string, count: number): Case[] {
   return cases;
 }
 
-function estimateUsd(model: ModelName, promptTokens: number, linesChanged: number): { tokens: number; usd: number } {
+function estimateUsd(promptTokens: number, linesChanged: number): { tokens: number; usd: number } {
   const diff = linesChanged * TOKENS_PER_CHANGED_LINE;
   const finalContext = promptTokens + diff + Math.max(diff * READ_MULTIPLE, READ_FLOOR_TOKENS);
   const sent = TURNS * finalContext / 2;
   const fresh = finalContext;
   const cached = sent - fresh;
-  const price = PRICES[model];
-  const long = finalContext > price.longAbove;
-  const usd = (fresh * (long ? price.longInput : price.input) + cached * (long ? price.longCacheRead : price.cacheRead) +
-    OUTPUT_TOKENS * (long ? price.longOutput : price.output)) / 1_000_000;
+  const usd = (fresh * PRICE.input + cached * PRICE.cacheRead + OUTPUT_TOKENS * PRICE.output) / 1_000_000;
   return { tokens: sent + OUTPUT_TOKENS, usd };
 }
 
@@ -96,7 +90,6 @@ function main(): void {
     options: {
       past: { type: "string", default: "0" },
       "no-regression": { type: "boolean", default: false },
-      models: { type: "string", default: "sol,opus" },
       out: { type: "string", default: "backtest.jsonl" },
       "confirm-spend": { type: "boolean", default: false },
       ref: { type: "string", default: "origin/main" },
@@ -105,10 +98,6 @@ function main(): void {
     },
   });
   const repo = git(process.cwd(), ["rev-parse", "--show-toplevel"]);
-  const models = values.models.split(",").map(name => {
-    if (!isModelName(name)) throw new Error(`unknown model ${JSON.stringify(name)}`);
-    return name;
-  });
   const past = Number(values.past);
   if (!Number.isInteger(past) || past < 0) throw new Error(`--past must be a whole number, got ${values.past}`);
   const cases = [
@@ -117,22 +106,17 @@ function main(): void {
   ];
 
   const promptTokens = Math.ceil(readFileSync(join(repo, "REVIEW.md"), "utf8").length / CHARS_PER_TOKEN) + 1_000;
-  console.log(`${cases.length} cases x ${models.length} models = ${cases.length * models.length} reviews`);
+  console.log(`${cases.length} Opus reviews`);
   console.log(`assumptions: ${TOKENS_PER_CHANGED_LINE} tokens per changed line, reads ${READ_MULTIPLE}x the diff ` +
     `(at least ${READ_FLOOR_TOKENS}), ${TURNS} turns, ${OUTPUT_TOKENS} output tokens, ${promptTokens} prompt tokens`);
-  let totalUsd = 0;
-  for (const model of models) {
-    let tokens = 0;
-    let usd = 0;
-    for (const { linesChanged } of cases) {
-      const estimate = estimateUsd(model, promptTokens, linesChanged);
-      tokens += estimate.tokens;
-      usd += estimate.usd;
-    }
-    totalUsd += usd;
-    console.log(`${model}: about ${(tokens / 1_000_000).toFixed(1)}M tokens, $${usd.toFixed(2)}`);
+  let tokens = 0;
+  let usd = 0;
+  for (const { linesChanged } of cases) {
+    const estimate = estimateUsd(promptTokens, linesChanged);
+    tokens += estimate.tokens;
+    usd += estimate.usd;
   }
-  console.log(`total: about $${totalUsd.toFixed(2)}`);
+  console.log(`about ${(tokens / 1_000_000).toFixed(1)}M tokens, $${usd.toFixed(2)}`);
 
   if (!values["confirm-spend"]) {
     console.log("No model was called. Pass --confirm-spend once the spend is approved.");
@@ -154,29 +138,27 @@ function main(): void {
       .filter(sha => spawnSync("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`]).status !== 0);
     if (missing.length > 0) git(repo, ["fetch", "--no-tags", "origin", ...missing]);
     const baseSha = git(repo, ["rev-parse", testCase.baseSha]);
-    for (const model of models) {
-      const workDir = mkdtempSync(join(tmpdir(), `backtest-${testCase.id}-${model}-`));
-      const started = Date.now();
-      const pr = { headSha: testCase.headSha, baseSha, title: testCase.title, body: "" };
-      // A named case: one case that cannot be prepared or reviewed is recorded, and the rest run.
-      let runnerError: string | null = null;
-      try {
-        prepareInputs(repo, workDir, model, pr, { round: 1, reviewFromSha: null }, policySha);
-        runReview(workDir, model, opencodeBin, gateway);
-      } catch (error) {
-        runnerError = error instanceof Error ? error.message : String(error);
-      }
-      try {
-        const verdict = buildVerdict(workDir, model, pr);
-        appendFileSync(values.out, `${JSON.stringify({ case: testCase.id, catchable: testCase.catchable,
-          lines_changed: testCase.linesChanged, wall_ms: Date.now() - started, runner_error: runnerError, verdict })}\n`);
-        console.log(`${testCase.id} ${model}: ${verdict.status} confidence ${verdict.merge_confidence}, ` +
-          `${verdict.findings.filter(finding => finding.severity === "P0" || finding.severity === "P1").length} P0/P1, ` +
-          `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}` +
-          (runnerError === null ? "" : `, runner error: ${runnerError}`));
-      } finally {
-        rmSync(workDir, { recursive: true, force: true });
-      }
+    const workDir = mkdtempSync(join(tmpdir(), `backtest-${testCase.id}-`));
+    const started = Date.now();
+    const pr = { headSha: testCase.headSha, baseSha, title: testCase.title, body: "" };
+    // A named case: one case that cannot be prepared or reviewed is recorded, and the rest run.
+    let runnerError: string | null = null;
+    try {
+      prepareInputs(repo, workDir, pr, { round: 1, reviewFromSha: null }, policySha);
+      runReview(workDir, opencodeBin, gateway);
+    } catch (error) {
+      runnerError = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      const verdict = buildVerdict(workDir, pr);
+      appendFileSync(values.out, `${JSON.stringify({ case: testCase.id, catchable: testCase.catchable,
+        lines_changed: testCase.linesChanged, wall_ms: Date.now() - started, runner_error: runnerError, verdict })}\n`);
+      console.log(`${testCase.id}: ${verdict.status} confidence ${verdict.merge_confidence}, ` +
+        `${verdict.findings.filter(finding => finding.severity === "P0" || finding.severity === "P1").length} P0/P1, ` +
+        `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}` +
+        (runnerError === null ? "" : `, runner error: ${runnerError}`));
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
     }
   }
 }

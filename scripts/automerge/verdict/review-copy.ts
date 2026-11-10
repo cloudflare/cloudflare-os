@@ -1,8 +1,8 @@
-// Builds the directory the verdict reviewer reads: the head commit's tree, with every file that
-// steers an agent taken from the base commit instead. Written from git objects, never from a
-// checkout, so head `.gitattributes` and hooks play no part.
+// Gives a reviewer the head commit's code with every file that steers an agent taken from the base
+// commit instead: a fresh copy written from git objects for the Opus runner, or the checkout itself
+// for Bonk, which reads the working tree.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -43,6 +43,7 @@ function listTree(repo: string, commit: string): TreeEntry[] {
 
 /** Blob contents by object id, read in one `git cat-file --batch` pass. */
 function readBlobs(repo: string, objects: string[]): Map<string, Buffer> {
+  if (objects.length === 0) return new Map();
   const output = execFileSync("git", ["-C", repo, "cat-file", "--batch"],
     { input: objects.join("\n") + "\n", maxBuffer: MAX_TREE_BYTES });
   const blobs = new Map<string, Buffer>();
@@ -102,4 +103,39 @@ export function buildReviewCopy(repo: string, headSha: string, baseSha: string, 
     headInstructionPaths: head.filter(entry => isInstructionPath(entry.path)).map(entry => entry.path),
     skipped,
   };
+}
+
+/** Refuses a write whose parent directories are not all real directories inside `root`. */
+function assertRealParents(root: string, path: string): void {
+  const segments = path.split("/").slice(0, -1);
+  for (let depth = 1; depth <= segments.length; depth++) {
+    const stat = lstatSync(join(root, ...segments.slice(0, depth)), { throwIfNoEntry: false });
+    if (stat === undefined) return;
+    if (!stat.isDirectory()) throw new Error(`refusing ${JSON.stringify(path)}: a parent is not a directory`);
+  }
+}
+
+/**
+ * Puts the base commit's instruction files in place of the head's in `worktree`, a checkout of
+ * `headSha`, before a reviewer that reads the working tree runs there. Every head instruction path,
+ * symlinks among them, is removed; every regular base instruction file is written in its place, and
+ * base symlinks are left out. Returns the head paths it removed or replaced.
+ */
+export function replaceInstructionFiles(worktree: string, headSha: string, baseSha: string): string[] {
+  const head = listTree(worktree, headSha).filter(entry => isInstructionPath(entry.path)).map(entry => entry.path);
+  const base = listTree(worktree, baseSha).filter(entry => REGULAR_FILE_MODES.has(entry.mode) && isInstructionPath(entry.path));
+  for (const path of [...head, ...base.map(entry => entry.path)]) {
+    assertSafePath(path);
+    assertRealParents(worktree, path);
+    rmSync(join(worktree, path), { recursive: true, force: true });
+  }
+  const blobs = readBlobs(worktree, [...new Set(base.map(entry => entry.object))]);
+  for (const { path, object } of base) {
+    const content = blobs.get(object);
+    if (content === undefined) throw new Error(`git cat-file did not return ${object} for ${path}`);
+    mkdirSync(dirname(join(worktree, path)), { recursive: true });
+    assertRealParents(worktree, path);
+    writeFileSync(join(worktree, path), content, { mode: 0o644 });
+  }
+  return head;
 }

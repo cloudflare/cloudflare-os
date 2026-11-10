@@ -1,7 +1,7 @@
 name: Review verdict
 
-# One model review per reviewer for each non-draft head, parsed into the `automerge-<model>.json`
-# artifact the risk-review gate reads. This workflow publishes nothing itself: no check run, no
+# The Opus review of each non-draft head, parsed into the `automerge-verdict-opus.json` artifact the
+# risk-review gate reads. The other verdict is Bonk's, from bonk-pr.yml. This workflow publishes nothing itself: no check run, no
 # comment, no `checks: write`. The reviewer reads a copy of the head built from git objects with
 # every instruction file taken from the base commit, and the gateway secrets reach only the step
 # that runs opencode.
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   verdict:
-    name: Verdict (${{ matrix.model }})
+    name: Verdict (opus)
     # Fork pull requests get no gateway secrets, and the gate ignores their artifacts; bot pull
     # requests get Dependabot's secrets only.
     if: >-
@@ -38,12 +38,6 @@ jobs:
       # Lists this workflow's earlier runs and jobs to count review rounds.
       actions: read
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        model: [sol, opus]
-    env:
-      MODEL: ${{ matrix.model }}
     steps:
       # Full history for the merge base and earlier reviewed heads.
       - name: Check out the base commit
@@ -73,7 +67,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPO_DIR: ${{ github.workspace }}
-          JOB_NAME: Verdict (${{ matrix.model }})
+          JOB_NAME: Verdict (opus)
         run: node scripts/automerge/verdict/verdict.ts prepare
 
       # The platform binary straight from the registry, checked against a pinned sha256 so the
@@ -109,7 +103,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: automerge-${{ matrix.model }}
-          path: ${{ runner.temp }}/automerge-${{ matrix.model }}.json
+          name: automerge-verdict-opus
+          path: ${{ runner.temp }}/automerge-verdict-opus.json
           if-no-files-found: error
           overwrite: true

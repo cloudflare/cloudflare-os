@@ -1,5 +1,5 @@
 // Turns a reviewer's text into findings, NEEDS-A-PERSON reasons and a MERGE-CONFIDENCE score, in
-// the shape REVIEW.md and the prompt in verdict.ts ask for. The text is model output that read the
+// the shape REVIEW.md and REPORT_FORMAT ask for. The text is model output that read the
 // pull request, so a pull request can steer what it says: every ambiguity resolves toward a person
 // (a finding with no tag is P1, a stray NEEDS-A-PERSON counts, a second or malformed score is an
 // error).
@@ -24,6 +24,24 @@ export interface ParsedReview {
 }
 
 export type ParseResult = { ok: true; review: ParsedReview } | { ok: false; error: string };
+
+/** The report shape every reviewer is asked for, and the only one {@link parseReview} accepts. */
+export const REPORT_FORMAT = `## Findings
+
+### [P1] One-line title
+\`path/to/file.ts:123\`
+What happens, the sequence that leads to it, and its result.
+
+## Summary
+
+A short summary, then any NEEDS-A-PERSON lines, then the MERGE-CONFIDENCE line last.
+
+Each finding is one "###" entry whose title starts with exactly one of [P0], [P1], [P2] or [P3],
+with its file and line alone on the next line. With no findings, write "None." under
+"## Findings". Use no other headings: every heading under "## Findings" counts as a finding,
+and any other section makes the review invalid. Write the words NEEDS-A-PERSON and
+MERGE-CONFIDENCE only on those lines.
+`;
 
 const SEVERITIES: readonly Severity[] = ["P0", "P1", "P2", "P3"];
 const TAG = /\[(P[0-3])\]/g;
