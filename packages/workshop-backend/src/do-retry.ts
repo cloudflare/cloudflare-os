@@ -127,3 +127,16 @@ export async function retryOnDoReset<T>(
     return recovered;
   }
 }
+
+/** Resolves or rejects as `request` does, unless `ms` pass first: then rejects with `message`.
+ * The request is not cancelled; its late answer is dropped. Uses `setTimeout` cleared on
+ * settlement, not `AbortSignal.timeout`, whose timer outlives a prompt answer and delays
+ * Durable Object eviction. */
+export async function withTimeout<T>(request: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([request, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), ms);
+    })]);
+  } finally { clearTimeout(timeout); }
+}
