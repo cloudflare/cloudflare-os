@@ -1535,7 +1535,8 @@ export type ObservationDescription = {
    * copied, or redeemed), and people who joined through a link or through another collaborator
    * lose access, restarting the gadget if any are present. After that, only the owner can add
    * collaborators, one at a time. Those who remain are still subject to `addObserver()`
-   * verification on every open.
+   * verification on every open, as are the members of the workspace's space, whose role the flag
+   * does not end (see `WorkspaceMetadata.ownerInvitesOnly`).
    *
    * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
    * requires each recipient to be granted access individually.

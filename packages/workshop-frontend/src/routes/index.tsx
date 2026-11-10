@@ -7,6 +7,7 @@ import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import { UpdateAvailableNotice } from "../features/deployment-updates/UpdateAvailableNotice";
 import { useAuthenticatedApi } from "../AuthContext";
+import { useUiFeatureFlag } from "../FeatureFlagsContext";
 import { RpcStub } from "capnweb";
 import {
   Overseer,
@@ -23,11 +24,16 @@ import {
 import { useDocumentTitle } from "../useDocumentTitle";
 import { homePromptFromSearch } from "../homePrompt";
 import { composerDraftStorageKey } from "../features/chat/composer/draft/composerDraft";
+import { NewWorkspaceSpaceSelect } from "../features/spaces/NewWorkspaceSpaceSelect";
+import { useNewWorkspaceSpace } from "../features/spaces/useNewWorkspaceSpace";
 
+// `space` asks for the team space the workspace is created in. It is read only while the
+// `spaces` flag is on.
 type HomeSearch = {
   prompt?: string;
   cfos_native_state?: string;
   cfos_native_key?: string;
+  space?: string;
 };
 
 export const Route = createFileRoute("/")({
@@ -38,6 +44,7 @@ export const Route = createFileRoute("/")({
       ? search.cfos_native_state : undefined,
     cfos_native_key: typeof search.cfos_native_key === "string"
       ? search.cfos_native_key : undefined,
+    space: typeof search.space === "string" ? search.space : undefined,
   }),
 });
 
@@ -45,10 +52,11 @@ export const Route = createFileRoute("/")({
 // in the AppShell rail, so this page focuses on a single thing: composing the first message of a
 // new gadget — a centered column with a hero, the prompt composer, and a few task suggestions.
 function HomePage() {
-  return <HomePageContent prompt={Route.useSearch().prompt} />;
+  const { prompt, space } = Route.useSearch();
+  return <HomePageContent prompt={prompt} space={space} />;
 }
 
-export function HomePageContent({ prompt }: HomeSearch) {
+export function HomePageContent({ prompt, space }: HomeSearch) {
   useDocumentTitle("Home");
 
   const { authenticatedApi, currentUser } = useAuthenticatedApi();
@@ -60,11 +68,17 @@ export function HomePageContent({ prompt }: HomeSearch) {
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
+  // Clearing the prompt from the route keeps `space` only where it is read, which is while the
+  // `spaces` flag is on; a prompt that arrives with one therefore waits for the flag.
+  const spacesFlag = useUiFeatureFlag("spaces");
+  const spaceUndecided = space !== undefined && spacesFlag.loading;
+  const keptSpace = spacesFlag.enabled ? space : undefined;
+
   useEffect(() => {
-    if (!prompt) return;
+    if (!prompt || spaceUndecided) return;
     setSeed((previous) => ({ text: prompt, nonce: (previous?.nonce ?? 0) + 1 }));
-    navigate({ to: "/", search: {}, replace: true });
-  }, [navigate, prompt]);
+    navigate({ to: "/", search: keptSpace === undefined ? {} : { space: keptSpace }, replace: true });
+  }, [navigate, prompt, spaceUndecided, keptSpace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,14 +106,38 @@ export function HomePageContent({ prompt }: HomeSearch) {
     persistSelectedModel(value);
   }, []);
 
+  // The space the workspace is created in: a team space's id, or null for the user's personal
+  // space, which is all it ever is while the `spaces` flag is off.
+  const {
+    teamSpaces,
+    spaceId,
+    chooseSpace,
+    whenSettled: whenSpaceSettled,
+  } = useNewWorkspaceSpace(space);
+  // A send is made for the space selected when it began, so that space is held as the
+  // workspace's until the send has settled. A selection that changes meanwhile (a link's
+  // space that only then proves to be one of the user's) applies afterwards: to the next
+  // send when this one failed, and to nothing when it worked, since that leaves the page.
+  const [sending, setSending] = useState(false);
+  const [workspaceSpaceId, setWorkspaceSpaceId] = useState(spaceId);
+  if (!sending && workspaceSpaceId !== spaceId) setWorkspaceSpaceId(spaceId);
+  const spaceIdRef = useRef(workspaceSpaceId);
+  spaceIdRef.current = workspaceSpaceId;
+
   // Pre-create a provisional gadget as soon as the user starts interacting, so that navigation
   // after submit is instant. Same pattern as before — disposed on unmount if never consumed.
-  const provisionalOverseerRef = useRef<{ stub: RpcStub<Overseer> } | null>(null);
+  // What the composer makes in it (attachments, connections) exists nowhere else, so it outlives
+  // a change of the selected space: `spaceId` is the space it was created in or last moved to,
+  // and a send moves it to the space the send is for.
+  const provisionalOverseerRef =
+    useRef<{ stub: RpcStub<Overseer>; spaceId: string | null } | null>(null);
 
   const ensureProvisionalGadget = useCallback(() => {
     if (!provisionalOverseerRef.current) {
-      const overseer = authenticatedApi.newWorkspace();
-      provisionalOverseerRef.current = { stub: overseer };
+      const overseer = spaceIdRef.current === null
+        ? authenticatedApi.newWorkspace()
+        : authenticatedApi.newWorkspace(spaceIdRef.current);
+      provisionalOverseerRef.current = { stub: overseer, spaceId: spaceIdRef.current };
     }
   }, [authenticatedApi]);
 
@@ -119,8 +157,19 @@ export function HomePageContent({ prompt }: HomeSearch) {
       formats?: MessageFormatRef[],
     ) => {
       try {
+        // A link that asks for a space is honoured by a send that beats the list of spaces.
+        await whenSpaceSettled();
+        setSending(true);
         ensureProvisionalGadget();
-        const overseer = provisionalOverseerRef.current!.stub;
+        const provisional = provisionalOverseerRef.current!;
+        const overseer = provisional.stub;
+        // The gadget registers with its space at its first activity, which `newChat` is, so a
+        // move to the space this send is for has to settle first.
+        const sendSpaceId = spaceIdRef.current;
+        if (provisional.spaceId !== sendSpaceId) {
+          await overseer.moveToSpace(sendSpaceId);
+          provisional.spaceId = sendSpaceId;
+        }
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
           overseer.newChat(message, modelId, capsules, attachments, formats),
@@ -146,9 +195,11 @@ export function HomePageContent({ prompt }: HomeSearch) {
           });
         }
         throw err;
+      } finally {
+        setSending(false);
       }
     },
-    [ensureProvisionalGadget, navigate, toasts],
+    [ensureProvisionalGadget, navigate, toasts, whenSpaceSettled],
   );
 
   const getOverseer = useCallback((): RpcStub<Overseer> => {
@@ -213,6 +264,19 @@ export function HomePageContent({ prompt }: HomeSearch) {
             ? composerDraftStorageKey(currentUser.id, "home")
             : undefined}
         />
+
+        {/* Where the workspace is created, once the user has a team space to choose. Pulled up
+            under the composer's own controls. */}
+        {teamSpaces.length > 0 && (
+          <div className="-mt-6 flex justify-end px-1">
+            <NewWorkspaceSpaceSelect
+              teamSpaces={teamSpaces}
+              value={spaceId}
+              disabled={sending}
+              onValueChange={chooseSpace}
+            />
+          </div>
+        )}
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
         <HomeTaskSuggestions

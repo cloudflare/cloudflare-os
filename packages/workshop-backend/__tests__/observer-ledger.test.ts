@@ -68,6 +68,9 @@ type World = {
   impl: any;
   instance: OverseerDurableObject;
   roles: Map<string, Access>;
+  // The role each profile's membership of the workspace's space gives them, which the owner's
+  // User DO is asked for once the workspace has an owner (`impl.ownerId`).
+  spaceRoles: Map<string, "build" | "use">;
   // Per profile: the whole verifier, or an Error its User DO's getVerifier() throws.
   verifiers: Map<string, unknown>;
   checks: Check[];
@@ -136,6 +139,7 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
       impl,
       instance,
       roles: new Map(),
+      spaceRoles: new Map(),
       verifiers: new Map(),
       checks: [],
       restarts: [],
@@ -147,6 +151,8 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
         },
         describeConnectedAccount: async () => null,
         listProvidedAccounts: async () => [],
+        workspaceRoleInSpace: async (_workspace: string, asked: string) =>
+            world.spaceRoles.get(asked) ?? null,
       }),
     };
     world.impl.scheduleAccessRestart = async (reason: string) => { world.restarts.push(reason); };
@@ -162,6 +168,7 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
     });
     world.impl.users = {
       idFromName: (name: string) => name,
+      idFromString: (id: string) => id,
       get: (id: string) => world.clientUser(id),
     };
     await fn(world);
@@ -1903,5 +1910,82 @@ describe("direct context authorization", () => {
         { from: "gadget", chatId: 1 })).rejects.toThrow(/no attributable chat or gadget/);
 
     expect(impl.storage.nextActionId.get()).toBe(before);
+  }));
+
+  it("checks a member admitted through the workspace's space alone", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    impl.ownerId = "owner";
+    world.spaceRoles.set("mallory", "build");
+    impl.storage.observers.put(
+        { profileId: "mallory", observerId: "obs-m", accountChoices: { [CONN]: 20 } });
+
+    // Nothing remembers a role of hers yet, and whoever holds no session is checked at admission.
+    await impl.authorizeObservation(CONN, withSubresources(["before"]), { from: "user" });
+    expect(world.checks).toEqual([]);
+    expect(await impl.authorizeCollaborator("mallory", world.clientUser("mallory")))
+        .toEqual({ role: "build" });
+    expect(world.checks).toEqual([{ profileId: "mallory", ids: ["before"] }]);
+
+    // Admitted, she is in the audience of the next read, which she cannot see.
+    world.verifiers.set("mallory", observerVerifier(() => world, "mallory", ids => ids));
+    let before = impl.storage.nextActionId.get();
+    await expect(impl.authorizeObservation(CONN, withSubresources(["after"]), { from: "user" }))
+        .rejects.toThrow(/could not be confirmed/);
+    expect(world.checks.at(-1)).toEqual({ profileId: "mallory", ids: ["after"] });
+    expect(impl.storage.nextActionId.get()).toBe(before);
+  }));
+
+  it("checks a member of the space of a workspace that holds restricted data as a collaborator",
+      () => withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    impl.ownerId = "owner";
+    world.spaceRoles.set("mallory", "build");
+    impl.storage.observers.put(
+        { profileId: "mallory", observerId: "obs-m", accountChoices: { [CONN]: 20 } });
+    // The read that makes the workspace restricted and owner-invites-only is one she cannot see.
+    world.verifiers.set("mallory", observerVerifier(() => world, "mallory", ids => ids));
+    let sharing = { ...await impl.getSharingManager(), computeAffectedByOwnerInvitesOnly: () => [] };
+    impl.getSharingManager = async () => sharing;
+    await impl.authorizeObservation(CONN, withSubresources(
+        ["secret"], { containsRestrictedData: true, ownerInvitesOnly: true }), { from: "user" });
+    expect(impl.storage.containsRestrictedData.get()).toBe(true);
+    expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
+
+    // Her role in the space is what admits her, once she passes the check a collaborator would.
+    await expect(impl.authorizeCollaborator("mallory", world.clientUser("mallory")))
+        .rejects.toThrow(/could not confirm/);
+    expect(world.checks).toEqual([{ profileId: "mallory", ids: ["secret"] }]);
+    world.verifiers.delete("mallory");
+    expect(await impl.authorizeCollaborator("mallory", world.clientUser("mallory")))
+        .toEqual({ role: "build" });
+
+    // Admitted, she is in the audience of the next read.
+    world.checks.length = 0;
+    await impl.authorizeObservation(CONN, withSubresources(["after"]), { from: "user" });
+    expect(world.checks).toEqual([{ profileId: "mallory", ids: ["after"] }]);
+  }));
+
+  it("checks a member who uses for a gadget's read and not for a chat's", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedGadget(impl, GADGET, { DB: CONN });
+    impl.ownerId = "owner";
+    world.spaceRoles.set("carol", "use");
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+    expect(await impl.authorizeGadget("carol", world.clientUser("carol"), GADGET)).toBe(true);
+    world.checks.length = 0;
+
+    await impl.authorizeObservation(
+        CONN, withSubresources(["g"]), { from: "gadget", gadgetId: GADGET });
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["g"] }]);
+    impl.isLiveExecution = (chatId: number, id: string) => chatId === 1 && id === "e1";
+    await impl.authorizeObservation(
+        CONN, withSubresources(["c"]), { from: "agent", chatId: 1 }, "e1");
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["g"] }]);
   }));
 });

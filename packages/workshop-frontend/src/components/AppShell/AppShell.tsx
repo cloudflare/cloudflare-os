@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useRouterState } from '@tanstack/react-router'
 import { List, X } from '@phosphor-icons/react'
 import TopBarNotice from '../../TopBarNotice'
 import ReconnectingChip from '../ReconnectingChip'
+import { useUiFeatureFlag } from '../../FeatureFlagsContext'
 import { useConnectionLost } from '../../RpcContext'
 import Sidebar from './Sidebar'
 import CommandPalette from './CommandPalette'
@@ -87,6 +88,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setMobileOpen(false)
   }, [pathname])
+
+  // With the `spaces` flag on, a navigation that changes only the search closes the drawer too:
+  // the Home link changes nothing else when Home is open with the space a new workspace goes in
+  // named there (`/?space=<id>`). The flag is read when the location changes and is not itself
+  // watched, so its value arriving, or a session being replaced, closes nothing.
+  const spacesFlag = useUiFeatureFlag('spaces').enabled
+  const href = useRouterState({ select: (s) => s.location.href })
+  const closeOnSearchChange = useEffectEvent(() => {
+    if (spacesFlag) setMobileOpen(false)
+  })
+  useEffect(() => {
+    closeOnSearchChange()
+  }, [href])
 
   // Global ⌘K / Ctrl+K opens the command palette; the rail's search button opens it via a custom
   // event so it doesn't have to prop-drill into the palette.

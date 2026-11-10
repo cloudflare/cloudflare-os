@@ -28,6 +28,8 @@ import {
 import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
+import { SidebarSpaceLinks } from '../../features/spaces/SidebarSpaceLinks'
+import { useSpaces } from '../../features/spaces/useSpaces'
 import SidebarGadgetRow from './SidebarGadgetRow'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
@@ -311,6 +313,10 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
 
   const [favOpen, setFavOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
+  const [spacesOpen, setSpacesOpen] = useState(true)
+  // The user's team spaces. Their personal space gets no row: its workspaces head the Workspaces
+  // page, which the rail already links to. Empty while the `spaces` flag is off.
+  const teamSpaces = useSpaces().spaces.filter((space) => space.kind === 'team')
 
   if (collapsed) {
     const compact = [...favorites, ...recent].slice(0, 8)
@@ -328,6 +334,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onDelete={onDelete}
           />
         ))}
+        <SidebarSpaceLinks spaces={teamSpaces} collapsed />
       </div>
     )
   }
@@ -407,6 +414,19 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </>
         )}
       </SidebarSection>
+
+      {/* Spaces — each links to the space's own page. */}
+      {teamSpaces.length > 0 && (
+        <SidebarSection
+          label="Spaces"
+          open={spacesOpen}
+          onToggle={() => setSpacesOpen((o) => !o)}
+        >
+          <div className="flex flex-col">
+            <SidebarSpaceLinks spaces={teamSpaces} collapsed={false} />
+          </div>
+        </SidebarSection>
+      )}
     </div>
   )
 }

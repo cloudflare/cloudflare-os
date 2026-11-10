@@ -589,12 +589,16 @@ test("@reportsId becomes the command's reportsId, out of its doc, checked agains
   assert.deepEqual(tagged("shared notebook outline().title")().nodes.FixtureAuthedApi!.commands["new-notebook"]!.reportsId,
     { noun: "shared notebook", method: "outline", property: "title" });
 
-  // The real API's creating methods report the workspace's id.
+  // The real API's creating methods report the id of what they made.
   for (const name of ["new-workspace", "new-workspace-from-blueprint"]) {
     const created = real.nodes.AuthenticatedApi!.commands[name]!;
     assert.deepEqual(created.reportsId, { noun: "workspace", method: "getMetadata", property: "id" }, name);
     assert.doesNotMatch(created.doc, /@reportsId/, name);
   }
+  // And the one that creates a space reports the space's id.
+  const createSpace = real.nodes.AuthenticatedApi!.commands["create-space"]!;
+  assert.deepEqual(createSpace.reportsId, { noun: "space", method: "getInfo", property: "id" });
+  assert.doesNotMatch(createSpace.doc, /@reportsId/);
 });
 
 test("@nullWhen becomes the command's nullWhen, in the CLI's words and out of its doc, on a method whose null stops a chain", () => {

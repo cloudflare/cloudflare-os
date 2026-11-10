@@ -80,4 +80,6 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v3", new_sqlite_classes: ["UserDirectoryDurableObject"] },
   // The deployment-wide admin audit log (admin-audit.ts).
   { tag: "v4", new_sqlite_classes: ["AdminAuditDurableObject"] },
+  // Spaces: one SpaceDurableObject per space.
+  { tag: "v5", new_sqlite_classes: ["SpaceDurableObject"] },
 ];

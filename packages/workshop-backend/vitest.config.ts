@@ -108,6 +108,7 @@ export default defineConfig({
           // AdminSettings also reaches it through `ctx.exports`.
           TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
+          TEST_SPACE: { className: 'SpaceDurableObject', useSQLite: true },
         },
       },
     }),

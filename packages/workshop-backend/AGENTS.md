@@ -109,3 +109,8 @@ Workspace DO to User DO: individual read commands use an authorized open workspa
 bulk read actions and unread queries use only local User DO state. Never add a User DO callback
 to the workspace for unread state or metadata. The workspace checks existing observer admission
 locally before fanout, without re-enrolling observers or calling gatekeeper verifiers per message.
+
+## Spaces
+
+Spaces (one `SpaceDurableObject` per space with its rules in the pure `SpaceModel`, `src/spaces.ts`;
+each workspace's space on its owner's record in `user.ts`) are documented in `docs/spaces.md`.
