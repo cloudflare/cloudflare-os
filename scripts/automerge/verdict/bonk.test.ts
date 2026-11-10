@@ -4,7 +4,8 @@ import { describe, it } from "node:test";
 
 import { actionPins, buildBonkVerdict, type BonkInputs } from "./bonk.ts";
 
-const bonkWorkflow = readFileSync(new URL("../../../.github/workflows/bonk-pr.yml", import.meta.url), "utf8");
+// bonk-pr.yml as of ee876fd35, recorded so an unrelated workflow edit cannot break these tests.
+const bonkWorkflow = readFileSync(new URL("./testdata/bonk-pr-ee876fd35.yml", import.meta.url), "utf8");
 
 const FINGERPRINT = {
   model: "cloudflare-ai-gateway/openai/gpt-6.1-sol",
@@ -61,10 +62,8 @@ describe("buildBonkVerdict", () => {
 });
 
 describe("actionPins", () => {
-  it("reads the ask-bonk SHA and opencode version from bonk-pr.yml", () => {
-    const uses = /ask-bonk\/github@([0-9a-f]{40})/.exec(bonkWorkflow);
-    const version = /opencode_version: (\S+)/.exec(bonkWorkflow);
-    assert.deepEqual(actionPins(bonkWorkflow), { action: uses?.[1], opencode: version?.[1] });
+  it("reads the ask-bonk SHA and opencode version from a recorded bonk-pr.yml", () => {
+    assert.deepEqual(actionPins(bonkWorkflow), { action: "14a1af226388b15b389a0c1b7df9168a940165b6", opencode: "1.18.33" });
   });
 
   it("refuses a revision that pins no action, or two", () => {
