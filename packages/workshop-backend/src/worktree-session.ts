@@ -7,7 +7,9 @@
 // (agent.ts), so binding operations and file-tool operations see one consistent worktree, and
 // writes and commits buffer into the same step and become durable at the same barrier. The git
 // side -- base-tree walks, blob reads, commit writes -- goes through the host's WorkspaceGitCache,
-// the same plumbing the file tools' lazy reads use.
+// the same plumbing the file tools' lazy reads use. Only getReplicator() hands out access that
+// outlives the execution: the worktree's WorktreeReplicator (worktree-replica.ts), for a gatekeeper
+// keeping a replica of it.
 //
 // The env.GIT binding (git-binding.ts) serves this same class for its in-memory worktrees,
 // substituting a single object holding the worktree's state for both the turn and the host.
@@ -27,6 +29,7 @@ import type {
   WorktreeFileEntry,
 } from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { ReplicableWorktree, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
 import {
   diffFiles, validateCodeChangeSchema, type BytesRef, type FileChange, type FileContent,
 } from "@gadgets/workshop-shared/code-change";
@@ -37,12 +40,15 @@ import { formatGrep, scanWorkpieceForGrep } from "./grep";
 import { blobByteStream } from "./git-chunked-blob";
 
 /**
- * What the session needs from the overseer: the git plumbing and the worktree's registry record
- * (whose headCommit the step barrier owns). Structurally satisfied by OverseerImpl.
+ * What the session needs from the overseer: the git plumbing, the worktree's registry record
+ * (whose headCommit the step barrier owns), and its replicator. Structurally satisfied by
+ * OverseerImpl.
  */
 export interface WorktreeSessionHost {
   gitCache: WorkspaceGitCache;
   getWorktreeRecord(id: WorkpieceId): WorktreeRecordView;
+  /** ReplicableWorktree.getReplicator(); absent where the worktree can't be replicated. */
+  getWorktreeReplicator?(id: WorkpieceId): Promise<WorktreeReplicator>;
 }
 
 /** The slice of the worktree registry record the session reads. */
@@ -56,7 +62,7 @@ export interface WorktreeRecordView {
  * module doc for how state splits between the turn (`turn`) and the workspace (`host`).
  */
 @validateRpc()
-export class WorktreeSessionImpl extends RpcTarget implements Worktree {
+export class WorktreeSessionImpl extends RpcTarget implements Worktree, ReplicableWorktree {
   /**
    * `author` resolves who commits are attributed to. It is called only by commit(), so a session
    * that never commits never pays for resolving it (env.GIT's may need an RPC to the owner's DO).
@@ -404,6 +410,11 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       }
     }
     return files;
+  }
+
+  async getReplicator(): Promise<WorktreeReplicator> {
+    if (!this.host.getWorktreeReplicator) throw new Error("This worktree can't be replicated.");
+    return this.host.getWorktreeReplicator(this.worktreeId);
   }
 }
 

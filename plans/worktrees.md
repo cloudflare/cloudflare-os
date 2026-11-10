@@ -41,7 +41,7 @@ in `packages/workshop-shared/src/gatekeeper.ts`. Providers return a one-shot raw
 plus terminal status; the overseer owns bounded cache ingestion and requested-object checks.
 This kernel-facing method is not exposed to gadgets: the kernel routes pulls using recorded
 provenance, while the transport checks oid syntax, not advertisement history. Native Git in a
-container goes through the kernel instead (`ReplicableWorktree.gitPull()`, see
+container goes through the kernel instead (`WorktreeReplicator.gitPull()`, see
 `docs/worktree-replicas.md`), which asks providers for what it doesn't store.
 
 ## Locked decisions

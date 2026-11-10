@@ -1,15 +1,15 @@
 // Serve native Git's read-only smart-HTTP fetch (protocol v2) from a mounted worktree, so that a
 // container gatekeeper can point a Git remote at a made-up URL and forward the requests
 // `git fetch` makes to `serveGitUploadPack()`. The worktree's Git API is structured
-// (`ReplicableWorktree.gitHead()` and `gitPull()`); this translates between the two.
+// (`WorktreeReplicator.gitHead()` and `gitPull()`); this translates between the two.
 
 import type { GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
-import type { ReplicableWorktree, WorktreeGitPullHints } from "@gadgets/workshop-shared/worktree-replica";
+import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
 import { DELIM_PKT, encodePktLine, FLUSH_PKT, parsePktItems, pktText, type PktItem } from "./git-transport";
 import { readBytesCapped } from "./response-body";
 
-/** What `serveGitUploadPack()` serves: a Worktree stub, or anything with the same Git methods. */
-export type GitUploadPackSource = Pick<ReplicableWorktree, "gitHead" | "gitPull">;
+/** What `serveGitUploadPack()` serves: a WorktreeReplicator, or anything with the same Git methods. */
+export type GitUploadPackSource = Pick<WorktreeReplicator, "gitHead" | "gitPull">;
 
 /** The largest fetch request accepted: each `have` line is about 50 bytes. */
 const MAX_REQUEST_BYTES = 1024 * 1024;

@@ -1190,7 +1190,7 @@ export interface Gatekeeper<Session> extends DurableObject {
    * storage/transfer limits.
    *
    * The workspace also pulls history it has never stored, to serve native Git in a container
-   * that has mounted a worktree (see `ReplicableWorktree.gitPull()`). Such pulls pass the
+   * that has mounted a worktree (see `WorktreeReplicator.gitPull()`). Such pulls pass the
    * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
    * pulling a commit outside the cases above, the workspace confirms it is an ancestor of a
    * commit the gatekeeper is known to have, with a commit-only pull (`filterTreeDepth: 0`) of the

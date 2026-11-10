@@ -35,7 +35,7 @@ import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
 
-import type {ReplicableWorktree} from "@gadgets/workshop-shared/worktree-replica";
+import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-shared/worktree-replica";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -54,7 +54,7 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
-  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and keeps it. */
+  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and mounts it. */
   mountWorktree(worktree: unknown): Promise<string>;
   /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
   runCommand(path: string, text: string): Promise<string>;
@@ -467,11 +467,14 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         { ...input, chatGatewayRpcTarget });
   }
 
-  /** Fetches the worktree's head, as `git clone` would, and keeps the stub for runCommand(). */
+  /**
+   * Fetches the worktree's head, as `git clone` would, and keeps its replicator for runCommand().
+   */
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
-    this.ctx.storage.kv.put("mounted-worktree", worktree);
-    const head = await worktree.gitHead();
-    await fetchPack(worktree, head);
+    using replicator = await worktree.getReplicator();
+    this.ctx.storage.kv.put("mounted-worktree", replicator);
+    const head = await replicator.gitHead();
+    await fetchPack(replicator, head);
     return `worktree pack received for ${head}`;
   }
 
@@ -481,10 +484,10 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
    * the command left, which holds only `path`.
    */
   async runCommand(path: string, text: string): Promise<string> {
-    const worktree = this.ctx.storage.kv.get<RpcStub<ReplicableWorktree>>("mounted-worktree");
-    if (!worktree) throw new Error("No worktree is mounted");
-    const snapshot = await worktree.snapshot();
-    await fetchPack(worktree, snapshot.tree);
+    using replicator = this.ctx.storage.kv.get<RpcStub<WorktreeReplicator>>("mounted-worktree");
+    if (!replicator) throw new Error("No worktree is mounted");
+    const snapshot = await replicator.snapshot();
+    await fetchPack(replicator, snapshot.tree);
     const blob = {type: 3, payload: new TextEncoder().encode(text)};
     const blobId = await gitObjectId("blob", blob.payload);
     const tree = {type: 2, payload: concat([new TextEncoder().encode(`100644 ${path}\0`), hexBytes(blobId)])};
@@ -500,8 +503,8 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 }
 
 // Fetches `oid` from the worktree, checking that a raw Git pack arrives.
-async function fetchPack(worktree: RpcStub<ReplicableWorktree>, oid: string): Promise<void> {
-  using transfer = await worktree.gitPull([oid], {commitHistory: {kind: "full"}});
+async function fetchPack(replicator: RpcStub<WorktreeReplicator>, oid: string): Promise<void> {
+  using transfer = await replicator.gitPull([oid], {commitHistory: {kind: "full"}});
   const bytes = new Uint8Array(await new Response(await transfer.stream()).arrayBuffer());
   if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
 }

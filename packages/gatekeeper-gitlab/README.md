@@ -20,7 +20,7 @@ own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 `gitPull(oids, options)` returns a `GitPullTransfer`: a one-shot raw PACK stream and a separate
 terminal status. Lazy DO reads consume it through the bounded object cache. The same capability
 also serves native Git in a container that mounted a worktree: the container clones through
-`ReplicableWorktree.gitPull()`, and the kernel asks this gatekeeper for the history and files it
+`WorktreeReplicator.gitPull()`, and the kernel asks this gatekeeper for the history and files it
 doesn't store, streaming them through without storing the files (see
 [`docs/worktree-replicas.md`](../../docs/worktree-replicas.md#git-transport)). `gitPull` is
 kernel-facing, not a gadget-facing arbitrary Git proxy; the kernel selects objects from recorded

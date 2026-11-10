@@ -44,8 +44,8 @@ durable batch receipts).
 - **Step transactionality holds.** A command's edits join the running step's buffer, and are
   saved with its transcript or lost with it.
 - **Sync happens only during an `executeCode` call.** Background commands are not supported for
-  now. The Worktree stub stays persistent, so a container can mount in one turn and run
-  commands in later turns, across Durable Object restarts.
+  now. The worktree's replicator (from `getReplicator()`) is persistent, so a container can
+  mount in one turn and run commands in later turns, across Durable Object restarts.
 - **The unit of sync is a Git tree.** A hidden commit's metadata would mean nothing. Trees are
   content-addressed, so the container knows its files match the workspace's exactly when the
   tree IDs match. That holds across DO restarts, so a container never replays a history of
@@ -93,7 +93,7 @@ The docs describe the behaviour; these are the mechanisms behind it.
 
 ## Git fetches
 
-`ReplicableWorktree.gitPull()` is `worktreeGitPull` in
+`WorktreeReplicator.gitPull()` is `worktreeGitPull` in
 `packages/workshop-backend/src/worktree-git.ts`, fed by the overseer's `worktreeGitPull` and
 `#remoteHistoryBoundaries`. It takes the same structured arguments as `Gatekeeper.gitPull()`
 (less `type` and `referencedBy`, which a native client doesn't know) and returns a
@@ -227,11 +227,14 @@ Re-rooting a worktree's pin mid-epoch was new. These needed checking during impl
 
 Where the implementation departed from the design as first reviewed:
 
-- **The stored stub** (`926b2352`). What agent code passes on is the binding loopback, which
-  used to fail once its execution ended. Every call through it now resolves to the
-  `WorktreeEndpoint` of the execution that minted it: its file methods still work only during
-  that execution, while `gitPull()` works at any time and `snapshot()` serves whichever execution
-  is running in the chat. So a stub the agent passes to a gadget also keeps replica access.
+- **The stored stub** (`926b2352`, reshaped later). What agent code passes on is the binding
+  loopback, which fails once its execution ended. A gatekeeper instead stores the
+  `WorktreeReplicator` the stub's `getReplicator()` returns during that execution: a persistent
+  stub whose `gitHead()` and `gitPull()` work at any time and whose `snapshot()` serves whichever
+  execution is running in the chat. (An earlier shape made the binding itself persistent, with a
+  `WorktreeEndpoint` whose file methods still died with the execution; splitting the two kept
+  `WorktreeSessionImpl` as on main.) So a gadget the agent passes the stub to can also get
+  replica access.
 - **Object check on submit** (`926b2352`). Rather than every object reachable from the submitted
   tree but not the snapshot's, each object at a path where they differ must be stored or
   pullable, so a command can move a file the workspace never loaded. Submitted trees must also

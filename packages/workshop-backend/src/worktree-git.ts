@@ -20,7 +20,7 @@ export interface WorktreeGitSource {
 
   /**
    * The trees that may be fetched by ID: those the running execution handed out (see
-   * `ReplicableWorktree.snapshot()`).
+   * `WorktreeReplicator.snapshot()`).
    */
   trees: ReadonlySet<string>;
 
@@ -60,7 +60,7 @@ function checkHints(oids: string[], hints: WorktreeGitPullHints): void {
 }
 
 /**
- * Serve a Git pull of one worktree; see `ReplicableWorktree.gitPull()`. The worktree's own
+ * Serve a Git pull of one worktree; see `WorktreeReplicator.gitPull()`. The worktree's own
  * commits are built from workspace storage, while the files of the history's boundary commits
  * are streamed through from a connection rather than loaded into the workspace. History beyond
  * the boundary is proxied from a connection.

@@ -10,13 +10,16 @@
 // ID), the paths its submissions merged with conflicts (named in the executeCode result), and
 // each worktree's queue of submissions. A snapshot tree is stored like any other Git object and
 // nothing else records it; one no submission builds on is garbage for a future collection.
+//
+// A gatekeeper reaches these through a WorktreeReplicatorImpl, which outlives executions: it is
+// restored from a persistent stub, and serves whichever execution is running in the chat.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
-import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitOid, GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import type {
-  WorktreeCommand, WorktreeSnapshot, WorktreeState,
+  WorktreeCommand, WorktreeGitPullHints, WorktreeReplicator, WorktreeSnapshot, WorktreeState,
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
@@ -59,7 +62,7 @@ export class WorktreeReplicas {
     }
   }
 
-  /** `ReplicableWorktree.snapshot()`. */
+  /** `WorktreeReplicator.snapshot()`. */
   async snapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot> {
     this.requireLive();
     let { tree } = await this.#currentTree(worktreeId);
@@ -289,6 +292,41 @@ function canonicalTree(entries: GitTreeEntry[], payload: Uint8Array): boolean {
 // A diff entry as the entry a merged tree is written with.
 function fileEntry({ mode, oid }: DiffEntry): FileEntry {
   return { mode, oid };
+}
+
+/**
+ * What a WorktreeReplicator needs from the overseer, which checks that the worktree still belongs
+ * to the chat on each call. Structurally satisfied by OverseerImpl.
+ */
+export interface WorktreeReplicatorHost {
+  worktreeSnapshot(chatId: number, worktreeId: WorkpieceId): Promise<WorktreeSnapshot>;
+  worktreeGitHead(chatId: number, worktreeId: WorkpieceId): GitOid;
+  worktreeGitPull(chatId: number, worktreeId: WorkpieceId, oids: GitOid[],
+                  hints: WorktreeGitPullHints): Promise<GitPullTransfer>;
+}
+
+/**
+ * `WorktreeReplicator`: a gatekeeper's lasting replica access to a chat's worktree, restored
+ * from persistent stubs (see ReplicableWorktree.getReplicator()).
+ */
+@validateRpc()
+export class WorktreeReplicatorImpl extends RpcTarget implements WorktreeReplicator {
+  constructor(private host: WorktreeReplicatorHost, private chatId: number,
+              private worktreeId: WorkpieceId) {
+    super();
+  }
+
+  async snapshot(): Promise<WorktreeSnapshot> {
+    return this.host.worktreeSnapshot(this.chatId, this.worktreeId);
+  }
+
+  async gitHead(): Promise<GitOid> {
+    return this.host.worktreeGitHead(this.chatId, this.worktreeId);
+  }
+
+  async gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
+    return this.host.worktreeGitPull(this.chatId, this.worktreeId, oids, hints);
+  }
 }
 
 /** `WorktreeCommand`: one snapshot's handle; see the interface doc. */

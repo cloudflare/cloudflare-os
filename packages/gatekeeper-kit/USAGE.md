@@ -1233,16 +1233,19 @@ draining the stream, require `complete` before accepting the transfer. Cancel an
 and dispose the capability when done.
 
 The same capability serves native Git in a container that has mounted a worktree (see
-[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md)). The kernel parses the
-container's fetch and asks the provider for what the workspace doesn't store, passing the
-container's `haves`, its `shallow` boundary and any deepen (`commitHistory`, including
-`relative`) as hints. Packs stay self-contained (no thin-pack dependencies); the transfer's
+[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md)). The container gatekeeper's
+`serveGitUploadPack()` parses the container's fetch into a structured pull, and the kernel asks
+the provider for what the workspace doesn't store, passing the container's `haves`, its
+`shallow` boundary and any deepen (`commitHistory`, including `relative`) as hints. Packs stay self-contained (no thin-pack dependencies); the transfer's
 `shallowInfo()` reports the provider's `shallow-info` lines, which the raw pack doesn't carry.
 Cache fills never send `have`s.
 
-A container gatekeeper that mounts a worktree stores the Worktree stub, clones it with native Git
-through `worktree.gitPull(request)` from a guest-local URL it invents, and syncs around each
-command with `worktree.snapshot()` and the snapshot's `command.submit()`. The API is
+A container gatekeeper that mounts a worktree calls the Worktree stub's `getReplicator()` while
+the agent's call that passed the stub is running (the stub itself stops working when that code
+execution ends), and stores the persistent `WorktreeReplicator` it returns. It clones the
+worktree with native Git from a guest-local URL it invents, answering Git's requests with
+`serveGitUploadPack(request, replicator)` (`gatekeeper-kit/git-upload-pack`), and syncs around
+each command with `replicator.snapshot()` and the snapshot's `command.submit()`. The API is
 `workshop-shared/src/worktree-replica.ts`, and the Git command sequence is in
 [`docs/worktree-replicas.md`](../../docs/worktree-replicas.md#a-command-from-the-containers-side).
 

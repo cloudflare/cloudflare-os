@@ -10,9 +10,11 @@
 // The workspace is always the source of truth. The replica syncs with it only at the edges of a
 // command, and each sync is a Git tree:
 // 1. The gatekeeper receives a Worktree stub (e.g. through a call like
-//    `mountWorktree(env.REPO, "repo")`) and stores it. The stub is persistent, so the mount can
-//    outlast the agent turn and Durable Object restarts. It clones the worktree with `gitPull()`,
-//    which native Git reaches through gatekeeper-kit's `serveGitUploadPack()`.
+//    `mountWorktree(env.REPO, "repo")`), calls its `getReplicator()`, and stores the
+//    `WorktreeReplicator` it returns. The Worktree stub itself works only during the agent's code
+//    execution that passed it, but the replicator is persistent, so the mount can outlast the
+//    agent turn and Durable Object restarts. It clones the worktree with `gitPull()`, which native
+//    Git reaches through gatekeeper-kit's `serveGitUploadPack()`.
 // 2. Before running a command, it calls `snapshot()`. The workspace writes a Git tree of the
 //    worktree's current files, including uncommitted edits, and returns its ID along with a
 //    handle for this command. If the replica's files already have that tree, they are in sync.
@@ -43,7 +45,7 @@ export interface WorktreeState {
   /**
    * A Git tree of the worktree's files: the chat's accepted content plus its uncommitted edits,
    * including edits made earlier in the current execution. Fetch it with
-   * `ReplicableWorktree.gitPull()` (natively, `git fetch origin <tree>`) during the execution that
+   * `WorktreeReplicator.gitPull()` (natively, `git fetch origin <tree>`) during the execution that
    * received it, and update the files to it from the tree they actually have, not the last tree synced (a
    * command cut off by a restart may have left them changed). docs/worktree-replicas.md gives the
    * Git commands.
@@ -58,14 +60,14 @@ export interface WorktreeState {
   head: GitOid;
 }
 
-/** The worktree's state before a command, from `ReplicableWorktree.snapshot()`. */
+/** The worktree's state before a command, from `WorktreeReplicator.snapshot()`. */
 export interface WorktreeSnapshot extends WorktreeState {
   /** The handle through which this command's result is submitted (a stub, once received). */
   command: WorktreeCommand;
 }
 
 /**
- * One command's handle, from `ReplicableWorktree.snapshot()`. It lives in memory, bound to the
+ * One command's handle, from `WorktreeReplicator.snapshot()`. It lives in memory, bound to the
  * agent's code execution that was running when the snapshot was taken: it stops working when that
  * execution ends, and a workspace restart breaks it. If that happens while a command runs, stop
  * the command and everything it started, since its edits can no longer be submitted; the next
@@ -103,17 +105,27 @@ export interface WorktreeCommand extends RpcTarget {
 }
 
 /**
- * Methods a Worktree stub offers to gatekeepers that keep a replica of it. These sit alongside
- * the ordinary file methods (readFile(), writeFile(), commit(), ...) on the same stub.
- *
- * Unlike the file methods, which work only while the agent's code execution that received the
- * stub is running, these keep working afterwards: passing a Worktree stub to a gatekeeper hands
- * it lasting access to that one worktree. The stub is persistent, so store it along with the
- * replica. Access ends when the worktree or its chat is deleted. (The agent's own description of
- * the Worktree API omits these methods, because agents don't need them; that omission is not a
+ * What a Worktree stub offers to gatekeepers that keep a replica of it, alongside the ordinary
+ * file methods (readFile(), writeFile(), commit(), ...) on the same stub. (The agent's own
+ * description of the Worktree API omits it, because agents don't need it; that omission is not a
  * security boundary.)
  */
 export interface ReplicableWorktree extends RpcTarget {
+  /**
+   * The worktree's replicator, through which a gatekeeper keeps a replica of it. Like the file
+   * methods, this works only while the agent's code execution that received the stub is running,
+   * so call it when the stub is passed in.
+   */
+  getReplicator(): Promise<WorktreeReplicator>;
+}
+
+/**
+ * A gatekeeper's lasting access to one worktree, for keeping a replica of it, from
+ * `ReplicableWorktree.getReplicator()`. Passing a Worktree stub to a gatekeeper hands it this.
+ * The stub is persistent, so store it along with the replica. Access ends when the worktree or
+ * its chat is deleted.
+ */
+export interface WorktreeReplicator extends RpcTarget {
   /**
    * Write a Git tree of the worktree's current files and return it, with a handle for submitting
    * the command's result (see `WorktreeSnapshot`). Call this before each command, and update the
@@ -163,7 +175,7 @@ export interface ReplicableWorktree extends RpcTarget {
 }
 
 /**
- * What `ReplicableWorktree.gitPull()` should send, as for `Gatekeeper.gitPull()`, less what only
+ * What `WorktreeReplicator.gitPull()` should send, as for `Gatekeeper.gitPull()`, less what only
  * the workspace's own cache uses: the type of the objects wanted (a native Git client doesn't
  * know it) and the object that referenced them.
  */

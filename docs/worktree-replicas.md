@@ -48,11 +48,12 @@ worktree's chat. Background commands are not supported.
 
 ## API
 
-These methods are on the Worktree stub that agent code passes on (`env.REPO`), alongside the
-ordinary file methods. They are defined in
+The Worktree stub that agent code passes on (`env.REPO`) has one replica method,
+`getReplicator()`, alongside the ordinary file methods. It returns the `WorktreeReplicator` the
+gatekeeper keeps. Both are defined in
 [`packages/workshop-shared/src/worktree-replica.ts`](../packages/workshop-shared/src/worktree-replica.ts),
-which documents each one. The agent's description of the Worktree API omits them, since agents
-don't need them; that is for discoverability, not authorization.
+which documents each method. The agent's description of the Worktree API omits `getReplicator()`,
+since agents don't need it; that is for discoverability, not authorization.
 
 ```ts
 interface WorktreeState {
@@ -65,7 +66,10 @@ interface WorktreeSnapshot extends WorktreeState {
 interface WorktreeCommand extends RpcTarget {
   submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
 }
-interface ReplicableWorktree extends RpcTarget {
+interface ReplicableWorktree extends RpcTarget {  // the Worktree stub
+  getReplicator(): Promise<WorktreeReplicator>;  // only during the execution that passed the stub
+}
+interface WorktreeReplicator extends RpcTarget {  // persistent
   snapshot(): Promise<WorktreeSnapshot>;  // only during an agent's code execution
   gitHead(): Promise<GitOid>;             // at any time
   gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer>;  // at any time
@@ -77,14 +81,14 @@ type WorktreeGitPullHints = Omit<GitPullHints, "type" | "referencedBy">;
 ## A command, from the container's side
 
 Initial setup is an ordinary `git clone` of a made-up remote URL whose requests the gatekeeper
-answers with `serveGitUploadPack(request, worktree)` (see [Git transport](#git-transport)). The clone is shallow where the
+answers with `serveGitUploadPack(request, replicator)` (see [Git transport](#git-transport)). The clone is shallow where the
 history reaches a connected repository, with no special flags.
 
 The replica keeps a private index for syncing, separate from the real one, so that the real index
 can stay at the worktree's head. Below, `git-sync` stands for `GIT_INDEX_FILE=.git/replica-index
 git`. This is the sequence `__tests__/native/worktree-git.test.ts` runs against the kernel.
 
-1. **Snapshot.** Call `worktree.snapshot()`, which returns `{tree, head, command}`.
+1. **Snapshot.** Call `replicator.snapshot()`, which returns `{tree, head, command}`.
    - If `head` changed, fetch it: `git fetch origin`.
    - Compute the tree of the files as they actually are: `git-sync add -A`, then
      `actual=$(git-sync write-tree)`. Don't rely on the tree you last synced: a command cut off
@@ -238,24 +242,21 @@ never appear in the worktree's history.
 declarations, and replay rebuilds closed epochs from them, so they are roots for garbage
 collection for as long as the chat's history names them.
 
-## The Worktree stub
+## The Worktree stub and the replicator
 
 What a gatekeeper receives is the binding loopback the kernel minted into the agent's
-`executeCode` env. Every call through it, including from a gatekeeper that stored it, resolves to
-the Worktree endpoint for the execution that minted it:
+`executeCode` env. Every call through it resolves against the execution that minted it, and
+fails once that execution ends, since a worktree's uncommitted content lives in its turn. So the
+gatekeeper calls `getReplicator()` when the stub is passed in, and stores the
+`WorktreeReplicator` it returns.
 
-- **The file methods** (`readFile()`, `writeFile()`, `commit()`, ...) work only while that
-  execution runs, since a worktree's uncommitted content lives in its turn.
-- **The replica methods** keep working afterwards, for as long as the worktree belongs to the
-  chat and the chat exists. `gitHead()` and `gitPull()` work at any time, and `snapshot()` serves whichever
-  execution is running in the chat at the time.
-
-So passing a Worktree stub hands lasting access to that one worktree. A gatekeeper should store
-the stub with the replica, and can then mount in one turn and run commands in later turns,
-across workspace restarts. Deleting the worktree or its chat ends access (a fetch already
-streaming finishes). The stub is scoped to
-its worktree by the kernel, so it grants nothing beyond it; but a stub the agent passes to a
-gadget, not only to a gatekeeper, also keeps replica access.
+The replicator is a persistent stub, which keeps working for as long as the worktree belongs to
+the chat and the chat exists. `gitHead()` and `gitPull()` work at any time, and `snapshot()`
+serves whichever execution is running in the chat at the time. So passing a Worktree stub hands
+lasting access to that one worktree: a gatekeeper can mount in one turn and run commands in
+later turns, across workspace restarts. Deleting the worktree or its chat ends access (a fetch
+already streaming finishes). The replicator is scoped to its worktree by the kernel, so it
+grants nothing beyond it; but a gadget the agent passes the stub to can get one too.
 
 The receiving gatekeeper owns command approvals and the mount's lifetime.
 
@@ -267,7 +268,7 @@ whose `shallowInfo()` reports how the pack changes the guest's shallow boundary.
 checks the object IDs and depths, and re-encodes whatever it forwards to a connection from the
 hints.
 
-Native Git reaches it through gatekeeper-kit's `serveGitUploadPack(request, worktree)`. The
+Native Git reaches it through gatekeeper-kit's `serveGitUploadPack(request, replicator)`. The
 gatekeeper invents a guest-local origin URL and passes it the requests `git` makes to it,
 stripping the URL's own path; the kernel registers no URLs. The helper serves read-only Git
 protocol v2 smart HTTP: ref discovery and `ls-refs` from `gitHead()`, and `fetch` from
