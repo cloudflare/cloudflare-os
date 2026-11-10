@@ -252,7 +252,7 @@ test("native Git syncs a replica's files with snapshots and submissions", async 
       // plugin compiles; nothing here is called over RPC.
       name: "no-validation", setup(build) {
         build.onResolve({filter: /^capnweb-validate$/}, () => ({path: "capnweb-validate", namespace: "stub"}));
-        build.onLoad({filter: /.*/, namespace: "stub"}, () => ({contents: "export const validateRpc = () => () => {};"}));
+        build.onLoad({filter: /.*/, namespace: "stub"}, () => ({contents: "export const validateRpc = () => () => {};\nexport const skipRpcValidation = () => () => {};"}));
       },
     }]})).outputFiles[0].text;
   const dir = mkdtempSync(join(tmpdir(), "worktree-replica-"));
