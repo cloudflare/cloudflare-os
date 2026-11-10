@@ -70,7 +70,9 @@ import {
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
-import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
+import type {
+  AgentSpawnerBinding, CallableAgent, SpawnAttachment, SpawnCallableOptions, SpawnOptions,
+} from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from "./analytics";
@@ -6161,6 +6163,41 @@ class OverseerImpl implements AgentHooks {
       throw new Error("Attached files are too large.");
     }
     return result;
+  }
+
+  // Check the files a gadget attaches to AgentSpawnerBinding.spawn() exactly as a user's uploads
+  // are checked (count, size, and MIME signature). Writes nothing: the gadget stored the blobs
+  // itself with env.GIT.writeBlob(). Only blob oids are accepted -- rebuilding each handle drops
+  // anything else, so a gadget can't name a user's staged upload by id.
+  checkSpawnAttachments(attachments?: SpawnAttachment[]): ChatAttachmentRef[] | undefined {
+    return this.canonicalizeChatAttachmentRefs(
+        attachments?.map(({oid, mimeType, name}) => ({oid, mimeType, name})));
+  }
+
+  // Write the prompt of a chat spawned with AgentSpawnerBinding.spawn(), which the spawner
+  // created with no messages, along with the attachments checkSpawnAttachments() returned. As in
+  // newChat(), the attachments are projected into a new scratch worktree and committed with the
+  // message, so the agent sees them exactly as it sees a user's uploads: images inline in the
+  // prompt, and every file in its workspace.
+  async writeSpawnedChatPrompt(
+      chatId: number, timestamp: Date, author: AiChatAuthorInfo, prompt: string,
+      attachments: ChatAttachmentRef[] | undefined): Promise<void> {
+    let files = await this.#prepareWorkspaceAttachmentFiles(chatId, attachments);
+    let scratchWorktree = await this.#prepareScratchWorktree(chatId, files, author);
+    this.ctx.storage.transactionSync(() => {
+      if (scratchWorktree !== undefined) this.#installScratchWorktree(chatId, scratchWorktree);
+      this.commitChatAttachments(chatId, attachments, scratchWorktree?.commitId);
+      this.storage.chats.put({
+        chatId,
+        sequence: this.nextChatSequence(chatId),
+        timestamp,
+        author,
+
+        type: "message",
+        message: prompt,
+        attachments,
+      });
+    });
   }
 
   commitChatAttachments(
@@ -14271,9 +14308,11 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 interface AgentSpawnerQueue extends ApprovalQueue {
   /**
    * Implements AgentSpawnerBinding.spawn(), resolving the model from the account of
-   * `creatorUserId` (see AgentSpawnerBindingProps): the agent starts at once on `prompt`.
+   * `creatorUserId` (see AgentSpawnerBindingProps): the agent starts at once on `prompt`, with
+   * `options.attachments` attached to it.
    */
-  spawnAgent(title: string, prompt: string, creatorUserId?: string): Promise<void>;
+  spawnAgent(title: string, prompt: string, creatorUserId?: string, options?: SpawnOptions)
+      : Promise<void>;
 
   /**
    * Implements AgentSpawnerBinding.spawnCallable(), resolving the model as spawnAgent() does:
@@ -14287,24 +14326,20 @@ interface AgentSpawnerQueue extends ApprovalQueue {
 
 @validateRpc()
 class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQueue {
-  async spawnAgent(title: string, prompt: string, creatorUserId?: string): Promise<void> {
+  async spawnAgent(title: string, prompt: string, creatorUserId?: string, options?: SpawnOptions)
+      : Promise<void> {
+    // Checked before the chat exists, so a bad attachment creates no chat.
+    let attachments = this.impl.checkSpawnAttachments(options?.attachments);
+
     let {chatId, meta, userMeta, author, initiatorUserId} =
         await this.#createSpawnedChat(title, creatorUserId);
+
+    await this.impl.writeSpawnedChatPrompt(chatId, meta.started, author, prompt, attachments);
 
     if (userMeta.aiModel) {
       meta.activeAgent = userMeta.aiModel.profile;
       this.impl.storage.chatMeta.put(meta);
     }
-
-    this.impl.storage.chats.put({
-      chatId,
-      sequence: this.impl.nextChatSequence(chatId),
-      timestamp: meta.started,
-      author,
-
-      type: "message",
-      message: prompt,
-    });
 
     if (userMeta.aiModel) {
       // Fire off the agent (asynchronously).
@@ -14382,8 +14417,9 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       }
     }
 
+    // A new chat has no legacy attachments to migrate (see #migrateChatAttachments).
     let context: AiChatAgentContext = {
-      chatId, spawnerConfig: {...config, env: bindings}, bindings,
+      chatId, spawnerConfig: {...config, env: bindings}, bindings, attachmentsMigrated: true,
     };
     if (spawnerTypes) context.spawnerTypes = spawnerTypes;
     this.impl.storage.chatContext.put(context);
@@ -14462,11 +14498,11 @@ class AgentSpawnerBindingImpl extends RpcTarget {
     super();
   }
 
-  async spawn(title: string, prompt: string): Promise<void> {
+  async spawn(title: string, prompt: string, options?: SpawnOptions): Promise<void> {
     // TODO: Should we be calling authorizeObservation() here? It's not really observing anything,
     //   but you might want the audit logs? But also, the agents show up in the chat history so
     //   maybe it's not really necessary to include them in the audit log too.
-    return this.queue.spawnAgent(title, prompt, this.ctx.props.creatorUserId);
+    return this.queue.spawnAgent(title, prompt, this.ctx.props.creatorUserId, options);
   }
 
   // Migration guard: `options` admits a string only so that a gadget written against the old

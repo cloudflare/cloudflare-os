@@ -4,8 +4,9 @@
 // Minted per loopback session by the overseer's binding-loopback dispatch (startGatekeeperSession,
 // target type "git"). It grants nothing its callers couldn't already reach: reading a commit
 // requires knowing its full id (never a guessable abbreviation; see
-// WorkspaceGitCache.resolveCommitId), and writing only adds content-addressed objects to the
-// workspace's git store, never moving anything that names a commit.
+// WorkspaceGitCache.resolveCommitId), and writing (worktree commits, writeBlob) only adds
+// content-addressed objects to the workspace's git store, never moving anything that names a
+// commit.
 //
 // Its worktrees are the same WorktreeSessionImpl the agent's worktree bindings use, over an
 // InMemoryWorktree in place of the agent turn's state: uncommitted content lives in the session
@@ -132,5 +133,15 @@ export class GitImpl extends RpcTarget implements Git {
     await this.host.gitCache.ensureObject(oid, { type: "commit" });
     let { parents, message, author, committer } = this.host.gitCache.readCommitObject(oid);
     return { parents, message, author, committer };
+  }
+
+  // What Overseer.uploadBlob() does for the chat composer: the returned oid is a handle to bytes
+  // that an attachment can name (see AgentSpawnerBinding.spawn()). Grants nothing new: a
+  // worktree's writeBytes() and commit() already store blobs of any size.
+  async writeBlob(content: Uint8Array | ReadableStream<Uint8Array>): Promise<string> {
+    let { oid } = content instanceof Uint8Array
+        ? this.host.gitCache.writeBlob(content)
+        : await this.host.gitCache.writeBlobStream(content);
+    return oid;
   }
 }

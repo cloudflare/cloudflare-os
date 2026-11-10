@@ -324,6 +324,15 @@ describe("env.GIT readCommit", () => {
     await expect(git.readCommit("main")).rejects.toThrow(/not a full git commit id/);
     await expect(git.readCommit(tree)).rejects.toThrow(/is a tree, not a commit/);
   }));
+
+  it("writes blobs from bytes or a stream, returning their oid", () => withImpl(async impl => {
+    using git = new RpcStub(await openGit(impl));
+    let bytes = new TextEncoder().encode("hello\n");
+    let oid = await git.writeBlob(bytes);
+    expect(oid).toBe("ce013625030ba8dba906f756967f9e9ca394464a");  // `git hash-object`
+    expect(impl.gitCache.readBlob(oid, bytes.byteLength)).toEqual(bytes);
+    expect(await git.writeBlob(new Blob([bytes]).stream())).toBe(oid);
+  }));
 });
 
 describe("env.GIT presence", () => {
@@ -412,6 +421,7 @@ describe("env.GIT presence", () => {
     expect(description).toContain("export interface Git");
     expect(description).toContain("newWorktree(commitId: string): Promise<Worktree>");
     expect(description).toContain("readCommit(commitId: string): Promise<CommitMetadata>");
+    expect(description).toContain("writeBlob(content: Uint8Array | ReadableStream<Uint8Array>)");
     expect(description).toContain("export type CommitMetadata");
     expect(description).toContain("export interface Worktree");
     expect(description).not.toContain("BEGIN AGENT API");

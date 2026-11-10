@@ -44,6 +44,14 @@ export interface Git {
    * the commit with `newWorktree()`.
    */
   readCommit(commitId: string): Promise<CommitMetadata>;
+
+  /**
+   * Store raw bytes in the workspace's git store as a blob, and return its ID (40 hex digits).
+   * The ID is the content's address: storing the same bytes again returns the same ID. Use it
+   * where an API takes a stored file by ID, e.g. the attachments of an agent spawner's `spawn()`.
+   * Pass a `ReadableStream` for content too large to hold in memory.
+   */
+  writeBlob(content: Uint8Array | ReadableStream<Uint8Array>): Promise<string>;
 }
 
 /** Result of `Git.readCommit()`. */
