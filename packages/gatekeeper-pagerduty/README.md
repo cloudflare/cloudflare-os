@@ -154,6 +154,8 @@ Limits:
 - **Only the webhook's own account is served.** An event goes only to hooks on the account its
   incident link names (subdomain and region); hooks on any other account never see it.
 - **Every delivery costs a REST read** as the hook's owner, against their rate limit.
+- **Disconnecting drops the connection's hooks**, and enabling one afterwards fails with "This
+  PagerDuty account has been disconnected." Reconnecting keeps them.
 
 For local development, PagerDuty can't reach `localhost`: run a tunnel to the dev server (e.g.
 `cloudflared tunnel --url http://localhost:8787`), point a webhook at
