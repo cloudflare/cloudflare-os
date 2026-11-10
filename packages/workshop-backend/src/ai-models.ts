@@ -775,7 +775,8 @@ function toWellFormedJson(value: unknown): unknown {
   if (typeof value === "string") return value.toWellFormed();
   if (Array.isArray(value)) return value.map(toWellFormedJson);
   if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toWellFormedJson(item)]));
+  return Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [key.toWellFormed(), toWellFormedJson(item)]));
 }
 
 /**
