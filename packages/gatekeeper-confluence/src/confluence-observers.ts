@@ -182,7 +182,7 @@ export class ConfluenceObserverTracker {
   async addObserver(id: string, verifier: Fetcher<ConfluenceVerifierApi>): Promise<void> {
     const checked = new Set<ConfluenceObservedSet>();
     while (true) {
-      const sets = this.#listTrackedSets().filter(setId => !checked.has(setId));
+      const sets = this.trackedSets().filter(setId => !checked.has(setId));
       if (sets.length === 0) {
         this.#kv.put(this.#observerKey(id), verifier);
         return;
@@ -205,8 +205,8 @@ export class ConfluenceObserverTracker {
   // Centralize the persisted key format so writes and deletes cannot drift apart.
   #observerKey(id: string): string { return `observer:${id}`; }
 
-  /** Restores every typed observed-set ID from the DO's marker keys. */
-  #listTrackedSets(): ConfluenceObservedSet[] {
+  /** Every typed observed-set ID the DO's marker keys record, pending ones included. */
+  trackedSets(): ConfluenceObservedSet[] {
     const prefix = "observed:";
     return [...this.#kv.list<ObservedSetState>({ prefix })]
       .map(([key]) => key.slice(prefix.length) as ConfluenceObservedSet);

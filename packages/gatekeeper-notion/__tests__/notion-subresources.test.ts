@@ -14,6 +14,7 @@ import {
   assertBindingSubresources,
   checkNotionSubresourceAccess,
   credentialsId,
+  legacyHistory,
   itemSubresourceId,
   nameNewCredentials,
   parseNotionSubresource,
@@ -146,6 +147,27 @@ describe("assertBindingSubresources", () => {
   });
 });
 
+describe("legacyHistory", () => {
+  it("exports what an item binding's admission checked: the bound item, in the owner's workspace", () => {
+    const history = legacyHistory({ kind: "item", itemId: PAGE }, WORKSPACE, []);
+    expect(history).toEqual([pageId]);
+    expect(() => assertBindingSubresources({ kind: "item", itemId: PAGE }, history)).not.toThrow();
+  });
+
+  it("exports membership and every tracked item of a workspace binding, once each", () => {
+    const history = legacyHistory({ kind: "workspace" }, WORKSPACE, [PAGE_NORMALIZED, CHILD, PAGE]);
+    expect(history).toEqual([workspaceId, pageId, childId]);
+    expect(() => assertBindingSubresources({ kind: "workspace" }, history)).not.toThrow();
+    expect(legacyHistory({ kind: "workspace" }, WORKSPACE, [])).toEqual([workspaceId]);
+  });
+
+  it("refuses to export history it can't name", () => {
+    expect(() => legacyHistory({ kind: "workspace" }, undefined, [CHILD])).toThrow();
+    expect(() => legacyHistory({ kind: "item", itemId: PAGE }, undefined, [])).toThrow();
+    expect(() => legacyHistory({ kind: "workspace" }, WORKSPACE, ["~1"])).toThrow();
+  });
+});
+
 describe("checkNotionSubresourceAccess", () => {
   let kv: FakeKv;
   let access: KvTtlCache;
@@ -168,13 +190,30 @@ describe("checkNotionSubresourceAccess", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  let workspaceLookups = 0;
   const check = (ids: string[], ownWorkspace: { id?: string } = { id: WORKSPACE }) =>
-    checkNotionSubresourceAccess({ access, workspaceId: ownWorkspace.id, api: { detectKind } }, ids);
+    checkNotionSubresourceAccess({
+      access,
+      workspaceId: async () => {
+        workspaceLookups++;
+        return ownWorkspace.id;
+      },
+      api: { detectKind },
+    }, ids);
 
   it("compares workspace membership without asking Notion", async () => {
     expect(await check([workspaceId, workspaceSubresourceId(OTHER_WORKSPACE)])).toEqual([true, false]);
     expect(await check([workspaceId], {})).toEqual([false]);
     expect(detectKind).not.toHaveBeenCalled();
+  });
+
+  it("looks the account's workspace up once, and only when a membership is asked about", async () => {
+    workspaceLookups = 0;
+    expect(await check([pageId, childId])).toEqual([true, true]);
+    expect(workspaceLookups).toBe(0);
+    expect(await check([workspaceId, pageId, workspaceSubresourceId(OTHER_WORKSPACE)]))
+      .toEqual([true, true, false]);
+    expect(workspaceLookups).toBe(1);
   });
 
   it("parses every ID before asking Notion anything", async () => {

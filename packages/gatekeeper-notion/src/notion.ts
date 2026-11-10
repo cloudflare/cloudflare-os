@@ -79,6 +79,7 @@ import {
   assertBindingSubresources,
   checkNotionSubresourceAccess,
   credentialsId,
+  legacyHistory,
   nameNewCredentials,
   normalizeId,
 } from "./notion-subresources";
@@ -526,6 +527,37 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
+   * The id of the Notion workspace this account's connection belongs to, or `undefined` while it
+   * holds no credentials or when Notion names none. A connection made before workspace ids were
+   * stored asks Notion (users/me, with its own token) and stores the answer into its account info,
+   * unless a reconnect or revoke replaced the credentials meanwhile: then the installed ones' stored
+   * id answers, so one connection's workspace is never stored under another's. Throws when Notion
+   * can't be asked.
+   */
+  async getWorkspaceId(): Promise<string | undefined> {
+    const stored = this.ctx.storage.kv.get<StoredAccountInfo>("accountInfo")?.workspaceId;
+    if (stored) return stored;
+    const installed = credentialsId(this.ctx.storage.kv);
+    if (installed === undefined) return undefined;
+    const { workspaceId } = await this.#api().getBotUser();
+    // Read again: a refresh while Notion answered may have stored an id, and a reconnect another
+    // connection's info.
+    const info = this.ctx.storage.kv.get<StoredAccountInfo>("accountInfo");
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed || info?.workspaceId) {
+      return info?.workspaceId;
+    }
+    if (workspaceId) this.ctx.storage.kv.put<StoredAccountInfo>("accountInfo", { ...info, workspaceId });
+    return workspaceId;
+  }
+
+  #api(): NotionApi {
+    return new NotionApi(
+      async () => await this.getAccessToken(),
+      async () => await this.refreshCredentials(),
+    );
+  }
+
+  /**
    * Whether this account can read each Notion subresource, in order (see
    * checkNotionSubresourceAccess). An item answer is reused for up to ITEM_ACCESS_ALLOWED_TTL_MS if
    * allowed and ITEM_ACCESS_DENIED_TTL_MS if denied, until credentials are next installed. Every
@@ -537,11 +569,8 @@ export class UserAccount extends DurableObject<Env> {
     const installed = credentialsId(this.ctx.storage.kv);
     const answers = await checkNotionSubresourceAccess({
       access: this.#access,
-      workspaceId: this.ctx.storage.kv.get<StoredAccountInfo>("accountInfo")?.workspaceId,
-      api: new NotionApi(
-        async () => await this.getAccessToken(),
-        async () => await this.refreshCredentials(),
-      ),
+      workspaceId: () => this.getWorkspaceId(),
+      api: this.#api(),
     }, subresources);
     if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
       throw new Error("This collaborator's Notion connection changed while their access was being checked.");
@@ -728,10 +757,10 @@ export class NotionVerifier extends WorkerEntrypoint<Env, NotionVerifierProps>
   }
 
   async hasWorkspaceAccess(workspaceId: string): Promise<boolean> {
-    const info = await this.#account().getAccountInfo();
-    // Fail closed if either side's workspace id is unknown (e.g. an account connected before workspace
-    // ids were persisted): the observer must reconnect before they can be admitted.
-    return !!info.workspaceId && info.workspaceId === workspaceId;
+    // Fail closed if either side's workspace id is unknown even after asking Notion (see
+    // UserAccount.getWorkspaceId): the observer must reconnect before they can be admitted.
+    const own = await this.#account().getWorkspaceId();
+    return !!own && own === workspaceId;
   }
 
   async hasItemAccess(itemId: string): Promise<boolean> {
@@ -836,17 +865,16 @@ export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatek
     const kind = await this.#kind();
     const scope = new NotionObservationScope(
       { kind: "item", itemId: this.ctx.props.itemId },
-      async () => (await this.#ownerInfo()).workspaceId);
+      async () => await this.#owner().getWorkspaceId());
     if (kind === "database") {
       return new NotionDatabaseSessionImpl(store, approvalQueue.dup(), this.ctx.props.itemId, scope);
     }
     return new NotionPageSessionImpl(store, approvalQueue.dup(), this.ctx.props.itemId, scope);
   }
 
-  async #ownerInfo(): Promise<StoredAccountInfo> {
-    return await this.ctx.exports.UserAccount
-      .get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId))
-      .getAccountInfo();
+  #owner() {
+    return this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
   }
 
   /**
@@ -883,6 +911,15 @@ export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatek
   ): Promise<{ allowedObserverIds: string[] }> {
     assertBindingSubresources({ kind: "item", itemId: this.ctx.props.itemId }, subresources);
     return await verifyNotionAccess(observers, subresources);
+  }
+
+  /**
+   * What addObserver requires, as subresource IDs: the bound page or database, named under the
+   * owner's stored workspace (see legacyHistory). Reads stored state only.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    const { workspaceId } = await this.#owner().getAccountInfo();
+    return legacyHistory({ kind: "item", itemId: this.ctx.props.itemId }, workspaceId, []);
   }
 
   async applyAction(action: number): Promise<void> {
@@ -942,19 +979,19 @@ export class NotionWorkspaceGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<NotionWorkspaceSession> {
-    const info = await this.#ownerInfo();
+    const info = await this.#owner().getAccountInfo();
     const authorizedBy: NotionUser | null = info.ownerId
       ? { id: info.ownerId, name: info.ownerName, avatarUrl: info.ownerAvatar, type: "person" }
       : null;
     return new NotionWorkspaceSessionImpl(
       this.#store(), approvalQueue.dup(), authorizedBy,
-      new NotionObservationScope({ kind: "workspace" }, async () => info.workspaceId));
+      new NotionObservationScope(
+        { kind: "workspace" }, async () => await this.#owner().getWorkspaceId()));
   }
 
-  async #ownerInfo(): Promise<StoredAccountInfo> {
-    return await this.ctx.exports.UserAccount
-      .get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId))
-      .getAccountInfo();
+  #owner() {
+    return this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
   }
 
   // -------------------------------------------------------------------------
@@ -980,7 +1017,7 @@ export class NotionWorkspaceGatekeeperImpl
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<NotionVerifierApi>;
-    const workspaceId = (await this.#ownerInfo()).workspaceId;
+    const workspaceId = await this.#owner().getWorkspaceId();
     if (!workspaceId) throw new Error(MISSING_WORKSPACE_ID_MESSAGE);
     if (!(await verifier.hasWorkspaceAccess(workspaceId))) {
       throw new Error(
@@ -1021,6 +1058,16 @@ export class NotionWorkspaceGatekeeperImpl
   ): Promise<{ allowedObserverIds: string[] }> {
     assertBindingSubresources({ kind: "workspace" }, subresources);
     return await verifyNotionAccess(observers, subresources);
+  }
+
+  /**
+   * What addObserver requires, as subresource IDs: membership of the owner's stored workspace and
+   * every item the legacy tracker recorded under `observedItem:`, pending or observed (see
+   * legacyHistory). Reads stored state only.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    const { workspaceId } = await this.#owner().getAccountInfo();
+    return legacyHistory({ kind: "workspace" }, workspaceId, this.#listTrackedItems());
   }
 
   async applyAction(action: number): Promise<void> {
@@ -1215,8 +1262,9 @@ class NotionPageSessionImpl extends RpcTarget implements NotionPageSession {
     const pageId = this.#pageId;
     const provisional = this.#isProvisional();
     // Walk the block tree so sub-pages nested inside layout containers (columns, toggles, etc.) are
-    // found, not just direct children. The full set is gathered once (one observation), then served
-    // in `pageSize` chunks through the cursor.
+    // found, not just direct children. The full set is gathered once, then served in `pageSize`
+    // chunks through the cursor, each its own observation: one naming a large page's every child
+    // could exceed what the Workshop accepts of an observation.
     let all: NotionItemSummary[] | null = null;
     let offset = 0;
     return new PagedCursor<NotionItemSummary>(async () => {
@@ -1226,22 +1274,22 @@ class NotionPageSessionImpl extends RpcTarget implements NotionPageSession {
           const tree = await store.api.fetchBlockTree(store.resolveId(pageId));
           collectChildPages(tree, collected);
         }
-        const listed = overlayChildPages(collected, pageId, store, true);
-        // The listing reveals each (real) child item's existence/title, so attribute it to the parent
-        // page plus the child pages/databases themselves.
-        const itemIds = provisional ? [] : [
-          store.resolveId(pageId),
-          ...listed.filter(c => !NotionStore.isProvisional(c.id)).map(c => c.id),
-        ];
-        await scope.authorize(approvalQueue, itemIds,
-          observation("List Notion child pages", `List the sub-pages of Notion page ${store.resolveId(pageId)}.`));
-        // Buffered only once authorized, so a retry after a refused authorization asks again rather
-        // than serving what the refused one would have revealed.
-        all = listed;
+        all = overlayChildPages(collected, pageId, store, true);
       }
-      const slice = all.slice(offset, offset + pageSize);
+      const listed = all;
+      const slice = listed.slice(offset, offset + pageSize);
+      // The chunk reveals each (real) child item's existence/title, so attribute it to the parent
+      // page plus those child pages/databases.
+      const itemIds = provisional ? [] : [
+        store.resolveId(pageId),
+        ...slice.filter(c => !NotionStore.isProvisional(c.id)).map(c => c.id),
+      ];
+      await scope.authorize(approvalQueue, itemIds,
+        observation("List Notion child pages", `List the sub-pages of Notion page ${store.resolveId(pageId)}.`));
+      // Advanced only once authorized, so a retry after a refused authorization asks again for the
+      // same chunk rather than serving it, or skipping past it, unasked.
       offset += slice.length;
-      return { items: slice, nextCursor: offset < all.length ? String(offset) : undefined };
+      return { items: slice, nextCursor: offset < listed.length ? String(offset) : undefined };
     });
   }
 

@@ -710,6 +710,26 @@ async function verifyBindingAccess(
   return await verifyConfluenceAccess(observers, subresources);
 }
 
+/**
+ * A binding's `getHistoricalSubresources()`: the resource its legacy addObserver() checked of every
+ * collaborator (`baseline`, the bound site, space, or content), then each space and content item
+ * `tracker` recorded, as the subresources reads report them. Reads storage only.
+ * @throws Error rather than export an ID that `reported` says this binding's
+ * verifyObserverAccess() refuses.
+ */
+function legacyHistory(
+  baseline: ConfluenceSubresource, tracker: ConfluenceObserverTracker,
+  reported: (resource: ConfluenceSubresource) => boolean,
+): string[] {
+  const history = new BindingSubresources(baseline).of(tracker.trackedSets());
+  for (const subresource of history) {
+    if (!reported(parseConfluenceSubresource(subresource))) {
+      throw new Error(`This Confluence binding recorded ${subresource}, which its reads never report.`);
+    }
+  }
+  return history;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Gatekeeper DO instances.
 
@@ -788,6 +808,16 @@ export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekee
     return await verifyBindingAccess(observers, subresources, this.ctx.props.cloudId, () => true);
   }
 
+  /**
+   * The site, which addObserver() required of every collaborator, and each space and content item
+   * the legacy tracker recorded, as `site/<cloudId>/space/<spaceId>` and
+   * `site/<cloudId>/content/<contentId>`.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(
+      { kind: "site", cloudId: this.ctx.props.cloudId }, this.#tracker(), () => true);
+  }
+
   async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
   async rejectAction(action: number) { return rejectStoredAction(this.#store(), action); }
   async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
@@ -849,9 +879,24 @@ export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatek
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    return await verifyBindingAccess(observers, subresources, this.ctx.props.cloudId, resource =>
-      resource.kind === "content" ||
-      (resource.kind === "space" && resource.space === this.ctx.props.spaceKey));
+    return await verifyBindingAccess(
+      observers, subresources, this.ctx.props.cloudId, resource => this.#reports(resource));
+  }
+
+  /**
+   * The space, by key, which addObserver() required of every collaborator, and each content item
+   * the legacy tracker recorded, as `site/<cloudId>/content/<contentId>`.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(
+      { kind: "space", cloudId: this.ctx.props.cloudId, space: this.ctx.props.spaceKey },
+      this.#tracker(), resource => this.#reports(resource));
+  }
+
+  // Whether this binding's reads report `resource`, on the bound site: its space or any content.
+  #reports(resource: ConfluenceSubresource): boolean {
+    return resource.kind === "content" ||
+      (resource.kind === "space" && resource.space === this.ctx.props.spaceKey);
   }
 
   async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
@@ -919,6 +964,16 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
       resource => resource.kind === "content");
   }
 
+  /**
+   * The content, which addObserver() required of every collaborator, and each child page the
+   * legacy tracker recorded, as `site/<cloudId>/content/<contentId>`.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return legacyHistory(
+      { kind: "content", cloudId: this.ctx.props.cloudId, contentId: this.ctx.props.contentId },
+      this.#tracker(), resource => resource.kind === "content");
+  }
+
   async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
   async rejectAction(action: number) { return rejectStoredAction(this.#store(), action); }
   async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
@@ -963,23 +1018,37 @@ function disposeQueue(stub: RpcStub<ApprovalQueue>): void {
 /**
  * What a binding's reads report as subresources: on every read, the resource its legacy admission
  * baseline checked (the bound site, space, or content), plus each space or content item the read
- * reveals, named as the legacy tracker records it. Threaded unchanged into nested sessions and
- * cursors, so a space or content opened through a site binding still reports the site. The
- * baseline is formatted up front, so a binding missing the identity it needs fails to start.
+ * reveals, named as the legacy tracker records it. Threaded into nested sessions and cursors, so a
+ * space or content opened through a site binding still reports the site; a space session opened
+ * through it also reports that space on every read (see within). The baseline is formatted up
+ * front, so a binding missing the identity it needs fails to start.
  */
 class BindingSubresources {
-  readonly #cloudId: string;
-  readonly #baseline: string;
+  readonly #baseline: ConfluenceSubresource;
+  readonly #opened: ConfluenceObservedSet[];
+  readonly #required: string[];
 
-  constructor(baseline: ConfluenceSubresource) {
-    this.#cloudId = baseline.cloudId;
-    this.#baseline = formatConfluenceSubresource(baseline);
+  constructor(baseline: ConfluenceSubresource, opened: ConfluenceObservedSet[] = []) {
+    this.#baseline = baseline;
+    this.#opened = opened;
+    this.#required = [
+      formatConfluenceSubresource(baseline),
+      ...opened.map(set => observedSetSubresource(baseline.cloudId, set)),
+    ];
+  }
+
+  /**
+   * The subresources of a session opened on `opened` through this one, whose every read depends
+   * on it too, even one revealing nothing narrower.
+   */
+  within(opened: ConfluenceObservedSet[]): BindingSubresources {
+    return new BindingSubresources(this.#baseline, [...this.#opened, ...opened]);
   }
 
   /** The subresources of a read that reveals `revealed`: the baseline first, then each one. */
   of(revealed: ConfluenceObservedSet[]): string[] {
     return [...new Set([
-      this.#baseline, ...revealed.map(set => observedSetSubresource(this.#cloudId, set)),
+      ...this.#required, ...revealed.map(set => observedSetSubresource(this.#baseline.cloudId, set)),
     ])];
   }
 }
@@ -1046,12 +1115,14 @@ class SiteSessionImpl extends RpcTarget implements ConfluenceSiteSession {
     const space = "key" in ref
       ? await this.#store.api.getSpaceByKey(ref.key)
       : await this.#store.api.getSpaceById(ref.id);
+    const subresources = this.#subresources.within(spaceSets([space.id]));
     await authorizeRead(this.#approvalQueue, {
       ...observation("Open Confluence space", "Open a Confluence space."),
-      subresources: this.#subresources.of(spaceSets([space.id])),
+      subresources: subresources.of([]),
     });
+    // Every read of the session depends on the space, which the site's ACL doesn't cover.
     return new SpaceSessionImpl(
-      this.#store, this.#approvalQueue.dup(), this.#webBase, space.key, this.#subresources);
+      this.#store, this.#approvalQueue.dup(), this.#webBase, space.key, subresources);
   }
 
   async getContent(idOrUrl: string): Promise<ConfluenceContentSession> {

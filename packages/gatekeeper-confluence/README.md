@@ -152,17 +152,19 @@ cursor page included (an empty or simulated one too), reports the resources it d
 
 Content a Gadget has staged but Confluence has not created (a `~` ID) is never reported. Sessions
 opened through a binding (a space or content session from a site binding, say) keep reporting that
-binding's resource. The site prefix only identifies where a space or content item lives; it asks
-nothing beyond that resource itself.
+binding's resource. A space session opened by a site binding's `getSpace()` also reports that
+space, `site/<cloudId>/space/<spaceId>`, on every read, as do the content sessions opened through
+it, since site access doesn't imply access to the space. The site prefix only identifies where a
+space or content item lives; it asks nothing beyond that resource itself.
 
 `verifyObserverAccess()` refuses, for every observer, any ID that is not one of these, names
 another site, or names a kind the binding never reports (a site on a space or content binding, a
 space on a content binding, another space on a space binding). It then asks each observer's
 `ConfluenceVerifier.checkSubresourceAccess()`, which their `UserAccount` answers with their own
 token: sites from one live `accessible-resources` listing (never the `sites` saved at connect),
-spaces and content one request at a time by retrieving them. Only a 403/404, or a site the live
-listing leaves out, is a denial; credentials that can't be obtained or refreshed, rate limits and
-outages throw, which denies every observer in the call. Answers are cached under
+spaces and content by retrieving them, at most four requests at a time. Only a 403/404, or a site
+the live listing leaves out, is a denial; credentials that can't be obtained or refreshed, rate
+limits and outages throw, which denies every observer in the call. Answers are cached under
 `cache:@access:` (a `KvTtlCache` named `access`) for 15 minutes when allowed and 15 seconds when
 denied, partitioned by `credentialsId`: a UUID replaced on every connect and reconnect (not on a
 token refresh), named lazily for an account connected before it existed, and deleted on revoke.
@@ -171,7 +173,11 @@ Reads no longer feed the legacy `ConfluenceObserverTracker` or set `excludeObser
 `observed:space:<id>` / `observed:content:<id>` markers and `observer:<id>` verifiers stay, and
 `addObserver()` still checks the binding baseline (site, space, or content access) and every
 recorded set, for reads made before they reported subresources and reads by an older Worker
-version during rollout.
+version during rollout. `getHistoricalSubresources()` exports the same requirements, read from
+storage only: the binding baseline (`site/<cloudId>`, `site/<cloudId>/space/<spaceKey>`, or
+`site/<cloudId>/content/<contentId>`) and each recorded set as the subresource reads report it
+(`site/<cloudId>/space/<spaceId>` or `site/<cloudId>/content/<contentId>`), all IDs the binding's
+`verifyObserverAccess()` accepts.
 
 ## Resource picker
 

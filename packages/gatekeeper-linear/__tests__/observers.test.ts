@@ -23,7 +23,9 @@ vi.mock("../src/generated/linear-team-configurator-ui.txt", () => ({ default: ""
 vi.mock("../src/generated/linear-issue-configurator-ui.txt", () => ({ default: "" }));
 
 type Props = { resourceKind: "workspace" | "team" | "issue"; teamKeyOrId?: string; issueRef?: string };
-type Variables = { after?: string; id?: string; filter?: { key?: { eqIgnoreCase?: string } } };
+type Variables = {
+  after?: string; id?: string; filter?: { key?: { eqIgnoreCase?: string } }; input?: { parentId?: string | null };
+};
 
 function memoryKv() {
   const map = new Map<string, unknown>();
@@ -145,6 +147,73 @@ describe("subresources reported by reads", () => {
     expect(gadget.observations.map(o => o.subresources))
       .toEqual([["workspace/acme", `workspace/acme/team/${ENG.id}`, `workspace/acme/team/${OPS.id}`]]);
   });
+
+  describe("a parent Linear returns", () => {
+    const plan = { ...issue, id: "44444444-4444-4444-8444-444444444444", identifier: "OPS-1", title: "Private plan", team: OPS };
+
+    /** Linear holding ENG-1 under `parentId`, which an issueUpdate changes; it returns a parent's team when asked. */
+    function linearWithParent(parentId: string | null) {
+      linearApi((query, variables) => {
+        if (query.includes("issueUpdate")) {
+          parentId = variables.input?.parentId ?? null;
+          return { issueUpdate: { success: true } };
+        }
+        if (variables.id === plan.identifier || variables.id === plan.id) return { issue: plan };
+        const parent = parentId === plan.id
+          ? { id: plan.id, identifier: plan.identifier, url: plan.url, title: plan.title,
+              ...(/parent \{[^}]*team \{ id \}/.test(query) ? { team: { id: OPS.id } } : {}) }
+          : null;
+        return { issue: { ...issue, parent } };
+      });
+    }
+
+    it("reports the parent's team once the setParent that put it there is applied", async () => {
+      linearWithParent(null);
+      const { gk } = gatekeeper({ resourceKind: "workspace" });
+      const chat = recordingQueue();
+      await (await (await gk.startSession(chat.queue) as LinearWorkspace).getIssue("ENG-1")).setParent("OPS-1");
+      await gk.applyAction(1);
+
+      const gadget = recordingQueue();
+      const details = await (await (await gk.startSession(gadget.queue) as LinearWorkspace).getIssue("ENG-1")).getDetails();
+      expect(details.parent?.title).toBe("Private plan");
+      expect(gadget.observations.map(o => o.subresources))
+        .toEqual([["workspace/acme", `workspace/acme/team/${ENG.id}`, `workspace/acme/team/${OPS.id}`]]);
+    });
+
+    it("reports the team of a parent set in Linear, outside this gatekeeper", async () => {
+      linearWithParent(plan.id);
+      const { gk } = gatekeeper({ resourceKind: "workspace" });
+      const { queue, observations } = recordingQueue();
+      await (await (await gk.startSession(queue) as LinearWorkspace).getIssue("ENG-1")).getDetails();
+      expect(observations.map(o => o.subresources))
+        .toEqual([["workspace/acme", `workspace/acme/team/${ENG.id}`, `workspace/acme/team/${OPS.id}`]]);
+    });
+  });
+});
+
+describe("getHistoricalSubresources", () => {
+  it.each([
+    [{ resourceKind: "workspace" }, {}, ["workspace/acme"]],
+    [{ resourceKind: "workspace" }, { [`observedTeam:${ENG.id}`]: "observed", [`observedTeam:${OPS.id}`]: "pending" },
+      ["workspace/acme", `workspace/acme/team/${ENG.id}`, `workspace/acme/team/${OPS.id}`]],
+    [{ resourceKind: "team", teamKeyOrId: "eng" }, {}, ["workspace/acme/team/eng"]],
+    [{ resourceKind: "issue", issueRef: "ENG-1" }, {}, ["workspace/acme/issue/ENG-1"]],
+  ] as [Props, Record<string, unknown>, string[]][])(
+    "exports what %o's addObserver required, given legacy records %o, as IDs it verifies",
+    async (props, legacy, expected) => {
+      const { gk, map } = gatekeeper(props);
+      for (const [key, value] of Object.entries(legacy)) map.set(key, value);
+      const stored = new Map(map);
+      await expect(gk.getHistoricalSubresources()).resolves.toEqual(expected);
+      await expect(gk.getHistoricalSubresources()).resolves.toEqual(expected);
+      expect(map).toEqual(stored);
+
+      const verifier = { checkSubresourceAccess: vi.fn(async (ids: string[]) => ids.map(() => true)) };
+      await expect(gk.verifyObserverAccess([{ id: "o1", verifier }] as never, expected))
+        .resolves.toEqual({ allowedObserverIds: ["o1"] });
+      expect(verifier.checkSubresourceAccess).toHaveBeenCalledWith(expected);
+    });
 });
 
 describe("verifyObserverAccess", () => {
@@ -210,6 +279,31 @@ describe("UserAccount.checkSubresourceAccess", () => {
       "workspace/acme/issue/ENG-1", "workspace/acme/issue/OPS-1", "workspace/other/team/ENG",
     ])).resolves.toEqual([true, true, false, true, false, false]);
     expect(fetch.mock.calls.filter(([, init]) => (init.body as string).includes("organization"))).toHaveLength(1);
+  });
+
+  it("asks Linear about a few uncached resources at once, answering in order", async () => {
+    const keys = ["ENG", "T1", "T2", "T3", "T4", "T5", "T6"];
+    // Linear holds every team request until four are waiting, then answers the oldest, or answers
+    // them all once every one has been asked.
+    const waiting: (() => void)[] = [];
+    let asked = 0;
+    let mostWaiting = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+      const { query, variables } = JSON.parse(init.body as string) as { query: string; variables: Variables };
+      if (query.includes("organization")) return Response.json({ data: { organization: { id: "org", name: "Acme", urlKey: "acme" } } });
+      const { promise, resolve } = Promise.withResolvers<void>();
+      waiting.push(resolve);
+      mostWaiting = Math.max(mostWaiting, waiting.length);
+      if (++asked === keys.length) waiting.splice(0).forEach(answer => answer());
+      else if (waiting.length === 4) waiting.shift()!();
+      await promise;
+      const key = variables.filter?.key?.eqIgnoreCase;
+      return Response.json({ data: { teams: { nodes: key === "ENG" || key === "T5" ? [ENG] : [], pageInfo: lastPage } } });
+    }));
+    const { account: acct } = account();
+    await expect(acct.checkSubresourceAccess(keys.map(key => `workspace/acme/team/${key}`)))
+      .resolves.toEqual([true, false, false, false, false, true, false]);
+    expect(mostWaiting).toBe(4);
   });
 
   it("keeps an allowed answer for 15 minutes and a denial for 15 seconds", async () => {

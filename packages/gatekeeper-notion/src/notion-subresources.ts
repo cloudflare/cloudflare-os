@@ -24,9 +24,10 @@ const ITEM_FRAGMENT = "item";
 const ITEM_ID = /^[0-9a-f]{32}$/;
 
 /**
- * Thrown in place of a subresource when the binding owner's connection has no stored workspace id
- * (it was connected before workspace ids were persisted): without it no read can name what it
- * depends on, so it fails closed until the owner reconnects.
+ * Thrown in place of a subresource when the binding owner's connection has no workspace id: one
+ * connected before workspace ids were persisted asks Notion for it (see UserAccount.getWorkspaceId),
+ * and if Notion's answer names none, no read can name what it depends on, so it fails closed until
+ * the owner reconnects.
  */
 export const MISSING_WORKSPACE_ID_MESSAGE =
   "This Notion connection predates workspace-id tracking; please disconnect and reconnect " +
@@ -132,8 +133,8 @@ export class NotionObservationScope {
 
   /**
    * @param binding The binding whose reads this scope names.
-   * @param loadWorkspaceId Reads the binding owner's stored workspace id, once it is first needed.
-   * A missing id fails each read that needs it, and is asked again by the next.
+   * @param loadWorkspaceId Finds the binding owner's workspace id, once it is first needed. A
+   * missing id fails each read that needs it, and is asked again by the next.
    */
   constructor(binding: NotionBinding, loadWorkspaceId: () => Promise<string | undefined>) {
     this.#binding = binding;
@@ -223,29 +224,34 @@ export function credentialsId(kv: CacheKv): string | undefined {
 
 /**
  * Whether the account an access check runs as can read each of `subresources`, in order. All IDs are
- * parsed before anything is asked. Workspace membership compares the account's own stored workspace
- * id, asking nothing of Notion (an account with none is not a member). An item is retrieved with the
- * account's own token, one at a time, and the answer cached under the full subresource ID: an allowed
- * answer for ITEM_ACCESS_ALLOWED_TTL_MS, a denial for ITEM_ACCESS_DENIED_TTL_MS.
- * @param account The account's access cache, stored workspace id, and Notion API.
+ * parsed before anything is asked. Workspace membership compares the account's own workspace id,
+ * looked up once and only if a workspace ID is asked about (an account with none is not a member).
+ * An item is retrieved with the account's own token, one at a time, and the answer cached under the
+ * full subresource ID: an allowed answer for ITEM_ACCESS_ALLOWED_TTL_MS, a denial for
+ * ITEM_ACCESS_DENIED_TTL_MS.
+ * @param account The account's access cache, workspace id lookup, and Notion API.
  * @param subresources IDs to check.
  * @returns One answer per ID.
  * @throws Error for an ID that is not a Notion subresource, or when access can't be determined (see
- * hasItemAccess), which is never cached.
+ * hasItemAccess) or the workspace id can't be looked up, which is never cached.
  */
 export async function checkNotionSubresourceAccess(
   account: {
     access: KvTtlCache;
-    workspaceId: string | undefined;
+    workspaceId: () => Promise<string | undefined>;
     api: Pick<NotionApi, "detectKind">;
   },
   subresources: readonly string[],
 ): Promise<boolean[]> {
   const resources = subresources.map(parseNotionSubresource);
+  let ownWorkspaceId: Promise<string | undefined> | undefined;
   const answers: boolean[] = [];
+  // One at a time: Notion allows an integration about three requests a second on average, so
+  // concurrent checks would mostly earn rate limits, which fail the check.
   for (const [index, resource] of resources.entries()) {
     if (resource.kind === "workspace") {
-      answers.push(!!account.workspaceId && account.workspaceId === resource.workspaceId);
+      const workspaceId = await (ownWorkspaceId ??= account.workspaceId());
+      answers.push(!!workspaceId && workspaceId === resource.workspaceId);
     } else {
       answers.push(await account.access.cached(subresources[index],
         allowed => allowed ? ITEM_ACCESS_ALLOWED_TTL_MS : ITEM_ACCESS_DENIED_TTL_MS,
@@ -253,6 +259,31 @@ export async function checkNotionSubresourceAccess(
     }
   }
   return answers;
+}
+
+/**
+ * A binding's getHistoricalSubresources(): what legacy admission (addObserver) required of every
+ * observer before reads reported subresources, as the IDs naming it now. An item binding required
+ * its bound item. A workspace binding required membership of the owner's workspace and every item
+ * its tracker recorded, pending or observed (stored under their normalized ids). Legacy admission
+ * compared the owner's stored workspace id, so that is the one the IDs name.
+ * @param binding The binding whose history this is.
+ * @param ownerWorkspaceId The owner's stored workspace id, never asked of Notion here.
+ * @param trackedItemIds The normalized ids a workspace binding's legacy tracker recorded.
+ * @throws Error when `ownerWorkspaceId` is unknown, since no ID names an item or the membership
+ * without it, or a tracked id is not a Notion id.
+ */
+export function legacyHistory(
+  binding: NotionBinding, ownerWorkspaceId: string | undefined, trackedItemIds: readonly string[],
+): string[] {
+  if (!ownerWorkspaceId) {
+    throw new Error("This Notion binding's owner has no stored workspace id to name its history in.");
+  }
+  if (binding.kind === "item") return [itemSubresourceId(ownerWorkspaceId, binding.itemId)];
+  return [...new Set([
+    workspaceSubresourceId(ownerWorkspaceId),
+    ...trackedItemIds.map(itemId => itemSubresourceId(ownerWorkspaceId, itemId)),
+  ])];
 }
 
 /**

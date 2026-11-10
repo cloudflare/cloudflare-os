@@ -243,6 +243,49 @@ describe("verifyObserverAccess", () => {
   });
 });
 
+describe("getHistoricalSubresources", () => {
+  it("exports an organization binding's organization and every tracked project, pending included", async () => {
+    const requests = serve({});
+    const { gatekeeper: facet, kv } = gatekeeper({ resourceKind: "organization", slug: "acme" });
+    kv.put(`observedProject:${REF}`, "observed");
+    kv.put(`observedProject:${OTHER_REF}`, "pending");
+    const before = [...kv.map];
+
+    const exported = await facet.getHistoricalSubresources();
+    expect(exported.toSorted()).toEqual(
+      ["organization/acme", PROJECT_ID, `organization/acme/project/${OTHER_REF}`].toSorted());
+    expect(await facet.getHistoricalSubresources()).toEqual(exported);
+    expect([...kv.map]).toEqual(before);
+    expect(requests).toEqual([]);
+    const member = observer("member", () => true);
+    await expect(facet.verifyObserverAccess([member], exported))
+      .resolves.toEqual({ allowedObserverIds: ["member"] });
+  });
+
+  it("exports a project binding's project under the organization its metadata recorded, even stale", async () => {
+    serve({ [`/v1/projects/${REF}`]: project(REF, "acme") });
+    const { gatekeeper: facet, kv } = gatekeeper({ resourceKind: "project", ref: REF });
+    await facet.describe();
+    // A cache bump hides the entry from reads, not from history.
+    kv.put("cache:generation", 99);
+    const requests = serve({});
+
+    const exported = await facet.getHistoricalSubresources();
+    expect(exported).toEqual([PROJECT_ID]);
+    expect(requests).toEqual([]);
+    const member = observer("member", () => true);
+    await expect(facet.verifyObserverAccess([member], exported))
+      .resolves.toEqual({ allowedObserverIds: ["member"] });
+  });
+
+  it("refuses, rather than guesses, when a project binding never recorded its organization", async () => {
+    const requests = serve({});
+    const { gatekeeper: facet } = gatekeeper({ resourceKind: "project", ref: REF });
+    await expect(facet.getHistoricalSubresources()).rejects.toThrow(/never recorded which organization/);
+    expect(requests).toEqual([]);
+  });
+});
+
 describe("UserAccount.checkSubresourceAccess", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });

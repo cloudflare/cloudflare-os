@@ -483,6 +483,14 @@ export class McpGatekeeperImpl
     return { allowedObserverIds: [] };
   }
 
+  /**
+   * The inherited `addObserver` refused everyone, and nothing recorded proves a binding never
+   * read, so history exports the same `server/<serverId>` reads report, which admits nobody.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [serverSubresourceId(this.ctx.props.serverId)];
+  }
+
   async describe(): Promise<ResourceDescription> {
     const tools = await this.tools();
     const reads = tools.filter(entry => entry.mode === "read").length;

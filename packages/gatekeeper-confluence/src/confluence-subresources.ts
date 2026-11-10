@@ -9,6 +9,7 @@
 // Confluence is one product, so the IDs carry no namespace (see formatSubresourceId).
 
 import type { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
+import { mapLimit } from "@gadgets/gatekeeper-kit/observers";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import {
   ConfluenceApiError,
@@ -91,6 +92,10 @@ export function observedSetSubresource(cloudId: string, set: ConfluenceObservedS
 const ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const ACCESS_DENIED_TTL_MS = 15_000;
 
+// The most spaces and content items one check retrieves at once: enough that a long check doesn't
+// take a request's latency per item, few enough that it doesn't trip Atlassian's rate limit.
+const ACCESS_CHECK_CONCURRENCY = 4;
+
 /** The reads that retrieve a space or content item, which answer whether it is visible. */
 type ResourceApi = Pick<ConfluenceApi, "getSpaceById" | "getSpaceByKey" | "getContentById">;
 
@@ -109,7 +114,7 @@ export type ConfluenceAccessAccount = {
  * allowed answer for up to 15 minutes and a denial for up to 15 seconds. Every ID is parsed before
  * anything is asked. Sites are answered together, from one live listing of the account's
  * accessible resources (never the sites recorded at connect time); spaces and content are retrieved
- * one at a time. Only Atlassian refusing (403) or not finding (404) a resource, or not listing its
+ * a few at a time. Only Atlassian refusing (403) or not finding (404) a resource, or not listing its
  * site, is a denial. Anything else, including credentials that can't be obtained or refreshed, a
  * rate limit or an outage, throws, and is never reused.
  * @throws Error for an ID that is not a Confluence subresource, or when access can't be determined.
@@ -133,14 +138,15 @@ export async function checkConfluenceSubresourceAccess(
     sites.forEach((subresource, index) => answers.set(subresource, verdicts[index]));
   }
   // Atlassian answers for one space or content item per request, so each is cached on its own,
-  // and a later failure keeps what earlier requests learned. One at a time, so a long check doesn't
-  // trip Atlassian's rate limit.
-  for (const [index, subresource] of subresources.entries()) {
-    const resource = parsed[index];
-    if (resource.kind === "site" || answers.has(subresource)) continue;
-    answers.set(subresource, await cache.cached(subresource, ttl,
-      () => canRetrieve(account, resource, accessibleSites)));
-  }
+  // and a failure keeps what the requests already made learned. A few at a time, so a long check
+  // neither waits on each request in turn nor trips Atlassian's rate limit.
+  const retrieved = new Map<string, Exclude<ConfluenceSubresource, { kind: "site" }>>();
+  parsed.forEach((resource, index) => {
+    if (resource.kind !== "site") retrieved.set(subresources[index], resource);
+  });
+  const verdicts = await mapLimit([...retrieved], ACCESS_CHECK_CONCURRENCY, ([subresource, resource]) =>
+    cache.cached(subresource, ttl, () => canRetrieve(account, resource, accessibleSites)));
+  [...retrieved.keys()].forEach((subresource, index) => answers.set(subresource, verdicts[index]));
   return subresources.map(subresource => answers.get(subresource)!);
 }
 

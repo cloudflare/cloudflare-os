@@ -81,6 +81,7 @@ function makeQueue() {
 
 function gatekeeper<T>(
   Class: new (ctx: never, env: never) => T, props: Record<string, string> = {},
+  storage = makeStorage().storage,
 ): T {
   const owner = {
     getIdentity: async () => null,
@@ -90,7 +91,7 @@ function gatekeeper<T>(
   };
   const ctx = {
     props: { userObjectId: "owner", cloudId: CLOUD, webBase: "https://acme.atlassian.net/wiki", ...props },
-    storage: makeStorage().storage,
+    storage,
     exports: { UserAccount: { idFromString: (id: string) => id, get: () => owner } },
   };
   return new Class(ctx as never, {} as never);
@@ -102,9 +103,6 @@ describe("subresources reported by reads", () => {
       { results: [{ id: "10", key: "ENG", name: "Eng" }, { id: "11", key: "OPS", name: "Ops" }],
         _links: { next: "/wiki/api/v2/spaces?cursor=page-2&limit=25" } });
     answer(`${API}/spaces?cursor=page-2&limit=25`, { results: [] });
-    answer(`${API}/spaces?keys=ENG&limit=1&include-icon=true`,
-      { results: [{ id: "10", key: "ENG", name: "Eng" }] });
-    answer(`${API}/spaces/10/pages?depth=root&limit=25`, { results: [] });
     const queue = makeQueue();
     const session = await gatekeeper(ConfluenceSiteGatekeeperImpl).startSession(queue as never);
 
@@ -112,19 +110,36 @@ describe("subresources reported by reads", () => {
     const spaces = await session.listSpaces();
     await spaces.next();
     await spaces.next();
-    const space = await session.getSpace("ENG");
-    await (await space.listPages()).next();
 
     expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
       ["site/cloud-1"],
       ["site/cloud-1", "site/cloud-1/space/10", "site/cloud-1/space/11"],
       ["site/cloud-1"],
-      ["site/cloud-1", "site/cloud-1/space/10"],
-      // A space opened through a site binding still reports the site, even for an empty page.
-      ["site/cloud-1"],
     ]);
     expect(queue.observations.every(observation => observation.excludeObservers === undefined))
       .toBe(true);
+  });
+
+  it("reports a space opened through a site binding on every read of it, with the site", async () => {
+    answer(`${API}/spaces?keys=ENG&limit=1&include-icon=true`,
+      { results: [{ id: "10", key: "ENG", name: "Eng", description: { plain: { value: "Secret" } } }] });
+    answer(`${API}/spaces/10/pages?depth=root&limit=25`, { results: [] });
+    answer(`${API}/pages/300?body-format=storage`,
+      { id: "300", title: "Page", _links: { webui: "/spaces/ENG/pages/300" } });
+    const queue = makeQueue();
+    const site = await gatekeeper(ConfluenceSiteGatekeeperImpl).startSession(queue as never);
+
+    const space = await site.getSpace("ENG");
+    await space.getMetadata();
+    await (await space.listPages()).next();
+    const content = await space.getContent("300");
+    await content.getMetadata();
+
+    // Site access doesn't imply access to the space, so each read reports it, an empty page too.
+    const opened = ["site/cloud-1", "site/cloud-1/space/10"];
+    expect(queue.observations.map(({ subresources }) => subresources)).toEqual([
+      opened, opened, opened, opened, [...opened, "site/cloud-1/content/300"],
+    ]);
   });
 
   it("reports the bound space with the content each page reveals, but no staged content", async () => {
@@ -209,6 +224,44 @@ describe("verifyObserverAccess", () => {
     expect(await binding.verifyObserverAccess([observer("candidate")],
       ["site/cloud-1/space/ENG", "site/cloud-1/content/100"]))
       .toEqual({ allowedObserverIds: ["candidate"] });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// getHistoricalSubresources
+
+describe("getHistoricalSubresources", () => {
+  it.each([
+    ["site", ConfluenceSiteGatekeeperImpl, {}, ["observed:space:10", "observed:content:5"],
+      ["site/cloud-1", "site/cloud-1/space/10", "site/cloud-1/content/5"]],
+    ["space", ConfluenceSpaceGatekeeperImpl, { spaceKey: "ENG" }, ["observed:content:100"],
+      ["site/cloud-1/space/ENG", "site/cloud-1/content/100"]],
+    ["content", ConfluenceContentGatekeeperImpl, { contentId: "200" },
+      ["observed:content:200", "observed:content:201"],
+      ["site/cloud-1/content/200", "site/cloud-1/content/201"]],
+  ] as const)("exports a %s binding's baseline and recorded sets, which it verifies", async (
+    _name, Class, props, recorded, expected,
+  ) => {
+    const { map, storage } = makeStorage();
+    recorded.forEach((key, index) => storage.kv.put(key, index === 0 ? "observed" : "pending"));
+    storage.kv.put("observer:legacy", {});
+    const before = [...map.entries()];
+    const binding = gatekeeper(
+      Class as new (ctx: never, env: never) => ConfluenceSiteGatekeeperImpl, props, storage);
+
+    const history = await binding.getHistoricalSubresources();
+    expect(history).toEqual(expected);
+    expect(await binding.getHistoricalSubresources()).toEqual(expected);
+    expect([...map.entries()]).toEqual(before);
+
+    const candidate = observer("candidate", subresource => !subresource.endsWith(expected.at(-1)!));
+    expect(await binding.verifyObserverAccess([observer("allowed"), candidate], history))
+      .toEqual({ allowedObserverIds: ["allowed"] });
+  });
+
+  it("exports the baseline the legacy admission checked when nothing was recorded", async () => {
+    expect(await gatekeeper(ConfluenceSiteGatekeeperImpl).getHistoricalSubresources())
+      .toEqual(["site/cloud-1"]);
   });
 });
 
@@ -338,6 +391,37 @@ describe("UserAccount.checkSubresourceAccess", () => {
     space.resolve(Response.json({ results: [{ id: "10", key: "ENG", name: "Eng" }] }));
 
     await expect(checking).rejects.toThrow(/changed while their access was being checked/);
+  });
+
+  it("retrieves a few resources at once, answering in order and caching each", async () => {
+    const { account: observer } = account();
+    // Each retrieval waits until the test answers it, so the test sees how many run at once.
+    const held: (() => void)[] = [];
+    routes.unshift(url => {
+      const match = /^\/(?:pages|blogposts)\/(\d+)$/.exec(url.slice(API.length));
+      if (!match) return undefined;
+      return new Promise<Response>(resolve => held.push(() => resolve(match[1] === "3"
+        ? new Response("missing", { status: 404 })
+        : Response.json({ id: match[1], title: "Page" })))) as unknown as Response;
+    });
+    const ids = [1, 2, 3, 4, 5, 6, 7, 8].map(id => `site/cloud-1/content/${id}`);
+    const expected = [true, true, false, true, true, true, true, true];
+
+    // An object, so the loop sees the flag the promise sets; a 404 falls back to a blog post
+    // retrieval, so the number of requests isn't the number of IDs.
+    const state = { settled: false };
+    const checking = observer.checkSubresourceAccess(ids).finally(() => { state.settled = true; });
+    await vi.waitFor(() => expect(held).toHaveLength(4));
+    while (!state.settled) {
+      expect(held.length).toBeLessThanOrEqual(4);
+      held.shift()?.();
+      await vi.waitFor(() => expect(state.settled || held.length > 0).toBe(true));
+    }
+    expect(await checking).toEqual(expected);
+
+    const asked = requests.length;
+    expect(await observer.checkSubresourceAccess(ids)).toEqual(expected);
+    expect(requests.length).toBe(asked);
   });
 
   it("throws, and reuses nothing, when Atlassian fails to answer", async () => {

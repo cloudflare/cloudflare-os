@@ -1320,6 +1320,8 @@ export class HomeAssistantGatekeeperImpl
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
+  /** addObserver never restricted anyone, so there is no historical requirement to export. */
+  async getHistoricalSubresources(): Promise<string[]> { return []; }
 
   /** Allows every observer under the low-stakes observer policy. */
   async verifyObserverAccess(

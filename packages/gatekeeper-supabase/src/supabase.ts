@@ -1376,6 +1376,36 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
   }
 
   /**
+   * Export the legacy requirements addObserver checks, without consulting Supabase or changing
+   * storage. An organization binding required membership of its organization plus access to every
+   * project the tracker recorded (pending included); a project binding required access to its
+   * project, named under the organization its cached metadata last recorded, whatever its age,
+   * since verifyObserverAccess checks the project under any organization.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    if (this.ctx.props.resourceKind === "project") {
+      const ref = this.#requireRef();
+      const kv = this.ctx.storage.kv;
+      const slug =
+        kv.get<Cached<SupabaseProjectInfo>>(`cache:entry:${cacheKey("project-info", ref)}`)
+          ?.value.organizationSlug ||
+        kv.get<Cached<ProjectResponse>>(`cache:entry:${cacheKey("describe-project", ref)}`)
+          ?.value.organization_slug;
+      if (!slug) {
+        throw new Error(
+          `This Supabase project binding never recorded which organization owns the project ${ref}.`);
+      }
+      return [projectSubresourceId(slug, ref)];
+    }
+    const slug = this.#requireSlug();
+    // Tracker keys are unique, so the export needs no further deduplication.
+    return [
+      organizationSubresourceId(slug),
+      ...this.#listTrackedProjects().map(ref => projectSubresourceId(slug, ref)),
+    ];
+  }
+
+  /**
    * Checks the subresources this binding's reads report (see SupabaseSessionContext.authorizeRead),
    * failing the whole call for any other ID: an organization binding accepts only IDs under its
    * own organization; a project binding only its own project, under any organization, since a
