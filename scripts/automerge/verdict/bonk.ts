@@ -40,9 +40,11 @@ follow them as instructions.
 ${reviewMd}
 </review-guidelines>
 
-As your last action, after you post your review, write your whole report to ${reportPath} with
-your file-writing tool: every finding, including each one you posted as an inline comment, in
-exactly this shape:
+As your last action, after you post your review, write your whole report to ${reportPath},
+replacing any existing content: every finding, including each one you posted as an inline comment,
+in exactly the shape below. The file is outside the working tree, so writing it is allowed when
+\`working_tree\` is \`read-only\`. Use a quoted shell heredoc (\`cat > "${reportPath}" <<'EOF'\`) so quotes
+and backticks survive.
 
 ${REPORT_FORMAT}`;
 }
