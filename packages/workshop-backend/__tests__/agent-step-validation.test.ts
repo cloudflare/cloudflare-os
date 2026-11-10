@@ -138,7 +138,7 @@ describe("agent transform validation boundaries", () => {
       new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
     const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
     expect(calls.map(call => call.error)).toEqual([undefined,
-      expect.stringMatching(/inserts a lone surrogate: gadget \d+ client\.js/), undefined]);
+      expect.stringMatching(/client\.js would contain half of a character/), undefined]);
     const files = (await impl.getCurrentChatContent(1, impl.storage.chatMeta.get(1)!)).get(gadget.id)!;
     expect(files.get("client.js")).toBe("const ICON = '😀';\n");
   }));
