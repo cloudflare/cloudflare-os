@@ -129,8 +129,8 @@ function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
 }
 
 // How long an agent turn's setup waits on one gatekeeper before going on without its answer
-// (see prepareChatBindings). The bound generateBindingName gives its quick-model call.
-const TURN_SETUP_TIMEOUT_MS = 10_000;
+// (see prepareChatBindings). Long enough for a loaded gatekeeper to list a large catalog.
+const TURN_SETUP_TIMEOUT_MS = 30_000;
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 

@@ -1411,7 +1411,7 @@ describe("ambient gatekeepers that never answer", () => {
 
     await withSetupTimers(async () => {
       let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       let seeds = await preparing;
       expect(seeds.find(seed => seed.target === 1)).toMatchObject({ name: "RES1", catalog: null });
       expect(seeds.find(seed => seed.target === 2)?.catalog).toEqual({ entries: [] });
@@ -1442,7 +1442,7 @@ describe("ambient gatekeepers that never answer", () => {
     await withSetupTimers(async () => {
       let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
       // The name is asked for first, then the catalog: one bound each.
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(60_000);
       let seeds = await preparing;
       expect(seeds.find(seed => seed.target === 1)).toMatchObject({ name: "RESOURCE", catalog: null });
       expect(seeds.find(seed => seed.target === 2)).toMatchObject(
@@ -1465,7 +1465,7 @@ describe("ambient gatekeepers that never answer", () => {
 
     await withSetupTimers(async () => {
       let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       await preparing;
     });
     expect(impl.getChatAgentContext(1).bindings).toEqual({ RESOURCE: 1, RES2: 2 });
@@ -1490,7 +1490,7 @@ describe("ambient gatekeepers that never answer", () => {
 
     await withSetupTimers(async () => {
       let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, [pasted]);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       await preparing;
     });
     expect(pasted.capsules[0]).toMatchObject({ bindingName: "RESOURCE" });
