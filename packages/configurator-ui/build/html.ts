@@ -26,7 +26,7 @@ const scriptHash = (script: string): string =>
  * The frame's whole policy. Scripts are allowed by hash alone, so nothing can run that the build
  * did not write: no inline handlers, `javascript:` URLs, `eval` or injected `<script>`s. Nothing
  * may be fetched, so nothing the user selects or sees can leave the frame except through the RPC
- * session the Workshop hands it.
+ * session the Workshop hands it, or in the address of a link the user opens in a new tab.
  */
 const contentSecurityPolicy = (scripts: string[]): string => [
   "default-src 'none'",

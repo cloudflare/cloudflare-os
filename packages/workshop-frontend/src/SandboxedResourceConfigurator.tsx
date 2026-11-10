@@ -430,7 +430,11 @@ export default function SandboxedResourceConfigurator({
         ref={iframeRef}
         srcDoc={frame.iframeHtml}
         onLoad={handleIframeLoad}
-        sandbox="allow-scripts"
+        // allow-popups: a link the form shows (such as where to request access) opens in a new tab,
+        // since following it in the frame would replace the form. allow-popups-to-escape-sandbox:
+        // that tab is an ordinary page, so the site can sign the user in. Not allow-same-origin or
+        // allow-top-navigation: the frame still cannot reach the Workshop or navigate it.
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         title="Resource configurator"
         scrolling="no"
         style={{

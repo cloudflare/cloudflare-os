@@ -67,6 +67,19 @@ export default {
   render: ({ acceptedResourceUrlPatterns }) => <p>Accepts {acceptedResourceUrlPatterns?.join(", ") ?? "any type"}</p>,
 };
 `;
+
+const LINK_OUT = `
+import { Section, h } from "@gadgets/configurator-ui";
+export default {
+  initial: {},
+  resourceUrl: () => "https://files.example.com/any",
+  render: () => (
+    <Section>
+      <p>Request more in <a href="https://access.example.com/request" target="_blank" rel="noopener noreferrer">Access</a>.</p>
+    </Section>
+  ),
+};
+`;
 /** Built once per variant, as the build script builds it once per run. */
 const runtimes = new Map<boolean, Promise<ConfiguratorRuntime>>();
 
@@ -156,8 +169,9 @@ beforeAll(async () => {
     platform: "browser",
     logLevel: "silent",
   });
+  // Sandboxed as SandboxedResourceConfigurator sandboxes it.
   hostPage = `<!DOCTYPE html><html><body>
-<iframe id="frame" sandbox="allow-scripts" style="width:600px;height:80px;border:0"></iframe>
+<iframe id="frame" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" style="width:600px;height:80px;border:0"></iframe>
 <button id="host-control">Add connection</button>
 <script type="module">${bundled.outputFiles[0]!.text}</script>
 </body></html>`;
@@ -312,6 +326,27 @@ describe("generated configurator frame", () => {
       ]);
       expect(consoleErrors).toEqual([]);
     } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("opens a link in an ordinary new tab, and stays connected to the host", async () => {
+    const { page, frame, consoleErrors } = await host(await frameHtml(LINK_OUT, false));
+    try {
+      await page.context().route("https://access.example.com/**",
+        route => route.fulfill({ body: "<!DOCTYPE html><title>Access</title>", contentType: "text/html" }));
+      const [tab] = await Promise.all([
+        page.context().waitForEvent("page", { timeout: 5_000 }),
+        frame().getByRole("link", { name: "Access" }).click(),
+      ]);
+      await tab.waitForLoadState();
+      expect(tab.url()).toBe("https://access.example.com/request");
+      // Out of the sandbox: the site's own origin, where it can keep a session, not the frame's opaque one.
+      expect(await tab.evaluate(() => self.origin)).toBe("https://access.example.com");
+      expect(await collect(page)).toEqual({ url: "https://files.example.com/any" });
+      expect(consoleErrors).toEqual([]);
+    } finally {
+      // Closes the tab with it: each page has its own context.
       await page.close();
     }
   }, 30_000);

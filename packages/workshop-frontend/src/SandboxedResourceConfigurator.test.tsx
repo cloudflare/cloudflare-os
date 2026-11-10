@@ -116,6 +116,16 @@ describe('SandboxedResourceConfigurator access requests', () => {
   })
 })
 
+describe('SandboxedResourceConfigurator sandbox', () => {
+  // A link out may open a tab, but the frame stays an opaque origin that cannot reach or navigate
+  // the Workshop: no allow-same-origin, allow-top-navigation, allow-forms or allow-modals.
+  it('lets the frame run its scripts and open tabs, and nothing else', async () => {
+    await connectHost()
+    const sandbox = document.body.querySelector('iframe')!.getAttribute('sandbox')!
+    expect(sandbox.split(' ').toSorted()).toEqual(['allow-popups', 'allow-popups-to-escape-sandbox', 'allow-scripts'])
+  })
+})
+
 // A modal scroll area 700px tall, with the frame at its top.
 function scrollArea(): HTMLElement {
   const scroller = document.createElement('div')
