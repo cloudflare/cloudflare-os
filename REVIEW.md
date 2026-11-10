@@ -138,7 +138,7 @@ Report a failure in these areas at P1, or P0 for data loss or a security hole.
 
 ### Reviewing a gatekeeper
 
-Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
+The agent-facing API is `packages/gatekeeper-*/src/*types.d.ts`. Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
 
 - **Shape.** Read `types.d.ts` as the agent does, as its only documentation. Does the shape make sense? What would you do differently?
 - **User stories.** List the most common things a user would ask an agent to do with this service and walk each through the API. Flag any that are impossible, need sequential round trips that promise pipelining can't remove, or need knowledge the JSDoc doesn't give. Flag dead ends too: anything the grant includes that the agent can't navigate to, such as child pages it can list but not open.

@@ -176,9 +176,10 @@ jobs:
         if: steps.break_glass.outputs.active != 'true'
         run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
 
-      # After the install, so nothing it writes survives in an instruction path. REVIEW.md and every
-      # instruction file come from the base commit: the checkout is the head, so reading them there
-      # would let a pull request rewrite the rules its own review runs with.
+      # After the install, so the install cannot put a tracked instruction file back; files it creates
+      # elsewhere, such as in node_modules, are not replaced. REVIEW.md and every tracked instruction
+      # file come from the base commit: the checkout is the head, so reading them there would let a
+      # pull request rewrite the rules its own review runs with.
       - name: Prepare the review
         id: prompt
         if: steps.break_glass.outputs.active != 'true'

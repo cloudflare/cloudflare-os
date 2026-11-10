@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { fetchReviewedHeads, planRound } from "./rounds.ts";
+import { fetchReviewedHeads, planRound, readyAt } from "./rounds.ts";
 import { createTestRepo } from "./test-repo.ts";
 import { buildVerdict, canReviewSince, prepareInputs, PROMPT_HASH, readEvents } from "./verdict.ts";
 import type { Json } from "./json.ts";
@@ -53,14 +53,15 @@ function run(id: number, sha: string, extra: Record<string, Json> = {}): Json {
 }
 
 describe("fetchReviewedHeads", () => {
-  const query = { repository: "o/r", workflowFile: "review-verdict.yml", pullNumber: 7, headRef: "feature", jobName: "Verdict (sol)" };
+  const query = { repository: "o/r", workflowFile: "review-verdict.yml", pullNumber: 7, headRef: "feature",
+    jobName: "Verdict (opus)", stepName: null };
   const jobs: Record<number, Json> = {
-    1: { jobs: [{ name: "Verdict (sol)", conclusion: "success" }] },
-    2: { jobs: [{ name: "Verdict (sol)", conclusion: "failure" }, { name: "Verdict (opus)", conclusion: "success" }] },
-    3: { jobs: [{ name: "Verdict (sol)", conclusion: "success" }] },
-    4: { jobs: [{ name: "Verdict (sol)", conclusion: "success" }] },
-    5: { jobs: [{ name: "Verdict (sol)", conclusion: "success" }] },
-    6: { jobs: [{ name: "Verdict (sol)", conclusion: "success" }] },
+    1: { jobs: [{ name: "Verdict (opus)", conclusion: "success" }] },
+    2: { jobs: [{ name: "Verdict (opus)", conclusion: "failure" }, { name: "other", conclusion: "success" }] },
+    3: { jobs: [{ name: "Verdict (opus)", conclusion: "success" }] },
+    4: { jobs: [{ name: "Verdict (opus)", conclusion: "success" }] },
+    5: { jobs: [{ name: "Verdict (opus)", conclusion: "success" }] },
+    6: { jobs: [{ name: "Verdict (opus)", conclusion: "success" }] },
   };
   const runs: Json = { workflow_runs: [
     run(6, "h4", { pull_requests: [] }),
@@ -84,6 +85,32 @@ describe("fetchReviewedHeads", () => {
       { sha: "h1", reviewedAt: "2026-11-01T03:00:00Z" },
     ]);
     assert.match(requested[0], /event=pull_request&status=completed&branch=feature/);
+  });
+
+  it("needs the named step to have succeeded when one is given, so a skipped review is no round", async () => {
+    const bonkJobs: Record<number, Json> = {
+      1: { jobs: [{ name: "bonk", conclusion: "success", steps: [{ name: "Run Bonk", conclusion: "success" }] }] },
+      2: { jobs: [{ name: "bonk", conclusion: "success", steps: [{ name: "Run Bonk", conclusion: "skipped" }] }] },
+    };
+    const heads = await fetchReviewedHeads({ ...query, workflowFile: "bonk-pr.yml", jobName: "bonk", stepName: "Run Bonk" },
+      async path => path.includes("/workflows/") ? { workflow_runs: [run(2, "h2"), run(1, "h1")] }
+        : bonkJobs[Number(/runs\/(\d+)\/jobs/.exec(path)?.[1])] ?? null);
+    assert.deepEqual(heads.map(head => head.sha), ["h1"]);
+  });
+});
+
+describe("readyAt", () => {
+  const change = (event: string, at: string): Json => ({ event, created_at: at });
+
+  it("follows draft changes, starting from the state before the first one", () => {
+    const ready = readyAt([change("labeled", "2026-11-01T00:00:00Z"), change("ready_for_review", "2026-11-01T05:00:00Z"),
+      change("convert_to_draft", "2026-11-01T08:00:00Z")], true);
+    assert.deepEqual(["2026-11-01T04:00:00Z", "2026-11-01T06:00:00Z", "2026-11-01T09:00:00Z"].map(ready), [false, true, false]);
+  });
+
+  it("keeps the current state when the pull request never changed it", () => {
+    assert.equal(readyAt([], false)("2026-11-01T00:00:00Z"), true);
+    assert.equal(readyAt([], true)("2026-11-01T00:00:00Z"), false);
   });
 });
 

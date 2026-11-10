@@ -454,7 +454,7 @@ export function env(name: string): string {
 }
 
 /** The pull request fields the workflow's `pull_request` event payload carries. */
-export function eventPullRequest(): PullRequest & { number: number; headRef: string } {
+export function eventPullRequest(): PullRequest & { number: number; headRef: string; draft: boolean } {
   const pull = field(parseJson(readFileSync(env("GITHUB_EVENT_PATH"), "utf8")), "pull_request");
   const number = field(pull, "number");
   const headSha = field(field(pull, "head"), "sha");
@@ -462,11 +462,13 @@ export function eventPullRequest(): PullRequest & { number: number; headRef: str
   const baseSha = field(field(pull, "base"), "sha");
   const title = field(pull, "title");
   const body = field(pull, "body");
+  const draft = field(pull, "draft");
   if (typeof number !== "number" || typeof headSha !== "string" || typeof headRef !== "string" ||
-    typeof baseSha !== "string" || typeof title !== "string" || (body !== null && typeof body !== "string")) {
+    typeof baseSha !== "string" || typeof title !== "string" || (body !== null && typeof body !== "string") ||
+    typeof draft !== "boolean") {
     throw new Error("the event payload has no usable pull_request");
   }
-  return { number, headSha, headRef, baseSha, title, body: body ?? "" };
+  return { number, headSha, headRef, baseSha, title, body: body ?? "", draft };
 }
 
 async function main(command: string | undefined): Promise<void> {
@@ -481,6 +483,7 @@ async function main(command: string | undefined): Promise<void> {
       pullNumber: pr.number,
       headRef: pr.headRef,
       jobName: env("JOB_NAME"),
+      stepName: null,
     }, path => githubJson(path, token));
     const plan = planRound(pr.headSha, reviewed, sha => canReviewSince(repo, sha, pr));
     const review = prepareInputs(repo, workDir, pr, plan, pr.baseSha);

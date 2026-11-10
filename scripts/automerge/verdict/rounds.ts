@@ -66,26 +66,38 @@ export interface RunQuery {
   workflowFile: string;
   pullNumber: number;
   headRef: string;
-  /** The reviewer's job name, such as `Verdict (sol)`. */
+  /** The reviewer's job name, such as `Verdict (opus)`. */
   jobName: string;
+  /**
+   * A step of that job that must also have succeeded, when the job can succeed without a review
+   * (Bonk's job passes with every step skipped under break-glass); null when the job's own result
+   * says it (the Opus job fails whenever its verdict is not `ok`).
+   */
+  stepName: string | null;
+}
+
+type GetJson = (path: string) => Promise<Json>;
+
+/** Every item of a paged GitHub list, read until a short page. */
+async function listAll(getJson: GetJson, path: string, items: (body: Json) => Json[]): Promise<Json[]> {
+  const all: Json[] = [];
+  for (let page = 1; ; page++) {
+    const batch = items(await getJson(`${path}${path.includes("?") ? "&" : "?"}per_page=${PER_PAGE}&page=${page}`));
+    all.push(...batch);
+    if (batch.length < PER_PAGE) return all;
+  }
 }
 
 /**
  * Heads this reviewer reviewed: completed `pull_request` runs of the workflow on the pull request's
- * branch whose job for this reviewer succeeded (the job fails whenever the verdict is not `ok`).
+ * branch whose job for this reviewer (and `stepName`, when given) succeeded.
  * A run that lists no pull request still counts when it ran on this branch: GitHub leaves the list
  * empty in some cases, and an extra round sends the pull request to a person sooner, never later.
  */
-export async function fetchReviewedHeads(query: RunQuery, getJson: (path: string) => Promise<Json>): Promise<ReviewedHead[]> {
-  const { repository, workflowFile, pullNumber, headRef, jobName } = query;
-  const runs: Json[] = [];
-  for (let page = 1; ; page++) {
-    const batch = list(field(await getJson(`repos/${repository}/actions/workflows/${workflowFile}/runs?` +
-      `event=pull_request&status=completed&branch=${encodeURIComponent(headRef)}&per_page=${PER_PAGE}&page=${page}`),
-    "workflow_runs"));
-    runs.push(...batch);
-    if (batch.length < PER_PAGE) break;
-  }
+export async function fetchReviewedHeads(query: RunQuery, getJson: GetJson): Promise<ReviewedHead[]> {
+  const { repository, workflowFile, pullNumber, headRef, jobName, stepName } = query;
+  const runs = await listAll(getJson, `repos/${repository}/actions/workflows/${workflowFile}/runs?` +
+    `event=pull_request&status=completed&branch=${encodeURIComponent(headRef)}`, body => list(field(body, "workflow_runs")));
   const reviewed: ReviewedHead[] = [];
   for (const run of runs) {
     const id = field(run, "id");
@@ -99,9 +111,31 @@ export async function fetchReviewedHeads(query: RunQuery, getJson: (path: string
     }
     const jobs = list(field(await getJson(`repos/${repository}/actions/runs/${id}/jobs?filter=all&per_page=${PER_PAGE}`),
       "jobs"));
-    if (jobs.some(job => field(job, "name") === jobName && field(job, "conclusion") === "success")) {
+    if (jobs.some(job => field(job, "name") === jobName && field(job, "conclusion") === "success" &&
+      (stepName === null || list(field(job, "steps")).some(step =>
+        field(step, "name") === stepName && field(step, "conclusion") === "success")))) {
       reviewed.push({ sha, reviewedAt: createdAt });
     }
   }
   return reviewed;
+}
+
+/**
+ * Whether the pull request was ready for review, not a draft, at a given time, from its timeline's
+ * `ready_for_review` and `convert_to_draft` events. With none, it has been as it is now throughout.
+ */
+export function readyAt(timeline: Json[], draftNow: boolean): (time: string) => boolean {
+  const changes = timeline.flatMap(event => {
+    const kind = field(event, "event");
+    const at = field(event, "created_at");
+    return (kind === "ready_for_review" || kind === "convert_to_draft") && typeof at === "string"
+      ? [{ ready: kind === "ready_for_review", at }] : [];
+  }).toSorted((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const readyFirst = changes.length === 0 ? !draftNow : !changes[0].ready;
+  return time => changes.reduce((ready, change) => (change.at <= time ? change.ready : ready), readyFirst);
+}
+
+/** The pull request's timeline events. */
+export function fetchTimeline(repository: string, pullNumber: number, getJson: GetJson): Promise<Json[]> {
+  return listAll(getJson, `repos/${repository}/issues/${pullNumber}/timeline`, list);
 }
