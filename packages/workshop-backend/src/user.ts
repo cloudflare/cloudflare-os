@@ -5,6 +5,7 @@ import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, 
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { retryable } from "cloudflare:durable-objects";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type { Singleton } from "@gadgets/typed-storage";
 import {
@@ -320,6 +321,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
+
+  // Pure reads the runtime may run again when it retries a call the object may already have
+  // received. An experiment on one method: the call sites keep retryOnDoReset until the
+  // user_do.reset.surfaced logs show whether the runtime's retry survives a reset.
+  static {
+    retryable(this.prototype.listGatekeeperVendors);
+  }
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
