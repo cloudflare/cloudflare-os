@@ -1374,19 +1374,22 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
     if (await this.#kind() === "blogpost") {
       throw new ConfluenceApiError(400, "Blog posts cannot have child pages.");
     }
+    // Read with the creation the space key comes from, before anything awaits: rejecting a pending
+    // parent meanwhile deletes it, and with it what its space key was read from.
     const create = this.#store.createActionFor(this.#contentId)?.action;
+    const sources = [...new Set([...this.#subresources.opened, ...this.#sets()])];
     const spaceKey = await this.#spaceKey(create);
     // The description names the parent's space, read from the parent itself.
     await authorizeRead(this.#approvalQueue, {
       ...observation("Read Confluence parent page", "Read the space of the page a child page is created under."),
-      subresources: this.#subresources.of(this.#sets()),
+      subresources: this.#subresources.of(sources),
     });
     const provisionalId = this.#store.nextProvisionalId();
     await this.#stage({
       type: "createContent", provisionalId, kind: "page",
       parent: { type: "page", parentId: this.#contentId, spaceKey },
       title: options.title, content: options.content, status: options.status ?? "current",
-      sources: [...new Set([...this.#subresources.opened, ...this.#sets()])],
+      sources,
     });
     return new ContentSessionImpl(
       this.#store, this.#approvalQueue.dup(), this.#webBase, provisionalId, this.#subresources);

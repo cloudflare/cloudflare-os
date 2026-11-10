@@ -212,6 +212,41 @@ describe("subresources reported by reads", () => {
       ["site/cloud-1", "site/cloud-1/content/300", "site/cloud-1/space/10"],
     ]);
   });
+
+  it("keeps a pending parent's sources on a child page whose parent is rejected meanwhile", async () => {
+    answer(`${API}/pages/300?body-format=storage`,
+      { id: "300", title: "Merger", _links: { webui: "/spaces/PRIVATE/pages/300" } });
+    const binding = gatekeeper(ConfluenceSiteGatekeeperImpl);
+    const creator = await binding.startSession(makeQueue() as never);
+    await (await creator.getContent("300")).createChildPage({ title: "Plan" });
+
+    // The child's creation is rejected while a page is being created under it, after that
+    // creation read the space key the child took from page 300.
+    const authorizing = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const pausingQueue = {
+      async authorizeObservation(observation: Observation) {
+        if (observation.title !== "Read Confluence parent page") return;
+        authorizing.resolve();
+        await resume.promise;
+      },
+      async submitAction() {},
+      dup: () => pausingQueue,
+      [Symbol.dispose]() {},
+    };
+    const child = await (await binding.startSession(pausingQueue as never)).getContent("~1");
+    const creating = child.createChildPage({ title: "Detail" });
+    await authorizing.promise;
+    binding.rejectAction(1);
+    resume.resolve();
+    await creating;
+
+    const queue = makeQueue();
+    const meta = await (await (await binding.startSession(queue as never)).getContent("~2")).getMetadata();
+    expect(meta.spaceKey).toBe("PRIVATE");
+    expect(queue.observations.at(-1)?.subresources)
+      .toEqual(["site/cloud-1", "site/cloud-1/content/300"]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
