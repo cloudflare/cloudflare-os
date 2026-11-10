@@ -64,8 +64,9 @@ export function creationAction(resource: SupportedResource, title: string): Acti
     ...buildDescription(
       `Create a new, empty ${resource.title} in the My Drive of the Google account you choose.`)
       .inline("Title", title).finish(),
-    // No actionKind: the kernel never auto-applies a creation.
+    // The kernel never auto-applies a creation, so the card says so and names no kind.
     implementsRevert: false,
+    autoApprovable: false,
   };
 }
 

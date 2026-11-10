@@ -97,6 +97,14 @@ export class WebSearchGatekeeper
   /** Removes a collaborator; no observer state is kept. */
   async removeObserver(_id: string): Promise<void> {}
 
+  /** Allows every observer: search results are public. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
+
   applyAction(_action: number): Promise<void> {
     throw new Error("Web Search implements no actions.");
   }

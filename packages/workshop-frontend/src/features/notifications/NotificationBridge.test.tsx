@@ -256,7 +256,7 @@ describe("NotificationBridge", () => {
     Reflect.deleteProperty(window, "webkit");
   });
 
-  it("keeps one subscription across rerenders and declines while hidden", async () => {
+  it("keeps one subscription across rerenders and releases it while hidden", async () => {
     await render();
     // Kumo returns a new toast manager whenever its consumer renders; resubscribing on each one
     // would fan a single notification out through accumulated subscribers.
@@ -264,7 +264,7 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
 
     await act(async () => setVisibility("hidden"));
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledOnce();
     await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
     expect(addToast).not.toHaveBeenCalled();
   });
@@ -278,17 +278,56 @@ describe("NotificationBridge", () => {
     await act(() => subscribers[1].notify(notification));
     expect(addToast).toHaveBeenCalledTimes(1);
 
-    // Unsubscribing releases it too, whether hidden or unmounted.
+    // Hidden pages cannot delay push or restart a released subscription.
     await act(async () => setVisibility("hidden"));
     await release(1);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
     await act(async () => setVisibility("visible"));
     await act(async () => root.unmount());
+    expect(dispose).toHaveBeenCalledTimes(3);
     await release(2);
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(3);
     root = createRoot(container);
   });
 
-  it("does not retry a subscription that failed", async () => {
+  it("waits for visibility before subscribing", async () => {
+    setVisibility("hidden");
+    await render();
+    expect(authenticatedApi.subscribeToNotifications).not.toHaveBeenCalled();
+    await act(async () => setVisibility("visible"));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(() => subscribers[0].notify(notification));
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("releases the old session on replacement and unmount", async () => {
+    await render();
+    authenticatedApi = {...authenticatedApi};
+    await render();
+    expect(dispose).toHaveBeenCalledOnce();
+    await act(async () => root.unmount());
+    expect(dispose).toHaveBeenCalledTimes(2);
+    root = createRoot(container);
+  });
+
+  it("recovers when the subscriber is released before a successful setup ACK", async () => {
+    const ack = Promise.withResolvers<void>();
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(ack.promise, {[Symbol.dispose]: dispose});
+    });
+    await render();
+    await release(0);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(async () => ack.resolve());
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    await release(0); // A late release from the replaced callback must not replace the new one.
+    await act(() => subscribers[1].notify(notification));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    expect(addToast).toHaveBeenCalledOnce();
+  });
+
+  it("does not immediately retry when a failed subscription releases its arguments", async () => {
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});
     authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
       subscribers.push(subscriber);
@@ -298,6 +337,58 @@ describe("NotificationBridge", () => {
     // A failed call releases its arguments as well.
     await release(0);
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds recovery attempts and cancels retries while hidden", async () => {
+    vi.useFakeTimers();
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    let unavailable = true;
+    authenticatedApi.subscribeToNotifications.mockImplementation(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(unavailable ? Promise.reject(new Error("unavailable")) : Promise.resolve(),
+        {[Symbol.dispose]: dispose});
+    });
+    try {
+      await render();
+      await act(async () => vi.advanceTimersByTimeAsync(120_000));
+      const attempts = authenticatedApi.subscribeToNotifications.mock.calls.length;
+      expect(attempts).toBeGreaterThan(1);
+      expect(attempts).toBeLessThan(12);
+      await act(async () => setVisibility("hidden"));
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(attempts);
+      unavailable = false;
+      await act(async () => setVisibility("visible"));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(attempts + 1);
+      await act(() => subscribers.at(-1)!.notify(notification));
+      expect(addToast).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["unmount", "reconnect"])("cancels pending notification recovery on %s", async reason => {
+    vi.useFakeTimers();
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(Promise.reject(new Error("unavailable")), {[Symbol.dispose]: dispose});
+    });
+    try {
+      await render();
+      if (reason === "unmount") {
+        await act(async () => root.unmount());
+        root = createRoot(container);
+      } else {
+        authenticatedApi = {...authenticatedApi};
+        await render();
+      }
+      await release(0);
+      await act(async () => vi.advanceTimersByTime(60_000));
+      expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(reason === "unmount" ? 1 : 2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens a notified task in the app", async () => {

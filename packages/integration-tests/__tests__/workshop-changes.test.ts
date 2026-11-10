@@ -525,7 +525,7 @@ it.concurrent("two editors of one chat draft converge, and retries are idempoten
     const { id } = await owner.ws.getMetadata();
     const [name] = nextUsernames("collaborator");
     await withClient(api => signUp(api, name), async api => {
-      await owner.ws.addCollaborator(name, "build");
+      await owner.ws.addCollaborator(name, "workspace");
       return api.openWorkspace(id);
     }, async collaborator => {
       const chatId = await owner.ws.newChat("Let's edit together", null);

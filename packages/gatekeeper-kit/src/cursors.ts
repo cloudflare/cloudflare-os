@@ -39,17 +39,24 @@ export class ArrayCursor<T> extends RpcTarget implements Cursor<T> {
 }
 
 /**
- * Rows the agent's own simulation adds to a provider listing, such as an item it created that the
- * provider does not list yet. Each is merged before the first visible provider row it sorts
+ * The agent's own simulation of a provider listing. Its rows add what the provider does not list
+ * yet, such as an item it created. Each is merged before the first visible provider row it sorts
  * at-or-before; the rest follow the last provider page. They are not provider rows: they never
- * reach `authorizePage`'s `items`, and a page made only of them is not authorized. Their
- * position still says a little -- an injected row served ahead of the queue means no fetched
- * provider row sorts before it -- so a listing whose order is itself sensitive authorizes its
- * observation up front.
+ * reach `authorizePage`'s `items`, and a page made only of them is not authorized, unless
+ * `authorize` says they carry provider data. Their position still says a little -- an injected
+ * row served ahead of the queue means no fetched provider row sorts before it -- so a listing
+ * whose order is itself sensitive authorizes its observation up front.
  */
 export type CursorInjection<T> = {
   /** The rows to merge, sorted by `compare`. */
   items: readonly T[];
+  /**
+   * Set when the rows carry provider data, such as a provider row re-read because a simulated
+   * change moves it into the listing. Each is then authorized as it is served: it reaches
+   * `authorizePage`'s `items` in page order with the page's provider rows, and a page made only
+   * of injected rows is authorized like any other.
+   */
+  authorize?: boolean;
   /**
    * The provider's sort order: negative when `a` lists first. An injected row lists before an
    * equal provider row.
@@ -66,13 +73,17 @@ export type CursorInjection<T> = {
    * e.g. the injected stand-in for a create that landed mid-walk and the real row a later provider
    * page lists. An injected row's identity may change between servings (a temporary id becoming
    * the provider's), so served injected rows are re-keyed at every check; a provider row's must
-   * not change. Identities count as served only once their page is authorized.
+   * not change, and the rows `overlay` splits one into share it. Identities count as served only
+   * once their page is authorized.
    */
   identity?(item: T): string;
 };
 
 type CursorShape<T> = {
-  /** How many items each `next()` returns. */
+  /**
+   * The most items each `next()` returns. Only a provider row `overlay` splits into more than
+   * that exceeds it, since a row's pieces are served together.
+   */
   pageSize: number;
   /** How many items to ask the provider for at a time. */
   remotePageSize?: number;
@@ -93,15 +104,35 @@ type CursorShape<T> = {
   /** Simulated rows to merge into the provider's; see `CursorInjection`. */
   inject?: CursorInjection<T>;
   /**
+   * Re-derives a provider row as it is served, applying the gatekeeper's simulated changes the
+   * provider does not show yet: the rows to serve in its place, none to drop it and several where
+   * a change splits it. A row can sit in the buffer long after it was fetched, so this runs at
+   * serve time, not fetch time. The rows are served on one page, so no walk shows a split made
+   * under two states of the simulation; a page with no room left for them ends before the row.
+   * They must keep its sort position and share its identity. Authorization sees the rows it returns.
+   * It can run more than once for a row, a refused page's retry included, so it has no effects.
+   */
+  overlay?(item: T): readonly T[];
+  /**
+   * Runs at the start of every `next()`, before its page is built from the buffer or fetched, a
+   * refused page's retry included. `overlay` and `revalidate` are synchronous, so state they derive
+   * rows from that must be read asynchronously, such as whether the binding still reaches a row's
+   * container, is read here; reading it only at fetch time would serve buffered rows against
+   * whatever the last fetch saw. A throw fails that `next()` before any row is derived.
+   */
+  refresh?(): Promise<void>;
+  /**
    * Authorizes what `next()` is about to return, before it leaves the cursor. Runs on every page
    * carrying provider rows, including one served entirely from the buffer with no provider fetch,
    * on a spent window's empty page, and once for a walk that ends having disclosed nothing — a
    * zero-result query answers "no such thing", which is provider data too. A page made only of
-   * injected rows is not authorized.
+   * injected rows is not authorized, unless they are (`inject.authorize`).
    *
    * A throw holds the outgoing page, so the retry offers no provider row beyond it, with no further
-   * provider fetch and no chance of a capped page growing between refusal and retry. Its injected
-   * rows are re-read, and a provider row one of them no longer hides leads the next page instead.
+   * provider fetch and no chance of a capped page taking in more of the provider's rows between
+   * refusal and retry. Its rows are re-read, so `overlay` may make more or fewer of them, and a
+   * provider row the refusal did not cover -- one an injected row no longer hides, or one
+   * `overlay` had dropped -- leads the next page instead, as does one its page no longer has room for.
    * The exception is an empty page from a spent window: nothing was disclosed, so the retry opens a
    * fresh window rather than pinning the walk on a failure that may have been transient.
    *
@@ -110,11 +141,13 @@ type CursorShape<T> = {
    * between refusal and retry would otherwise disclose the previous connection's rows.
    *
    * `terminal` marks the walk over, so `items` is empty and no further page will come. Describe
-   * that case as the query it answered rather than the rows it returned, and give it a
-   * `{ kind: "baseline" }` scope or a synthetic collection id: the gate refuses a `collections`
-   * scope naming none. A mid-walk empty page (a spent fetch window that still says "ask again")
-   * arrives with `terminal: false`.
-   * @param items The provider rows of the page, without injected rows. Empty when `terminal`.
+   * that case as the query it answered rather than the rows it returned, and still report whatever
+   * restricts that answer (a containing workspace or tenant, say), since "none" is provider data
+   * too. A mid-walk empty page (a spent fetch window that still says "ask again") arrives with
+   * `terminal: false`. A legacy gate refuses a `collections` scope naming none, so a binding still
+   * on one gives an empty page `{ kind: "baseline" }` or a synthetic collection id.
+   * @param items The provider rows of the page, and its injected rows only under
+   * `inject.authorize`. Empty when `terminal`.
    * @param context `terminal` when this ends the walk.
    */
   authorizePage(items: readonly T[], context: { terminal: boolean }): Promise<void>;
@@ -134,8 +167,10 @@ type Entry<T> = { readonly item: T; readonly injected: boolean };
 // An outgoing page, built before authorization and committed only after it succeeds.
 type Outgoing<T> = {
   readonly items: T[];
-  // The provider rows among `items`: what authorization sees.
+  // What authorization sees of `items`: provider rows as served, and injected ones to authorize.
   readonly provided: T[];
+  // The queue entries behind `provided`: what a refusal covers, whatever `overlay` made of them.
+  readonly covered: Set<Entry<T>>;
   // Leading queue entries it used.
   consumed: number;
   // Identities it serves, and the injected rows among them, which are re-keyed at each check.
@@ -151,12 +186,14 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   readonly #dispose?: () => void;
   readonly #authorizePage: CursorShape<T>["authorizePage"];
   readonly #inject: CursorInjection<T>;
+  readonly #overlay?: (item: T) => readonly T[];
+  readonly #refresh?: () => Promise<void>;
   readonly #buffer: Entry<T>[] = [];
   readonly #servedIds = new Set<string>();
   readonly #servedInjected: T[] = [];
   #injectedIndex = 0;
   #remoteExhausted = false;
-  // Set once the walk has either disclosed provider rows or authorized that it had none. An empty
+  // Set once the walk has either had rows authorized or authorized that it had none. An empty
   // window leaves it clear: that page answered nothing, so the terminal answer is still owed.
   #answered = false;
   #held?: Outgoing<T>;
@@ -173,6 +210,8 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
     this.#dispose = options.dispose;
     this.#authorizePage = options.authorizePage;
     this.#inject = options.inject ?? { items: [], compare: () => 0 };
+    this.#overlay = options.overlay;
+    this.#refresh = options.refresh;
     // Assigned first, so a rejected size releases what the caller already acquired for this
     // cursor -- the documented pattern leases a gate before constructing one.
     try {
@@ -229,6 +268,7 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
 
   /** @returns One local page, `[]` when the fetch window is spent, or `null` at exhaustion. */
   async #fill(): Promise<T[] | null> {
+    await this.#refresh?.();
     // A refused page is held, and its retry offers no provider row beyond it: growing a page the
     // provider had capped would change what the approver already refused.
     const page = this.#held = await this.#take(this.#held);
@@ -236,36 +276,43 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
     // retry whose rows all dropped out with more of the queue behind them.
     const terminal = page.items.length === 0 && this.#remoteExhausted
       && page.consumed === this.#buffer.length;
-    // Injected rows are the gatekeeper's own simulation, so a page made only of them has nothing
-    // to authorize. A walk that disclosed nothing still answered the query: "no such thing" is
-    // provider data. Authorized once, so a repeated terminal `next()` emits no duplicate observation.
+    // Injected rows are the gatekeeper's own simulation unless it has them authorized, so a page
+    // made only of them has nothing to authorize. A walk that disclosed nothing still answered the
+    // query: "no such thing" is provider data. Authorized once, so a repeated terminal `next()`
+    // emits no duplicate observation.
     const injectedOnly = page.items.length > 0 && page.provided.length === 0;
     if (terminal ? !this.#answered : !injectedOnly) {
       try {
         await this.#authorizePage(page.provided, { terminal });
       } catch (error) {
         // An empty window disclosed nothing, and pinning it would stall the walk on a lost reply.
-        if (!terminal && page.items.length === 0) this.#held = undefined;
+        if (!terminal && page.items.length === 0) this.#commit(page, terminal);
         throw error;
       }
     }
+    this.#commit(page, terminal);
+    return terminal ? null : page.items;
+  }
+
+  /** Consumes `page` from the queue and records what it served. */
+  #commit(page: Outgoing<T>, terminal: boolean): void {
     this.#held = undefined;
     this.#buffer.splice(0, page.consumed);
     for (const id of page.ids) this.#servedIds.add(id);
     this.#servedInjected.push(...page.injected);
     if (terminal || page.provided.length > 0) this.#answered = true;
-    return terminal ? null : page.items;
   }
 
   /**
    * Builds the next outgoing page from the queue without consuming it, fetching only when the
    * queue runs dry. A refused page's retry instead rebuilds from the entries that page consumed,
-   * re-reading its injected rows, and stops before a provider row the refusal did not cover -- one
-   * a dropped injected row no longer hides -- which then leads the next page.
+   * re-reading every row, and stops before a provider row the refusal did not cover -- one a
+   * dropped injected row no longer hides, or one `overlay` had dropped -- which then leads the
+   * next page.
    */
   async #take(held?: Outgoing<T>): Promise<Outgoing<T>> {
-    const refused = held && new Set(held.provided);
-    const page: Outgoing<T> = { items: [], provided: [], consumed: 0, ids: [], injected: [] };
+    const page: Outgoing<T> =
+      { items: [], provided: [], covered: new Set(), consumed: 0, ids: [], injected: [] };
     let fetches = 0;
     while (page.items.length < this.#pageSize) {
       if (page.consumed === (held?.consumed ?? this.#buffer.length)) {
@@ -274,11 +321,12 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
         continue;
       }
       const entry = this.#buffer[page.consumed];
-      if (refused && !entry.injected && !refused.has(entry.item) && !this.#served(page, entry.item)) {
-        break;
-      }
+      const rows = this.#serve(page, entry);
+      if (held && rows.length > 0 && !entry.injected && !held.covered.has(entry)) break;
+      // An entry's rows share a page, so one with no room left for them leads the next.
+      if (page.items.length > 0 && page.items.length + rows.length > this.#pageSize) break;
       page.consumed++;
-      this.#admit(page, entry);
+      for (const row of rows) this.#admit(page, entry, row);
     }
     return page;
   }
@@ -294,16 +342,29 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
   }
 
   /**
-   * Adds an entry to a page unless it drops out. Revalidation and identity run here, at serve time,
-   * so a dropped row never costs a page while the fetch window lasts.
+   * The rows an entry serves now, none when it drops out. Re-derivation and identity run here, at
+   * serve time, so a dropped row never costs a page while the fetch window lasts. An entry's rows
+   * share its identity, so each is checked against what earlier entries served, not one another.
    */
-  #admit(page: Outgoing<T>, entry: Entry<T>): void {
-    const { revalidate, identity } = this.#inject;
-    const item = entry.injected && revalidate ? revalidate(entry.item) : entry.item;
-    if (item === null || this.#served(page, item)) return;
-    if (identity) page.ids.push(identity(item));
+  #serve(page: Outgoing<T>, entry: Entry<T>): readonly T[] {
+    const rows = entry.injected ? this.#revalidated(entry.item)
+      : this.#overlay ? this.#overlay(entry.item) : [entry.item];
+    return rows.filter(row => !this.#served(page, row));
+  }
+
+  /** An injected row as it is served now, if it still is. */
+  #revalidated(item: T): T[] {
+    const row = this.#inject.revalidate ? this.#inject.revalidate(item) : item;
+    return row === null ? [] : [row];
+  }
+
+  /** Adds a row an entry serves to the page. */
+  #admit(page: Outgoing<T>, entry: Entry<T>, item: T): void {
+    if (this.#inject.identity) page.ids.push(this.#inject.identity(item));
     page.items.push(item);
-    (entry.injected ? page.injected : page.provided).push(item);
+    if (entry.injected) page.injected.push(item);
+    else page.covered.add(entry);
+    if (!entry.injected || this.#inject.authorize) page.provided.push(item);
   }
 }
 
@@ -433,9 +494,10 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *
  * @example
  * ```ts
- * // The cursor is walked after this call returns, so it takes its own lease rather than
- * // borrowing the session's stub, and releases it when the walk is dropped.
- * const walk = this.#gate.lease();
+ * // The cursor is walked after this call returns, so it owns a duplicate of the session's
+ * // approval-queue stub and releases it when the walk is dropped.
+ * const walk = this.#queue.dup();
+ * const workspace = formatSubresourceId({ fragments: [{ name: "workspace", id: workspaceId }] });
  * return new TokenCursor<Project>({
  *   pageSize: 50,
  *   dispose: () => walk[Symbol.dispose](),
@@ -443,15 +505,17 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *     const page = await api.listProjects({ cursor: token, limit: perPage });
  *     return { items: page.projects, nextToken: page.nextCursor };
  *   },
- *   // Branch on emptiness, not on `terminal`: a spent mid-walk window is also empty, and a
- *   // `collections` scope naming no collection is refused.
- *   authorizePage: (items, { terminal }) => items.length === 0
- *     ? walk.authorize(
- *       { title: "Projects", description: terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible" },
- *       { kind: "baseline" })
- *     : walk.authorize(
- *       { title: "Projects", description: `Read ${items.length} projects` },
- *       { kind: "collections", ids: items.map(project => project.id) }),
+ *   // Every page reports the workspace, an empty one included: membership governs "none" too.
+ *   authorizePage: (items, { terminal }) => walk.authorizeObservation({
+ *     title: "Projects",
+ *     description: items.length > 0
+ *       ? `Read ${items.length} projects`
+ *       : terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible",
+ *     subresources: [
+ *       workspace,
+ *       ...items.map(project => formatSubresourceId({ fragments: [{ name: "project", id: project.id }] })),
+ *     ],
+ *   }),
  * });
  * ```
  */

@@ -176,6 +176,8 @@ export type RawUser = {
   email?: string | null;
   avatarUrl?: string | null;
   active?: boolean | null;
+  /** Whether the user is an app (an integration or agent) rather than a person. */
+  app?: boolean | null;
 };
 
 export type RawOrganization = {
@@ -250,7 +252,11 @@ export type RawIssue = {
   labels?: RawConnection<RawLabel> | null;
   team: RawTeam;
   project?: RawProject | null;
-  parent?: { id: string; identifier: string; url: string; title: string } | null;
+  /**
+   * `team` is absent only from a parent a pending action recorded before reads reported the
+   * parent's team (see LinearGatekeeperImpl.issueTeamIds).
+   */
+  parent?: { id: string; identifier: string; url: string; title: string; team?: { id: string } } | null;
   cycle?: RawCycle | null;
 };
 
@@ -266,7 +272,7 @@ export type RawComment = {
 // ---------------------------------------------------------------------------
 // GraphQL fragments
 
-const USER_FIELDS = `id name displayName email avatarUrl active`;
+const USER_FIELDS = `id name displayName email avatarUrl active app`;
 const TEAM_FIELDS = `id key name description private`;
 const STATE_FIELDS = `id name type color position`;
 const LABEL_FIELDS = `id name color`;
@@ -293,7 +299,7 @@ const ISSUE_DETAIL_FIELDS = `
   ${ISSUE_SUMMARY_FIELDS}
   description branchName
   creator { ${USER_FIELDS} }
-  parent { id identifier url title }
+  parent { id identifier url title team { id } }
   cycle { ${CYCLE_FIELDS} }
 `;
 

@@ -64,6 +64,36 @@ Data boundaries:
 - A browser's Web Push endpoint and keys pass through the User DO to the service with that DO's
   opaque subject; the installation stores only the subscription id the service returns for them.
 
+`authorizeNotificationDevice`, `registerNotificationDevice` and
+`registerAuthorizedNotificationDevice` share one limit per User DO, native and browser alike: 20
+calls per fixed minute-long window, which opens at the first call after the previous window ends.
+The count is kept in memory, so a restarted User DO opens a new window early. Calls past 20 are
+refused until the window ends, before anything is signed. Each admitted call sends a signed request
+that touches records at the central service the whole installation shares, so one user's loop
+could make them hot and use up the installation's request limit there, refusing every other user's
+pushes until it resets.
+
+The limit covers device calls only; deliveries aren't counted. A notification no open tab
+acknowledges is signed once for each device the User DO stores, and it stores only a user's 10
+most recently registered phones and, separately, their 10 most recently registered browsers, as
+the service keeps that many of each. The User DO drops a device the service evicted only once a
+push to it is answered `invalid_subscription` or `device_gone`, so without the cap a registration
+loop could pile up devices for one notification to reach. It registers one device at a time, so
+it stores them in the order the service received them.
+
+The cap mirrors the service instead of asking it, so it can still drop a live device, which then
+misses pushes until it next registers:
+
+- A phone's place at the service is set when the phone itself registers there, before the
+  installation exchanges that registration, so two phones registering at once can be ordered
+  differently in the two places.
+- A phone on the legacy path below counts toward its Cloudflare account's 10 at the service, so a
+  user with legacy phones from several accounts can have more than 10 live.
+- A device the service dropped for another reason, such as a revoked phone or a browser endpoint
+  another user of the installation took over, still counts here until a push finds it dead.
+
+Agreeing exactly would need the service to report a user's devices, which the protocol doesn't.
+
 The legacy native path used by the currently distributed TestFlight build hands the SPA a one-time
 registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a
@@ -116,7 +146,12 @@ pushes there.
 flowchart LR
   subgraph Install[One customer CFOS installation]
     Agent[Agent turn]
+    Workspace[Workspace Durable Object]
+    Candidates[(chatNotifications: stable event IDs)]
+    SourceDirty[(dirtyChats)]
     User[User Durable Object]
+    Cursor[(chatReadCursors: visible horizons, count, delivery receipt)]
+    Outbox[(notificationOutbox: accepted alert payloads)]
     Browser[Visible browser subscriber]
     Key[Install signing private key]
   end
@@ -134,9 +169,16 @@ flowchart LR
     Worker[Workshop service worker]
   end
 
-  Agent -->|completed or needs permission| User
-  User -->|visible client first| Browser
-  Browser -->|presentation acknowledged| User
+  Agent -->|completed or needs permission| Workspace
+  Workspace -->|record eligibility at timeline sequence| Candidates
+  Workspace -->|commit with timeline change| SourceDirty
+  SourceDirty -->|authorized visible head + eligible alerts; retain until ACK| User
+  User -->|commit absolute unread count before ACK| Cursor
+  User -->|same transaction before ACK| Outbox
+  Outbox -->|local drain and retry; no source fetch| User
+  User -->|offer to all subscribed tabs first| Browser
+  Browser -->|acknowledge only when visible| User
+  User -->|delete alert + advance receipt after delivery or skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
   Delivery -->|validate install and subscription| Registry
@@ -147,16 +189,38 @@ flowchart LR
   WebPush --> Worker
 ```
 
+The workspace assigns persisted dense visible positions, so the User DO calculates counts by
+subtraction rather than querying message history. The workspace checks admission before fanout;
+denied fanout attempts skip that recipient, rather than parking work on the User DO. A settled
+partial failure stores only failed recipients on the source dirty row; ACKed and denied users
+are not retried. A crash before that checkpoint can replay the batch, with recipient deduplication
+protecting accepted updates. Handoffs are bounded to two seconds. The all-success path writes no recipient checkpoint. Accepted alerts
+retry from the user's durable queue with the same UUID after eviction or a lost ACK. The retained completed-delivery
+receipt prevents re-enqueueing an already delivered alert on a source retry. Distinct alerts at
+the same timeline position retain independent UUIDs and queue items. Revocation durably retries
+recipient cleanup, which clears queued alerts and cancels in-flight delivery when received. See
+[user-owned unread state](user-unread-state.md) for the handoff and deletion boundaries.
+
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
 subscription id, opaque User DO subject, and same-origin deep-link path cross the central boundary
-during a send, plus the headers every signed request carries: install id, key id, timestamp, nonce,
-body digest, and signature. Permission details, chat content, gatekeeper grants, and provider
-credentials do not. A
-visible browser tab is offered the notification first, and push is sent to every registered device
-only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
-User DO reset drops its subscription. When the service answers `device_gone` or
+during an alert send. Separate `POST /v1/badges`
+replacements carry only `{subscriptionId, version, count}`; see
+[unread push badges](unread-push-badges.md). Both use the headers every signed request carries:
+install id, key id, timestamp, nonce, body digest, and signature. Permission details, chat content,
+gatekeeper grants, and provider credentials do not. Every subscribed browser tab is offered the
+notification at once; only visible tabs acknowledge it. Push is sent to every registered device
+if no tab acknowledges it within three seconds. Hidden tabs release their alert subscriptions so
+they cannot delay push; a client that becomes hidden during delivery rejects `notify()` without
+presenting a toast.
+A tab resubscribes if a User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
-app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
+app next opens. Any other failure, including `invalid_signature`, keeps the subscription and
+retries only the failed device subscriptions for up to ten minutes from first acceptance.
+Successful devices are not retried, and a failed event does not block later queued notifications.
+Each attempt has a 15-second
+budget, shortened to the remaining alert lifetime. Expired alerts are logged and discarded;
+their fixed deadlines survive resets and are not extended by repeated source delivery. Later
+alerts remain eligible, while unread counts are unchanged. Only turns a person
 started announce completion; callback turns, such as a schedule, and spawned agents notify only
 when they need the user's permission. A turn resumed by an approval or accepted connection keeps
 its original initiator's model, account and notification recipient, as well as whether it was a

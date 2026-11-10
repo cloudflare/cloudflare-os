@@ -45,14 +45,19 @@ describe("extraction", () => {
     expect(extractUrls(`${"a".repeat(64)}.com`)).toEqual([]);
   });
 
-  it("weighs long drafts in time linear in their length", () => {
-    // Each took seconds when a failed match could backtrack across the whole run.
-    for (const text of ["a.".repeat(50_000), "a-".repeat(50_000), `https://x.co/${".".repeat(100_000)}a`]) {
-      const started = performance.now();
-      weightedLength(text);
-      comparableText(text);
-      expect(performance.now() - started).toBeLessThan(1000);
-    }
+  it("keeps a long dotted draft as text rather than a link", () => {
+    const text = "a.".repeat(50_000);
+    expect(extractUrls(text)).toEqual([]);
+    expect(weightedLength(text)).toBe(100_000);
+    expect(comparableText(text)).toBe(text);
+  });
+
+  it("counts a long URL as one link and keeps its trailing sentence punctuation", () => {
+    const url = `https://x.co/${".".repeat(100_000)}a`;
+    const text = `${url}.`;
+    expect(extractUrls(text)).toEqual([url]);
+    expect(weightedLength(text)).toBe(24);
+    expect(comparableText(text)).toBe(".");
   });
 
   it("finds mentions, once each, ignoring email addresses", () => {

@@ -22,13 +22,126 @@ This package provides GitHub OAuth integration for Gadgets. It serves two purpos
 
 Every queued action carries a stable kind (`github.<action>`, e.g. `github.push`), and the user may
 opt in to approving a kind automatically on a connection. Every action is eligible, including
-closing and reopening, `requestChanges` reviews and force pushes, except two that always wait for a
-person: **merging a pull request** and **an approving review**. An approval shares the
-`github.postReview` kind with comment and request-changes reviews, but is never auto-approvable,
-so enabling that kind does not cover it. A force push has its own kind (`github.forcePush`), so
-enabling ordinary pushes does not let history be rewritten. Excluded actions are still approved
-by hand as before. Each binding advertises through `getAutoApprovableActions()` only the eligible
-kinds its session can submit (an issue binding, for example, never lists pushes).
+closing and reopening, `requestChanges` reviews and force pushes, except those that pass a review
+gate or can start a billed run, which always wait for a person: **merging a pull request**, **an
+approving review**, **a push or force push to the repository's default branch or a protected
+branch**, and **creating an issue assigned to an app**. An approval shares
+the `github.postReview` kind with comment and request-changes reviews, and a gated push shares
+`github.push` or `github.forcePush` with pushes to other branches, but neither is ever
+auto-approvable, so enabling those kinds does not cover them. Whether a branch is gated is read
+live when the push is queued, and again when an auto-approvable push applies: the repository's
+default branch, a branch GitHub reports as protected, or one a ruleset covers, including a branch
+the push creates, and the first push into an empty repository, which makes its default branch. A
+classic protection pattern is shown only to admins, so a push that creates a
+branch one will match is not gated. If GitHub denies the account access to the branch protection
+or ruleset details, the branch counts as unprotected; any other failed read gates the push. An issue assigned to an app (a login
+ending in `[bot]`, or `Copilot`) shares `github.createIssue` with other issues but always waits,
+because an app such as Copilot's coding agent starts a run that spends billed credits. A force push has its own kind (`github.forcePush`), so enabling ordinary pushes does
+not let history be rewritten. Excluded actions are still approved by hand as before. Each binding
+advertises through `getAutoApprovableActions()` only the eligible kinds its session can submit (an
+issue binding, for example, never lists pushes).
+
+## CI status (read-only)
+
+Gadgets can read CI with the `repo` scope connections already have; nothing CI-related is queued
+for approval, and every read is logged as an observation.
+
+- **Checks on a commit.** `repo.getChecks(ref?)` and `pullRequest.getChecks(commitId?)` report
+  the check runs (GitHub Actions jobs and other apps' checks) and commit statuses on a commit,
+  from GraphQL's `statusCheckRollup`: the first 1000 entries, with an overall `state`, `counts` by
+  state over every entry (over the listed ones when GitHub cannot count them), and a `phase`:
+  `active` (queued, running, or on a deployment wait timer: poll again), `blocked` (waits for a
+  person, such as a deployment reviewer or a first-time contributor's approval), `done`, or for a
+  commit nothing has reported on, `notStarted`. A commit reads `notStarted` while a push of it is
+  queued, or for 10 minutes after it became a head when CI is expected (the commit has
+  `.github/workflows/*.yml` or `*.yaml`, or its first parent had CI); otherwise it is `done` with
+  `state: "none"`. The head time is when this gatekeeper applied the push, else GitHub's activity
+  log for the branch (best-effort: if GitHub refuses or fails it, the committer date), else the
+  committer date; for a pull request's head, no earlier than when the pull request was opened,
+  since opening it starts `on: pull_request` CI without a push. A pull request read also marks which entries the base branch requires
+  (`required`) and names required checks that have not reported (`missingRequired`, best-effort
+  from the branch's rulesets and classic protection); while any is missing, the state reads
+  `expected` (unless something failed). An `expected` state, GitHub's own or from
+  `missingRequired`, with nothing else unfinished reads `active` for those same 10 minutes, then
+  `blocked`, since a required check that has not reported by then needs someone to act (a
+  path-filtered workflow, or an app that is not installed). A phase that would end polling
+  (`done`, or that `blocked`) reads `active` instead while a GitHub Actions run of the commit
+  waits on its concurrency group, created under an hour ago: such a run has no check runs, so
+  the rollup cannot show it (one best-effort `status=pending` runs lookup, made only then).
+- **Pull request scope.** A pull request binding reads CI only on the pull request's head (counting
+  queued pushes) and the first 250 commits its listing shows; check runs and workflow runs on any
+  other commit are refused. `GitHubPullRequestDetails.mergeState` carries GitHub's
+  `mergeable_state`.
+- **Check runs.** `getCheckRun(id)` accepts a check run id or an Actions job id (`/runs/<id>` and
+  `/actions/runs/<run>/job/<id>` URLs). `getDetails()` adds output, steps and any deployment
+  hold; `listAnnotations()` pages the file annotations; `readLog()` reads a finished Actions job's
+  log (numbered lines, tail by default, `fromLine`/`maxLines`/`search`), refusing other apps'
+  check runs. GitHub answers the logs endpoint with a redirect to its blob storage, which is
+  fetched without the token. Finished logs are cached (see `storage-schema.md`) and revalidated
+  against the logs endpoint before each use, so a deleted log stops being served.
+- **Workflow runs.** `repo.listWorkflowRuns()` filters by branch, commit, event and state (GitHub's
+  `queued` filter leaves out runs still `pending` on a concurrency group or `requested`);
+  `pullRequest.listWorkflowRuns()` lists the head commit's. `getWorkflowRun(id)` opens one for
+  `getDetails()` and `listJobs({ attempt? })`.
+
+Re-running, cancelling or approving runs, and merging when green, are not supported yet.
+
+## Sharing with collaborators
+
+A binding is one repository (or one of its issues or pull requests, which share its permissions),
+and the policy for a collaborator is that their own connected GitHub account can read that
+repository. Nothing narrower is checked: not the permissions CI logs, Actions or checks need, and
+passing doesn't mean GitHub shows that account everything the binding's account read.
+
+- **Identity.** A binding pins its repository's numeric GitHub id on its first read (read once by
+  name; a renamed or transferred repository's redirect to its id is followed) and reads nothing
+  until it has. From then on every REST request beneath the repository goes to
+  `/repositories/<id>/...` and follows no redirect, and GraphQL reads are checked against it.
+  Issue search and git fetches and pushes, which github.com addresses only by name, are sent to
+  the name that id has now, and a search or fetch fails if it changed before GitHub answered. So a
+  rename or transfer keeps the binding on its repository and a repository later created under an
+  old name is never read in its place: the binding's requests fail instead. A push is not checked
+  again once GitHub has answered, since what GitHub accepted can't be called back: only a rename
+  and the name's reuse both landing between the lookup and the push could deliver it elsewhere. A
+  binding that read before ids were pinned is pinned to the repository its name names at its first
+  read since, which may not be the one it read then.
+  Returned repository references and issue/pull-request URLs use GitHub's canonical response, not
+  the binding's original name; queued creations and comments use the repository metadata, and hook
+  comment/review subjects use the current name from the delivery's access check. Existing cache
+  freshness rules still apply.
+- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+  one served from a cache or from queued actions, and each hook delivery, reports
+  `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it
+  is returned (see [docs/observers.md](../../docs/observers.md) §10). A hook bound by an earlier
+  release reports the id its binding stored.
+- **Public repositories.** When the binding's owner finds the pinned repository public at
+  `GET /repositories/<id>`, a read is allowed for every collaborator without asking their
+  accounts: anyone can read a public repository, so a collaborator whose credentials have expired
+  doesn't block it. Visibility is the repository's own, whoever's token reads it, and every read
+  uses the owner's token, so it has just worked. The answer is reused for up to 15 minutes, so a
+  repository made private is still treated as public for at most that long. An owner answer that
+  says nothing (expired credentials, a rate limit, an outage) counts as not public, leaving
+  collaborators to their own accounts. Opening the workspace doesn't take this shortcut: each open
+  still checks the collaborator's own account, as below.
+- **Checks.** Otherwise a collaborator's account is asked `GET /repositories/<id>` with its own
+  token: 200 allows; 404, or a 403 GitHub doesn't mark as a rate limit (an organization's OAuth app
+  or SAML restrictions), denies; anything else fails the check rather than deny. Their account
+  reuses a grant for up to 15 minutes and a denial for up to 15 seconds, so a revoked grant can
+  still admit them for 15 minutes; it asks afresh after a reconnect, which may sign in as another
+  GitHub user, and reuses nothing once disconnected or once GitHub has confirmed its grant dead:
+  the check fails. Each open also asks, uncached and never with the binding owner's token, for what
+  the workspace read before reads reported the repository: whether their account can read the
+  repository the binding's name names now, as releases that read by name asked, and, once the
+  binding has pinned an id, the same question of that id, since what those releases read may have
+  come from a repository that took the name. A binding with no id yet has read nothing by id, so
+  the name is all it is checked by. Caches those releases filled are discarded on upgrade.
+- **Offline collaborators.** After a collaborator has opened the workspace and chosen an account,
+  the Workshop keeps checking that account for reads within their sharing scope, even after their
+  session closes. On a private repository a failed check can therefore block the owner's reads and
+  hook callbacks while that collaborator is offline; being offline alone does not block anything.
+  Account removal or confirmed credential expiry fails immediately; repository access revocation
+  may remain hidden by the 15-minute grant cache. A collaborator with no stored account choice is
+  checked on admission instead.
 
 ## Setting Up GitHub OAuth Credentials
 

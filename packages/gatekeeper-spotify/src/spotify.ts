@@ -5,6 +5,7 @@ import {
   stripTrailingSlashes,
   workerVersionTag,
   type AccountDescription,
+  type ActionKind,
   type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -12,6 +13,7 @@ import {
   type GatekeeperUser,
   type GatekeeperUserVerifier,
   type GatekeeperVendor as GatekeeperVendorIface,
+  type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
@@ -57,6 +59,7 @@ import type {
   SpotifyUserRef,
   SpotifyPlaylistDetailsUpdate,
 } from "./types";
+import { autoApprovableKinds, autoApprovalOf } from "./action-kinds";
 import TYPES_CODE from "./types.txt";
 import SPOTIFY_LOGO_SVG from "./spotify-logo.svg";
 import SPOTIFY_ACCOUNT_CONFIGURATOR_HTML from "./generated/account-configurator-ui.txt";
@@ -66,6 +69,14 @@ import type {
   SpotifyConfiguratorOption,
   SpotifyPlaylistConfiguratorRpc,
 } from "./configurator/playlist-configurator-types";
+
+/** Observation that must state its subresources, so an omitted list is a type error. */
+type ObservationWithSubresources = ObservationDescription & { subresources: string[] };
+
+/** Reports a read; this gatekeeper's reads expose no tracked subresources, so callers pass `[]`. */
+function authorizeRead(queue: RpcStub<ApprovalQueue>, observation: ObservationWithSubresources): Promise<void> {
+  return queue.authorizeObservation(observation);
+}
 
 type Env = Cloudflare.Env & {
   BASE_URL?: string;
@@ -96,7 +107,7 @@ type StoredCredentials = {
   scopes: string[];
 };
 
-type ResourceKind = "account" | "playlist";
+export type ResourceKind = "account" | "playlist";
 
 type SpotifyGatekeeperImplProps = {
   userObjectId: string;
@@ -851,7 +862,7 @@ type PlayerAction = BaseAction & { type: "player"; command: PlayerCommand };
 type PlaylistTrackAction =
   PlaylistAddAction | PlaylistRemoveAction | PlaylistReorderAction | PlaylistReplaceAction;
 
-type SpotifyAction =
+export type SpotifyAction =
   | SaveTracksAction | RemoveSavedTracksAction | SaveAlbumsAction | RemoveSavedAlbumsAction
   | FollowArtistsAction | UnfollowArtistsAction
   | PlaylistCreateAction | PlaylistTrackAction | PlaylistDetailsAction
@@ -1175,8 +1186,8 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKinds(this.ctx.props.resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<SpotifyAccountSession | SpotifyPlaylist> {
@@ -1192,10 +1203,20 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
    * library, playlists, playback) is not the kind of restricted, access-controlled corporate data
    * the information-flow model exists to protect — if you share a Gadget that can read your
    * playlists, that is your call. So any collaborator may observe: addObserver/removeObserver are
-   * no-ops and we never set excludeObservers on observations.
+   * no-ops and reads report `subresources: []`, so verifyObserverAccess allows every observer.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
+  /** addObserver never restricted anyone, so there is no historical requirement to export. */
+  async getHistoricalSubresources(): Promise<string[]> { return []; }
+
+  /** Allows every observer under the low-stakes observer policy. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
 
   // -------------------------------------------------------------------------
   // Action storage & lookup
@@ -1812,12 +1833,22 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
     try {
       // The text comes from the prepared payload, not the caller, so it always shows what applies.
-      await queue.submitAction(action.approvalId, { ...presentation, ...describeSpotifyAction(action) });
+      await queue.submitAction(action.approvalId,
+        { ...presentation, ...describeSpotifyAction(action), ...autoApprovalOf(action) });
     } catch (error) {
+      // An auto-approval can apply the action before the reply arrives, so a record the overseer
+      // has moved past staged (being applied, applied, or failed and kept for a retry) proves it
+      // received the action: failing would invite a repeated write, and deleting would strand the
+      // retry.
+      const state = this.#getRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;
     }
-    const record = this.#requireRecord(action.approvalId);
+    // For the same reason the action may already be applied (and retired) or failed by now; only a
+    // record still staged becomes pending.
+    const record = this.ctx.storage.kv.get<StoredActionRecord>(this.#actionKey(action.approvalId));
+    if (record?.state !== "staged") return;
     record.state = "pending";
     this.ctx.storage.kv.put(this.#actionKey(action.approvalId), record);
     this.#invalidatePendingCache();
@@ -1872,11 +1903,20 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
 
   async applyAction(actionId: number): Promise<void> {
     const record = this.#requireRecord(actionId);
+    // The overseer records completion only after this returns, so an apply that already ran can be
+    // delivered again after a lost reply or a restart; it has nothing left to do.
+    if (record.state === "approved") return;
     // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
     if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
       throw new Error(`Spotify action ${actionId} is no longer pending.`);
     }
     const action = record.action;
+    if (record.state === "staged") {
+      // Being applied proves the overseer received the action, which a lost submit reply relies on.
+      record.state = "pending";
+      this.ctx.storage.kv.put(this.#actionKey(actionId), record);
+      this.#invalidatePendingCache();
+    }
     try {
       await this.#performAction(action, record);
     } catch (error) {
@@ -2088,7 +2128,8 @@ class SpotifyPlayerImpl extends RpcTarget implements SpotifyPlayer {
 
   async getState(): Promise<SpotifyPlaybackState> {
     const state = await this.#gk.playerGetState();
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read playback state",
       description: "Read the current Spotify playback state and active device.",
     });
@@ -2097,7 +2138,8 @@ class SpotifyPlayerImpl extends RpcTarget implements SpotifyPlayer {
 
   async getDevices(): Promise<SpotifyDevice[]> {
     const devices = await this.#gk.playerGetDevices();
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "List playback devices",
       description: "List the available Spotify Connect devices.",
     });
@@ -2106,7 +2148,8 @@ class SpotifyPlayerImpl extends RpcTarget implements SpotifyPlayer {
 
   async getQueue(): Promise<{ currentlyPlaying: SpotifyTrack | null; queue: SpotifyTrack[] }> {
     const result = await this.#gk.playerGetQueue();
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read playback queue",
       description: "Read the currently playing track and the upcoming playback queue.",
     });
@@ -2115,7 +2158,8 @@ class SpotifyPlayerImpl extends RpcTarget implements SpotifyPlayer {
 
   async getRecentlyPlayed(limit?: number): Promise<SpotifyPlayHistoryEntry[]> {
     const result = await this.#gk.playerGetRecentlyPlayed(limit);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read recently played",
       description: "Read recently played tracks from listening history.",
     });
@@ -2212,7 +2256,8 @@ class SpotifyPlaylistImpl extends RpcTarget implements SpotifyPlaylist {
 
   async getDetails(): Promise<SpotifyPlaylistSummary> {
     const summary = await this.#gk.playlistGetDetails(this.#logicalId);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: `Read playlist "${summary.name}"`,
       description: `Read details of the Spotify playlist "${summary.name}" (${summary.trackCount} tracks).`,
     });
@@ -2221,7 +2266,8 @@ class SpotifyPlaylistImpl extends RpcTarget implements SpotifyPlaylist {
 
   async listTracks(limit?: number, offset?: number): Promise<SpotifyPlaylistTrack[]> {
     const tracks = await this.#gk.playlistListTracks(this.#logicalId, limit, offset);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read playlist tracks",
       description: `Read ${tracks.length} track(s) from the playlist.`,
     });
@@ -2318,7 +2364,8 @@ class SpotifyPlaylistImpl extends RpcTarget implements SpotifyPlaylist {
 
   async isFollowing(): Promise<boolean> {
     const result = await this.#gk.isFollowingPlaylist(this.#logicalId);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Check playlist follow status",
       description: "Check whether this playlist is in your library.",
     });
@@ -2343,7 +2390,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async getProfile(): Promise<SpotifyProfile> {
     const profile = await this.#gk.getProfile();
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read Spotify profile",
       description: `Read the connected Spotify account's profile (${profile.displayName ?? profile.id}).`,
     });
@@ -2365,7 +2413,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
     }
     assertOptionalLimit(limit);
     const results = await this.#gk.search(query, types as SpotifySearchType[], limit);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: `Search Spotify for "${query}"`,
       description: `Search the Spotify catalog for "${query}" (${types.join(", ")}).`,
     });
@@ -2374,7 +2423,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async getTrack(trackId: string): Promise<SpotifyTrack> {
     const track = await this.#gk.getTrack(toBareId(trackId, "track"));
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: `Read track "${track.name}"`,
       description: `Read catalog details for the track "${track.name}".`,
     });
@@ -2383,7 +2433,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async listSavedTracks(limit?: number, offset?: number): Promise<SpotifyTrack[]> {
     const tracks = await this.#gk.listSavedTracks(limit, offset);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read saved tracks",
       description: `Read ${tracks.length} saved track(s) from the library.`,
     });
@@ -2392,7 +2443,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async listSavedAlbums(limit?: number, offset?: number): Promise<SpotifyAlbumRef[]> {
     const albums = await this.#gk.listSavedAlbums(limit, offset);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read saved albums",
       description: `Read ${albums.length} saved album(s) from the library.`,
     });
@@ -2401,7 +2453,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async areTracksSaved(trackIds: string[]): Promise<boolean[]> {
     const result = await this.#gk.areTracksSaved(trackIds.map(id => toBareId(id, "track")));
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Check saved tracks",
       description: `Check whether ${trackIds.length} track(s) are saved in the library.`,
     });
@@ -2410,7 +2463,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async areAlbumsSaved(albumIds: string[]): Promise<boolean[]> {
     const result = await this.#gk.areAlbumsSaved(albumIds.map(id => toBareId(id, "album")));
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Check saved albums",
       description: `Check whether ${albumIds.length} album(s) are saved in the library.`,
     });
@@ -2424,7 +2478,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
     }
     assertOptionalLimit(limit);
     const tracks = await this.#gk.getTopTracks(timeRange as SpotifyTopTimeRange | undefined, limit);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read top tracks",
       description: `Read the user's top ${tracks.length} track(s).`,
     });
@@ -2438,7 +2493,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
     }
     assertOptionalLimit(limit);
     const artists = await this.#gk.getTopArtists(timeRange as SpotifyTopTimeRange | undefined, limit);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Read top artists",
       description: `Read the user's top ${artists.length} artist(s).`,
     });
@@ -2507,7 +2563,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async isFollowingArtists(artistIds: string[]): Promise<boolean[]> {
     const result = await this.#gk.areArtistsFollowed(artistIds.map(id => toBareId(id, "artist")));
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "Check followed artists",
       description: `Check whether ${artistIds.length} artist(s) are followed.`,
     });
@@ -2516,7 +2573,8 @@ class SpotifyAccountSessionImpl extends RpcTarget implements SpotifyAccountSessi
 
   async listPlaylists(limit?: number, offset?: number): Promise<SpotifyPlaylistSummary[]> {
     const playlists = await this.#gk.listPlaylists(limit, offset);
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
+      subresources: [],
       title: "List playlists",
       description: `List ${playlists.length} of the user's playlists.`,
     });

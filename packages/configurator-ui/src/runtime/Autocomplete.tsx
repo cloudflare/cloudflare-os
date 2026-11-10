@@ -23,7 +23,8 @@ const showWholeIfClipped = (option: ConfiguratorUIOption) => (event: PointerEven
 /**
  * Searches the gatekeeper as the user types and selects one result. The input shows the typed query
  * (kept in the store by field name, so `clearFields` can drop it) rather than the value; a
- * pre-filled value with no title yet shows the value itself.
+ * pre-filled value, or one the module sets while the field is blank, has no title yet and shows the
+ * value itself.
  */
 export const Autocomplete = ({
   name, value, placeholder, loadOptions, onChange, onClear, disabled = false,
@@ -43,6 +44,16 @@ export const Autocomplete = ({
   const query = forgetQuery ? "" : storedQuery;
 
   const [suggestions, setSuggestions] = useState<OptionsState>({ status: "loading" });
+  // A value the module set, rather than the user picked, has put no text in the field.
+  const shownValue = useRef(value);
+  useEffect(() => {
+    if (value === shownValue.current) return;
+    shownValue.current = value;
+    if (value && query === "") {
+      const option = suggestions.status === "ready" ? suggestions.options.find(o => o.value === value) : undefined;
+      store.setQuery(queryName, option?.title ?? value);
+    }
+  }, [value, query, suggestions, store, queryName]);
   const anchorRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined);

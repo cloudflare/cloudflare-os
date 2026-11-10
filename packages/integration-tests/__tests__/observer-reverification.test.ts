@@ -14,7 +14,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
+import * as fc from "fast-check";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
@@ -128,7 +130,7 @@ async function shareGadgetWithBob(
     await overseer.newGatekeeper(aliceAccount.id, thingUrl(thingName));
   }
   const { id: gadgetId } = await overseer.getMetadata();
-  const collaborator = await overseer.addCollaborator(bob, "build");
+  const collaborator = await overseer.addCollaborator(bob, "workspace");
   if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
   overseer[Symbol.dispose]();
 
@@ -164,7 +166,7 @@ async function bobOpensAndCloses(shared: SharedGadget): Promise<ObserverConfigRe
 }
 
 describe("observer re-verification", () => {
-  it.concurrent("lists the connections each sharing role must verify", async () => {
+  it.concurrent("lists the connections each grant must verify", async () => {
     await withSession(async publicApi => {
       const [alice] = nextUsernames("alice");
       using aliceApi = await signUp(publicApi, alice);
@@ -172,25 +174,38 @@ describe("observer re-verification", () => {
       using overseer = await aliceApi.newWorkspace();
 
       using bound = await overseer.newGatekeeper(account.id, thingUrl("bound"));
+      using other = await overseer.newGatekeeper(account.id, thingUrl("other"));
       using unbound = await overseer.newGatekeeper(account.id, thingUrl("unbound"));
-      if (!bound || !unbound) throw new Error("Failed to create test connections");
+      if (!bound || !other || !unbound) throw new Error("Failed to create test connections");
 
       using gadget = await overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
       await gadget.bind("TEST_THING", await bound.getId());
+      using otherGadget = await overseer.createGadget("Other Gadget", undefined, "OTHER_GADGET");
+      await otherGadget.bind("TEST_THING", await other.getId());
 
-      await expect(overseer.listObserverRequirements("use")).resolves.toEqual([
-        expect.objectContaining({
-          gatekeeperId: await bound.getId(),
-          vendorId: TEST_VENDOR_ID,
-          resourceTitle: "Test Thing bound",
-          resourceUrl: thingUrl("bound"),
-        }),
-      ]);
-      await expect(overseer.listObserverRequirements("build")).resolves.toEqual([
+      // Each gadget's recipients verify only what that gadget reaches.
+      await expect(overseer.listObserverRequirements({ gadgetId: await gadget.getId() }))
+          .resolves.toEqual([
+            expect.objectContaining({
+              gatekeeperId: await bound.getId(),
+              vendorId: TEST_VENDOR_ID,
+              resourceTitle: "Test Thing bound",
+              resourceUrl: thingUrl("bound"),
+            }),
+          ]);
+      await expect(overseer.listObserverRequirements({ gadgetId: await otherGadget.getId() }))
+          .resolves.toEqual([
+            expect.objectContaining({ gatekeeperId: await other.getId() }),
+          ]);
+      await expect(overseer.listObserverRequirements("workspace")).resolves.toEqual([
         expect.objectContaining({ resourceTitle: "Test Ambient" }),
         expect.objectContaining({ resourceTitle: "Test Thing bound" }),
+        expect.objectContaining({ resourceTitle: "Test Thing other" }),
         expect.objectContaining({ resourceTitle: "Test Thing unbound" }),
       ]);
+      // A connection is not a gadget, so it cannot be granted.
+      await expect(overseer.listObserverRequirements({ gadgetId: await bound.getId() }))
+          .rejects.toThrow(`No such gadget: ${await bound.getId()}`);
     });
   });
 
@@ -205,7 +220,7 @@ describe("observer re-verification", () => {
 
       const ownerWorkspace = await aliceApi.newWorkspace();
       const { id: gadgetId } = await ownerWorkspace.getMetadata();
-      const collaborator = await ownerWorkspace.addCollaborator(bob, "build");
+      const collaborator = await ownerWorkspace.addCollaborator(bob, "workspace");
       if (!collaborator) throw new Error(`Failed to share the gadget with ${bob}`);
       ownerWorkspace[Symbol.dispose]();
 
@@ -365,6 +380,110 @@ describe("observer re-verification", () => {
       expect(error).not.toBeNull();
       expect(error!.message).toMatch(/could not confirm/i);
       expect(error!.message).toContain(DENIED_REASON);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// A collaborator's opens over time, while each connection's credential lapses or is repaired
+// between opens and during the one re-prompt. Checked against ensureObserver()'s documented rules
+// (docs/observers.md): until an open succeeds, each one prompts for every binding; every pass
+// verifies every binding; only failed bindings are re-prompted, once, with their failure; a
+// terminal error names exactly the bindings still failing; no failed open de-registers anything,
+// a first-ever one included; and every open registers under the one observer id the first
+// reserved.
+
+/** One open: per binding, whether its credential verifies on the first pass, then after a repair. */
+type ObserverOpen = { firstPass: boolean[]; afterReprompt: boolean[] };
+
+// Credentials mostly work, so a collaborator also gets to be a returning observer.
+const verifies = fc.oneof({ arbitrary: fc.constant(true), weight: 3 }, fc.constant(false));
+const observerOpens: fc.Arbitrary<ObserverOpen[]> = fc.integer({ min: 1, max: 3 })
+  .chain(bindings => fc.array(fc.record({
+    firstPass: fc.array(verifies, { minLength: bindings, maxLength: bindings }),
+    afterReprompt: fc.array(verifies, { minLength: bindings, maxLength: bindings }),
+  }), { minLength: 1, maxLength: 3 }));
+
+describe("observer re-verification over a collaborator's opens", () => {
+  it.concurrent("registers, re-prompts and reports exactly as the bindings verify, removing nothing",
+      async () => {
+    await fc.assert(fc.asyncProperty(observerOpens, async opens => withSession(async publicApi => {
+      const [prefix] = nextUsernames("obsprop");
+      const names = opens[0]!.firstPass.map((_, i) => `${prefix}-${i}`);
+      const urls = names.map(thingUrl);
+      const shared = await shareGadgetWithBob(publicApi, names);
+      const bob = shared.bobAccount.id;
+      const setOutcomes = (outcomes: boolean[]) => Promise.all(outcomes.map((allow, i) =>
+        setVerifyOutcome(shared.bobLabel,
+          allow ? { allow: true } : { allow: false, reason: EXPIRED_REASON }, urls[i])));
+
+      // Whether an earlier open succeeded, which is what publishes Bob's account choices.
+      let returning = false;
+      // How many passes verified each binding; each registers Bob there.
+      const registrations = urls.map(() => 0);
+
+      for (const [k, { firstPass, afterReprompt }] of opens.entries()) {
+        await setOutcomes(firstPass);
+        const recorder = new ObserverConfigRecorder();
+        if (!returning) recorder.alwaysChoose(bob, 1);
+        recorder.respondWith(async needs => {
+          await setOutcomes(afterReprompt);
+          return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: bob }));
+        });
+        const opened = await bobOpens(shared, recorder).then(
+          overseer => { overseer[Symbol.dispose](); return null; },
+          (error: unknown) => error as Error);
+
+        const passes = firstPass.every(Boolean) ? [firstPass] : [firstPass, afterReprompt];
+        for (const pass of passes) pass.forEach((ok, i) => { if (ok) registrations[i]!++; });
+        const failing = names.filter((_, i) => !passes.at(-1)![i]);
+
+        const prompts = recorder.calls.map(needs => needs
+          .filter(need => urls.includes(need.resourceUrl!))
+          .map(need => ({ name: names[urls.indexOf(need.resourceUrl!)], failure: need.failure })));
+        const expectedPrompts = [
+          ...returning ? [] : [names.map(name => ({ name, failure: undefined }))],
+          ...passes.length === 1 ? [] : [names.filter((_, i) => !firstPass[i]).map(name => ({
+            name,
+            failure: { accountId: bob, reason: expect.stringContaining(EXPIRED_REASON) },
+          }))],
+        ];
+        expect(prompts, `prompts of open ${k}`).toEqual(expectedPrompts);
+
+        if (failing.length === 0) {
+          expect(opened, `open ${k}`).toBeNull();
+          returning = true;
+        } else {
+          expect(opened?.message, `open ${k}`).toMatch(/could not confirm/i);
+          const named = opened!.message.split("\n")
+            .filter(line => line.includes(shared.bobLabel))
+            .map(line => /^Test Thing (\S+) \(/.exec(line)?.[1]);
+          expect(named.toSorted(), `bindings named by open ${k}`).toEqual(failing.toSorted());
+        }
+      }
+
+      // Each verified pass registered Bob at its binding, nothing removed him, and every
+      // registration names the one observer id.
+      const ids = new Set<string>();
+      for (const [i, url] of urls.entries()) {
+        const events = await observerEvents(url);
+        expect(events.map(({ type }) => type), `events at ${names[i]}`)
+          .toEqual(Array.from({ length: registrations[i]! }, () => "add"));
+        for (const { id } of events) ids.add(id);
+      }
+      expect(ids.size, "distinct observer ids").toBeLessThanOrEqual(1);
+    })), {
+      ...PROPERTY_RUN_OPTIONS,
+      numRuns: 8,
+      examples: [
+        // The 0d7793c reproduction: a lapses and is repaired as b lapses for good.
+        [[{ firstPass: [true, true], afterReprompt: [true, true] },
+          { firstPass: [false, true], afterReprompt: [true, false] }]],
+        // A first-ever open fails terminally and keeps what it registered; the next succeeds under
+        // the same observer id.
+        [[{ firstPass: [false, true], afterReprompt: [false, true] },
+          { firstPass: [true, true], afterReprompt: [true, true] }]],
+      ],
     });
   });
 });

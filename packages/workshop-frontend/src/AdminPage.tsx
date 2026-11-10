@@ -12,9 +12,11 @@ import { useDocumentTitle } from './useDocumentTitle'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
+import { AdminAuditPanel } from './features/admin-audit/AdminAuditPanel'
+import { auditSettingsOf, type AuditSettings } from './features/admin-audit/auditSettings'
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
-import { RestrictedWebFetchHostsCard } from './features/web-fetch/RestrictedWebFetchHostsCard'
+import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -54,8 +56,9 @@ export default function AdminPage() {
   const [instructionsDraft, setInstructionsDraft] = useState('')
   const [savingInstructions, setSavingInstructions] = useState(false)
 
-  // The hosts a workspace that has observed restricted data may still fetch from.
+  // What a workspace that has observed restricted data may still fetch.
   const [restrictedWebFetchHosts, setRestrictedWebFetchHosts] = useState<string[]>([])
+  const [restrictedWebFetchApprovals, setRestrictedWebFetchApprovals] = useState(false)
 
   // Top-bar notice: last-saved value + current editor draft.
   const [savedAnnouncement, setSavedAnnouncement] = useState('')
@@ -102,11 +105,21 @@ export default function AdminPage() {
   // saved only once that later one has applied.
   const [reloadUpdateStatus] = useState(() => latestReads<DeploymentUpdateStatus | null>(setUpdateStatus))
 
-  // The tab lives in the URL so the notice can link to one; changing it replaces the history entry
-  // on the same route, which keeps this component and its drafts.
+  // The audit retention, null while the backend is older than the admin audit log and has no Audit
+  // tab.
+  const [auditSettings, setAuditSettings] = useState<AuditSettings | null>(null)
+  // Only the latest re-read applies (see latestReads).
+  const [reloadAuditSettings] = useState(() =>
+    latestReads<AdminSettingsView>((view) => setAuditSettings(auditSettingsOf(view))))
+
+  // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters;
+  // changing either replaces the history entry on the same route, which keeps this component and
+  // its drafts.
   const navigate = useNavigate()
-  const activeTab = resolveAdminTab(useSearch({ from: '/admin' }).tab, {
+  const { tab: requestedTab, ...auditFilter } = useSearch({ from: '/admin' })
+  const activeTab = resolveAdminTab(requestedTab, {
     updatesAvailable: updateStatus === 'pending' ? 'pending' : updateStatus !== null,
+    auditAvailable: auditSettings !== null,
   })
   const handleTabChange = (tab: string) => {
     if (isAdminTab(tab)) void navigate({ to: '/admin', search: { tab }, replace: true })
@@ -135,6 +148,7 @@ export default function AdminPage() {
     setSavedInstructions(view.instanceInstructions)
     setInstructionsDraft(view.instanceInstructions)
     setRestrictedWebFetchHosts(view.restrictedWebFetchHosts)
+    setRestrictedWebFetchApprovals(view.restrictedWebFetchApprovals)
     setSavedAnnouncement(view.announcement)
     setAnnouncementDraft(view.announcement)
     setSavedBanner(view.banner)
@@ -144,6 +158,7 @@ export default function AdminPage() {
     setAccentDraft(view.accentColor)
     setFormats(view.formats)
     setGatewayModels(view.gatewayModels)
+    setAuditSettings(auditSettingsOf(view))
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -470,6 +485,7 @@ export default function AdminPage() {
           { value: 'formats', label: 'Formats' },
           { value: 'models', label: 'Models' },
           { value: 'access', label: 'Access' },
+          ...(auditSettings !== null ? [{ value: 'audit', label: 'Audit' }] : []),
           // Also listed while a requested Updates tab waits for the status, so it shows as selected.
           ...(activeTab === 'updates' || (updateStatus !== null && updateStatus !== 'pending')
             ? [{ value: 'updates', label: 'Updates' }]
@@ -492,6 +508,17 @@ export default function AdminPage() {
               onChanged={() => reloadUpdateStatus(() => admin.api.getUpdateStatus())}
             />
           )
+      )}
+
+      {/* Admin audit log and its retention */}
+      {activeTab === 'audit' && auditSettings !== null && (
+        <AdminAuditPanel
+          admin={admin.api}
+          settings={auditSettings}
+          onSettingsChanged={() => reloadAuditSettings(() => admin.api.getSettings())}
+          filter={auditFilter}
+          onFilterChange={(filter) => void navigate({ to: '/admin', search: { tab: 'audit', ...filter }, replace: true })}
+        />
       )}
 
       {/* Standard output formats */}
@@ -916,10 +943,12 @@ export default function AdminPage() {
       )}
 
       {activeTab === 'general' && (
-        <RestrictedWebFetchHostsCard
+        <RestrictedWebFetchCard
           admin={admin.api}
           hosts={restrictedWebFetchHosts}
           onSaved={setRestrictedWebFetchHosts}
+          approvals={restrictedWebFetchApprovals}
+          onApprovalsSaved={setRestrictedWebFetchApprovals}
         />
       )}
 

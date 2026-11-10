@@ -3,12 +3,15 @@
 // the listing cursors apply. No platform imports, so everything here runs under the package's
 // Node vitest project.
 
+import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci";
 import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GitLabActor,
   GitLabBranchRef,
   GitLabBranchSummary,
+  GitLabCiPhase,
+  GitLabCommitCi,
   GitLabCommitDetails,
   GitLabCommitIdentity,
   GitLabCommitSummary,
@@ -20,32 +23,49 @@ import type {
   GitLabIssueFilter,
   GitLabIssueSearch,
   GitLabIssueSummary,
+  GitLabJobDetails,
+  GitLabJobSummary,
   GitLabLabel,
   GitLabMergeRequestDetails,
   GitLabMergeRequestFilter,
   GitLabMergeRequestRevision,
   GitLabMergeRequestSearch,
   GitLabMergeRequestSummary,
+  GitLabPipelineDetails,
+  GitLabPipelineStatus,
+  GitLabPipelineSummary,
   GitLabProjectMetadata,
   GitLabProjectRef,
   GitLabTagSummary,
+  GitLabTestCase,
+  GitLabTestReportSummary,
 } from "./types";
 import type {
   GitLabBranchResponse,
   GitLabCommitResponse,
+  GitLabCommitStatusResponse,
   GitLabDiffRefsResponse,
   GitLabDiffResponse,
   GitLabDiscussionResponse,
   GitLabIssueResponse,
+  GitLabJobResponse,
   GitLabLabelResponse,
   GitLabLineRangeEndpoint,
   GitLabMergeRequestResponse,
   GitLabNoteResponse,
+  GitLabPipelineBasicResponse,
+  GitLabPipelineResponse,
   GitLabPositionResponse,
   GitLabProjectResponse,
   GitLabSimpleUser,
   GitLabTagResponse,
+  GitLabTestReportResponse,
+  GitLabTestReportSummaryResponse,
 } from "./gitlab-api";
+import { VENDOR_ID } from "./gitlab-env";
+import { obsContext } from "./observability";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorId: VENDOR_ID });
 
 // ---------------------------------------------------------------------------
 // Instance URLs
@@ -201,6 +221,9 @@ export function normalizeProjectMetadata(instanceUrl: string, response: GitLabPr
 // Issues
 
 export function normalizeIssueSummary(instanceUrl: string, projectPath: string, response: GitLabIssueResponse): GitLabIssueSummary {
+  // Requests may use the binding's original path as an ID-rewrite key after a move. GitLab's
+  // returned browser URL names the project that actually answered, not a replacement at that path.
+  projectPath = parseResourceUrl(instanceUrl, response.web_url)?.projectPath ?? projectPath;
   const id = String(response.iid);
   return {
     project: projectRef(instanceUrl, projectPath),
@@ -270,6 +293,7 @@ export function normalizeMergeRequestSummary(
   response: GitLabMergeRequestResponse,
   sourceProject?: GitLabProjectRef,
 ): GitLabMergeRequestSummary {
+  projectPath = parseResourceUrl(instanceUrl, response.web_url)?.projectPath ?? projectPath;
   const id = String(response.iid);
   const target = projectRef(instanceUrl, projectPath);
   const source: GitLabBranchRef = {
@@ -425,6 +449,241 @@ export function normalizeTagSummary(response: GitLabTagResponse): GitLabTagSumma
 /** The commit ids a merge request summary carries: its source and target shas, where known. */
 export function commitIdsOfMergeRequestSummary(mr: { source: { sha: string | null }; target: { sha: string | null } }): GitOid[] {
   return [mr.source.sha, mr.target.sha].filter(sha => sha !== null);
+}
+
+// ---------------------------------------------------------------------------
+// CI
+
+/**
+ * Every pipeline and job status GitLab documents (`doc/api/jobs.md#job-status-values`,
+ * `doc/api/pipelines.md`), with whether it moves on by itself. `scheduled` (a timer),
+ * `waiting_for_callback` (an external system), and `canceling` (`after_script` running) all finish
+ * without anyone acting; `manual` waits for a person.
+ */
+const CI_PHASES: Record<Exclude<GitLabPipelineStatus, "unknown">, GitLabCiPhase> = {
+  created: "active",
+  waiting_for_resource: "active",
+  preparing: "active",
+  waiting_for_callback: "active",
+  pending: "active",
+  running: "active",
+  canceling: "active",
+  scheduled: "active",
+  manual: "blocked",
+  success: "done",
+  failed: "done",
+  canceled: "done",
+  skipped: "done",
+};
+
+/**
+ * A provider status as the agent-facing union. One GitLab adds later reads `"unknown"` -- blocked,
+ * so a caller polling for completion stops rather than spins -- and is logged so the mapping can be
+ * extended.
+ */
+export function ciStatus(value: string): GitLabPipelineStatus {
+  if (Object.hasOwn(CI_PHASES, value)) return value as GitLabPipelineStatus;
+  logger.warn("unrecognised GitLab CI status", { event: "ci.unknown_status", ciStatus: value });
+  return "unknown";
+}
+
+/** Whether a pipeline or job moves on by itself; a status this mapping does not know waits, like `manual`. */
+export function ciPhase(status: GitLabPipelineStatus): GitLabCiPhase {
+  return status === "unknown" ? "blocked" : CI_PHASES[status];
+}
+
+/** `project` names the project the pipeline ran in when that is not the bound one (a fork's). */
+export function normalizePipelineSummary(response: GitLabPipelineBasicResponse, project?: GitLabProjectRef): GitLabPipelineSummary {
+  const status = ciStatus(response.status);
+  return {
+    id: String(response.id),
+    status,
+    phase: ciPhase(status),
+    source: response.source,
+    ref: response.ref,
+    commitId: response.sha,
+    url: response.web_url,
+    createdAt: new Date(response.created_at),
+    updatedAt: new Date(response.updated_at),
+    ...(project === undefined ? {} : { project }),
+  };
+}
+
+export function normalizePipelineDetails(instanceUrl: string, response: GitLabPipelineResponse): GitLabPipelineDetails {
+  return {
+    ...normalizePipelineSummary(response),
+    startedAt: parseDate(response.started_at),
+    finishedAt: parseDate(response.finished_at),
+    durationSeconds: response.duration ?? undefined,
+    configErrors: response.yaml_errors || undefined,
+    user: actorFromUser(instanceUrl, response.user),
+  };
+}
+
+/**
+ * A job or trigger job as a `listJobs()` row. A trigger job's downstream pipeline is openable only
+ * when it ran in the bound project (`boundProjectId`): a child pipeline, not a multi-project one.
+ */
+export function normalizeJobSummary(
+  response: GitLabJobResponse, ...[kind, boundProjectId]: ["job"] | ["trigger", number]
+): GitLabJobSummary {
+  const status = ciStatus(response.status);
+  const downstream = kind === "trigger" ? response.downstream_pipeline : null;
+  return {
+    id: String(response.id),
+    name: response.name,
+    stage: response.stage,
+    status,
+    phase: ciPhase(status),
+    kind,
+    allowFailure: response.allow_failure,
+    failureReason: response.failure_reason ?? undefined,
+    ...(downstream
+      ? { downstream: downstream.project_id === boundProjectId
+        ? { crossProject: false as const, pipelineId: String(downstream.id) }
+        : { crossProject: true as const } }
+      : {}),
+    startedAt: parseDate(response.started_at),
+    finishedAt: parseDate(response.finished_at),
+    durationSeconds: response.duration ?? undefined,
+    url: response.web_url,
+  };
+}
+
+export function normalizeJobDetails(response: GitLabJobResponse): GitLabJobDetails {
+  return {
+    ...normalizeJobSummary(response, "job"),
+    pipelineId: String(response.pipeline.id),
+    commitId: response.commit?.id ?? response.pipeline.sha,
+    ref: response.ref,
+    runner: response.runner?.description || response.runner?.name || undefined,
+  };
+}
+
+/**
+ * An external system's status as a `listJobs()` row. The statuses API does not expose a stage;
+ * GitLab files every posted status under its `external` stage (`GenericCommitStatus`). With no
+ * `target_url` the row links to its pipeline, the nearest page that shows it.
+ */
+export function normalizeCommitStatus(response: GitLabCommitStatusResponse, pipelineUrl: string): GitLabJobSummary {
+  const status = ciStatus(response.status);
+  return {
+    id: String(response.id),
+    name: response.name,
+    stage: "external",
+    status,
+    phase: ciPhase(status),
+    kind: "status",
+    allowFailure: response.allow_failure,
+    description: response.description || undefined,
+    targetUrl: response.target_url || undefined,
+    startedAt: parseDate(response.started_at),
+    finishedAt: parseDate(response.finished_at),
+    url: response.target_url || pipelineUrl,
+  };
+}
+
+/**
+ * Whether a merge request's head pipeline ran for its head commit `headSha`, not an earlier head's.
+ * A merged-results pipeline runs on a commit GitLab made by merging the head -- on the merge
+ * request's `…/merge` ref, or `…/train` for a merge train -- and counts when that commit's parents
+ * include the head; `parentsOf` reads them, and is asked only for such a pipeline. `null` (the
+ * commit cannot be read) counts as not current.
+ */
+export async function pipelineIsForHead(
+  pipeline: { sha: string; ref: string },
+  headSha: string,
+  mergeRequestIid: string,
+  parentsOf: (sha: string) => Promise<string[] | null>,
+): Promise<boolean> {
+  if (pipeline.sha === headSha) return true;
+  const prefix = `refs/merge-requests/${mergeRequestIid}/`;
+  if (pipeline.ref !== `${prefix}merge` && pipeline.ref !== `${prefix}train`) return false;
+  return (await parentsOf(pipeline.sha))?.includes(headSha) ?? false;
+}
+
+/** CI on a commit no pipeline can exist for yet, such as one only a queued push will deliver. */
+export function queuedCommitCi(commitId: string): GitLabCommitCi {
+  return { commitId, phase: "notStarted", pipeline: null };
+}
+
+/**
+ * Where a project's CI configuration is, from `ci_config_path`: a file in the repository (empty
+ * means GitLab's default `.gitlab-ci.yml`), or somewhere else -- `path@group/project` in another
+ * project, or a remote URL -- which counts as present, since this project's tree cannot say.
+ */
+export function ciConfigLocation(ciConfigPath: string | null | undefined): { kind: "file"; path: string } | { kind: "elsewhere" } {
+  const path = ciConfigPath?.trim() ?? "";
+  if (path === "") return { kind: "file", path: ".gitlab-ci.yml" };
+  if (path.includes("@") || /^https?:\/\//i.test(path)) return { kind: "elsewhere" };
+  return { kind: "file", path: path.replace(/^\/+/, "") };
+}
+
+export function normalizeTestReportSummary(response: GitLabTestReportSummaryResponse): GitLabTestReportSummary {
+  return {
+    total: response.total.count,
+    failed: response.total.failed,
+    errored: response.total.error,
+    skipped: response.total.skipped,
+    suites: response.test_suites.map(suite => ({
+      name: suite.name,
+      total: suite.total_count,
+      failed: suite.failed_count,
+      errored: suite.error_count,
+    })),
+  };
+}
+
+/** How much of a failed test's recorded output `listFailedTests()` returns. */
+export const TEST_OUTPUT_MAX_CHARS = 4096;
+const TEST_OUTPUT_TRUNCATED = "\n… [output truncated]";
+
+/**
+ * The failed and errored cases of a test report, suite by suite. `output` joins what the report
+ * recorded (`system_output` and `stack_trace`, each once), cut to `TEST_OUTPUT_MAX_CHARS`.
+ */
+export function failedTestCases(response: GitLabTestReportResponse): GitLabTestCase[] {
+  const cases: GitLabTestCase[] = [];
+  for (const suite of response.test_suites) {
+    for (const testCase of suite.test_cases) {
+      if (testCase.status !== "failed" && testCase.status !== "error") continue;
+      const parts = [...new Set([testCase.system_output, testCase.stack_trace].filter(part => !!part?.trim()))];
+      const output = parts.join("\n");
+      cases.push({
+        suite: suite.name,
+        name: testCase.name,
+        className: testCase.classname || undefined,
+        file: testCase.file || undefined,
+        status: testCase.status,
+        output: output === "" ? undefined
+          : output.length > TEST_OUTPUT_MAX_CHARS ? output.slice(0, TEST_OUTPUT_MAX_CHARS) + TEST_OUTPUT_TRUNCATED : output,
+        durationSeconds: testCase.execution_time ?? undefined,
+      });
+    }
+  }
+  return cases;
+}
+
+const LOG_SECTION = /section_(start|end):\d+:([A-Za-z0-9_.-]+)(?:\[[^\]\r]*\])?\r?/g;
+
+/**
+ * One raw job-trace line as `readCiLog` keeps it, or null when it is markup only. Strips ANSI
+ * escapes and carriage-return overwrites; a `section_start` marker becomes `▶ ` and the section's
+ * heading (or its name when the heading is empty), and a line holding only `section_end` markers
+ * is dropped. Everything else is kept verbatim.
+ */
+export function normalizeGitLabLogLine(line: string): string | null {
+  // Section markers precede their heading's `\r`, so they are read before overwriting.
+  const text = stripAnsi(line);
+  const markers = text.includes("section_") ? [...text.matchAll(LOG_SECTION)] : [];
+  if (markers.length === 0) return applyCarriageReturns(text);
+  const start = markers.findLast(marker => marker[1] === "start");
+  if (start === undefined) {
+    const rest = applyCarriageReturns(text.replace(LOG_SECTION, ""));
+    return rest === "" ? null : rest;
+  }
+  const heading = applyCarriageReturns(text.slice(start.index + start[0].length).replace(LOG_SECTION, "")).trim();
+  return `▶ ${heading === "" ? start[2] : heading}`;
 }
 
 // ---------------------------------------------------------------------------

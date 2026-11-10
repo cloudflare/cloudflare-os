@@ -1,6 +1,6 @@
-// The collaborator ACL. `addObserver` is the only thing standing between a shared gadget and another
-// user's telemetry, and it had no coverage: the deny path, and the refusal to treat an infrastructure
-// failure as a denial, are both asserted here.
+// The collaborator ACL: verifyObserverAccess() for the account every read reports, and
+// addObserver(), which still checks each binding as before reads reported one. The deny path, and
+// the refusal to treat an infrastructure failure as a denial, are both asserted here.
 
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const WORKER_PROPS = { userObjectId: "user-1", accountId: ACCOUNT_ID, workerName: "api-worker" };
 const ACCOUNT_PROPS = { userObjectId: "user-1", accountId: ACCOUNT_ID };
+const ACCOUNT_SUBRESOURCE = `account/${ACCOUNT_ID}`;
 
 // Each case gets its own facet name: a facet is cached per name, so reusing one would silently reuse
 // the first case's props.
@@ -30,6 +31,32 @@ describe("addObserver", () => {
 
     expect(message).not.toBeNull();
     expect(message).toContain("verifier exploded");
+  });
+});
+
+describe("verifyObserverAccess", () => {
+  it("allows only observers whose own credentials can read the account, even on a Worker binding", async () => {
+    const { result, asked } = await hooks.verifyObserverAccess("verify",
+      WORKER_PROPS, { allowed: true, denied: false }, [ACCOUNT_SUBRESOURCE]);
+
+    expect(result).toEqual(["allowed"]);
+    // The account itself is asked about, not the binding's Worker.
+    expect(asked).toEqual({ allowed: [ACCOUNT_ID], denied: [ACCOUNT_ID] });
+  });
+
+  it("fails the whole call when an observer's access cannot be determined", async () => {
+    const { result } = await hooks.verifyObserverAccess("verify-explode",
+      ACCOUNT_PROPS, { allowed: true, broken: "verifier exploded" }, [ACCOUNT_SUBRESOURCE]);
+
+    expect(result).toContain("verifier exploded");
+  });
+
+  it("refuses an ID it never reports without asking anyone", async () => {
+    const { result, asked } = await hooks.verifyObserverAccess("verify-unknown", ACCOUNT_PROPS,
+      { observer: true }, [ACCOUNT_SUBRESOURCE, `${ACCOUNT_SUBRESOURCE}/worker/${"a".repeat(32)}`]);
+
+    expect(result).toContain("Not a Cloudflare Workers Observability subresource");
+    expect(asked).toEqual({ observer: [] });
   });
 });
 

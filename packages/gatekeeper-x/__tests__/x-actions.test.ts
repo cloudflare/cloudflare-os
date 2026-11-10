@@ -39,7 +39,8 @@ const bob: XUserInfo = {
 /** Submits through the real action set, capturing what the approver would be shown. */
 async function describeAction<K extends keyof XActions>(kind: K, payload: XActions[K]): Promise<ActionDescription> {
   const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
-  const host = { me: async () => me } as unknown as XActionHost;
+  // Every temporary ID counts as created, so an action on a pending post can be described alone.
+  const host = { me: async () => me, refs: { isResolved: () => true } } as unknown as XActionHost;
   const shown: ActionDescription[] = [];
   const queue = { submitAction: async (_id: number, description: ActionDescription) => void shown.push(description) };
   await actions.bind(journal, host).submit(queue as never, kind, payload, { fence: { generation: me.id } });
@@ -115,12 +116,111 @@ describe("descriptions", () => {
     expect(follow.autoApprovable).toBe(false);
   });
 
+  it.each(["author", "quote", "repost"] as const)("redacts a protected %s from every post-action preview", async source => {
+    const restricted: XPostInfo = {
+      ...theirPost, text: "private source text", author: { ...theirPost.author, username: "private_writer", protected: true },
+    };
+    const info: XPostInfo = source === "author" ? restricted : {
+      ...theirPost, text: "private source text", [source === "quote" ? "quoteOf" : "repostOf"]: restricted,
+    };
+    const post = { id: "50", info };
+    const previews = await Promise.all([
+      describeAction("deletePost", { post }),
+      describeAction("like", { post, on: true }),
+      describeAction("repost", { post, on: false }),
+      describeAction("bookmark", { post, on: true }),
+      describeAction("hide", { post, hidden: false }),
+      describeAction("reply", { ref: "~1", draft: draft("My reply"), parent: post, conversationId: "50", submittedAt: 0 }),
+    ]);
+    for (const preview of previews) {
+      expect(JSON.stringify(preview)).not.toMatch(/private source text|private_writer|@bob|x\.com\/bob/);
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "https://x.com/i/web/status/50" }));
+    }
+    expect(field(previews.at(-1)!, "Reply")).toMatchObject({ value: "My reply" });
+  });
+
+  it("points at a protected account's own pending post by its temporary ID, showing the draft", async () => {
+    const { url: _published, ...unpublished } = theirPost;
+    const mine: XPostInfo = {
+      ...unpublished, id: "~3", text: "My draft", author: { ...theirPost.author, username: "alice", protected: true },
+    };
+    const post = { id: "~3", info: mine };
+    for (const preview of await Promise.all([
+      describeAction("like", { post, on: true }),
+      describeAction("deletePost", { post }),
+      describeAction("reply", { ref: "~4", draft: draft("Follow-up"), parent: post, conversationId: "~3", submittedAt: 0 }),
+    ])) {
+      expect(JSON.stringify(preview)).not.toContain("status/~3");
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "your pending post ~3" }));
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "My draft" }));
+    }
+  });
+
+  it("redacts private List names while warning of a List a pending change makes public", async () => {
+    const list = { id: "70", nameRestricted: true as const, info: {
+      id: "70", url: "https://x.com/i/lists/70", name: "Private List title", description: "Private description",
+      private: false, owner: theirPost.author, memberCount: 0, followerCount: 0,
+    } };
+    const previews = await Promise.all([
+      describeAction("updateList", { list, changes: { private: false } }),
+      describeAction("deleteList", { list }),
+      describeAction("listMember", { list, user: bob, add: true }),
+    ]);
+    for (const preview of previews) {
+      expect(JSON.stringify(preview)).not.toMatch(/Private List title|Private description/);
+    }
+    expect(previews[2].description).toMatch(/X may tell them/);
+  });
+
   it("offers only private, reversible actions for auto-approval", async () => {
     expect((await describeAction("bookmark", { post: { id: "50", info: theirPost }, on: true })).autoApprovable).toBe(true);
     expect((await describeAction("mute", { user: bob, on: true })).autoApprovable).toBe(true);
     const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
     const kinds = actions.bind(journal, {} as XActionHost).autoApprovableKinds().map(kind => kind.tag).toSorted();
     expect(kinds).toEqual(["x.post.bookmark", "x.post.hide", "x.user.mute"]);
+  });
+
+  it("declares a kind and verdict for every action, both ways of every toggle", async () => {
+    const post = { id: "50", info: theirPost };
+    const list = {
+      id: "70", info: {
+        id: "70", url: "https://x.com/i/lists/70", name: "Friends", description: "", private: true,
+        owner: theirPost.author, memberCount: 0, followerCount: 0,
+      },
+    };
+    const reply = { ref: "~1", draft: draft("Agreed"), parent: post, conversationId: "50", submittedAt: 0 };
+    const createList = { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 };
+    // Mapped over every kind, so a new action can't be added without declaring its verdict here.
+    const cases: { [K in keyof XActions]: { tag: string; autoApprovable: boolean; payloads: XActions[K][] } } = {
+      createPost: {
+        tag: "x.post.create", autoApprovable: false, payloads: [{ refs: ["~1"], drafts: [draft("Hi")], submittedAt: 0 }],
+      },
+      reply: { tag: "x.post.reply", autoApprovable: false, payloads: [reply] },
+      deletePost: { tag: "x.post.delete", autoApprovable: false, payloads: [{ post }] },
+      like: { tag: "x.post.like", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      repost: { tag: "x.post.repost", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      bookmark: { tag: "x.post.bookmark", autoApprovable: true, payloads: [{ post, on: true }, { post, on: false }] },
+      hide: { tag: "x.post.hide", autoApprovable: true, payloads: [{ post, hidden: true }, { post, hidden: false }] },
+      follow: { tag: "x.user.follow", autoApprovable: false, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      mute: { tag: "x.user.mute", autoApprovable: true, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      createList: { tag: "x.list.manage", autoApprovable: false, payloads: [createList, { ...createList, private: true }] },
+      updateList: {
+        tag: "x.list.manage", autoApprovable: false,
+        payloads: [{ list, changes: { name: "Pals" } }, { list, changes: { private: false } }],
+      },
+      deleteList: { tag: "x.list.manage", autoApprovable: false, payloads: [{ list }] },
+      listMember: {
+        tag: "x.list.members", autoApprovable: false,
+        payloads: [{ list, user: bob, add: true }, { list, user: bob, add: false }],
+      },
+    };
+    for (const [kind, { tag, autoApprovable, payloads }] of Object.entries(cases)) {
+      for (const payload of payloads) {
+        const description = await describeAction(kind as keyof XActions, payload as never);
+        expect({ kind, tag: description.actionKind?.tag, autoApprovable: description.autoApprovable })
+          .toEqual({ kind, tag, autoApprovable });
+      }
+    }
   });
 
   it("refuses to stage an action without the X user it is fenced to", async () => {

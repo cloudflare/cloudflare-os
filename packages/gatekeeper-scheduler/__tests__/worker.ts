@@ -1,4 +1,5 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { ScheduleDriver } from "../src/schedule-driver.js";
 import type { ScheduleSummary } from "../src/types.js";
 
@@ -17,6 +18,7 @@ type BlockPoint = "start" | "authorization" | "callback";
 
 let mode: TestMode = "success";
 let events: string[] = [];
+let observations: ObservationDescription[] = [];
 let callbackScheduleIds: string[] = [];
 let activeCallbacks = 0;
 let maxActiveCallbacks = 0;
@@ -100,7 +102,8 @@ class TestApprovalQueue extends RpcTarget {
     this.#markDisposed = resolve;
   });
 
-  async authorizeObservation(): Promise<void> {
+  async authorizeObservation(description: ObservationDescription): Promise<void> {
+    observations.push(description);
     events.push("authorize");
     await pauseIfBlocked("authorization");
     if (mode === "authorization-reject") throw new Error("authorization rejected");
@@ -206,6 +209,7 @@ export class TestHooks extends WorkerEntrypoint {
   read() {
     return {
       events: [...events],
+      observations: [...observations],
       callbackScheduleIds: [...callbackScheduleIds],
       maxActiveCallbacks,
       disposedApprovalQueues,
@@ -220,6 +224,7 @@ export class TestHooks extends WorkerEntrypoint {
     timeline = [];
     mode = "success";
     events = [];
+    observations = [];
     callbackScheduleIds = [];
     activeCallbacks = 0;
     maxActiveCallbacks = 0;

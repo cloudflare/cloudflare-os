@@ -2,21 +2,26 @@
 
 import type { RpcStub } from "cloudflare:workers";
 import type {
+  Gatekeeper,
   GatekeeperUserVerifier,
   ObservationAuthorizer,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   asVerifier,
+  DEFAULT_CONCURRENCY,
+  mapLimit,
   NOTHING_TO_RESOLVE,
   OBSERVER_DENIED,
   ObserverTracker,
   type ObservationCheck,
   type ObserverTrackerOptions,
 } from "./observer-tracker";
+import { requirePositiveInt } from "./positive-int";
 
 export {
   asVerifier,
+  mapLimit,
   OBSERVER_ATTEMPT_LIFETIME_MS,
   OBSERVER_DENIED,
   OBSERVER_WITHHELD,
@@ -199,8 +204,9 @@ export function escapeObservationValue(value: string): string {
 }
 
 /**
- * Describes what a read discloses: the admission baseline, the provider groupings whose ACLs
- * govern it, or nothing shareable at all.
+ * Describes what a read discloses: the subresources the Workshop checks for it, or, for a binding
+ * still on a legacy strategy, the admission baseline, the provider groupings whose ACLs govern it,
+ * or nothing shareable at all. New gatekeepers use only `subresources`.
  *
  * A `collections` scope names provider-side access-controlled groupings — a space, a project, a
  * repo — not the individual rows returned. The gate refuses one under a strategy whose
@@ -208,17 +214,31 @@ export function escapeObservationValue(value: string): string {
  * ran; pick `trackedCollectionObservers` for a resource whose children carry their own ACLs, and
  * `baseline` where admission already covers the read. It also refuses a `collections` scope
  * naming none, so a read that returned nothing describes itself as `baseline`.
+ *
+ * A `subresources` scope reports the read's access dependencies as
+ * `ObservationDescription.subresources`, and the Workshop checks them itself: through the
+ * gatekeeper's `verifyObserverAccess()` (see {@link observerAccessVerifier}) for every collaborator
+ * who can see the chat or gadget that made the read, and again at each one's admission. The
+ * strategy takes no part, so the read adds nothing to the binding's tracked collections, exclusions
+ * or fences, while the strategy's `addObserver()` keeps enforcing what earlier reads recorded and
+ * every read still on another scope. Name every dependency the read has, including any the
+ * admission baseline enforced (the bound resource's ACL, tenant membership), not only those new to
+ * the binding, since the Workshop records them per chat or gadget; `[]` says nothing restricts the
+ * read. An owner-only read stays on `withholdFromObservers` until the binding reports an id its
+ * oracle grants only to the owner.
  */
 export type ObservationScope =
   | { kind: "baseline" }
   | { kind: "collections"; ids: readonly string[] }
-  | { kind: "withholdFromObservers" };
+  | { kind: "withholdFromObservers" }
+  | { kind: "subresources"; ids: readonly string[] };
 
-/** Observation text completed by the gate with derived exclusions. */
-export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
+/** Observation text, which the gate completes with derived exclusions or the scope's subresources. */
+export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
 
 /**
- * Authorizes observations after applying the selected observer strategy.
+ * Authorizes observations for an existing binding: through its legacy observer strategy, or for a
+ * `subresources` scope with the Workshop alone. New gatekeepers report subresources directly.
  *
  * @example
  * ```ts
@@ -291,12 +311,20 @@ export class ObservationGate implements Disposable {
   }
 
   /**
-   * Authorizes a read and commits its prepared observer state.
-   * @param input Observation description without derived exclusions.
+   * Authorizes a read: through the strategy, committing its prepared observer state, or for a
+   * `subresources` scope with the Workshop alone.
+   * @param input Observation description without derived exclusions or subresources.
    * @param scope Data scope disclosed by the read.
    * @returns A promise that resolves after authorization commits.
    */
   async authorize(input: ObservationInput, scope: ObservationScope): Promise<void> {
+    if (scope.kind === "subresources") {
+      // The Workshop checks and records these itself, so there is no observer state to prepare or
+      // settle, and a failure propagates as it came. Deduplicated here because the Workshop's
+      // limits count ids before it deduplicates them.
+      await this.#authorizer.authorizeObservation({ ...input, subresources: [...new Set(scope.ids)] });
+      return;
+    }
     const check = await this.#prepare(scope);
     const exclude = check.excludeObservers;
     try {
@@ -317,7 +345,7 @@ export class ObservationGate implements Disposable {
    * @param scope Data scope disclosed by the read.
    * @returns Prepared observer state.
    */
-  async #prepare(scope: ObservationScope): Promise<ObservationCheck> {
+  async #prepare(scope: Exclude<ObservationScope, { kind: "subresources" }>): Promise<ObservationCheck> {
     switch (scope.kind) {
       case "baseline":
         return NOTHING_TO_RESOLVE;
@@ -339,4 +367,50 @@ export class ObservationGate implements Disposable {
         return (await this.#strategy.prepare?.(scope.ids)) ?? NOTHING_TO_RESOLVE;
     }
   }
+}
+
+/** `Gatekeeper.verifyObserverAccess()`, as {@link observerAccessVerifier} implements it. */
+export type VerifyObserverAccess = NonNullable<Gatekeeper<unknown>["verifyObserverAccess"]>;
+
+/**
+ * Implements `Gatekeeper.verifyObserverAccess()` over a batched ACL oracle, for a binding whose
+ * reads report `subresources`, directly or through a `subresources` scope. Each observer is judged
+ * by the verifier the Workshop passed with it, against every subresource, on every call. Nothing is
+ * stored or cached, since the same observer id may come back with another account's verifier, and
+ * nothing here waits on a read, which may itself be awaiting the authorization that asked.
+ *
+ * Each oracle call receives every subresource in the Workshop's call, up to 10,000 IDs. Split them
+ * to fit the provider's per-request caps while staying within the Worker's subrequest limit. An
+ * existing binding converting read by read can share its `trackedCollectionObservers` oracle, but
+ * must not size this helper's batches from `maxTrackedCollections`; lowering that limit does not
+ * shrink the tracker's persisted history either. IDs arrive exactly as reads reported them, so
+ * report canonical spellings. Only a literal `true` grants, and an answer of the wrong length
+ * throws, since index alignment is all that ties a verdict to an ID. Unlike the tracker, which
+ * excludes an observer whose oracle throws, a throw here fails the whole call: no further verifier
+ * is asked, and the call rejects with the first error once those already asked have settled. The
+ * Workshop denies everyone in that call when access cannot be determined. The oracle must throw,
+ * rather than answer `false`, when it cannot tell — expired credentials, a provider outage.
+ * @param options ACL oracle and verifier concurrency (default 6).
+ * @returns A `verifyObserverAccess()` implementation.
+ */
+export function observerAccessVerifier<V>(
+  options: Pick<ObserverTrackerOptions<V>, "hasCollectionAccess" | "concurrency">,
+): VerifyObserverAccess {
+  const { hasCollectionAccess } = options;
+  const concurrency = requirePositiveInt("concurrency", options.concurrency ?? DEFAULT_CONCURRENCY);
+  return async (observers, subresources) => {
+    // The Workshop never asks about none. Were it to, "every one of none" would admit everyone
+    // without consulting anything, so refuse rather than answer vacuously.
+    if (subresources.length === 0) throw new Error("There are no subresources to check access to.");
+    const granted = await mapLimit(observers, concurrency, async ({ verifier }) => {
+      // Copied per verifier: an oracle that chunks destructively would otherwise hand the next one
+      // an emptied question, which every answer, and the length check below, would satisfy.
+      const verdicts = await hasCollectionAccess(asVerifier<V>(verifier), subresources.slice());
+      if (verdicts.length !== subresources.length) {
+        throw new Error("An access check answered for a different number of subresources than it was asked about.");
+      }
+      return subresources.every((_, index) => verdicts[index] === true);
+    });
+    return { allowedObserverIds: observers.filter((_, index) => granted[index]).map(({ id }) => id) };
+  };
 }

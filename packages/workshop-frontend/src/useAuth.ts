@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
+import { nativeApp } from './features/native-app/nativeApp'
 import { NativeConnectSession } from './features/native-app/connectSession'
 import { browserPushSupport, disableBrowserPush } from './features/notifications/browserPush'
 import { disconnectNativeNotificationEnrollment } from './features/notifications/nativeNotificationEnrollment'
@@ -131,6 +132,7 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   const logout = () => {
     try {
       disconnectNativeNotificationEnrollment()
+      nativeApp()?.sessionEnded?.()
     } catch (error) {
       console.error('Failed to disconnect native notifications:', error)
     }

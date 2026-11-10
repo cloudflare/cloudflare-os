@@ -350,30 +350,54 @@ it), or change a meeting they don't organize.
 
 ## Sharing a workspace
 
-A collaborator can observe a workspace that reads SharePoint only if all of these hold:
+Every read reports what it revealed as subresources, which the Workshop checks each collaborator
+against before showing them the read, and again whenever they open the workspace. A collaborator
+passes only if all of these hold:
 
 - they have their own working Microsoft 365 connection
-- that connection is in the same tenant
-- their own account can open everything the workspace has already read
+- that connection is in the owner's tenant
+- their own account can open everything the read revealed
 
-For Outlook, the same holds for mail: a collaborator observes mail reads only if they can open
-that mailbox themselves, so a workspace reading a shared mailbox can be shared with its members,
-while one reading the user's own mail is kept from everyone else.
+SharePoint can break permission inheritance on any folder, file or list item, so a read reports each
+thing it revealed rather than one container: `sharepoint/site/<siteId>`, `sharepoint/drive/<driveId>`,
+`sharepoint/drive/<driveId>/item/<itemId>` for a file's or folder's details,
+`sharepoint/site/<siteId>/list/<listId>` and its `/item/<itemId>`, `sharepoint/site/<siteId>/page/<pageId>`,
+a file's bytes as `sharepoint/drive/<driveId>/content/<itemId>` and its history as
+`sharepoint/drive/<driveId>/versions/<itemId>` (someone may see a file they can't open), and a draft
+the owner read as its file, list item or page followed by `/version/<version>`, which passes only if
+the collaborator is shown that same draft.
 
-For Calendar, a collaborator observes a calendar binding's reads only if that calendar's sharing list
-gives them a role that sees at least as much as the binding shows (`freeBusyRead` for `freeBusy`,
-`limitedRead` for `limited`, `read` for `full`, delegate access to private events for `private=show`).
-Only a calendar's owner can read its sharing list, so this decides the user's own calendars; a binding
-on someone else's calendar is observed by that calendar's owner and nobody else.
-So a gadget showing the team calendar at free/busy can be shared with the whole organization if the
-calendar is, and one showing full details only with the people it is shared with at `read`. An
-availability read admits whoever can see those people's free/busy themselves, and an every-calendar
-binding that has read events is the user's alone.
+For Outlook, the same holds for mail: a read reports the mailbox (`outlook/user/<userId>`), a folder
+(`…/folder/<folderId>`) or each message (`…/message/<messageId>`), and a collaborator sees it only if
+they can open that themselves. So a workspace reading a shared mailbox can be shared with its
+members, someone shared only the Inbox sees Inbox reads, and one reading the user's own mail is kept
+from everyone else.
 
-SharePoint can break permission inheritance on any folder, file or list item. So the gatekeeper
-tracks each thing a read reveals (up to 2,000 per binding) rather than one container. Each later
-read is checked against every observer, and a read that reveals something an observer can't open is
-blocked for as long as they remain one. See `docs/observers.md`.
+For Calendar, a calendar binding's reads report the calendar at the detail they showed
+(`calendar/user/<ownerId>/freeBusy/<calendarId>`, `…/limitedCalendar/…`, `…/calendar/…` for all
+details, `…/privateCalendar/…` for private events), and a collaborator sees them only if that
+calendar's sharing list gives them a role that sees as much (`freeBusyRead`, `limitedRead`, `read`,
+delegate access to private events). Only a calendar's owner can read its sharing list, so this
+decides the user's own calendars; a binding on someone else's calendar is observed by that calendar's
+owner and nobody else. So a gadget showing the team calendar at free/busy can be shared with the
+whole organization if the calendar is, and one showing full details only with the people it is
+shared with at `read`. An availability read reports each person (`calendar/availability/<address>`)
+and admits whoever can see their free/busy themselves, and an every-calendar binding's reads
+(`calendar/user/<userId>`) are the user's alone. A read that reveals nothing narrower reports the
+owner's tenant (`tenant/<tenantId>`).
+
+Every other ID also names its tenant right after its namespace, as in
+`outlook/tenant/<tenantId>/user/<userId>/message/<messageId>`, so that it names one resource
+whichever account checks it, unless `MICROSOFT_TENANT_ID` is a tenant ID: a deployment fixed to one
+tenant that way leaves the tenant out. A domain doesn't fix one, since it can move to another tenant.
+Changing `MICROSOFT_TENANT_ID` from a tenant ID to anything else needs a migration of what workspaces
+recorded: their IDs name resources in the tenant the deployment had fixed.
+
+Each collaborator's own account answers these checks, and reuses an answer Graph gave for up to 15
+minutes when it allowed and 15 seconds when it denied, across every workspace, until it is next
+reconnected: a share revoked in Microsoft 365 can still admit a collaborator for up to 15 minutes. A
+calendar's sharing list is reused for 2 minutes. What reads revealed before they reported
+subresources is still checked whenever a collaborator joins. See `docs/observers.md`.
 
 ## Troubleshooting
 

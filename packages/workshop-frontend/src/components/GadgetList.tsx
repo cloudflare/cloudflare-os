@@ -1,7 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, UserPlus, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
+import { useUnreadState } from '../features/notifications/UnreadStateBridge'
+import { UnreadBadge } from '../features/notifications/UnreadBadge'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
 import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
@@ -57,6 +59,8 @@ function AppRow({
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const unread = useUnreadState()
+  const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
   useEffect(() => {
     if (isRenaming) renameInputRef.current?.focus()
@@ -131,6 +135,7 @@ function AppRow({
         <Clock size={10} />
         {formatRelativeTime(gadget.lastActive)}
       </span>
+      <UnreadBadge count={unreadMessages} />
 
       {/* Overflow menu — wrapper stops clicks from reaching the parent Link */}
       <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
@@ -145,22 +150,28 @@ function AppRow({
           }
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
+          <DropdownMenu.Item disabled={unreadMessages === 0} onClick={() => {
+            void unread?.markWorkspaceRead(gadget.id).catch(() => {})
+          }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
           <DropdownMenu.Item onClick={startRenaming} className={MENU_ITEM}>
-            <Pencil size={13} className="mr-2" />
+            <Pencil size={13} />
             Rename
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onTogglePin(gadget)} className={MENU_ITEM}>
-            <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
+            <Star size={13} weight={gadget.pinned ? 'fill' : 'regular'} />
             {gadget.pinned ? 'Unfavorite' : 'Favorite'}
           </DropdownMenu.Item>
           <DropdownMenu.Item onClick={() => onInfo(gadget)} className={MENU_ITEM}>
-            <Info size={13} className="mr-2" />
+            <Info size={13} />
             Information
           </DropdownMenu.Item>
-          <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
-            <ShareNetwork size={13} className="mr-2" />
-            Share
-          </DropdownMenu.Item>
+          {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+          {gadget.role !== 'use' && (
+            <DropdownMenu.Item onClick={() => onShare(gadget)} className={MENU_ITEM}>
+              <UserPlus size={13} />
+              Invite to workspace
+            </DropdownMenu.Item>
+          )}
           <WorkspaceNotificationsMenu
             workspaceId={gadget.id}
             mute={gadget.notificationMute}
@@ -172,7 +183,7 @@ function AppRow({
             onClick={() => onDelete(gadget)}
             className={MENU_ITEM_DANGER}
           >
-            <Trash size={13} className="mr-2" />
+            <Trash size={13} />
             {gadget.owner ? 'Dismiss' : 'Delete'}
           </DropdownMenu.Item>
         </DropdownMenu.Content>
@@ -485,6 +496,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
           onClose={handleShareClose}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
+          target={{ kind: 'workspace' }}
           currentUser={userInfo}
           authenticatedApi={authenticatedApi}
         />

@@ -16,8 +16,10 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
   }

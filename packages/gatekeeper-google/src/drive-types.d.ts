@@ -139,7 +139,46 @@ export type DrivePdfText = {
   hasText: boolean;
 };
 
-/** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
+/** Which bytes of a Drive file `readFile()` reads. */
+export type DriveFileReadOptions = {
+  /** Where to start, in bytes from the start of the file. Defaults to 0. */
+  offset?: number;
+  /** How many bytes to read, at least 1. Defaults to the rest of the file. */
+  length?: number;
+};
+
+/** A Drive file's content, or one range of it, streamed. */
+export type DriveFileBytes = {
+  /** The file's MIME type, as `DriveEntry.mimeType` gives it. */
+  mimeType: string;
+  /** The whole file's size in bytes. */
+  size: number;
+  /** When the file was last modified. Reads reporting different times read different versions of it. */
+  modifiedTime: Date;
+  /** Where `content` starts, in bytes from the start of the file. */
+  offset: number;
+  /** How many bytes `content` carries: those asked for, fewer where the file ends, and none from its end. */
+  length: number;
+  /**
+   * The bytes, read from Google as you read them, so a file of any size never has to be held in
+   * memory. Pass it to a worktree's `writeBytes()` to save the file, read it whole with
+   * `await new Response(content).arrayBuffer()` (or `.text()`, for UTF-8 text), or use a reader
+   * to stop early. A range can end partway through a multi-byte character, so decode text read in
+   * several ranges with one `TextDecoder`, calling `decoder.decode(bytes, { stream: true })` for
+   * each range and `decoder.decode()` at the end; decoding each range on its own corrupts the
+   * characters split between them.
+   * Read it straight away, and cancel it if you will not: a stream left unread for a minute is
+   * ended. A stream that fails partway, whatever its error says, did not deliver the file: it was
+   * left unread, or Google stopped sending it or sent less of it than the file had, so read the
+   * file again.
+   */
+  content: ReadableStream<Uint8Array>;
+};
+
+/**
+ * Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, PDF text, and the
+ * bytes of any other file.
+ */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -154,8 +193,7 @@ export interface GoogleDriveReadSession {
   /**
    * Search the connected account with structured values. At least one filter other than `order`
    * is required, and omitting `order` for a full-text search preserves Drive's relevance order.
-   * Exact-file bindings cannot be searched. An empty result is withheld because it is
-   * owner-relative and cannot be shared safely.
+   * Exact-file bindings cannot be searched.
    */
   search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>>;
 
@@ -182,6 +220,17 @@ export interface GoogleDriveReadSession {
    * when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
+   * other uploaded file, whatever its type or size. `options` selects part of it; omitted, the
+   * whole file. Google Docs, Sheets and Slides are refused naming the method that opens them, as
+   * are folders, shortcuts and other Google-native files (MIME types starting
+   * `application/vnd.google-apps.`), which have no content to download. Fails when Google does not
+   * let the account download the file, and asks to reconnect when the account was connected before
+   * Drive bindings could read file content.
+   */
+  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 }
 
 /** Read-only navigation within the originally selected folder. */
@@ -192,8 +241,7 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
   /**
    * Search the positioned folder's direct children, or those of the folders named by
    * `childFolderIds`, using provider-side filters. At least one filter other than `order` is
-   * required, and omitting `order` for a full-text search preserves Drive's relevance order. An
-   * empty result is withheld because it is owner-relative and cannot be shared safely.
+   * required, and omitting `order` for a full-text search preserves Drive's relevance order.
    */
   search(query: DriveFolderSearchQuery): Promise<Cursor<DriveEntry>>;
 
@@ -217,6 +265,12 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
    * reconnect when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * Read a live direct child's own content as a stream of bytes, as
+   * `GoogleDriveReadSession.readFile()` does.
+   */
+  readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;

@@ -34,7 +34,9 @@ export function entry(id: number, over: Partial<Record<string, unknown>> = {}): 
     createdAt: new Date(1700000000000 + id * 60_000),
     state: 'pending',
     type: 'action',
-    description: { title: `Action ${id}`, description: '', implementsRevert: false },
+    description: {
+      title: `Action ${id}`, description: '', implementsRevert: false, autoApprovable: false,
+    },
     ...over,
   } as ActionLogEntry
 }

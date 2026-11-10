@@ -17,13 +17,16 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
   workerVersionTag,
+  type ActionKind,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   type ActionDescriptionBuilder, buildDescription, plainInline, type RenderedDescription,
 } from "@gadgets/gatekeeper-kit/action-description";
+import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { mapLimit, observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import type {
   Cursor,
   LinearWorkspace,
@@ -73,6 +76,7 @@ import {
   type IssueCreateInput,
   type IssueUpdateInput,
 } from "./linear-api";
+import { autoApprovableKindsOf, autoApprovalOf } from "./linear-auto-approval";
 import {
   LinearWorkspaceConfiguratorUI,
   LinearTeamConfiguratorUI,
@@ -82,6 +86,12 @@ import LINEAR_WORKSPACE_CONFIGURATOR_HTML from "./generated/linear-workspace-con
 import LINEAR_TEAM_CONFIGURATOR_HTML from "./generated/linear-team-configurator-ui.txt";
 import LINEAR_ISSUE_CONFIGURATOR_HTML from "./generated/linear-issue-configurator-ui.txt";
 import { obsContext } from "./observability.js";
+import {
+  issueSubresourceId,
+  parseLinearSubresource,
+  teamSubresourceId,
+  workspaceSubresourceId,
+} from "./linear-subresources";
 
 const VENDOR_ID = "linear";
 
@@ -97,6 +107,15 @@ const TOKEN_REFRESH_SKEW_MS = 60 * 1000;
 const METADATA_CACHE_TTL_MS = 60 * 1000;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 250;
+
+// How long an account reuses an answer about its access to a workspace, team or issue, counted from
+// when it started asking Linear. Linear doesn't say when access changes: a revoked grant is noticed
+// only once the answer that allowed it expires, while a denial is kept briefly so that a new grant
+// is noticed soon.
+const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
+const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
+// How many of an account's uncached access answers it asks Linear for at once.
+const SUBRESOURCE_ACCESS_CONCURRENCY = 4;
 
 type Env = Cloudflare.Env & {
   BASE_URL?: string;
@@ -530,6 +549,28 @@ type StoredNonce = {
 };
 
 export class UserAccount extends DurableObject<Env> {
+  // This account's answers about its own access to Linear subresources, keyed by subresource and
+  // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
+  // outlive a disconnect that left storage behind, nor survive a reconnect, which may sign in as
+  // another Linear user or to another workspace. Bypassed while the account holds no credentials.
+  #access = new KvTtlCache(this.ctx.storage.kv, () => this.#credentialsId(), { name: "access" });
+
+  // Names the grant installed now, or undefined while there is none. Every install (a first
+  // connect, or a confirmed reconnect) names its grant afresh, a token refresh keeps the name, and
+  // revoking deletes it with everything else, so no load that started under an earlier grant can
+  // find the same name when it finishes. Grants installed before names existed are named on first
+  // use.
+  #credentialsId(): string | undefined {
+    const kv = this.ctx.storage.kv;
+    if (!kv.get<LinearOAuthGrant>("grant")) return undefined;
+    let id = kv.get<string>("credentialsId");
+    if (id === undefined) {
+      id = crypto.randomUUID();
+      kv.put<string>("credentialsId", id);
+    }
+    return id;
+  }
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
     if (!this.ctx.storage.kv.get<LinearOAuthGrant>("grant")) {
       await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
@@ -605,6 +646,7 @@ export class UserAccount extends DurableObject<Env> {
       handoff = await callback.reconnectComplete(stageId);
     } else {
       this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
+      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
       clearCredentialExpiryLatch(this.ctx.storage.kv);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
@@ -624,6 +666,7 @@ export class UserAccount extends DurableObject<Env> {
     const grant = commitStagedCredentials<LinearOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
+    this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
     clearCredentialExpiryLatch(this.ctx.storage.kv);
   }
 
@@ -639,15 +682,24 @@ export class UserAccount extends DurableObject<Env> {
       return grant.accessToken;
     }
 
+    // Named before the request, so a reconnect or revoke that replaces this grant while it runs is
+    // seen when it returns.
+    const installed = this.#credentialsId();
     try {
       const refreshed = await refreshAccessToken({
         refreshToken: grant.refreshToken,
         clientId: this.env.CLIENT_ID,
         clientSecret: this.env.CLIENT_SECRET,
       });
+      // Storing a refresh of a replaced grant would put the old account's tokens under the new
+      // installation's name, where the access cache would serve one account's answers to the other.
+      if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) return this.#installedAccessToken();
       this.ctx.storage.kv.put<LinearOAuthGrant>("grant", refreshed);
       return refreshed.accessToken;
     } catch (err) {
+      // The grant that failed to refresh is no longer installed, so its failure says nothing about
+      // the one that is.
+      if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) return this.#installedAccessToken();
       // A revoked/expired refresh token (invalid_grant) means the connection is dead. Notify the
       // Workshop here, since the error type is lost when it crosses the RPC boundary to the caller.
       if (err instanceof LinearApiError && err.isAuthError) {
@@ -658,9 +710,75 @@ export class UserAccount extends DurableObject<Env> {
     }
   }
 
+  // The installed grant's access token, for a refresh that a reconnect or revoke overtook.
+  #installedAccessToken(): string {
+    const grant = this.ctx.storage.kv.get<LinearOAuthGrant>("grant");
+    if (!grant) throw new Error("Linear credentials have not been configured for this account.");
+    return grant.accessToken;
+  }
+
   async noteCredentialsExpired(): Promise<void> {
     await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
       this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
+  }
+
+  /**
+   * Whether this account can read each Linear subresource, in order: a workspace when its token
+   * belongs to it; a team or an issue when, in addition, Linear shows the token that team or issue
+   * (a private team the user isn't in, and its issues, come back as not found). An allowed answer is
+   * reused for up to SUBRESOURCE_ACCESS_ALLOWED_TTL_MS and a denial for up to
+   * SUBRESOURCE_ACCESS_DENIED_TTL_MS, until credentials are next installed. Throws for an ID it
+   * can't check, or when access can't be determined (no or expired credentials, a rate limit, an
+   * outage), which is never reused. Every answer comes from the credentials installed when the
+   * check began: a reconnect partway through could otherwise combine one Linear account's answers
+   * with another's, so it fails the check.
+   */
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    // Parsed before anything is asked, so an ID this account can't check is refused outright.
+    const resources = subresources.map(parseLinearSubresource);
+    const installed = this.#credentialsId();
+    const api = new LinearApi(() => this.getAccessToken());
+    // The url key of the workspace this account's token belongs to (a Linear grant is for one
+    // workspace), asked at most once per call and credential installation, and only when some
+    // answer isn't cached. Keyed by the installation each load starts under, so a reconnect during
+    // the call can't decide the new credentials' answers with the old grant's workspace. It is kept
+    // only in the answers it decides.
+    const organizations = new Map<string | undefined, Promise<string>>();
+    // Linear answers for one resource per request, so each is cached on its own and a few are asked
+    // at a time; a failure starts no more, but keeps what the others learned.
+    const answers = await mapLimit([...subresources.entries()], SUBRESOURCE_ACCESS_CONCURRENCY,
+      ([index, subresource]) => this.#access.cached<boolean>(subresource,
+        allowed => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS,
+        async () => {
+          const resource = resources[index];
+          try {
+            const generation = this.#credentialsId();
+            let organization = organizations.get(generation);
+            if (organization === undefined) {
+              organization = api.getOrganization().then(org => org.urlKey);
+              organizations.set(generation, organization);
+            }
+            if ((await organization) !== resource.workspaceUrlKey) return false;
+            switch (resource.kind) {
+              case "workspace": return true;
+              case "team": return (await api.findTeam(resource.teamKeyOrId)) !== null;
+              case "issue": return (await api.getIssue(resource.issueRef)) !== null;
+            }
+          } catch (error) {
+            // Unlike LinearVerifier's legacy checks, a rejected token is no answer here: it says
+            // nothing about what this account may read, so it throws rather than denying.
+            if (error instanceof LinearApiError && error.isAuthError) {
+              throw new Error(
+                "This collaborator's Linear credentials have expired or been revoked, so their access " +
+                "can't be checked.", { cause: error });
+            }
+            throw error;
+          }
+        }));
+    if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
+      throw new Error("This collaborator's Linear connection changed while their access was being checked.");
+    }
+    return answers;
   }
 
   async alarm(): Promise<void> {
@@ -817,10 +935,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   /**
-   * Mint a verifier representing this account, used by LinearGatekeeperImpl.addObserver to confirm a
-   * prospective observer may read a bound team/issue (and, for workspace bindings, the workspace and
-   * each accessed team). The verifier carries this user's own account id, so the access checks run
-   * against the observer's *own* Linear token.
+   * Mint a verifier representing this account, used by LinearGatekeeperImpl.verifyObserverAccess
+   * to confirm an observer may read the workspace, teams and issue a binding's reads report, and by
+   * its legacy addObserver for reads made before they reported them. The verifier carries this
+   * user's own account id, so the access checks run against the observer's *own* Linear token.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -832,9 +950,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // ---------------------------------------------------------------------------
 // Verifier
 //
-// Linear uses the "ACL check (single unit)" strategy for team and issue bindings, and "data-set
-// tracking (by team)" for workspace bindings (see LinearGatekeeperImpl observer methods). All three
-// reduce to per-observer access questions answered against the observer's *own* token:
+// Every read reports the subresources it depends on (see LinearGatekeeperImpl.authorizeRead), which
+// the Workshop checks through verifyObserverAccess, and that asks checkSubresourceAccess, answered
+// by the observer's UserAccount from its own token and recent answers.
+//
+// The has*Access methods serve the legacy addObserver, which still guards reads made before reads
+// reported subresources. Each answers against the observer's *own* token, now:
 //   - hasWorkspaceAccess(urlKey): the observer belongs to the workspace (their viewer's organization
 //     urlKey matches). Gates workspace-level metadata/member-directory reads, which any member sees.
 //   - hasTeamAccess(urlKey, teamKeyOrId): the observer is in the workspace AND can see the team.
@@ -843,28 +964,29 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     any member. Team UUIDs are global, so this also rejects a same-key team in another workspace.
 //   - hasIssueAccess(urlKey, issueRef): the observer is in the workspace AND can see the issue
 //     (issues inherit their team's ACL, so getIssue returns null when the team is hidden).
-// The overseer only ever hands this verifier back to a Linear gatekeeper, which may therefore trust
-// the boolean results.
+// checkSubresourceAccess asks the same questions, except that a token Linear rejects throws there
+// instead of reading as a denial. The overseer only ever hands this verifier back to a Linear
+// gatekeeper, which may therefore trust the boolean results.
 
 type LinearVerifierProps = {
   userObjectId: string;
 };
 
 /**
- * The non-standard methods the Linear gatekeeper calls on its own verifier (see addObserver). Not
- * part of the generic GatekeeperUserVerifier contract.
+ * The non-standard methods the Linear gatekeeper calls on its own verifier (see addObserver and
+ * verifyObserverAccess). Not part of the generic GatekeeperUserVerifier contract.
  */
 export interface LinearVerifierApi extends GatekeeperUserVerifier {
   hasWorkspaceAccess(workspaceUrlKey: string): Promise<boolean>;
   hasTeamAccess(workspaceUrlKey: string, teamKeyOrId: string): Promise<boolean>;
   hasIssueAccess(workspaceUrlKey: string, issueRef: string): Promise<boolean>;
+  /**
+   * Whether the observer's account can read each Linear subresource, in order, reusing recent
+   * answers (see UserAccount.checkSubresourceAccess). Throws for an ID it can't check, or when
+   * access can't be determined (expired credentials, a rate limit, an outage).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
 }
-
-type TeamObservationCheck = {
-  excludeObservers?: string[];
-  pendingTeams: string[];
-  commit(): void;
-};
 
 type ObservedTeamState = true | "pending" | "observed";
 
@@ -919,7 +1041,20 @@ export class LinearVerifier extends WorkerEntrypoint<Env, LinearVerifierProps>
       throw error;
     }
   }
+
+  async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    const accounts = this.ctx.exports.UserAccount;
+    return await accounts.get(accounts.idFromString(this.ctx.props.userObjectId))
+      .checkSubresourceAccess(subresources);
+  }
 }
+
+// Admits an observer only if their own account can read every workspace, team and issue a
+// binding's reads reported, as its UserAccount last learned (see UserAccount.checkSubresourceAccess).
+const verifyLinearAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<LinearVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});
 
 // ---------------------------------------------------------------------------
 // Action records — stored in the gatekeeper DO and applied/reverted on approval.
@@ -936,10 +1071,15 @@ type IssueOverlayPatch = {
   state?: RawWorkflowState;
   assignee?: RawUser | null;
   project?: RawProject | null;
+  /**
+   * Carries the parent's team, which a read showing it reports (see
+   * LinearGatekeeperImpl.issueTeamIds), except on actions stored before it was recorded, whose
+   * pre-read the legacy tracker recorded.
+   */
   parent?: RawIssue["parent"];
 };
 
-type StoredAction =
+type StoredAction = (
   | { id: number; status: ActionStatus; kind: "createIssue"; input: IssueCreateInput;
       provisionalId: string; createdIssueId?: string; synthetic: RawIssue; title: string }
   | { id: number; status: ActionStatus; kind: "updateIssue"; issueRef: string;
@@ -952,10 +1092,20 @@ type StoredAction =
       createdCommentId?: string; synthetic: RawComment; title: string }
   | { id: number; status: ActionStatus; kind: "createLabel"; teamId: string; name: string;
       color?: string; description?: string; createdLabelId?: string; synthetic: RawLabel; title: string }
-  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string };
+  | { id: number; status: ActionStatus; kind: "archive"; issueRef: string; archived: boolean; title: string }
+) & {
+  /**
+   * Set when the overseer first applies the action, which proves it received it even if the submit
+   * reply was lost (see `enqueue`).
+   */
+  applyStarted?: true;
+};
 
-// Distributive Omit so the union's variant-specific fields survive; enqueue assigns id + status.
-type StoredActionDraft = StoredAction extends infer T
+/**
+ * A stored action before `enqueue` assigns its id and status. The Omit is distributive, so each
+ * variant keeps its own fields.
+ */
+export type StoredActionDraft = StoredAction extends infer T
   ? T extends { id: number } ? Omit<T, "id" | "status"> : never
   : never;
 
@@ -1023,80 +1173,65 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
   }
 
   // -------------------------------------------------------------------------
-  // Observer tracking (see addObserver/removeObserver). Only workspace bindings track state; team
-  // and issue bindings are single ACL units verified up front, with nothing to log or exclude.
+  // Observations
+  //
+  // Every read authorizes through authorizeRead, which reports what the binding's access depends on
+  // (see #observationSubresources); the Workshop checks those through verifyObserverAccess.
+
+  /**
+   * The subresources a read revealing data of `teamIds` reports: what this binding's addObserver
+   * checks for every read, plus, on a workspace binding, each of those teams. A workspace binding
+   * reports `workspace/<urlKey>` and `workspace/<urlKey>/team/<teamId>` for each team (none for
+   * workspace metadata or the member directory); a team binding only its team and an issue binding
+   * only its issue, as their URLs named them, since nothing they read is checked more finely. No
+   * other teams or issues are reported, however many a read reveals.
+   * @throws Error when the binding lacks the team or issue its kind names.
+   */
+  #observationSubresources(teamIds: readonly string[]): string[] {
+    const { workspaceUrlKey, resourceKind, teamKeyOrId, issueRef } = this.ctx.props;
+    switch (resourceKind) {
+      case "team":
+        if (!teamKeyOrId) throw new Error("This Linear team connection names no team. Please reconnect it.");
+        return [teamSubresourceId(workspaceUrlKey, teamKeyOrId)];
+      case "issue":
+        if (!issueRef) throw new Error("This Linear issue connection names no issue. Please reconnect it.");
+        return [issueSubresourceId(workspaceUrlKey, issueRef)];
+      default:
+        return [
+          workspaceSubresourceId(workspaceUrlKey),
+          ...[...new Set(teamIds)].map(teamId => teamSubresourceId(workspaceUrlKey, teamId)),
+        ];
+    }
+  }
+
+  /**
+   * Authorizes a read that reveals data of the teams `teamIds` (empty for workspace metadata and
+   * the member directory, which any workspace member may see), reporting the subresources this
+   * binding's access depends on (see #observationSubresources). Every read goes through this, a
+   * cursor's every page included, rather than calling approvalQueue.authorizeObservation directly.
+   */
+  async authorizeRead(
+    queue: RpcStub<ApprovalQueue>,
+    teamIds: readonly string[],
+    observation: Omit<ObservationDescription, "subresources" | "excludeObservers">,
+  ): Promise<void> {
+    await queue.authorizeObservation({ ...observation, subresources: this.#observationSubresources(teamIds) });
+  }
+
+  // -------------------------------------------------------------------------
+  // Legacy observer tracking (see addObserver/removeObserver). Only workspace bindings track state:
+  // the teams whose data reads revealed before they reported subresources, and the verifiers of
+  // the observers addObserver admitted. Reads no longer feed it or exclude observers, but a read
+  // still running an older Worker version during rollout may, so addObserver keeps checking every
+  // observer against those teams and storing verifiers, through the has*Access methods, which
+  // reuse no answers.
 
   #observerKey(id: string): string { return `observer:${id}`; }
-  #observedTeamKey(teamId: string): string { return `observedTeam:${teamId}`; }
-
-  #isTeamObserved(teamId: string): boolean {
-    const state = this.ctx.storage.kv.get<ObservedTeamState>(this.#observedTeamKey(teamId));
-    return state === true || state === "observed";
-  }
 
   #listTrackedTeams(): string[] {
     const prefix = "observedTeam:";
     return [...this.ctx.storage.kv.list<ObservedTeamState>({ prefix })]
       .map(([key]) => key.slice(prefix.length));
-  }
-
-  *#listObservers(): IterableIterator<[string, Fetcher<LinearVerifierApi>]> {
-    const prefix = "observer:";
-    for (const [key, verifier] of this.ctx.storage.kv.list<Fetcher<LinearVerifierApi>>({ prefix })) {
-      yield [key.slice(prefix.length), verifier];
-    }
-  }
-
-  // Workspace bindings only. Marks unknown teams pending and returns current observers who cannot
-  // access any pending team in this attempt. Authorization promotes them; failed attempts remain
-  // pending and are rechecked on retry.
-  async #prepareTeamObservation(teamIds: string[]): Promise<TeamObservationCheck> {
-    const pendingTeams = [...new Set(teamIds)].filter(id => !this.#isTeamObserved(id));
-    if (pendingTeams.length === 0) return {pendingTeams, commit() {}};
-    for (const teamId of pendingTeams) {
-      const key = this.#observedTeamKey(teamId);
-      if (this.ctx.storage.kv.get<ObservedTeamState>(key) === undefined) {
-        this.ctx.storage.kv.put(key, "pending");
-      }
-    }
-    const observerAccess = await Promise.all([...this.#listObservers()].map(async ([id, verifier]) => {
-      const access = await Promise.all(pendingTeams.map(
-        teamId => verifier.hasTeamAccess(this.ctx.props.workspaceUrlKey, teamId),
-      ));
-      return [id, access.every(hasAccess => hasAccess)] as const;
-    }));
-    const excluded = observerAccess.filter(([, hasAccess]) => !hasAccess).map(([id]) => id);
-    return {
-      excludeObservers: excluded.length > 0 ? excluded : undefined,
-      pendingTeams,
-      commit: () => {
-        for (const teamId of pendingTeams) {
-          this.ctx.storage.kv.put(this.#observedTeamKey(teamId), "observed");
-        }
-      },
-    };
-  }
-
-  /**
-   * Authorize an observation that reveals data belonging to specific team(s). For workspace bindings
-   * this also tracks those teams as observed data sets and excludes any observers lacking access to a
-   * newly-seen one; for team/issue bindings it is a plain authorizeObservation (the bound resource is
-   * a single ACL unit verified up front). Every team-scoped read should go through this rather than
-   * calling approvalQueue.authorizeObservation directly. `teamIds` may be empty for workspace-level
-   * reads (org metadata, member directory) that any workspace member may see.
-   */
-  async authorizeTeamObservation(
-    queue: RpcStub<ApprovalQueue>,
-    teamIds: string[],
-    description: ObservationDescription,
-  ): Promise<void> {
-    const check = this.ctx.props.resourceKind === "workspace" && teamIds.length > 0
-      ? await this.#prepareTeamObservation(teamIds)
-      : {pendingTeams: [], commit() {}};
-    await queue.authorizeObservation({
-      ...description, excludeObservers: check.excludeObservers,
-    });
-    check.commit();
   }
 
   /**
@@ -1141,13 +1276,14 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
     this.#invalidatePendingActions();
     try {
-      await approvalQueue.submitAction(id, description);
+      // The verdict comes from the stored payload, so it always describes what applies.
+      await approvalQueue.submitAction(id, { ...description, ...autoApprovalOf(action) });
     } catch (err) {
       // An auto-approval can apply the action mid-flight, which proves the overseer received it --
       // only the reply was lost, and reporting failure would invite a repeated provider write. A
       // missing record proves nothing: a dependency's rejection cascade deletes it too.
       const current = this.ctx.storage.kv.get<StoredAction>(`action:${id}`);
-      if (current?.status === "applied") return;
+      if (current?.status === "applied" || current?.applyStarted) return;
       if (current) {
         // Drop the record so simulated reads don't show an action no approver can resolve.
         this.ctx.storage.kv.delete(`action:${id}`);
@@ -1255,6 +1391,18 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
       out.push(this.#overlayIssue(action.synthetic));
     }
     return out;
+  }
+
+  /**
+   * The teams a read showing `issue`, as issueRaw returned it, reveals data of: its own, plus its
+   * parent's, whose title and URL it shows. That is the parent Linear returns, whether set there or
+   * by an applied action, or one a pending setParent or sub-issue create put there, read under the
+   * authorization of whichever chat or gadget queued the action, which doesn't carry over to the
+   * one reading it now.
+   */
+  issueTeamIds(issue: RawIssue): string[] {
+    const parentTeamId = issue.parent?.team?.id;
+    return parentTeamId === undefined ? [issue.team.id] : [issue.team.id, parentTeamId];
   }
 
   // Match pending comments to an issue by the exact ref used, by the resolved real id (so a
@@ -1479,8 +1627,8 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKindsOf(this.ctx.props.resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<LinearWorkspace | LinearTeam | LinearIssue> {
@@ -1495,7 +1643,10 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
   }
 
   /**
-   * Observer tracking. Strategy depends on the binding's granularity:
+   * Legacy observer tracking. Every read now reports the subresources it depends on (see
+   * authorizeRead), which the Workshop checks through verifyObserverAccess. This check stays for
+   * reads made before they did, and for reads an older Worker version makes during rollout, so it
+   * is unchanged. Strategy depends on the binding's granularity:
    *
    * - Team / Issue binding — "ACL check (single unit)". The binding is one team (or one issue, which
    *   inherits its team's ACL), so we just confirm the observer can see it (hasTeamAccess /
@@ -1503,11 +1654,11 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
    *   outside that unit, so no observers are tracked and removeObserver is a no-op.
    *
    * - Workspace binding — "data-set tracking (by team)". Workspace members may belong to different
-   *   teams, so we track which teams' data the Gadget has actually observed and verify each observer
-   *   against them. addObserver requires workspace membership (so workspace-level metadata and the
-   *   member directory are fine to show) plus access to every already-observed team; later, the first
-   *   observation of a *new* team excludes any observer lacking it (see #prepareTeamObservation). Verified
-   *   observers are remembered (their verifier stored) so that forward-exclusion check can run.
+   *   teams, so the teams whose data the Gadget observed before reads reported them are tracked and
+   *   each observer verified against them. addObserver requires workspace membership (so
+   *   workspace-level metadata and the member directory are fine to show) plus access to every
+   *   tracked team. Verified observers are remembered (their verifier stored), because an older
+   *   Worker version's read excludes those lacking a team it observes for the first time.
    *
    * The overseer re-runs addObserver on every open, catching loss of access promptly.
    */
@@ -1563,9 +1714,50 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.delete(this.#observerKey(id));
   }
 
+  /**
+   * Checks the subresources this binding's reads report (see #observationSubresources), failing the
+   * whole call for any other ID: one in another workspace, or of a kind or resource this binding
+   * never reports (on a team or issue binding, anything but its own team or issue; on a workspace
+   * binding, any issue). An observer is allowed when their own account can read each of them, as
+   * their UserAccount last learned (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    const { workspaceUrlKey, resourceKind, teamKeyOrId, issueRef } = this.ctx.props;
+    for (const subresource of subresources) {
+      const resource = parseLinearSubresource(subresource);
+      const reported = resource.workspaceUrlKey === workspaceUrlKey && (
+        resourceKind === "team" ? resource.kind === "team" && resource.teamKeyOrId === teamKeyOrId
+        : resourceKind === "issue" ? resource.kind === "issue" && resource.issueRef === issueRef
+        : resource.kind !== "issue");
+      if (!reported) throw new Error("Not a subresource this Linear connection reports.");
+    }
+    return await verifyLinearAccess(observers, subresources);
+  }
+
+  /**
+   * What addObserver required of every collaborator, as the subresources reads report it (see
+   * #observationSubresources): a team or issue binding's own team or issue; on a workspace binding,
+   * membership as `workspace/<urlKey>`, plus `workspace/<urlKey>/team/<teamId>` for each team the
+   * legacy tracker recorded, pending or observed, by the UUID it recorded and reads now report.
+   * Reads storage only.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return this.#observationSubresources(this.#listTrackedTeams());
+  }
+
   async applyAction(actionId: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
+    // The overseer records completion only after this returns, so a lost reply or a restart in
+    // between re-delivers an apply that already ran; running it again would repeat the write.
+    if (action.status === "applied") return;
+    if (!action.applyStarted) {
+      action.applyStarted = true;
+      this.ctx.storage.kv.put<StoredAction>(`action:${actionId}`, action);
+    }
 
     await this.#run(async api => {
       switch (action.kind) {
@@ -1741,9 +1933,9 @@ class StreamingCursor<TRaw, TOut> extends RpcTarget implements Cursor<TOut> {
   #fetchPage: (after: string | undefined) => Promise<RawConnection<TRaw>>;
   #normalize: (raw: TRaw) => TOut;
   #queue: RpcStub<ApprovalQueue>;
-  #describe: (items: TOut[]) => ObservationDescription;
-  // The team(s) whose data a given raw page reveals, for workspace-binding observer tracking (see
-  // LinearGatekeeperImpl.authorizeTeamObservation). Empty for workspace-level pages any member sees.
+  #describe: (items: TOut[]) => Omit<ObservationDescription, "subresources" | "excludeObservers">;
+  // The team(s) whose data a given raw page reveals, which a workspace binding reports (see
+  // LinearGatekeeperImpl.authorizeRead). Empty for workspace-level pages any member sees.
   #teamIdsOf: (rawItems: TRaw[]) => string[];
   #after: string | undefined = undefined;
   #done = false;
@@ -1753,7 +1945,7 @@ class StreamingCursor<TRaw, TOut> extends RpcTarget implements Cursor<TOut> {
     queue: RpcStub<ApprovalQueue>,
     fetchPage: (after: string | undefined) => Promise<RawConnection<TRaw>>,
     normalize: (raw: TRaw) => TOut,
-    describe: (items: TOut[]) => ObservationDescription,
+    describe: (items: TOut[]) => Omit<ObservationDescription, "subresources" | "excludeObservers">,
     teamIdsOf: (rawItems: TRaw[]) => string[],
   ) {
     super();
@@ -1769,8 +1961,9 @@ class StreamingCursor<TRaw, TOut> extends RpcTarget implements Cursor<TOut> {
     if (this.#done) return null;
     const conn = await this.#fetchPage(this.#after);
     const items = conn.nodes.map(this.#normalize);
-    // Authorize before advancing pagination state, so a denied page can be retried.
-    await this.#gk.authorizeTeamObservation(this.#queue, this.#teamIdsOf(conn.nodes), this.#describe(items));
+    // Authorize before advancing pagination state, so a denied page can be retried. An empty page is
+    // authorized too: it still reports the binding's resource, since absence is an answer from it.
+    await this.#gk.authorizeRead(this.#queue, this.#teamIdsOf(conn.nodes), this.#describe(items));
     this.#after = conn.pageInfo.endCursor ?? undefined;
     if (!conn.pageInfo.hasNextPage) this.#done = true;
     return items;
@@ -1804,7 +1997,7 @@ class LinearWorkspaceSessionImpl extends RpcTarget implements LinearWorkspace {
   async getMetadata(): Promise<LinearWorkspaceMetadata> {
     const org = await this.#gk.orgRaw();
     // Workspace-level metadata is visible to any workspace member, so no team attribution is needed.
-    await this.#gk.authorizeTeamObservation(this.#queue, [], {
+    await this.#gk.authorizeRead(this.#queue, [], {
       title: "Read workspace info",
       description: `Read metadata for the Linear workspace **${org.name}**.`,
     });
@@ -1880,7 +2073,7 @@ class LinearWorkspaceSessionImpl extends RpcTarget implements LinearWorkspace {
   async findMembers(query?: string): Promise<LinearUser[]> {
     const users = await this.#gk.findMembersRaw(query);
     // The workspace member directory is visible to any workspace member, so no team attribution.
-    await this.#gk.authorizeTeamObservation(this.#queue, [], {
+    await this.#gk.authorizeRead(this.#queue, [], {
       title: "Find members",
       description: `Looked up ${users.length} workspace member(s)${query ? ` matching "${query}"` : ""}.`,
     });
@@ -1923,7 +2116,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
 
   async getMetadata(): Promise<LinearTeamMetadata> {
     const team = await this.#team();
-    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+    await this.#gk.authorizeRead(this.#queue, [team.id], {
       title: "Read team info",
       description: `Read metadata for team **${team.key} · ${team.name}**.`,
     });
@@ -1971,7 +2164,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
   async listWorkflowStates(): Promise<LinearWorkflowState[]> {
     const team = await this.#team();
     const states = await this.#gk.workflowStatesRaw(team.id);
-    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+    await this.#gk.authorizeRead(this.#queue, [team.id], {
       title: "List workflow states",
       description: `Listed ${states.length} workflow state(s) for team ${team.key}.`,
     });
@@ -1981,7 +2174,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
   async listLabels(): Promise<LinearLabel[]> {
     const team = await this.#team();
     const labels = await this.#gk.labelsForDisplay(team.id);
-    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+    await this.#gk.authorizeRead(this.#queue, [team.id], {
       title: "List labels",
       description: `Listed ${labels.length} label(s) for team ${team.key}.`,
     });
@@ -1996,7 +2189,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
     // The duplicate check and the description reveal this team, so on a workspace binding the log
     // must only reach observers who may see it. Authorized after the read, as in listLabels, so a
     // failed read records nothing.
-    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+    await this.#gk.authorizeRead(this.#queue, [team.id], {
       title: "Read team for new label",
       description: `Read team ${team.key} and its labels to create a label.`,
     });
@@ -2048,7 +2241,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
   async listMembers(): Promise<LinearUser[]> {
     const team = await this.#team();
     const members = await this.#gk.teamMembersRaw(team.id);
-    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+    await this.#gk.authorizeRead(this.#queue, [team.id], {
       title: "List team members",
       description: `Listed ${members.length} member(s) of team ${team.key}.`,
     });
@@ -2099,7 +2292,7 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
   // who may see the issue's team (and `extraTeamIds`, such as a new parent's team).
   async #requireIssueForAction(extraTeamIds: string[] = []): Promise<RawIssue> {
     const issue = await this.#requireIssue();
-    await this.#gk.authorizeTeamObservation(this.#queue, [...new Set([issue.team.id, ...extraTeamIds])], {
+    await this.#gk.authorizeRead(this.#queue, [issue.team.id, ...extraTeamIds], {
       title: `Read issue ${issue.identifier}`,
       description: `Read issue ${issueLabel(issue)} to describe an action on it.`,
     });
@@ -2108,7 +2301,7 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
 
   async getDetails(): Promise<LinearIssueDetails> {
     const issue = await this.#requireIssue();
-    await this.#gk.authorizeTeamObservation(this.#queue, [issue.team.id], {
+    await this.#gk.authorizeRead(this.#queue, this.#gk.issueTeamIds(issue), {
       title: `Read issue ${issue.identifier}`,
       description: `Read details of issue ${issueLabel(issue)}.`,
     });
@@ -2301,7 +2494,9 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
         throw new Error(`Parent issue ${parent.identifier} is not in the team this connection is limited to.`);
       }
       resolvedParentId = parent.id;
-      parentOverlay = { id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title };
+      parentOverlay = {
+        id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title, team: { id: parent.team.id },
+      };
       parentTeamIds.push(parent.team.id);
     }
     const issue = await this.#requireIssueForAction(parentTeamIds);
@@ -2321,7 +2516,7 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
 
   async readComments(options?: LinearPageOptions): Promise<Cursor<LinearComment>> {
     // Resolve the issue (also enforcing team scope, if any) so the comment thread can be attributed
-    // to the issue's team for observer tracking.
+    // to the issue's team, which a workspace binding reports.
     const issue = await this.#requireIssue();
     const teamId = issue.team.id;
     const ref = this.#ref;
@@ -2561,13 +2756,15 @@ async function createIssueViaQueue(
   if (options.parentId) {
     const parent = await gk.issueRaw(options.parentId);
     input.parentId = parent.id;
-    parentObj = { id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title };
+    parentObj = {
+      id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title, team: { id: parent.team.id },
+    };
     parentTeamId = parent.team.id;
   }
 
   // The description shows the team, state, label and parent names and the assignee's email, so on
   // a workspace binding the log must only reach observers who may see those teams.
-  await gk.authorizeTeamObservation(queue, [...new Set([teamId, parentTeamId ?? teamId])], {
+  await gk.authorizeRead(queue, [teamId, parentTeamId ?? teamId], {
     title: "Read team for new issue",
     description: "Read the team, workflow state, labels, assignee and parent issue named in a new issue.",
   });

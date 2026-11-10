@@ -1,4 +1,9 @@
 import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
+import { useUnreadState } from "./features/notifications/UnreadStateBridge";
+import { UnreadBadge } from "./features/notifications/UnreadBadge";
+import { ReadTimeline } from "./features/notifications/ReadTimeline";
+import { TimelineReadItem } from "./features/notifications/TimelineReadItem";
+import { timelineReadRanges } from "./features/notifications/timelineReadRanges";
 import {
   Fragment,
   isValidElement,
@@ -41,6 +46,7 @@ import {
   Copy,
   Clipboard as ClipboardIcon,
   WarningCircle,
+  StopCircle,
   Code,
   File as FileIcon,
   PencilSimple,
@@ -103,6 +109,7 @@ import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
+import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
@@ -120,6 +127,8 @@ import {
   findUnresolvedConflicts, listConflictedFiles, type UnresolvedConflict,
 } from "./features/chat/mergeConflicts";
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
+import { UiBlockCard, type UiBlockCardProps } from "./features/chat/UiBlockCard";
+import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
 
@@ -1270,6 +1279,40 @@ export const MarkdownMessage = memo(function MarkdownMessage(
   );
 });
 
+// Shows text as code, in a fence longer than any backtick run inside it.
+function asCodeBlock(text: string): string {
+  const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map(run => run.length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}html\n${text}\n${fence}`;
+}
+
+type AnswerBlocks = Omit<UiBlockCardProps, "block">;
+
+/**
+ * An agent answer: Markdown prose, with each `<inline-html>` block drawn as a live view. A block
+ * draws as it streams, and shows as code if its stored answer never closed it.
+ */
+const AgentAnswer = (
+  { message, blocks, streaming }: { message: string; blocks: AnswerBlocks; streaming: boolean },
+): ReactNode => {
+  // ChatInterface renders every message again on each streamed delta; an answer is parsed only
+  // when it changes.
+  const parts = useMemo(() => parseInlineHtmlBlocks(message, { streaming }), [message, streaming]);
+
+  return parts.map((part, i) => {
+    switch (part.kind) {
+      case "text":
+        return <MarkdownMessage key={i} message={part.text} />;
+      case "block":
+      case "open":
+        // An open block's view stays the closed block's: the same component, at the same place.
+        return part.kind === "open" && !streaming
+          ? <MarkdownMessage key={i} message={asCodeBlock(part.text)} />
+          : <UiBlockCard key={i} {...blocks} block={part} />;
+    }
+  });
+};
+
 // Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
 function useAttachmentObjectUrl(content: Uint8Array | undefined, mimeType: string): string | null {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -1851,10 +1894,13 @@ type ChatDisplayEntry =
       toolCalls?: AiToolCall[];
       toolCallGroups?: ToolCallGroup[];
       lastMessageSequence?: number;
+      // The agent's answer still streaming, drawn as the message it will become.
+      streaming?: true;
     }
   | {
       type: "workRun";
       key: string;
+      firstSequence: number;
       toolCalls: AiToolCall[];
       observations: ObservationChatMessage[];
       toolCallGroups: ToolCallGroup[];
@@ -2052,17 +2098,31 @@ function transcriptToolCalls(toolCalls: AiToolCall[]): AiToolCall[] {
     tc.output === undefined || Boolean(tc.error));
 }
 
+/** The agent's answer streaming in: the key of the row it is drawn in, and what it has so far. */
+export type StreamingAnswer = {
+  key: string;
+  chatId: number;
+  author: AiChatAuthorInfo;
+  text: string;
+  reasoning: string;
+};
+
 export function buildChatDisplayEntries(
   messages: AiChatMessage[],
   changeStatus: ReadonlyMap<number, "pending" | "merged" | "reverted">,
   // Loaded compaction boundaries, oldest first.
   boundaries: readonly CompactionBoundary[] = [],
   outputOf?: ToolOutputResolver,
+  // Answers this session watched stream in: the row key each stored one keeps, by sequence, and
+  // the one streaming now.
+  answers: {keys?: ReadonlyMap<number, string>; streaming?: StreamingAnswer} = {},
 ): ChatDisplayEntry[] {
   // Catalog changes are for the agent alone (see the "catalogChange" message).
   messages = messages.filter(msg => msg.type !== "catalogChange");
   const result: ChatDisplayEntry[] = [];
   let lastAgentAuthorId: string | null = null;
+  const messageKey = (msg: AiChatMessage) =>
+    answers.keys?.get(msg.sequence) ?? `msg-${msg.chatId}-${msg.sequence}`;
 
   // Where each boundary is announced. A cut is chosen to leave a working tail, so it lands some way
   // back from where the user typed `/compact` -- announcing it there would drop the acknowledgement
@@ -2224,6 +2284,7 @@ export function buildChatDisplayEntries(
       result.push({
         type: "workRun",
         key: `work-${msg.chatId}-${msg.sequence}`,
+        firstSequence: msg.sequence,
         toolCalls: workParts.toolCalls,
         observations: workParts.observations,
         toolCallGroups: buildToolCallGroups(
@@ -2264,7 +2325,7 @@ export function buildChatDisplayEntries(
       if (workParts.toolCalls.length > 0 || workParts.observations.length > 0) {
         result.push({
           type: "message",
-          key: `msg-${msg.chatId}-${msg.sequence}`,
+          key: messageKey(msg),
           message: msg,
           toolCalls: workParts.toolCalls,
           toolCallGroups: buildToolCallGroups(
@@ -2281,10 +2342,28 @@ export function buildChatDisplayEntries(
 
     result.push({
       type: "message",
-      key: `msg-${msg.chatId}-${msg.sequence}`,
+      key: messageKey(msg),
       message: msg,
     });
     i++;
+  }
+
+  // Drawn as the message it will become, after the model-change row that message will get.
+  if (answers.streaming) {
+    const {key, chatId, author, text, reasoning} = answers.streaming;
+    const message: AiChatMessage = {
+      type: "message",
+      chatId,
+      // Not stored, so no sequence or time. NaN matches nothing the row looks up by sequence, and
+      // the row shows a time only beside the actions of a finished turn.
+      sequence: NaN,
+      timestamp: new Date(),
+      author,
+      message: text,
+      reasoning,
+    };
+    maybePushModelChange(message);
+    result.push({type: "message", key, message, streaming: true});
   }
 
   return result;
@@ -2626,6 +2705,9 @@ type ProvisionalToolCallState = {
 type ProvisionalChatState = {
   text: string;
   reasoning: string;
+  // The React key of the row the streamed text and reasoning are drawn in, minted when they start.
+  // The stored message keeps it (see answerKeysRef), so the views in it keep running.
+  answerKey: string | undefined;
   // The turn is summarizing older context and can't produce output until it finishes.
   compacting: boolean;
   toolCalls: ProvisionalToolCallState[];
@@ -2637,6 +2719,7 @@ function createProvisionalChatState(): ProvisionalChatState {
   return {
     text: "",
     reasoning: "",
+    answerKey: undefined,
     compacting: false,
     toolCalls: [],
     toolCallsById: new Map(),
@@ -2647,6 +2730,7 @@ function createProvisionalChatState(): ProvisionalChatState {
 function clearProvisionalTextState(state: ProvisionalChatState) {
   state.text = "";
   state.reasoning = "";
+  state.answerKey = undefined;
   state.toolCalls = [];
   state.toolCallsById.clear();
   // Note: This function only clears chat streaming state, not the active-file marker. Chat
@@ -2726,6 +2810,7 @@ function ChatInterface({
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
   const { currentUser } = useAuthenticatedApi();
+  const unread = useUnreadState();
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
     chats: new Map(),
@@ -2735,6 +2820,10 @@ function ChatInterface({
     lastMessageTimestamp: null,
   });
   const provisionalRef = useRef<Map<number, ProvisionalChatState>>(new Map());
+  // By chat, the React key each stored answer this session watched stream in keeps, by the answer's
+  // sequence. Entries live as long as the page: a row whose key changed would remount its views.
+  const answerKeysRef = useRef<Map<number, Map<number, string>>>(new Map());
+  const nextAnswerKeyRef = useRef(0);
   // Per-chat buffers of live (unmaterialized) change rows (see ChatLiveChangeRows), fed by
   // changeApplied, pruned by materialization watermarks and generation bumps.
   const chatChangeRowsRef = useRef<Map<number, ChatChangeRowBuffer>>(new Map());
@@ -2976,11 +3065,23 @@ function ChatInterface({
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isScrolledToBottomRef = useRef(true);
 
+  // Where the chat list was scrolled to. Without the sidebar, opening a thread replaces the list,
+  // so the list starts from this when the user comes back.
+  const chatListScrollTopRef = useRef(0);
+  const restoreChatListScroll = useCallback((el: HTMLDivElement | null) => {
+    if (el) el.scrollTop = chatListScrollTopRef.current;
+  }, []);
+
   const scrollMessagesToBottom = useCallback(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
   }, []);
+  // A view grows after it renders, once its frame reports its height, and a list that was at the
+  // bottom has to stay there.
+  const keepAtBottom = useCallback(() => {
+    if (isScrolledToBottomRef.current) scrollMessagesToBottom();
+  }, [scrollMessagesToBottom]);
 
   // Force a re-render when cache is updated
   const forceUpdate = () => setUpdateCounter((prev) => prev + 1);
@@ -3107,6 +3208,12 @@ function ChatInterface({
     ),
     [currentMessages],
   );
+  // Like a connection request, a pending web fetch request holds the agent's turn, oldest first.
+  const pendingWebFetchRequestIds = useMemo(
+    () => currentMessages.flatMap((msg) =>
+      msg.type === "webFetchRequest" && msg.state === "pending" ? [msg.requestId] : []),
+    [currentMessages],
+  );
   // A pending awaitDecision action also blocks the composer: the agent turn is suspended until the
   // user approves or rejects it, so (like a connection request) further input must wait.
   const hasPendingAwaitedAction = useMemo(
@@ -3118,6 +3225,14 @@ function ChatInterface({
     ),
     [currentMessages],
   );
+  // While one of these is pending, neither the composer nor a view's Send can add a message.
+  const sendBlockedReason = hasPendingConnectionRequest
+    ? "Set up or deny the connection request above to continue."
+    : hasPendingAwaitedAction
+      ? "Approve or reject the pending action above to continue."
+      : pendingWebFetchRequestIds.length > 0
+        ? "Approve or deny the web fetch request above to continue."
+        : undefined;
   // A gadget's stamped format, looked up by the id a finished createGadget call reports, so the
   // transcript can say "Created Doc" with the Doc icon.
   const resolveToolOutput = useCallback(
@@ -3125,14 +3240,36 @@ function ChatInterface({
     [outputOfWorkpiece],
   );
 
+  // Get metadata for selected chat
+  const currentChatMetadata =
+    selectedChatId !== null ? cacheRef.current.chats.get(selectedChatId) : null;
+  const currentProvisionalState =
+    selectedChatId !== null
+      ? (provisionalRef.current.get(selectedChatId) ?? null)
+      : null;
+
+  // The answer streaming in, drawn once it has text or reasoning to show.
+  const streamingKey = currentProvisionalState?.answerKey;
+  const streamingAuthor = currentChatMetadata?.activeAgent;
+  const streamingText = currentProvisionalState?.text ?? "";
+  const streamingReasoning = showThinkingTraces ? (currentProvisionalState?.reasoning ?? "") : "";
   const displayEntries = useMemo(
     () =>
       // Hide agent checkpoints; surface them as turn-level discard actions. User-saved
       // checkpoints get their own compact row so the discard action is attached to the
       // edit that actually created it.
       buildChatDisplayEntries(
-          currentMessages, messageStates.changeStatus, currentCompactions, resolveToolOutput),
-    [currentMessages, messageStates, currentCompactions, resolveToolOutput],
+          currentMessages, messageStates.changeStatus, currentCompactions, resolveToolOutput, {
+            // message() fills this as it adds the message, so currentMessages changes with it.
+            keys: selectedChatId !== null ? answerKeysRef.current.get(selectedChatId) : undefined,
+            streaming: selectedChatId !== null && streamingKey !== undefined && streamingAuthor &&
+                (streamingText.trim() !== "" || streamingReasoning !== "")
+              ? {key: streamingKey, chatId: selectedChatId, author: streamingAuthor,
+                 text: streamingText, reasoning: streamingReasoning}
+              : undefined,
+          }),
+    [currentMessages, messageStates, currentCompactions, resolveToolOutput, selectedChatId,
+     streamingKey, streamingAuthor, streamingText, streamingReasoning],
   );
 
   const entryTopClasses = useMemo(() => {
@@ -3143,10 +3280,14 @@ function ChatInterface({
     return out;
   }, [displayEntries]);
 
-  // Get metadata for selected chat
-  const currentChatMetadata =
-    selectedChatId !== null ? cacheRef.current.chats.get(selectedChatId) : null;
   const queuedSteers = currentChatMetadata?.queuedSteers;
+
+  // A rendered item owns the bookkeeping following it too, so collapsed work/checkpoints
+  // cannot leave an uncleareable badge. Compaction/model labels aren't independently read items.
+  const timelineStarts = displayEntries.map(entry =>
+    entry.type === "workRun" ? entry.firstSequence : "message" in entry ?
+      (entry.type === "message" ? entry.slashCommand?.sequence : undefined) ?? entry.message.sequence : undefined);
+  const timelineRanges = timelineReadRanges(timelineStarts, currentMessages);
 
   // Hide the user name on user message rows when the only human in the chat is the
   // currently-logged-in user (it would just say "you" on every message). If anyone else has ever
@@ -3221,11 +3362,6 @@ function ChatInterface({
     onSelectedChatProposedChangesChangeRef.current?.(currentProposedWorkpieces ?? []);
     // oxlint-disable-next-line exhaustive-deps -- currentProposedWorkpieces is covered by its key.
   }, [currentProposedWorkpiecesKey, metadataLoaded, selectedChatId]);
-
-  const currentProvisionalState =
-    selectedChatId !== null
-      ? (provisionalRef.current.get(selectedChatId) ?? null)
-      : null;
 
   const currentRowBuffer =
     selectedChatId !== null ? (chatChangeRowsRef.current.get(selectedChatId) ?? null) : null;
@@ -3351,6 +3487,12 @@ function ChatInterface({
     // Approaching the top pulls in the previous page, so a compacted thread reads as one continuous
     // scroll rather than making the user ask for their own history.
     if (el.scrollTop <= EARLIER_PAGE_PREFETCH_PX) loadEarlierRef.current();
+  }, []);
+
+  const handleUnreadNavigation = useCallback((pending: boolean) => {
+    const el = messagesContainerRef.current;
+    isScrolledToBottomRef.current = !pending && !!el &&
+      el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
   }, []);
 
   useLayoutEffect(() => {
@@ -3551,6 +3693,7 @@ function ChatInterface({
       cacheRef.current.compacted.delete(chatId);
       removeChatFromActionMessageIndex(chatId);
       provisionalRef.current.delete(chatId);
+      answerKeysRef.current.delete(chatId);
       editPreviewsRef.current.delete(chatId);
       chatChangeRowsRef.current.delete(chatId);
       bumpChatListVersion();
@@ -3661,6 +3804,15 @@ function ChatInterface({
       const provisional = provisionalRef.current.get(msg.chatId);
       if (provisional) {
         if (msg.type === "message") {
+          // The stored row keeps the streaming row's key, and so its views, only when this client
+          // saw the whole text: one that joined mid-answer, or lost deltas while it reconnected,
+          // would keep views at the wrong blocks.
+          if (provisional.answerKey !== undefined && msg.author.type === "agent" &&
+              msg.message === provisional.text) {
+            let keys = answerKeysRef.current.get(msg.chatId);
+            if (!keys) answerKeysRef.current.set(msg.chatId, keys = new Map());
+            keys.set(msg.sequence, provisional.answerKey);
+          }
           clearProvisionalTextState(provisional);
         } else if (msg.type === "changes") {
           clearProvisionalCodeState(provisional);
@@ -3810,6 +3962,10 @@ function ChatInterface({
           emitEditPreviewEvent(chatId, { kind: "clear", toolCallId: event.toolCallId });
           break;
         }
+      }
+
+      if (provisional.answerKey === undefined && (provisional.text || provisional.reasoning)) {
+        provisional.answerKey = `answer-${chatId}-${nextAnswerKeyRef.current++}`;
       }
 
       if (isProvisionalChatStateEmpty(provisional)) {
@@ -5337,11 +5493,11 @@ function ChatInterface({
                   onClick={() => setChatListScope(scope.value)}
                   className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                 >
-                  <span className="mr-2 inline-flex h-3 w-3 items-center justify-center text-kumo-default">
+                  <span className="inline-flex h-3 w-3 items-center justify-center text-kumo-default">
                     {active ? <Check size={11} weight="bold" /> : null}
                   </span>
                   <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-3 font-mono text-[11px] text-kumo-inactive">
+                  <span className="ml-1 font-mono text-[11px] text-kumo-inactive">
                     {scope.count}
                   </span>
                 </DropdownMenu.Item>
@@ -5351,7 +5507,11 @@ function ChatInterface({
         </DropdownMenu>
       </div>
       {/* Chat list */}
-      <div className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3">
+      <div
+        ref={restoreChatListScroll}
+        onScroll={(e) => { chatListScrollTopRef.current = e.currentTarget.scrollTop; }}
+        className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3"
+      >
         {!chatListReady ? (
           <div className="flex items-center justify-center py-10">
             <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
@@ -5388,6 +5548,8 @@ function ChatInterface({
               <div key={chat.id} className="relative">
                 {(() => {
                   const isRenaming = renamingChatId === chat.id;
+                  const unreadMessageCount = unread?.chats?.find(item =>
+                    item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5474,6 +5636,9 @@ function ChatInterface({
                       </div>
                     </div>
                     {!isRenaming && (
+                      <UnreadBadge count={unreadMessageCount} />
+                    )}
+                    {!isRenaming && (
                       <DropdownMenu>
                         <DropdownMenu.Trigger
                           render={
@@ -5490,15 +5655,21 @@ function ChatInterface({
                           onClick={(event) => event.stopPropagation()}
                           className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1"
                         >
+                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount === 0} onClick={() => {
+                            void unread?.markRead(overseer, chat.id).catch(() => {});
+                          }}>Mark thread read</DropdownMenu.Item>
+                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount > 0} onClick={() => {
+                            void unread?.markUnread(overseer, chat.id).catch(() => {});
+                          }}>Mark thread unread</DropdownMenu.Item>
                           <DropdownMenu.Item
-                            icon={<Pencil size={12} className="mr-2" />}
+                            icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                           >
                             Rename
                           </DropdownMenu.Item>
                           <DropdownMenu.Item
-                            icon={<Trash size={12} className="mr-2" />}
+                            icon={<Trash className="size-3" />}
                             variant="danger"
                             onClick={() => handleDeleteChat(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"
@@ -5575,7 +5746,8 @@ function ChatInterface({
             onPointerUp={handleSidebarPointerUp}
             onPointerCancel={handleSidebarPointerUp}
           >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
+            {/* Widened only to the right: the chat list's scrollbar sits just left of the handle. */}
+            <div className="absolute inset-y-0 left-0 -right-2" />
           </div>
         </>
       )}
@@ -5704,7 +5876,17 @@ function ChatInterface({
                     <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
                   </div>
                 ) : (
-                  <div
+                  <ReadTimeline
+                    key={`${workspaceId}:${selectedChatId}`}
+                    workspaceId={workspaceId}
+                    overseer={overseer}
+                    chatId={selectedChatId}
+                    container={messagesContainerRef}
+                    oldestSequence={oldestLoadedSequence}
+                    latestSequence={currentMessages.at(-1)?.sequence ?? -1}
+                    loadingEarlier={isLoadingEarlier}
+                    loadEarlier={handleShowEarlierMessages}
+                    onUnreadNavigation={handleUnreadNavigation}
                     className={`flex flex-col px-3 pt-5 sm:px-6 sm:pt-8 ${pendingConsoleLogCount > 0 ? "pb-16" : "pb-8"} ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}
                   >
                     {isLoadingEarlier && (
@@ -6083,11 +6265,19 @@ function ChatInterface({
 
                               {hasMessageText && (
                                 <div className={`text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`}>
-                                  <MarkdownMessage
-                                    message={msg.message}
-                                    capsules={msg.capsules}
-                                    formats={msg.formats}
-                                  />
+                                  {msg.author.type === "agent" ? (
+                                    <AgentAnswer
+                                      message={msg.message}
+                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      streaming={entry.streaming === true}
+                                    />
+                                  ) : (
+                                    <MarkdownMessage
+                                      message={msg.message}
+                                      capsules={msg.capsules}
+                                      formats={msg.formats}
+                                    />
+                                  )}
                                 </div>
                               )}
 
@@ -6225,6 +6415,14 @@ function ChatInterface({
 
                         {msg.type === "connectionRequest" && renderConnectionRequestCard(msg)}
 
+                        {msg.type === "webFetchRequest" && (
+                          <WebFetchRequestCard
+                            overseer={overseer}
+                            request={msg}
+                            pendingRequestIds={pendingWebFetchRequestIds}
+                          />
+                        )}
+
                         {msg.type === "useGadget" && (
                           <div className="max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
                             <Tooltip content={`Used the gadget at ${formatFullTimestamp(msg.timestamp)}`} asChild>
@@ -6248,31 +6446,42 @@ function ChatInterface({
                             return (
                               <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
                                 <div className="flex w-full items-center gap-2 px-1.5 py-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleErrorExpansion(key)}
-                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
-                                    aria-expanded={expanded}
-                                  >
+                                  {msg.code === "stopped" ? (
                                     <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
                                       <span className="flex min-w-0 flex-1 items-center gap-2">
-                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
-                                          <WarningCircle size={16} weight="fill" />
+                                        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-inactive" aria-hidden="true">
+                                          <StopCircle size={16} weight="fill" />
                                         </span>
-                                        <span className="flex min-w-0 flex-1 items-center gap-1">
-                                          <span className="min-w-0 truncate">
-                                            <span className="font-medium text-kumo-danger">Error: </span>
-                                            <span className="text-kumo-subtle">{msg.message}</span>
-                                          </span>
-                                          <CaretRight
-                                            size={13}
-                                            weight="bold"
-                                            className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
-                                          />
-                                        </span>
+                                        <span className="min-w-0 truncate">Stopped</span>
                                       </span>
                                     </Tooltip>
-                                  </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleErrorExpansion(key)}
+                                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.995]"
+                                      aria-expanded={expanded}
+                                    >
+                                      <Tooltip content={formatFullTimestamp(msg.timestamp)} asChild>
+                                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                                          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-kumo-danger" aria-hidden="true">
+                                            <WarningCircle size={16} weight="fill" />
+                                          </span>
+                                          <span className="flex min-w-0 flex-1 items-center gap-1">
+                                            <span className="min-w-0 truncate">
+                                              <span className="font-medium text-kumo-danger">Error: </span>
+                                              <span className="text-kumo-subtle">{msg.message}</span>
+                                            </span>
+                                            <CaretRight
+                                              size={13}
+                                              weight="bold"
+                                              className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out ${expanded ? "rotate-90" : ""}`}
+                                            />
+                                          </span>
+                                        </span>
+                                      </Tooltip>
+                                    </button>
+                                  )}
                                   {isLast && msg.code === "usage_limit" && (
                                     <Tooltip content="Add credits to continue." asChild>
                                       <button
@@ -6286,7 +6495,7 @@ function ChatInterface({
                                     </Tooltip>
                                   )}
                                   {isLast && msg.code !== "usage_limit" && (
-                                    <Tooltip content="Retry the last action." asChild>
+                                    <Tooltip content={msg.code === "stopped" ? "Continue where the agent stopped." : "Retry the last action."} asChild>
                                       <button
                                         type="button"
                                         onClick={() => handleRetry()}
@@ -6294,7 +6503,7 @@ function ChatInterface({
                                         className="flex flex-shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-[13px] leading-4 font-medium text-kumo-default transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default-hover focus-visible:text-kumo-default-hover focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                                       >
                                         <ArrowsClockwise size={12} weight="bold" />
-                                        Retry
+                                        {msg.code === "stopped" ? "Continue" : "Retry"}
                                       </button>
                                     </Tooltip>
                                   )}
@@ -6338,6 +6547,11 @@ function ChatInterface({
                         )}
                         </div>
                       );
+                    }).map((content, entryIndex) => {
+                      const range = timelineRanges[entryIndex];
+                      return range ? <TimelineReadItem key={displayEntries[entryIndex].key} {...range}>
+                        {content}
+                      </TimelineReadItem> : content;
                     })}
 
                     {currentRowBuffer && currentHasUserDraftRows && (() => {
@@ -6414,15 +6628,23 @@ function ChatInterface({
                         !hasShownReasoning &&
                         provisionalToolCalls.length === 0;
 
+                      // The streamed text and reasoning are the last transcript row (see
+                      // StreamingAnswer), so all that is left here may be nothing.
+                      if (!isCompacting && !showThinking && provisionalToolCalls.length === 0) {
+                        return null;
+                      }
+
                       // Match the spacing this response gets once finalized (see rhythmTopClass)
-                      // so it doesn't shift when streaming completes.
+                      // so it doesn't shift when streaming completes. Under the streaming answer's
+                      // row, tool calls sit as they will inside its stored row.
                       const lastEntry =
                         displayEntries.length > 0
                           ? displayEntries[displayEntries.length - 1]
                           : null;
                       const provisionalTopClass = !lastEntry
                         ? ""
-                        : lastEntry.type === "modelChange"
+                        : lastEntry.type === "modelChange" ||
+                            (lastEntry.type === "message" && lastEntry.streaming)
                           ? "mt-2"
                           : isUserMessageEntry(lastEntry)
                             ? "mt-5"
@@ -6439,16 +6661,6 @@ function ChatInterface({
                           {showThinking && (
                             <div className={`inline-flex px-1.5 py-1 text-[14px] leading-5 tracking-[-0.25px] ${styles.thinkingShimmer}`}>
                               Thinking
-                            </div>
-                          )}
-
-                          {showThinkingTraces && currentProvisionalState?.reasoning && (
-                            <ThinkingTraceRow reasoning={currentProvisionalState.reasoning} />
-                          )}
-
-                          {currentProvisionalState?.text && (
-                            <div className={`text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`}>
-                              <MarkdownMessage message={currentProvisionalState.text} />
                             </div>
                           )}
 
@@ -6542,7 +6754,7 @@ function ChatInterface({
                         </div>
                       );
                     })}
-                  </div>
+                  </ReadTimeline>
                 )}
               </div>
 
@@ -6580,13 +6792,7 @@ function ChatInterface({
                           `workspace:${workspaceId}:chat:${selectedChatId}`,
                         )
                       : undefined}
-                    blockedReason={
-                      hasPendingConnectionRequest
-                        ? "Set up or deny the connection request above to continue."
-                        : hasPendingAwaitedAction
-                          ? "Approve or reject the pending action above to continue."
-                          : undefined
-                    }
+                    blockedReason={sendBlockedReason}
                     draftUpdateBanner={(() => {
                       if (!currentChatMetadata ||
                           !(chatHasProposedChanges(currentChatMetadata) ||

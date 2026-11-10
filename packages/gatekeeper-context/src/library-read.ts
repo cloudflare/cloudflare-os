@@ -1,5 +1,6 @@
-// Agent read path over the account's library. Every returned result is authorized as an observation;
-// results revealing collection contents are attributed to those collections for observer checks.
+// Agent read path over the account's library. Every returned result is authorized as an observation
+// reporting the collections whose contents it revealed, which the Workshop checks collaborators
+// against.
 
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
@@ -91,12 +92,9 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
       || ((await this.#discoveredPublicIds()).includes(collectionId) && await this.#isLivePublic(collectionId));
   }
 
-  // A read revealing no collection contents is authorized against the admission baseline, so it
-  // does not constrain who may observe the workspace.
+  // A read revealing no collection contents reports none, so it constrains no one beyond admission.
   #authorize(collectionIds: string[], description: ObservationInput): Promise<void> {
-    return this.gate.authorize(description, collectionIds.length > 0
-      ? { kind: "collections", ids: collectionIds }
-      : { kind: "baseline" });
+    return this.gate.authorize(description, { kind: "subresources", ids: collectionIds });
   }
 
   async search(query: string, opts?: {

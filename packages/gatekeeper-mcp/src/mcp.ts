@@ -66,6 +66,7 @@ import {
 } from "@gadgets/mcp-shared/user";
 import { connectFormHtml } from "./connect-form.js";
 import { serverIdFromEndpoint } from "./server-id.js";
+import { assertOwnServerSubresources, serverSubresourceId } from "./server-subresources.js";
 import { mcpResourceFor, mcpResources } from "./resources.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
@@ -343,8 +344,8 @@ export class GatekeeperUserImpl
 // ---------------------------------------------------------------------------
 // Verifier
 
-// Required by the `GatekeeperUser` contract but never interrogated, since `addObserver` refuses
-// everyone. Carries no props for the same reason.
+// Required by the `GatekeeperUser` contract but never interrogated, since `addObserver` and
+// `verifyObserverAccess` refuse everyone. Carries no props for the same reason.
 @validateRpc()
 export class McpVerifier extends WorkerEntrypoint<Env> implements GatekeeperUserVerifier {
   verify(): void {}
@@ -456,6 +457,38 @@ export class McpGatekeeperImpl
 
   get serverName(): string {
     return this.ctx.props.serverName;
+  }
+
+  /**
+   * Every read through this binding reports `server/<serverId>`. `serverId` has been written into
+   * the props of every binding since this gatekeeper was added, so no older binding lacks it. It is
+   * a display slug and can collide across hosts, which is harmless: `verifyObserverAccess` admits
+   * nobody, and endpoint equality and action-kind tags keep using the full endpoint.
+   */
+  get observationSubresources(): string[] {
+    return [serverSubresourceId(this.ctx.props.serverId)];
+  }
+
+  /**
+   * Private-only: a valid `server/<serverId>` for this binding admits no observer, since being
+   * able to authenticate to a pasted endpoint is not evidence of being allowed to see what the
+   * owner read from it. Any other ID fails the whole call, which denies everyone in it. The
+   * inherited `addObserver` still refuses everyone, for reads recorded before subresources.
+   */
+  async verifyObserverAccess(
+    _observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    assertOwnServerSubresources(subresources, this.ctx.props.serverId);
+    return { allowedObserverIds: [] };
+  }
+
+  /**
+   * The inherited `addObserver` refused everyone, and nothing recorded proves a binding never
+   * read, so history exports the same `server/<serverId>` reads report, which admits nobody.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [serverSubresourceId(this.ctx.props.serverId)];
   }
 
   async describe(): Promise<ResourceDescription> {

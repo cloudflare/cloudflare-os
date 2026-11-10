@@ -5,14 +5,14 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type * as Kumo from '@cloudflare/kumo'
-import type { AiChatAuthorInfo, ModelKind } from '@gadgets/workshop-shared/api'
+import type { AiChatAuthorInfo, AiGatewayInfo, ModelKind, ServerConfig } from '@gadgets/workshop-shared/api'
 
 const api = vi.hoisted(() => ({
   listModels: vi.fn<(kind?: ModelKind) => Promise<AiChatAuthorInfo[]>>(async (kind) => kind === 'decision'
     ? [{ type: 'agent', id: 'decision-model', name: 'Decision model' }]
     : [{ type: 'agent', id: 'chat-model', name: 'Chat model' }]),
   getQuickModel: async () => null,
-  getAiConfig: async () => ({ enabled: false }),
+  getAiConfig: vi.fn<() => Promise<Partial<AiGatewayInfo>>>(async () => ({ enabled: false })),
   setQuickModel: vi.fn<(modelId: string | null) => Promise<void>>(async () => {}),
 }))
 
@@ -26,6 +26,7 @@ vi.mock('./AuthContext', () => ({
 }))
 
 import { Route } from './routes/providers'
+import { ServerConfigContext } from './ServerConfigContext'
 
 // The route's component is code-split; load its chunk while collecting, outside the test timeout.
 const ProvidersPage = Route.options.component!
@@ -55,11 +56,14 @@ describe('ProvidersPage quick model', () => {
     api.setQuickModel.mockClear()
   })
 
-  async function renderPage() {
+  async function renderPage({ cloudflareLimitsEnabled = false } = {}) {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
-    await act(async () => root!.render(<ProvidersPage />))
+    await act(async () => root!.render(
+      <ServerConfigContext.Provider value={{ cloudflareLimitsEnabled } as ServerConfig}>
+        <ProvidersPage />
+      </ServerConfigContext.Provider>))
     await vi.waitFor(() => expect(document.body.textContent).toContain('Decision model'))
   }
 
@@ -84,5 +88,21 @@ describe('ProvidersPage quick model', () => {
     api.listModels.mockResolvedValueOnce([])
     await renderPage()
     expect(document.body.textContent).not.toContain('Quick model:')
+  })
+
+  // The server refuses a quick model there, since quick tasks count against no usage limit.
+  it('is not offered where Cloudflare limits apply, which the notice explains', async () => {
+    api.getAiConfig.mockResolvedValueOnce({
+      enabled: true, enabledProviders: [], builtInModelIds: [], userModelsEnabled: true,
+    })
+    await renderPage({ cloudflareLimitsEnabled: true })
+    expect(document.body.textContent)
+      .toContain('Fast tasks like generating chat titles use your deployment’s own model.')
+
+    expect(nameOf('Chat model').closest('[role="button"]')).toBeNull()
+    await act(async () => nameOf('Chat model').click())
+    expect(api.setQuickModel).not.toHaveBeenCalled()
+    const [chatMenu] = document.body.querySelectorAll<HTMLElement>('[aria-label="Provider actions"]')
+    expect(await menuItems(chatMenu)).not.toContainEqual(expect.stringContaining('quick model'))
   })
 })

@@ -7,11 +7,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type {
   WorkspaceMetadata,
   GadgetSummary,
+  WorkpieceId,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 
-// Covers which gadgets the editor offers "Update from blueprint" for, and how the editor brings a
-// chat into view: the one a blueprint update was proposed in, or the one a notification opens.
+// Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
+// chat into view (the one a blueprint update was proposed in, or the one a notification opens),
+// which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
+// workspace a gadget's deletion is confirmed in.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -34,6 +37,13 @@ const mocks = vi.hoisted(() => {
       replace?: boolean
     }) => void>(),
     search: {} as Record<string, unknown>,
+    workspaceId: 'workspace',
+    // The props the use-only view was last rendered with.
+    useView: null as null | {
+      gadget: unknown
+      gadgetOpenFailure: string | null
+      onRetryGadget: () => void
+    },
     workspace: {
       overseer: {
         stub: {
@@ -51,6 +61,7 @@ const mocks = vi.hoisted(() => {
       error: null,
       connectionLost: false,
       observerConfig: null,
+      createObserverConfigCallback: () => disposable,
       retry: () => {},
       cancelObserverConfig: () => {},
       updateTitle: () => {},
@@ -63,7 +74,7 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('@tanstack/react-router', () => ({
-  useParams: () => ({ id: 'workspace' }),
+  useParams: () => ({ id: mocks.workspaceId }),
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -90,7 +101,10 @@ vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }),
 }))
 vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () => ({}) }))
-vi.mock('./useWorkspaceOpen', () => ({ useWorkspaceOpen: () => mocks.workspace }))
+vi.mock('./useWorkspaceOpen', () => ({
+  useWorkspaceOpen: () => mocks.workspace,
+  observerOpenFailureMessage: () => null,
+}))
 vi.mock('./useActions', () => ({ useActions: () => ({ pending: [] }), useActionEntries: () => {} }))
 vi.mock('./errorReporting', () => ({ reportIssue: () => {} }))
 vi.mock('./features/blueprint-updates/useBlueprintUpdateAvailable', () => ({
@@ -140,7 +154,12 @@ vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
 vi.mock('./GadgetUI', () => ({ default: () => null }))
-vi.mock('./GadgetUseView', () => ({ default: () => null }))
+vi.mock('./GadgetUseView', () => ({
+  default: (props: NonNullable<typeof mocks.useView>) => {
+    mocks.useView = props
+    return null
+  },
+}))
 vi.mock('./ObserverConfigModal', () => ({ default: () => null }))
 vi.mock('./ShareModal', () => ({ default: () => null }))
 vi.mock('./TopBarNotice', () => ({ default: () => null }))
@@ -150,6 +169,21 @@ vi.mock('./components/SiteLogo', () => ({ default: () => null }))
 vi.mock('./components/UserMenu', () => ({ default: () => null }))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
 vi.mock('./features/notifications/WorkspaceNotificationsMenu', () => ({ WorkspaceNotificationsMenu: () => null }))
+// A gadget's tab with its menu's Delete beside it, and the confirmation as one button.
+vi.mock('./features/gadget-deletion/GadgetContextMenu', () => ({
+  GadgetContextMenu: ({ trigger, onDelete }: { trigger: ReactElement<{ title: string }>; onDelete: () => void }) => (
+    <>
+      {trigger}
+      <button type="button" onClick={onDelete}>delete {trigger.props.title}</button>
+    </>
+  ),
+}))
+vi.mock('./features/gadget-deletion/DeleteGadgetDialog', () => ({
+  DeleteGadgetDialog: ({ gadget, onDelete }: {
+    gadget: GadgetSummary
+    onDelete: (id: WorkpieceId) => Promise<boolean>
+  }) => <button type="button" onClick={() => void onDelete(gadget.id)}>confirm deleting {gadget.title}</button>,
+}))
 
 import GadgetEditor from './GadgetEditor'
 import { isChatVisible } from './features/notifications/visibleChat'
@@ -174,6 +208,9 @@ function button(name: string): HTMLButtonElement {
   return found
 }
 
+const hasButton = (name: string) =>
+  [...container.querySelectorAll('button')].some(candidate => candidate.textContent === name)
+
 async function click(name: string) {
   await act(async () => { button(name).click() })
 }
@@ -190,6 +227,7 @@ async function proposeUpdate() {
 beforeEach(() => {
   mocks.navigate.mockReset()
   mocks.search = {}
+  mocks.workspaceId = 'workspace'
   localStorage.clear()
   container = document.createElement('div')
   document.body.append(container)
@@ -322,5 +360,189 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     await openEditor('desktop')
     expect(isChatVisible('workspace', 3)).toBe(false)
     window.history.replaceState(null, '', window.location.pathname)
+  })
+
+  it('withdraws the visible chat in the conversation list and restores it on return', async () => {
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+
+    mocks.search = {}
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(false)
+
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+  })
+})
+
+// A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
+// once its admission resolves, and never one disposed when an earlier admission was abandoned.
+describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
+  const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
+  type Client = { gadgetId: WorkpieceId; disposed: boolean }
+  const workspace = mocks.workspace
+  const original = { overseer: workspace.overseer, metadata: workspace.metadata }
+  let admissions: { resolve: () => void; reject: (error: Error) => void }[]
+  const shownClient = () => mocks.useView?.gadget as Client | null | undefined
+
+  // A fresh overseer stub, as a reconnect hands the editor.
+  function useOnlyOverseer(): typeof original.overseer {
+    const disposable = { [Symbol.dispose]() {} }
+    return {
+      stub: {
+        ...original.overseer.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          await subscriber.entry(GADGET)
+          await subscriber.entry(BUDGET)
+          await subscriber.ready()
+          return disposable
+        },
+        getGadget: (gadgetId?: WorkpieceId) => {
+          const { promise, resolve, reject } = Promise.withResolvers<unknown>()
+          const client = {
+            gadgetId: gadgetId!,
+            disposed: false,
+            [Symbol.dispose]() { client.disposed = true },
+          }
+          admissions.push({ resolve: () => resolve({ dup: () => client, [Symbol.dispose]() {} }), reject })
+          return Object.assign(promise, disposable)
+        },
+      },
+    }
+  }
+
+  beforeEach(() => {
+    admissions = []
+    mocks.useView = null
+    workspace.metadata = { ...original.metadata, role: 'use' } as WorkspaceMetadata
+    workspace.overseer = useOnlyOverseer()
+  })
+
+  afterEach(() => {
+    workspace.overseer = original.overseer
+    workspace.metadata = original.metadata
+  })
+
+  it('shows nothing while a gadget it left is admitted again', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    const first = shownClient()
+    expect(first).toMatchObject({ gadgetId: GADGET.id, disposed: false })
+
+    // Leave for a gadget still being admitted, and come back before it is.
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+
+    expect(first?.disposed).toBe(true)
+    expect(shownClient()).toBeNull()
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(shownClient()).toMatchObject({ gadgetId: GADGET.id, disposed: false })
+  })
+
+  it('keeps the gadget on screen through a reconnect, but not past a refused re-admission', async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    const first = shownClient()
+
+    workspace.overseer = useOnlyOverseer()
+    await openEditor('desktop')
+    expect(shownClient()).toBe(first)
+
+    await act(async () => admissions.at(-1)!.reject(new Error('refused')))
+    expect(mocks.useView?.gadgetOpenFailure).not.toBeNull()
+
+    await act(async () => mocks.useView!.onRetryGadget())
+    expect(mocks.useView?.gadgetOpenFailure).toBeNull()
+    expect(shownClient()).toBeNull()
+  })
+})
+
+describe('GadgetEditor, deleting a gadget', () => {
+  const workspace = mocks.workspace
+  const original = workspace.overseer
+  let removed: string[]
+
+  // Workspaces number their gadgets alike, from 1, so these share ids.
+  function overseerFor(workspaceId: string, titles: string[]): typeof original {
+    const disposable = { [Symbol.dispose]() {} }
+    return {
+      stub: {
+        ...original.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          for (const [index, title] of titles.entries()) {
+            await subscriber.entry({ id: index + 1, type: 'gadget', title, commitId: 'head' })
+          }
+          await subscriber.ready()
+          return disposable
+        },
+        getGadget: (gadgetId?: WorkpieceId) => ({
+          remove: async () => { removed.push(`${workspaceId}:${gadgetId}`) },
+          ...disposable,
+        }),
+      },
+    }
+  }
+
+  async function openWorkspace(workspaceId: string, titles: string[]) {
+    mocks.workspaceId = workspaceId
+    workspace.overseer = overseerFor(workspaceId, titles)
+    await openEditor('desktop')
+  }
+
+  beforeEach(() => {
+    removed = []
+    mocks.search = { w: 1 }
+    // The tab strip watches its own width.
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  })
+
+  afterEach(() => {
+    workspace.overseer = original
+    vi.unstubAllGlobals()
+  })
+
+  it('deletes the gadget once confirmed', async () => {
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+
+    await click('delete Packing')
+    expect(removed).toEqual([])
+    await click('confirm deleting Packing')
+
+    expect(removed).toEqual(['trips:2'])
+  })
+
+  // The pane names a lone gadget rather than tabbing it.
+  it('offers the menu on the open gadget when it is the only one', async () => {
+    await openWorkspace('trips', ['Itinerary'])
+
+    // The keyboard's menu key opens the menu of whatever has focus.
+    const name = container.querySelector<HTMLElement>('[title="Itinerary"]')!
+    act(() => name.focus())
+    expect(document.activeElement).toBe(name)
+
+    await click('delete Itinerary')
+    await click('confirm deleting Itinerary')
+
+    expect(removed).toEqual(['trips:1'])
+  })
+
+  // Back, or a notification's "Open task", moves the editor to another workspace without
+  // remounting it.
+  it('drops a confirmation when the editor moves to another workspace', async () => {
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+    await click('delete Packing')
+
+    await openWorkspace('budget', ['Expenses', 'Invoices'])
+    expect(hasButton('confirm deleting Packing')).toBe(false)
+
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+    expect(hasButton('confirm deleting Packing')).toBe(false)
+    expect(removed).toEqual([])
   })
 })

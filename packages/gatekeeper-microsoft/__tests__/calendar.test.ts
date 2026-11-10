@@ -8,12 +8,12 @@ import { inOrganization, roleIn } from "../src/calendar-acl";
 import { checkRecurrence, eventInfo, eventTimes, recurrenceJson, recurrenceWords, type EventView } from "../src/calendar-events";
 import { freeTimes, intersect, merge, subtract, workingSpans } from "../src/calendar-free";
 import { parseEvent, parsePermission, parseSchedule, type GraphCalendarPermission, type GraphEvent } from "../src/calendar-graph";
-import { calendarUnits, decide, decodeCalendarUnit, encodeCalendarUnit, isAvailabilityUnit, probeAvailability } from "../src/calendar-observers";
+import { decide, decodeCalendarUnit, isAvailabilityUnit, probeAvailability } from "../src/calendar-observers";
 import {
   CalendarUrlError, accessCeiling, calendarUrl, describeScope, parseCalendarUrl, roleSees, sharingRole, type CalendarScope,
 } from "../src/calendar-scope";
 import { localToInstant } from "../src/calendar-time";
-import type { GraphApi } from "../src/graph-api";
+import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   ALL_RESOURCES, CALENDAR_RESOURCE, OUTLOOK_RESOURCE, effectiveCalendarAccess, grantedCalendarAccess, grantedResourcePatterns,
   grantsSharedCalendars, scopesFor, type Env,
@@ -324,17 +324,25 @@ describe("the sharing-role ladder", () => {
   });
 });
 
-describe("observer units", () => {
-  const units = calendarUnits(OWNER);
+describe("legacy observer units", () => {
+  // As the legacy tracker spelled what reads revealed before they reported subresources.
+  const units = {
+    calendar: (calendarId: string, level: string, owner = OWNER) => `calendar:${owner}:${calendarId}:${level}`,
+    everything: () => `calendars:${OWNER}`,
+    availability: (address: string) => `availability:${address}`,
+  };
   const sarah = { tenantId: "t", objectId: SARAH, email: "sarah@contoso.com" };
   const acl = (role: string) => ({ roleOf: async () => sharingRole(role) });
   const noProbe = async () => { throw new Error("no probe expected"); };
 
-  it("encode and decode, and refuse anything malformed", () => {
-    for (const id of [units.calendar(CAL_ID, "limited"), units.everything(), units.availability("Sarah@Contoso.com")]) {
-      expect(encodeCalendarUnit(decodeCalendarUnit(id)!)).toBe(id);
-    }
-    expect(units.availability("Sarah@Contoso.com")).toBe("availability:sarah@contoso.com");
+  it("decode, and refuse anything malformed", () => {
+    expect([units.calendar(CAL_ID, "limited"), units.everything(), units.availability("sarah@contoso.com")].map(decodeCalendarUnit)).toEqual([
+      { kind: "calendar", ownerId: OWNER, calendarId: CAL_ID, level: "limited" },
+      { kind: "calendars", ownerId: OWNER },
+      { kind: "availability", address: "sarah@contoso.com" },
+    ]);
+    // An address may hold a `/`, which an agent may ask about, so a legacy record of one still reads.
+    expect(decodeCalendarUnit(units.availability("sales/eu@contoso.com"))).toEqual({ kind: "availability", address: "sales/eu@contoso.com" });
     for (const bad of ["calendar:not-a-guid:x:full", `calendar:${OWNER}:${CAL_ID}:everything`, `calendars:${OWNER}:extra`, "availability:no-at-sign", "mail:x"]) {
       expect(decodeCalendarUnit(bad)).toBeNull();
     }
@@ -342,7 +350,7 @@ describe("observer units", () => {
   });
 
   it("admit only the owner to everything, and to someone else's calendar", async () => {
-    const other = calendarUnits(SARAH).calendar(CAL_ID, "freeBusy");
+    const other = units.calendar(CAL_ID, "freeBusy", SARAH);
     expect(await decide([units.everything(), other], { tenantId: "t", objectId: OWNER }, { objectId: OWNER }, acl("none"), noProbe)).toEqual([true, false]);
     expect(await decide([units.everything()], sarah, { objectId: OWNER }, acl("delegateWithPrivateEventAccess"), noProbe)).toEqual([false]);
     // Sarah's own calendar, which the binding's owner had shared with them: Sarah passes.
@@ -363,8 +371,10 @@ describe("observer units", () => {
     expect(verdicts).toEqual([true, true, false]);
     expect(asked).toEqual([["availability:bob@contoso.com"]]);
   });
+});
 
-  it("count free/busy as given only when Exchange gave something", async () => {
+describe("probing free/busy", () => {
+  it("counts free/busy as given only when Exchange gave something", async () => {
     const api = {
       request: async () => ({
         value: [
@@ -374,8 +384,17 @@ describe("observer units", () => {
         ],
       }),
     } as unknown as GraphApi;
-    const ids = ["bob", "hidden", "gone", "missing"].map(name => units.availability(`${name}@contoso.com`));
-    expect(await probeAvailability(api, [...ids, units.everything()])).toEqual([true, false, false, false, false]);
+    const addresses = ["bob", "hidden", "gone", "missing"].map(name => `${name}@contoso.com`);
+    expect(await probeAvailability(api, [...addresses, null])).toEqual([true, false, false, false, false]);
+  });
+
+  it("preserves a getSchedule credential rejection for the credential source", async () => {
+    const api = new GraphApi("t", { fetch: async () => Response.json(
+      { error: { code: "InvalidAuthenticationToken" } }, { status: 401 },
+    ) });
+    const result = probeAvailability(api, ["bob@contoso.com"]);
+    await expect(result).rejects.toBeInstanceOf(GraphApiError);
+    await expect(result).rejects.toMatchObject({ status: 401, isAuthError: true });
   });
 });
 

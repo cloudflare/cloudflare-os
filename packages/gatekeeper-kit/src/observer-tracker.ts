@@ -74,7 +74,8 @@ const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 // Keep verifier fan-out below the Workers subrequest ceiling.
 const DEFAULT_MAX_OBSERVERS = 10;
 
-const DEFAULT_CONCURRENCY = 6;
+/** Internal: default concurrent verifier round trips, for the tracker and `observerAccessVerifier`. */
+export const DEFAULT_CONCURRENCY = 6;
 
 // What the reads disclosing one collection marker still owe it. A marker may be reclaimed only once every
 // claimant settled and all of them settled as proven refusals -- one unknown outcome fences it for
@@ -131,20 +132,35 @@ function settleSets(
   return reclaimable;
 }
 
-// Map with bounded concurrency while preserving result order.
-async function mapLimit<In, Out>(
+/**
+ * Maps with bounded concurrency, preserving result order. Once a call fails it starts no
+ * more, and rejects with that first error only after the calls already running have settled, so
+ * none of them outlives the map.
+ * @param items Inputs.
+ * @param limit Most calls in flight at once.
+ * @param fn Per-item work.
+ * @returns One result per input, in input order.
+ */
+export async function mapLimit<In, Out>(
   items: readonly In[],
   limit: number,
   fn: (item: In) => Promise<Out>,
 ): Promise<Out[]> {
   const results: Out[] = [];
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    for (let index = next++; index < items.length; index = next++) {
-      results[index] = await fn(items[index]!);
+    while (failure === undefined && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  if (failure !== undefined) throw failure.error;
   return results;
 }
 
