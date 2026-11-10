@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  isDoResetError, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
+  isDoResetError, isLoopLimitError, retryOnDoReset, withTimeout, wrapDoStubForTelemetry,
 } from "../src/do-retry";
 import { createWorkshopLogger } from "../src/observability";
 
@@ -273,5 +273,38 @@ describe("retryOnDoReset", () => {
     // The frontend classifier reads the flags as own enumerable props; pin that they survive.
     expect({ ...(caught as object) }).toMatchObject(PRODUCTION_RESET);
     expect(recoveredEvents(info)).toBe(0);
+  });
+});
+
+describe("withTimeout", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("settles as the request does, leaving no timer behind", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await expect(withTimeout(Promise.resolve("answer"), 1_000, "Timed out.")).resolves.toBe("answer");
+    const error = new Error("request failed");
+    await expect(withTimeout(Promise.reject(error), 1_000, "Timed out.")).rejects.toBe(error);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects with the message once the time has passed, and drops a late answer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const request = Promise.withResolvers<string>();
+    let outcome: unknown;
+    const settled = withTimeout(request.promise, 1_000, "Timed out.")
+        .then(value => { outcome = value; }, error => { outcome = error; });
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await settled;
+    expect(outcome).toEqual(new Error("Timed out."));
+
+    request.resolve("late");
+    await request.promise;
+    expect(outcome).toEqual(new Error("Timed out."));
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

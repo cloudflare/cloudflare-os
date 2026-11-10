@@ -9,7 +9,7 @@
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding). scheduleAccessRestart is
 // replaced with a recorder: a real ctx.abort() would kill the test DO.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as fc from "fast-check";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
@@ -1374,6 +1374,126 @@ describe("ambient catalogs", () => {
     expect(catalogLoads).toEqual([1, 2, 1, 1]);
     expect(other.find(seed => seed.target === 1)?.catalog).toEqual({ entries: [] });
     expect(other.find(seed => seed.target === 2)?.catalog).toBeNull();
+  }));
+});
+
+describe("ambient gatekeepers that never answer", () => {
+  // Time moves only for the waits under test; the Durable Object's own I/O keeps real timers.
+  async function withSetupTimers(run: () => Promise<void>): Promise<void> {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await run();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  function seedAmbient(impl: any, id: number): void {
+    seedGatekeeper(impl, id);
+    let record = impl.storage.gatekeepers.get(id);
+    record.creationSpec = { type: "ambient", vendorId: `v${id}` };
+    impl.storage.gatekeepers.put(record);
+  }
+
+  it("a catalog that never answers costs the turn that catalog only, and is asked for again",
+      () => withImpl(async (impl) => {
+    let never = new Promise<never>(() => {});
+    let hung = true;
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: () => id === 1 && hung ? never : Promise.resolve({ entries: [] }),
+    });
+    for (let id of [1, 2]) seedAmbient(impl, id);
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    let warn = vi.spyOn(impl.logger, "warn");
+
+    await withSetupTimers(async () => {
+      let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
+      await vi.advanceTimersByTimeAsync(10_000);
+      let seeds = await preparing;
+      expect(seeds.find(seed => seed.target === 1)).toMatchObject({ name: "RES1", catalog: null });
+      expect(seeds.find(seed => seed.target === 2)?.catalog).toEqual({ entries: [] });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+    expect(warn).toHaveBeenCalledWith("failed to load agent catalog", expect.objectContaining({
+      event: "agent.catalog.load.failed", gatekeeperId: 1, resourceTitle: "Connection 1",
+      error: new Error("Gatekeeper getAgentCatalog() timed out."),
+    }));
+
+    hung = false;
+    let next: SeedBindingInfo[] = await impl.prepareChatBindings(1, []);
+    expect(next.find(seed => seed.target === 1)?.catalog).toEqual({ entries: [] });
+  }));
+
+  it("a facet that never arrives is bounded like a catalog that never answers",
+      () => withImpl(async (impl) => {
+    let never = new Promise<never>(() => {});
+    impl.getGatekeeperFacet = (id: number) => id === 1 ? never : ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: async () => ({ entries: [] }),
+    });
+    for (let id of [1, 2]) seedAmbient(impl, id);
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+    await withSetupTimers(async () => {
+      let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
+      // The name is asked for first, then the catalog: one bound each.
+      await vi.advanceTimersByTimeAsync(20_000);
+      let seeds = await preparing;
+      expect(seeds.find(seed => seed.target === 1)).toMatchObject({ name: "RESOURCE", catalog: null });
+      expect(seeds.find(seed => seed.target === 2)).toMatchObject(
+          { name: "RES2", catalog: { entries: [] } });
+    });
+  }));
+
+  it("a describe() that never answers names the binding RESOURCE",
+      () => withImpl(async (impl) => {
+    let never = new Promise<never>(() => {});
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: () => id === 1 ? never : Promise.resolve(
+          { title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: async () => null,
+    });
+    for (let id of [1, 2]) seedAmbient(impl, id);
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    let warn = vi.spyOn(impl.logger, "warn");
+
+    await withSetupTimers(async () => {
+      let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, []);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await preparing;
+    });
+    expect(impl.getChatAgentContext(1).bindings).toEqual({ RESOURCE: 1, RES2: 2 });
+    expect(warn).toHaveBeenCalledWith(
+        "failed to fetch suggested binding name for ambient resource", expect.objectContaining({
+          event: "chat.binding.ambient.describe.failed", gatekeeperId: 1,
+          error: new Error("Gatekeeper describe() timed out."),
+        }));
+  }));
+
+  it("a pasted resource whose describe() never answers is named RESOURCE",
+      () => withImpl(async (impl) => {
+    impl.getGatekeeperFacet = () => ({ describe: () => new Promise<never>(() => {}) });
+    seedGatekeeper(impl, 1);
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    let pasted = {
+      type: "message", chatId: 1, sequence: 0, timestamp: new Date(0), message: "", author: USER_META.profile,
+      capsules: [{ gatekeeperId: 1, description: { title: "Doc", url: "https://example.com/1" } }],
+    };
+    impl.storage.chats.put(pasted);
+
+    await withSetupTimers(async () => {
+      let preparing: Promise<SeedBindingInfo[]> = impl.prepareChatBindings(1, [pasted]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await preparing;
+    });
+    expect(pasted.capsules[0]).toMatchObject({ bindingName: "RESOURCE" });
   }));
 });
 
