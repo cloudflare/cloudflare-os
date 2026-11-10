@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/GadgetEditor.blueprintUpdate.test.tsx
+  s_3d1009fbfd1d0e::t_b1816197d7fa17 16-17,40,77,172-186,211-213,230,465-532
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_3d1009fbfd1d0e::t_18900a17333f9b 1161-1166,1186,1465-1467,2103,2310,2392,2394-2395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "32e311c1dd6011064beeb9ae0565fc9ac952e948",
+  "prompts": {},
+  "sessions": {
+    "s_3d1009fbfd1d0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "149494a0-07c6-48b5-b7ea-ed47fd031b7c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
