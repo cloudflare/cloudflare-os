@@ -1825,6 +1825,39 @@ describe("Gemini function call signatures", () => {
   }, 15000);
 });
 
+describe("Tool-call arguments", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // A model can emit half of a surrogate pair in its arguments, and every later request resends
+  // them; Anthropic rejects a body holding one.
+  it("reach the provider well-formed", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      apiToken: "direct-api-token",
+    }, INITIATOR);
+    const stream = handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }, {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_1", name: "editFile", arguments: { replacement: "'\ud83d'" } }],
+        api: handle.model.api,
+        provider: handle.model.provider,
+        model: handle.model.id,
+        usage: zeroUsage(),
+        stopReason: "toolUse",
+        timestamp: 0,
+      }],
+    }, { fetch: fetchStub, maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+
+    // Compared JSON-encoded: a lone surrogate in a failure report breaks the vitest pool's WebSocket.
+    expect(JSON.stringify(JSON.parse(capturedRequests[0].body).messages[1].content[0].input))
+        .toBe(JSON.stringify({ replacement: "'\uFFFD'" }));
+  });
+});
+
 // Counts the cache breakpoints in an Anthropic request body.
 const breakpointCount = (body: string) => body.split(`"cache_control"`).length - 1;
 

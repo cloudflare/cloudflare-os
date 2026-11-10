@@ -1,6 +1,6 @@
 import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  type FileContent, type CodeContent, type CodeChange,
+  validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
@@ -3035,12 +3035,15 @@ async function runAgentPass(
           : "Too many code changes in one step. End this response; the changes made so far " +
             "are being saved, and you can continue the work in your next step.");
     }
-    // Apply first: an inapplicable change must throw before anything buffers.
+    // Validate and apply first: a change the barrier's content check would refuse (text with a
+    // lone surrogate, say) must throw before anything buffers, as a tool error the model can
+    // correct, not fail the whole step at the barrier.
     let newContent = sessionContent;
     if (pin !== undefined) {
       newContent = new Map(newContent);
       newContent.set(workpieceId, pin.baseFiles);
     }
+    validateCodeChangeContent(change, newContent);
     newContent = applyCodeChange(newContent, change);
     stepBuffer.changes.push({
       change,
