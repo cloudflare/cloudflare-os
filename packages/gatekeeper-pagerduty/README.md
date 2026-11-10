@@ -155,7 +155,10 @@ Limits:
   incident link names (subdomain and region); hooks on any other account never see it.
 - **Every delivery costs a REST read** as the hook's owner, against their rate limit.
 - **Disconnecting drops the connection's hooks**, and enabling one afterwards fails with "This
-  PagerDuty account has been disconnected." Reconnecting keeps them.
+  PagerDuty account has been disconnected." Reconnecting keeps them. This is best effort: if the
+  hook driver can't be reached, the disconnect still completes (logged as
+  `pagerduty.hooks.forget.failed`) and the hooks stay registered, each delivery failing without a
+  grant.
 
 For local development, PagerDuty can't reach `localhost`: run a tunnel to the dev server (e.g.
 `cloudflared tunnel --url http://localhost:8787`), point a webhook at
