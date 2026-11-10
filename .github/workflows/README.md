@@ -101,6 +101,10 @@ An organization owner, or a GitHub App manager, does this once.
 - Medium and high bands require `evidence-consumer-build`, held until the GitLab tokens exist and
   the gadgets-internal patch merges. Until then those bands cannot open; the report still lists
   their records.
+- `.agents/skills/write-gatekeeper/SKILL.md` is a culprit file of escapes fixed on 2026-10-08,
+  2026-11-02 and 2026-11-06, so the escape raise puts edits to it in the high band until those
+  fall out of the 90-day window (2027-02-04). High needs `evidence-consumer-build` too, so scoring
+  those edits admits none of them before then.
 - A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
   until the next push, which sends the pull request to a person.
 - The report counts a fix as a miss only when it names the pull request or reverts it within 14

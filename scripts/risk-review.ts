@@ -30,7 +30,7 @@
 // token. Every missing, stale or malformed input counts as absent, which sends the pull request to a
 // person.
 
-import { basename, dirname } from "node:path/posix";
+import { basename } from "node:path/posix";
 
 import {
   AREAS,
@@ -646,10 +646,17 @@ type PullRef = RepoRef & { pull_number: number };
 
 type Page = { per_page: number; page: number };
 
+/** An entry of a git tree, as `git.getTree` returns it. */
+interface TreeEntry {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+}
+
 /** A file or directory entry from `repos.getContent`. */
 interface ContentEntry {
   type: string;
-  name?: string;
   /** The blob SHA, for a file. */
   sha?: string;
   content?: string;
@@ -676,6 +683,9 @@ export interface GitHubClient {
       getContent(args: RepoRef & { path: string; ref: string }): Promise<{ data: ContentEntry | ContentEntry[] }>;
       compareCommitsWithBasehead(args: RepoRef & { basehead: string; per_page: number }):
         Promise<{ data: { merge_base_commit: { sha: string } } }>;
+    };
+    git: {
+      getTree(args: RepoRef & { tree_sha: string }): Promise<{ data: { tree: TreeEntry[]; truncated: boolean } }>;
     };
     checks: {
       create(args: RepoRef & { name: string; head_sha: string; status: "in_progress"; details_url: string }):
@@ -875,7 +885,8 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
       ...(file.status === "removed" ? [] : [{ path: file.filename, ref: pull.head.sha }]),
     ];
     for (const { path, ref } of sides) {
-      if (await entryType(github, repo, path, ref) !== "file") facts.skillSymlinks.push(path);
+      const mode = await entryMode(github, repo, path, ref);
+      if (mode !== "100644" && mode !== "100755") facts.skillSymlinks.push(path);
     }
   }
   for (const file of needed) {
@@ -910,17 +921,30 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
 }
 
 /**
- * A path's entry type at a commit (`file`, `dir`, `symlink` or `submodule`), read from its parent
- * directory's listing: the contents API follows a symlink to a file and reports the file.
+ * A path's git mode at a commit (`100644`, `100755`, `120000` for a symlink, `040000`, `160000`),
+ * walked down from the commit's root tree one directory at a time. The contents API cannot tell: it
+ * resolves a symlink to a file and reports the file.
  */
-async function entryType(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
-  try {
-    const { data } = await github.rest.repos.getContent({ ...repo, path: dirname(path), ref });
-    return Array.isArray(data) ? data.find((entry) => entry.name === basename(path))?.type : undefined;
-  } catch (error) {
-    if (error instanceof Error && isNotFound(error)) return undefined;
-    throw error;
+async function entryMode(github: GitHubClient, repo: RepoRef, path: string, commit: string): Promise<string | undefined> {
+  let tree = commit;
+  const segments = path.split("/");
+  for (const [index, segment] of segments.entries()) {
+    let entries: TreeEntry[];
+    try {
+      const { data } = await github.rest.git.getTree({ ...repo, tree_sha: tree });
+      if (data.truncated) return undefined;
+      entries = data.tree;
+    } catch (error) {
+      if (error instanceof Error && isNotFound(error)) return undefined;
+      throw error;
+    }
+    const entry = entries.find((candidate) => candidate.path === segment);
+    if (!entry) return undefined;
+    if (index === segments.length - 1) return entry.mode;
+    if (entry.type !== "tree") return undefined;
+    tree = entry.sha;
   }
+  return undefined;
 }
 
 /** When the head was pushed: the earliest check suite GitHub created for it. */

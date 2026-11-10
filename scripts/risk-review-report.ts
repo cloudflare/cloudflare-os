@@ -281,6 +281,8 @@ export interface CalibrationRecord {
   holding: ReadonlySet<string>;
   /** A short hash of both reviewers' fingerprints, or `null` when either verdict was absent. */
   reviewers: string | null;
+  /** A completed check run whose record could not be read (truncated, or another shape). */
+  unreadable?: true;
 }
 
 /** A maintainer's comment or review on the pull request, other than the author's. */
@@ -299,8 +301,8 @@ export interface CalibrationPull {
   events: MaintainerEvent[];
   /**
    * When each head was pushed, as best GitHub shows it: the latest of its committer date, a force
-   * push that left it, and its first check suite. Erring late only makes more comments count as
-   * followed by a commit, which fails toward misses.
+   * push that left it, and its first check suite. An error either way can move a catch onto the
+   * wrong head; a head with any unreadable record, or none, counts as one the reviewers passed.
    */
   pushes: { head: string; at: number }[];
   followUps: { number: number; revert: boolean }[];
@@ -330,20 +332,20 @@ function min(scores: { bonk: number; opus: number }): number {
  * Why `pull` is a miss at a threshold, given its would-merge point; empty when it is not.
  *
  * A person's catch counts after the point, when the gate would already have merged. Before the
- * point it counts too, unless the record in force at the time shows the reviewers themselves were
- * not satisfied (no eligible scores, or a lower score under the threshold): a head the reviewers
- * passed and only a missing proof, a hold or a missing record kept from merging is still one a
- * person had to catch.
+ * point it counts too, unless every record on the head the person was looking at shows the
+ * reviewers never passed it (no eligible scores, or a lower score under the threshold, at any
+ * time). A head the reviewers passed at some point, and that only a missing proof, a hold or a
+ * reviewer still running kept from merging, is one a person had to catch; so is a head with no
+ * readable record.
  */
 function missReasons(pull: CalibrationPull, point: CalibrationRecord, threshold: number): string[] {
   const reasons: string[] = [];
   const reviewersPassed = (at: number) => {
     if (at > point.at) return true;
-    // The record in force is the latest one on the head the person was looking at; a head no record
-    // had judged yet counts as passed.
     const head = pull.pushes.filter((push) => push.at <= at).toSorted((a, b) => a.at - b.at).at(-1)?.head;
-    const before = pull.records.filter((record) => record.at <= at && (head === undefined || record.head === head)).at(-1);
-    return before === undefined || (before.scores !== null && min(before.scores) >= threshold);
+    const onHead = pull.records.filter((record) => head === undefined || record.head === head);
+    return onHead.length === 0 ||
+      onHead.some((record) => record.unreadable || (record.scores !== null && min(record.scores) >= threshold));
   };
   const pushedAfter = (at: number) => pull.pushes.some((push) => push.at > at);
   for (const { at, login, kind } of pull.events) {
@@ -374,7 +376,7 @@ export function calibrate(pulls: CalibrationPull[], { evidence, now }: {
     const records = pull.records.toSorted((a, b) => a.at - b.at);
     for (const threshold of THRESHOLDS) {
       const point = records.find((record) =>
-        !record.ruledOut && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
+        !record.ruledOut && !record.unreadable && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
         (evidence.get(`${record.area} ${record.band}`) ?? ["unknown band"]).every((name) => record.holding.has(name)));
       if (!point?.reviewers) continue;
       const key = `${point.area} ${point.band} ${point.reviewers} ${threshold}`;
@@ -511,6 +513,13 @@ export async function buildCalibration(get: GitHubGet, { repository, app, since,
     if (commits.length >= 250) pushedAt.set("unlisted", Number.POSITIVE_INFINITY);
     const records: CalibrationRecord[] = [];
     for (const sha of [...pushedAt.keys()].filter((key) => key !== "unlisted")) {
+      const runs: Json[] = [];
+      for (let page = 1; ; page++) {
+        const listed = asObject(await get(`${base}/commits/${sha}/check-runs?check_name=${CHECK_NAME}&filter=all&per_page=100&page=${page}`))?.check_runs;
+        if (!Array.isArray(listed)) throw new Error(`${sha}'s check runs are not a list`);
+        runs.push(...listed);
+        if (listed.length < 100) break;
+      }
       // GitHub creates a head's first check suite when it is pushed (later ones come from check runs
       // apps add); a commit pushed under a later head has none, and that head's push covers it.
       const suites = asObject(await get(`${base}/commits/${sha}/check-suites?per_page=100`))?.check_suites;
@@ -519,13 +528,18 @@ export async function buildCalibration(get: GitHubGet, { repository, app, since,
         return typeof at === "string" ? [Date.parse(at)] : [];
       });
       if (created.length > 0) pushedAt.set(sha, Math.max(pushedAt.get(sha) ?? 0, Math.min(...created)));
-      const runs = asObject(await get(`${base}/commits/${sha}/check-runs?check_name=${CHECK_NAME}&filter=all&per_page=100`))?.check_runs;
-      for (const value of Array.isArray(runs) ? runs : []) {
+      for (const value of runs) {
         const run = asObject(value);
         const completed = run?.completed_at;
-        if (asObject(run?.app)?.slug !== app || run?.status !== "completed" || typeof completed !== "string") continue;
-        const record = readCalibrationRecord(asObject(run?.output)?.summary, pull.number, Date.parse(completed), sha);
-        if (record) records.push(record);
+        // A cancelled run was superseded on purpose and decided nothing; the run that took over did.
+        if (asObject(run?.app)?.slug !== app || run?.status !== "completed" || run.conclusion === "cancelled") continue;
+        if (typeof completed !== "string") continue;
+        const at = Date.parse(completed);
+        // An unreadable record can never be a would-merge point, and counts as the reviewers having
+        // passed its head, so it can only add misses.
+        records.push(readCalibrationRecord(asObject(run?.output)?.summary, pull.number, at, sha) ?? {
+          at, head: sha, area: "", band: "", ruledOut: true, scores: null, holding: new Set(), reviewers: null, unreadable: true,
+        });
       }
     }
     const author = pull.user?.login.toLowerCase();

@@ -174,6 +174,9 @@ describe("classifyChangeset NEVER_AUTO", () => {
     }
     const renamed = file(".agents/skills/x/SKILL.md", { status: "renamed", previous_filename: "AGENTS.md" });
     assert.notDeepEqual(classify([renamed]).neverAuto, []);
+    for (const path of [".agents/skills/x/AGENTS.md", ".agents/skills/x/CLAUDE.md", ".agents/skills/x/.opencode/agent.md", ".agents/config.json"]) {
+      assert.notDeepEqual(classify([file(path)]).neverAuto, [], path);
+    }
   });
 
   it("sends a symlink under .agents/skills/ to a person", () => {

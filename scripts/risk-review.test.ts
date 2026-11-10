@@ -158,8 +158,8 @@ interface HarnessOptions {
   enqueueRefused?: true;
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
-  /** Directory listings by `<ref>:<dir>`, as the contents API returns them. */
-  dirs?: Record<string, { name: string; type: string }[]>;
+  /** Git trees by SHA; a commit's SHA names its root tree. */
+  trees?: Record<string, { path: string; mode: string; type: string; sha: string }[]>;
   lastPush?: string | undefined;
   mergeQueue?: Json;
   /** Check runs another run created on the commit after this one, to test the takeover check. */
@@ -222,8 +222,6 @@ function harness(options: HarnessOptions = {}) {
       },
       repos: {
         getContent: async ({ path, ref }) => {
-          const entries = options.dirs?.[`${ref}:${path}`];
-          if (entries) return { data: entries };
           const text = contents.get(`${ref}:${path}`);
           if (text === undefined) throw notFound();
           const sha = createHash("sha1").update(text).digest("hex");
@@ -232,6 +230,13 @@ function harness(options: HarnessOptions = {}) {
         compareCommitsWithBasehead: async ({ basehead }) => {
           if (options.uncomparable) throw notFound();
           return { data: { merge_base_commit: { sha: options.mergeBases?.[basehead] ?? basehead.split("...")[0] ?? "" } } };
+        },
+      },
+      git: {
+        getTree: async ({ tree_sha }) => {
+          const entries = options.trees?.[tree_sha];
+          if (!entries) throw notFound();
+          return { data: { tree: entries, truncated: false } };
         },
       },
       checks: {
@@ -871,9 +876,18 @@ describe("runRiskReview preview smoke", () => {
   });
 });
 
-/** The write-gatekeeper skill's directory listing, with `SKILL.md` as `type`. */
-function listing(type: string): { name: string; type: string }[] {
-  return [{ name: "SKILL.md", type }, { name: "references", type: "dir" }];
+function tree(path: string, sha: string): { path: string; mode: string; type: string; sha: string } {
+  return { path, mode: "040000", type: "tree", sha };
+}
+
+/** The git trees from `commit` down to `.agents/skills/write-gatekeeper/SKILL.md`, which has `mode`. */
+function skillTrees(commit: string, mode: string): Record<string, { path: string; mode: string; type: string; sha: string }[]> {
+  return {
+    [commit]: [tree(".agents", `${commit}-agents`), { path: "README.md", mode: "100644", type: "blob", sha: "r" }],
+    [`${commit}-agents`]: [tree("skills", `${commit}-skills`)],
+    [`${commit}-skills`]: [tree("write-gatekeeper", `${commit}-skill`)],
+    [`${commit}-skill`]: [{ path: "SKILL.md", mode, type: "blob", sha: "s" }, tree("references", "refs")],
+  };
 }
 
 describe("runRiskReview content rules", () => {
@@ -892,17 +906,19 @@ describe("runRiskReview content rules", () => {
 
   it("scores a skill edit, and sends a symlink under .agents/skills/ to a person", async () => {
     const skill = ".agents/skills/write-gatekeeper/SKILL.md";
-    const dir = ".agents/skills/write-gatekeeper";
     const decideSkill = async (base: string, head: string) => {
-      const { calls, evaluate } = harness({ files: { 7: [file(skill)] }, dirs: { [`${BASE}:${dir}`]: listing(base), [`${HEAD}:${dir}`]: listing(head) } });
+      const { calls, evaluate } = harness({ files: { 7: [file(skill)] }, trees: { ...skillTrees(BASE, base), ...skillTrees(HEAD, head) } });
       await evaluate("workflow_run", producerCompleted());
       const pull = lastRecord(calls).pulls[0];
       assert.ok(pull);
       return pull;
     };
-    assert.deepEqual((await decideSkill("file", "file")).never_auto, []);
-    assert.match((await decideSkill("file", "symlink")).never_auto.join("\n"), /symlink under \.agents\/skills\//);
-    assert.match((await decideSkill("symlink", "file")).never_auto.join("\n"), /symlink/);
+    assert.deepEqual((await decideSkill("100644", "100644")).never_auto, []);
+    assert.deepEqual((await decideSkill("100644", "100755")).never_auto, []);
+    // The trees API is the one that shows a symlink: the contents API reports its target as a file.
+    assert.match((await decideSkill("100644", "120000")).never_auto.join("\n"), /symlink under \.agents\/skills\//);
+    assert.match((await decideSkill("120000", "100644")).never_auto.join("\n"), /symlink/);
+    assert.match((await decideSkill("100644", "160000")).never_auto.join("\n"), /symlink/);
     const { calls, evaluate } = harness({ files: { 7: [file(skill)] } });
     await evaluate("workflow_run", producerCompleted());
     assert.match(lastRecord(calls).pulls[0]?.never_auto.join("\n") ?? "", /symlink/);

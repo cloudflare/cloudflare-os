@@ -215,6 +215,23 @@ describe("calibrate", () => {
     assert.deepEqual(row(rows, 9)?.misses.map(({ number }) => number), [903, 904]);
   });
 
+  it("counts a catch on a head the reviewers passed only after the person commented, and one with an unreadable record", () => {
+    const comment = { at: NOW_CAL - 24 * DAY, login: "deregtd", kind: "comment" as const };
+    const pushes = [{ head: "h1", at: NOW_CAL - 26 * DAY }, { head: "h2", at: NOW_CAL - 23 * DAY }];
+    // Opus was still running at the comment; both scored h1 9/9 afterwards, and the author pushed a fix.
+    const late = calPull(905, 20, { records: [calRecord(25, 9, 9, { scores: null }), calRecord(24.5, 9, 9)], events: [comment], pushes });
+    // h1's only record was truncated; the point is on h2.
+    const unreadable = calPull(906, 20, {
+      records: [calRecord(25, 0, 0, { scores: null, ruledOut: true, reviewers: null, unreadable: true }), calRecord(22, 9, 9, { head: "h2" })],
+      events: [comment],
+      pushes,
+    });
+    // h1 never passed: the person's catch matched the reviewers' doubt.
+    const doubted = calPull(907, 20, { records: [calRecord(25, 5, 9), calRecord(22, 9, 9, { head: "h2" })], events: [comment], pushes });
+    const misses = row(calibrate([late, unreadable, doubted], { evidence: EVIDENCE, now: NOW_CAL }), 9)?.misses.map(({ number }) => number);
+    assert.deepEqual(misses, [905, 906]);
+  });
+
   it("counts a miss for a change request, a revert, or a later pull request naming it, and not for an approval or a comment no commit followed", () => {
     const after = NOW_CAL - 21 * DAY;
     const pulls = [
@@ -303,8 +320,8 @@ describe("buildCalibration", () => {
       [`${R}/pulls/901/reviews?per_page=100&page=1`]: [{ user: { login: "kentonv", type: "User" }, state: "APPROVED", submitted_at: new Date(NOW_CAL - 21 * DAY).toISOString() }],
       [`${R}/commits/${HEAD}/check-suites?per_page=100`]: { check_suites: [{ created_at: new Date(NOW_CAL - 22 * DAY).toISOString() }] },
       [`${R}/commits/${OLD}/check-suites?per_page=100`]: { check_suites: [] },
-      [`${R}/commits/${HEAD}/check-runs?check_name=risk-review&filter=all&per_page=100`]: { check_runs: [runOn(21.5, 7)] },
-      [`${R}/commits/${OLD}/check-runs?check_name=risk-review&filter=all&per_page=100`]: { check_runs: [runOn(25, 9), { ...runOn(24.5, 10), app: { slug: "someone-else" } }] },
+      [`${R}/commits/${HEAD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(21.5, 7)] },
+      [`${R}/commits/${OLD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(25, 9), { ...runOn(24.5, 10), app: { slug: "someone-else" } }, { ...runOn(24.8, 10), conclusion: "cancelled", output: { summary: "A later run decides this commit." } }] },
     };
     const get: GitHubGet = async (path) => {
       const response = responses[path];

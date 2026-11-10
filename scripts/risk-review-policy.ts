@@ -109,6 +109,9 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
   },
 ];
 
+/** Skills, which coding agents read; edits here are AI-scored. */
+const SKILLS = ".agents/skills/**";
+
 /**
  * Paths no AI may decide on, always a person: this gate and everything it reads or trusts (so a
  * pull request that an AI judges always runs `main`'s producer workflows and judge scripts), the
@@ -116,9 +119,6 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
  * names its reason for the decision record. The one exception is a proven Actions bump (see
  * {@link classifyChangeset}); no AI decides that either.
  */
-/** Skills, which coding agents read; edits here are AI-scored. */
-const SKILLS = ".agents/skills/**";
-
 const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[] = [
   { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
   {
@@ -131,11 +131,14 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[]
       "REVIEW.md",
       "**/AGENTS.md",
       "**/CLAUDE.md",
-      "**/.agents/**",
       "**/opencode.json",
       "**/opencode.jsonc",
       "**/.opencode/**",
     ],
+  },
+  {
+    reason: "agent skills and settings outside .agents/skills/",
+    globs: ["**/.agents/**"],
     // Skills are scored like code: the reviewers read the base version of every instruction file,
     // so a skill edit cannot steer its own review (decision 2026-11-10). A symlink there can.
     except: [SKILLS],
