@@ -10,6 +10,7 @@ import {
   HookTargetMetadata,
   ResourceDescription,
   ApprovalQueue,
+  type ObservationDescription,
   VendorDescription,
   GatekeeperConnectCallback,
   AccountDescription,
@@ -34,6 +35,17 @@ import EMAIL_CONFIGURATOR_HTML from "./generated/email-configurator-ui.txt";
 import type { EmailMailboxConfiguratorRpc } from "./configurator/email-configurator-types";
 import EMAIL_LOGO_SVG from "./email-logo.svg";
 import { obsContext } from "./observability.js";
+
+/** Observation that must state its subresources, so an omitted list is a type error. */
+type ObservationWithSubresources = ObservationDescription & { subresources: string[] };
+
+/** Reports a read; this gatekeeper's reads expose no tracked subresources, so callers pass `[]`. */
+async function authorizeRead(
+  queue: { authorizeObservation(observation: ObservationDescription): PromiseLike<unknown> },
+  observation: ObservationWithSubresources,
+): Promise<void> {
+  await queue.authorizeObservation(observation);
+}
 
 const VENDOR_ID = "email";
 
@@ -582,11 +594,21 @@ export class EmailGatekeeperImpl extends DurableObject<Env, EmailGatekeeperImplP
    * Observer tracking: the email gatekeeper uses the "low-stakes" strategy. Each mailbox is a fresh
    * address minted on the deployment's own domain for this Gadget; there is no external ACL and no
    * other party who "independently has access" to that inbox, so the Gadget's own collaborators are
-   * the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and we
-   * never set excludeObservers on observations.
+   * the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and
+   * reads report `subresources: []`, so verifyObserverAccess allows every observer.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
+  /** addObserver never restricted anyone, so there is no historical requirement to export. */
+  async getHistoricalSubresources(): Promise<string[]> { return []; }
+
+  /** Allows every observer under the low-stakes observer policy. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
 }
 
 @validateRpc()
@@ -680,7 +702,8 @@ export class EmailAddress extends DurableObject<Env> {
     let sender = email.from.name
         ? `${email.from.name} <${email.from.address}>`
         : email.from.address;
-    await startHookResult.approvalQueue.authorizeObservation({
+    await authorizeRead(startHookResult.approvalQueue, {
+      subresources: [],
       title: `Email from ${email.from.address}: ${email.subject}`,
       description: `Received email from ${sender}\n\n`
           + `**Subject:** ${email.subject}\n`

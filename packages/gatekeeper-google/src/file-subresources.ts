@@ -2,8 +2,11 @@
 // gatekeepers and by the UserAccount that checks an observer against them.
 //
 // Each names the file a read returned data from, as the API that read it names that file:
-//   - `drive/file/<fileId>`: a Drive file's metadata, or a PDF's text, which an observer's own
-//     account may see when Drive lets it see the file.
+//   - `drive/file/<fileId>`: a Drive file's metadata, which an observer's own account may see when
+//     Drive lets it see the file.
+//   - `drive/content/<fileId>`: a Drive file's content, its bytes or a PDF's text, which an
+//     observer's own account may see only when Drive lets it download the file: an owner or
+//     administrator can stop viewers downloading a file they can still see.
 //   - `drive/folder/<folderId>`: that a Drive folder's children can be listed, which only an
 //     observer whose own account can list them may see. A folder is a Drive file with the same ID,
 //     so the kind is what tells this check from the one above.
@@ -32,13 +35,17 @@ export type NativeFileSubresource = {
   fileId: string;
 };
 
+/** What Drive itself answers for: a file's metadata, a listable folder, or a file's content. */
+export type DriveUnit = DriveObservation | { kind: "content"; fileId: string };
+
 /** What a Drive, Docs, Sheets or Slides subresource ID names: a Drive unit, or a native file. */
-export type FileSubresource = DriveObservation | NativeFileSubresource;
+export type FileSubresource = DriveUnit | NativeFileSubresource;
 
 /** The namespace and fragment name each kind of file subresource is spelled with. */
 const SPELLINGS: Record<FileSubresource["kind"], { namespace: string; name: string }> = {
   file: { namespace: DRIVE_SUBRESOURCE_NAMESPACE, name: "file" },
   folder: { namespace: DRIVE_SUBRESOURCE_NAMESPACE, name: "folder" },
+  content: { namespace: DRIVE_SUBRESOURCE_NAMESPACE, name: "content" },
   document: { namespace: DOCS_SUBRESOURCE_NAMESPACE, name: "document" },
   spreadsheet: { namespace: SHEETS_SUBRESOURCE_NAMESPACE, name: "spreadsheet" },
   presentation: { namespace: SLIDES_SUBRESOURCE_NAMESPACE, name: "presentation" },

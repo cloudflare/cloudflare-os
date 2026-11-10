@@ -322,4 +322,23 @@ const whole: DrivePdfText = { text: "", hasText: true };
 const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
 `)).toEqual([]);
   });
+
+  it("streams a file's bytes from both Drive sessions, whole or by range", () => {
+    expect(compileAgentTypes(driveBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderSession;
+declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
+async function readCsv(): Promise<string> {
+  const whole = await drive.readFile("file-1");
+  const text = await new Response(whole.content).text();
+  const first = await folder.readFile("file-2", { offset: 16, length: 1024 });
+  const rest: boolean = first.offset + first.length < first.size;
+  const changed: boolean = first.modifiedTime.getTime() > 0;
+  await worktree.writeBytes("data/file-2.bin", first.content);
+  return text + first.mimeType + rest + changed;
+}
+// @ts-expect-error The content is a stream, not the bytes themselves.
+const held: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new Date(), offset: 0, length: 1, content: new Uint8Array(1) };
+`)).toEqual([]);
+  });
 });

@@ -80,6 +80,24 @@ const frameHtml = async (source: string, frontendReporting: boolean) => {
   return configuratorHtml(runtime, module);
 };
 
+const HIERARCHY_PICKER = `
+import { Field, HierarchyPicker, Section, h } from "@gadgets/configurator-ui";
+const items = ["Reports", "Budgets", "Planning", "Archive"].map(title => ({ id: title, title, kind: "container" }));
+export default {
+  initial: { target: null },
+  resourceUrl: ({ values }) => "https://files.example.com/folders/" + values.target,
+  render: ({ values, setValues }) => (
+    <Section>
+      <Field label="What to connect">
+        <HierarchyPicker name="target" value={values.target} root={{ id: "root", title: "Drive" }}
+          loadItems={async ({ query }) => ({ items: items.filter(item => item.title.toLowerCase().includes(query.toLowerCase())) })}
+          onChange={target => setValues({ target })} searchPlaceholder="Search Drive, or paste a link" />
+      </Field>
+    </Section>
+  ),
+};
+`;
+
 /** What {@link HOST_SCRIPT} leaves on the host page's global object for the test to read. */
 type HostGlobals = {
   events: unknown[][];
@@ -310,6 +328,35 @@ describe("generated configurator frame", () => {
       });
       expect((await events()).filter(([kind]) => kind === "ready")).toEqual([["ready", false]]);
       expect(await collect(page)).toEqual({ error: expect.stringMatching(/failed to render/i) });
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  // Only the generated frame has the runtime's styles, so only here can the picker's rows be measured.
+  it("moves nothing in a hierarchy picker as a search starts and ends", async () => {
+    const { page, frame } = await host(await frameHtml(HIERARCHY_PICKER, false));
+    try {
+      const search = frame().getByRole("searchbox", { name: "Search Drive, or paste a link" });
+      await frame().getByRole("option", { name: "Reports" }).waitFor();
+      const layout = () => frame().locator("[data-hierarchy-picker]").evaluate(picker => {
+        const box = picker.querySelector('[role="listbox"]')!.parentElement!;
+        const input = picker.querySelector('input[type="search"]')!;
+        return { height: picker.getBoundingClientRect().height, list: box.getBoundingClientRect().top,
+          search: input.getBoundingClientRect().width };
+      });
+      const resting = await layout();
+
+      await search.click();
+      expect(await layout()).toEqual(resting);
+      await search.pressSequentially("rep");
+      await frame().getByText("Search results").waitFor();
+      expect(await layout()).toEqual(resting);
+      await search.press("Escape");
+      await frame().getByRole("option", { name: "Budgets" }).waitFor();
+      expect(await layout()).toEqual(resting);
+      await search.blur();
+      expect(await layout()).toEqual(resting);
     } finally {
       await page.close();
     }

@@ -1735,6 +1735,8 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
+  /** Only records of calls to this method. */
+  method?: AdminAuditRecord["method"];
   /** Only records made at or after this time. */
   since?: Date;
   /** The previous page's `nextCursor`; absent for the first page. */

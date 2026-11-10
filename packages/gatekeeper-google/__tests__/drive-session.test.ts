@@ -438,26 +438,39 @@ describe("Drive native sessions", () => {
     expectReported(authorizations[0], ["drive/file/file-1"]);
   });
 
-  // openNativeFile() already reported the Drive metadata, so each content read reports only the
-  // file as the API that reads it names it; a PDF's text is read through Drive itself.
+  // openNativeFile() already reported the Drive metadata, so each read reports only what it
+  // reads: a native file as its own API names it, or the content of a file Drive downloads, a
+  // PDF's text or any other file's bytes, which a collaborator needs leave to download to see.
   it.each([
-    ["account Doc", { kind: "account" } as const, docMime, "docs/document/file-1"],
-    ["account Sheet", { kind: "account" } as const, sheetMime, "sheets/spreadsheet/file-1"],
-    ["account PDF", { kind: "account" } as const, pdfMime, "drive/file/file-1"],
+    ["account Doc", { kind: "account" } as const, docMime, {}, "docs/document/file-1"],
+    ["account Sheet", { kind: "account" } as const, sheetMime, {}, "sheets/spreadsheet/file-1"],
+    ["account PDF", { kind: "account" } as const, pdfMime, { content: true },
+      "drive/content/file-1"],
+    ["account CSV", { kind: "account" } as const, "text/csv", { content: true },
+      "drive/content/file-1"],
     ["exact-file Doc", { kind: "file", fileId: "file-1" } as const,
-      docMime, "docs/document/file-1"],
+      docMime, {}, "docs/document/file-1"],
     ["exact-file PDF", { kind: "file", fileId: "file-1" } as const,
-      pdfMime, "drive/file/file-1"],
-  ])("reports only the native file on an %s read", async (_name, scope, mimeType, expected) => {
+      pdfMime, { content: true }, "drive/content/file-1"],
+  ])("reports only what an %s read reads", async (_name, scope, mimeType, options, expected) => {
     let { session, authorizations } = core({ scope });
 
-    await expect(session.nativeRead("file-1", mimeType)(
+    await expect(session.nativeRead("file-1", mimeType, options)(
       async () => "content",
       value => ({ title: "Read file", description: `Read ${value}.` }),
     )).resolves.toBe("content");
     expect(authorizations).toEqual([{
       title: "Read file", description: "Read content.", subresources: [expected],
     }]);
+  });
+
+  // Only a content read downloads a file through Drive, so any other read of a file with no
+  // native API is refused rather than reported as the file's metadata alone.
+  it("refuses a read of a non-native file that is not a content read", () => {
+    let { session } = core();
+
+    expect(() => session.nativeRead("file-1", pdfMime))
+      .toThrow("Google Drive has no native read of application/pdf files.");
   });
 
   it("withholds a native read's value when authorization is denied", async () => {
@@ -665,16 +678,17 @@ describe("positioned Drive folder session", () => {
     expectReported(authorizations[3], ["drive/folder/R"]);
   });
 
-  // Each content read revalidates the child in the folder, so it reports both as well as the
-  // file as its own API names it; a PDF's text is read through Drive, collapsing the last two.
+  // Each read revalidates the child in the folder, so it reports both as well as what it reads:
+  // a native file as its own API names it, or the content of a file Drive downloads.
   it.each([
-    ["Doc", directDoc, ["drive/folder/R", "drive/file/D0", "docs/document/D0"]],
-    ["PDF", child("P", "R", { mimeType: pdfMime }), ["drive/folder/R", "drive/file/P"]],
-  ])("reports the folder, the child and the native file on a %s read",
-    async (_name, target, expected) => {
+    ["Doc", directDoc, {}, ["drive/folder/R", "drive/file/D0", "docs/document/D0"]],
+    ["PDF", child("P", "R", { mimeType: pdfMime }), { content: true },
+      ["drive/folder/R", "drive/file/P", "drive/content/P"]],
+  ])("reports the folder, the child and what it reads on a %s read",
+    async (_name, target, options, expected) => {
       const { session, authorizations } = positioned([root, target]);
 
-      await expect(session.nativeRead(target.id, target.mimeType!)(
+      await expect(session.nativeRead(target.id, target.mimeType!, options)(
         async () => "content",
         value => ({ title: "Read file", description: `Read ${value}.` }),
       )).resolves.toBe("content");

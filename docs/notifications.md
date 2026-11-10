@@ -203,12 +203,15 @@ recipient cleanup, which clears queued alerts and cancels in-flight delivery whe
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
 subscription id, opaque User DO subject, and same-origin deep-link path cross the central boundary
-during a send, plus the headers every signed request carries: install id, key id, timestamp, nonce,
-body digest, and signature. Permission details, chat content, gatekeeper grants, and provider
-credentials do not. Every subscribed browser tab is offered the notification at once; only visible
-tabs acknowledge it. Push is sent to every registered device if no tab acknowledges it within
-three seconds. Hidden tabs release their alert subscriptions so they cannot delay push; a client
-that becomes hidden during delivery rejects `notify()` without presenting a toast.
+during an alert send. Separate `POST /v1/badges`
+replacements carry only `{subscriptionId, version, count}`; see
+[unread push badges](unread-push-badges.md). Both use the headers every signed request carries:
+install id, key id, timestamp, nonce, body digest, and signature. Permission details, chat content,
+gatekeeper grants, and provider credentials do not. Every subscribed browser tab is offered the
+notification at once; only visible tabs acknowledge it. Push is sent to every registered device
+if no tab acknowledges it within three seconds. Hidden tabs release their alert subscriptions so
+they cannot delay push; a client that becomes hidden during delivery rejects `notify()` without
+presenting a toast.
 A tab resubscribes if a User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps the subscription and

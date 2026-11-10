@@ -21,6 +21,7 @@ import { requirePositiveInt } from "./positive-int";
 
 export {
   asVerifier,
+  mapLimit,
   OBSERVER_ATTEMPT_LIFETIME_MS,
   OBSERVER_DENIED,
   OBSERVER_WITHHELD,
@@ -236,7 +237,8 @@ export type ObservationScope =
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
 
 /**
- * Authorizes observations after applying the selected observer strategy.
+ * Authorizes observations for an existing binding: through its legacy observer strategy, or for a
+ * `subresources` scope with the Workshop alone. New gatekeepers report subresources directly.
  *
  * @example
  * ```ts
@@ -377,12 +379,16 @@ export type VerifyObserverAccess = NonNullable<Gatekeeper<unknown>["verifyObserv
  * stored or cached, since the same observer id may come back with another account's verifier, and
  * nothing here waits on a read, which may itself be awaiting the authorization that asked.
  *
- * The oracle has the shape `trackedCollectionObservers` takes, so a binding converting read by read
- * can hand both the same function. It receives the ids exactly as reads reported them, so report
- * canonical spellings. Only a literal `true` grants, and an answer of the wrong length throws, since
- * index alignment is all that ties a verdict to an id. Unlike the tracker, which excludes an
- * observer whose oracle throws, a throw here fails the whole call, and the Workshop denies everyone
- * in it: what the contract asks for when access cannot be determined. So the oracle must throw,
+ * Each oracle call receives every subresource in the Workshop's call, up to 10,000 IDs. Split them
+ * to fit the provider's per-request caps while staying within the Worker's subrequest limit. An
+ * existing binding converting read by read can share its `trackedCollectionObservers` oracle, but
+ * must not size this helper's batches from `maxTrackedCollections`; lowering that limit does not
+ * shrink the tracker's persisted history either. IDs arrive exactly as reads reported them, so
+ * report canonical spellings. Only a literal `true` grants, and an answer of the wrong length
+ * throws, since index alignment is all that ties a verdict to an ID. Unlike the tracker, which
+ * excludes an observer whose oracle throws, a throw here fails the whole call: no further verifier
+ * is asked, and the call rejects with the first error once those already asked have settled. The
+ * Workshop denies everyone in that call when access cannot be determined. The oracle must throw,
  * rather than answer `false`, when it cannot tell — expired credentials, a provider outage.
  * @param options ACL oracle and verifier concurrency (default 6).
  * @returns A `verifyObserverAccess()` implementation.

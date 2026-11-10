@@ -71,7 +71,9 @@ export function agentCodeChangeShape(change: CodeChange) {
  * produce more decides for itself how to stay under it in a way the model can read -- readFile
  * returns a window of whole lines with a continuation note, grep drops whole matches and says how
  * many, webFetch cuts its body and says so in the frontmatter -- rather than any tool's output
- * being spliced blindly. Tools not listed are small by construction.
+ * being spliced blindly. Tools not listed are small by construction. The same limit bounds what the
+ * user puts in front of the model: a text attachment is inlined, and a user change's diff shown,
+ * only within it; past it the file is named instead, for readFile to window.
  */
 export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 
@@ -701,6 +703,39 @@ Draft requested text directly in chat; do not look up blueprints or create a Gad
 Note that users rarely ask for "a Gadget" in those words. They ask for a thing: a doc, a deck, a tracker, a tool that does X. "Summarize this doc", "draft an email", or "check these figures" usually asks for an answer or one-off task, not a new Gadget. Work on an existing Gadget when the request refers to it. If a useful answer completes the task, give that answer. Ask a brief clarification when it's unclear whether the user wants something created; otherwise, proceed. When the goal is unclear, ask what the user wants to accomplish before suggesting an application.
 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
+
+# Live views in your answers
+
+You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+
+\`\`\`
+Spending on food rose 18% in October, mostly eating out.
+
+<inline-html>
+<title>Food spending by week</title>
+<h3>Food spending by week</h3>
+<div id="weeks"></div>
+<script type="module">
+  const limit = 120;
+  const weeks = [[1, 96], [2, 132], [3, 88], [4, 141]];
+  const list = document.getElementById("weeks");
+  for (const [week, total] of weeks) {
+    const bar = list.appendChild(document.createElement("button"));
+    bar.textContent = \`Week \${week}: \${total} of \${limit}\`;
+    bar.onclick = () => agent.send(\`Show me week \${week} in detail.\`);
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
+* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
+* \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
+* For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
+* The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
+* A view keeps no state. Something that must remember things between visits belongs in a Gadget.
 
 # Writing Gadgets
 
@@ -1773,12 +1808,15 @@ async function runAgentPass(
   // the map) is "not already removed", and for a complete entry is "present in the map". (A
   // `set` of a base path a sparse entry hasn't loaded renders as an addition, since the previous
   // text isn't at hand; the shipped clients emit `set` only for new or re-created files, so this
-  // is cosmetic and left alone.)
+  // is cosmetic and left alone.) The observation is one tool result, so its diffs share
+  // MAX_TOOL_RESULT_CHARS; a file whose diff doesn't fit is named instead, and the model's
+  // knowledge of it dropped, so editFile makes it read the file first.
   let applyReplayedChange = (change: CodeChange, includeDiff: boolean): string | undefined => {
     let before = sessionContent;
     sessionContent = applyCodeChange(sessionContent, change);
 
     let diffParts: string[] = [];
+    let diffBudget = MAX_TOOL_RESULT_CHARS;
     for (let [key, entries] of includeDiff ? Object.entries(change) : []) {
       let id = Number(key);
       let envName = chatNameFor(id);
@@ -1805,9 +1843,14 @@ async function runAgentPass(
         }
         let diff = formatUnifiedDiff(
             filename, oldContent ?? "", newContent ?? "", oldContent !== undefined, true);
-        if (diff) {
-          fileDiffParts.push(diff);
+        if (!diff) continue;
+        if (diff.length > diffBudget) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; the diff is too large to show, so read the file`);
+          continue;
         }
+        diffBudget -= diff.length;
+        fileDiffParts.push(diff);
       }
 
       if (fileDiffParts.length > 0) {
@@ -2247,11 +2290,22 @@ async function runAgentPass(
                     data: data.toBase64(),
                     mimeType: attachment.mimeType,
                   }];
-                } else if (text !== undefined) {
+                } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
                     text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
                         text,
+                  }];
+                } else if (text !== undefined) {
+                  // Inlined, it would be resent on every turn, and could alone exceed the model's
+                  // window, which compaction cannot fix.
+                  return [{
+                    type: "text",
+                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
+                        "bytes, too large to inline. " + (workspaceLocation
+                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                              "workspace file.]"
+                            : "It is not in the workspace yet, so its contents are unavailable.]"),
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {

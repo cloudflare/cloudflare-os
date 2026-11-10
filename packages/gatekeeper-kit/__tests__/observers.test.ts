@@ -851,6 +851,25 @@ describe("ObservationGate", () => {
     expect(authorizeObservation).toHaveBeenCalledWith({ ...read, subresources: [] });
   });
 
+  it.each([
+    ["a marked refusal", refusal()],
+    ["an unknown outcome", new Error("connection lost")],
+  ])("leaves the strategy's state alone when a subresources read fails with %s", async (_outcome, failure) => {
+    // The Workshop alone checks a converted read, so its failure has nothing of the strategy's to
+    // reclaim or keep: no pending marker written, no recorded history touched.
+    const kv = fakeKv();
+    const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [true] });
+    await new ObservationGate(fakeAuthorizer(), strategy).authorize(read, { kind: "collections", ids: ["before"] });
+    const entries = [...kv.list({ prefix: "" })];
+    const writes = [...kv.writes];
+
+    await expect(new ObservationGate(fakeAuthorizer(vi.fn(async () => { throw failure; })), strategy)
+      .authorize(read, { kind: "subresources", ids: ["after"] })).rejects.toBe(failure);
+
+    expect([...kv.list({ prefix: "" })]).toEqual(entries);
+    expect(kv.writes).toEqual(writes);
+  });
+
   it("refuses collection ids under a strategy that cannot check them", async () => {
     // The hierarchical trap: org-level admission, project-level ACLs. Correctly supplying the
     // project ids used to disclose them with nothing consulted.
@@ -1179,6 +1198,38 @@ describe("observerAccessVerifier", () => {
     const check = observerAccessVerifier<unknown>({ hasCollectionAccess: async () => { throw failure; } });
 
     await expect(check([{ id: "x", verifier: someUser }], ["a"])).rejects.toBe(failure);
+  });
+
+  it.each([
+    { outcome: "success", failure: new Error("credentials expired") },
+    { outcome: "failure", failure: undefined },
+  ])("stops new checks and drains an in-flight $outcome before rejecting with the first error", async ({ outcome: laterOutcome, failure }) => {
+    // Each verifier is meant for this call only, so none may still be in use once it has failed.
+    vi.useFakeTimers();
+    const asked: string[] = [];
+    const check = observerAccessVerifier<{ id: string }>({
+      concurrency: 2,
+      hasCollectionAccess: async ({ id }, collectionIds) => {
+        asked.push(id);
+        if (id === "a") throw failure;
+        // A provider that takes a second to answer, so "b" is still running when "a" fails.
+        const answered = Promise.withResolvers<void>();
+        setTimeout(answered.resolve, 1000);
+        await answered.promise;
+        if (laterOutcome === "failure") throw new Error("a later failure must not replace the first");
+        return collectionIds.map(() => true);
+      },
+    });
+    const observers = ["a", "b", "c", "d"].map(id => ({ id, verifier: { id } as unknown as Fetcher<GatekeeperUserVerifier> }));
+
+    let outcome: unknown = "pending";
+    void check(observers, ["secret"]).then(() => { outcome = "resolved"; }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(outcome).toBe("pending");
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toBe(failure);
+    expect(asked).toEqual(["a", "b"]);
   });
 
   it("refuses to answer for no subresources rather than admitting everyone vacuously", async () => {

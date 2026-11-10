@@ -497,6 +497,7 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
   "gatekeeper-x": { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
   "gatekeeper-microsoft": { id: "MICROSOFT_CLIENT_ID", secret: "MICROSOFT_CLIENT_SECRET" },
+  "gatekeeper-pagerduty": { id: "PAGERDUTY_CLIENT_ID", secret: "PAGERDUTY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
@@ -519,6 +520,8 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
   // Each connection's daily read limit; unset, the in-code default.
   "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
+  // The signing secret of the PagerDuty webhook a tunnel delivers to; unset, hooks are refused.
+  "gatekeeper-pagerduty": ["PAGERDUTY_WEBHOOK_SECRET"],
   // The Entra tenant (or allowlist of tenant IDs) to accept, which must be set or the gatekeeper
   // refuses to start, the most agents may do in SharePoint, Outlook and Calendar (unset: write, send
   // and schedule), and whether SharePoint asks for every site or only those granted to the app

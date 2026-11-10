@@ -167,6 +167,13 @@ export const TESTS_WITH_TIMEOUT_ENV: string[] = [
 ]
 
 /**
+ * Pins the cases the property suites generate (`property-runs.ts`). Every generated test task
+ * passes and fingerprints it, so a suite that adopts fast-check needs no wiring of its own, and a
+ * different seed is a cache miss rather than a replayed result.
+ */
+const PROPERTY_SEED_ENV = 'FAST_CHECK_SEED'
+
+/**
  * The worker budget `scripts/vp/run.ts` sets (see `scripts/vp/concurrency.ts`). Defined here
  * because every package's task graph loads this module, which must not pull in that one.
  */
@@ -257,7 +264,7 @@ export function vitestTaskWithExclusions(
     cache: {
       input: [{ auto: true }, ...exclusions],
       output: [{ auto: true }, ...exclusions],
-      env: TESTS_WITH_TIMEOUT_ENV,
+      env: [...TESTS_WITH_TIMEOUT_ENV, PROPERTY_SEED_ENV],
       untrackedEnv: pinned ? [] : VITEST_WORKERS_ENV,
     },
   }

@@ -13,7 +13,7 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
-import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import { escapeObservationValue } from "@gadgets/gatekeeper-kit/observers";
 import { ResponseTooLargeError, readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import type { ApprovalQueue, HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
@@ -49,9 +49,7 @@ export type OutlookHookTarget = RpcTarget & NewMessageHook;
 export type OutlookHookParams = Record<string, never>;
 
 /** What a hook's delivery stub reaches: the binding, narrowed to delivering. */
-export interface OutlookHookDelivery extends RpcTarget {
-  deliver(callback: RpcStub<OutlookHookTarget>, approvalQueue: RpcStub<ApprovalQueue>, messageId: string): Promise<void>;
-}
+export type OutlookHookDelivery = HookDelivery<OutlookHookTarget, string>;
 
 /** Everything a hook needs once enabled, captured when the binding subscribes it. */
 export type OutlookHookProps = {
@@ -149,7 +147,7 @@ export class OutlookHookController extends WorkerEntrypoint<Env, OutlookHookProp
 // -- driver ------------------------------------------------------------------------------------
 
 type Registration = { userObjectId: string; mailboxUser: string; folderId: string; /** Only mail received from here on. */ since: string };
-type Capabilities = { delivery: RpcStub<OutlookHookDelivery>; initiator: Fetcher<HookInitiator<OutlookHookTarget>> };
+type Capabilities = HookCapabilities<OutlookHookTarget, string>;
 /**
  * A folder being watched: its subscription, if Graph would take one, and how far it has been read.
  * `continueAt` is when the newest message a scan cut short by `MAX_PAGES_PER_SYNC` had read was
@@ -157,8 +155,6 @@ type Capabilities = { delivery: RpcStub<OutlookHookDelivery>; initiator: Fetcher
  */
 type Watch = { subscriptionId?: string; expiresAt?: number; renewAt: number; cursor: string; continueAt?: string };
 
-const registrationKey = (key: string) => `reg:${key}`;
-const capabilitiesKey = (key: string) => `caps:${key}`;
 const watchKey = (folderId: string) => `watch:${folderId}`;
 /** The watched folders, read up front: the loops over them write and await as they go. */
 const watches = (kv: SyncKvStorage) => Array.from(kv.list<Watch>({ prefix: "watch:" }));
@@ -172,7 +168,7 @@ const SYNC_AT_KEY = "syncAt";
  * they depend on.
  */
 export class OutlookHookDriver extends DurableObject<Env> {
-  #queue = new HookDeliveryQueue<string>(this.ctx.storage.kv, () => {
+  #hooks = new HookRegistry<OutlookHookTarget, string, Registration>(this.ctx.storage.kv, () => {
     logger.warn("dropped an Outlook message after repeated delivery failures", { event: "outlook.hooks.delivery.dropped" });
   });
 
@@ -185,27 +181,20 @@ export class OutlookHookDriver extends DurableObject<Env> {
     if (kv.get<Watch>(watchKey(registration.folderId)) === undefined) {
       kv.put<Watch>(watchKey(registration.folderId), { renewAt: Date.now(), cursor: now });
     }
-    const replaced = kv.get<Capabilities>(capabilitiesKey(key));
-    kv.put<Registration>(registrationKey(key), { ...registration, since: now });
-    kv.put(capabilitiesKey(key), capabilities);
-    disposeStubs(replaced);
+    this.ctx.storage.transactionSync(() => this.#hooks.set(key, { ...registration, since: now }, capabilities));
     // Subscribe now, so the approval that enabled the hook learns if Graph can't be reached.
     await this.#ensureSubscriptions();
     await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
-    const kv = this.ctx.storage.kv;
-    disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
-    kv.delete(registrationKey(key));
-    kv.delete(capabilitiesKey(key));
-    this.#queue.cancel(key);
+    this.#hooks.remove(key);
     await this.#dropUnwatched();
   }
 
   /** Drops every hook here: the account is being disconnected. */
   async forgetAccount(): Promise<void> {
-    for (const [regKey] of this.#registrations()) await this.unregister(regKey.slice("reg:".length));
+    for (const [key] of this.#registrations()) await this.unregister(key);
   }
 
   /** A change notification arrived. Only a read follows, and only for the right secret. */
@@ -228,7 +217,7 @@ export class OutlookHookDriver extends DurableObject<Env> {
       await this.#ensureSubscriptions();
       if ((kv.get<number>(SYNC_AT_KEY) ?? 0) <= Date.now()) await this.#sync();
     }
-    await this.#queue.run(Date.now(), (hookKey, messageId) => this.#deliver(hookKey, messageId));
+    await this.#hooks.run(Date.now());
     await this.#reschedule();
   }
 
@@ -265,9 +254,9 @@ export class OutlookHookDriver extends DurableObject<Env> {
           const registrations = this.#registrations().filter(([, registration]) => registration.folderId === folderId);
           for (const row of page.value ?? []) {
             if (typeof row.id !== "string" || typeof row.receivedDateTime !== "string" || row.isDraft === true) continue;
-            for (const [regKey, registration] of registrations) {
+            for (const [hookKey, registration] of registrations) {
               if (Date.parse(row.receivedDateTime) < Date.parse(registration.since)) continue;
-              this.#queue.enqueue(regKey.slice("reg:".length), row.id, row.id, Date.now());
+              this.#hooks.enqueue(hookKey, row.id, row.id, Date.now());
             }
             if (Date.parse(row.receivedDateTime) > Date.parse(newest)) newest = row.receivedDateTime;
           }
@@ -348,18 +337,6 @@ export class OutlookHookDriver extends DurableObject<Env> {
     }
   }
 
-  async #deliver(hookKey: string, messageId: string): Promise<void> {
-    const capabilities = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(hookKey));
-    if (!capabilities) return;
-    try {
-      using hook = await capabilities.initiator.startHook();
-      // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
-      await capabilities.delivery.deliver(hook.callback, hook.approvalQueue, messageId);
-    } finally {
-      disposeStubs(capabilities);
-    }
-  }
-
   #pushing(): boolean {
     return [...this.ctx.storage.kv.list<Watch>({ prefix: "watch:" })].every(([, watch]) => watch.subscriptionId !== undefined);
   }
@@ -383,7 +360,7 @@ export class OutlookHookDriver extends DurableObject<Env> {
   }
 
   #registrations(): [string, Registration][] {
-    return [...this.ctx.storage.kv.list<Registration>({ prefix: "reg:" })];
+    return this.#hooks.entries();
   }
 
   #account(userObjectId: string) {
@@ -393,7 +370,7 @@ export class OutlookHookDriver extends DurableObject<Env> {
   async #reschedule(): Promise<void> {
     const kv = this.ctx.storage.kv;
     const times: number[] = [];
-    const queueDue = this.#queue.nextDue();
+    const queueDue = this.#hooks.nextDue();
     if (queueDue !== undefined) times.push(queueDue);
     if (this.#registrations().length > 0) {
       times.push(kv.get<number>(SYNC_AT_KEY) ?? Date.now());
