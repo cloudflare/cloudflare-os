@@ -161,9 +161,9 @@ describe("legacyHistory", () => {
     expect(legacyHistory({ kind: "workspace" }, WORKSPACE, [])).toEqual([workspaceId]);
   });
 
-  it("refuses to export history it can't name", () => {
-    expect(() => legacyHistory({ kind: "workspace" }, undefined, [CHILD])).toThrow();
-    expect(() => legacyHistory({ kind: "item", itemId: PAGE }, undefined, [])).toThrow();
+  it("exports nothing without the owner's workspace id, and refuses an id that isn't Notion's", () => {
+    expect(legacyHistory({ kind: "workspace" }, undefined, [CHILD])).toEqual([]);
+    expect(legacyHistory({ kind: "item", itemId: PAGE }, undefined, [])).toEqual([]);
     expect(() => legacyHistory({ kind: "workspace" }, WORKSPACE, ["~1"])).toThrow();
   });
 });

@@ -278,10 +278,10 @@ describe("getHistoricalSubresources", () => {
       .resolves.toEqual({ allowedObserverIds: ["member"] });
   });
 
-  it("refuses, rather than guesses, when a project binding never recorded its organization", async () => {
+  it("exports nothing for a project binding that never recorded its organization", async () => {
     const requests = serve({});
     const { gatekeeper: facet } = gatekeeper({ resourceKind: "project", ref: REF });
-    await expect(facet.getHistoricalSubresources()).rejects.toThrow(/never recorded which organization/);
+    expect(await facet.getHistoricalSubresources()).toEqual([]);
     expect(requests).toEqual([]);
   });
 });

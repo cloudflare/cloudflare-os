@@ -1381,6 +1381,11 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
    * project the tracker recorded (pending included); a project binding required access to its
    * project, named under the organization its cached metadata last recorded, whatever its age,
    * since verifyObserverAccess checks the project under any organization.
+   *
+   * Not covered by the migration: a project binding that never cached its project's metadata
+   * exports nothing, since no ID names the project without its organization. This deliberately
+   * loosens its sharing controls: once the Workshop imports history in place of legacy admission,
+   * nothing it disclosed before reads reported subresources stays protected.
    */
   async getHistoricalSubresources(): Promise<string[]> {
     if (this.ctx.props.resourceKind === "project") {
@@ -1391,11 +1396,7 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
           ?.value.organizationSlug ||
         kv.get<Cached<ProjectResponse>>(`cache:entry:${cacheKey("describe-project", ref)}`)
           ?.value.organization_slug;
-      if (!slug) {
-        throw new Error(
-          `This Supabase project binding never recorded which organization owns the project ${ref}.`);
-      }
-      return [projectSubresourceId(slug, ref)];
+      return slug ? [projectSubresourceId(slug, ref)] : [];
     }
     const slug = this.#requireSlug();
     // Tracker keys are unique, so the export needs no further deduplication.

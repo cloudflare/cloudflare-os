@@ -267,18 +267,20 @@ export async function checkNotionSubresourceAccess(
  * its bound item. A workspace binding required membership of the owner's workspace and every item
  * its tracker recorded, pending or observed (stored under their normalized ids). Legacy admission
  * compared the owner's stored workspace id, so that is the one the IDs name.
+ *
+ * Not covered by the migration: a binding whose owner has no stored workspace id (connected before
+ * ids were stored, and not backfilled since) exports nothing, since no ID names its history without
+ * one. This deliberately loosens its sharing controls: once the Workshop imports history in place of
+ * legacy admission, nothing it disclosed before reads reported subresources stays protected.
  * @param binding The binding whose history this is.
  * @param ownerWorkspaceId The owner's stored workspace id, never asked of Notion here.
  * @param trackedItemIds The normalized ids a workspace binding's legacy tracker recorded.
- * @throws Error when `ownerWorkspaceId` is unknown, since no ID names an item or the membership
- * without it, or a tracked id is not a Notion id.
+ * @throws Error when a tracked id is not a Notion id.
  */
 export function legacyHistory(
   binding: NotionBinding, ownerWorkspaceId: string | undefined, trackedItemIds: readonly string[],
 ): string[] {
-  if (!ownerWorkspaceId) {
-    throw new Error("This Notion binding's owner has no stored workspace id to name its history in.");
-  }
+  if (!ownerWorkspaceId) return [];
   if (binding.kind === "item") return [itemSubresourceId(ownerWorkspaceId, binding.itemId)];
   return [...new Set([
     workspaceSubresourceId(ownerWorkspaceId),

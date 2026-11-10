@@ -206,7 +206,8 @@ describe("a connection made before workspace ids were stored", () => {
     await expect((await gk.startSession(queue) as NotionPage).getMetadata()).rejects.toThrow(MISSING_WORKSPACE_ID_MESSAGE);
     expect(observations).toEqual([]);
     expect(owner.kv.get("accountInfo")).toEqual({ ownerName: "Ada" });
-    await expect(gk.getHistoricalSubresources()).rejects.toThrow();
+    // Not covered by the migration: with no workspace to name it in, history exports nothing.
+    expect(await gk.getHistoricalSubresources()).toEqual([]);
 
     const observer = userAccount({});
     expect(await observer.account.checkSubresourceAccess([workspaceSubresourceId(WORKSPACE)])).toEqual([false]);

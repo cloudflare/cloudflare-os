@@ -73,6 +73,13 @@ subresources: project access for a project binding; organization membership plus
 recorded project for an organization binding, whose verified observers' verifiers are still stored.
 Reads no longer record projects or set `excludeObservers`.
 
+`getHistoricalSubresources()` exports what those checks require, from storage alone: an
+organization binding's organization plus each recorded project; a project binding's project, named
+under the organization its cached metadata recorded. A project binding that never cached that
+metadata exports nothing and is not covered by the migration: once the Workshop imports history in
+place of legacy admission, nothing it disclosed before reads reported subresources stays protected,
+a deliberate loosening of its sharing controls.
+
 ## Storage
 
 `UserAccount` (besides the connect flow's `callback`, `nonce`, staged-reconnect and credential-expiry

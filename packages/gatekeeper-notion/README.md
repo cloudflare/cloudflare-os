@@ -84,8 +84,11 @@ binding checks membership and every item recorded under `observedItem:<id>` befo
 reported, and stores admitted verifiers under `observer:<id>`. Reads no longer add to either.
 `getHistoricalSubresources()` exports what those checks require, named under the owner's stored
 workspace id and without asking Notion: an item binding's bound item; a workspace binding's
-membership plus each recorded item, pending or observed. It throws while the owner has no stored
-workspace id, since no existing ID can name the history without one.
+membership plus each recorded item, pending or observed. While the owner has no stored
+workspace id it exports nothing, since no existing ID can name the history without one. Such a
+binding is not covered by the migration: once the Workshop imports history in place of legacy
+admission, nothing it disclosed before reads reported subresources stays protected, a deliberate
+loosening of its sharing controls.
 
 ## Data sources
 
