@@ -224,8 +224,9 @@ export class PagerDutyHookController extends WorkerEntrypoint<Env, PagerDutyHook
  * disconnected connection.
  */
 export class PagerDutyHookDriver extends DurableObject<Env> {
-  #hooks = new HookRegistry<PagerDutyEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped a PagerDuty event after repeated delivery failures", { event: "hooks.delivery.dropped" });
+  #hooks = new HookRegistry<PagerDutyEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, {
+    onRunReport: report => logger.warn("PagerDuty hook deliveries failed, timed out or were dropped",
+      { event: "hooks.delivery.report", ...report }),
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {

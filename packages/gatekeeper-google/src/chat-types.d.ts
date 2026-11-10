@@ -681,9 +681,11 @@ export interface ChatMessageHook {
   /**
    * Called with each new message. `entry.message` can read it in full and reply, and
    * `entry.conversation` reaches the rest of what the hook watches; writes through either are
-   * queued for approval, and both are released when this call returns. A message may arrive more
-   * than once or out of order, so key any work on `entry.info.id` to keep it idempotent; one this
-   * throws for is retried with backoff, eight attempts in all. Disabling the hook ends its retries.
+   * queued for approval, and both are released when this call returns. Return within a minute or
+   * two: after 4 minutes the call counts as failed and the message is retried, while the first
+   * call may still be running. So a message may arrive more than once, even twice at once, or out
+   * of order: key any work on `entry.info.id` to keep it idempotent. One this throws for is retried
+   * with backoff, eight attempts in all. Disabling the hook ends its retries.
    */
   receiveMessage(entry: ChatNewMessageEntry): Promise<void>;
 }

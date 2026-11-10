@@ -261,8 +261,9 @@ One per connected account, named by its `UserAccount` id; see `src/github-hooks.
 - `caps:<hookKey>` -> `{ delivery, initiator }`: the facet's persistent delivery stub and the
   Workshop's `HookInitiator`.
 - `msg:<hookKey>:<eventId>` -> the kit's `HookDeliveryQueue` rows, named by the digest of the
-  event's payload: an event pending delivery to one hook, or a finished one kept for a day to
-  collapse redeliveries.
+  event's payload: an event pending delivery to one hook, with `attempts` counting the attempts
+  started on it (stored before each call), or a finished one kept for a day to collapse
+  redeliveries.
 - `queue:due:<time>:<hookKey>:<eventId>`, `queue:finished:<time>:<hookKey>:<eventId>` and
   `queue:indexed` -> the queue's indexes of those rows: by when each pending one is next due, and
   when each finished one finished, which the dedupe window counts from.

@@ -168,8 +168,9 @@ const SYNC_AT_KEY = "syncAt";
  * they depend on.
  */
 export class OutlookHookDriver extends DurableObject<Env> {
-  #hooks = new HookRegistry<OutlookHookTarget, string, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped an Outlook message after repeated delivery failures", { event: "outlook.hooks.delivery.dropped" });
+  #hooks = new HookRegistry<OutlookHookTarget, string, Registration>(this.ctx.storage.kv, {
+    onRunReport: report => logger.warn("Outlook hook deliveries failed, timed out or were dropped",
+      { event: "outlook.hooks.delivery.report", ...report }),
   });
 
   async register(key: string, registration: Omit<Registration, "since">, capabilities: Capabilities): Promise<void> {
