@@ -6906,17 +6906,17 @@ class OverseerImpl implements AgentHooks {
     return facet.startSession(queue);
   }
 
-  // WorktreeSessionHost: ReplicableWorktree.getReplicator(), for a worktree of the chat whose
-  // execution the session belongs to. The stub is persistent, so a gatekeeper can store it.
+  // WorktreeSessionHost: ReplicableWorktree.getReplicator(). The stub is persistent, so a
+  // gatekeeper can store it. The WorktreeReplicator methods below throw once the worktree is
+  // deleted (including with its chat), which ends the replicator's access.
   async getWorktreeReplicator(worktreeId: WorkpieceId): Promise<WorktreeReplicator> {
-    let chatId = this.getWorktreeRecord(worktreeId).chatId;
     return await this.ctx.restore(
-        {type: "worktreeReplicator", worktreeId, chatId} satisfies OverseerRestoreParams);
+        {type: "worktreeReplicator", worktreeId} satisfies OverseerRestoreParams);
   }
 
   // WorktreeReplicator.snapshot(), for the execution running in the worktree's chat.
-  worktreeSnapshot(chatId: number, worktreeId: number): Promise<WorktreeSnapshot> {
-    this.#requireWorktreeAccess(chatId, worktreeId);
+  worktreeSnapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot> {
+    let chatId = this.getWorktreeRecord(worktreeId).chatId;
     let replicas = this.#activeExecutions.get(chatId)?.replicas;
     if (replicas === undefined) {
       throw new Error("A worktree can be snapshotted only while the agent's code runs in its chat.");
@@ -6924,25 +6924,18 @@ class OverseerImpl implements AgentHooks {
     return replicas.snapshot(worktreeId);
   }
 
-  // Throws if the worktree no longer belongs to the chat, or the chat is gone: the end of a
-  // WorktreeReplicator's access.
-  #requireWorktreeAccess(chatId: number, worktreeId: number): void {
-    if (this.getWorktreeRecord(worktreeId).chatId !== chatId || !this.storage.chatMeta.get(chatId))
-      throw new Error("Worktree access ended.");
-  }
-
   // As for the Worktree binding, a replica's HEAD includes a commit() buffered earlier in the
   // running step.
-  worktreeGitHead(chatId: number, worktreeId: number): string {
-    this.#requireWorktreeAccess(chatId, worktreeId);
-    return this.#activeExecutions.get(chatId)?.worktree?.getBufferedHead(worktreeId) ??
-      this.getWorktreeRecord(worktreeId).headCommit;
+  worktreeGitHead(worktreeId: WorkpieceId): string {
+    let record = this.getWorktreeRecord(worktreeId);
+    return this.#activeExecutions.get(record.chatId)?.worktree?.getBufferedHead(worktreeId) ??
+      record.headCommit;
   }
 
-  async worktreeGitPull(chatId: number, worktreeId: number, oids: string[],
+  async worktreeGitPull(worktreeId: WorkpieceId, oids: string[],
       hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
-    const head = this.worktreeGitHead(chatId, worktreeId);
-    const execution = this.#activeExecutions.get(chatId);
+    const head = this.worktreeGitHead(worktreeId);
+    const execution = this.#activeExecutions.get(this.getWorktreeRecord(worktreeId).chatId);
     // Pull from a connection. Access is checked when a pull starts, not while its pack streams.
     const pullFrom = async (source: WorkpieceId, pulled: string[], pullHints: GitPullHints) => {
       this.assertGatekeeperUsable(source);
@@ -11096,8 +11089,8 @@ class OverseerImpl implements AgentHooks {
         WorktreeReplicatorImpl {
     switch (params.type) {
       case "worktreeReplicator":
-        this.#requireWorktreeAccess(params.chatId, params.worktreeId);
-        return new WorktreeReplicatorImpl(this, params.chatId, params.worktreeId);
+        this.getWorktreeRecord(params.worktreeId);  // validate it exists
+        return new WorktreeReplicatorImpl(this, params.worktreeId);
 
       case "gadget": {
         if (params.codeId) {
@@ -11133,7 +11126,7 @@ class OverseerImpl implements AgentHooks {
 
 type OverseerRestoreParams = {
   // A WorktreeReplicator (see getWorktreeReplicator).
-  type: "worktreeReplicator"; worktreeId: number; chatId: number;
+  type: "worktreeReplicator"; worktreeId: number;
 } | {
   // This is a stub pointing at the gadget. [restore]() will return the facet stub.
   type: "gadget";

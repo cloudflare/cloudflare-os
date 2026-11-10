@@ -250,8 +250,8 @@ fails once that execution ends, since a worktree's uncommitted content lives in 
 gatekeeper calls `getReplicator()` when the stub is passed in, and stores the
 `WorktreeReplicator` it returns.
 
-The replicator is a persistent stub, which keeps working for as long as the worktree belongs to
-the chat and the chat exists. `gitHead()` and `gitPull()` work at any time, and `snapshot()`
+The replicator is a persistent stub, which keeps working until the worktree is deleted (as it is
+with its chat). `gitHead()` and `gitPull()` work at any time, and `snapshot()`
 serves whichever execution is running in the chat at the time. So passing a Worktree stub hands
 lasting access to that one worktree: a gatekeeper can mount in one turn and run commands in
 later turns, across workspace restarts. Deleting the worktree or its chat ends access (a fetch

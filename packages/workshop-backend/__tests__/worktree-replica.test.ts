@@ -40,7 +40,7 @@ const step = (impl: Impl, id: number, path: string, set: string) =>
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 // The WorktreeReplicator a gatekeeper keeps, restored after the execution it came from ended.
 const mounted = (impl: Impl, worktreeId: number): Promise<Replicator & Disposable> =>
-  impl.ctx.restore({type: "worktreeReplicator", chatId: 1, worktreeId});
+  impl.ctx.restore({type: "worktreeReplicator", worktreeId});
 // Fetch `want` through the stub and list the pack's objects.
 async function transfer(worktree: Pick<Replicator, "gitPull">, want: string, haves?: string[]) {
   using pulled = await worktree.gitPull([want], {commitHistory: {kind: "full"}, haves});
@@ -69,7 +69,7 @@ const ANCESTOR = "ab".repeat(20);
 const depth = (commits: number): WorktreeGitPullHints => ({commitHistory: {kind: "depth", depth: commits}});
 const FULL: WorktreeGitPullHints = {commitHistory: {kind: "full"}};
 // Pull `oids` of worktree `id`, as the replica methods of its stub do.
-const pull = (impl: Impl, id: number, oids: string[], hints = depth(1)) => impl.worktreeGitPull(1, id, oids, hints);
+const pull = (impl: Impl, id: number, oids: string[], hints = depth(1)) => impl.worktreeGitPull(id, oids, hints);
 const dispose = (pulled: GitPullTransfer) => (pulled as GitPullTransfer & Disposable)[Symbol.dispose]();
 // Commit `files` on top of the worktree's head, as the agent's commit() does.
 async function commitOnHead(impl: Impl, id: number, files: [string, string][]) {

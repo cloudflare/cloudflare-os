@@ -295,37 +295,36 @@ function fileEntry({ mode, oid }: DiffEntry): FileEntry {
 }
 
 /**
- * What a WorktreeReplicator needs from the overseer, which checks that the worktree still belongs
- * to the chat on each call. Structurally satisfied by OverseerImpl.
+ * What a WorktreeReplicator needs from the overseer, whose methods throw once the worktree is
+ * deleted. Structurally satisfied by OverseerImpl.
  */
 export interface WorktreeReplicatorHost {
-  worktreeSnapshot(chatId: number, worktreeId: WorkpieceId): Promise<WorktreeSnapshot>;
-  worktreeGitHead(chatId: number, worktreeId: WorkpieceId): GitOid;
-  worktreeGitPull(chatId: number, worktreeId: WorkpieceId, oids: GitOid[],
+  worktreeSnapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot>;
+  worktreeGitHead(worktreeId: WorkpieceId): GitOid;
+  worktreeGitPull(worktreeId: WorkpieceId, oids: GitOid[],
                   hints: WorktreeGitPullHints): Promise<GitPullTransfer>;
 }
 
 /**
- * `WorktreeReplicator`: a gatekeeper's lasting replica access to a chat's worktree, restored
+ * `WorktreeReplicator`: a gatekeeper's lasting replica access to a worktree, restored
  * from persistent stubs (see ReplicableWorktree.getReplicator()).
  */
 @validateRpc()
 export class WorktreeReplicatorImpl extends RpcTarget implements WorktreeReplicator {
-  constructor(private host: WorktreeReplicatorHost, private chatId: number,
-              private worktreeId: WorkpieceId) {
+  constructor(private host: WorktreeReplicatorHost, private worktreeId: WorkpieceId) {
     super();
   }
 
   async snapshot(): Promise<WorktreeSnapshot> {
-    return this.host.worktreeSnapshot(this.chatId, this.worktreeId);
+    return this.host.worktreeSnapshot(this.worktreeId);
   }
 
   async gitHead(): Promise<GitOid> {
-    return this.host.worktreeGitHead(this.chatId, this.worktreeId);
+    return this.host.worktreeGitHead(this.worktreeId);
   }
 
   async gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
-    return this.host.worktreeGitPull(this.chatId, this.worktreeId, oids, hints);
+    return this.host.worktreeGitPull(this.worktreeId, oids, hints);
   }
 }
 
