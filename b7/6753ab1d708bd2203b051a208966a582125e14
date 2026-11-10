@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/GadgetEditor.blueprintUpdate.test.tsx
+  s_3d1009fbfd1d0e::t_80ec8dec43ffad 184,524-528
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_3d1009fbfd1d0e::t_38a23572fe1272 229,1474,1478-1480,1482,2114,2116
+packages/workshop-frontend/src/features/gadget-deletion/DeleteGadgetDialog.test.tsx
+  s_3d1009fbfd1d0e::t_364797e686bca8 21,37,45,58-59,67,72-88,90
+packages/workshop-frontend/src/features/gadget-deletion/DeleteGadgetDialog.tsx
+  s_3d1009fbfd1d0e::t_3b1afcb9112642 18-19,21,31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b76753ab1d708bd2203b051a208966a582125e14",
+  "prompts": {},
+  "sessions": {
+    "s_3d1009fbfd1d0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "149494a0-07c6-48b5-b7ea-ed47fd031b7c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
