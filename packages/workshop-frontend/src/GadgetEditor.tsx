@@ -1158,6 +1158,12 @@ export default function GadgetEditor() {
     setActiveTab(tab)
   }, [])
 
+  // A gadget awaiting confirmation of its deletion, tagged with its workspace. The editor stays
+  // mounted when Back or a toast's "Open task" moves it to another workspace, whose gadgets reuse
+  // the same ids, so a confirmation must not follow it there; the reset below drops it.
+  const [gadgetToDelete, setGadgetToDelete] =
+    useState<{ workspaceId: string, gadget: GadgetSummary } | null>(null)
+
   useEffect(() => {
     setChatChanges(undefined)
     setLiveRows(undefined)
@@ -1177,6 +1183,7 @@ export default function GadgetEditor() {
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
+    setGadgetToDelete(null)
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
@@ -1455,7 +1462,9 @@ export default function GadgetEditor() {
   }, [overseer, toasts])
 
   // ── gadget deletion ─────────────────────────────────────────────────────────────
-  const [gadgetToDelete, setGadgetToDelete] = useState<GadgetSummary | null>(null)
+  const requestGadgetDeletion = (target: GadgetSummary) => {
+    if (id) setGadgetToDelete({ workspaceId: id, gadget: target })
+  }
 
   // The subscription drops the deleted gadget, and the selection falls back past it on its own.
   const handleDeleteGadget = async (workpieceId: WorkpieceId) => {
@@ -2091,7 +2100,7 @@ export default function GadgetEditor() {
                   gadgets={visibleWorkpieces}
                   activeId={selectedWorkpieceId}
                   onSelect={handleSelectWorkpiece}
-                  onDelete={setGadgetToDelete}
+                  onDelete={requestGadgetDeletion}
                 />
               ) : selectedWorkpieceSummary && (
                 <PaneLabel
@@ -2298,7 +2307,7 @@ export default function GadgetEditor() {
               onExpandedChange={handleWorkpieceRailExpandedChange}
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
-              onDelete={setGadgetToDelete}
+              onDelete={requestGadgetDeletion}
               pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
@@ -2380,10 +2389,10 @@ export default function GadgetEditor() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}
       />
-      {gadgetToDelete && (
+      {gadgetToDelete && gadgetToDelete.workspaceId === id && (
         <DeleteGadgetDialog
-          key={gadgetToDelete.id}
-          gadget={gadgetToDelete}
+          key={gadgetToDelete.gadget.id}
+          gadget={gadgetToDelete.gadget}
           onDelete={handleDeleteGadget}
           onClosed={() => setGadgetToDelete(null)}
         />
