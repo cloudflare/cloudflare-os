@@ -390,10 +390,12 @@ describe("followUps", () => {
     const culprit = merged(894, "2026-11-03T18:00:00Z");
     const follow = merged(1001, fix.merged_at, fix.title, fix.body);
     assert.deepEqual(followUps(culprit, [culprit, follow], REPOSITORY), [{ number: 1001, revert: false }]);
-    for (const body of ["See https://github.com/cloudflare/cloudflare-os/pull/894", "cloudflare/cloudflare-os#894", "#894"]) {
+    for (const body of ["See https://github.com/cloudflare/cloudflare-os/pull/894", "cloudflare/cloudflare-os#894", "#894", "Fixes (#894)."]) {
       assert.equal(followUps(culprit, [merged(1002, fix.merged_at, "Fix", body)], REPOSITORY).length, 1, body);
     }
-    for (const body of ["https://github.com/cloudflare/cloudflare-os/pull/8940", "https://github.com/someone/fork/pull/894", "#8941"]) {
+    // Bonk on #1093, round 5: `#894` at the end of another repository's reference is not this one's.
+    for (const body of ["https://github.com/cloudflare/cloudflare-os/pull/8940", "https://github.com/someone/fork/pull/894", "#8941",
+      "Fixes cloudflare/workers-sdk#894", "someone/fork#894", "not-cloudflare/cloudflare-os#894"]) {
       assert.deepEqual(followUps(culprit, [merged(1002, fix.merged_at, "Fix", body)], REPOSITORY), [], body);
     }
   });

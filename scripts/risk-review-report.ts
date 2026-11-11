@@ -107,9 +107,11 @@ export function followUps(pull: MergedPull, merged: MergedPull[], repository: st
   if (!pull.merged_at) return [];
   const start = Date.parse(pull.merged_at);
   const end = start + REVERT_WINDOW_DAYS * 86_400_000;
-  // `#N`, `owner/repo#N`, or a link to the pull request, with or without a fragment or subpage.
+  // `#N`, `owner/repo#N` for this repository, or a link to the pull request, with or without a
+  // fragment or subpage. The look-behind keeps `#N` at the end of another repository's reference
+  // (`cloudflare/workers-sdk#N`) from counting.
   const repo = repository.replace("/", "\\/");
-  const mention = new RegExp(`(?:(?:${repo})?#|https:\\/\\/github\\.com\\/${repo}\\/(?:pull|issues)\\/)${pull.number}(?!\\d)`);
+  const mention = new RegExp(`(?:(?<![\\w/.-])(?:${repo})?#|https:\\/\\/github\\.com\\/${repo}\\/(?:pull|issues)\\/)${pull.number}(?!\\d)`);
   return merged.flatMap((other) => {
     const at = other.merged_at ? Date.parse(other.merged_at) : Number.NaN;
     const names = mention.test(other.title) || mention.test(other.body ?? "");
