@@ -6268,7 +6268,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Decides how webFetch may fetch `url` for the chat (see AgentHooks.authorizeWebFetch).
-  async authorizeWebFetch(chatId: number, url: string, mayRequestApproval: boolean)
+  async authorizeWebFetch(chatId: number, url: string)
       : Promise<{env: WebFetchEnv} | {approvalMessage: string}> {
     // Once the workspace has observed restricted data, a URL can carry it to whoever sees the
     // request, so only the hosts an admin trusts with that data are reachable, or a URL a user
@@ -6276,7 +6276,7 @@ class OverseerImpl implements AgentHooks {
     let config = this.storage.containsRestrictedData.get()
         ? await readAdminConfig(this.env) : undefined;
     let allowedHosts = config && new Set(config.restrictedWebFetchHosts);
-    if (config?.restrictedWebFetchApprovals && mayRequestApproval) {
+    if (config?.restrictedWebFetchApprovals) {
       let href = validateWebFetchUrl(url).href;
       // An approved URL's redirects need no checks: the site picks them knowing only that URL.
       if (this.#webFetchApproved(chatId, href)) {

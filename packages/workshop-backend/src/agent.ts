@@ -581,11 +581,10 @@ export interface AgentHooks {
   /**
    * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
    * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
-   * Where that workspace refuses `url` but the admin lets users approve it (and
-   * `mayRequestApproval`), records a "webFetchRequest" instead, and the turn should end. Throws
-   * if the workspace may reach nothing.
+   * Where that workspace refuses `url` but the admin lets users approve it, records a
+   * "webFetchRequest" instead, and the turn should end. Throws if the workspace may reach nothing.
    */
-  authorizeWebFetch(chatId: number, url: string, mayRequestApproval: boolean)
+  authorizeWebFetch(chatId: number, url: string)
       : Promise<{env: WebFetchEnv} | {approvalMessage: string}>;
 
   /**
@@ -3564,7 +3563,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {url, raw}) => {
         try {
-          let authorized = await hooks.authorizeWebFetch(chatId, url, !agentContext.spawnerConfig);
+          let authorized = await hooks.authorizeWebFetch(chatId, url);
           if ("approvalMessage" in authorized) {
             decisionRequested = true;
             return toolResult(authorized.approvalMessage,
