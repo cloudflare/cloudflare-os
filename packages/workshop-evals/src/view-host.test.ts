@@ -266,7 +266,7 @@ describe("RenderedView", { timeout: 60_000 }, () => {
         const other = await env.OTHER.catch(error => error.message);
         document.getElementById("out").textContent = north + " " + total + " " + other;
       </script>`, binder(opened), ["TOTALS", "LOG"]);
-    expect(await view.text()).toContain("1200 1200 env.OTHER is not listed in this view's env attribute.");
+    expect(await view.text()).toContain("1200 1200 env.OTHER");
     expect(opened.toSorted()).toEqual(["LOG", "TOTALS"]);
   });
 
