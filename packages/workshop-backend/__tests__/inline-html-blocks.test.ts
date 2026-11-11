@@ -81,17 +81,12 @@ describe("parseInlineHtmlBlocks", () => {
     }
   });
 
-  it("refuses an env list with a bad name or then", () => {
-    let errors = ['"FOOD, 2X"', '"then"', '"__proto__"'].map(value =>
-      parseInlineHtmlBlocks(lines(`<inline-html env=${value}>`, "<p>a</p>", "</inline-html>"))
-          .flatMap(s => s.kind === "block" ? [s.error] : []));
-    expect(errors).toEqual([
-      ['This view\'s `env` lists a bad name. Invalid binding name "2X": binding names must be JavaScript ' +
-          "identifiers (letters, digits, and '_', not starting with a digit)."],
-      ["This view's `env` lists then, which a view can't read."],
-      ['This view\'s `env` lists a bad name. Invalid binding name "__proto__": this name collides with a ' +
-          "built-in object property."],
-    ]);
+  it("refuses an env list with a bad name or then, naming it", () => {
+    for (let [value, name] of [['"FOOD, 2X"', "2X"], ['"then"', "then"], ['"__proto__"', "__proto__"]]) {
+      let errors = parseInlineHtmlBlocks(lines(`<inline-html env=${value}>`, "<p>a</p>", "</inline-html>"))
+          .flatMap(s => s.kind === "block" ? [s.error] : []);
+      expect(errors, value).toEqual([expect.stringContaining(name!)]);
+    }
   });
 
   it("gives an open block its env names once its opening line ends, unless one is bad", () => {

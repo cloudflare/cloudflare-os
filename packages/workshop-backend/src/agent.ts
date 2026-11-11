@@ -106,8 +106,13 @@ export interface SavedEnvScope {
   claimed: ReadonlySet<string>;
 }
 
-/** A name an executeCode run saved on `env`: JSON data, or another name for a chat binding. */
-export type EnvSave = {name: string, json: string} | {name: string, alias: string};
+/**
+ * A name an executeCode run saved on `env`: JSON data, or another name for the chat binding
+ * `alias`, whose entry it shares.
+ */
+export type EnvSave =
+  | {name: string, json: string}
+  | {name: string, alias: string, entry: ChatBindingEntry};
 
 /**
  * The agent turn's worktree state, as the programmatic Worktree binding needs it. The binding is
@@ -4005,8 +4010,7 @@ async function runAgentPass(
               chatBindings.set(save.name, {type: "data"});
               pendingSavedData.set(save.name, save.json);
             } else {
-              let target = chatBindings.get(save.alias);
-              if (target !== undefined) chatBindings.set(save.name, target);
+              chatBindings.set(save.name, save.entry);
             }
           }
           let savedEnv: SavedEnvName[] = saves.map(save =>

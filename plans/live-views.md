@@ -324,8 +324,10 @@ restricted data. This plan does not change gadget frames.
   `chatSavedData`, of `{chatId, name, json}`, keyed by `chatSavedDataKey(chatId, name)`, which is
   `chatKeyPrefix(chatId) + name`. Another name of a binding, as in `env.SALES = env.EXPENSES`, is
   a copy of `EXPENSES`'s own entry under `SALES`: a `workpiece` entry for a Gadget, connection or
-  worktree, a `value` entry for callback arguments. So it resolves as its target does everywhere,
-  and needs no kind of its own. `deleteChat` sweeps `chatSavedData` beside `agentCallbackArgs`.
+  worktree. So it resolves as its target does everywhere, and needs no kind of its own. Another
+  name for agent callback arguments is refused: it would carry the same arguments into every run
+  again, views refuse them, and the run reaches them by their own name. `deleteChat` sweeps
+  `chatSavedData` beside `agentCallbackArgs`.
 - **Keyed by name, not by sequence.** A `value` payload is keyed by its message's sequence, since
   each callback has its own arguments. A data name holds one value at a time, and nothing reads an
   older one: a revert "changes what the chat proposes, not what was said" (`refoldChatCompactions`),
@@ -363,7 +365,10 @@ restricted data. This plan does not change gadget frames.
   measures each JSON text itself and checks that it parses. Then it decides each name in order. It
   refuses a name `validateBindingName` refuses; a name in scope that is not a data name: one the
   chat binds as anything but data, `GIT`, a name a pending connection request claims (runAgent
-  passes the turn's `claimedNames`), or a name saved as another name earlier in the run; and a
+  passes the turn's `claimedNames`), or a name saved as another name earlier in the run; another
+  name whose target is not one of the chat's own names (it must pass `validateBindingName` and be
+  an own property of `bindings`, so a tampered harness can't name `toString`), is saved data, or
+  is callback arguments; and a
   save that would take what the chat's code carries by value past the cap, unless it shrinks its
   name. The harness reports a value too long to save by its length alone, so its result stays
   small. One refused name refuses no other. The output
@@ -378,14 +383,23 @@ restricted data. This plan does not change gadget frames.
   beside `bindings`.
 - **The barrier.** `commitAgentStep` takes the step's `savedData: {name, json}[]` and writes it in
   the step's transaction, with the record that stamps the names. It writes nothing for a chat that
-  is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing.
-- **Caps.** One cap, 400,000 UTF-16 code units for what an `executeCode` run's `env` carries by
-  value: each data name with its JSON text, measured as `json.length` as
+  is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing. A save
+  is buffered only after `executeCodeMode` returns, and the call then returns at once; pi records
+  a call as an error only when it threw or its result says so, and runs no `afterToolCall` here,
+  with tool calls run in sequence, so a buffered save's call is always recorded with its stamp,
+  even in a step the user stopped.
+- **Caps.** One cap on what a save controls, 400,000 UTF-16 code units for what an `executeCode`
+  run's `env` carries by value: each data name with its JSON text, measured as `json.length` as
   `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`, and each agent callback's name
   with its arguments, measured as JSON would write them, a stub counting 64 (`envValueLength`,
   which reads no member of a stub). A save that grows a name past the cap is refused; one that
   shrinks a name always lands, so a chat over the cap through its callbacks can come back under
-  it. Its reason:
+  it. Callback arguments arrive unbounded (`deliverAgentCallback`), so the env build enforces the
+  platform's limit itself: `#fitEnv` measures the `env` a run would carry in bytes as V8
+  serializes it (one byte a code unit for Latin-1 text, two otherwise), and past 1 MiB less 64
+  KiB it leaves out saved data names, largest first, then callback arguments, largest first, and
+  names each in the run's output. A name left out is still saved, and `env.NAME = null` lands as
+  a shrinking save, so the chat recovers. Its reason:
   - Every `executeCode` run carries all of it into its Dynamic Worker, and workerd refuses an
     `env` over 1 MiB: "Dynamic Worker env size (1900053 bytes) exceeds the maximum allowed size of
     1048576 bytes", observed in this branch's workerd tests when a first build tried 2,000,000
@@ -460,7 +474,8 @@ restricted data. This plan does not change gadget frames.
   folds the seed, the active checkpoint's `chatBindings` and the messages after it with
   `foldChatBindings`: the loop `buildCompactionState` runs today, taken out so both use it. A
   `data` entry returns its stored JSON. A name the tag lists that is another name of a binding
-  resolves as that binding, since its entry is a copy.
+  resolves as that binding, since its entry is a copy. The fold reads every message since the
+  checkpoint on each name a view opens.
 - **Kinds.** A Gadget (`gadgets` record of type `gadget`): the kernel materializes the chat's
   changes, then returns `getGadgetFacet(id, chatId, joinAs)`. Materializing is skipped while a turn
   runs (`checkChatExistsAndMaterializeChanges`), as it is for a gadget pane opened mid-turn. A
@@ -471,7 +486,9 @@ restricted data. This plan does not change gadget frames.
   and callback arguments. The automatic `GIT` binding is not a chat binding, so a view never
   reaches it. A Gadget's `exports` is not in the returned stub.
 - **The root stub.** Both kinds are wrapped once, as `getGadgetFacet` wraps its facet: the wrapper
-  counts toward `joinAs` until it is disposed, and refuses each call once the chat is gone.
+  counts toward `joinAs` until it is disposed, and refuses each call once the chat is gone. A
+  property of the stub gets the same wrapper, and the check runs when it is called, so
+  `session.issues.list()` pipelines as Cap'n Web allows, and is refused with its chat.
 - **The view caller.** `GatekeeperCaller` gains `{from: "view", chatId}`. `observerContextOf` maps
   it to the chat. `ApprovalQueueImpl` refuses `bindHook` for it ("A view can't bind hooks.") before
   anything is stored, and refuses `authorizeObservation` and `submitAction` once its chat is gone,
@@ -686,6 +703,10 @@ restricted data. This plan does not change gadget frames.
 - `turnViews` in `evals/views.ts` keeps each block's names, and `view-comes-after-its-gadgets`
   fails a view that lists a name its own message, or a later one in the turn, creates or saves
   (the `savedEnv` stamp).
+- Declined on review, 2026-11-11: the eval host structured-clones what a binding's call returns,
+  so a view that calls a method on a returned capability (a GitHub issue, a cursor) fails there
+  with an explicit error; no eval task gives a view a connection today, and the Workshop passes
+  such capabilities through Cap'n Web.
 
 ## Rejected alternatives
 

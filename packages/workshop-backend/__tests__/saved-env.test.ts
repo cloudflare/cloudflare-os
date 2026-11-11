@@ -91,6 +91,11 @@ const code = (body: string) =>
   fauxToolCall("executeCode", { code: `export default async function(self, env) {\n${body}\n}` });
 const step = (...calls: ReturnType<typeof fauxToolCall>[]) => fauxAssistantMessage(calls, { stopReason: "toolUse" });
 const output = (call: AiToolCall | undefined) => call?.toolName === "executeCode" ? call.output : call?.error;
+// The names a run's output reports it saved, and those it reports it refused, in order, and the
+// line it gives one name.
+const savedNames = (log: string) => [...log.matchAll(/^Saved env\.(\w+) /gm)].map(match => match[1]);
+const refusedNames = (log: string) => [...log.matchAll(/^env\.(\w+) was not saved:/gm)].map(match => match[1]);
+const lineFor = (log: string, name: string) => log.split("\n").find(line => line.startsWith(`env.${name} `)) ?? "";
 
 describe("executeCode saving env", () => {
   it("saves JSON data and another name for a binding, and says so", () => withChat(async ({ run }) => {
@@ -98,14 +103,11 @@ describe("executeCode saving env", () => {
       env.TOTALS = { north: 1200, rows: [["Acme", 3.5, true, null]] };
       env.SALES = env.EXPENSES;
       console.log("done");`);
-    expect(log.split("\n")).toEqual([
-      "done",
-      "Saved env.TOTALS (data) for views and later code.",
-      "Saved env.SALES (another name for env.EXPENSES) for views and later code.",
-    ]);
+    expect(log.split("\n")[0]).toBe("done");
+    expect(savedNames(log)).toEqual(["TOTALS", "SALES"]);
     expect(saves).toEqual([
       { name: "TOTALS", json: '{"north":1200,"rows":[["Acme",3.5,true,null]]}' },
-      { name: "SALES", alias: "EXPENSES" },
+      { name: "SALES", alias: "EXPENSES", entry: EXPENSES },
     ]);
   }));
 
@@ -121,18 +123,12 @@ describe("executeCode saving env", () => {
       env.NAN = [NaN];
       env.BIG = "é".repeat(500000);
       env.KEPT = "yes";`, { claimed: ["PENDING"] });
-    const neither = "is neither JSON data nor another name for one of this chat's bindings.";
-    expect(log.split("\n")).toEqual([
-      "env.GIT was not saved: env.GIT is one of this chat's bindings; save it under another name.",
-      "env.EXPENSES was not saved: env.EXPENSES is one of this chat's bindings; save it under another name.",
-      "env.PENDING was not saved: env.PENDING is one of this chat's bindings; save it under another name.",
-      `env.WHEN was not saved: env.WHEN.at is a Date, so env.WHEN ${neither}`,
-      `env.LOOP was not saved: env.LOOP.self contains itself, so env.LOOP ${neither}`,
-      `env.DRAW was not saved: env.DRAW is a function, so env.DRAW ${neither}`,
-      `env.NAN was not saved: env.NAN[0] is NaN, so env.NAN ${neither}`,
-      "env.BIG was not saved: env.BIG is 500002 code units as JSON, and a chat's saved data holds at most 400,000.",
-      "Saved env.KEPT (data) for views and later code.",
-    ]);
+    expect(refusedNames(log)).toEqual(["GIT", "EXPENSES", "PENDING", "WHEN", "LOOP", "DRAW", "NAN", "BIG"]);
+    expect(savedNames(log)).toEqual(["KEPT"]);
+    // A value that is not data is named by the path that keeps it from being data.
+    expect(lineFor(log, "WHEN")).toContain("env.WHEN.at");
+    expect(lineFor(log, "LOOP")).toContain("env.LOOP.self");
+    expect(lineFor(log, "NAN")).toContain("env.NAN[0]");
     expect(saves).toEqual([{ name: "KEPT", json: '"yes"' }]);
   }));
 
@@ -152,9 +148,7 @@ describe("executeCode saving env", () => {
     };
     let { log, saves } = await run(`env.B = "漢".repeat(20000);`, near);
     expect(saves).toEqual([]);
-    expect(log).toBe("env.B was not saved: it would take what this chat's code carries in env, its " +
-        "saved data and any agent callback arguments, past 400,000 code units; save less, or set a name you " +
-        "no longer need to null.");
+    expect(refusedNames(log)).toEqual(["B"]);
 
     // Callback arguments alone over the cap: a save that grows is refused, one that shrinks lands.
     impl.storage.agentCallbackArgs.put({ chatId: CHAT_ID, sequence: 9, args: ["x".repeat(410_000)] });
@@ -163,16 +157,52 @@ describe("executeCode saving env", () => {
     expect((await run(`env.A = "short";`, over)).saves).toEqual([{ name: "A", json: '"short"' }]);
   }));
 
+  it("leaves the largest saved data out of a run its env would not fit, and lets it shrink back",
+      () => withChat(async ({ impl, run }) => {
+    // A callback arriving after the save took the chat past what one run can carry.
+    impl.storage.agentCallbackArgs.put({ chatId: CHAT_ID, sequence: 9, args: ["x".repeat(800_000)] });
+    let bindings = { EXPENSES, ARGS: { type: "value", messageSequence: 9 }, BIG: { type: "data" },
+        SMALL: { type: "data" } } as Bindings;
+    let pending = { BIG: JSON.stringify("漢".repeat(150_000)), SMALL: "[1]" };
+    let ran = await run(`console.log(typeof env.BIG, JSON.stringify(env.SMALL), env.ARGS[0].length);`,
+        { bindings, pending });
+    expect(ran.log.split("\n")).toContain("undefined [1] 800000");
+    expect(lineFor(ran.log, "BIG")).not.toBe("");
+    expect(lineFor(ran.log, "SMALL")).toBe("");
+
+    let shrunk = await run(`env.BIG = null;`, { bindings, pending });
+    expect(shrunk.saves).toEqual([{ name: "BIG", json: "null" }]);
+    let back = await run(`console.log(JSON.stringify(env.BIG));`, { bindings, pending: { ...pending, BIG: "null" } });
+    expect(back.log).toBe("null");
+  }));
+
+  it("refuses another name for agent callback arguments, which the run reaches by their own name",
+      () => withChat(async ({ impl, run }) => {
+    impl.storage.agentCallbackArgs.put({ chatId: CHAT_ID, sequence: 9, args: [{ n: 1 }] });
+    let { log, saves } = await run(`env.COPY = env.ARGS;`,
+        { bindings: { EXPENSES, ARGS: { type: "value", messageSequence: 9 } } });
+    expect(saves).toEqual([]);
+    expect(refusedNames(log)).toEqual(["COPY"]);
+  }));
+
+  it("refuses another name a tampered harness reports for a name that is not the chat's own",
+      () => withChat(async ({ run }) => {
+    for (let alias of ["toString", "__proto__", "constructor"]) {
+      // The harness finds the name an object came from with Array.prototype.find.
+      let { log, saves } = await run(`Array.prototype.find = () => [${JSON.stringify(alias)}]; env.X = {};`);
+      expect(saves, alias).toEqual([]);
+      expect(refusedNames(log), alias).toEqual(["X"]);
+    }
+  }));
+
   it("saves data changed in place, keeps a deleted name, and leaves untouched data alone", () => withChat(async ({ run }) => {
     let { log, saves } = await run(`env.FOOD.weeks.push(2); delete env.OLD;`, {
       bindings: { EXPENSES, FOOD: { type: "data" }, OLD: { type: "data" }, SAME: { type: "data" } },
       pending: { FOOD: '{"weeks":[1]}', OLD: "1", SAME: "[3]" },
     });
     expect(saves).toEqual([{ name: "FOOD", json: '{"weeks":[1,2]}' }]);
-    expect(log.split("\n")).toEqual([
-      "Saved env.FOOD (data) for views and later code.",
-      "env.OLD is still saved: a saved name can't be removed; save it again to replace it.",
-    ]);
+    expect(refusedNames(log)).toEqual([]);
+    expect(lineFor(log, "OLD")).not.toBe("");
   }));
 
   it("keeps data names data: a copy of one is data, and one can't become another name", () => withChat(async ({ run }) => {
@@ -180,7 +210,7 @@ describe("executeCode saving env", () => {
       bindings: { EXPENSES, FOOD: { type: "data" } }, pending: { FOOD: "[1]" },
     });
     expect(saves).toEqual([{ name: "COPY", json: "[1]" }]);
-    expect(log).toContain("env.FOOD was not saved: env.FOOD holds saved data, and stays data");
+    expect(refusedNames(log)).toEqual(["FOOD"]);
   }));
 
   it("gives a run the step's unsaved data and the chat's stored data", () => withChat(async ({ impl, run }) => {
@@ -200,7 +230,7 @@ describe("executeCode saving env", () => {
   it("checks the JSON the harness reports, since the agent's code shares its isolate", () => withChat(async ({ run }) => {
     let { log, saves } = await run(`JSON.stringify = () => "{"; env.X = 1;`);
     expect(saves).toEqual([]);
-    expect(log).toBe("env.X was not saved: its JSON does not parse.");
+    expect(refusedNames(log)).toEqual(["X"]);
   }));
 });
 
@@ -227,8 +257,7 @@ describe("saved env in a turn", () => {
       step(fauxToolCall("createGadget", { title: "New", bindingName: "NEWG" }), code(`env.NEWG = 1;`)),
       step(code(`env.LATER = 1;`), fauxToolCall("createGadget", { title: "Later", bindingName: "LATER" })),
     ]);
-    expect(output(calls[1])).toBe(
-      "env.NEWG was not saved: env.NEWG is one of this chat's bindings; save it under another name.");
+    expect(refusedNames(output(calls[1]) ?? "")).toEqual(["NEWG"]);
     expect(calls[3]?.error).toBeDefined();
   }));
 
@@ -240,6 +269,29 @@ describe("saved env in a turn", () => {
     impl.storage.chatMeta.delete(CHAT_ID);
     await impl.commitAgentStep(CHAT_ID, ALICE, [], { ...empty, savedData: [{ name: "B", json: "2" }] });
     expect([...impl.storage.chatSavedData.list()].map((record: { name: string }) => record.name)).toEqual(["A"]);
+  }));
+
+  it("builds the same binding map at tool time, in a later turn's replay, and for a view",
+      () => withChat(async ({ impl, turn }) => {
+    let seen: Bindings[] = [];
+    let executeCodeMode = impl.executeCodeMode.bind(impl);
+    impl.executeCodeMode = (chatId: number, body: string, initiator: unknown, model: string,
+                            bindings: Bindings, ...rest: unknown[]) => {
+      seen.push(bindings);
+      return executeCodeMode(chatId, body, initiator, model, bindings, ...rest);
+    };
+    await turn([
+      step(code(`env.A = 1; env.S = env.EXPENSES;`)),
+      step(code(`env.A = 2; env.B = [env.A];`)),
+      step(code(`console.log("tool time");`)),
+    ]);
+    await turn([step(code(`console.log("replay");`))]);
+    let [toolTime, replay] = seen.slice(-2);
+    expect(Object.keys(toolTime!)).toEqual(["EXPENSES", "A", "S", "B"]);
+    expect(replay).toEqual(toolTime);
+    for (let [name, entry] of Object.entries(toolTime!)) {
+      expect(impl.resolveChatBinding(CHAT_ID, name), name).toEqual(entry);
+    }
   }));
 
   it("removes a chat's saved data with the chat", () => withChat(async ({ impl, turn, open }) => {

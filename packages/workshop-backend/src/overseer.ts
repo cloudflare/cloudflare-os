@@ -136,24 +136,38 @@ async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
-// The most an executeCode run's env may carry by value (see #decideEnvSaves and
-// plans/live-views.md, "Caps"), in UTF-16 code units: each saved data name with its JSON text, and
-// each agent callback's name with its arguments. Every run carries all of it into its Dynamic
-// Worker, and workerd refuses an env over 1 MiB ("Dynamic Worker env size ... exceeds the maximum
-// allowed size of 1048576 bytes"). A string is serialized at up to two bytes per unit, so 400,000
-// units leave room for the stubs of the chat's other bindings. The same bound keeps each
-// chatSavedData record well inside Durable Object storage's 2 MB value limit.
+// What a save may bring a chat's by-value env to (see #decideEnvSaves and plans/live-views.md,
+// "Caps"), in UTF-16 code units: each saved data name with its JSON text, and each agent callback's
+// name with its arguments. It bounds only what a save controls: callback arguments arrive
+// unbounded, so executeCodeMode's env build (#fitEnv) enforces the platform's limit itself. At up
+// to two bytes a unit, 400,000 units keep a chat that saves within it clear of that limit, and
+// each chatSavedData record well inside Durable Object storage's 2 MB value limit.
 const MAX_SAVED_DATA_LENGTH = 400_000;
 
-// What a stub, or any other value that is not plain data, counts toward MAX_SAVED_DATA_LENGTH: a
-// stub serializes as a small reference.
+// The most a run's env may carry, in bytes as workerd serializes it, which refuses an env over
+// 1 MiB ("Dynamic Worker env size ... exceeds the maximum allowed size of 1048576 bytes"), less
+// 64 KiB for what envValueLength's estimate leaves out.
+const MAX_ENV_BYTES = 1_048_576 - 65_536;
+
+// What a stub, or any other value that is not plain data, counts in an env: a stub serializes as a
+// small reference. A binding of the chat that is a stub counts as much.
 const OPAQUE_VALUE_LENGTH = 64;
 
-// About how many UTF-16 code units `value` takes in an env, as JSON would write it. Descends only
-// plain objects and arrays, and reads no member of anything else, since a callback's arguments may
-// hold stubs, whose every member is a call.
-function envValueLength(value: unknown, open = new Set<object>()): number {
-  if (typeof value === "string") return value.length + 2;
+// A string's length in code units, and in bytes as V8 serializes it: one byte a unit when every
+// unit fits in Latin-1, two otherwise.
+const codeUnits = (text: string) => text.length;
+const serializedBytes = (text: string) => {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 0xff) return 2 * text.length;
+  }
+  return text.length;
+};
+
+// About how much `value` takes in an env, as JSON would write it, with each string measured by
+// `measure`. Descends only plain objects and arrays, and reads no member of anything else, since a
+// callback's arguments may hold stubs, whose every member is a call.
+function envValueLength(value: unknown, measure = codeUnits, open = new Set<object>()): number {
+  if (typeof value === "string") return measure(value) + 2;
   if (typeof value === "function") return OPAQUE_VALUE_LENGTH;
   if (typeof value !== "object" || value === null) return 8;
   let prototype: unknown = Object.getPrototypeOf(value);
@@ -164,10 +178,20 @@ function envValueLength(value: unknown, open = new Set<object>()): number {
   open.add(value);
   let length = 2;
   for (let [key, item] of Object.entries(value)) {
-    length += (array ? 0 : key.length + 3) + envValueLength(item, open) + 1;
+    length += (array ? 0 : measure(key) + 3) + envValueLength(item, measure, open) + 1;
   }
   open.delete(value);
   return length;
+}
+
+// Whether `name` can name a binding (see validateBindingName).
+function isBindingName(name: string): boolean {
+  try {
+    validateBindingName(name);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 let CODE_MODE_HARNESS =
@@ -8390,34 +8414,47 @@ class OverseerImpl implements AgentHooks {
     throw new Error(`"${name}" can't be used in a view.`);
   }
 
-  // A view's root stub: each call is refused once the chat is gone, and disposing it disposes
-  // `stub` and ends `leave`'s session count, so the holder can't keep one without the other.
+  // A view's root stub: each call through it, at any depth of property, is refused once the chat
+  // is gone, and disposing it disposes `stub` and ends `leave`'s session count, so the holder can't
+  // keep one without the other.
   #viewStub(stub: RpcStub<any>, chatId: number, leave?: () => void): RpcStub<any> {
     let chatMeta = this.storage.chatMeta;
-    let proxy = new Proxy(stub, {
-      get(target, prop) {
-        if (prop === Symbol.dispose) {
-          return () => {
-            leave?.();
-            target[Symbol.dispose]();
-          };
-        }
-        // `target` as the receiver, as in getGadgetFacet, where the proxy as receiver throws.
-        let member = Reflect.get(target, prop, target);
-        if (typeof prop !== "string" || typeof member !== "function") return member;
+    // Each wrapper's own target, so a call passes its parent's stub, not the wrapper, as `this`.
+    let targets = new WeakMap<object, object>();
+    let wrap = (target: any, root: boolean): any => {
+      let proxy = new Proxy(target, {
+        get(member, prop) {
+          if (root && prop === Symbol.dispose) {
+            return () => {
+              leave?.();
+              member[Symbol.dispose]();
+            };
+          }
+          // `member` as the receiver, as in getGadgetFacet, where the proxy as receiver throws.
+          let value = Reflect.get(member, prop, member);
+          // A property of a stub is a stub of that path, which a call or a further property
+          // pipelines through: it gets the same wrapper, so its call is checked too.
+          if (typeof prop !== "string" || prop === "then" || typeof value !== "function") return value;
+          return wrap(value, false);
+        },
         // Checked in a continuation, so the refusal rejects the promise the caller already holds.
-        return (...args: unknown[]) => Promise.resolve().then(() => {
-          if (!chatMeta.get(chatId)) throw new Error("This view's chat has been deleted.");
-          return Reflect.apply(member, target, args);
-        });
-      },
-      getPrototypeOf() {
-        return RpcTarget.prototype;
-      },
-    });
+        apply(member, self, args) {
+          return Promise.resolve().then(() => {
+            if (!chatMeta.get(chatId)) throw new Error("This view's chat has been deleted.");
+            let receiver = typeof self === "object" || typeof self === "function" ? self : undefined;
+            return Reflect.apply(member, receiver ? targets.get(receiver) ?? receiver : undefined,
+                args);
+          });
+        },
+        getPrototypeOf() {
+          return RpcTarget.prototype;
+        },
+      });
+      targets.set(proxy, target);
+      return proxy;
+    };
     // As in getGadgetFacet: workerd doesn't detect a proxy RpcTarget that it serializes.
-    // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
-    return new NativeRpcStub(proxy) as RpcStub<any>;
+    return new NativeRpcStub(wrap(stub, true)) as RpcStub<any>;
   }
 
   getChatAgentContext(chatId: number): AiChatAgentContext {
@@ -9810,10 +9847,12 @@ class OverseerImpl implements AgentHooks {
         overseerId: this.ctx.id.toString(),
       };
 
-      // The agent's env holds the chat's named bindings (see getEnvForAgent).
-      let env = this.getEnvForAgent(chatId, bindings, executionId, savedEnv.pending);
-      let savedNames = Object.entries(bindings)
-          .filter(([name, entry]) => entry.type === "data" && Object.hasOwn(env, name))
+      // The agent's env holds the chat's named bindings (see getEnvForAgent), less any the run
+      // can't carry (see #fitEnv).
+      let fitted = this.#fitEnv(chatId, bindings, savedEnv.pending);
+      let env = this.getEnvForAgent(chatId, fitted.bindings, executionId, savedEnv.pending);
+      let savedNames = Object.entries(fitted.bindings)
+          .filter(([, entry]) => entry.type === "data")
           .map(([name]) => name);
       let workerDef: WorkerLoaderWorkerCode = {
         compatibilityDate: "2026-02-01",
@@ -9883,8 +9922,10 @@ class OverseerImpl implements AgentHooks {
       if (error !== undefined) {
         log += `\n\nUncaught exception: ${error}`;
       }
-      // The model reads what the run saved on env, and why it refused any name.
-      let {notes, saves} = this.#decideEnvSaves(chatId, bindings, savedEnv, changes);
+      // The model reads what the run left out of env, what it saved, and why it refused any name.
+      let decided = this.#decideEnvSaves(chatId, bindings, savedEnv, changes);
+      let saves = decided.saves;
+      let notes = [...fitted.notes, ...decided.notes];
       if (notes.length > 0) onOutputText?.(`\n${notes.join("\n")}`);
       log = [log, ...notes].filter(part => part !== "").join("\n");
       if (log === "") log = "(function succeeded with no output)";
@@ -9899,6 +9940,47 @@ class OverseerImpl implements AgentHooks {
       this.#codeModeResolvers.delete(executionId);
       this.#forgedRestoreTargets.delete(chatId);
     }
+  }
+
+  // The chat's bindings that fit in one run's env (see MAX_ENV_BYTES), and a note for each name
+  // left out to make them fit: saved data first, largest first, then agent callback arguments,
+  // largest first. A name left out is still saved, and a save that shrinks it lands as any other
+  // does (see #decideEnvSaves), so the chat can always come back under the limit.
+  #fitEnv(chatId: number, bindings: Record<string, ChatBindingEntry>,
+          pending: ReadonlyMap<string, string>)
+      : {bindings: Record<string, ChatBindingEntry>, notes: string[]} {
+    let total = 0;
+    let byValue: {name: string, size: number, data: boolean}[] = [];
+    for (let [name, entry] of Object.entries(bindings)) {
+      let size = serializedBytes(name) + (
+          entry.type === "data" ? serializedBytes(this.savedDataJson(chatId, name, pending)) :
+          entry.type === "value" ?
+              envValueLength(this.#callbackArgs(chatId, entry.messageSequence), serializedBytes) :
+          OPAQUE_VALUE_LENGTH);
+      total += size;
+      if (entry.type !== "workpiece") byValue.push({name, size, data: entry.type === "data"});
+    }
+    let leftOut = new Set<string>();
+    let notes: string[] = [];
+    for (let {name, size, data} of byValue.toSorted(
+        (a, b) => Number(b.data) - Number(a.data) || b.size - a.size)) {
+      if (total <= MAX_ENV_BYTES) break;
+      total -= size;
+      leftOut.add(name);
+      notes.push(`env.${name} was left out of this run: with it, the run's env would be past the ` +
+          `platform's limit of 1 MiB.` + (data
+              ? ` It is still saved; set env.${name} = null, or save it smaller, to bring it back.`
+              : ""));
+    }
+    return {
+      bindings: Object.fromEntries(Object.entries(bindings).filter(([name]) => !leftOut.has(name))),
+      notes,
+    };
+  }
+
+  // An agent callback's stored arguments, or undefined if they are gone.
+  #callbackArgs(chatId: number, messageSequence: number): unknown[] | undefined {
+    return this.storage.agentCallbackArgs.get(chatKey(chatId, messageSequence))?.args;
   }
 
   // Decides each name a run changed on env (see plans/live-views.md, "Saving env"). A data name
@@ -9918,8 +10000,7 @@ class OverseerImpl implements AgentHooks {
         lengths.set(name, length);
         total += length;
       } else if (entry.type === "value") {
-        let stored = this.storage.agentCallbackArgs.get(chatKey(chatId, entry.messageSequence));
-        total += name.length + envValueLength(stored?.args);
+        total += name.length + envValueLength(this.#callbackArgs(chatId, entry.messageSequence));
       }
     }
     let notes: string[] = [];
@@ -9943,24 +10024,33 @@ class OverseerImpl implements AgentHooks {
         }
         continue;
       }
-      let entry = bindings[name];
+      // `bindings` is a plain object, so only its own names count: a reported name can't reach
+      // Object.prototype's.
+      let ownEntry = (key: string) => Object.hasOwn(bindings, key) ? bindings[key] : undefined;
+      let entry = ownEntry(name);
       if (name === GIT_BINDING_NAME || scope.claimed.has(name) || aliased.has(name) ||
           (entry !== undefined && entry.type !== "data")) {
         refuse(`env.${name} is one of this chat's bindings; save it under another name`);
         continue;
       }
       if (typeof change.alias === "string") {
-        let target = bindings[change.alias];
+        let alias = change.alias;
+        let target = isBindingName(alias) ? ownEntry(alias) : undefined;
         if (isData) {
-          refuse(`env.${name} holds saved data, and stays data; save env.${change.alias} under ` +
+          refuse(`env.${name} holds saved data, and stays data; save env.${alias} under ` +
               `a new name`);
+        } else if (target?.type === "value") {
+          // A second name would carry the same arguments into every run again, and no view
+          // reaches them.
+          refuse(`env.${alias} holds agent callback arguments; read them as env.${alias}, or ` +
+              `save what you need from them as data`);
         } else if (target === undefined || target.type === "data") {
           refuse(`env.${name} is neither JSON data nor another name for one of this chat's ` +
               `bindings`);
         } else {
-          saves.push({name, alias: change.alias});
+          saves.push({name, alias, entry: target});
           aliased.add(name);
-          notes.push(`Saved env.${name} (another name for env.${change.alias}) for views and ` +
+          notes.push(`Saved env.${name} (another name for env.${alias}) for views and ` +
               `later code.`);
         }
         continue;

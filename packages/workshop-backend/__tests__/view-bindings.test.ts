@@ -48,11 +48,23 @@ export class Gadget extends DurableObject {
 }
 `;
 
+// A capability a session hands out, sharing its queue, as a GitHub cursor does.
+class FakeCursor extends RpcTarget {
+  constructor(readonly queue: ApprovalQueue) { super(); }
+  async next() {
+    await this.queue.authorizeObservation({ title: "Read the next issue", description: "Issue 13." });
+    return "#13";
+  }
+}
+
 // The session a gatekeeper returns, behind a real stub as in production.
 class FakeSession extends RpcTarget {
   disposed = false;
   constructor(readonly queue: ApprovalQueue) { super(); }
   listIssues() { return ["#12"]; }
+  // A member reached through a property, as `session.issues.list()`.
+  get issues() { return { list: () => ["#12"] }; }
+  openCursor() { return new FakeCursor(this.queue); }
   [Symbol.dispose]() { this.disposed = true; }
 }
 
@@ -248,6 +260,25 @@ describe("connectToChatBinding", () => {
     await expect(queue.authorizeObservation({ title: "Read", description: "Read.", ownerInvitesOnly: true }))
         .rejects.toThrow("This view's chat has been deleted.");
     expect([...impl.storage.actions.list()]).toEqual([]);
+  }));
+
+  it("passes a call through a property of a connection's session, and refuses it once the chat is deleted",
+      () => withChat(async ({ impl, open }) => {
+    let github = await (await open("owner")).connectToChatBinding(CHAT_ID, "GITHUB");
+    if (github.type !== "connection") throw new Error("expected a connection");
+    expect(await github.session.issues.list()).toEqual(["#12"]);
+    impl.storage.chatMeta.delete(CHAT_ID);
+    await expect(github.session.issues.list()).rejects.toThrow("This view's chat has been deleted.");
+  }));
+
+  it("refuses a call through a capability a view's session returned, once the chat is deleted",
+      () => withChat(async ({ impl, open }) => {
+    let github = await (await open("owner")).connectToChatBinding(CHAT_ID, "GITHUB");
+    if (github.type !== "connection") throw new Error("expected a connection");
+    using cursor = await github.session.openCursor();
+    expect(await cursor.next()).toBe("#13");
+    impl.storage.chatMeta.delete(CHAT_ID);
+    await expect(cursor.next()).rejects.toThrow("This view's chat has been deleted.");
   }));
 
   it("after the gadget's facet restarts, a view's next call fails and a new lookup works",
