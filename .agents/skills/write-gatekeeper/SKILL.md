@@ -23,7 +23,7 @@ Write new gatekeepers to this observer contract:
 - Implement `addObserver(id, verifier)` and `removeObserver(id)`, which the current interface requires, as **compatibility-only no-ops**. Do not introduce observer rosters, observed-set logs, stored observer verifiers, `excludeObservers`, or new legacy trackers.
 - Require `subresources` in your read helper's type; the shared type still makes it optional. Type-checking does not enforce the whole contract; use the [review checklist](#reviewing-a-gatekeeper).
 
-The current `gatekeeper.ts` JSDoc still describes the legacy protocol, in which `addObserver()` must verify and throw and a binding-wide requirement such as tenant membership belongs there. For new gatekeepers this section overrides it. The current kernel already supports that: it checks every reported requirement through `verifyObserverAccess()` before authorizing each read, and again at every collaborator's open.
+The current `gatekeeper.ts` JSDoc still describes the legacy protocol, in which `addObserver()` must verify and throw and a binding-wide requirement such as tenant membership belongs there. For new gatekeepers this section overrides it. The current kernel already supports that: it checks every reported requirement itself through `verifyObserverAccess()`.
 
 This is a **new-authoring** rule, not a shortcut for migrating existing gatekeepers. Existing migrations must preserve old checks and export their historical requirements through `getHistoricalSubresources()`; they cannot export a blind `[]` or turn their admission methods into no-ops. See [Existing-code migration and legacy history](#existing-code-migration-and-legacy-history).
 
@@ -280,7 +280,7 @@ For concrete examples, see the Google gatekeeper's Google Docs simulation/cache 
 
 ### Observer verification
 
-This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks which observers can access them. Before authorizing a read, it checks every collaborator who can see the chat or gadget that made it through `verifyObserverAccess()`. It records the reported IDs and checks them again when collaborators open that context.
+This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks, through `verifyObserverAccess()`, which observers can access them. Which collaborators it asks about, and when, is the Workshop's policy (`docs/observers.md` §10), not part of the gatekeeper's contract: answer correctly for whichever observers a call names.
 
 For **new gatekeepers**, there is one authoring protocol: explicit `subresources` on every observation, with no binding-wide admission dependency. Omitting the optional field selects legacy behavior; it does not fail type-checking. Prevent that omission with a typed helper, not a legacy tracker.
 

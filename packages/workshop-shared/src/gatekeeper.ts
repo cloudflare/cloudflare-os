@@ -1121,11 +1121,10 @@ export interface Gatekeeper<Session> extends DurableObject {
 
   /**
    * Required of a gatekeeper whose observations report `ObservationDescription.subresources`:
-   * which of `observers` can read every one of `subresources` now. The Workshop calls this to check
-   * collaborators against the subresource IDs this gatekeeper reported: before authorizing a read
-   * that reports them, for every collaborator who can see the context that made it, and at
-   * admission, alongside `addObserver()`, for everything the collaborator's role reaches. The
-   * answer must not depend on which of the two is asking, and the Workshop does not say.
+   * which of `observers` can read every one of `subresources` now. See
+   * `ObservationDescription.subresources` for the Workshop's audience and scheduling policy.
+   * Answers must not depend on whether the check is for read authorization or admission; the
+   * Workshop does not identify which.
    *
    * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
    * unique within one call. It is not a cache key: the same observer may arrive later with a
@@ -1285,8 +1284,7 @@ export interface ObservationAuthorizer extends RpcTarget {
    * data to the gadget, this is OK.
    *
    * When `description.subresources` is present, returning normally also means the Workshop
-   * recorded them and confirmed that every collaborator who can see the read may access them (see
-   * `ObservationDescription.subresources`).
+   * recorded them and completed the checks required by `ObservationDescription.subresources`.
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
 
@@ -1567,8 +1565,10 @@ export type ObservationDescription = {
    * Workshop checks collaborators against through this gatekeeper's
    * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting them must implement it. Before
    * authorizing the read, the Workshop checks every collaborator who can see the chat or gadget
-   * that made it, refusing the read if any is denied; it then records the IDs and checks them again
-   * at each collaborator's admission, alongside `Gatekeeper.addObserver()`.
+   * that made it and holds a live session, refusing the read if any is denied; it then records the
+   * IDs and checks them again at each collaborator's admission, alongside
+   * `Gatekeeper.addObserver()`, which is where a collaborator without a live session is first
+   * checked against them.
    *
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
    * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)

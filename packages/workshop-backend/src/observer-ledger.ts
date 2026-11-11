@@ -284,10 +284,10 @@ export class ObserverLedger {
   // live session, whatever their role: "build" collaborators for any read, anyone with access for
   // a workspace read (which every chat and gadget includes), and for a gadget's read, those whose
   // access includes a gadget that reaches it -- whether or not they have opened that gadget. One
-  // without a session sees nothing until they open again, and that admission checks every
-  // requirement this read records, so an offline collaborator's lapsed account cannot block the
-  // read. An admission counts as a session from before it verifies, so a read either checks it or
-  // commits before it rescopes.
+  // without a session is checked against every requirement this read records when they next open,
+  // so an offline collaborator's lapsed account cannot block the read; what can reach them before
+  // then is listed under Known limitations in docs/observers.md. An admission counts as a session
+  // from before it verifies, so a read either checks it or commits before it rescopes.
   //
   // Observers without a choice for this connection have had no session holding anything whose
   // verification scope it entered since (every widening restarts the sessions holding what

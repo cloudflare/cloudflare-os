@@ -216,16 +216,15 @@ export function escapeObservationValue(value: string): string {
  * naming none, so a read that returned nothing describes itself as `baseline`.
  *
  * A `subresources` scope reports the read's access dependencies as
- * `ObservationDescription.subresources`, and the Workshop checks them itself: through the
- * gatekeeper's `verifyObserverAccess()` (see {@link observerAccessVerifier}) for every collaborator
- * who can see the chat or gadget that made the read, and again at each one's admission. The
- * strategy takes no part, so the read adds nothing to the binding's tracked collections, exclusions
- * or fences, while the strategy's `addObserver()` keeps enforcing what earlier reads recorded and
- * every read still on another scope. Name every dependency the read has, including any the
- * admission baseline enforced (the bound resource's ACL, tenant membership), not only those new to
- * the binding, since the Workshop records them per chat or gadget; `[]` says nothing restricts the
- * read. An owner-only read stays on `withholdFromObservers` until the binding reports an id its
- * oracle grants only to the owner.
+ * `ObservationDescription.subresources`, and the Workshop checks collaborators against them
+ * itself, through the gatekeeper's `verifyObserverAccess()` (see {@link observerAccessVerifier}).
+ * The strategy takes no part, so the read adds nothing to the binding's tracked collections,
+ * exclusions or fences, while the strategy's `addObserver()` keeps enforcing what earlier reads
+ * recorded and every read still on another scope. Name every dependency the read has, including
+ * any the admission baseline enforced (the bound resource's ACL, tenant membership), not only
+ * those new to the binding, since the Workshop records them per chat or gadget; `[]` says nothing
+ * restricts the read. An owner-only read stays on `withholdFromObservers` until the binding
+ * reports an id its oracle grants only to the owner.
  */
 export type ObservationScope =
   | { kind: "baseline" }

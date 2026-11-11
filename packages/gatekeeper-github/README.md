@@ -111,8 +111,8 @@ passing doesn't mean GitHub shows that account everything the binding's account 
   freshness rules still apply.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   one served from a cache or from queued actions, and each hook delivery, reports
-  `repo/<repoId>` as its subresource, so the Workshop checks everyone who can see it before it
-  is returned (see [docs/observers.md](../../docs/observers.md) §10). A hook bound by an earlier
+  `repo/<repoId>` as its subresource, which the Workshop checks collaborators against (see
+  [docs/observers.md](../../docs/observers.md) §10). A hook bound by an earlier
   release reports the id its binding stored.
 - **Public repositories.** When the binding's owner finds the pinned repository public at
   `GET /repositories/<id>`, a read is allowed for every collaborator without asking their
@@ -135,13 +135,6 @@ passing doesn't mean GitHub shows that account everything the binding's account 
   binding has pinned an id, the same question of that id, since what those releases read may have
   come from a repository that took the name. A binding with no id yet has read nothing by id, so
   the name is all it is checked by. Caches those releases filled are discarded on upgrade.
-- **Offline collaborators.** After a collaborator has opened the workspace and chosen an account,
-  the Workshop keeps checking that account for reads within their sharing scope, even after their
-  session closes. On a private repository a failed check can therefore block the owner's reads and
-  hook callbacks while that collaborator is offline; being offline alone does not block anything.
-  Account removal or confirmed credential expiry fails immediately; repository access revocation
-  may remain hidden by the 15-minute grant cache. A collaborator with no stored account choice is
-  checked on admission instead.
 
 ## Setting Up GitHub OAuth Credentials
 

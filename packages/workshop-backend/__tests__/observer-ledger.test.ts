@@ -1,11 +1,11 @@
 // Kernel-owned observer requirements (observer-ledger.ts), decided per observation. A read that
 // reports ObservationDescription.subresources is checked against every collaborator who can see
-// its context, through the connection's own verifyObserverAccess() handed each observer's
-// verifier -- failing closed on every malformed or failed answer -- and is then recorded as a
-// requirement. A read omitting them is checked by nothing here: the gatekeeper's addObserver()
-// and excludeObservers cover it, as they always have. Admission is additive: every in-scope
-// connection's addObserver(), plus its verifyObserverAccess() for the requirements recorded
-// through it that the collaborator's role reaches.
+// its context and holds a live session, through the connection's own verifyObserverAccess()
+// handed each observer's verifier -- failing closed on every malformed or failed answer -- and is
+// then recorded as a requirement. A read omitting them is checked by nothing here: the
+// gatekeeper's addObserver() and excludeObservers cover it, as they always have. Admission is
+// additive: every in-scope connection's addObserver(), plus its verifyObserverAccess() for the
+// requirements recorded through it that the collaborator's role reaches.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // observer-verification-failure.test.ts); gatekeeper facets, User DOs, verifiers, and the sharing
