@@ -314,14 +314,36 @@ describe('toChatFeed', () => {
   })
 
   describe('system rows', () => {
-    it('reports saved edits, accepts and discards, as the viewer’s own or by name', () => {
+    it('marks saved edits, accepts and discards, as the viewer’s own or by name', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
       const result = feed(changes(), merge(), changes({ author: other }), revert(2, other))
-      expect(only(result, 'notice').map(({ notice, text }) => [notice, text])).toEqual([
+      expect(only(result, 'divider').map(({ marks, label }) => [marks, label])).toEqual([
         ['changes', 'You saved edits'],
         ['merge', 'You accepted changes'],
         ['changes', 'Grace Hopper saved edits'],
         ['revert', 'Grace Hopper discarded changes'],
+      ])
+    })
+
+    it('puts what someone did after an answer below what the answer produced', () => {
+      const turn = [user('make a report'), agent({ text: 'Here it is', toolCalls: [createGadget(1)] }), created(1), changes(), merge()]
+      const open = feed(...turn)
+      expect(kinds(open)).toEqual(['user', 'assistant', 'output', 'divider', 'divider'])
+      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }, { label: 'You accepted changes' }])
+
+      expect(kinds(feed(...turn, user('thanks')))).toEqual(['user', 'assistant', 'output', 'divider', 'divider', 'user'])
+    })
+
+    it('leaves it where it happened when the agent carried on afterwards', () => {
+      const result = feed(
+        user('make a report'),
+        agent({ text: 'Creating it', toolCalls: [createGadget(1)] }),
+        changes(),
+        agent({ text: 'I see your edits; finishing up' }),
+        merge(),
+      )
+      expect(rows(result).map((row) => (row.kind === 'divider' ? row.label : row.kind))).toEqual([
+        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'You accepted changes',
       ])
     })
 

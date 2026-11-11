@@ -13,16 +13,16 @@ export const SystemBlocksPreview = () => {
 
   return (
     <>
-      <Section title="SystemRow, FeedDivider">
+      <Section title="SystemRow, FeedDivider (where the context was cut, and what people did to the changes)">
         <Column>
-          <SystemRow icon="edit">You saved edits</SystemRow>
-          <SystemRow icon="accept">You accepted changes</SystemRow>
-          <SystemRow icon="discard">Grace Hopper discarded changes</SystemRow>
           <SystemRow icon="swap">Switched to Mock Model Fast</SystemRow>
           <SystemRow icon="plug">Used the gadget</SystemRow>
           <SystemRow icon="code" detail={'{ key: "PLAT-230" }'}>onTicket() with env.TICKETS</SystemRow>
           <SystemRow icon="info">A message this version can’t show</SystemRow>
           <FeedDivider>Context compacted</FeedDivider>
+          <FeedDivider>You saved edits</FeedDivider>
+          <FeedDivider>You accepted changes</FeedDivider>
+          <FeedDivider>Grace Hopper discarded changes</FeedDivider>
         </Column>
       </Section>
       <Section title="ErrorMessage (earlier error, last error with Retry, out of credits)">
