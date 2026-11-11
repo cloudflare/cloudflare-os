@@ -280,8 +280,12 @@ const RECONNECT =
   "This Google account was connected before Drive bindings could read file content. Reconnect " +
   "it in Workshop to read comments.";
 
-/** The refusal for a reply to, or a resolve of, a `pending:` comment ID. */
+/** The refusal for a reply to, or a resolve of, the `pending:` ID of a comment that still waits. */
 const STILL_PENDING = "That comment is waiting for approval; reply to it once it is posted.";
+
+/** The refusal for a reply to, or a resolve of, a `pending:` ID that names no waiting comment. */
+const PENDING_DECIDED = "That pending ID names no comment waiting for approval. If its comment " +
+  "was posted, list the file's comments again and use the comment's Drive ID.";
 
 function newSession(
   convertPdf?: PdfConverter, scope: DriveBindingScope = { kind: "account" },
@@ -1939,8 +1943,8 @@ describe("Drive comment actions", () => {
       ["comment", ["doc-1", "Hi", { tabId: "t.0" }],
         "tabId names the tab a quote is in; pass the quote too."],
       ["suggestEdit", ["doc-1", "", "June"], "The text to replace is empty."],
-      ["reply", ["doc-1", "pending:3", "Hi"], STILL_PENDING],
-      ["resolve", ["doc-1", "pending:3"], STILL_PENDING],
+      ["reply", ["doc-1", "pending:3", "Hi"], PENDING_DECIDED],
+      ["resolve", ["doc-1", "pending:3"], PENDING_DECIDED],
     ])("refuses a read-only binding's %s before it looks at the arguments", async (method, args, own) => {
       // A read and write binding refuses the argument for its own sake.
       expect((await binding().call(method, ...args)).error).toBe(own);
@@ -2164,11 +2168,78 @@ describe("Drive comment actions", () => {
       expect(refused.actionId).toBeUndefined();
     });
 
-    it("refuses to reply to a comment still waiting for approval, asking Google nothing", async () => {
-      let refused = await binding().call("reply", "doc-1", "pending:3", "Agreed.");
+    it("answers a pending ID by whether its comment still waits, asking Google nothing", async () => {
+      let drive = binding();
+      let waiting = await drive.queued("comment", "doc-1", "Should this be June?");
+      let asked = provider.requests.length;
+      let id = `pending:${waiting.actionId}`;
 
-      expect(refused.error).toBe(STILL_PENDING);
-      expect(provider.requests).toEqual([]);
+      expect((await drive.call("reply", "doc-1", id, "Agreed.")).error).toBe(STILL_PENDING);
+      expect((await drive.call("resolve", "doc-1", id)).error).toBe(STILL_PENDING);
+      // An ID never issued, and a queued reply's.
+      expect((await drive.call("reply", "doc-1", "pending:999", "Agreed.")).error)
+        .toBe(PENDING_DECIDED);
+      let existing = provider.seed("doc-1");
+      let reply = await drive.queued("reply", "doc-1", existing.id, "Yes.");
+      asked = provider.requests.length;
+      expect((await drive.call("resolve", "doc-1", `pending:${reply.actionId}`)).error)
+        .toBe(PENDING_DECIDED);
+      expect(provider.requests).toHaveLength(asked);
+
+      // Once the comment is posted, or rejected, its pending ID names nothing that waits, and the
+      // posted comment takes a reply under its Drive ID.
+      expect(await drive.apply(waiting.actionId)).toBeNull();
+      expect((await drive.call("reply", "doc-1", id, "Agreed.")).error).toBe(PENDING_DECIDED);
+      let other = await drive.queued("comment", "doc-1", "And this?");
+      await drive.reject(other.actionId);
+      expect((await drive.call("reply", "doc-1", `pending:${other.actionId}`, "Agreed.")).error)
+        .toBe(PENDING_DECIDED);
+      let posted = (await drive.comments("doc-1")).find(comment => comment.text === "Should this be June?");
+      if (!posted) throw new Error("the comment was not posted");
+      await drive.queued("reply", "doc-1", posted.id, "Agreed.");
+    });
+
+    it("refuses a second resolve, and a reply, while a resolve of the comment waits", async () => {
+      const RESOLVE_PENDING = "That comment already has a resolve waiting for approval. To give " +
+        "it a closing reply, have that resolve rejected and resolve again with the reply as the text.";
+      const REPLY_RESOLVE_PENDING = "That comment has a resolve waiting for approval, and a reply " +
+        "posted after it would reopen the comment. To close the comment with a reply, have that " +
+        "resolve rejected and resolve again with the reply as the text; otherwise reply once the " +
+        "resolve is decided.";
+      let drive = binding();
+      let comment = provider.seed("doc-1");
+      let other = provider.seed("doc-1", { content: "Typo here." });
+      let first = await drive.queued("resolve", "doc-1", comment.id);
+
+      for (let args of [[comment.id], [comment.id, "Done."]]) {
+        let second = await drive.call("resolve", "doc-1", ...args);
+        expect(second.error).toBe(RESOLVE_PENDING);
+        expect(second.actionId).toBeUndefined();
+      }
+      let asked = provider.requests.length;
+      let reply = await drive.call("reply", "doc-1", comment.id, "Thanks.");
+      expect(reply.error).toBe(REPLY_RESOLVE_PENDING);
+      // The comment itself is not asked for: only the file's scope and the account's right.
+      expect(provider.requests.slice(asked).filter(request => request.includes("/comments/")))
+        .toEqual([]);
+      // Another comment's resolve queues.
+      await drive.queued("resolve", "doc-1", other.id);
+
+      // Once the resolve is rejected, a resolve with the closing reply queues, and so does a reply.
+      await drive.reject(first.actionId);
+      let closing = await drive.queued("resolve", "doc-1", comment.id, "Done.");
+      await drive.reject(closing.actionId);
+      let plain = await drive.queued("reply", "doc-1", comment.id, "Thanks.");
+      expect(plain.value).not.toHaveProperty("action");
+
+      // A reply queued before a resolve is not refused, and both post in that order.
+      let resolve = await drive.queued("resolve", "doc-1", comment.id);
+      expect(await drive.apply(plain.actionId)).toBeNull();
+      expect(await drive.apply(resolve.actionId)).toBeNull();
+      expect(comment.resolved).toBe(true);
+      // After an applied resolve, a reply queues as one that reopens.
+      let reopen = await drive.queued("reply", "doc-1", comment.id, "Not yet.");
+      expect(reopen.value).toMatchObject({ action: "reopen" });
     });
 
     it("refuses to resolve a resolved comment, which Google would accept", async () => {
@@ -2569,6 +2640,49 @@ describe("Drive comment actions", () => {
       expect(await drive.apply(actionId)).toBeNull();
       expect(existing).toMatchObject({ resolved: true });
       expect(existing.replies.map(reply => reply.action)).toEqual(["resolve", "reopen", "resolve"]);
+    });
+
+    it("fails a reply whose comment was edited after it was queued, and denying clears it", async () => {
+      let drive = binding();
+      let comment = provider.seed("doc-1");
+      let { actionId } = await drive.queued("reply", "doc-1", comment.id, "Yes, it is.");
+      comment.content = "Is this date still right?";
+
+      let edited = await drive.apply(actionId);
+      expect(edited).toBe("That comment was edited after this was queued. Queue it again to " +
+        "answer the comment as it is now.");
+      expect(posts()).toEqual([]);
+      // Approving again answers the same; denying withdraws it, and a new reply then queues.
+      expect(await drive.apply(actionId)).toBe(edited);
+      await drive.reject(actionId);
+      expect((await drive.comments("doc-1")).flatMap(listed => listed.replies)).toEqual([]);
+      await drive.queued("reply", "doc-1", comment.id, "Yes, it is.");
+    });
+
+    it("stops after three sends Google left unconfirmed that posted nothing, and denying clears it", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      for (let sends = 1; sends <= 3; sends++) {
+        provider.nextWrite = { status: 503, reason: "backendError", message: "Backend Error" };
+        expect(await drive.apply(actionId)).toMatch(/did not confirm whether this was posted/);
+        expect(posts()).toHaveLength(sends);
+        await drive.age(actionId, 6 * 60 * 1000);
+      }
+
+      let exhausted = await drive.apply(actionId);
+      expect(exhausted).toBe("Google Drive did not accept this in 3 tries, and none of them " +
+        "posted it, so it won't be sent again. Reject it to clear it.");
+      expect(posts()).toHaveLength(3);
+      expect(await drive.attempts()).toEqual({});
+      expect(await drive.apply(actionId)).toBe(exhausted);
+      expect(posts()).toHaveLength(3);
+
+      await drive.reject(actionId);
+      expect((await drive.comments("doc-1")).filter(comment => comment.pending)).toEqual([]);
+      // Nothing is left of it: the same comment queues and posts afresh.
+      let again = await drive.queued("comment", "doc-1", "Should this be June?");
+      expect(await drive.apply(again.actionId)).toBeNull();
+      expect(provider.live("doc-1")).toHaveLength(1);
     });
 
     it("waits out the window rather than send again while Google may still show the send", async () => {

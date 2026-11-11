@@ -98,8 +98,24 @@ export async function writeRefusal(gate: DriveWriteGate): Promise<string | undef
 }
 
 /** The refusal for a reply to, or a resolve of, a comment that is itself still queued. */
-export const PENDING_COMMENT_REFUSED =
+const PENDING_COMMENT_REFUSED =
   "That comment is waiting for approval; reply to it once it is posted.";
+
+/** The refusal for a reply to, or a resolve of, a `pending:` ID that names no queued comment. */
+const PENDING_COMMENT_DECIDED =
+  "That pending ID names no comment waiting for approval. If its comment was posted, list the " +
+  "file's comments again and use the comment's Drive ID.";
+
+/** The refusal for a resolve of a comment this binding already has a resolve queued for. */
+export const RESOLVE_PENDING =
+  "That comment already has a resolve waiting for approval. To give it a closing reply, have " +
+  "that resolve rejected and resolve again with the reply as the text.";
+
+/** The refusal for a reply to a comment this binding has a resolve queued for. */
+export const REPLY_RESOLVE_PENDING =
+  "That comment has a resolve waiting for approval, and a reply posted after it would reopen " +
+  "the comment. To close the comment with a reply, have that resolve rejected and resolve " +
+  "again with the reply as the text; otherwise reply once the resolve is decided.";
 
 /** The refusal for resolving a resolved comment, which Drive would accept with another reply. */
 export const ALREADY_RESOLVED = "That comment is already resolved.";
@@ -109,6 +125,8 @@ export const COMMENT_NOT_FOUND = "That comment was not found on this file.";
 
 const RESOLVED_SINCE_QUEUED = "That comment was resolved after this reply was queued, and " +
   "replying would reopen it. Queue the reply again to reopen it.";
+const EDITED_SINCE_QUEUED = "That comment was edited after this was queued. Queue it again to " +
+  "answer the comment as it is now.";
 const NO_LONGER_IN_SCOPE = "That file is no longer in this connection's scope.";
 const CANNOT_COMMENT = "The connected account can no longer comment on that file.";
 
@@ -138,13 +156,18 @@ export function shownFileName(name: string): string {
     ? `${characters.slice(0, FILE_NAME_CHARS).join("")}…` : name;
 }
 
-/** The comment a reply or resolve answers, as it stood when queued, for the approver. */
+/**
+ * The comment a reply or resolve answers, as it stood when queued: what the approval shows of it,
+ * and what apply holds it to.
+ */
 export type CommentParent = {
   author: string;
-  /** The comment's text, or the first 200 characters of a longer one. */
+  /** The comment's text, or the first 200 characters of a longer one: what the approval shows. */
   excerpt: string;
   /** The comment's text is longer than `excerpt`, which the approval then says. */
   cut?: true;
+  /** Hex SHA-256 of the comment's whole text, which apply requires it still to have. */
+  sha256: string;
 };
 
 /** What every Drive comment write carries about the file it is on. */
@@ -207,6 +230,8 @@ export type CommentAttempt = {
   at: number;
   /** The account's replies already on the comment that look like what this send posts. */
   existing?: string[];
+  /** Earlier sends of this write proven to have posted nothing. */
+  failedSends?: number;
 };
 
 /** What applying a Drive comment write needs. */
@@ -244,14 +269,43 @@ export async function readLiveComment(
   }
 }
 
-/** What the approval of a reply or resolve shows of the comment it answers. */
-export function commentParent(comment: DriveCommentRecord): CommentParent {
+/** A hex SHA-256 of `text`. */
+async function sha256Hex(text: string): Promise<string> {
+  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** What a reply or resolve keeps of the comment it answers: see {@link CommentParent}. */
+export async function commentParent(comment: DriveCommentRecord): Promise<CommentParent> {
   let characters = [...comment.content];
   return {
     author: comment.author.displayName,
     excerpt: characters.slice(0, PARENT_EXCERPT_CHARS).join(""),
     ...(characters.length > PARENT_EXCERPT_CHARS ? { cut: true as const } : {}),
+    sha256: await sha256Hex(comment.content),
   };
+}
+
+/**
+ * The refusal for a reply to, or a resolve of, the `pending:` ID `commentId`: its comment still
+ * awaits approval among `pending`, or the ID names no queued comment, having been decided or
+ * never issued for one.
+ */
+export function pendingCommentRefusal(
+  commentId: string, pending: readonly JournalEntry<DriveCommentAction>[],
+): string {
+  let waiting = pending.some(({ id, action }) =>
+    action.kind === "createComment" && `${PENDING_PREFIX}${id}` === commentId);
+  return waiting ? PENDING_COMMENT_REFUSED : PENDING_COMMENT_DECIDED;
+}
+
+/** Whether `pending` holds a resolve of comment `commentId` on file `fileId`. */
+export function hasPendingResolve(
+  fileId: string, commentId: string, pending: readonly JournalEntry<DriveCommentAction>[],
+): boolean {
+  return pending.some(({ action }) =>
+    action.kind === "resolveComment" && action.payload.fileId === fileId &&
+    action.payload.commentId === commentId);
 }
 
 /** A time Drive gave a comment or reply, validated. */
@@ -381,6 +435,11 @@ async function requireStillAllowed(
   if (action.kind === "createComment") return undefined;
   let comment = await readLiveComment(host.api, action.payload.fileId, action.payload.commentId);
   if (!comment) throw new ActionApplyError(COMMENT_NOT_FOUND);
+  // The approval showed this comment, and the write answers all of it. Only its text is compared:
+  // the author never changes, and a changed display name is not a changed comment.
+  if (await sha256Hex(comment.content) !== action.payload.parent.sha256) {
+    throw new ActionApplyError(EDITED_SINCE_QUEUED);
+  }
   if (action.kind === "resolveComment" && comment.resolved) {
     throw new ActionApplyError(ALREADY_RESOLVED);
   }
@@ -523,12 +582,19 @@ function refusal(error: unknown): string {
   return `Google Drive refused this comment [http=${error.status}].`;
 }
 
+/** Sends of one write that Drive may leave unconfirmed before it fails for good. */
+const MAX_COMMENT_SENDS = 3;
+const SENDS_EXHAUSTED = `Google Drive did not accept this in ${MAX_COMMENT_SENDS} tries, and ` +
+  "none of them posted it, so it won't be sent again. Reject it to clear it.";
+
 /**
  * Posts one approved write, looking first for what an earlier send of it may have posted. A
- * send's marker is dropped here only once no send of the write is in doubt: Google refused it
- * having posted nothing, or a look made after its window closed found nothing. One whose send
- * posted, was found by a look, or cannot be told stays, for the gatekeeper to drop once the
- * action's record is settled: until then a retry must find it and look, never send.
+ * send's marker is dropped here only once the write is over with nothing posted: Google refused
+ * it, a check failed it for good, or its third send was also found to have posted nothing. The
+ * marker of a send proven empty stays until the next send's replaces it, so that the sends are
+ * counted. One whose send posted, was found by a look, or cannot be told stays too, for the
+ * gatekeeper to drop once the action's record is settled: until then a retry must find it and
+ * look, never send.
  * @returns The ID Drive gave what was posted.
  */
 async function post(
@@ -536,6 +602,7 @@ async function post(
 ): Promise<string> {
   let log = logger.with({ actionId: id, actionKind: action.kind, fileId: action.payload.fileId });
   let prior = host.attempts.get(id);
+  let failedSends = 0;
   if (prior) {
     // Judged before the look: one taken while the window is open proves nothing by finding nothing.
     let conclusive = windowClosed(prior);
@@ -547,18 +614,28 @@ async function post(
       return found;
     }
     if (!conclusive) throw notShownYet(prior);
-    // The window closed with nothing found: that send posted nothing, so none is in doubt.
-    host.attempts.delete(id);
+    // The window closed with nothing found: that send posted nothing.
+    failedSends = (prior.failedSends ?? 0) + 1;
+    if (failedSends >= MAX_COMMENT_SENDS) {
+      host.attempts.delete(id);
+      throw new ActionApplyError(SENDS_EXHAUSTED);
+    }
   }
 
-  let comment = await requireStillAllowed(host, action);
+  let comment = await requireStillAllowed(host, action).catch((error: unknown) => {
+    // Nothing applies a write that failed for good again, so its marker has no reader left.
+    if (error instanceof ActionApplyError) host.attempts.delete(id);
+    throw error;
+  });
   let at = Date.now();
   // A reply already there, such as an earlier resolve of a since reopened comment, is not this
   // send's. Comments are not listed first: taking an identical one for this send drops a duplicate.
   let existing = action.kind === "createComment" || !comment ? [] : comment.replies
     .filter(reply => mineFrom(reply, at - CLOCK_SKEW_MS) && looksSent(action, reply))
     .map(reply => reply.id);
-  host.attempts.put(id, { at, ...(existing.length ? { existing } : {}) });
+  host.attempts.put(id, {
+    at, ...(existing.length ? { existing } : {}), ...(failedSends ? { failedSends } : {}),
+  });
   try {
     let created = await send(host.api, action);
     log.info("posted a Drive comment", {

@@ -55,12 +55,19 @@ export interface DriveCommentWrites {
   /**
    * Queue a reply to a comment on an in-scope file. Replying to a resolved comment reopens it. A
    * comment that is itself still `pending` takes replies once it is posted, under its Drive ID.
+   * Fails for a comment that has a resolve awaiting approval, which the reply would reopen. A
+   * closing reply is `resolve()`'s own text, given when the resolve is queued: to add one to a
+   * resolve already queued, have the user reject that resolve, then resolve again with the text.
+   * Any other reply waits until the resolve is decided. At approval the reply fails if the comment
+   * was edited after the reply was queued.
    */
   reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;
 
   /**
    * Queue resolving a comment on an in-scope file, with an optional closing reply. Fails for a
-   * comment that is already resolved or that is itself still `pending`.
+   * comment that is already resolved, that already has a resolve awaiting approval, or that is
+   * itself still `pending`. At approval the resolve fails if the comment was edited after the
+   * resolve was queued.
    */
   resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;
 }

@@ -51,8 +51,9 @@ import {
 } from "./drive-comment-body";
 import {
   ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentAttempts, commentParent, DRIVE_COMMENT_ACTIONS,
-  isPendingCommentId, overlayPending, PENDING_COMMENT_REFUSED, pendingComment, pendingReply,
-  readLiveComment, shownFileName, toDriveComment, writeRefusal,
+  hasPendingResolve, isPendingCommentId, overlayPending, pendingComment, pendingCommentRefusal,
+  pendingReply, readLiveComment, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, shownFileName,
+  toDriveComment, writeRefusal,
   type CommentTargetPayload, type DriveCommentAction, type DriveCommentActions,
   type DriveCommentQueue,
 } from "./drive-comments";
@@ -3779,12 +3780,6 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
-/** Refuses a comment ID that names a queued write, or is not a comment ID at all. */
-function requirePostedCommentId(commentId: string): void {
-  if (isPendingCommentId(commentId)) throw new Error(PENDING_COMMENT_REFUSED);
-  if (!isDriveCommentId(commentId)) throw new Error("Not a Google Drive comment ID.");
-}
-
 /** The refusal for a comment write on a folder: Drive answers one with a server error, every time. */
 const FOLDER_COMMENT_REFUSED = "A Google Drive folder cannot take comments.";
 
@@ -4045,12 +4040,16 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   async reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply> {
     await this.#requireWritable();
-    requirePostedCommentId(commentId);
+    await this.#requirePostedCommentId(commentId);
     let queued = await this.#queueComment(fileId, "createReply", async (target, base) => {
       let content = composeReply(text);
+      // Before Drive is asked for the comment, so that a resolve applied meanwhile is seen there.
+      if (await this.#resolvePending(target.fileId, commentId)) {
+        throw new Error(REPLY_RESOLVE_PENDING);
+      }
       let comment = await this.#liveComment(target.fileId, commentId);
       return {
-        ...base, commentId, content, parent: commentParent(comment),
+        ...base, commentId, content, parent: await commentParent(comment),
         // Drive reopens a resolved comment that is replied to.
         ...(comment.resolved ? { reopens: true as const } : {}),
       };
@@ -4060,15 +4059,16 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   async resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply> {
     await this.#requireWritable();
-    requirePostedCommentId(commentId);
+    await this.#requirePostedCommentId(commentId);
     let queued = await this.#queueComment(fileId, "resolveComment", async (target, base) => {
       let content = composeResolve(text);
+      if (await this.#resolvePending(target.fileId, commentId)) throw new Error(RESOLVE_PENDING);
       let comment = await this.#liveComment(target.fileId, commentId);
       // Drive would add another resolve reply to a resolved comment.
       if (comment.resolved) throw new Error(ALREADY_RESOLVED);
       return {
         ...base, commentId, ...(content === undefined ? {} : { content }),
-        parent: commentParent(comment),
+        parent: await commentParent(comment),
       };
     });
     return pendingReply(queued.id, { kind: "resolveComment", payload: queued.payload });
@@ -4078,6 +4078,24 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async #requireWritable(): Promise<void> {
     let refused = await this.#comments.writeRefusal();
     if (refused !== undefined) throw new Error(refused);
+  }
+
+  /**
+   * Refuses a comment ID that is not one Drive gave: a `pending:` ID, by whether its comment still
+   * awaits approval in this binding's queue, or anything that is not a comment ID at all.
+   */
+  async #requirePostedCommentId(commentId: string): Promise<void> {
+    if (isPendingCommentId(commentId)) {
+      throw new Error(await this.#comments.undecided(
+        async pending => pendingCommentRefusal(commentId, pending)));
+    }
+    if (!isDriveCommentId(commentId)) throw new Error("Not a Google Drive comment ID.");
+  }
+
+  /** Whether this binding has a resolve of the comment waiting for approval. */
+  #resolvePending(fileId: string, commentId: string): Promise<boolean> {
+    return this.#comments.undecided(
+      async pending => hasPendingResolve(fileId, commentId, pending));
   }
 
   /**

@@ -440,7 +440,14 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
       "Defaults to the first tab.",
       "Replying to a resolved comment reopens it.",
       "A comment that is itself still `pending` takes replies once it is posted, under its Drive ID.",
-      "Fails for a comment that is already resolved or that is itself still `pending`.",
+      "Fails for a comment that is already resolved, that already has a resolve awaiting " +
+        "approval, or that is itself still `pending`.",
+      "Fails for a comment that has a resolve awaiting approval, which the reply would reopen.",
+      "to add one to a resolve already queued, have the user reject that resolve, then resolve " +
+        "again with the text.",
+      "At approval the reply fails if the comment was edited after the reply was queued.",
+      "At approval the resolve fails if the comment was edited after the resolve was queued.",
+      "and not a folder, which takes no comments.",
       "anywhere the connected account can reach in Google Drive, plus comment writes.",
       "the only file its methods accept, plus comment writes on it.",
       "plus comment writes on the positioned folder's direct children.",

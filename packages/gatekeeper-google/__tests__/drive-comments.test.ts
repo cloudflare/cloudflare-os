@@ -1,5 +1,6 @@
 import { ActionJournal, type JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessTokenCache } from "../src/auth-retry";
 import {
@@ -7,8 +8,9 @@ import {
   type DriveScopeNode,
 } from "../src/drive-api";
 import {
-  commentParent, DRIVE_COMMENT_ACTIONS, overlayPending, pendingComment, pendingReply,
-  readOnlyRefusal, shownFileName, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
+  commentParent, DRIVE_COMMENT_ACTIONS, hasPendingResolve, overlayPending, pendingComment,
+  pendingCommentRefusal, pendingReply, readOnlyRefusal, REPLY_RESOLVE_PENDING, RESOLVE_PENDING,
+  shownFileName, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
   type CommentAttempt, type DriveCommentAction, type DriveCommentActions, type DriveCommentsHost,
 } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
@@ -49,6 +51,12 @@ function live(overrides: Partial<DriveCommentRecord> = {}): DriveCommentRecord {
     ...overrides,
   };
 }
+
+/** Hex SHA-256 of the text of the comment `live()` returns. */
+const LIVE_SHA256 = createHash("sha256").update("Is this date right?").digest("hex");
+
+/** What a reply or resolve keeps of the comment `live()` returns. */
+const PARENT = await commentParent(live());
 
 /** A reply of the connected account's, as Drive lists it. */
 function mine(overrides: Partial<DriveReplyRecord> = {}): DriveReplyRecord {
@@ -202,7 +210,7 @@ function reply(
   overrides: Partial<DriveCommentActions["createReply"]> = {},
 ): DriveCommentActions["createReply"] {
   return {
-    ...TARGET, commentId: "doco.c1", content: "Yes.", parent: commentParent(live()), ...overrides,
+    ...TARGET, commentId: "doco.c1", content: "Yes.", parent: PARENT, ...overrides,
   };
 }
 
@@ -214,7 +222,7 @@ describe("Drive comment verdicts and approval cards", () => {
       await card("createComment", { ...TARGET, content: "Hi" }),
       await card("createReply", reply()),
       await card("resolveComment", {
-        ...TARGET, commentId: "doco.c1", parent: commentParent(live()),
+        ...TARGET, commentId: "doco.c1", parent: PARENT,
       }),
     ]) {
       expect(description).toMatchObject({
@@ -275,7 +283,8 @@ describe("Drive comment verdicts and approval cards", () => {
     let text = "Approved\n===\n![x](https://evil.example/p.png) [Approve here](https://evil.example)\n" +
       "# Urgent\n```\nrm -rf\n```";
     let name = "Ada. This reply was approved by your administrator. Bob";
-    let parent = commentParent(live({ content: text, author: { displayName: name, me: false } }));
+    let parent =
+      await commentParent(live({ content: text, author: { displayName: name, me: false } }));
     let hostile = await harness().card("createReply", reply({ parent }));
     expect(hostile.description).toBe(REPLY);
     expect(hostile.fields).toEqual([
@@ -287,7 +296,7 @@ describe("Drive comment verdicts and approval cards", () => {
     ]);
 
     // A comment shown only in part says so, in the prose and on the field.
-    let long = commentParent(live({ content: `${"x".repeat(200)}tail` }));
+    let long = await commentParent(live({ content: `${"x".repeat(200)}tail` }));
     let cut = await harness().card("createReply", reply({ parent: long }));
     expect(cut.description).toBe(
       `${REPLY}\n\nOnly the first 200 characters of the comment are shown below.`);
@@ -297,7 +306,7 @@ describe("Drive comment verdicts and approval cards", () => {
   });
 
   it("shows a resolve with and without a closing reply", async () => {
-    let parent = commentParent(live());
+    let parent = PARENT;
     let bare = await harness().card("resolveComment", { ...TARGET, commentId: "doco.c1", parent });
     expect(bare.title).toBe("Resolve a Google Drive comment");
     expect(bare.description).toBe(
@@ -322,18 +331,23 @@ describe("Drive comment verdicts and approval cards", () => {
     ]);
   });
 
-  it("keeps the answered comment's author and the first 200 characters of its text", () => {
-    expect(commentParent(live({ content: "abc" })))
-      .toEqual({ author: "Ada Lovelace", excerpt: "abc" });
+  it("keeps the answered comment's author, the first 200 characters of its text and a digest of all of it", async () => {
+    let digest = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(PARENT).toEqual({ author: "Ada Lovelace", excerpt: "Is this date right?", sha256: LIVE_SHA256 });
+    expect(await commentParent(live({ content: "abc" })))
+      .toEqual({ author: "Ada Lovelace", excerpt: "abc", sha256: digest("abc") });
     let whole = "x".repeat(200);
-    expect(commentParent(live({ content: whole })))
-      .toEqual({ author: "Ada Lovelace", excerpt: whole });
-    expect(commentParent(live({ content: `${whole}tail` })))
-      .toEqual({ author: "Ada Lovelace", excerpt: whole, cut: true });
+    expect(await commentParent(live({ content: whole })))
+      .toEqual({ author: "Ada Lovelace", excerpt: whole, sha256: digest(whole) });
+    // The digest is of the whole text, the part past what is shown included.
+    expect(await commentParent(live({ content: `${whole}tail` })))
+      .toEqual({ author: "Ada Lovelace", excerpt: whole, cut: true, sha256: digest(`${whole}tail`) });
     // Characters are code points: a cut never splits a surrogate pair, and 200 emoji are whole.
-    expect(commentParent(live({ content: "😀".repeat(200) }))).not.toHaveProperty("cut");
-    expect(commentParent(live({ content: "😀".repeat(201) })))
-      .toEqual({ author: "Ada Lovelace", excerpt: "😀".repeat(200), cut: true });
+    expect(await commentParent(live({ content: "😀".repeat(200) }))).not.toHaveProperty("cut");
+    expect(await commentParent(live({ content: "😀".repeat(201) }))).toEqual({
+      author: "Ada Lovelace", excerpt: "😀".repeat(200), cut: true,
+      sha256: digest("😀".repeat(201)),
+    });
   });
 });
 
@@ -552,6 +566,83 @@ describe("Drive comment checks at apply", () => {
       }
     }
   });
+
+  it("fails a reply or resolve whose comment was edited after it was queued, anywhere in its text", async () => {
+    const EDITED = "That comment was edited after this was queued. Queue it again to answer the " +
+      "comment as it is now.";
+    let long = `${"x".repeat(200)}tail`;
+    for (let kind of ["createReply", "resolveComment"] as const) {
+      for (let [queued, now] of [
+        ["Is this date right?", "Is this date still right?"],
+        // Past what the approval showed.
+        [long, `${long}!`],
+      ]) {
+        let { api, journal, attempts, submit, apply } = harness();
+        let parent = await commentParent(live({ content: queued }));
+        api.getComment.mockResolvedValue(live({ content: now }));
+        let id = await submit(kind, reply({ parent }));
+        expect(await apply(id), kind).toBe(EDITED);
+        expect(journal.get(id)?.state, kind).toBe("failed");
+        expect(attempts.has(id), kind).toBe(false);
+        expect(api.createReply).not.toHaveBeenCalled();
+      }
+    }
+
+    // A changed display name is not a changed comment, and a long comment left alone still posts.
+    let renamed = harness();
+    renamed.api.getComment.mockResolvedValue(live({ author: { displayName: "Ada King", me: false } }));
+    expect(await renamed.apply(await renamed.submit("createReply", reply()))).toBeNull();
+    let unchanged = harness();
+    unchanged.api.getComment.mockResolvedValue(live({ content: long }));
+    let parent = await commentParent(live({ content: long }));
+    expect(await unchanged.apply(await unchanged.submit("createReply", reply({ parent })))).toBeNull();
+
+    // Gone is said before edited, and edited before resolved.
+    let gone = harness();
+    gone.api.getComment.mockResolvedValue(live({ content: "Other", deleted: true }));
+    expect(await gone.apply(await gone.submit("createReply", reply()))).toBe(NOT_FOUND);
+    let both = harness();
+    both.api.getComment.mockResolvedValue(live({ content: "Other", resolved: true }));
+    expect(await both.apply(await both.submit("resolveComment", reply()))).toBe(EDITED);
+  });
+});
+
+describe("what a binding has queued for a comment", () => {
+  const entry = (id: number, action: DriveCommentAction): JournalEntry<DriveCommentAction> =>
+    ({ id, action });
+  const WAITING = "That comment is waiting for approval; reply to it once it is posted.";
+  const DECIDED = "That pending ID names no comment waiting for approval. If its comment was " +
+    "posted, list the file's comments again and use the comment's Drive ID.";
+
+  it("answers a pending ID by whether its comment still waits", () => {
+    let pending = [
+      entry(4, { kind: "createComment", payload: { ...TARGET, content: "Hi" } }),
+      entry(6, { kind: "createReply", payload: reply() }),
+    ];
+    expect(pendingCommentRefusal("pending:4", pending)).toBe(WAITING);
+    // Never issued, a queued reply's ID, and a comment since approved or rejected.
+    expect(pendingCommentRefusal("pending:5", pending)).toBe(DECIDED);
+    expect(pendingCommentRefusal("pending:6", pending)).toBe(DECIDED);
+    expect(pendingCommentRefusal("pending:4", [])).toBe(DECIDED);
+  });
+
+  it("finds a queued resolve by its file and its comment", () => {
+    let resolve = { ...TARGET, commentId: "doco.c1", parent: PARENT };
+    let pending = [entry(1, { kind: "resolveComment", payload: resolve })];
+    expect(hasPendingResolve("doc-1", "doco.c1", pending)).toBe(true);
+    expect(hasPendingResolve("doc-1", "doco.c2", pending)).toBe(false);
+    expect(hasPendingResolve("doc-2", "doco.c1", pending)).toBe(false);
+    expect(hasPendingResolve("doc-1", "doco.c1", [entry(1, { kind: "createReply", payload: reply() })]))
+      .toBe(false);
+    expect(hasPendingResolve("doc-1", "doco.c1", [])).toBe(false);
+    expect(RESOLVE_PENDING).toBe(
+      "That comment already has a resolve waiting for approval. To give it a closing reply, have " +
+      "that resolve rejected and resolve again with the reply as the text.");
+    expect(REPLY_RESOLVE_PENDING).toBe(
+      "That comment has a resolve waiting for approval, and a reply posted after it would reopen " +
+      "the comment. To close the comment with a reply, have that resolve rejected and resolve " +
+      "again with the reply as the text; otherwise reply once the resolve is decided.");
+  });
 });
 
 describe("Drive comment sends and their markers", () => {
@@ -598,24 +689,142 @@ describe("Drive comment sends and their markers", () => {
     expect(attempts.has(id)).toBe(true);
   });
 
-  it("sends again once a send is proven empty, having dropped its marker before the checks", async () => {
+  it("sends again once a send is proven empty, keeping its marker through a check that fails", async () => {
+    let { api, journal, attempts, submit, apply, aged, refuse } = harness();
+    api.createComment.mockRejectedValueOnce(unconfirmed());
+    let id = await submit("createComment", { ...TARGET, content: "Hi" });
+    expect(await apply(id)).toBe(UNCONFIRMED_SEND);
+    let at = aged(id);
+    refuse(WRITES_GRANT_MISSING);
+    expect(await apply(id)).toBe(WRITES_GRANT_MISSING);
+    // The look ran, and found nothing. The marker stays as it was, so the send is counted once
+    // however often the check after it fails.
+    expect(api.listComments).toHaveBeenCalledTimes(1);
+    expect(attempts.get(id)).toStrictEqual({ at });
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(await apply(id)).toBe(WRITES_GRANT_MISSING);
+    expect(attempts.get(id)).toStrictEqual({ at });
+
+    refuse(undefined);
+    expect(await apply(id)).toBeNull();
+    expect(api.createComment).toHaveBeenCalledTimes(2);
+    // The second send's marker records the one before it.
+    expect(attempts.get(id)).toStrictEqual({ at: expect.any(Number), failedSends: 1 });
+  });
+
+  it("stops after three sends that posted nothing, and never sends a fourth", async () => {
+    const EXHAUSTED = "Google Drive did not accept this in 3 tries, and none of them posted it, " +
+      "so it won't be sent again. Reject it to clear it.";
+    let { api, journal, attempts, submit, apply, reject, aged } = harness();
+    api.createComment.mockRejectedValue(unconfirmed());
+    let id = await submit("createComment", { ...TARGET, content: "Hi" });
+    for (let sends = 1; sends <= 3; sends++) {
+      expect(await apply(id)).toBe(UNCONFIRMED_SEND);
+      expect(api.createComment).toHaveBeenCalledTimes(sends);
+      expect(attempts.get(id)?.failedSends).toBe(sends === 1 ? undefined : sends - 1);
+      aged(id);
+    }
+    // The third send is found to have posted nothing too: the write fails for good, unsent.
+    expect(await apply(id)).toBe(EXHAUSTED);
+    expect(api.createComment).toHaveBeenCalledTimes(3);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(attempts.has(id)).toBe(false);
+    // Approving again answers the same and asks Drive nothing; denying clears it.
+    let looks = api.listComments.mock.calls.length;
+    expect(await apply(id)).toBe(EXHAUSTED);
+    expect(api.listComments).toHaveBeenCalledTimes(looks);
+    await expect(reject(id)).resolves.toBeUndefined();
+    expect(journal.get(id)).toBeUndefined();
+
+    // A rate limit is Google's answer that nothing was posted: the count starts over.
+    let limited = harness();
+    limited.api.createComment
+      .mockRejectedValueOnce(unconfirmed())
+      .mockRejectedValueOnce(new DriveApiRequestError(429))
+      .mockRejectedValueOnce(unconfirmed());
+    let other = await limited.submit("createComment", { ...TARGET, content: "Hi" });
+    expect(await limited.apply(other)).toBe(UNCONFIRMED_SEND);
+    limited.aged(other);
+    expect(await limited.apply(other)).toMatch(/^Google Drive is limiting requests/);
+    expect(limited.attempts.has(other)).toBe(false);
+    expect(await limited.apply(other)).toBe(UNCONFIRMED_SEND);
+    expect(limited.attempts.get(other)?.failedSends).toBeUndefined();
+  });
+
+  it("drops the marker of a write that fails for good after its send is proven empty", async () => {
     let { api, journal, attempts, submit, apply, aged, refuse } = harness();
     api.createComment.mockRejectedValueOnce(unconfirmed());
     let id = await submit("createComment", { ...TARGET, content: "Hi" });
     expect(await apply(id)).toBe(UNCONFIRMED_SEND);
     aged(id);
-    refuse(WRITES_GRANT_MISSING);
-    expect(await apply(id)).toBe(WRITES_GRANT_MISSING);
-    // The look ran, and found nothing.
-    expect(api.listComments).toHaveBeenCalledTimes(1);
-    expect(attempts.size).toBe(0);
-    expect(journal.get(id)?.state).toBe("pending");
+    refuse("This Google Drive connection is read-only.");
+    expect(await apply(id)).toBe("This Google Drive connection is read-only.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(attempts.has(id)).toBe(false);
+    expect(api.createComment).toHaveBeenCalledTimes(1);
+  });
 
-    refuse(undefined);
-    expect(await apply(id)).toBeNull();
-    // No marker, so no look.
-    expect(api.listComments).toHaveBeenCalledTimes(1);
-    expect(api.createComment).toHaveBeenCalledTimes(2);
+  // Denying always withdraws: no state a write can be left in refuses it, whatever approving
+  // answers there.
+  it("withdraws a write from every state approving can leave it in", async () => {
+    type Run = ReturnType<typeof harness>;
+    let states: [string, (run: Run) => Promise<number>, RegExp][] = [
+      ["never approved", run => run.submit("createComment", { ...TARGET, content: "Hi" }), /^$/],
+      ["a send Drive did not confirm, inside its window", async run => {
+        run.api.createComment.mockRejectedValueOnce(unconfirmed());
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        expect(await run.apply(id)).toBe(UNCONFIRMED_SEND);
+        return id;
+      }, /^Google Drive may still be posting this/],
+      ["waiting for the account to allow changes", async run => {
+        run.refuse(WRITES_GRANT_MISSING);
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        expect(await run.apply(id)).toBe(WRITES_GRANT_MISSING);
+        return id;
+      }, /^Changes need a permission/],
+      ["failed for good at a check", async run => {
+        run.api.getComment.mockResolvedValue(live({ content: "Is this date still right?" }));
+        let id = await run.submit("createReply", reply());
+        expect(await run.apply(id)).toMatch(/^That comment was edited after this was queued/);
+        return id;
+      }, /^That comment was edited after this was queued/],
+      ["failed for good by Google's refusal", async run => {
+        run.api.createComment.mockRejectedValueOnce(viewOnly());
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        expect(await run.apply(id)).toBe(CANNOT_COMMENT);
+        return id;
+      }, /^The connected account can no longer comment/],
+      ["an outcome that cannot be told", async run => {
+        let posted = run.keepPosts({ loseFirst: true });
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        expect(await run.apply(id)).toBe(UNCONFIRMED_SEND);
+        posted.push({ ...posted[0]!, id: "doco.twin" });
+        expect(await run.apply(id)).toMatch(/more than one identical comment/);
+        return id;
+      }, /more than one identical comment/],
+      ["an approval interrupted after its claim", async run => {
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        run.journal.markClaimed(id);
+        return id;
+      }, /./],
+    ];
+    for (let [name, reach, again] of states) {
+      // Approving again answers as before, or waits: it never settles these on its own terms.
+      let stuck = harness();
+      let id = await reach(stuck);
+      if (name !== "never approved" && !name.startsWith("an approval interrupted")) {
+        expect(await stuck.apply(id), name).toMatch(again);
+      }
+      // Denying does, from the same state, and nothing is left behind for a later approval.
+      let run = harness();
+      id = await reach(run);
+      let sends = run.api.createComment.mock.calls.length + run.api.createReply.mock.calls.length;
+      await expect(run.reject(id), name).resolves.toBeUndefined();
+      expect(run.journal.get(id), name).toBeUndefined();
+      expect(run.journal.listPending(), name).toEqual([]);
+      expect(run.api.createComment.mock.calls.length + run.api.createReply.mock.calls.length, name)
+        .toBe(sends);
+    }
   });
 
   it("binds a posted comment after a retire that did not land, without sending again", async () => {
@@ -754,8 +963,7 @@ describe("Drive comment looks for an earlier send", () => {
   });
 
   it("does not take a plain reply for a resolve it sent, nor a resolve for a plain reply", async () => {
-    let parent = commentParent(live());
-    let payload = { ...TARGET, commentId: "doco.c1", content: "Fixed.", parent };
+    let payload = { ...TARGET, commentId: "doco.c1", content: "Fixed.", parent: PARENT };
     for (let [kind, stray] of [
       ["resolveComment", mine()],
       ["createReply", mine({ action: "resolve" })],
