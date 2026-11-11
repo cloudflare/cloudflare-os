@@ -26,7 +26,7 @@ export const MascotPreview = () => {
         <div className="flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line">
           <Mascot emotion={emotion} shown={shown} interactive className="w-40" />
           <Mascot emotion={emotion} shown={shown} className="w-16" />
-          <Mascot emotion={emotion} shown={shown} className="w-9" />
+          <Mascot emotion={emotion} shown={shown} className="w-8" />
           <Mascot emotion={emotion} shown={shown} className="w-5" />
         </div>
       </div>

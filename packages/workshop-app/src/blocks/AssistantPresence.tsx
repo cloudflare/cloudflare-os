@@ -28,15 +28,15 @@ export const AssistantPresence = ({ working, status, details }: AssistantPresenc
 
   return (
     <div inert={!working} className="flex min-h-8 items-start gap-1 px-2 text-kumo-subtle">
-      <Mascot emotion="thinking" shown={working} className="w-9 shrink-0" />
-      <div className={cn('mt-0.5 min-w-0 flex-1 transition-opacity duration-200 motion-reduce:transition-none', !working && 'opacity-0')}>
+      <Mascot emotion="thinking" shown={working} className="w-8 shrink-0" />
+      <div className={cn('min-w-0 flex-1 transition-opacity duration-200 motion-reduce:transition-none', !working && 'opacity-0')}>
         {details
           ? (
             <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label}>
               {/* Back out under the mascot, so that the icons of the steps (8px in from a
-                  step's edge, 16px wide) run down from its middle: 18px - 16px, less the 40px
-                  the mascot and the gap after it take before this column starts. */}
-              <div className="-ms-[38px]">{details.content}</div>
+                  step's edge, 16px wide) run down from its middle: its 16px less theirs, less
+                  the 36px the mascot and the gap after it take before this column starts. */}
+              <div className="-ms-9">{details.content}</div>
             </Disclosure>
           )
           : <div className="px-2 py-1 text-base/5">{label}</div>}

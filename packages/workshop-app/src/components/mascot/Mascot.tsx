@@ -36,7 +36,8 @@ const describe = (emotion: MascotEmotion) =>
 /**
  * The Workshop cloud, alive: it drifts when idle, bounces while thinking, and has a face for
  * happy and sad. It leans towards a pointer that comes near, stays still for people who ask for
- * reduced motion, and rests while off screen. Its colours are the brand asset's own, not UI tokens.
+ * reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
+ * messages: their fill for the body, their text colour for the sparkle and the face.
  */
 export const Mascot = ({ emotion, shown = true, interactive, className }: MascotProps) => {
   const frame = useRef<HTMLDivElement>(null)
@@ -60,11 +61,11 @@ export const Mascot = ({ emotion, shown = true, interactive, className }: Mascot
           {LOBES.map((lobe) => <path key={lobe} data-part="lobe" />)}
         </clipPath>
       </defs>
-      <g fill="#FF5C2E">
+      <g className="fill-kumo-contrast">
         {Array.from({ length: RAINDROPS }, (_, index) => <path key={index} data-part="drop" d={raindrop} transform="scale(0)" />)}
       </g>
       {/* Whatever of the sparkle or the face reaches past the body is drawn in the body's colour. */}
-      <g fill="#FF5C2E">
+      <g className="fill-kumo-contrast">
         {LOBES.map((lobe) => <path key={lobe} data-part="lobe" />)}
         <g data-part="sparkle"><path d={sparkle} /></g>
         <g data-part="face" opacity="0">
@@ -72,7 +73,8 @@ export const Mascot = ({ emotion, shown = true, interactive, className }: Mascot
           <path data-part="eye" />
         </g>
       </g>
-      <g clipPath={`url(#${interior})`} fill="#fffaf5">
+      {/* Kumo has this one as a text colour only. */}
+      <g clipPath={`url(#${interior})`} className="fill-current text-kumo-inverse">
         <g data-part="sparkle"><path d={sparkle} /></g>
         <g data-part="face" opacity="0">
           <path data-part="eye" />
