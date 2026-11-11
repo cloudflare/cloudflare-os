@@ -171,10 +171,18 @@ export const toolSections = (call: AiToolCall): ToolSection[] => {
       return [...section('Reason', call.input.reason), ...section('Result', call.output)]
     case 'giveUp':
       return section('Reason', call.input.error)
+    // Their line already says everything they were given.
     case 'observeUserChanges':
+    case 'setBindingHook':
+    case 'setGadgetBinding':
+    case 'saveCapsuleAsBinding':
+    case 'createGadget':
+    case 'createWorktree':
+    case 'createExternalResource':
       return []
     default:
-      return section('Input', json(call.input))
+      // A tool newer than this build: show what it was called with.
+      return section('Input', json((call as AiToolCall).input))
   }
 }
 

@@ -1,5 +1,5 @@
 import { RpcTarget } from 'capnweb'
-import type { AiChatSubscriber } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ActionsSubscriber, AiChatSubscriber } from '@gadgets/workshop-shared/api'
 
 /** The notifications this app acts on. Code changes (`changeApplied`) are not part of it. */
 export type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'>
@@ -34,4 +34,20 @@ export class ChatSubscriber extends RpcTarget implements AiChatSubscriber {
   }
 
   changeApplied() {}
+}
+
+/**
+ * What the server calls when an action or a hook changes: decided, auto-approved, switched on or
+ * off. A chat's messages carry a copy of the record that the chat subscription does not refresh.
+ */
+export class ActionUpdates extends RpcTarget implements ActionsSubscriber {
+  constructor(private readonly onEntry: (record: ActionLogEntry) => void) {
+    super()
+  }
+
+  entry(record: ActionLogEntry) {
+    this.onEntry(record)
+  }
+
+  ready() {}
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
-import { ChatPane } from '@/chat/ChatPane'
+import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
 import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
@@ -39,7 +39,17 @@ const MockChat = ({ scenario, onSelectScenario, onRestart }: {
   onSelectScenario: (id: string) => void
   onRestart: () => void
 }) => {
-  const [{ session, overseer }] = useState(() => createMockApi(scenario))
+  // Made once, so the callbacks handed to the chat stay the same.
+  const [{ session, overseer, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+    const mock = createMockApi(scenario)
+    return {
+      ...mock,
+      // What the real connect flow ends with, and what confirming a standing approval does.
+      onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
+      onAlwaysApprove: ({ gatekeeperId, actionKind }: Parameters<NonNullable<ChatPaneProps['onAlwaysApprove']>>[0]) =>
+        mock.overseer.setAutoApprovedActionKind(gatekeeperId, actionKind),
+    }
+  })
 
   useEffect(() => {
     overseer.player.play()
@@ -50,7 +60,12 @@ const MockChat = ({ scenario, onSelectScenario, onRestart }: {
     <ApiContext value={session}>
       <WorkspacesProvider>
         <div className="relative flex h-full flex-col bg-kumo-base">
-          <ChatPane workspaceId={MOCK_WORKSPACE_ID} chatId={0} />
+          <ChatPane
+            workspaceId={MOCK_WORKSPACE_ID}
+            chatId={0}
+            onSetUpConnection={onSetUpConnection}
+            onAlwaysApprove={onAlwaysApprove}
+          />
           <MockControls
             scenarios={SCENARIOS}
             scenario={scenario}

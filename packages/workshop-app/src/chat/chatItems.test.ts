@@ -43,6 +43,10 @@ const run = (rest: { output?: string; error?: string } = { output: 'ok' }) => ca
 const createGadget = (gadgetId: number, title = 'Report') => call('createGadget', { title, bindingName: 'REPORT' }, { output: { gadgetId } })
 const created = (gadgetId: number) => changes({ author: AGENT, createdGadgets: [{ gadgetId, title: 'Report', bindingName: 'REPORT' }] })
 
+const request = (state: 'pending' | 'accepted' | 'denied') =>
+  connectionRequest({ vendorName: 'ClickHouse', reason: 'Read error rates.', resourceTitle: 'ClickHouse cluster', state })
+const noFallback = (result: ChatFeed) => only(result, 'notice').filter(({ notice }) => notice === 'unknown')
+
 describe('toChatFeed', () => {
   describe('messages', () => {
     it('maps user and agent text in order, identified by sequence', () => {
@@ -279,8 +283,6 @@ describe('toChatFeed', () => {
     })
 
     it('shows a connection request in each of its states', () => {
-      const request = (state: 'pending' | 'accepted' | 'denied') =>
-        connectionRequest({ vendorName: 'ClickHouse', reason: 'Read error rates.', resourceTitle: 'ClickHouse cluster', state })
       const result = feed(request('pending'), request('accepted'), request('denied'))
       expect(only(result, 'connection').map(({ state, scope }) => [state, scope])).toEqual([
         ['pending', 'ClickHouse cluster'], ['connected', 'ClickHouse cluster'], ['denied', 'ClickHouse cluster'],
@@ -365,8 +367,6 @@ describe('toChatFeed', () => {
   })
 
   describe('recorded chats', () => {
-    const noFallback = (result: ChatFeed) => only(result, 'notice').filter(({ notice }) => notice === 'unknown')
-
     it.each(SCENARIOS.map((scenario) => [scenario.id, scenario] as const))('renders every message of the %s scenario', async (_id, scenario) => {
       expect(noFallback(toChatFeed(scenario.history, viewer))).toEqual([])
 

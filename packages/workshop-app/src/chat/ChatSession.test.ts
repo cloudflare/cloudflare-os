@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
+  ActionLogEntry,
   AiChatAuthorInfo,
   AiChatHistoryPage,
   AiChatMessage,
@@ -10,7 +11,7 @@ import type {
   Overseer,
 } from '@gadgets/workshop-shared/api'
 import { ChatSession, type ChatOverseer, type ChatSnapshot } from './ChatSession'
-import { ChatSubscriber } from './ChatSubscriber'
+import { ActionUpdates, ChatSubscriber } from './ChatSubscriber'
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
@@ -44,15 +45,21 @@ const message = (sequence: number, text: string, author = userAuthor, chatId = 0
 const userMessage = (sequence: number, text: string, chatId = 0) => message(sequence, text, userAuthor, chatId)
 const agentMessage = (sequence: number, text: string, chatId = 0) => message(sequence, text, agentAuthor, chatId)
 
+const actionMessage = (sequence: number, actionLog: ActionLogEntry): AiChatMessage =>
+  ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'action', actionId: actionLog.id, actionLog })
+
 const page = (...messages: AiChatMessage[]): AiChatHistoryPage => ({ messages })
 
 /** A workspace's Overseer, plus what a test needs to act as the server: the subscriber it was given. */
 const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number, AiChatHistoryPage> = {}) => {
   let subscriber: ChatSubscriber | undefined
+  let actionUpdates: ActionUpdates | undefined
   const dispose = vi.fn<() => void>()
   const leaseDispose = vi.fn<() => void>()
+  const actionsLeaseDispose = vi.fn<() => void>()
   // Only its disposer matters to the session.
   const lease = { [Symbol.dispose]: leaseDispose } as unknown as RpcStub<{}>
+  const actionsLease = { [Symbol.dispose]: actionsLeaseDispose } as unknown as RpcStub<{}>
 
   const listChats = vi.fn<() => Promise<AiChatMetadata[]>>(() => chats)
   const getChatHistory = vi.fn<Overseer['getChatHistory']>(
@@ -64,13 +71,28 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     subscriber = given
     return Promise.resolve(lease)
   })
+  const subscribeToActions = vi.fn<ChatOverseer['subscribeToActions']>((given) => {
+    if (!(given instanceof ActionUpdates)) throw new Error('subscribeToActions was not given an ActionUpdates')
+    actionUpdates = given
+    return Promise.resolve(actionsLease)
+  })
   const sendChatMessage = vi.fn<Overseer['sendChatMessage']>(async () => {})
+  const asked = {
+    retryAgent: vi.fn<Overseer['retryAgent']>(async () => {}),
+    approveAction: vi.fn<Overseer['approveAction']>(async () => {}),
+    rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
+    denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
+    enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
+    disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
+  }
 
   const overseer: ChatOverseer = {
     listChats,
     getChatHistory,
     subscribeToChat,
+    subscribeToActions,
     sendChatMessage,
+    ...asked,
     [Symbol.dispose]: dispose,
   }
   return {
@@ -78,11 +100,16 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     listChats,
     getChatHistory,
     subscribeToChat,
+    subscribeToActions,
     sendChatMessage,
+    ...asked,
     dispose,
     leaseDispose,
+    actionsLeaseDispose,
     /** What the server calls with chat activity. */
     server: () => subscriber!,
+    /** What the server calls when an action's record changes. */
+    actions: () => actionUpdates!,
   }
 }
 
@@ -110,6 +137,32 @@ const started = async (
 
 const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve()
+}
+
+/** A chat whose agent is running, and a way to stream to it as the server does. */
+const working = async (history: AiChatMessage[] = []) => {
+  const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]), { 0: page(...history) })
+  const session = await started(fake)
+  return { session, stream: (...events: AiChatStreamEvent[]) => events.forEach((event) => fake.server().stream(0, event)), server: fake.server() }
+}
+const withCalls = (sequence: number, toolCalls: AiToolCall[], reasoning?: string): AiChatMessage =>
+  ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'message', message: '', toolCalls, reasoning })
+
+/** An action's record, pending unless `change` says otherwise. */
+const log = (change: Partial<ActionLogEntry & { type: 'action' }> = {}): ActionLogEntry => ({
+  id: 7,
+  type: 'action',
+  resourceTitle: 'Jira',
+  createdAt: new Date(0),
+  state: 'pending',
+  description: { title: 'Create issue', description: '', implementsRevert: false },
+  ...change,
+})
+
+/** A chat that ends with an action awaiting a decision (or with `actionLog`). */
+const withAction = async (actionLog = log()) => {
+  const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'file it'), actionMessage(1, actionLog)) })
+  return { fake, session: await started(fake) }
 }
 
 describe('ChatSession', () => {
@@ -175,11 +228,20 @@ describe('ChatSession', () => {
       expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'subscription refused' })
     })
 
+    it('reports an actions subscription that cannot be made', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      fake.subscribeToActions.mockReturnValueOnce(Promise.reject(new Error('actions refused')))
+      const session = await started(fake)
+
+      expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'actions refused' })
+    })
+
     it('subscribes before it reads anything, so nothing in between is missed', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       await started(fake)
 
       expect(fake.subscribeToChat.mock.invocationCallOrder[0]).toBeLessThan(fake.listChats.mock.invocationCallOrder[0])
+      expect(fake.subscribeToActions.mock.invocationCallOrder[0]).toBeLessThan(fake.listChats.mock.invocationCallOrder[0])
       expect(fake.subscribeToChat.mock.invocationCallOrder[0]).toBeLessThan(
         fake.getChatHistory.mock.invocationCallOrder[0],
       )
@@ -437,13 +499,6 @@ describe('ChatSession', () => {
 
   describe('a step as it streams', () => {
     const file = { workpieceId: 1, filename: 'worker.ts' }
-    const working = async (history: AiChatMessage[] = []) => {
-      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]), { 0: page(...history) })
-      const session = await started(fake)
-      return { session, stream: (...events: AiChatStreamEvent[]) => events.forEach((event) => fake.server().stream(0, event)), server: fake.server() }
-    }
-    const withCalls = (sequence: number, toolCalls: AiToolCall[], reasoning?: string): AiChatMessage =>
-      ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'message', message: '', toolCalls, reasoning })
     const read: AiToolCall = { toolCallId: 'read', toolName: 'readFile', input: { filename: 'chart.tsx' } }
 
     it('shows reasoning as it is written, which is no longer just thinking', async () => {
@@ -649,6 +704,83 @@ describe('ChatSession', () => {
     })
   })
 
+  describe('what a row asks for', () => {
+    it('approves through the workspace, and shows the decision when the action’s record says so', async () => {
+      const { fake, session } = await withAction()
+      expect(ready(session).pinned).toMatchObject([{ kind: 'action', actionId: 7, state: 'pending' }])
+
+      await session.approveAction(7)
+      expect(fake.approveAction).toHaveBeenCalledExactlyOnceWith(7)
+      // Nothing is assumed: the card changes only when the workspace reports the record.
+      expect(ready(session).pinned).toMatchObject([{ state: 'pending' }])
+
+      fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor }))
+      expect(ready(session).pinned).toMatchObject([{ state: 'approved', resolution: 'Approved by User' }])
+    })
+
+    it('denies through the workspace', async () => {
+      const { fake, session } = await withAction()
+
+      await session.rejectAction(7)
+      fake.actions().entry(log({ state: 'rejected', resolvedBy: userAuthor }))
+
+      expect(fake.rejectAction).toHaveBeenCalledExactlyOnceWith(7)
+      expect(ready(session).pinned).toMatchObject([{ state: 'denied' }])
+    })
+
+    it('shows an approval someone else gave, or a rule', async () => {
+      const { fake, session } = await withAction()
+
+      fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor, autoApproved: true }))
+
+      expect(ready(session).pinned).toMatchObject([{ state: 'approved', resolution: 'Auto-approved (User’s rule)' }])
+    })
+
+    it('ignores a record no loaded message shows', async () => {
+      const { fake, session } = await withAction()
+      const before = session.getSnapshot()
+
+      fake.actions().entry(log({ id: 99, state: 'approved' }))
+
+      expect(session.getSnapshot()).toBe(before)
+    })
+
+    it('switches a hook on and off, following the record for its state', async () => {
+      const hook: ActionLogEntry = { id: 7, type: 'bindHook', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 3, enabled: true }
+      const { fake, session } = await withAction(hook)
+
+      await session.setHookEnabled(3, false)
+      expect(fake.disableHook).toHaveBeenCalledExactlyOnceWith(3)
+      fake.actions().entry({ ...hook, enabled: false })
+      expect(ready(session).pinned).toMatchObject([{ kind: 'hook', enabled: false }])
+
+      await session.setHookEnabled(3, true)
+      expect(fake.enableHook).toHaveBeenCalledExactlyOnceWith(3)
+    })
+
+    it('retries the chat it shows, and denies a connection request', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(2, 'Other', 1), chat(4, 'Chat', 1)]))
+      const session = await started(fake, 4)
+
+      await session.retry('model-1')
+      await session.denyConnection('request-1')
+
+      expect(fake.retryAgent).toHaveBeenCalledExactlyOnceWith(4, 'model-1')
+      expect(fake.denyConnectionRequest).toHaveBeenCalledExactlyOnceWith('request-1')
+    })
+
+    it('reports what could not be done, until the next thing is asked', async () => {
+      const { fake, session } = await withAction()
+      fake.approveAction.mockRejectedValueOnce(new Error('Action is not pending: 7'))
+
+      await session.approveAction(7)
+      expect(ready(session).actionError).toBe('Action is not pending: 7')
+
+      await session.rejectAction(7)
+      expect(ready(session).actionError).toBeUndefined()
+    })
+  })
+
   describe('send', () => {
     it('sends into the chat that is shown', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(2, 'Other', 1), chat(4, 'Chat', 1)]))
@@ -696,6 +828,7 @@ describe('ChatSession', () => {
       await flush()
       expect(fake.dispose).toHaveBeenCalledOnce()
       expect(fake.leaseDispose).toHaveBeenCalledOnce()
+      expect(fake.actionsLeaseDispose).toHaveBeenCalledOnce()
 
       history.resolve(page(userMessage(0, 'late')))
       chats.resolve([chat(0, 'Late chat', 1)])
@@ -715,6 +848,7 @@ describe('ChatSession', () => {
       await flush()
       expect(fake.dispose).toHaveBeenCalledOnce()
       expect(fake.leaseDispose).toHaveBeenCalledOnce()
+      expect(fake.actionsLeaseDispose).toHaveBeenCalledOnce()
     })
 
     it('opens nothing for a session that was never started', () => {

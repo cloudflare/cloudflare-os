@@ -3,15 +3,17 @@ import { useApi } from '@/rpc/ApiContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatSession, type ChatSnapshot } from './ChatSession'
 
+/** What can be asked of a chat. Each is stable for the life of the session. */
+export type ChatActions = Pick<
+  ChatSession,
+  'send' | 'loadEarlier' | 'retry' | 'approveAction' | 'rejectAction' | 'denyConnection' | 'setHookEnabled'
+>
+
 /**
- * One chat, live, and a way to send to it. The session is fixed to the chat it is created with, so
- * give the calling component a `key` of the ids to switch chats.
+ * One chat, live, and what can be asked of it. The session is fixed to the chat it is created
+ * with, so give the calling component a `key` of the ids to switch chats.
  */
-export const useChatSession = (workspaceId: string, chatId: number): {
-  chat: ChatSnapshot
-  send: ChatSession['send']
-  loadEarlier: ChatSession['loadEarlier']
-} => {
+export const useChatSession = (workspaceId: string, chatId: number): { chat: ChatSnapshot; actions: ChatActions } => {
   const { api, user } = useApi()
   const refreshWorkspaces = useRefreshWorkspaces()
   // Creating a session is free; it connects only when started, in the effect below. When a turn
@@ -26,5 +28,5 @@ export const useChatSession = (workspaceId: string, chatId: number): {
   }, [session])
 
   const chat = useSyncExternalStore(session.subscribe, session.getSnapshot)
-  return { chat, send: session.send, loadEarlier: session.loadEarlier }
+  return { chat, actions: session }
 }

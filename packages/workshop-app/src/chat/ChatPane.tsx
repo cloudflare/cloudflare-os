@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react'
-import { Composer } from '@/blocks/Composer'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
+import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { UserMessage } from '@/blocks/UserMessage'
 import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
+import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
+import type { ChatItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
@@ -17,14 +19,22 @@ export type ChatPaneProps = {
   chatId: number
   /** The title to show until the chat's own arrives, e.g. from the list it was opened from. */
   initialTitle?: string
+  /**
+   * What this app cannot do itself yet, for whoever can. Left out, the chat says so when asked.
+   * Keep each stable, or every row renders again.
+   */
+  onOpenOutput?: ChatItemHandlers['onOpenOutput']
+  onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
+  onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
 }
 
 const LIVE_REASONING = 'live:reasoning'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) => {
-  const { chat, send, loadEarlier } = useChatSession(workspaceId, chatId)
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+  const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
+  const workspaces = useWorkspaces()
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
   // What a row asked for that this app cannot do yet.
@@ -33,25 +43,32 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
   const liveReasoningOpen = useOpenKeys(disclosure, [LIVE_REASONING]).has(LIVE_REASONING)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+  const restricted = workspaces.status === 'ready' &&
+    workspaces.workspaces.some(({ id, containsRestrictedData }) => id === workspaceId && containsRestrictedData === true)
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
+      // TODO: the attachment preview.
       onOpenAttachment: unavailable('Previewing attachments'),
-      onOpenOutput: unavailable('Opening outputs'),
-      onApprove: unavailable('Approving actions'),
-      onDeny: unavailable('Denying actions'),
-      onAlwaysApprove: unavailable('Standing approvals'),
-      onHookEnabledChange: unavailable('Switching hooks'),
-      onSetUpConnection: unavailable('Setting up connections'),
-      onDenyConnection: unavailable('Denying connections'),
-      onRetry: unavailable('Retrying'),
+      // TODO: open the workpiece in the output pane, once there is one.
+      onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
+      onApprove: actions.approveAction,
+      onDeny: actions.rejectAction,
+      // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
+      onAlwaysApprove: onAlwaysApprove ?? unavailable('Standing approvals'),
+      onHookEnabledChange: actions.setHookEnabled,
+      // TODO: the connect flow, which ends in `Overseer.acceptConnectionRequest`.
+      onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
+      onDenyConnection: actions.denyConnection,
+      onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
+      // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
     }
-  }, [])
+  }, [actions, model, onOpenOutput, onSetUpConnection, onAlwaysApprove])
 
-  const row = (item: Parameters<typeof ChatItemView>[0]['item']) => (
-    <ChatItemView key={item.key} item={item} disclosure={disclosure} handlers={handlers} />
+  const row = (item: ChatItem) => (
+    <ChatItemView key={item.key} item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
   )
 
   const messages = useMemo(() => {
@@ -60,16 +77,20 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
     let sequence = 0
     return items?.map((item) => {
       sequence = Math.max(sequence, item.id)
-      return { id: item.key, sequence, content: <ChatItemView item={item} disclosure={disclosure} handlers={handlers} /> }
+      return {
+        id: item.key,
+        sequence,
+        content: <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />,
+      }
     }) ?? []
-  }, [items, disclosure, handlers])
+  }, [items, disclosure, handlers, restricted])
 
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
     if (model.status !== 'ready') return setProblem(describeModelProblem(model))
     setProblem(undefined)
     setNotice(undefined)
-    void send(text, model.id)
+    void actions.send(text, model.id)
   }
 
   return (
@@ -78,7 +99,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
         <MessageList
           messages={messages}
           streaming={chat.agentActive || Boolean(chat.streamingText)}
-          history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: loadEarlier }}
+          history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
         >
           {chat.openTools && row(chat.openTools)}
           {(chat.streamingText || chat.streamingReasoning) && (
@@ -99,6 +120,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
             <UserMessage key={index} parts={[{ type: 'text', text }]} from={from} unread />
           ))}
           {chat.sendError && <MessageBubble role="error">{chat.sendError}</MessageBubble>}
+          {chat.actionError && <MessageBubble role="error">{chat.actionError}</MessageBubble>}
           {problem && <MessageBubble role="error">{problem}</MessageBubble>}
           {notice && <p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p>}
         </MessageList>
