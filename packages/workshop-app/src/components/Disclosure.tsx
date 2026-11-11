@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Collapsible } from '@cloudflare/kumo/primitives/collapsible'
 import { CaretRightIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
+import './Disclosure.css'
 
 export type DisclosureProps = {
   /** The always-visible line; the whole of it is the button. */
@@ -18,11 +19,11 @@ export type DisclosureProps = {
  * being unmounted (a virtual list does that to rows far off screen).
  */
 export const Disclosure = ({ summary, children, open, onToggle, className }: DisclosureProps) => (
-  <Collapsible.Root open={open} onOpenChange={onToggle} className={cn('flex min-w-0 flex-col', className)}>
-    <Collapsible.Trigger className="group flex max-w-full items-center gap-2 self-start rounded-full px-2 py-1 text-left text-base/5 text-kumo-subtle hover:text-kumo-default">
+  <Collapsible.Root open={open} onOpenChange={onToggle} className={cn('flex min-w-0 flex-col text-base/5', className)}>
+    <Collapsible.Trigger className="group flex max-w-full items-center gap-2 self-start rounded-full px-2 py-1 text-left text-kumo-subtle hover:text-kumo-default">
       {summary}
-      <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
+      <CaretRightIcon aria-hidden="true" weight="bold" className="size-4 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
     </Collapsible.Trigger>
-    <Collapsible.Panel>{children}</Collapsible.Panel>
+    <Collapsible.Panel className="disclosure-panel">{children}</Collapsible.Panel>
   </Collapsible.Root>
 )

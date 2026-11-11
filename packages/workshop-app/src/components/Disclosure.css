@@ -1,0 +1,23 @@
+/* Kumo measures the expanded height before closing and keeps the panel mounted until the
+   transition finishes. Avoid temporarily collapsing it to measure `auto`: that can clamp the
+   conversation's scroll position before the visible closing animation even starts. */
+.disclosure-panel {
+  height: var(--collapsible-panel-height);
+  overflow: clip;
+  opacity: 1;
+  transition:
+    height 240ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 160ms ease-out;
+}
+
+.disclosure-panel[data-starting-style],
+.disclosure-panel[data-ending-style] {
+  height: 0;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .disclosure-panel {
+    transition: none;
+  }
+}

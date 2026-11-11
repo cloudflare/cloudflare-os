@@ -1,8 +1,10 @@
-import { useEffect, useEffectEvent, useRef, type ReactNode } from 'react'
+import { useEffect, useEffectEvent, useId, useRef, type ReactNode } from 'react'
+import { Collapsible } from '@cloudflare/kumo/primitives/collapsible'
 import { cn } from '@cloudflare/kumo/utils'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { XIcon } from '@phosphor-icons/react'
 import '@/components/Arrival.css'
-import { MessageActions } from './MessageActions'
+import { Button } from '@/components/Button'
+import { MessageActions, MESSAGE_ACTION_STYLE } from './MessageActions'
 import './MessageBubble.css'
 
 /** Which neighbours a message forms a run with: the message before it, the one after, or both. */
@@ -17,18 +19,24 @@ export type MessageBubbleProps = {
    */
   joins?: MessageJoins
   /**
-   * What there is to know about the message (see `MessageInfo`), shown under it while `open`.
+   * What there is to know about the message (see `MessageInfo`), in an outlined panel below it while open.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
    */
   details?: MessageDetails
 }
 
-export type MessageDetails = { open: boolean; onToggle: () => void; content: ReactNode }
+export type MessageDetails = {
+  open: boolean
+  onToggle: () => void
+  content: ReactNode
+  /** Metadata without a trace only needs as much width as its contents. */
+  fitContent?: boolean
+}
 
 const BUBBLE = {
-  user: 'rounded-[21px] bg-kumo-contrast text-kumo-inverse whitespace-pre-wrap',
-  assistant: 'rounded-[21px] bg-kumo-fill text-kumo-default',
-  error: 'rounded-[21px] bg-kumo-danger-tint text-kumo-danger',
+  user: 'bg-kumo-contrast text-kumo-inverse whitespace-pre-wrap',
+  assistant: 'bg-kumo-fill text-kumo-default',
+  error: 'bg-kumo-danger-tint text-kumo-danger',
 } as const
 
 // Consecutive messages from one sender read as a run: the row moves closer to the one above (the
@@ -42,18 +50,21 @@ const RUN = {
     bubble:
       '[[data-role=user]+[data-role=user]>&]:rounded-tr-md ' +
       '[[data-role=user]:has(+[data-role=user])>&]:rounded-br-md',
+    details: '[[data-role=user]:has(+[data-role=user])_&]:rounded-br-md',
   },
   assistant: {
     row: '[[data-role=assistant]+&]:-mt-1.5',
     bubble:
       '[[data-role=assistant]+[data-role=assistant]>&]:rounded-tl-md ' +
       '[[data-role=assistant]:has(+[data-role=assistant])>&]:rounded-bl-md',
+    details: '[[data-role=assistant]:has(+[data-role=assistant])_&]:rounded-bl-md',
   },
   error: {
     row: '[[data-role=error]+&]:-mt-1.5',
     bubble:
       '[[data-role=error]+[data-role=error]>&]:rounded-tl-md ' +
       '[[data-role=error]:has(+[data-role=error])>&]:rounded-bl-md',
+    details: '[[data-role=error]:has(+[data-role=error])_&]:rounded-bl-md',
   },
 } as const
 
@@ -63,37 +74,32 @@ const JOINED = {
   error: { above: 'rounded-tl-md', below: 'rounded-bl-md' },
 } as const
 
-// Beside the bubble, on the side the row has room, level with its middle. They are there all
-// along, so showing them moves nothing, and show while the bubble or the place they are in is
-// pointed at, or one of them has focus; the rest of the row does not bring them up. They touch
-// the bubble (the gap is their own padding), so the pointer crosses to them without leaving both.
-// They stay while the message's details are showing, as the way to put those away again.
-const ACTIONS =
-  'shrink-0 opacity-0 transition-opacity motion-reduce:transition-none ' +
-  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100'
-
-const UNFOLD = { duration: 0.24, ease: [0.25, 0.1, 0.25, 1] } as const
-const FOLDED = { height: 0, opacity: 0 }
+// Beside a bubble (the message, or its details), on the side the row has room, level with its
+// middle. They are there all along, so showing them moves nothing, and show while the bubble or the
+// place they are in is pointed at, or one of them was reached by keyboard; the rest of the row does
+// not bring them up, and nor does having clicked one. They touch the bubble (the gap is their own
+// padding), so the pointer crosses to them without leaving both.
+const BESIDE = 'absolute top-1/2 -translate-y-1/2 opacity-0 transition-opacity motion-reduce:transition-none has-[:focus-visible]:opacity-100'
+const ACTIONS = `${BESIDE} group-hover/message:opacity-100`
+const CLOSE = `${BESIDE} group-hover/details:opacity-100`
 
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
  * What can be done with a message shows beside it while it is pointed at (see `MessageActions`);
- * its details, when asked for, unfold under it.
+ * its details, when asked for, unfold in an outlined panel beneath it.
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
 export const MessageBubble = ({ role, children, joins, details }: MessageBubbleProps) => {
-  const transition = useReducedMotion() ? { duration: 0 } : UNFOLD
-  const actions = <MessageActions details={details} />
+  const detailsId = useId()
+  const actions = <MessageActions details={details && { ...details, controls: detailsId }} />
 
-  // The message's own parts: the bubble, the actions beside it, and the details under it. A press
-  // anywhere else puts the details away, the blank stretch of the message's own row included.
+  // The shell owns the text, its actions and its details. A press elsewhere puts the details away,
+  // including the blank stretch of the message's row.
   const bubble = useRef<HTMLDivElement>(null)
-  const beside = useRef<HTMLDivElement>(null)
-  const under = useRef<HTMLDivElement>(null)
   const open = details?.open ?? false
   const pressElsewhere = useEffectEvent(({ target }: PointerEvent) => {
-    if (target instanceof Node && [bubble, beside, under].some((part) => part.current?.contains(target))) return
+    if (target instanceof Node && bubble.current?.contains(target)) return
     details?.onToggle()
   })
   useEffect(() => {
@@ -103,47 +109,74 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
   }, [open])
 
   return (
-    <>
+    <Collapsible.Root
+      open={open}
+      onOpenChange={() => details?.onToggle()}
+      data-role={role}
+      className={cn('flex items-start [container-type:inline-size]', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+    >
       <div
-        data-role={role}
-        className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
-      >
-        <div
-          ref={bubble}
-          className={cn(
-            'peer/bubble arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
-            // It grows in downwards, as the conversation does, from its sender's side.
-            role === 'user' ? 'origin-top-right' : 'origin-top-left',
-            // A corner tightens gradually when a message joins this one in a run.
-            'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
-            BUBBLE[role],
-            RUN[role].bubble,
-            joins?.above && JOINED[role].above,
-            joins?.below && JOINED[role].below,
-          )}
-        >
-          {children}
-        </div>
-        {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
-        {role === 'user' && <div ref={beside} className={cn(ACTIONS, 'order-first pe-2')}>{actions}</div>}
-        {role === 'assistant' && <div ref={beside} className={cn(ACTIONS, 'ps-2')}>{actions}</div>}
-      </div>
-      {/* Under the message, in line with its words. It unfolds, so what is below moves with it;
-          a message that comes back on screen with its details open simply has them. */}
-      <AnimatePresence initial={false}>
-        {details?.open && (
-          <motion.div
-            ref={under}
-            initial={FOLDED}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={FOLDED}
-            transition={transition}
-            className={cn('overflow-y-clip px-5', role === 'user' && 'text-end')}
-          >
-            <div className="pt-1.5 pb-2">{details.content}</div>
-          </motion.div>
+        ref={bubble}
+        className={cn(
+          'arrives message-bubble max-w-[min(70%,65ch)] rounded-[21px] text-base/5 break-words',
+          // It grows in downwards, as the conversation does, from its sender's side.
+          role === 'user' ? 'origin-top-right' : 'origin-top-left',
+          'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+          RUN[role].bubble,
+          joins?.above && JOINED[role].above,
+          joins?.below && JOINED[role].below,
         )}
-      </AnimatePresence>
-    </>
+      >
+        <div className={cn(
+          'group/message relative rounded-[inherit] px-5 py-[11px] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+          BUBBLE[role],
+          open && JOINED[role].below,
+        )}>
+          {children}
+          {role === 'user' && <div className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
+          {role === 'assistant' && <div className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}
+        </div>
+        {/* The wrapper keeps details out of the message's intrinsic width. Metadata can be narrower
+            or wider than a short bubble, but is capped to the row's width; traces match the bubble. */}
+        {details && (
+          <div className={cn('flex flex-col [contain:inline-size]', role === 'user' ? 'items-end' : 'items-start')}>
+            <div className={cn('group/details relative', details.fitContent ? 'w-max max-w-[calc(100cqw_-_2.25rem)]' : 'w-full')}>
+              <Collapsible.Panel
+                id={detailsId}
+                data-message-details=""
+                inert={!open}
+                className="message-details text-kumo-default whitespace-normal"
+              >
+                <div className="pt-0.5">
+                  <div className={cn(
+                    'message-details-surface rounded-[21px] bg-kumo-base px-5 py-3 ring-1 ring-inset ring-kumo-line',
+                    role === 'user' ? 'origin-top-right' : 'origin-top-left',
+                    JOINED[role].above,
+                    RUN[role].details,
+                    joins?.below && JOINED[role].below,
+                  )}>
+                    {details.content}
+                  </div>
+                </div>
+              </Collapsible.Panel>
+              {open && (
+                <div className={cn(CLOSE, role === 'user' ? 'right-full pe-2' : 'left-full ps-2')}>
+                  {/* A cross this size reads thinner than the outlined icons beside a message, so it
+                      is drawn smaller and heavier to weigh the same. */}
+                  <Button
+                    variant="ghost"
+                    icon={<XIcon weight="bold" />}
+                    aria-label="Close details"
+                    title="Close details"
+                    className={`${MESSAGE_ACTION_STYLE} [&>svg]:size-3`}
+                    onClick={details.onToggle}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </Collapsible.Root>
   )
 }

@@ -24,7 +24,7 @@ const TRACE: ToolStepEntry[] = [
 /** What people and the agent say, in every state, and what there is to know about a message. */
 export const MessageBlocksPreview = () => {
   const { report, say } = useReport()
-  const { open, toggle, of } = useOpen()
+  const { open, toggle, of } = useOpen(['details'])
 
   return (
     <>
@@ -55,9 +55,12 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="AssistantMessage (plain, with Markdown; point at one and ask for its details, which unfold under it: the first has none)">
+      <Section title="Message details (separate outlined panel, expandable trace, and a short user message; Details closes or reopens the panel)">
         <Column>
-          <AssistantMessage text="I’ll build a personal Jira dashboard." />
+          <AssistantMessage
+            text="I’ll build a personal Jira dashboard."
+            details={{ ...of('no-trace'), fitContent: true, content: <MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /> }}
+          />
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
             details={{
@@ -67,7 +70,7 @@ export const MessageBlocksPreview = () => {
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}
-            details={{ ...of('mine'), content: <MessageInfo sender="You" sentAt={SENT} /> }}
+            details={{ ...of('mine'), fitContent: true, content: <MessageInfo sentAt={SENT} /> }}
           />
         </Column>
       </Section>
@@ -76,7 +79,7 @@ export const MessageBlocksPreview = () => {
           <Card><MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} /></Card>
           <Card><MessageInfo sender="Mock Model Fast" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /></Card>
           <Card><MessageInfo sender="Grace Hopper" sentAt={SENT} /></Card>
-          <Card><MessageInfo sender="You" /></Card>
+          <Card><MessageInfo /></Card>
         </div>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
