@@ -203,7 +203,7 @@ describe("env.GIT worktrees", () => {
     let turn = new Proxy({}, { get: () => () => { throw new Error("unused"); } });
     let running = impl.executeCodeMode(1, `
         export default async function() { await new Promise(r => setTimeout(r, 1000)); }`,
-        ALICE, "some-model", {}, undefined, turn);
+        ALICE, "some-model", {}, new AbortController().signal, undefined, turn);
     expect(await commitAs({ from: "agent", chatId: 1 }))
         .toEqual({ name: "Alice", email: "alice@example.com" });
     await running;

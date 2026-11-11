@@ -546,11 +546,13 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. Aborting
+   * `abortSignal` ends the code as an uncaught exception does, keeping its output so far.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
+                   abortSignal: AbortSignal,
                    onOutputText?: (delta: string) => void,
                    worktreeTurn?: WorktreeTurnAccess): Promise<string>;
   consumeCapturedActions(chatId: number)
@@ -3921,7 +3923,7 @@ async function runAgentPass(
           }
 
           let output = await hooks.executeCodeMode(
-              chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+              chatId, code, initiator, author.id, Object.fromEntries(chatBindings), abortSignal,
               delta => emitStreamEvent({
                 type: "toolOutputDelta",
                 toolCallId,

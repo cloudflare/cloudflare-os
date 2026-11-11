@@ -142,7 +142,7 @@ import agent from "agent.js";
 
 export default class extends WorkerEntrypoint {
   verify() {}
-  async run(self, restoreForger) {
+  async run(self, restoreForger, untilStopped) {
     let env = this.env;
     if (restoreForger) {
       // Graft the well-known \`restore\` symbol onto each service-binding stub in env -- for a
@@ -163,7 +163,8 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
-    let result = await agent(self, env, this.ctx);
+    // Returning ends the request, which cancels whatever the code was still waiting on.
+    let result = await Promise.race([agent(self, env, this.ctx), untilStopped()]);
     if (result !== undefined) console.log("Return value:", result);
   }
 }
@@ -236,7 +237,8 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
-  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+  run(self: unknown, restoreForger: NativeRpcStub<RestoreForgerImpl>,
+      untilStopped: () => Promise<void>): Promise<void>;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -9565,6 +9567,7 @@ class OverseerImpl implements AgentHooks {
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
+                        abortSignal: AbortSignal,
                         onOutputText?: (delta: string) => void,
                         worktreeTurn?: WorktreeTurnAccess)
       : Promise<string> {
@@ -9627,11 +9630,19 @@ class OverseerImpl implements AgentHooks {
         initiatorModelId,
       }});
 
+      // Stop rejects the harness's wait, so run() throws like any code that failed and the output
+      // so far is kept. Once run() returns the wait is resolved: left pending, it would hold back
+      // the trace.
+      let stopped = Promise.withResolvers<void>();
+      stopped.promise.catch(() => {});
+      abortSignal.addEventListener("abort", () => stopped.reject(abortSignal.reason), {once: true});
+
       let error: string | undefined;
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
+        await entrypoint.run(
+            selfStub, new RestoreForgerImpl(this, chatId, bindings), () => stopped.promise);
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -9639,6 +9650,8 @@ class OverseerImpl implements AgentHooks {
           error = `${err}`;
         }
         onOutputText?.(`\n\nUncaught exception: ${error}`);
+      } finally {
+        stopped.resolve();
       }
 
       let timeout = scheduler.wait(5000).then(() => { return null; })
