@@ -10,9 +10,9 @@ export type AssistantMessageProps = {
   details?: MessageDetails
 }
 
-/** What the agent said. */
+/** What the agent said. Copied, it is the Markdown it was written in. */
 export const AssistantMessage = ({ text, joins, onReply, details }: AssistantMessageProps) => (
-  <MessageBubble role="assistant" joins={joins} onReply={onReply} details={details}>
+  <MessageBubble role="assistant" joins={joins} onReply={onReply} copyText={text} details={details}>
     <Markdown>{text}</Markdown>
   </MessageBubble>
 )
