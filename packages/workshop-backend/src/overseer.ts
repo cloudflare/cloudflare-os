@@ -51,6 +51,7 @@ import { GitImpl } from "./git-binding";
 import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
 import { worktreeGitPull } from "./worktree-git";
 import { WorktreeReplicas, WorktreeReplicatorImpl } from "./worktree-replica";
+import { SessionWatchers, type SessionEnd } from "./session-watchers";
 import { GadgetExportsImpl } from "./exports-session";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
@@ -2242,6 +2243,7 @@ class OverseerImpl implements AgentHooks {
       await record.controller.disable();
     }
     this.storage.boundHooks.delete(record.id);
+    this.sessionWatchers.end(`hook:${record.id}`);
 
     stampBindHookAction(this.storage, record.actionId, false, {clearHookId: true});
   }
@@ -5653,6 +5655,7 @@ class OverseerImpl implements AgentHooks {
     for (let hook of Array.from(this.storage.boundHooks.list())) {
       if (hook.gatekeeperId !== id) continue;
       this.storage.boundHooks.delete(hook.id);
+      this.sessionWatchers.end(`hook:${hook.id}`);
       stampBindHookAction(this.storage, hook.actionId, false, {clearHookId: true});
       if (hook.enabled) {
         this.ctx.waitUntil(hook.controller.disable().catch(error => {
@@ -5665,6 +5668,7 @@ class OverseerImpl implements AgentHooks {
 
     this.ctx.facets.delete(`gatekeeper${id}`);
     this.storage.gatekeepers.delete(id);
+    this.sessionWatchers.end(`gatekeeper:${id}`);
     this.#rebroadcastChatMeta(affectedChats);
   }
 
@@ -5760,6 +5764,10 @@ class OverseerImpl implements AgentHooks {
   // holds the execution's worktree replica state (see worktree-replica.ts). See executeCodeMode.
   #activeExecutions = new Map<number, {executionId: string, initiator: AiChatAuthorInfo,
                                        worktree?: WorktreeTurnAccess, replicas?: WorktreeReplicas}>();
+
+  // ObservationAuthorizer.watchSession()'s watchers, released below when an execution ends, a
+  // hook is disabled or deleted, or a connection is removed, and by each authorizer when it is.
+  readonly sessionWatchers = new SessionWatchers();
 
   // ObserverLedgerHost: whether `executionId` is the executeCode invocation running for `chatId`.
   isLiveExecution(chatId: number, executionId: string): boolean {
@@ -9877,6 +9885,7 @@ class OverseerImpl implements AgentHooks {
       if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
         this.#activeExecutions.delete(chatId);
       }
+      this.sessionWatchers.end(`execution:${executionId}`);
       this.#codeModeOutputSubscribers.delete(executionId);
       this.#codeModeResolvers.delete(executionId);
       this.#forgedRestoreTargets.delete(chatId);
@@ -12642,6 +12651,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (!current) return;
       current.enabled = false;
       this.impl.storage.boundHooks.put(current);
+      this.impl.sessionWatchers.end(`hook:${id}`);
       stampBindHookAction(this.impl.storage, current.actionId, false);
     }
   }
@@ -14375,9 +14385,12 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
 // only (no actions or hooks).
 @validateRpc()
 class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationAuthorizer {
+  readonly #end: SessionEnd;
+
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
               private caller: GatekeeperCaller) {
     super();
+    this.#end = impl.sessionWatchers.newQueue();
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
@@ -14387,6 +14400,31 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
   async getGitCache(): Promise<GitCache> {
     return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
   }
+
+  async requireLive(): Promise<void> {
+    if (sessionConnectionGone(this.impl, this.gatekeeperId)) throw new Error(CONNECTION_GONE);
+  }
+
+  async watchSession(watcher: NativeRpcStub<NativeRpcTarget>)
+      : Promise<NativeRpcStub<NativeRpcTarget>> {
+    return this.impl.sessionWatchers.watch([this.#end, `gatekeeper:${this.gatekeeperId}`],
+        watcher, sessionConnectionGone(this.impl, this.gatekeeperId));
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
+
+  [Symbol.dispose](): void {
+    this.impl.sessionWatchers.end(this.#end);
+  }
+}
+
+const CONNECTION_GONE = "This session's gatekeeper connection has been removed.";
+
+// Whether a session's connection is gone, which ends every session through it.
+function sessionConnectionGone(impl: OverseerImpl, gatekeeperId: number): boolean {
+  return impl.storage.gatekeepers.get(gatekeeperId) === undefined;
 }
 
 // Re-resolve a hook's record and refuse unless it is still enabled and its connection usable.
@@ -14455,10 +14493,13 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // containsRestrictedData). Session queues (openGatekeeperSession) pass no hookId: they are
   // bounded by the facet's in-DO lifetime, which the session chokepoints already gate.
   // `executionId` is the agent execution an agent caller's session was minted for.
+  readonly #end: SessionEnd;
+
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
               private caller: GatekeeperCaller, private hookId?: number,
               private executionId?: string) {
     super();
+    this.#end = impl.sessionWatchers.newQueue();
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
@@ -14481,6 +14522,43 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         description: HookDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
+  }
+
+  async requireLive(): Promise<void> {
+    let ended = this.#ended();
+    if (ended !== undefined) throw new Error(ended);
+    // A live hook can still be refused while its connection awaits a restart (retryably).
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+  }
+
+  async watchSession(watcher: NativeRpcStub<NativeRpcTarget>)
+      : Promise<NativeRpcStub<NativeRpcTarget>> {
+    let ends: SessionEnd[] = [this.#end, `gatekeeper:${this.gatekeeperId}`];
+    if (this.executionId !== undefined) ends.push(`execution:${this.executionId}`);
+    if (this.hookId !== undefined) ends.push(`hook:${this.hookId}`);
+    return this.impl.sessionWatchers.watch(ends, watcher, this.#ended() !== undefined);
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return this.executionId;
+  }
+
+  // The gatekeeper released its last stub of this queue.
+  [Symbol.dispose](): void {
+    this.impl.sessionWatchers.end(this.#end);
+  }
+
+  // Why this session is over, if it is: each of these also releases its watchers.
+  #ended(): string | undefined {
+    if (sessionConnectionGone(this.impl, this.gatekeeperId)) return CONNECTION_GONE;
+    if (this.hookId !== undefined && !this.impl.storage.boundHooks.get(this.hookId)?.enabled) {
+      return "Hook has been deleted or disabled.";
+    }
+    if (this.executionId !== undefined && this.caller.from === "agent" &&
+        !this.impl.isLiveExecution(this.caller.chatId, this.executionId)) {
+      return "The code execution this session belongs to has ended.";
+    }
+    return undefined;
   }
 
   // Not part of ApprovalQueue: how the overseer tells which execution a queue passed back to it

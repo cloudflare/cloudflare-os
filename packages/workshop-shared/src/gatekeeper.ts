@@ -1322,6 +1322,36 @@ export interface ObservationAuthorizer extends RpcTarget {
    * of possession.
    */
   getGitCache(): Promise<GitCache>;
+
+  /**
+   * Throws unless this session can still act: for a session the agent's code opened, unless that
+   * code execution (an `executeCode` call) is still running; for a hook firing, unless the hook
+   * is still enabled; for any session, unless its gatekeeper connection still exists. A broken
+   * stub (say, because the workspace restarted) throws too. Either way, the session is over.
+   */
+  requireLive(): Promise<void>;
+
+  /**
+   * Holds `watcher` until this session ends, then releases it, which runs its
+   * `[Symbol.dispose]()`. That happens however the session ends: its execution finishes, is
+   * cancelled or times out; its hook is disabled or deleted; its gatekeeper connection is
+   * removed; the gatekeeper releases this authorizer; or the workspace crashes or restarts, which
+   * drops the workspace's stub, so the runtime disposes `watcher` without the workspace's help.
+   * Use it to stop work the session started, such as a container command. If the session has
+   * already ended, `watcher` is released at once.
+   *
+   * Dispose of the returned handle to stop watching; `watcher` is then released at once. A handle
+   * whose connection to the workspace breaks is disposed too, so `watcher` is released then.
+   */
+  watchSession(watcher: RpcStub<RpcTarget>): Promise<RpcStub<RpcTarget>>;
+
+  /**
+   * The ID of the agent's code execution (an `executeCode` call) that opened this session, the
+   * same for every session it opens, on any gatekeeper; undefined for a session with none (a
+   * user's, a gadget's, a hook firing's). It only identifies the execution: no API accepts it as
+   * proof of anything.
+   */
+  getExecutionId(): Promise<string | undefined>;
 }
 
 /**

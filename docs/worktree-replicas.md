@@ -127,10 +127,15 @@ previous submission's result if it checked that out, or else the tree it submitt
 Otherwise one command's snapshot checkout can overwrite files another command is still writing,
 before that one submits. Commands that run in parallel need separate checkouts.
 
-**Stop commands when the connection drops.** If the connection to the workspace drops while a
-command runs, its execution is gone and its edits can no longer be submitted. Stop the command and
-everything it started, rather than let it keep writing files. The next command's step 1 restores
-the files.
+**Stop commands when their session ends.** If the execution ends while a command runs (it
+finished, was cancelled or timed out, or the workspace restarted), the command's edits can no
+longer be submitted. Stop the command and everything it started, rather than let it keep writing
+files; the next command's step 1 restores the files. To learn of it, pass a watcher to
+`queue.watchSession()` before starting the command: the watcher is disposed when the session ends,
+even if the workspace crashes, and disposing the returned handle stops the watch once the command
+is done. `queue.requireLive()` checks the session before a step that's costly to undo, and
+`queue.getExecutionId()` tells whether two sessions come from the same execution, for a container
+that must not serve unrelated executions at once.
 
 ## What the kernel does
 

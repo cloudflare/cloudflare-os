@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {env, RpcTarget} from "cloudflare:workers";
+import {env, RpcStub, RpcTarget} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import type {OverseerDurableObject} from "./test-worker";
 import {abortAllDurableObjects} from "cloudflare:test";
@@ -879,5 +879,95 @@ describe("worktree commands", () => {
         expect.stringContaining(`name Git reserves for one (${JSON.stringify(name)})`)), expect.stringMatching(/neither in its pack nor in its base/),
       expect.stringMatching(/is malformed/)]);
     expect(pins(impl)).toEqual([]);
+  }));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Gatekeeper session lifetime: requireLive(), watchSession() and getExecutionId(), through the
+// same agent turns as the commands above.
+
+type Session = {
+  requireLive(): Promise<void>;
+  watchSession(watcher: RpcTarget): Promise<Disposable>;
+  getExecutionId(): Promise<string | undefined>;
+} & Disposable;
+
+// A gatekeeper's watcher: `released` settles once the workspace lets go of it.
+class Watcher extends RpcTarget {
+  released: Promise<void>;
+  #release!: () => void;
+  constructor() {
+    super();
+    this.released = new Promise(resolve => this.#release = resolve);
+  }
+  [Symbol.dispose]() { this.#release(); }
+}
+// Whether `watcher` is released within a few turns of the event loop.
+const releasedSoon = (watcher: Watcher) => Promise.race([watcher.released.then(() => true),
+  new Promise<boolean>(resolve => setTimeout(() => resolve(false), 200))]);
+const failure = (promise: Promise<unknown>) => promise.then(() => "", (error: Error) => error.message);
+
+// The connection that queueFor()'s sessions belong to.
+function connect(impl: Impl) {
+  impl.storage.gatekeepers.put({id: 7, class: impl.ctx.exports.ReplicaGitSource({}),
+    creationSpec: {type: "gatekeeper", vendorId: "github", typeUrlPattern: "https://github.com/*/*",
+      resourceUrl: "https://github.com/fixture/session"}});
+}
+// The queue as a gatekeeper holds it: a stub, so what it is passed crosses RPC.
+const asStub = (queue: Queue) => new RpcStub(queue as RpcTarget) as unknown as Session;
+
+describe("gatekeeper session lifetime", () => {
+  it("lives as long as the agent's code execution that opened it", () => withCommands(async (impl, id) => {
+    connect(impl);
+    const watcher = new Watcher();
+    let session!: Session, during!: unknown[];
+    runCode(impl, id, {
+      command: async (repo, replicator, queue, execution) => {
+        session = asStub(queue);
+        await session.watchSession(watcher);
+        during = [await failure(session.requireLive()), await session.getExecutionId() === execution,
+          await releasedSoon(watcher)];
+      },
+    });
+    await turn(impl, [[execute("command")]]);
+    expect(during).toEqual(["", true, false]);
+    expect(await releasedSoon(watcher)).toBe(true);
+    expect(await failure(session.requireLive())).toMatch("code execution this session belongs to has ended");
+    // Watching a session that is over releases the watcher at once.
+    const late = new Watcher();
+    await session.watchSession(late);
+    expect(await releasedSoon(late)).toBe(true);
+  }));
+
+  it("stops watching when the handle is disposed, or the gatekeeper releases the queue", () => withCommands(async (impl, id) => {
+    connect(impl);
+    const [unwatched, kept] = [new Watcher(), new Watcher()];
+    let released!: boolean[];
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        const session = asStub(queue);
+        (await session.watchSession(unwatched))[Symbol.dispose]();
+        const first = await releasedSoon(unwatched);
+        await session.watchSession(kept);
+        const before = await releasedSoon(kept);
+        session[Symbol.dispose]();
+        released = [first, before, await releasedSoon(kept)];
+      },
+    });
+    await turn(impl, [[execute("command")]]);
+    expect(released).toEqual([true, false, true]);
+  }));
+
+  it("ends a session with no execution when its connection is removed", () => withCommands(async impl => {
+    connect(impl);
+    const session = asStub(await impl.openGatekeeperSession(
+      7, {startSession: (queue: unknown) => queue} as never, {from: "user"}) as Queue);
+    const watcher = new Watcher();
+    await session.watchSession(watcher);
+    expect([await failure(session.requireLive()), await session.getExecutionId(), await releasedSoon(watcher)])
+      .toEqual(["", undefined, false]);
+    impl.removeGatekeeper(7);
+    expect(await releasedSoon(watcher)).toBe(true);
+    expect(await failure(session.requireLive())).toMatch("connection has been removed");
   }));
 });
