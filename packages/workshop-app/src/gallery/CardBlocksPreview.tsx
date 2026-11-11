@@ -32,7 +32,7 @@ export const CardBlocksPreview = () => {
           <OutputCard title="Fix export timeout" kind="worktree" onOpen={() => say('open the worktree')} />
         </Column>
       </Section>
-      <Section title="ActionCard (pending, with a standing approval, restricted and incomplete, approved, denied, auto-approved)">
+      <Section title="ActionCard (pending, with a standing approval, restricted and incomplete, approved, denied)">
         <Column>
           <ActionCard {...request} state="pending" onApprove={after('approved')} onDeny={after('denied')} />
           <ActionCard
@@ -47,7 +47,6 @@ export const CardBlocksPreview = () => {
           <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always approve')} />
           <ActionCard {...request} state="approved" resolution="Approved by Ada Lovelace" {...of('approved')} />
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
-          <ActionCard {...request} state="approved" automatic resolution="Auto-approved (Ada Lovelace’s rule)" {...of('auto')} />
         </Column>
       </Section>
       <Section title="HookCard (switchable, off, deleted)">

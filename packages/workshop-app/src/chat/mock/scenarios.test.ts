@@ -81,6 +81,7 @@ describe('scenarios', () => {
     await untilWaiting()
     expect(ready().pinned).toMatchObject([{ kind: 'action', title: 'Create issue in PLAT', state: 'pending' }])
     await session.approveAction(pending().actionId)
+    expect(rows().at(-1)).toMatchObject({ kind: 'action', title: 'Create issue in PLAT', state: 'approved' })
 
     await untilWaiting()
     await session.rejectAction(pending().actionId)
@@ -90,14 +91,15 @@ describe('scenarios', () => {
     await overseer.setAutoApprovedActionKind(pending().rule!.gatekeeperId, pending().rule!.actionKind)
 
     await untilWaiting()
-    // The whole exchange is one turn, so every card is under its last answer.
-    expect(rows().map(({ kind }) => kind).slice(-5)).toEqual(['assistant', 'action', 'action', 'action', 'action'])
-    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual([
-      'Approved by Ada Lovelace',
-      'Denied by Ada Lovelace',
-      'Auto-approved (Ada Lovelace’s rule)',
-      'Auto-approved (Ada Lovelace’s rule)',
-    ])
+    // Nothing is waiting any more, so each request is back where it was made.
+    expect(ready().pinned).toEqual([])
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'action', 'assistant', 'action', 'assistant', 'tools', 'assistant'])
+    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual(['Approved by Ada Lovelace', 'Denied by Ada Lovelace'])
+    // The two a rule approved were never anyone's decision: they are steps of the work.
+    expect(of(rows(), 'tools')[1]).toMatchObject({
+      summary: 'Ran code, took 2 actions',
+      entries: [{ type: 'call' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }],
+    })
   })
 
   it('observation-hook: what was read is listed with the tools, and the hook under the answer can be switched', async () => {
@@ -114,9 +116,11 @@ describe('scenarios', () => {
     const { session, ready, seen } = await watch(scenario('connection-request'), ({ rows }) => of(rows(), 'connection').map(({ state }) => state))
     expect(seen).toEqual(new Set(['pending', 'connected']))
 
-    const waiting = of(ready().pinned, 'connection').find(({ state }) => state === 'pending')!
+    const [waiting] = of(ready().pinned, 'connection')
+    expect(waiting).toMatchObject({ vendorName: 'Grafana', state: 'pending' })
     await session.denyConnection(waiting.requestId)
-    expect(ready().pinned.map((row) => row.kind === 'connection' && row.state)).toEqual(['connected', 'denied'])
+    expect(ready().pinned).toEqual([])
+    expect(of(ready().items, 'connection').map(({ vendorName, state }) => [vendorName, state])).toEqual([['ClickHouse', 'connected'], ['Grafana', 'denied']])
   })
 
   it('output: the card stays under the answer, a draft until the changes are accepted', async () => {

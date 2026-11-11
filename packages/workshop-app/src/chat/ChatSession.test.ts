@@ -715,7 +715,8 @@ describe('ChatSession', () => {
       expect(ready(session).pinned).toMatchObject([{ state: 'pending' }])
 
       fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor }))
-      expect(ready(session).pinned).toMatchObject([{ state: 'approved', resolution: 'Approved by User' }])
+      expect(ready(session).pinned).toEqual([])
+      expect(ready(session).items.at(-1)).toMatchObject({ kind: 'action', state: 'approved', resolution: 'Approved by User' })
     })
 
     it('denies through the workspace', async () => {
@@ -725,15 +726,16 @@ describe('ChatSession', () => {
       fake.actions().entry(log({ state: 'rejected', resolvedBy: userAuthor }))
 
       expect(fake.rejectAction).toHaveBeenCalledExactlyOnceWith(7)
-      expect(ready(session).pinned).toMatchObject([{ state: 'denied' }])
+      expect(ready(session).items.at(-1)).toMatchObject({ kind: 'action', state: 'denied' })
     })
 
-    it('shows an approval someone else gave, or a rule', async () => {
+    it('stops asking when a rule approves the action instead', async () => {
       const { fake, session } = await withAction()
 
       fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor, autoApproved: true }))
 
-      expect(ready(session).pinned).toMatchObject([{ state: 'approved', resolution: 'Auto-approved (User’s rule)' }])
+      expect(ready(session).pinned).toEqual([])
+      expect(ready(session).openTools?.entries).toMatchObject([{ type: 'action', resolution: 'Auto-approved (User’s rule)' }])
     })
 
     it('ignores a record no loaded message shows', async () => {

@@ -19,7 +19,7 @@ export type ResourceLink = { title: string; url?: string }
 /** What a created gadget is, when its blueprint declared a format. */
 export type OutputFormat = { noun: string; icon: OutputIcon }
 
-/** One step of the agent's work: a tool it called, or a resource that call read. */
+/** One step of the agent's work: a tool it called, a resource that call read, or an action a standing rule let through. */
 export type ToolEntry =
   | {
       type: 'call'
@@ -34,6 +34,16 @@ export type ToolEntry =
       running?: boolean
     }
   | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[] }
+  | {
+      type: 'action'
+      key: string
+      label: string
+      /** The rule that approved it, e.g. "Auto-approved (Ada’s rule)". */
+      resolution: string
+      resource?: ResourceLink
+      description: string
+      fields: ActionField[]
+    }
 
 type Row = {
   /** The sequence of the message the row comes from; the first, when it spans several. */
@@ -77,10 +87,8 @@ export type ActionItem = Row & {
   resource?: ResourceLink
   fields: ActionField[]
   state: 'pending' | 'approved' | 'denied'
-  /** How it was decided, e.g. "Auto-approved (Ada’s rule)". */
+  /** Who decided it, e.g. "Approved by Ada". */
   resolution?: string
-  /** Approved by a standing rule rather than by someone's click. */
-  automatic: boolean
   /** Part of what the action will send is not in its description. */
   incomplete: boolean
   /** The standing approval the user could give instead of deciding each time. */
@@ -120,8 +128,11 @@ export type ErrorItem = Row & {
   recovery?: 'retry' | 'continue'
 }
 
-/** The things an answer produced or asks for. They are shown under the answer, not where they happened. */
-export type ArtefactItem = OutputItem | ActionItem | HookItem | ConnectionItem
+/**
+ * What an answer produced, or is waiting on the user for. These are shown under the answer, not
+ * where they happened. An approval or a connection request is one only until it is decided.
+ */
+export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem
 
 /** One row of the conversation. */
 export type ChatItem = UserItem | AssistantItem | ToolsItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
@@ -139,8 +150,9 @@ export type FeedContext = {
 
 /**
  * A chat's messages as rows. A turn is everything from one prompt to the next; what a turn
- * produced (outputs, hooks) or asks the user (approvals, connection requests) is moved to the end
- * of the turn, so it sits under the answer however much the agent wrote afterwards.
+ * produced (outputs, hooks) or still asks the user (pending approvals and connection requests) is
+ * moved to the end of the turn, so it sits under the answer however much the agent wrote
+ * afterwards. Once the user has decided, the request goes back to where it happened.
  *
  * The last turn is still open: more may be written in it, and whatever streams belongs between its
  * rows and its artefacts. So its trailing run of tool calls and its artefacts are kept apart.
@@ -274,16 +286,17 @@ const commandItem = (
   }
 }
 
-const actionItem = (id: number, log: ActionLogEntry & { type: 'action' }): Omit<ActionItem, 'key'> => {
-  const { description, resolvedBy, gatekeeperId } = log
+type ActionLog = ActionLogEntry & { type: 'action' }
+
+const resolutionOf = ({ state, autoApproved, resolvedBy }: ActionLog): string | undefined => {
+  if (state === 'pending') return undefined
+  if (autoApproved) return `Auto-approved${resolvedBy ? ` (${resolvedBy.name}’s rule)` : ''}`
+  return `${state === 'approved' ? 'Approved' : 'Denied'}${resolvedBy ? ` by ${resolvedBy.name}` : ''}`
+}
+
+const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
+  const { description, gatekeeperId } = log
   const state = log.state === 'rejected' ? 'denied' : log.state
-  const by = resolvedBy ? ` by ${resolvedBy.name}` : ''
-  const resolution =
-    state === 'pending'
-      ? undefined
-      : log.autoApproved
-        ? `Auto-approved${resolvedBy ? ` (${resolvedBy.name}’s rule)` : ''}`
-        : `${state === 'approved' ? 'Approved' : 'Denied'}${by}`
   const { actionKind } = description
   return {
     kind: 'action',
@@ -294,8 +307,7 @@ const actionItem = (id: number, log: ActionLogEntry & { type: 'action' }): Omit<
     resource: resourceOf(log),
     fields: description.fields ?? [],
     state,
-    resolution,
-    automatic: log.autoApproved === true,
+    resolution: resolutionOf(log),
     incomplete: state === 'pending' && description.descriptionIsComplete !== true,
     // Only where a rule would apply to this very action: its gatekeeper allows one for its kind.
     rule:
@@ -308,43 +320,51 @@ const actionItem = (id: number, log: ActionLogEntry & { type: 'action' }): Omit<
 type WorkStep =
   | { type: 'call'; call: AiToolCall; sequence: number; reasoning?: string }
   | { type: 'observation'; message: Message<'action'>; log: ActionLogEntry & { type: 'observation' } }
+  | { type: 'action'; message: Message<'action'>; log: ActionLog }
+
+const stepEntry = (step: WorkStep): ToolEntry => {
+  if (step.type === 'call') {
+    const { call } = step
+    return {
+      type: 'call',
+      key: call.toolCallId,
+      icon: toolIcon(call.toolName),
+      label: toolLabel(call),
+      error: call.error,
+      reasoning: step.reasoning,
+      sections: toolSections(call),
+    }
+  }
+  const { description } = step.log
+  const detail = {
+    key: `${step.type}:${step.message.sequence}`,
+    resource: resourceOf(step.log),
+    description: description.description,
+    fields: description.fields ?? [],
+  }
+  return step.type === 'observation'
+    ? { type: 'observation', label: `Read ${description.title || step.log.resourceTitle || 'a resource'}`, ...detail }
+    : { type: 'action', label: description.title, resolution: resolutionOf(step.log) ?? '', ...detail }
+}
 
 const toolsItem = (emit: Emit, steps: WorkStep[]): ToolsItem => {
   const first = steps[0]
-  const key = first.type === 'call' ? first.call.toolCallId : `observation:${first.message.sequence}`
+  const key = first.type === 'call' ? first.call.toolCallId : `${first.type}:${first.message.sequence}`
   return emit<ToolsItem>(
     `tools:${key}`,
     steps.map((step) => (step.type === 'call' ? step.call : step.message)),
     () => {
       const calls = steps.flatMap((step) => (step.type === 'call' ? [step.call] : []))
-      const observations = steps.flatMap((step) => (step.type === 'observation' ? [step.log] : []))
-      const targets = [...calls.map(toolTarget), ...observations.map(({ resourceTitle }) => resourceTitle)]
+      const logs = steps.flatMap((step) => (step.type === 'call' ? [] : [step.log]))
+      const reads = steps.filter(({ type }) => type === 'observation').length
+      const targets = [...calls.map(toolTarget), ...logs.map(({ resourceTitle }) => resourceTitle)]
       return {
         kind: 'tools',
         id: first.type === 'call' ? first.sequence : first.message.sequence,
-        summary: summarizeTools(calls, observations.length),
+        summary: summarizeTools(calls, reads, logs.length - reads),
         targets: [...new Set(targets.filter((target): target is string => !!target))],
         failed: calls.some((call) => !!call.error),
-        entries: steps.map((step): ToolEntry =>
-          step.type === 'call'
-            ? {
-                type: 'call',
-                key: step.call.toolCallId,
-                icon: toolIcon(step.call.toolName),
-                label: toolLabel(step.call),
-                error: step.call.error,
-                reasoning: step.reasoning,
-                sections: toolSections(step.call),
-              }
-            : {
-                type: 'observation',
-                key: `observation:${step.message.sequence}`,
-                label: `Read ${step.log.description.title || step.log.resourceTitle || 'a resource'}`,
-                resource: resourceOf(step.log),
-                description: step.log.description.description,
-                fields: step.log.description.fields ?? [],
-              },
-        ),
+        entries: steps.map(stepEntry),
       }
     },
   )
@@ -547,12 +567,23 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             resource: resourceOf(log),
             enabled: log.enabled,
           })))
-        } else pinned.push(emit<ActionItem>(`action:${id}`, [message], () => actionItem(id, log)))
+        } else if (log.autoApproved) {
+          // Nobody was asked, so it is part of the work like the call that made it.
+          work.push({ type: 'action', message, log })
+        } else {
+          const item = emit<ActionItem>(`action:${id}`, [message], () => actionItem(id, log))
+          // It waits under the answer; once decided it is history, back where it happened.
+          if (item.state === 'pending') pinned.push(item)
+          else {
+            closeWork()
+            items.push(item)
+          }
+        }
         break
       }
 
-      case 'connectionRequest':
-        pinned.push(emit<ConnectionItem>(`connection:${id}`, [message], () => ({
+      case 'connectionRequest': {
+        const item = emit<ConnectionItem>(`connection:${id}`, [message], () => ({
           kind: 'connection',
           id,
           requestId: message.requestId,
@@ -561,8 +592,14 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           scope: message.resourceTitle ?? message.resourceUrl,
           reason: message.reason,
           state: message.state === 'accepted' ? 'connected' : message.state,
-        })))
+        }))
+        if (item.state === 'pending') pinned.push(item)
+        else {
+          closeWork()
+          items.push(item)
+        }
         break
+      }
 
       case 'changes':
         // The agent's own edits are part of its work; the migration's bookkeeping is nobody's action.

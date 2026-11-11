@@ -217,10 +217,11 @@ const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1
 
 /**
  * One line for a run of work: "Read 3 files, edited 2, ran code". A single step is its own
- * sentence. `observations` is how many resources were read alongside the calls.
+ * sentence. `reads` is how many resources were read alongside the calls, and `actions` how many
+ * actions a standing rule let them take.
  */
-export const summarizeTools = (calls: AiToolCall[], observations = 0): string => {
-  if (calls.length === 1 && observations === 0) return toolLabel(calls[0])
+export const summarizeTools = (calls: AiToolCall[], reads = 0, actions = 0): string => {
+  if (calls.length === 1 && reads === 0 && actions === 0) return toolLabel(calls[0])
 
   const phrases: string[] = []
   const mentioned = new Set<string>()
@@ -236,7 +237,8 @@ export const summarizeTools = (calls: AiToolCall[], observations = 0): string =>
     const { verb, noun, distinctTargets } = COUNTED[toolName] ?? { verb: `used ${toolName}` }
     add(verb, distinctTargets ? new Set(ofTool.map(toolTarget)).size : ofTool.length, noun)
   }
-  if (observations > 0) add('read', observations, ['resource', 'resources'])
+  if (reads > 0) add('read', reads, ['resource', 'resources'])
+  if (actions > 0) add('took', actions, ['action', 'actions'])
 
   const shown = phrases.slice(0, MAX_PHRASES)
   const rest = phrases.length - shown.length

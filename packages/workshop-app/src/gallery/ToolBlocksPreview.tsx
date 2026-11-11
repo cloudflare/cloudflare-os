@@ -46,6 +46,15 @@ const steps: ToolStepEntry[] = [
     fields: [{ label: 'Board', kind: 'inline', value: 'PLAT' }],
   },
   { type: 'call', key: 'failed', icon: 'edit', label: 'Edited src/worker.ts', error: 'The text to replace was not found in src/worker.ts.', sections: [] },
+  {
+    type: 'action',
+    key: 'action',
+    label: 'Add label “bug” to PLAT-212',
+    resolution: 'Auto-approved (Ada Lovelace’s rule)',
+    resource: { title: 'Jira · Platform board', url: 'https://jira.example.com/projects/PLAT' },
+    description: '',
+    fields: [{ label: 'Label', kind: 'inline', value: 'bug' }],
+  },
 ]
 
 /** The agent's work, collapsed and opened, and the literal values a step can carry. */
@@ -54,10 +63,10 @@ export const ToolBlocksPreview = () => {
 
   return (
     <>
-      <Section title="ToolGroup (closed, open with steps, failed, running, a single step, a single observation)">
+      <Section title="ToolGroup (closed, open with steps, failed, running, a single step, a single observation, a single auto-approved action)">
         <Column>
           <ToolGroup summary="Read 3 files, edited 2, ran code" targets={['src/worker.ts', 'src/chart.tsx', 'package.json']} failed={false} entries={steps.slice(0, 3)} {...of('group')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup summary="Read 1 file, edited 2, ran code, and 1 more" targets={['src/worker.ts', 'src/chart.tsx', 'Jira · Platform board']} failed entries={steps} {...of('group-open')} openEntries={open} onToggleEntry={toggle} />
+          <ToolGroup summary="Read 1 file, edited 2, ran code, and 2 more" targets={['src/worker.ts', 'src/chart.tsx', 'Jira · Platform board']} failed entries={steps} {...of('group-open')} openEntries={open} onToggleEntry={toggle} />
           <ToolGroup
             summary="Writing src/trend.ts…"
             targets={['src/worker.ts', 'src/trend.ts']}
@@ -71,6 +80,7 @@ export const ToolBlocksPreview = () => {
           <ToolGroup summary="" targets={[]} failed={false} entries={[steps[2]]} {...of('single')} openEntries={open} onToggleEntry={toggle} />
           <ToolGroup summary="" targets={[]} failed={false} entries={[steps[0]]} {...of('single-plain')} openEntries={open} onToggleEntry={toggle} />
           <ToolGroup summary="" targets={[]} failed={false} entries={[steps[3]]} {...of('single-observation')} openEntries={open} onToggleEntry={toggle} />
+          <ToolGroup summary="" targets={[]} failed={false} entries={[steps[5]]} {...of('single-action')} openEntries={open} onToggleEntry={toggle} />
         </Column>
       </Section>
       <Section title="ActionFields (inline, empty, text, truncated JSON, list, empty list, files, omitted)">
