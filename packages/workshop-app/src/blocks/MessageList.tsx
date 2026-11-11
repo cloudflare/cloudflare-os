@@ -26,6 +26,11 @@ export type MessageListProps = {
 export type MessageListHandle = {
   /** Brings one of `messages` into view and points it out. Nothing happens for an id not among them. */
   scrollToMessage: (id: MessageListItem['id']) => void
+  /**
+   * Goes to the end of the conversation and follows it from there, wherever the reader was: for
+   * when they have just said something themselves.
+   */
+  scrollToLatest: () => void
 }
 
 /** The clock of Arrival.css, which a row opens on so that what is below moves with what grows in. */
@@ -59,7 +64,8 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
       const sequence = messages.find((message) => message.id === id)?.sequence
       if (sequence !== undefined) scrollToRow(String(id), Math.floor(sequence / VIRTUAL_PAGE_SIZE))
     },
-  }), [messages, scrollToRow])
+    scrollToLatest: scrollToBottom,
+  }), [messages, scrollToRow, scrollToBottom])
   const startRef = useRef<HTMLDivElement>(null)
   useScrollFadeFallback(scrollRef)
   // Sequence buckets stay stable when history is prepended or an existing message is updated.
