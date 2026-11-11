@@ -752,6 +752,48 @@ describe("Drive comment sends and their markers", () => {
     expect(limited.attempts.get(other)?.failedSends).toBeUndefined();
   });
 
+  // Google lists an account that can only view a file none of its comments, its own included,
+  // with no error: a look by such an account finds nothing whatever was posted.
+  it("takes nothing found for proof only when the account could have seen its comment", async () => {
+    const BLIND = "The connected account can no longer comment on that file, and Google Drive " +
+      "shows a file's comments only to accounts that can, so whether this was posted can't be " +
+      "checked, and it won't be sent again. Reject it to clear it.";
+    let { api, journal, attempts, submit, apply, reject, aged, keepPosts } = harness();
+    let posted = keepPosts({ loseFirst: true });
+    let id = await submit("createComment", { ...TARGET, content: "Hi" });
+    expect(await apply(id)).toBe(UNCONFIRMED_SEND);
+    expect(posted).toHaveLength(1);
+    // The account is made a viewer: the listing is empty, and the file says it cannot comment.
+    api.listComments.mockImplementation(async () => ({ comments: [] }));
+    api.getScopeNodes.mockImplementation(async ids => ids.map(nodeId => ({ id: nodeId, canComment: false })));
+
+    // Inside the window nothing is concluded either way.
+    expect(await apply(id)).toMatch(/^Google Drive may still be posting this/);
+    expect(journal.get(id)?.state).toBe("pending");
+    let at = aged(id);
+    expect(await apply(id)).toBe(BLIND);
+    expect(journal.get(id)).toMatchObject({ state: "failed", outcome: "unknown" });
+    expect(attempts.get(id)).toStrictEqual({ at });
+    expect(api.createComment).toHaveBeenCalledTimes(1);
+    // The same answer once the right to comment is back, with nothing asked; denying clears it.
+    api.getScopeNodes.mockImplementation(async ids => ids.map(nodeId => ({ id: nodeId, canComment: true })));
+    let asked = api.listComments.mock.calls.length;
+    expect(await apply(id)).toBe(BLIND);
+    expect(api.listComments).toHaveBeenCalledTimes(asked);
+    await expect(reject(id)).resolves.toBeUndefined();
+    expect(journal.get(id)).toBeUndefined();
+
+    // A file the account no longer sees at all ends the same way.
+    let gone = harness();
+    gone.api.createComment.mockRejectedValueOnce(unconfirmed());
+    let other = await gone.submit("createComment", { ...TARGET, content: "Hi" });
+    expect(await gone.apply(other)).toBe(UNCONFIRMED_SEND);
+    gone.aged(other);
+    gone.api.getScopeNodes.mockImplementation(async () => [undefined]);
+    expect(await gone.apply(other)).toBe(BLIND);
+    expect(gone.api.createComment).toHaveBeenCalledTimes(1);
+  });
+
   it("drops the marker of a write that fails for good after its send is proven empty", async () => {
     let { api, journal, attempts, submit, apply, aged, refuse } = harness();
     api.createComment.mockRejectedValueOnce(unconfirmed());
@@ -803,6 +845,17 @@ describe("Drive comment sends and their markers", () => {
         expect(await run.apply(id)).toMatch(/more than one identical comment/);
         return id;
       }, /more than one identical comment/],
+      ["a look that could not have seen the comment", async run => {
+        run.keepPosts({ loseFirst: true });
+        let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
+        expect(await run.apply(id)).toBe(UNCONFIRMED_SEND);
+        run.api.listComments.mockImplementation(async () => ({ comments: [] }));
+        run.api.getScopeNodes.mockImplementation(
+          async ids => ids.map(nodeId => ({ id: nodeId, canComment: false })));
+        run.aged(id);
+        expect(await run.apply(id)).toMatch(/whether this was posted can't be checked/);
+        return id;
+      }, /whether this was posted can't be checked/],
       ["an approval interrupted after its claim", async run => {
         let id = await run.submit("createComment", { ...TARGET, content: "Hi" });
         run.journal.markClaimed(id);

@@ -1748,6 +1748,9 @@ describe("Drive comment actions", () => {
           return this.#write(url, request, fileId, file, body => this.#createComment(fileId, body));
         }
         if (this.listRefusal) return driveError(this.listRefusal);
+        // As Google answers an account that can only view the file: none of its comments, its
+        // own included, and no error.
+        if (!file.canComment) return Response.json({ comments: [] });
         let since = url.searchParams.get("startModifiedTime");
         return Response.json({
           comments: this.live(fileId)
@@ -2718,6 +2721,36 @@ describe("Drive comment actions", () => {
       expect(Object.keys(await drive.attempts())).toEqual([String(actionId)]);
       expect(await drive.reject(actionId)).toBeNull();
       expect(await drive.attempts()).toEqual({});
+    });
+
+    it("ends as of unknown outcome when the account lost the right to comment after a send Google left unconfirmed", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      // The send posts, and its answer is lost.
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+      expect(provider.live("doc-1")).toHaveLength(1);
+      // The file's owner then makes the connected account a viewer: Google lists it nothing.
+      let file = provider.files.get("doc-1");
+      if (!file) throw new Error("no such file");
+      file.canComment = false;
+      await drive.age(actionId, 6 * 60 * 1000);
+
+      let blind = await drive.apply(actionId);
+
+      expect(blind).toBe("The connected account can no longer comment on that file, and Google " +
+        "Drive shows a file's comments only to accounts that can, so whether this was posted " +
+        "can't be checked, and it won't be sent again. Reject it to clear it.");
+      expect(posts()).toHaveLength(1);
+      // With the right to comment back, approving still answers the same and sends nothing.
+      file.canComment = true;
+      expect(await drive.apply(actionId)).toBe(blind);
+      expect(posts()).toHaveLength(1);
+      expect(Object.keys(await drive.attempts())).toEqual([String(actionId)]);
+      // Denying clears it; the comment the send posted stays.
+      expect(await drive.reject(actionId)).toBeNull();
+      expect(await drive.attempts()).toEqual({});
+      expect(provider.live("doc-1")).toHaveLength(1);
     });
 
     it("fails a send Google refused before posting, clearing its marker", async () => {

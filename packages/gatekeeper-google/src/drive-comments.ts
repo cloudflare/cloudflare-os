@@ -542,6 +542,22 @@ async function findPosted(
   return candidates[0]?.id;
 }
 
+/** The end of a look that found nothing while Drive shows this account none of the file's comments. */
+const LOOK_BLIND = "The connected account can no longer comment on that file, and Google Drive " +
+  "shows a file's comments only to accounts that can, so whether this was posted can't be " +
+  "checked, and it won't be sent again. Reject it to clear it.";
+
+/**
+ * Refuses to take a look that found nothing for proof that nothing was posted, when it could have
+ * found nothing either way: Drive lists an account that cannot comment on a file none of its
+ * comments, its own included, and answers with no error.
+ * @throws ActionOutcomeUnknownError when the connected account cannot comment on the file now.
+ */
+async function requireSightedLook(host: DriveCommentsHost, action: DriveCommentAction): Promise<void> {
+  let [file] = await host.api.getScopeNodes([action.payload.fileId]);
+  if (file?.canComment !== true) throw new ActionOutcomeUnknownError(LOOK_BLIND);
+}
+
 /** Whether a send's window has closed, so a look that finds nothing proves it posted nothing. */
 function windowClosed(attempt: CommentAttempt): boolean {
   return attempt.at + RECONCILE_WINDOW_MS < Date.now() - CLOCK_SKEW_MS;
@@ -614,7 +630,9 @@ async function post(
       return found;
     }
     if (!conclusive) throw notShownYet(prior);
-    // The window closed with nothing found: that send posted nothing.
+    await requireSightedLook(host, action);
+    // The window closed with nothing found by an account that would see it: that send posted
+    // nothing.
     failedSends = (prior.failedSends ?? 0) + 1;
     if (failedSends >= MAX_COMMENT_SENDS) {
       host.attempts.delete(id);
