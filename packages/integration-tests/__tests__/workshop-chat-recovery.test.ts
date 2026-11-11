@@ -9,8 +9,8 @@ import {
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  accountLabel, connect, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp, stubFor,
-  waitFor, waitForIdleChat, withOwnerWorkspace, WorkpieceRecorder,
+  accountLabel, connect, listConnectedAccounts, logIn, nextUsernames, restartWorkspace, RpcTarget,
+  signUp, stubFor, waitFor, waitForIdleChat, withOwnerWorkspace, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -204,8 +204,8 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
 
 it.concurrent("stopping an agent whose code is still running ends the turn at once", async () => {
   // Code that would hold the turn for a minute, and call back into the chat if left running.
-  const code = `export default async function(self) {
-    console.log("started");
+  const code = `export default async function(self, env) {
+    console.log("read", await env.TEST_AMBIENT.readValue());
     await scheduler.wait(1500);
     await self.late();
     await scheduler.wait(60_000);
@@ -218,12 +218,15 @@ it.concurrent("stopping an agent whose code is still running ends the turn at on
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  await waitFor("the test account to be provisioned", async () =>
+    (await listConnectedAccounts(api)).some(entry => entry.vendorId === TEST_VENDOR_ID) || null);
   using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("Run it.", SCRIPTED_MODEL_ID);
-  await waitFor("the model request", async () => model.requests.length === 1 || null);
-  // Nothing reports that the code has started; the output asserted below shows that it had.
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // The code's read is audited, which is how its start can be seen from here.
+  await waitFor("the running code's read", async () =>
+    (await ws.listActions({ filter: "observation" })).entries.length > 0 || null);
   await ws.stopAgent(chatId);
   // Well inside the minute the code would otherwise hold the turn for.
   await waitFor("the stopped chat to go idle", async () =>
@@ -235,8 +238,8 @@ it.concurrent("stopping an agent whose code is still running ends the turn at on
   expect(stopped.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []))
     .toEqual([expect.objectContaining({
       toolCallId: "slow",
-      // What the code logged before it was stopped, which also shows it was running by then.
-      output: expect.stringMatching(/^started\n[^]*User requested to stop agent/),
+      // What the code logged before it was stopped.
+      output: expect.stringMatching(/^read [^]*User requested to stop agent/),
     })]);
 
   // Past the point where the abandoned code would have called back.

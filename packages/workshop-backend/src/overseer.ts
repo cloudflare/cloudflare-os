@@ -9620,6 +9620,7 @@ class OverseerImpl implements AgentHooks {
 
       // First check the code actually starts up. Treat startup errors as total failures.
       await entrypoint.verify();
+      abortSignal.throwIfAborted();
 
       // Create the `self` magic object that allows executed code to call back into this
       // chat thread. Uses the initiator's user ID for model resolution on callbacks.
