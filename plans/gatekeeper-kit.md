@@ -2790,6 +2790,9 @@ assertion.
 
 ### 5.5 `./http`
 
+The `./http` subpath has since shipped as the typed provider client (`createOpenAPIClient`), so
+this proposal needs another name before it ships.
+
 ```ts
 export function handleGatekeeperHttp<E extends KitEnv, Creds, Public>(req: Request, opts: {
   env: E;
