@@ -21,6 +21,18 @@
   from { margin-top: 0; }
 }
 
+/* A message that was gone to (the message list marks its row) stands out for a moment: its
+   bubble takes a stronger fill, holds it for a second and a half, and fades back. The fill is
+   laid over the bubble's own in the colour of its text, so a light bubble darkens and a dark one
+   lightens, whatever the theme. */
+[data-pointed-out] .message-bubble-text {
+  animation: message-bubble-pointed-out 2200ms ease-out;
+}
+
+@keyframes message-bubble-pointed-out {
+  5%, 73% { box-shadow: inset 0 0 0 100vmax color-mix(in oklab, currentColor 16%, transparent); }
+}
+
 /* A message's details come and go by the stage they are in (useDetailsStage.ts times the steps
    of going; keep the two in step). They arrive whole, with the growth, fade and focus of an
    arriving bubble. Putting them away takes two steps: they fold to their first line the way a

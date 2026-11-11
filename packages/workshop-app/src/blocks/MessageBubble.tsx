@@ -137,7 +137,7 @@ export const MessageBubble = ({ role, children, joins, onReply, details }: Messa
         )}
       >
         <div className={cn(
-          'group/message relative rounded-[inherit] px-5 py-[11px] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+          'message-bubble-text group/message relative rounded-[inherit] px-5 py-[11px] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
           BUBBLE[role],
           joinsDetails && JOINED[role].below,
         )}>
