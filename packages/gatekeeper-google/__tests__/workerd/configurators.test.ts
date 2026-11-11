@@ -164,9 +164,9 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
     });
 
-    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
-    // start there, or at the Shared drives tab, for the picker to open it where it lives.
-    it("places a pasted folder link for a creation under its tab", async () => {
+    // The creation picker's My Drive tab is Drive's `root` alias, so a folder's path, pasted or
+    // looked up, must start there or at the Shared drives tab for the picker to open it in place.
+    it("finds a creation's folder with its path under its tab", async () => {
       const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
         id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
         capabilities: { canListChildren: true, canAddChildren: true },
@@ -177,6 +177,7 @@ describe("Google resource configurators", () => {
         "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
         "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
         "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+        "/files/notes": { id: "notes", name: "Notes", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false },
       });
       const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
       const pasted = async (id: string) =>
@@ -191,6 +192,23 @@ describe("Google resource configurators", () => {
       await expect(pasted("specs")).resolves.toMatchObject([{
         id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
       }]);
+      // A looked-up folder is the node a pasted link to it lists.
+      for (let id of ["plans", "0AMyRoot", "specs"]) {
+        await expect(creating.getFolder(`folder:${id}`), id).resolves.toEqual((await pasted(id))[0]);
+      }
+      await expect(creating.getFolder("folder:notes")).resolves.toBeNull();
+      await expect(creating.getFolder("folder:gone")).resolves.toBeNull();
+
+      // A suggested place to create something is a link, as a browser shows it.
+      for (let [url, id] of [
+        ["https://drive.google.com/drive/u/1/folders/plans", "folder:plans"],
+        ["https://drive.google.com/drive/folders/0AMyRoot", "folder:root"],
+        ["https://drive.google.com/drive/my-drive", "folder:root"],
+        ["https://drive.google.com/drive/folders/notes", null],
+        ["https://drive.google.com/drive/folders/%E0%A4%A", null],
+        ["https://docs.google.com/document/d/notes/edit", null],
+        ["not a url", null],
+      ] as const) await expect(creating.folderForUrl(url), url).resolves.toBe(id);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing
