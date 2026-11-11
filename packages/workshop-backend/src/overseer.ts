@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, SpendLimitHit } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -44,6 +44,7 @@ import {
   AiGatewayLogRetryableError,
   getAiGatewayConfig,
   getAiGatewayLogCost,
+  spendLimitFromError,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
@@ -7830,7 +7831,7 @@ class OverseerImpl implements AgentHooks {
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
     // Why the turn ended early, posted in the `finally`.
-    let failure: {message: string, code?: string} | undefined;
+    let failure: {message: string, code?: string, spendLimit?: SpendLimitHit} | undefined;
     // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer).
     let lastRequest: CachedRequest | undefined;
     let startedAt = Date.now();
@@ -7957,7 +7958,10 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      failure = {message: errorMessage};
+      let spendLimit = apiError && spendLimitFromError(apiError.message, apiStatus);
+      failure = spendLimit
+        ? {message: "The AI spending limit was reached. Try again later.", code: "spend_limit", spendLimit}
+        : {message: errorMessage};
     } finally {
       if (owns()) {
         // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
@@ -7977,7 +7981,8 @@ class OverseerImpl implements AgentHooks {
           // Posted past the turn's last await, so a steer sent as the turn winds down still lands
           // before the error, which must stay last for Retry to show.
           if (failure) {
-            this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
+            this.postAgentErrorMessage(
+                chatId, aiModel.profile, failure.message, failure.code, failure.spendLimit);
           }
 
           // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
@@ -9263,7 +9268,8 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string) {
+  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string,
+                        spendLimit?: SpendLimitHit) {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
       // Chat thread deleted?
@@ -9283,6 +9289,7 @@ class OverseerImpl implements AgentHooks {
       type: "error",
       message,
       ...(code ? { code } : {}),
+      ...(spendLimit ? { spendLimit } : {}),
     });
   }
 

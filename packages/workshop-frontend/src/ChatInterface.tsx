@@ -109,6 +109,7 @@ import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
+import { SpendLimitCard } from "./features/chat/SpendLimitCard";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
@@ -6442,6 +6443,17 @@ function ChatInterface({
                             const isLast =
                               msg.sequence === lastMessageSequence &&
                               !isAgentActive;
+                            if (msg.code === "spend_limit" && msg.spendLimit) {
+                              return (
+                                <SpendLimitCard
+                                  limit={msg.spendLimit}
+                                  timestamp={formatFullTimestamp(msg.timestamp)}
+                                  retry={isLast
+                                    ? { onRetry: () => handleRetry(), disabled: selectedModel === null }
+                                    : undefined}
+                                />
+                              );
+                            }
                             const expanded = expandedErrors.has(key);
                             return (
                               <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">

@@ -26,7 +26,7 @@ import {
   seenAlwaysAvailableResources,
 } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
-import type { AiGatewayLogRoute } from "./ai-gateway";
+import { spendLimitFromError, type AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
@@ -4470,7 +4470,10 @@ async function runAgentPass(
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
-    if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
+    // A spend limit's 429 is not transient.
+    if (isRetryableAssistantError(turnFailure) && !spendLimitFromError(message, error.statusCode)) {
+      return {type: "transientFailure", error};
+    }
     throw error;
   }
 

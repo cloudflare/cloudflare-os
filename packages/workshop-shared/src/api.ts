@@ -4503,6 +4503,16 @@ export type AiChatAuthorInfo = {
   // `AuthenticatedApi.getAvatar(userId)`.
 };
 
+/** The AI Gateway spend limit that refused a turn's model request. */
+export type SpendLimitHit = {
+  /** The limit, in US dollars. */
+  cost: number;
+  /** The window the limit applies over, in seconds. */
+  windowSeconds: number;
+  /** Whether the window is rolling rather than fixed. */
+  sliding: boolean;
+};
+
 /** One message in a chat: where it is in the chat, when and by whom it was written, and its body. */
 export type AiChatMessage = {
   chatId: number;
@@ -4818,9 +4828,12 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure).
+   * marks a run the user stopped, which is not a failure; "spend_limit" marks a model request an
+   * AI Gateway spend limit refused, described by `spendLimit`).
    */
   code?: string;
+  /** The limit that refused the request, when `code` is "spend_limit". */
+  spendLimit?: SpendLimitHit;
 } | {
   /**
    * Indicates that a call was delivered to the agent: a method was called on its `self` object

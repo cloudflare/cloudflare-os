@@ -1,7 +1,7 @@
 import {
   AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider,
   AutoRouterPool, GatewayModel, GatewayModelMode, HTTPS_ONLY_PROVIDERS, ModelKind, ReasoningLevel,
-  SUGGESTED_MODELS, modelKind,
+  SpendLimitHit, SUGGESTED_MODELS, modelKind,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
@@ -476,4 +476,16 @@ export async function getAiGatewayLogCost(
 
   let cost = "cost" in body.result ? body.result.cost : undefined;
   return validateLogCost(cost);
+}
+
+// e.g. "429 Spend limit exceeded: rule '3c84c20a' (cost limit 0.1 per 86400s, sliding) for ..."
+const SPEND_LIMIT_ERROR = /Spend limit exceeded: rule '[^']*' \(cost limit ([\d.]+) per (\d+)s, (\w+)\)/;
+
+/** The AI Gateway spend limit a failed model request hit, if that is why it failed. */
+export function spendLimitFromError(errorMessage: string, statusCode: number | undefined)
+    : SpendLimitHit | undefined {
+  if (statusCode !== 429) return undefined;
+  let match = SPEND_LIMIT_ERROR.exec(errorMessage);
+  if (!match) return undefined;
+  return { cost: Number(match[1]), windowSeconds: Number(match[2]), sliding: match[3] === "sliding" };
 }

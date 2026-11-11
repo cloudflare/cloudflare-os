@@ -13,6 +13,7 @@ import {
   gatewayRunConfig,
   getAiGatewayLogCost,
   getGatewayModels,
+  spendLimitFromError,
 } from "../src/ai-gateway.js";
 import { getModel } from "../src/ai-models.js";
 
@@ -942,5 +943,21 @@ describe("getAiGatewayLogCost", () => {
         .rejects.toBeInstanceOf(AiGatewayLogRetryableError);
     await expect(getAiGatewayLogCost(env(), route, "log-id"))
         .rejects.toBeInstanceOf(AiGatewayLogRetryableError);
+  });
+});
+
+describe("spendLimitFromError", () => {
+  const refusal = "Spend limit exceeded: rule '3c84c20a' (cost limit 0.1 per 86400s, sliding) " +
+      "for anthropic anthropic/claude-opus-5.5";
+
+  it("reads the window from a gateway refusal, behind any provider SDK's prefix", () => {
+    expect(spendLimitFromError(`429 ${refusal}`, 429)).toEqual({ cost: 0.1, windowSeconds: 86400, sliding: true });
+    expect(spendLimitFromError(`OpenAI API error (429): ${refusal.replace("sliding", "fixed")}`, 429))
+        .toEqual({ cost: 0.1, windowSeconds: 86400, sliding: false });
+  });
+
+  it("ignores other failures", () => {
+    expect(spendLimitFromError(`429 ${refusal}`, 500)).toBeUndefined();
+    expect(spendLimitFromError("429 Rate limit exceeded", 429)).toBeUndefined();
   });
 });

@@ -113,6 +113,17 @@ describe("transient model failures", () => {
       fauxAssistantMessage(fauxText("Never requested.")),
     ])).rejects.toThrow("400 Invalid request");
   }));
+
+  it("does not retry a request an AI Gateway spend limit refused", () => withImpl(async impl => {
+    seedChat(impl);
+    let refusal = "429 Spend limit exceeded: rule '3c84c20a' (cost limit 0.1 per 86400s, sliding) " +
+        "for anthropic anthropic/claude-opus-5.5";
+
+    await expect(runScriptedTurn(impl, [
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: refusal }),
+      fauxAssistantMessage(fauxText("Never requested.")),
+    ])).rejects.toThrow(refusal);
+  }));
 });
 
 describe("the request a turn leaves to keep cached", () => {
