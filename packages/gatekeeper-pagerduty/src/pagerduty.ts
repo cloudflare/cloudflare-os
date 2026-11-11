@@ -78,7 +78,6 @@ import {
 } from "./pagerduty-env";
 import { PagerDutyConfiguratorUI } from "./pagerduty-configurator";
 import { forgetHooks, handleWebhook } from "./pagerduty-hooks";
-import type { WireUser } from "./pagerduty-normalize";
 import { parseResourceUrl, sameTenant } from "./pagerduty-urls";
 import { obsContext } from "./observability";
 import PAGERDUTY_LOGO_SVG from "./pagerduty-logo.svg";
@@ -173,7 +172,7 @@ function toGrant(tokens: OAuthTokens): Grant {
 
 /** Reads the user a grant belongs to. */
 async function fetchUser(accessToken: string, grant: GrantIdentity): Promise<Identity> {
-  const { user } = await new PagerDutyApi(accessToken, grant.region).get<{ user: WireUser }>("/users/me");
+  const { user } = await new PagerDutyApi(accessToken, grant.region).rest.users.get("/users/me");
   return identityOf(grant, user);
 }
 

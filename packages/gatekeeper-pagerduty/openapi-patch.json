@@ -1,0 +1,67 @@
+[
+  {
+    "op": "replace",
+    "path": "/components/schemas/ResponderRequestTargetReference",
+    "reason": "The schema lists a target's fields flat, but the API takes each target wrapped in responder_request_target, as the description's own request example for POST /incidents/{id}/responder_requests shows.",
+    "value": {
+      "type": "object",
+      "required": [
+        "responder_request_target"
+      ],
+      "properties": {
+        "responder_request_target": {
+          "type": "object",
+          "required": [
+            "id",
+            "type"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The id of the user or escalation policy."
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "user_reference",
+                "escalation_policy_reference"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "op": "add",
+    "path": "/paths/~1incidents~1{id}/put/requestBody/content/application~1json/schema/properties/incident/properties/priority/nullable",
+    "reason": "The gatekeeper clears an incident's priority by setting it to null, which the description does not allow.",
+    "value": true
+  },
+  {
+    "op": "add",
+    "path": "/components/schemas/IncidentBody/properties/type",
+    "reason": "IncidentBody requires a type it never declares; the description's request example for POST /incidents sends incident_body.",
+    "value": {
+      "type": "string",
+      "enum": [
+        "incident_body"
+      ]
+    }
+  },
+  {
+    "op": "replace",
+    "path": "/components/schemas/IncidentBody/properties/details",
+    "reason": "The description declares the details an object, but its request example for POST /incidents sends a string, as the gatekeeper does.",
+    "value": {
+      "type": "string",
+      "description": "Additional incident details."
+    }
+  },
+  {
+    "op": "add",
+    "path": "/components/parameters/include_incident/schema/enum/-",
+    "reason": "The gatekeeper reads an incident's body with include[]=body, which this enum leaves out.",
+    "value": "body"
+  }
+]

@@ -11,15 +11,17 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
+import type { IncidentsApi } from "./openapi/incidents";
+import type { OnCallsApi } from "./openapi/onCalls";
 import {
-  MAX_LIMIT, chainedPage, isDenial, listing, scheduleListings, schedulePath, type OffsetSource, type PagerDutyApi, type Query,
+  MAX_LIMIT, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type PagerDutyApi, type QueryOf,
 } from "./pagerduty-api";
 import { isProvisional, type PagerDutyActions, type PriorityTarget, type UserTarget } from "./pagerduty-actions";
 import { subresourceId, type Identity, type ObjectKind } from "./pagerduty-credentials";
 import type { Tenant } from "./pagerduty-env";
 import {
   toIncidentSummary, toOnCall, toPriority, toScheduleSummary, toServiceSummary, toTeam, toUser, toUserRef,
-  type Schedule, type WireIncident, type WirePriority, type WireRef, type WireSchedule, type WireService, type WireUser,
+  type Schedule, type WireIncident, type WirePriority, type WireRef, type WireSchedule, type WireService,
 } from "./pagerduty-normalize";
 import {
   changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridingUsers, pendingIncidents,
@@ -184,16 +186,20 @@ export function windowOf(window: PagerDutyTimeWindow | undefined, days: number, 
 /** The connected user, as the pending actions they staged show them. */
 export const youRef = (me: Identity) => ({ id: me.userId, name: me.name });
 
+/** What an incident read can include besides the incident. */
+export type IncidentInclude = NonNullable<QueryOf<IncidentsApi, "/incidents/{id}">["include[]"]>;
+
 /** An incident as PagerDuty describes it now. */
 export async function readIncident({ host }: { host: SessionHost }, id: string,
-                                   include: readonly string[] = []): Promise<WireIncident> {
-  return (await host.read(api => api.get<{ incident: WireIncident }>(`/incidents/${id}`, include.length ? { include } : {})))
-    .incident;
+                                   include: IncidentInclude = []): Promise<WireIncident> {
+  return (await host.read(api => api.rest.incidents.get("/incidents/{id}", {
+    path: { id }, query: include.length ? { "include[]": include } : {},
+  }))).incident;
 }
 
 /** A service as PagerDuty describes it now. */
 export async function readService({ host }: { host: SessionHost }, id: string): Promise<WireService> {
-  return (await host.read(api => api.get<{ service: WireService }>(`/services/${id}`))).service;
+  return (await host.read(api => api.rest.services.get("/services/{id}", { path: { id } }))).service;
 }
 
 /** What a schedule read asks for besides the schedule: its shifts in `window`, and the users a shift-based one names. */
@@ -209,17 +215,19 @@ export async function readSchedule({ host }: { host: SessionHost }, id: string,
                                    { window, users }: ScheduleQuery = {}): Promise<Schedule> {
   const probed: { schedule?: Schedule } = {};
   const shiftBased = await host.cached(`schedule-generation:${id}`, CATALOG_TTL_MS, async () => {
-    const probe = await host.read(api => api.schedule<{ schedule: WireSchedule }>(id));
-    probed.schedule = { ...probe.body.schedule, shiftBased: probe.shiftBased };
+    const probe = await host.read(api => api.schedule(id));
+    probed.schedule = { ...probe.schedule, shiftBased: probe.shiftBased };
     return probe.shiftBased;
   });
   // The probe serves a read that asks for nothing more; v2 has no `users` to include.
   if (probed.schedule && !window && !(users && shiftBased)) return probed.schedule;
   // v3 sends a schedule's shifts and users only when asked to include them.
-  const query: Query = shiftBased
-    ? { ...window, include: [...(window ? ["final_schedule"] : []), ...(users ? ["users"] : [])] }
-    : { ...window };
-  const read = await host.read(api => api.get<{ schedule: WireSchedule }>(schedulePath(id, shiftBased), query));
+  const read = await host.read(api => shiftBased
+    ? api.rest.schedulesV3.get("/v3/schedules/{id}", {
+      path: { id },
+      query: { ...window, "include[]": [...(window ? ["final_schedule" as const] : []), ...(users ? ["users" as const] : [])] },
+    })
+    : api.rest.schedules.get("/schedules/{id}", { path: { id }, query: { ...window } }));
   return { ...read.schedule, shiftBased };
 }
 
@@ -234,7 +242,8 @@ export function cachedService(ctx: { host: SessionHost }, id: string): Promise<W
  */
 async function servicesWithin({ host, within: { teamId, serviceId } }: SessionContext): Promise<string[] | undefined> {
   const teamServices = teamId === undefined ? undefined : await host.cached(`team-services:${teamId}`, SERVICE_TTL_MS, async () =>
-    (await host.read(api => api.all<WireRef>("/services", "services", { team_ids: [teamId] }))).map(({ id }) => id));
+    (await host.read(api => api.all(page => api.rest.services.get("/services", { query: { "team_ids[]": [teamId], ...page } }),
+      reply => reply.services))).map(({ id }) => id));
   return serviceId === undefined ? teamServices : (teamServices ?? [serviceId]).filter(id => id === serviceId);
 }
 
@@ -266,7 +275,7 @@ export async function outsideOf(ctx: { host: SessionHost }, serviceId: string, w
  * `loadService` reads the service's teams, briefly cached by default.
  */
 export async function currentIncident(ctx: { host: SessionHost }, id: string, within: Within,
-                                      include: readonly string[] = [], loadService = cachedService):
+                                      include: IncidentInclude = [], loadService = cachedService):
     Promise<{ wire: WireIncident; outside?: string }> {
   const wire = await readIncident(ctx, id, include);
   const outside = await outsideOf(ctx, wire.service.id, within, loadService);
@@ -294,7 +303,8 @@ export async function objectOutside(ctx: { host: SessionHost }, { kind, id }: Sc
 /** Every user matching `query`, up to `MAX_USERS`. */
 export async function findUsers(ctx: SessionContext, query: string | undefined): Promise<PagerDutyUser[]> {
   if (query !== undefined) text(query, "query", 200);
-  const users = await ctx.host.read(api => api.all<WireUser>("/users", "users", { query }, MAX_USERS));
+  const users = await ctx.host.read(api => api.all(page => api.rest.users.get("/users", { query: { query, ...page } }),
+    reply => reply.users, MAX_USERS));
   await ctx.authorize({ title: "Looked up PagerDuty users", description: `Found ${countOf(users.length, "user")}.` });
   return users.map(toUser);
 }
@@ -302,7 +312,8 @@ export async function findUsers(ctx: SessionContext, query: string | undefined):
 /** The account's priorities, cached briefly. */
 function priorities(ctx: SessionContext): Promise<WirePriority[]> {
   return ctx.host.cached("priorities", CATALOG_TTL_MS,
-    () => ctx.host.read(api => api.all<WirePriority>("/priorities", "priorities")));
+    () => ctx.host.read(api => api.all(page => api.rest.priorities.get("/priorities", { query: page }),
+      reply => reply.priorities)));
 }
 
 /** The account's priorities, as an agent lists them. */
@@ -326,8 +337,9 @@ export async function usersNamed(ctx: SessionContext, given: readonly string[], 
   return await Promise.all(given.map(async value => {
     text(value, what);
     const user = OBJECT_ID.test(value)
-      ? (await ctx.host.read(api => api.get<{ user: WireUser }>(`/users/${value}`))).user
-      : (await ctx.host.read(api => api.all<WireUser>("/users", "users", { query: value }, MAX_USERS)))
+      ? (await ctx.host.read(api => api.rest.users.get("/users/{id}", { path: { id: value } }))).user
+      : (await ctx.host.read(api => api.all(page => api.rest.users.get("/users", { query: { query: value, ...page } }),
+        reply => reply.users, MAX_USERS)))
         .find(({ email }) => email.toLowerCase() === value.toLowerCase());
     if (!user) throw new Error(`No PagerDuty user has the email ${value}.`);
     return { ...toUserRef(user), given: value };
@@ -377,13 +389,16 @@ export function listed(title: string, noun: string) {
   });
 }
 
+/** The filters every named listing takes: a name to match, and the team bound, if any. */
+type NamedFilters = { query?: string; "team_ids[]"?: readonly string[] };
+
 /**
  * Listings of services, teams or schedules, walked in turn, reporting each row: a team's listing
  * too, since PagerDuty showing the team needn't mean it shows everything the team owns.
  */
 function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "service" | "team" | "schedule",
                                                list: PagerDutyListOptions | undefined,
-                                               sources: (filters: Query) => readonly OffsetSource<T>[]): Cursor<T> {
+                                               sources: (filters: NamedFilters) => readonly OffsetSource<T>[]): Cursor<T> {
   const query = list?.query === undefined ? undefined : text(list.query, "query", 200);
   const { teamId } = ctx.within;
   const pageSize = pageSizeOf(list);
@@ -392,7 +407,7 @@ function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "serv
     // Only PagerDuty filters by team, so a team's rows are fetched a page at a time, as they're
     // served: none waits to be served after it has left the team.
     ...(teamId ? { remotePageSize: pageSize } : {}),
-    sources: sources({ query, ...(teamId ? { team_ids: [teamId] } : {}) }),
+    sources: sources({ query, ...(teamId ? { "team_ids[]": [teamId] } : {}) }),
     describe: listed(`Listed PagerDuty ${plural(kind)}`, kind),
     result: rows => rows.map(({ id }) => ({ kind, id })),
   });
@@ -401,11 +416,13 @@ function namedListing<T extends { id: string }>(ctx: SessionContext, kind: "serv
 /** Services, by name. */
 export const listServices = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyServiceSummary> =>
   namedListing(ctx, "service", list,
-    filters => [listing("/services", "services", { ...filters, sort_by: "name" }, toServiceSummary)]);
+    filters => [listing((api, page) => api.rest.services.get("/services", { query: { ...filters, sort_by: "name", ...page } }),
+      reply => reply.services, toServiceSummary)]);
 
 /** The account's teams. */
 export const listTeams = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyTeamSummary> =>
-  namedListing(ctx, "team", list, filters => [listing("/teams", "teams", filters, toTeam)]);
+  namedListing(ctx, "team", list, filters => [listing((api, page) => api.rest.teams.get("/teams", { query: { ...filters, ...page } }),
+    reply => reply.teams, toTeam)]);
 
 /** Schedules: layer-based ones, by name, then shift-based ones, which PagerDuty lists apart. */
 export const listSchedules = (ctx: SessionContext, list: PagerDutyListOptions | undefined): Cursor<PagerDutyScheduleSummary> =>
@@ -420,7 +437,7 @@ const MAX_QUERY_SERVICES = 100;
  * the services `scope` names, if any, which are team `teamId`'s, if any.
  */
 function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: string[] | undefined, me: Identity,
-                       teamId?: string): { query: IncidentQuery; params: Query } {
+                       teamId?: string): { query: IncidentQuery; params: QueryOf<IncidentsApi, "/incidents"> } {
   const statuses = filter?.statuses ?? ["triggered", "acknowledged"];
   const urgencies = filter?.urgencies;
   const requested = ids(filter?.serviceIds, "serviceIds");
@@ -444,10 +461,10 @@ function incidentQuery(filter: PagerDutyIncidentFilter | undefined, scope: strin
   const query: IncidentQuery = {
     statuses, urgencies, serviceIds, since, until, assignedToMe: filter?.assignedToMe === true,
   };
-  const params: Query = {
-    statuses, urgencies, since, until,
-    ...byTeam ? { team_ids: [teamId] } : { service_ids: serviceIds },
-    user_ids: query.assignedToMe ? [me.userId] : undefined,
+  const params: QueryOf<IncidentsApi, "/incidents"> = {
+    "statuses[]": statuses, "urgencies[]": urgencies, since, until,
+    ...byTeam ? { "team_ids[]": [teamId] } : { "service_ids[]": serviceIds },
+    "user_ids[]": query.assignedToMe ? [me.userId] : undefined,
     date_range: filter?.allTime ? "all" : undefined,
     sort_by: "created_at:desc",
   };
@@ -492,7 +509,8 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   const named = (filter?.serviceIds ? query.serviceIds! : []).map(service);
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize,
-    sources: [nothing ? empty : listing("/incidents", "incidents", params, toIncidentSummary)],
+    sources: [nothing ? empty : listing((api, page) => api.rest.incidents.get("/incidents", { query: { ...params, ...page } }),
+      reply => reply.incidents, toIncidentSummary)],
     refresh: async () => {
       live = await servicesWithin(ctx);
       pending = host.pending();
@@ -524,7 +542,8 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
  * reaches: the listing asks for those, and each page drops entries on one it has since lost.
  */
 export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWindow | undefined, options: {
-  params?: Query; users?: readonly string[]; filter?: readonly ObjectRef[]; policies?(): Promise<readonly string[]>;
+  params?: QueryOf<OnCallsApi, "/oncalls">; users?: readonly string[]; filter?: readonly ObjectRef[];
+  policies?(): Promise<readonly string[]>;
 }): Promise<Cursor<PagerDutyOnCall>> {
   const levels = window?.levels;
   if (levels?.some(level => !Number.isInteger(level) || level < 1)) {
@@ -544,12 +563,14 @@ export async function listOnCalls(ctx: SessionContext, window: PagerDutyOnCallWi
   // names one an override puts on call, as PagerDuty would leave out the entry they cover.
   const covering = users?.some(id => overriding.includes(id));
   const params = {
-    ...options.params, ...(reach && { escalation_policy_ids: reach }), user_ids: covering ? undefined : users, since, until,
+    ...options.params, ...(reach && { "escalation_policy_ids[]": reach }), "user_ids[]": covering ? undefined : users,
+    since, until,
   };
   return offsetCursor<PagerDutyOnCall>(ctx, {
     pageSize: pageSizeOf(window),
     // With no policy to filter by, PagerDuty would answer for the whole account.
-    sources: [reach?.length === 0 ? empty : listing("/oncalls", "oncalls", params, toOnCall)],
+    sources: [reach?.length === 0 ? empty : listing((api, page) => api.rest.onCalls.get("/oncalls", { query: { ...params, ...page } }),
+      reply => reply.oncalls, toOnCall)],
     describe: listed("Listed who is on call in PagerDuty", "on-call entry"),
     filter: [...options.filter ?? [], ...(reach ?? []).map(escalationPolicy)],
     result: rows => rows.flatMap(entry =>

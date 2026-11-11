@@ -27,7 +27,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { isDenial } from "./pagerduty-api";
 import { VENDOR_ID, webHost, type Env, type Tenant } from "./pagerduty-env";
-import { toIncidentSummary, toUserRef, type WireIncident, type WireNote, type WireRef } from "./pagerduty-normalize";
+import { toIncidentSummary, toUserRef, type WireIncident, type WireRef } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import {
   SessionContext, outsideOf, readIncident, withinOf, youRef, type HookScope, type SessionHost,
@@ -149,7 +149,8 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
       if (await outsideOf({ host }, wire.service.id, withinOf(scope))) return;
       if (event.trimmedNoteId !== undefined) {
         // Left out if deleted since.
-        const { notes } = await host.read(api => api.get<{ notes: WireNote[] }>(`/incidents/${wire.id}/notes`));
+        const { notes } = await host.read(api =>
+          api.rest.incidents.get("/incidents/{id}/notes", { path: { id: wire.id } }));
         note = notes.find(({ id }) => id === event.trimmedNoteId)?.content;
       }
     } catch (error) {

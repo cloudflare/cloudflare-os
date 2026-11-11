@@ -9,7 +9,7 @@ import { validateRpc } from "capnweb-validate";
 import type { NewIncident } from "./pagerduty-actions";
 import { youOf } from "./pagerduty-credentials";
 import { webOrigin } from "./pagerduty-env";
-import { toMember, toRef, toServiceDetails, toTeam, type WireMember, type WireRef, type WireTeam } from "./pagerduty-normalize";
+import { toMember, toRef, toServiceDetails, toTeam } from "./pagerduty-normalize";
 import { PagerDutyIncidentImpl } from "./pagerduty-incident-session";
 import { PagerDutyScheduleImpl } from "./pagerduty-schedule-session";
 import { serviceUrgency } from "./pagerduty-simulation";
@@ -106,7 +106,7 @@ export class PagerDutyAccountImpl extends PagerDutyScopeImpl implements PagerDut
     const policyIds = ids(filter?.escalationPolicyIds, "escalationPolicyIds");
     const users = filter?.users === undefined ? undefined : await usersNamed(this.ctx, filter.users, "users");
     return listOnCalls(this.ctx, filter, {
-      params: { schedule_ids: scheduleIds, escalation_policy_ids: policyIds },
+      params: { "schedule_ids[]": scheduleIds, "escalation_policy_ids[]": policyIds },
       users: users?.map(({ id }) => id),
       filter: [...(scheduleIds ?? []).map(schedule), ...(policyIds ?? []).map(escalationPolicy)],
     });
@@ -126,7 +126,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async getMetadata(): Promise<PagerDutyTeamMetadata> {
-    const { team: wire } = await this.ctx.host.read(api => api.get<{ team: WireTeam }>(`/teams/${this.#id}`));
+    const { team: wire } = await this.ctx.host.read(api => api.rest.teams.get("/teams/{id}", { path: { id: this.#id } }));
     const me = await this.ctx.host.me();
     await this.ctx.authorize({ title: "Read a PagerDuty team", description: "Read the team's name and description." });
     return { ...toTeam(wire), you: youOf(me) };
@@ -134,7 +134,8 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
 
   async listMembers(): Promise<PagerDutyTeamMember[]> {
     const rows = await this.ctx.host.read(api =>
-      api.all<WireMember>(`/teams/${this.#id}/members`, "members", { include: ["users"] }));
+      api.all(page => api.rest.teams.get("/teams/{id}/members", { path: { id: this.#id }, query: { "include[]": ["users"], ...page } }),
+        reply => reply.members));
     await this.ctx.authorize({ title: "Listed a PagerDuty team's members", description: `Read ${countOf(rows.length, "member")}.` });
     return rows.map(toMember);
   }
@@ -160,7 +161,9 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
     return listOnCalls(this.ctx, window, {
       policies: () => this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
-        (await this.ctx.host.read(api => api.all<WireRef>("/escalation_policies", "escalation_policies", { team_ids: [this.#id] })))
+        (await this.ctx.host.read(api => api.all(page => api.rest.escalationPolicies.get("/escalation_policies", {
+          query: { "team_ids[]": [this.#id], ...page },
+        }), reply => reply.escalation_policies)))
           .map(({ id }) => id)),
     });
   }

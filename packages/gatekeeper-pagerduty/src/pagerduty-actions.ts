@@ -10,10 +10,11 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, sanitizeTitle, type ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
-import { PagerDutyApiError, isRefusal, type PagerDutyApi } from "./pagerduty-api";
+import type { IncidentsApi } from "./openapi/incidents";
+import { PagerDutyApiError, isRefusal, type BodyOf, type PagerDutyApi } from "./pagerduty-api";
 import type { Identity } from "./pagerduty-credentials";
 import { VENDOR_ID, type Tenant } from "./pagerduty-env";
-import type { WireIncident, WireOverride } from "./pagerduty-normalize";
+import type { WireIncident } from "./pagerduty-normalize";
 import type { ScopedObject, Within } from "./pagerduty-session-shared";
 import { resourceUrl } from "./pagerduty-urls";
 import type { PagerDutyOverride, PagerDutyRef, PagerDutyUrgency } from "./types";
@@ -205,19 +206,23 @@ async function idempotent(host: PagerDutyActionHost, op: (api: PagerDutyApi, me:
   await refusalsFail(host.write(op));
 }
 
+/** The fields `PUT /incidents/{id}` changes. */
+type IncidentChange = Omit<BodyOf<IncidentsApi, "put", "/incidents/{id}">["incident"], "type">;
+
 /** Updates the incident `id` with the `PUT /incidents/{id}` fields in `incident`. */
-async function putIncident(host: PagerDutyActionHost, id: string, incident: Record<string, unknown>): Promise<void> {
-  await idempotent(host, api => api.write("PUT", `/incidents/${id}`, { incident: { type: "incident_reference", ...incident } }));
+async function putIncident(host: PagerDutyActionHost, id: string, incident: IncidentChange): Promise<void> {
+  await idempotent(host, api => api.rest.incidents.put("/incidents/{id}", {
+    path: { id }, body: { incident: { type: "incident_reference", ...incident } },
+  }));
 }
 
 /** Updates the incident `target` is, refused once it has left the scope it was staged in. */
-async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: Record<string, unknown>): Promise<void> {
+async function updateIncident(host: PagerDutyActionHost, target: IncidentTarget, incident: IncidentChange): Promise<void> {
   await putIncident(host, await incidentId(host, target), incident);
 }
 
-const userReference = ({ id }: UserTarget) => ({ id, type: "user_reference" });
-const priorityReference = (priority: PriorityTarget | null | undefined) =>
-  priority ? { id: priority.id, type: "priority_reference" } : null;
+const userReference = ({ id }: UserTarget) => ({ id, type: "user_reference" as const });
+const priorityReference = ({ id }: PriorityTarget) => ({ id, type: "priority_reference" as const });
 
 const ACKNOWLEDGE = { tag: "acknowledge-incidents", label: "Acknowledge and snooze incidents" };
 const RESOLVE = { tag: "resolve-incidents", label: "Resolve incidents" };
@@ -246,9 +251,10 @@ function overrideDefinition(autoApprovable: boolean) {
         .inline("Until", payload.end)),
     apply: async (payload: NewOverride, host: PagerDutyActionHost) => {
       await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
-      const [result] = await once(host, api => api.write<{ status: number; errors?: string[]; override?: WireOverride }[]>(
-        "POST", `/schedules/${payload.scheduleId}/overrides`,
-        { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] }));
+      const [result] = await once(host, api => api.rest.schedules.post("/schedules/{id}/overrides", {
+        path: { id: payload.scheduleId },
+        body: { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] },
+      }));
       if (!result?.override?.id) {
         throw new ActionApplyError(`PagerDuty refused the override${result?.errors?.length ? `: ${result.errors.join("; ")}` : "."}`);
       }
@@ -305,7 +311,9 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "unless it is resolved first.").inline("Seconds", String(payload.seconds))),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.write("POST", `/incidents/${id}/snooze`, { duration: payload.seconds }));
+      await once(host, api => api.rest.incidents.post("/incidents/{id}/snooze", {
+        path: { id }, body: { duration: payload.seconds },
+      }));
     },
   },
   resolve: {
@@ -329,7 +337,8 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     describe: (payload, host) => present("Set a PagerDuty incident's priority",
       buildDescription(`Sets the priority of ${incidentLabel(host, payload.incident)}.`)
         .inline("Priority", payload.priority?.name ?? "(none)")),
-    apply: (payload, host) => updateIncident(host, payload.incident, { priority: priorityReference(payload.priority) }),
+    apply: (payload, host) => updateIncident(host, payload.incident,
+      { priority: payload.priority ? priorityReference(payload.priority) : null }),
   },
   setTitle: {
     kind: EDIT,
@@ -353,7 +362,9 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       buildDescription(`Adds a note to ${incidentLabel(host, payload.incident)}.`).verbatim("Note", payload.content)),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.write("POST", `/incidents/${id}/notes`, { note: { content: payload.content } }));
+      await once(host, api => api.rest.incidents.post("/incidents/{id}/notes", {
+        path: { id }, body: { note: { content: payload.content } },
+      }));
     },
   },
   reassign: {
@@ -400,14 +411,17 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     },
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, (api, me) => api.write("POST", `/incidents/${id}/responder_requests`, {
-        requester_id: me.userId,
-        message: payload.message,
-        responder_request_targets: [
-          ...payload.users.map(user => ({ responder_request_target: userReference(user) })),
-          ...payload.escalationPolicyIds.map(policy =>
-            ({ responder_request_target: { id: policy, type: "escalation_policy_reference" } })),
-        ],
+      await once(host, (api, me) => api.rest.incidents.post("/incidents/{id}/responder_requests", {
+        path: { id },
+        body: {
+          requester_id: me.userId,
+          message: payload.message,
+          responder_request_targets: [
+            ...payload.users.map(user => ({ responder_request_target: userReference(user) })),
+            ...payload.escalationPolicyIds.map(policy =>
+              ({ responder_request_target: { id: policy, type: "escalation_policy_reference" as const } })),
+          ],
+        },
       }));
     },
   },
@@ -423,7 +437,9 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "sends to its subscribers and stakeholders.").verbatim("Message", payload.message)),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.write("POST", `/incidents/${id}/status_updates`, { message: payload.message }));
+      await once(host, api => api.rest.incidents.post("/incidents/{id}/status_updates", {
+        path: { id }, body: { message: payload.message },
+      }));
     },
   },
   createIncident: {
@@ -447,8 +463,8 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     },
     apply: async (payload, host) => {
       await host.requireInScope({ kind: "service", id: payload.service.id }, payload.within);
-      const { incident } = await once(host, api => api.write<{ incident: WireIncident }>("POST", "/incidents", {
-        incident: {
+      const { incident } = await once(host, api => api.rest.incidents.post("/incidents", {
+        body: { incident: {
           type: "incident",
           title: payload.title,
           service: { id: payload.service.id, type: "service_reference" },
@@ -458,7 +474,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
           ...(payload.assignTo?.length
             ? { assignments: payload.assignTo.map(user => ({ assignee: userReference(user) })) } : {}),
           ...(payload.incidentKey !== undefined ? { incident_key: payload.incidentKey } : {}),
-        },
+        } },
       }));
       host.refs.bind(payload.ref, incident.id);
     },
@@ -486,7 +502,9 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });
       await idempotent(host, async api => {
         try {
-          await api.write("DELETE", `/schedules/${payload.scheduleId}/overrides/${id}`);
+          await api.rest.schedules.delete("/schedules/{id}/overrides/{override_id}", {
+            path: { id: payload.scheduleId, override_id: id },
+          });
         } catch (error) {
           // Already gone counts as removed.
           if (!(error instanceof PagerDutyApiError && error.status === 404)) throw error;
