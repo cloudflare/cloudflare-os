@@ -94,18 +94,22 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
   const detailsId = useId()
   const actions = <MessageActions details={details && { ...details, controls: detailsId }} />
 
-  // The shell owns the text, its actions and its details. A press elsewhere puts the details away,
+  // The shell owns the text, its actions and its details. A click elsewhere puts the details away,
   // including the blank stretch of the message's row.
+  //
+  // On the click, not the press: closing moves what is below, and a button that moved between the
+  // press and the release would not be clicked at all. That is what asking for another message's
+  // details is, and this way the one closes and the other opens together.
   const bubble = useRef<HTMLDivElement>(null)
   const open = details?.open ?? false
-  const pressElsewhere = useEffectEvent(({ target }: PointerEvent) => {
+  const clickElsewhere = useEffectEvent(({ target }: MouseEvent) => {
     if (target instanceof Node && bubble.current?.contains(target)) return
     details?.onToggle()
   })
   useEffect(() => {
     if (!open) return
-    document.addEventListener('pointerdown', pressElsewhere)
-    return () => document.removeEventListener('pointerdown', pressElsewhere)
+    document.addEventListener('click', clickElsewhere)
+    return () => document.removeEventListener('click', clickElsewhere)
   }, [open])
 
   return (
