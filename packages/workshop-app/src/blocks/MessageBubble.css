@@ -21,13 +21,31 @@
   from { margin-top: 0; }
 }
 
-/* The details use the same growth, fade and focus as arriving bubbles. Transitions let an
-   interrupted open reverse smoothly. Kumo supplies a measured height, so closing never briefly
-   collapses the content for measurement and clamps the conversation's scroll position. */
+/* A message's details come and go in two steps, by the stage they are in (useDetailsStage.ts
+   times the steps; keep the two in step). They arrive as one line, with the growth, fade and
+   focus of an arriving bubble, and that line then opens to the rest the way a disclosure does
+   (Disclosure.css). Putting them away folds them back to the line, which then closes and fades as
+   a row that leaves does.
+
+   All of it is transitions, so a change of mind part of the way turns around from where it is,
+   and heights are rows of a grid going between none and all of their content, so nothing is ever
+   measured: collapsing something to measure it is what used to clamp the conversation's scroll
+   position. */
+.message-details,
+.message-details-more {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.message-details > div,
+.message-details-more > div {
+  min-height: 0;
+  /* Only downwards: the steps reach sideways into the panel's padding. */
+  overflow-y: clip;
+}
+
 .message-details {
-  height: var(--collapsible-panel-height);
-  overflow: clip;
-  transition: height var(--arrival-duration) var(--arrival-easing);
+  transition: grid-template-rows var(--arrival-duration) var(--arrival-easing);
 }
 
 .message-details-surface {
@@ -41,15 +59,48 @@
     filter 200ms 40ms ease-out;
 }
 
-.message-details:is([data-starting-style], [data-ending-style]) {
-  height: 0;
+.message-details-more {
+  opacity: 1;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 160ms ease-out;
 }
 
-.message-details:is([data-starting-style], [data-ending-style]) > div > .message-details-surface {
+.message-details:not([data-stage='full']) .message-details-more {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.message-details[data-stage='leaving'] {
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.message-details[data-stage='leaving'] .message-details-surface {
   scale: 0.5;
   border-radius: 21px;
   opacity: 0;
   filter: blur(3px);
+  transition:
+    scale 240ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    border-radius 240ms ease-out,
+    opacity 160ms ease-out,
+    filter 160ms ease-out;
+}
+
+/* Where the line arrives from. Details that are first drawn already open (a row scrolled back
+   to) are in another stage, and are simply there. */
+@starting-style {
+  .message-details[data-stage='row'] {
+    grid-template-rows: 0fr;
+  }
+
+  .message-details[data-stage='row'] .message-details-surface {
+    scale: 0.5;
+    border-radius: 21px;
+    opacity: 0;
+    filter: blur(3px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -58,7 +109,10 @@
   }
 
   .message-details,
-  .message-details-surface {
+  .message-details[data-stage='leaving'],
+  .message-details-surface,
+  .message-details[data-stage='leaving'] .message-details-surface,
+  .message-details-more {
     transition: none;
   }
 }

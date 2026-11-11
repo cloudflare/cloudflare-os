@@ -4,7 +4,7 @@ import { MessageBubble, type MessageDetails, type MessageJoins } from './Message
 export type AssistantMessageProps = {
   text: string
   joins?: MessageJoins
-  /** What there is to know about the message (see `MessageInfo`), shown under it while open. */
+  /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
 }
 

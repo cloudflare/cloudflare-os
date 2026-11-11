@@ -1,8 +1,10 @@
-import { CalendarBlankIcon, CpuIcon, UserIcon } from '@phosphor-icons/react'
+import type { ReactNode } from 'react'
+import { CalendarBlankIcon, CpuIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import type { ToolStepEntry } from './ToolStep'
 import { WorkLog } from './WorkLog'
 
-export type MessageInfoProps = {
+export type MessageInfo = {
   /** The model or other sender. Omitted for the viewer's own messages. */
   sender?: string
   /** When it joined the conversation. Absent for a message that has not yet. */
@@ -21,42 +23,43 @@ export type MessageInfoProps = {
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-/**
- * Metadata for a message, followed by its trace when there is one.
- */
-export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => {
-  const SenderIcon = trace ? CpuIcon : UserIcon
+const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; children: ReactNode }) => (
+  <p className="flex items-center gap-2 text-sm/5 text-kumo-subtle">
+    <LineIcon aria-hidden="true" className="size-4 shrink-0" />
+    <span className="sr-only">{name}</span>
+    <span className="min-w-0">{children}</span>
+  </p>
+)
 
-  return (
-    <div className="flex flex-col gap-3">
-      <dl className="flex flex-col gap-2 text-sm/5 text-kumo-subtle">
-        {sender && (
-          <div className="flex items-center gap-2">
-            <dt className="shrink-0">
-              <SenderIcon aria-hidden="true" className="size-4" />
-              <span className="sr-only">From</span>
-            </dt>
-            <dd className="min-w-0">{sender}</dd>
-          </div>
-        )}
-        <div className="flex items-center gap-2">
-          <dt className="shrink-0">
-            <CalendarBlankIcon aria-hidden="true" className="size-4" />
-            <span className="sr-only">Sent</span>
-          </dt>
-          <dd className="min-w-0">
-            {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
-          </dd>
-        </div>
-      </dl>
-      {trace && trace.steps.length > 0 && (
-        <section aria-label="What led to this message" className="border-t border-kumo-line pt-2 text-start">
-          {/* Compensate for each step's hit-area padding so its icon aligns with the metadata. */}
-          <div className="-mx-2">
-            <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
-          </div>
-        </section>
-      )}
-    </div>
+/**
+ * What there is to know about a message, as the two parts a message's details show it in (see
+ * `MessageBubble`): the line they arrive as, and what that line then opens to, when there is more.
+ */
+export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
+  const from = sender && <Line icon={trace ? CpuIcon : UserIcon} name="From">{sender}</Line>
+  const sent = (
+    <Line icon={CalendarBlankIcon} name="Sent">
+      {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
+    </Line>
   )
+  const steps = trace && trace.steps.length > 0 && (
+    <section aria-label="What led to this message" className="border-t border-kumo-line pt-2 text-start">
+      {/* Compensate for each step's hit-area padding so its icon aligns with the lines above. */}
+      <div className="-mx-2">
+        <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
+      </div>
+    </section>
+  )
+
+  if (!from && !steps) return { summary: sent }
+  return {
+    summary: from || sent,
+    // The space above is part of it, so that folded away it leaves exactly the one line.
+    more: (
+      <div className={cn('flex flex-col gap-3', from ? 'pt-2' : 'pt-3')}>
+        {from && sent}
+        {steps}
+      </div>
+    ),
+  }
 }
