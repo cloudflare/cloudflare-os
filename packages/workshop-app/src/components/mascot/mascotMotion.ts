@@ -38,8 +38,6 @@ const STAGGER = 0.07
 const TURN = [2, 3, 0, 1]
 const SPARKLE_AT = 3 * STAGGER + 0.12
 const ARRIVED = SPARKLE_AT + GROW
-/** How long coming or going takes, for whoever animates the room it is given. */
-export const MASCOT_ARRIVAL_SECONDS = ARRIVED
 /** From nothing to full size, a little past it on the way. */
 const pop = (value: number) => {
   if (value <= 0) return 0

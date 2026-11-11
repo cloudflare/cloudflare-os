@@ -1,9 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { MASCOT_ARRIVAL_SECONDS, RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
+import { RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
 import { raindrop, sparkle } from './shapes'
 
-export { MASCOT_ARRIVAL_SECONDS }
 export type { MascotEmotion }
 
 export type MascotProps = {
