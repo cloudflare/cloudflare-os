@@ -116,7 +116,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   // faster, though no further, so the clock it runs on has a pace of its own.
   let billow = 0
   let billowTime = 0
-  let billowVigour = 1.4
+  let billowVigour = 4
   const follow = { x: 0, y: 0 }
   const weight = { x: 0, y: 0 }
   const star = { x: 43.5, y: 32.7, rotation: 0, scale: 1 }
@@ -373,7 +373,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     // they go nowhere.
     const billows = mood === 'idle' || mood === 'thinking'
     billow = reduced ? 0 : billow + ((billows ? 1 : 0) - billow) * ease
-    billowVigour += ((mood === 'thinking' ? 2.1 : 1.4) - billowVigour) * ease
+    billowVigour += ((mood === 'thinking' ? 6 : 4) - billowVigour) * ease
     if (!reduced) billowTime += dt * billowVigour
     lobes.forEach((lobe, index) => {
       const pace = billowTime * (1 + index * 0.17)
