@@ -1189,6 +1189,9 @@ export type ShareLinkRecord = {
    */
   gadgetId?: WorkpieceId;
 
+  /** Set when the link grants only its gadget's view (see PermissionEdge.viewOnly). */
+  viewOnly?: true;
+
   /**
    * The gadgets a "use" link to several gadgets grants: what a link to every gadget, made before
    * gadgets were shared individually, was frozen to by the schema version 7 migration (see

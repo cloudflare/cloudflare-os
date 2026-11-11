@@ -83,7 +83,7 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
+import { SharingManager, SharingCaller, accessIncludesGadget, accessIsLive } from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
@@ -11219,6 +11219,8 @@ class OverseerImpl implements AgentHooks {
     if (grant !== "workspace" && !this.isShareableGadget(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
+    // The view reaches nothing, so someone shared only it has nothing to verify.
+    if (grant !== "workspace" && grant.viewOnly) return [];
     return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
   }
 
@@ -11376,6 +11378,10 @@ class OverseerImpl implements AgentHooks {
   // only that view (ViewGadgetClientInterface). Access is the only gate on it, re-read after the
   // failure; under ownerInvitesOnly that already admits only the owner's direct grantees. With
   // the admin policy off or no view, the failure throws exactly as before.
+  //
+  // A collaborator shared only the view (CollaboratorAccess.viewOnly) is never verified: the view
+  // reaches nothing, so there is nothing to verify them against, and they are admitted to it
+  // whatever their accounts allow. With the admin policy off they are refused.
   async authorizeGadget(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
@@ -11384,6 +11390,13 @@ class OverseerImpl implements AgentHooks {
     let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
     if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
       return false;
+    }
+    if (!accessIsLive(access, gadgetId)) {
+      if (!await this.sharedViewsAvailable()) {
+        throw new Error("This gadget was shared to view, and views are turned off here.");
+      }
+      this.#recordGadgetOpen(profileId, gadgetId, "view");
+      return "view";
     }
     let mode: GadgetAccessMode;
     let leaveSession = this.joinSession({kind: "use", profileId}, gadgetId);
@@ -14381,6 +14394,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return added;
   }
 
+  async setCollaboratorGadgetAccess(profileId: string, gadgetId: WorkpieceId, level: "use" | "view")
+      : Promise<AffectedCollaborator[]> {
+    let affected = (await this.impl.getSharingManager())
+        .setGadgetAccess(this.#sharingCaller(), profileId, gadgetId, level === "view");
+    // As for removeCollaborator: someone limited to the view must not keep a live session.
+    if (affected.length > 0) {
+      this.impl.scheduleAccessRestart(
+          "Gadget restarted to limit a collaborator to its view.");
+    }
+    if (level === "view" && this.isOwner) void this.impl.refreshView(gadgetId);
+    this.impl.ctx.waitUntil(this.impl.refreshAffectedCollaboratorListings(affected).catch(error => {
+      this.impl.logger.warn("failed to refresh listings after an access change", {
+        event: "sharing.collaborator.access.refresh.failed", error,
+      });
+    }));
+    return affected;
+  }
+
   async previewRemoveCollaborator(profileId: string, gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> {
     return (await this.impl.getSharingManager())
@@ -14660,9 +14691,13 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     if (!mode) throw new Error(`No such gadget: ${id}`);
     if (mode === "view") {
       await this.impl.refreshView(id);
+      // Shared only the view, they may have opened it before the owner took one.
+      if (!await this.impl.currentView(id)) {
+        throw new Error("There's nothing to show yet. Ask its owner to open it.");
+      }
       // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but
       //     the type system doesn't know this.
-      return new ViewGadgetClientInterface(this.impl, id);
+      return new ViewGadgetClientInterface(this.impl, id, !accessIsLive(this.access, id));
     }
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
@@ -14817,6 +14852,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<CollaboratorInfo | null> { this.#deny(); }
   async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> { this.#deny(); }
+  async setCollaboratorGadgetAccess(_profileId: string, _gadgetId: WorkpieceId,
+      _level: "use" | "view"): Promise<AffectedCollaborator[]> { this.#deny(); }
   async previewRemoveCollaborator(_profileId: string, _gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> {
     this.#deny();
@@ -15265,7 +15302,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
 // decision here too.
 @validateRpc()
 class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
-  constructor(private impl: OverseerImpl, private id: WorkpieceId) {
+  // `viewOnly`: the holder was shared only the view, so the view says exploring isn't offered.
+  constructor(private impl: OverseerImpl, private id: WorkpieceId, private viewOnly = false) {
     super();
   }
 
@@ -15295,7 +15333,8 @@ class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
 
   async getView(): Promise<GadgetView> {
     await this.#requireViews();
-    return this.impl.readView(this.id);
+    let view = await this.impl.readView(this.id);
+    return this.viewOnly ? {...view, viewOnly: true} : view;
   }
 
   // The view has no chats: a chatId would name code the viewer may not see.

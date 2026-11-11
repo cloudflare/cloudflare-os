@@ -160,6 +160,7 @@ function openViewer(impl: ObserverImpl, access: CollaboratorAccess = {
     getViewUiBundle: (id: number) => impl.getViewUiBundle(id),
     getViewFacet: (id: number) => impl.getViewFacet(id),
     refreshView: (id: number) => impl.refreshView(id),
+    currentView: (id: number) => impl.currentView(id),
   } });
 }
 
@@ -540,5 +541,71 @@ describe("taking the owner's view", () => {
 
     await impl.removeWorkpiece(GADGET);
     expect(impl.storage.views.get(GADGET)).toBeUndefined();
+  }));
+});
+
+describe("getGadget for a collaborator shared the gadget to view only", () => {
+  const VIEW_ONLY: CollaboratorAccess = { role: "use", gadgetIds: [GADGET], viewOnly: [GADGET] };
+  function limitToView(impl: ObserverImpl): void {
+    impl.storage.collaborators.put({ profile: { id: VIEWER, name: "Bob" }, addedBy: [
+      { type: "user", sharer: OWNER, created: new Date(0), role: "use", gadgetId: GADGET, viewOnly: true },
+    ] });
+  }
+
+  it("hands out the view without verifying, even when they could use it", () =>
+      withImpl(async impl => {
+    seedSharedGadget(impl);
+    limitToView(impl);
+    facets(impl);
+    servesViews(impl);
+    publishView(impl);
+    let client = await openViewer(impl, VIEW_ONLY);
+
+    let gadget = await client.getGadget(GADGET, chooseAccount());
+
+    expect(await gadget.getAccessMode()).toBe("view");
+    expect((await gadget.getView()).viewOnly).toBe(true);
+    expect(impl.storage.observers.get(VIEWER)).toBeUndefined();
+    expect(impl.storage.collaboratorOpens.get(VIEWER)?.gadgets[GADGET]?.mode).toBe("view");
+    dispose(gadget);
+    dispose(client);
+  }));
+
+  it("says there is nothing to show before the owner has taken a view", () =>
+      withImpl(async impl => {
+    seedSharedGadget(impl);
+    limitToView(impl);
+    facets(impl);
+    servesViews(impl);
+    let client = await openViewer(impl);
+
+    await expect(client.getGadget(GADGET)).rejects.toThrow(/nothing to show yet/);
+    dispose(client);
+  }));
+
+  it("refuses them where the deployment does not serve views", () => withImpl(async impl => {
+    seedSharedGadget(impl);
+    limitToView(impl);
+    facets(impl);
+    servesViews(impl, false);
+    publishView(impl);
+    let client = await openViewer(impl);
+
+    await expect(client.getGadget(GADGET, chooseAccount())).rejects.toThrow(/shared to view/);
+    dispose(client);
+  }));
+
+  it("doesn't mark the view of someone who can use it as view-only", () => withImpl(async impl => {
+    seedSharedGadget(impl);
+    facets(impl);
+    servesViews(impl);
+    publishView(impl);
+    let client = await openViewer(impl);
+
+    let gadget = await client.getGadget(GADGET);
+
+    expect((await gadget.getView()).viewOnly).toBeUndefined();
+    dispose(gadget);
+    dispose(client);
   }));
 });

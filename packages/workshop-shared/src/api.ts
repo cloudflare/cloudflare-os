@@ -4321,6 +4321,17 @@ export interface Overseer extends RpcTarget {
                   note?: string): Promise<CollaboratorInfo | null>;
 
   /**
+   * Change how a collaborator holds gadget `gadgetId`: "use" lets them use it live, as granting
+   * it does (see addCollaborator()), and "view" limits them to the owner's view of it. Limiting
+   * severs the grants of it that removing them from it would (see removeCollaborator()) and
+   * grants the caller's own view in their place, so live access someone else granted still
+   * counts. A collaborator using it live when limited is disconnected, and reopens it as the
+   * view. Returns the users whose access narrowed, as removeCollaborator() does.
+   */
+  setCollaboratorGadgetAccess(profileId: string, gadgetId: WorkpieceId, level: "use" | "view")
+      : Promise<AffectedCollaborator[]>;
+
+  /**
    * Stop sharing this workspace with a user (unshare it): remove a collaborator, identified by
    * profile.id, or with `gadgetId`, only their grants to that gadget. Access they hold through
    * grants to the whole workspace is unaffected by the latter.
@@ -6791,6 +6802,12 @@ export type GadgetView = {
 
   /** Whose view it is: the workspace owner. */
   owner: AiChatAuthorInfo;
+
+  /**
+   * Set when the viewer was shared only the view (see CollaboratorGrant), so exploring the
+   * gadget live isn't theirs to offer.
+   */
+  viewOnly?: true;
 };
 
 /**
@@ -7013,18 +7030,22 @@ export type CollaboratorRole = "build" | "use";
 
 /**
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
- * gadget's deployed UI.
+ * gadget's deployed UI. With `viewOnly`, the gadget is only shown as its owner's view (see
+ * "Shared views" in docs/sharing.md): never live, so its recipient is never asked to verify
+ * access to what it reads.
  */
-export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
+export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId; viewOnly?: true};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.
  * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
  * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open.
+ * `viewOnly` lists those of `gadgetIds` they may only see as the owner's view, because no grant
+ * lets them use it live; absent when there are none.
  */
 export type CollaboratorAccess =
   | {role: "build"}
-  | {role: "use", gadgetIds: WorkpieceId[]};
+  | {role: "use", gadgetIds: WorkpieceId[], viewOnly?: WorkpieceId[]};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -7059,6 +7080,9 @@ export type PermissionEdge = {
    * a share link to several gadgets gives its recipient, one per gadget.
    */
   gadgetId?: WorkpieceId;
+
+  /** Set when the edge grants only its gadget's view (see CollaboratorGrant). */
+  viewOnly?: true;
 } & ({
   /** Granted directly by another user. */
   type: "user";

@@ -7,9 +7,10 @@
 // resolved values (or, where laziness matters, a callback) into this module.
 //
 // ACCESS: A collaborator holds "build" access to the whole workspace, or "use" access to some of
-// its gadgets (see CollaboratorAccess). Each permission edge or share link confers its own grant
-// only while its sharer (a link's creator) holds "build". A collaborator holds the union over all
-// their valid edges; "use" access supports no grants.
+// its gadgets (see CollaboratorAccess), each live or only its owner's view (`viewOnly`). Each
+// permission edge or share link confers its own grant only while its sharer (a link's creator)
+// holds "build". A collaborator holds the union over all their valid edges, in which using a
+// gadget live outranks seeing its view; "use" access supports no grants.
 //
 // LAZY REVOCATION MODEL: Access is determined by reachability from the owner in the permission
 // graph, recomputed live at every open() (see `getEffectiveAccess`). Revocation is therefore lazy:
@@ -45,57 +46,73 @@ export function accessIncludesGadget(access: CollaboratorAccess, gadgetId: Workp
   return access.role === "build" || access.gadgetIds.includes(gadgetId);
 }
 
-// Whether `a` grants everything `b` does.
+/**
+ * Whether `access` lets its holder use gadget `gadgetId` live, rather than only see its owner's
+ * view of it (see CollaboratorAccess.viewOnly).
+ */
+export function accessIsLive(access: CollaboratorAccess, gadgetId: WorkpieceId): boolean {
+  return accessIncludesGadget(access, gadgetId) &&
+      !(access.role === "use" && access.viewOnly?.includes(gadgetId));
+}
+
+// `use` access to `gadgetIds`, of which `viewOnly` only as views, normalized.
+function useAccess(gadgetIds: WorkpieceId[], viewOnly: WorkpieceId[]): CollaboratorAccess {
+  return {role: "use", gadgetIds, ...(viewOnly.length > 0 ? {viewOnly} : {})};
+}
+
+// Whether `a` grants everything `b` does: every gadget, and live wherever `b` is.
 function accessCovers(a: CollaboratorAccess, b: CollaboratorAccess): boolean {
   if (a.role === "build") return true;
   if (b.role === "build") return false;
   let held = a.gadgetIds;
-  return b.gadgetIds.every(id => held.includes(id));
+  return b.gadgetIds.every(id => held.includes(id) && (!accessIsLive(b, id) || accessIsLive(a, id)));
 }
 
-// What either `a` or `b` grants.
+// What either `a` or `b` grants: a gadget is only a view if neither grants it live.
 function unionAccess(a: CollaboratorAccess, b: CollaboratorAccess): CollaboratorAccess {
   if (a.role === "build" || b.role === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y),
-  };
+  let gadgetIds = [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y);
+  return useAccess(gadgetIds, gadgetIds.filter(id => !accessIsLive(a, id) && !accessIsLive(b, id)));
 }
 
-// What `prior` grants that `now` does not cover (see accessCovers), as access to restore.
+// What `prior` grants that `now` does not cover (see accessCovers), as access to restore: the
+// gadgets `now` lacks, and those it has only as views where `prior` had them live.
 function lostAccess(prior: CollaboratorAccess, now: CollaboratorAccess | undefined)
     : CollaboratorAccess {
   if (!now || now.role === "build" || prior.role === "build") return prior;
-  let kept = now.gadgetIds;
-  return {role: "use", gadgetIds: prior.gadgetIds.filter(id => !kept.includes(id))};
+  let lost = prior.gadgetIds.filter(id =>
+      !accessIncludesGadget(now, id) || (accessIsLive(prior, id) && !accessIsLive(now, id)));
+  return useAccess(lost, lost.filter(id => !accessIsLive(prior, id)));
 }
 
 // The fields of a permission edge or share link that say what it grants. Only a link names
 // several gadgets.
-type GrantFields = {role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]};
+type GrantFields = {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]; viewOnly?: true;
+};
 
 type UserEdge = Extract<PermissionEdge, {type: "user"}>;
 
 // What `record` confers at most: its role (absent on records from before roles, meaning "build"),
-// narrowed to the gadgets it names. A "use" grant naming none confers nothing.
+// narrowed to the gadgets it names, and to their views if it says so. A "use" grant naming none
+// confers nothing.
 function ceilingOf(record: GrantFields): CollaboratorAccess {
   if ((record.role ?? "build") === "build") return BUILD;
-  return {
-    role: "use",
-    gadgetIds: record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]),
-  };
+  let gadgetIds = record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]);
+  return useAccess(gadgetIds, record.viewOnly ? gadgetIds : []);
 }
 
 // The edges conferring `access`: one per gadget, since an edge names at most one.
 function grantFieldsFor(access: CollaboratorAccess): GrantFields[] {
   if (access.role === "build") return [{role: "build"}];
-  return access.gadgetIds.map(gadgetId => ({role: "use", gadgetId}));
+  return access.gadgetIds.map(gadgetId =>
+      ({role: "use", gadgetId, ...(accessIsLive(access, gadgetId) ? {} : {viewOnly: true})}));
 }
 
 // Identifies what an edge or link grants, so what each grant confers is computed once.
 function grantKey(record: GrantFields): string {
   if ((record.role ?? "build") === "build") return "build";
-  return `use:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
+  return `use:${record.gadgetIds?.join(",") ?? record.gadgetId}${record.viewOnly ? ":view" : ""}`;
 }
 
 // Fixed 256-bit key used to domain-separate share key hashes from other hashes in the system.
@@ -209,7 +226,7 @@ export class SharingManager {
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
-    return {role: "use", gadgetId: grant.gadgetId};
+    return {role: "use", gadgetId: grant.gadgetId, ...(grant.viewOnly ? {viewOnly: true} : {})};
   }
 
   // Throw unless `caller` holds "build": only then do the grants they make confer anything (see
@@ -400,6 +417,8 @@ export class SharingManager {
     kept.role = fields.role;
     if (fields.gadgetId === undefined) delete kept.gadgetId;
     else kept.gadgetId = fields.gadgetId;
+    if (fields.viewOnly) kept.viewOnly = true;
+    else delete kept.viewOnly;
     if (note !== undefined) kept.note = note;
     let droppedEdges = new Set<PermissionEdge>(dropped);
     record.addedBy = record.addedBy.filter(edge => !droppedEdges.has(edge));
@@ -461,6 +480,36 @@ export class SharingManager {
 
     this.#reRootKeptUsers(caller, baseline, new Set(keepUsers));
 
+    return this.#computeAffected(baseline, this.computeEffectiveAccess());
+  }
+
+  /**
+   * Let collaborator `profileId` use gadget `gadgetId` live, or limit them to its owner's view of
+   * it (`viewOnly`). Using it is granted as addCollaborator grants it. Limiting severs the edges a
+   * removal of that gadget would (see removeCollaborator) and grants the caller's own view of it
+   * in their place, so it narrows only what the caller controls: live access another sharer
+   * granted still counts. Returns the collaborators whose access narrowed.
+   */
+  setGadgetAccess(caller: SharingCaller, profileId: string, gadgetId: WorkpieceId,
+                  viewOnly: boolean): AffectedCollaborator[] {
+    let target = this.storage.collaborators.get(profileId);
+    if (!target) {
+      throw new Error("User is not a collaborator.");
+    }
+    if (this.ownerInvitesOnly() && !caller.isOwner) {
+      throw new Error(
+          "Only the workspace owner can share a workspace that contains sensitive data.");
+    }
+    let fields = this.#grantFields({gadgetId, ...(viewOnly ? {viewOnly: true} : {})});
+    this.#requireCanShare(caller);
+
+    let baseline = this.computeEffectiveAccess();
+    if (viewOnly) {
+      let severed = this.#severs(caller, profileId, gadgetId);
+      target.addedBy = target.addedBy.filter(edge => !severed(profileId, edge));
+    }
+    this.#grantEdge(target, caller.profileId, fields);
+    this.storage.collaborators.put(target);
     return this.#computeAffected(baseline, this.computeEffectiveAccess());
   }
 

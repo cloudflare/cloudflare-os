@@ -1820,3 +1820,49 @@ describe("migrateToFrozenGadgetGrants", () => {
     expect(mgr.getEffectiveAccess("a")).toBeUndefined();
   });
 });
+
+describe("setGadgetAccess (Can use / Can view)", () => {
+  function viewOf(...gadgetIds: WorkpieceId[]): CollaboratorAccess {
+    return { role: "use", gadgetIds, viewOnly: gadgetIds };
+  }
+
+  it("invites someone to view a gadget only", () => {
+    let { mgr } = makeManager();
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 1, viewOnly: true } });
+    expect(mgr.getEffectiveAccess("bob")).toEqual(viewOf(1));
+  });
+
+  it("limits a live collaborator to the view, and reports the narrowing", () => {
+    let { storage, mgr } = makeManager();
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 1 } });
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 2 } });
+
+    let affected = mgr.setGadgetAccess(owner, "bob", 1, true);
+
+    expect(ids(affected)).toEqual(["bob"]);
+    expect(mgr.getEffectiveAccess("bob")).toEqual({ role: "use", gadgetIds: [1, 2], viewOnly: [1] });
+    expect(edgesOf(storage, "bob").filter(edge => edge.gadgetId === 1)).toHaveLength(1);
+  });
+
+  it("lets a view-only collaborator use the gadget again, narrowing nobody", () => {
+    let { storage, mgr } = makeManager();
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 1, viewOnly: true } });
+
+    expect(mgr.setGadgetAccess(owner, "bob", 1, false)).toEqual([]);
+    expect(mgr.getEffectiveAccess("bob")).toEqual(only(1));
+    expect(edgesOf(storage, "bob")).toHaveLength(1);
+  });
+
+  it("counts live access another sharer granted over a view", () => {
+    let { mgr } = makeManager();
+    mgr.addCollaborator({ caller: owner, profile: profile("alice"), grant: "workspace" });
+    mgr.addCollaborator({ caller: owner, profile: profile("bob"), grant: { gadgetId: 1, viewOnly: true } });
+    mgr.addCollaborator({ caller: collab("alice"), profile: profile("bob"), grant: { gadgetId: 1 } });
+    expect(mgr.getEffectiveAccess("bob")).toEqual(only(1));
+  });
+
+  it("refuses someone who isn't a collaborator", () => {
+    let { mgr } = makeManager();
+    expect(() => mgr.setGadgetAccess(owner, "nobody", 1, true)).toThrow(/not a collaborator/);
+  });
+});

@@ -257,3 +257,9 @@ end of their section.
 - **Chatting with a new gadget.** A gadget made from a blueprint has no chat yet; the first
   message starts one rather than failing.
 
+- **Can use / Can view.** Each person given a gadget is shared it to use or only to view, chosen
+  beside the invite box and changed from their row. Can view is the owner's snapshot and nothing
+  more: no "sign in to use it live". Can use starts on the snapshot when the gadget needs access
+  they haven't confirmed, then drops into the live gadget. Limiting someone who is using it live
+  disconnects them back to the snapshot. The link row stays Can use / No access, and the choice
+  only appears where the deployment serves snapshots.
