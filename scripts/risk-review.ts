@@ -999,10 +999,17 @@ async function lastBaseChange(github: GitHubClient, repo: RepoRef, number: numbe
 async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
   Promise<Partial<Record<ProducerName, ProducerInput>>> {
   const repository = `${repo.owner}/${repo.repo}`;
-  const [shared, notBefore] = await Promise.all([
+  const [sharedBranch, notBefore] = await Promise.all([
     sharedHeadError(github, repo, pull, defaultBranch),
     lastBaseChange(github, repo, pull.number),
   ]);
+  // After a base change GitHub rebuilds the merge ref in the background, so a run the change itself
+  // started may still use the old base's workflows. Only a head pushed after the change is safe.
+  const pushed = notBefore > 0 ? await readLastPush(github, repo, pull.head.sha) : undefined;
+  const staleBase = notBefore > 0 && (pushed === undefined || Date.parse(pushed) <= notBefore)
+    ? "the base changed after the head was pushed; producers count again after the next push"
+    : undefined;
+  const shared = sharedBranch ?? staleBase;
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
   const runsOf = async (workflow: string) => {
     const cached = runsByWorkflow.get(workflow);

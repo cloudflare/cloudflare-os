@@ -282,7 +282,9 @@ function harness(options: HarnessOptions = {}) {
         }),
         listSuitesForRef: async () => {
           const created = "lastPush" in options ? options.lastPush : PUSHED;
-          const suites = created === undefined ? [] : [{ created_at: created }, { created_at: "2026-11-02T10:30:00Z" }];
+          // The head's first suite comes at its push; another app adds one later.
+          const later = created === undefined ? undefined : new Date(Date.parse(created) + 1_800_000).toISOString();
+          const suites = created === undefined || later === undefined ? [] : [{ created_at: created }, { created_at: later }];
           return { data: { total_count: suites.length + (options.manySuites ? 100 : 0), check_suites: suites } };
         },
       },
@@ -882,12 +884,27 @@ describe("runRiskReview producer binding", () => {
     // Retargeted to a branch with a replaced workflow, run (and re-run) there, then retargeted back.
     const before = forgedAt({ created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T12:00:00Z" });
     const timeline = [{ event: "base_ref_changed", created_at: "2026-11-02T10:45:00Z" }];
-    const { calls, evaluate } = harness({ ...open, runs: [...verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T11:30:00Z", run_started_at: "2026-11-02T11:30:00Z" } })), ...before], timeline });
+    const after = verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T11:30:00Z", run_started_at: "2026-11-02T11:30:00Z" } }));
+    const { calls, evaluate } = harness({ ...open, runs: [...after, ...before], timeline, lastPush: "2026-11-02T11:20:00Z" });
     await evaluate("workflow_run", producerCompleted());
     assert.equal(bonkScore(calls), 8);
-    const onlyBefore = harness({ ...open, runs: before, timeline });
+    const onlyBefore = harness({ ...open, runs: before, timeline, lastPush: "2026-11-02T11:20:00Z" });
     await onlyBefore.evaluate("workflow_run", producerCompleted());
     assert.equal(lastRecord(onlyBefore.calls).pulls[0]?.would.decision, "person");
+  });
+
+  it("trusts no producer run when the base changed after the head was pushed", async () => {
+    // The head was pushed at 10:00 (the harness's last push); the base changed at 10:45, and a run
+    // the change started may have used the old base's merge commit.
+    const timeline = [{ event: "base_ref_changed", created_at: "2026-11-02T10:45:00Z" }];
+    const late = verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T10:46:00Z", run_started_at: "2026-11-02T10:46:00Z" } }));
+    const { calls, evaluate } = harness({ ...open, runs: late, timeline });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "the base changed after the head was pushed; producers count again after the next push" });
+    const fresh = verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T10:51:00Z", run_started_at: "2026-11-02T10:51:00Z" } }));
+    const pushedAfter = harness({ ...open, runs: fresh, timeline, lastPush: "2026-11-02T10:50:00Z" });
+    await pushedAfter.evaluate("workflow_run", producerCompleted());
+    assert.equal(bonkScore(pushedAfter.calls), 8);
   });
 
   it("rejects a verdict from a fork, or one made for another head or base", async () => {

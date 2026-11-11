@@ -32,7 +32,8 @@ Bonk's verdict artifact and `review-verdict.yml` land in #972, `automerge-proofs
 `automerge-evidence.yml` in #988. Until then the gate finds no run of them and counts every input they
 would give as absent, so every pull request goes to a person. The gate accepts an artifact only from a successful `pull_request` run of the
 expected workflow file on the pull request's head commit and branch, in this repository, created
-after the pull request's base last changed; and none counts when another pull request from the same
+after the pull request's base last changed (and none counts until a push follows that change,
+since GitHub rebuilds the merge ref in the background); and none counts when another pull request from the same
 branch, open or closed, targets another base, since its runs use that base's copy of the workflows.
 The run whose latest
 attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
