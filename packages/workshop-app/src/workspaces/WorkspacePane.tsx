@@ -1,8 +1,9 @@
 import { ChatListItem } from '@/blocks/ChatListItem'
-import { Button } from '@/components/Button'
+import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useWorkspaces } from './WorkspacesContext'
 import { formatActivity } from './formatActivity'
+import { workspaceLabel } from './workspaceLabel'
 import { useWorkspaceChats } from './useWorkspaceChats'
 
 export type WorkspacePaneProps = {
@@ -18,7 +19,7 @@ export const WorkspacePane = ({ workspaceId, onOpenChat }: WorkspacePaneProps) =
     workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
 
   return (
-    <PageLayout header={workspaceTitle && <Button>{workspaceTitle}</Button>}>
+    <PageLayout header={workspaceTitle && <WorkspaceCrumb id={workspaceId} title={workspaceTitle} label={workspaceLabel(workspaceTitle)} expanded />}>
       {chats.status === 'loading' && <p role="status" className="px-3 py-2 text-base text-kumo-subtle">Loading chats…</p>}
       {chats.status === 'failed' && (
         <p className="px-3 py-2 text-base text-kumo-subtle">Couldn’t load chats: {chats.message}</p>

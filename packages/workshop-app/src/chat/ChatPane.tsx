@@ -1,13 +1,14 @@
 import { useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
+import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
 import { WorkLog } from '@/blocks/WorkLog'
-import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
@@ -20,6 +21,8 @@ export type ChatPaneProps = {
   chatId: number
   /** The title to show until the chat's own arrives, e.g. from the list it was opened from. */
   initialTitle?: string
+  /** Goes to the page of the workspace the chat is in. */
+  onOpenWorkspace: () => void
   /**
    * What this app cannot do itself yet, for whoever can. Left out, the chat says so when asked.
    * Keep each stable, or every row renders again.
@@ -32,7 +35,7 @@ export type ChatPaneProps = {
 const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -49,8 +52,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
   const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
-  const restricted = workspaces.status === 'ready' &&
-    workspaces.workspaces.some(({ id, containsRestrictedData }) => id === workspaceId && containsRestrictedData === true)
+  const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const restricted = workspace?.containsRestrictedData === true
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
@@ -121,7 +124,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
 
   return (
     <ChatLayout
-      header={title && <Button>{title}</Button>}
+      header={(workspace || title) && (
+        <ChatHeader
+          workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
+          title={title}
+        />
+      )}
       composer={(
         <Composer
           ref={composer}

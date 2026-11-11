@@ -29,14 +29,17 @@ function MockRoute() {
       key={`${scenario.id}/${attempt}`}
       scenario={scenario}
       onSelectScenario={(id) => navigate({ to: '/mock/$scenario', params: { scenario: id } })}
+      onOpenScenarios={() => navigate({ to: '/mock' })}
       onRestart={() => setAttempt((current) => current + 1)}
     />
   )
 }
 
-const MockChat = ({ scenario, onSelectScenario, onRestart }: {
+const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   scenario: Scenario
   onSelectScenario: (id: string) => void
+  /** The list of scenarios stands in for the workspace's page, which the fake backend does not have. */
+  onOpenScenarios: () => void
   onRestart: () => void
 }) => {
   // Made once, so the callbacks handed to the chat stay the same.
@@ -63,6 +66,7 @@ const MockChat = ({ scenario, onSelectScenario, onRestart }: {
           <ChatPane
             workspaceId={MOCK_WORKSPACE_ID}
             chatId={0}
+            onOpenWorkspace={onOpenScenarios}
             onSetUpConnection={onSetUpConnection}
             onAlwaysApprove={onAlwaysApprove}
           />
