@@ -217,6 +217,10 @@ export const stamp = (source: MessageSource, sequence: number): AiChatMessage =>
   timestamp: new Date(FIRST_MESSAGE_AT + sequence * 60_000),
 })
 
+// A step of the agent is committed as one batch, in this order: its message (text, reasoning and
+// tool calls), then the actions, observations and hooks its tools made, then any connection
+// request. Scripts deliver messages in that order.
+
 /** What a script step waits for when it does not simply follow the step before it. */
 export type Trigger =
   | 'onStart'
@@ -266,19 +270,20 @@ export const streamText = (text: string): ScriptStep[] =>
 export const streamReasoning = (text: string): ScriptStep[] =>
   chunks(text).map((delta) => ({ stream: { type: 'reasoningDelta', delta }, delay: CHUNK_DELAY }))
 
+const stream = (event: AiChatStreamEvent, delay = CHUNK_DELAY): ScriptStep => ({ stream: event, delay })
+
 /**
  * Streams one tool call the way the server does before the call's durable message: it starts and
  * names its file; code to run streams as the call's code and a file's new content as a preview of
  * the edit; then its input is complete. `executeCode` never reports that: it runs, its output
  * streams, and its durable message ends it.
  */
-export const streamTool = (call: AiToolCall, format?: BlueprintOutput): ScriptStep[] => {
-  const { toolCallId, toolName } = call
-  const stream = (event: AiChatStreamEvent, delay = CHUNK_DELAY): ScriptStep => ({ stream: event, delay })
-  const file = 'filename' in call.input ? { workpieceId: 1, filename: call.input.filename } : undefined
+export const streamTool = (toolCall: AiToolCall, format?: BlueprintOutput): ScriptStep[] => {
+  const { toolCallId, toolName } = toolCall
+  const file = 'filename' in toolCall.input ? { workpieceId: 1, filename: toolCall.input.filename } : undefined
   const edit =
-    toolName === 'editFile' ? { content: call.input.replacement, textToReplace: call.input.textToReplace }
-    : toolName === 'writeFile' ? { content: call.input.content }
+    toolCall.toolName === 'editFile' ? { content: toolCall.input.replacement, textToReplace: toolCall.input.textToReplace }
+    : toolCall.toolName === 'writeFile' ? { content: toolCall.input.content }
     : undefined
   return [
     stream({ type: 'toolCallStarted', toolCallId, toolName }, 200),
@@ -286,10 +291,10 @@ export const streamTool = (call: AiToolCall, format?: BlueprintOutput): ScriptSt
     ...(format ? [stream({ type: 'toolCallOutputFormat', toolCallId, output: format }, 120)] : []),
     ...(file && edit ? [stream({ type: 'editPreviewStart', toolCallId, file, textToReplace: edit.textToReplace }, 120)] : []),
     ...chunks(edit?.content ?? '', 4).map((delta) => stream({ type: 'editPreviewDelta', toolCallId, delta })),
-    ...(toolName === 'executeCode'
+    ...(toolCall.toolName === 'executeCode'
       ? [
-          ...chunks(call.input.code, 4).map((delta) => stream({ type: 'toolCodeDelta', toolCallId, delta })),
-          ...chunks(call.output ?? '', 4).map((delta) => stream({ type: 'toolOutputDelta', toolCallId, delta }, 90)),
+          ...chunks(toolCall.input.code, 4).map((delta) => stream({ type: 'toolCodeDelta', toolCallId, delta })),
+          ...chunks(toolCall.output ?? '', 4).map((delta) => stream({ type: 'toolOutputDelta', toolCallId, delta }, 90)),
         ]
       : [stream({ type: 'toolCallFinished', toolCallId }, 200)]),
   ]

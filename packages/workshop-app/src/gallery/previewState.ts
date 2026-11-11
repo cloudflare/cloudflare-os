@@ -11,10 +11,11 @@ export const useOpen = (initial: string[] = []) => {
   return { open, toggle, of: (key: string) => ({ open: open.has(key), onToggle: () => toggle(key) }) }
 }
 
+const later = () => new Promise<void>((resolve) => setTimeout(resolve, 900))
+
 /** What a preview's controls report, after a moment, the way a call to the backend would answer. */
 export const useReport = () => {
   const [report, setReport] = useState('Use a control to see what it reports.')
-  const later = () => new Promise<void>((resolve) => setTimeout(resolve, 900))
   return {
     report,
     later,

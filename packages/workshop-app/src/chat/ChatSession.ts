@@ -1,5 +1,5 @@
 import type { RpcStub } from 'capnweb'
-import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
 import {
   continueTools,
   EMPTY_FEED,
@@ -12,7 +12,7 @@ import {
   type ToolsItem,
 } from './chatItems'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
-import { ChatSubscriber, type ChatEvents } from './ChatSubscriber'
+import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
 export type ChatSnapshot =
   | { status: 'loading' }
@@ -48,6 +48,8 @@ export type ChatSnapshot =
       queuedSteers: QueuedSteer[]
       /** Why the last send failed, until the next send. */
       sendError: string | undefined
+      /** Why the last thing asked of a row (approve, deny, retry, a hook's switch) failed, until the next. */
+      actionError: string | undefined
       /** Older history is fetched separately from the live tail. */
       hasEarlier: boolean
       loadingEarlier: boolean
@@ -55,16 +57,31 @@ export type ChatSnapshot =
     }
   | { status: 'failed'; message: string }
 
+type Calls =
+  | 'listChats'
+  | 'getChatHistory'
+  | 'sendChatMessage'
+  | 'retryAgent'
+  | 'approveAction'
+  | 'rejectAction'
+  | 'denyConnectionRequest'
+  | 'enableHook'
+  | 'disableHook'
+
 /**
- * The part of a workspace's Overseer a session uses, and the lease that must be disposed.
- * `subscribeToChat` takes the subscriber object itself, as a call through a stub does: the stub
- * for it is made and released by the RPC system.
+ * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
+ * subscribe calls take the subscriber object itself, as a call through a stub does: the stub for
+ * it is made and released by the RPC system.
  */
-export type ChatOverseer = Pick<Overseer, 'listChats' | 'getChatHistory' | 'sendChatMessage'> & {
+export type ChatOverseer = Pick<Overseer, Calls> & {
   subscribeToChat(
     subscriber: Parameters<RpcStub<Overseer>['subscribeToChat']>[0],
     startAfter?: Date,
   ): ReturnType<Overseer['subscribeToChat']>
+  subscribeToActions(
+    subscriber: Parameters<RpcStub<Overseer>['subscribeToActions']>[0],
+    startAfter?: Date,
+  ): ReturnType<Overseer['subscribeToActions']>
 } & Disposable
 
 /** A message waiting for the running agent to read it. */
@@ -121,7 +138,7 @@ export class ChatSession {
   #snapshot: ChatSnapshot = LOADING
   #listeners = new Set<() => void>()
   #overseer: ChatOverseer | undefined
-  #lease: Promise<Disposable> | undefined
+  #leases: Promise<Disposable>[] = []
   // Bumped by every start() and stop(), so work from an earlier run can tell it is stale.
   #run = 0
 
@@ -150,6 +167,7 @@ export class ChatSession {
   #tail: { openTools: ToolsItem | undefined; streamingTools: ToolsItem | undefined } | undefined
   #generation: number | undefined
   #sendError: string | undefined
+  #actionError: string | undefined
   #nextBeforeSequence: number | undefined
   #loadingEarlier = false
   #historyError: string | undefined
@@ -183,11 +201,12 @@ export class ChatSession {
   stop() {
     this.#run++
     this.#reset()
-    void this.#lease?.then(
-      (lease) => lease[Symbol.dispose](),
-      () => {},
-    )
-    this.#lease = undefined
+    for (const lease of this.#leases.splice(0)) {
+      void lease.then(
+        (held) => held[Symbol.dispose](),
+        () => {},
+      )
+    }
     this.#overseer?.[Symbol.dispose]()
     this.#overseer = undefined
   }
@@ -206,6 +225,42 @@ export class ChatSession {
     } catch (error) {
       if (run !== this.#run) return
       this.#sendError = messageOf(error)
+    }
+    if (run === this.#run) this.#publishReady()
+  }
+
+  /** Runs the agent again on the conversation as it stands, e.g. after an error. */
+  retry = (modelId: string) => this.#ask((overseer) => overseer.retryAgent(this.chatId, modelId))
+
+  /**
+   * Approves a pending action.
+   *
+   * TODO: approving a creation (`ActionLogEntry.creation`) also needs the account to create it in.
+   * The server refuses one until this app can ask; the refusal shows as `actionError`.
+   */
+  approveAction = (actionId: number) => this.#ask((overseer) => overseer.approveAction(actionId))
+
+  rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
+
+  denyConnection = (requestId: string) => this.#ask((overseer) => overseer.denyConnectionRequest(requestId))
+
+  setHookEnabled = (hookId: number, enabled: boolean) =>
+    this.#ask((overseer) => (enabled ? overseer.enableHook(hookId) : overseer.disableHook(hookId)))
+
+  /**
+   * Asks the workspace for something a row offers. What it changes comes back through the
+   * subscriptions, not from here; a failure is reported in the snapshot's `actionError`.
+   */
+  async #ask(call: (overseer: ChatOverseer) => Promise<unknown>) {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) return
+    const run = this.#run
+    this.#actionError = undefined
+    try {
+      await call(overseer)
+    } catch (error) {
+      if (run !== this.#run) return
+      this.#actionError = messageOf(error)
     }
     if (run === this.#run) this.#publishReady()
   }
@@ -300,6 +355,7 @@ export class ChatSession {
     this.#outputFormats = new Map()
     this.#generation = undefined
     this.#sendError = undefined
+    this.#actionError = undefined
     this.#nextBeforeSequence = undefined
     this.#loadingEarlier = false
     this.#historyError = undefined
@@ -332,6 +388,7 @@ export class ChatSession {
       pinned: this.#feed.pinned,
       queuedSteers: this.#queuedSteers,
       sendError: this.#sendError,
+      actionError: this.#actionError,
       hasEarlier: this.#nextBeforeSequence !== undefined,
       loadingEarlier: this.#loadingEarlier,
       historyError: this.#historyError,
@@ -343,11 +400,16 @@ export class ChatSession {
     this.#overseer = overseer
     try {
       // Subscribe before reading anything, so nothing that happens meanwhile is missed.
-      const lease = overseer.subscribeToChat(new ChatSubscriber(this.#eventsFor(run)))
-      this.#lease = lease
-      lease.catch((error) => {
-        if (run === this.#run) this.#fail(messageOf(error))
-      })
+      const leases = [
+        overseer.subscribeToChat(new ChatSubscriber(this.#eventsFor(run))),
+        overseer.subscribeToActions(new ActionUpdates((record) => this.#live(run, () => this.#applyAction(record)))),
+      ]
+      this.#leases = leases
+      for (const lease of leases) {
+        lease.catch((error) => {
+          if (run === this.#run) this.#fail(messageOf(error))
+        })
+      }
 
       // The messages are shown as soon as they arrive; the title and agent state follow from the
       // list, as the workspace has no call for one chat's metadata.
@@ -446,6 +508,19 @@ export class ChatSession {
     // A finished step replaces what streamed of it; updates to an agent's approval/tool cards do not.
     if (message.type === 'message' && message.author.type === 'agent' &&
       (this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)) this.#discardProvisional()
+    this.#publishReady()
+  }
+
+  /** Refreshes the copy of an action's record that its chat message carries. */
+  #applyAction(record: ActionLogEntry) {
+    let changed = false
+    for (const [sequence, message] of this.#messages) {
+      if (message.type !== 'action' || message.actionId !== record.id) continue
+      this.#messages.set(sequence, { ...message, actionLog: record })
+      changed = true
+    }
+    if (!changed) return
+    this.#rebuildFeed()
     this.#publishReady()
   }
 

@@ -129,6 +129,7 @@ const approval: Scenario = {
     ...turn(
       say(agent({ text: 'I’ll file it in the Platform project.' })),
       streamTool(createTicket),
+      { message: agent({ toolCalls: [createTicket] }), delay: 300 },
       {
         message: action({
           title: 'Create issue in PLAT',
@@ -141,9 +142,8 @@ const approval: Scenario = {
             { label: 'Labels', kind: 'list', items: ['dashboard', 'bug'] },
           ],
         }),
-        delay: 300,
+        delay: 200,
       },
-      { message: agent({ toolCalls: [createTicket] }), delay: 200 },
     ),
     ...when('onApprove', turn(
       say(agent({ text: 'Filed as **PLAT-212**. I’d also post it to #platform.' })),
@@ -165,6 +165,7 @@ const approval: Scenario = {
     ...when(['onDeny', 'onApprove'], turn(
       say(agent({ text: 'Understood. Last thing: I’ll label the ticket so it shows on the board.' })),
       streamTool(labelTicket),
+      { message: agent({ toolCalls: [labelTicket] }), delay: 300 },
       {
         message: action({
           title: 'Add label “dashboard” to PLAT-212',
@@ -172,9 +173,8 @@ const approval: Scenario = {
           awaitDecision: true,
           fields: [{ label: 'Label', kind: 'inline', value: 'dashboard' }],
         }),
-        delay: 300,
+        delay: 200,
       },
-      { message: agent({ toolCalls: [labelTicket] }), delay: 200 },
     )),
     ...when('onApprove', turn(
       {
@@ -190,6 +190,14 @@ const approval: Scenario = {
   ],
 }
 
+const restrictedApproval: Scenario = {
+  ...approval,
+  id: 'approval-restricted',
+  title: 'File a ticket (restricted)',
+  description: 'The approval scenario in a workspace that has read sensitive data: requests show in full, with no standing approvals.',
+  restricted: true,
+}
+
 const watch = call('executeCode', { code: 'const board = await env.JIRA.board("PLAT")\nreturn board.issues.filter((issue) => issue.isNew)\n' }, { output: '3 new issues\n' })
 const hook = call('setBindingHook', { bindingName: 'JIRA', entrypoint: 'OnNewIssue' })
 
@@ -200,6 +208,7 @@ const observationHook: Scenario = {
   history: history([user('Watch the Platform board and summarise new tickets for me.')]),
   script: turn(
     streamTool(watch),
+    { message: agent({ toolCalls: [watch] }), delay: 300 },
     {
       message: observation({
         title: 'Platform board',
@@ -216,14 +225,13 @@ const observationHook: Scenario = {
       }),
       delay: 200,
     },
-    { message: agent({ toolCalls: [watch] }), delay: 300 },
     say(agent({ text: 'Three tickets are new this week. I’ll have Jira tell me when another arrives.' })),
     streamTool(hook),
+    { message: agent({ toolCalls: [hook] }), delay: 300 },
     {
       message: bindHook({ title: 'New issue in PLAT', description: 'Runs `OnNewIssue` when a ticket is created on the board.' }),
-      delay: 300,
+      delay: 200,
     },
-    { message: agent({ toolCalls: [hook] }), delay: 200 },
     say(agent({
       text:
         'From now on each new ticket gets a one-line summary here. This week’s:\n\n' +
@@ -246,17 +254,17 @@ const connection: Scenario = {
       say(agent({ text: 'I don’t have access to ClickHouse yet.' })),
       streamTool(listResources),
       streamTool(requestClickHouse),
+      { message: agent({ toolCalls: [listResources, requestClickHouse] }), delay: 300 },
       {
         message: connectionRequest({
           vendorName: 'ClickHouse',
           resourceTitle: 'ClickHouse cluster',
           resourceUrl: 'https://analytics.example.com/errors',
-          reason: 'To read last week’s error rates from the `errors` database.',
+          reason: 'To read last week’s error rates from the errors database.',
           bindingName: 'ERRORS',
         }),
-        delay: 300,
+        delay: 200,
       },
-      { message: agent({ toolCalls: [listResources, requestClickHouse] }), delay: 200 },
     ),
     ...when('onAcceptConnection', turn(
       streamTool(query),
@@ -293,8 +301,8 @@ const output: Scenario = {
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),
       streamTool(createDoc, DOCUMENT),
+      { message: agent({ toolCalls: [createDoc] }), delay: 300 },
       { message: changes({ author: AGENT, createdGadgets: [{ gadgetId: 41, title: 'Q3 platform review', bindingName: 'REVIEW' }] }), delay: 200 },
-      { message: agent({ toolCalls: [createDoc] }), delay: 200 },
       streamTool(writeDoc),
       { message: agent({ toolCalls: [writeDoc] }), delay: 300 },
       say(agent({
@@ -408,6 +416,7 @@ export const SCENARIOS: Scenario[] = [
   plain,
   toolRun,
   approval,
+  restrictedApproval,
   observationHook,
   connection,
   output,
