@@ -6,15 +6,16 @@
 // OPENCODE_BIN and the CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID and CLOUDFLARE_API_TOKEN values,
 // and writes one line per review to --out.
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { field, list, parseJson } from "./json.ts";
-import { buildVerdict, prepareInputs, runReview } from "./verdict.ts";
+import { buildVerdict, prepareInputs, runReview, type GatewayEnv, type Verdict } from "./verdict.ts";
 
-interface Case {
+export interface Case {
   id: string;
   title: string;
   headSha: string;
@@ -134,33 +135,53 @@ function main(): void {
   const policySha = git(repo, ["rev-parse", values["policy-ref"]]);
   console.log(`reviewing under REVIEW.md and instruction files from ${policySha}`);
   for (const testCase of cases) {
-    const missing = [testCase.headSha, testCase.baseSha]
-      .filter(sha => spawnSync("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`]).status !== 0);
-    if (missing.length > 0) git(repo, ["fetch", "--no-tags", "origin", ...missing]);
-    const baseSha = git(repo, ["rev-parse", testCase.baseSha]);
-    const workDir = mkdtempSync(join(tmpdir(), `backtest-${testCase.id}-`));
-    const started = Date.now();
-    const pr = { headSha: testCase.headSha, baseSha, title: testCase.title, body: "" };
-    // A named case: one case that cannot be prepared or reviewed is recorded, and the rest run.
-    let runnerError: string | null = null;
-    try {
-      prepareInputs(repo, workDir, pr, { round: 1, reviewFromSha: null }, policySha);
-      runReview(workDir, opencodeBin, gateway);
-    } catch (error) {
-      runnerError = error instanceof Error ? error.message : String(error);
-    }
-    try {
-      const verdict = buildVerdict(workDir, pr);
-      appendFileSync(values.out, `${JSON.stringify({ case: testCase.id, catchable: testCase.catchable,
-        lines_changed: testCase.linesChanged, wall_ms: Date.now() - started, runner_error: runnerError, verdict })}\n`);
-      console.log(`${testCase.id}: ${verdict.status} confidence ${verdict.merge_confidence}, ` +
-        `${verdict.findings.filter(finding => finding.severity === "P0" || finding.severity === "P1").length} P0/P1, ` +
-        `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}` +
-        (runnerError === null ? "" : `, runner error: ${runnerError}`));
-    } finally {
-      rmSync(workDir, { recursive: true, force: true });
-    }
+    const record = replayCase(repo, testCase, policySha, opencodeBin, gateway);
+    appendFileSync(values.out, `${JSON.stringify(record)}\n`);
+    const { verdict, runner_error: runnerError } = record;
+    console.log(`${testCase.id}: ${verdict.status} confidence ${verdict.merge_confidence}, ` +
+      `${verdict.findings.filter(finding => finding.severity === "P0" || finding.severity === "P1").length} P0/P1, ` +
+      `needs a person ${verdict.needs_person.length}, tokens ${JSON.stringify(verdict.details.tokens)}` +
+      (runnerError === null ? "" : `, runner error: ${runnerError}`));
   }
 }
 
-main();
+/** One case's result line. */
+export interface CaseRecord {
+  case: string;
+  catchable: boolean | null;
+  lines_changed: number;
+  wall_ms: number;
+  runner_error: string | null;
+  verdict: Verdict;
+}
+
+/**
+ * Reviews one case. Anything that fails before the verdict is built, fetching its commits included,
+ * is recorded on that case, so one bad case does not stop the run.
+ */
+export function replayCase(repo: string, testCase: Case, policySha: string, opencodeBin: string, gateway: GatewayEnv): CaseRecord {
+  const workDir = mkdtempSync(join(tmpdir(), `backtest-${testCase.id}-`));
+  const started = Date.now();
+  const pr = { headSha: testCase.headSha, baseSha: testCase.baseSha, title: testCase.title, body: "" };
+  // A named case: the error is recorded on the case, and the verdict built from what is left is an error.
+  let runnerError: string | null = null;
+  try {
+    const missing = [testCase.headSha, testCase.baseSha]
+      .filter(sha => spawnSync("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`]).status !== 0);
+    if (missing.length > 0) git(repo, ["fetch", "--no-tags", "origin", ...missing]);
+    pr.baseSha = git(repo, ["rev-parse", testCase.baseSha]);
+    prepareInputs(repo, workDir, pr, { round: 1, reviewFromSha: null }, policySha);
+    runReview(workDir, opencodeBin, gateway);
+  } catch (error) {
+    runnerError = error instanceof Error ? error.message : String(error);
+  }
+  try {
+    return { case: testCase.id, catchable: testCase.catchable, lines_changed: testCase.linesChanged,
+      wall_ms: Date.now() - started, runner_error: runnerError, verdict: buildVerdict(workDir, pr) };
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+// Through realpath, since import.meta.url resolves symlinks in the path the script was run by.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();
