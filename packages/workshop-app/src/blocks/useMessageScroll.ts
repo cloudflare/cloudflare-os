@@ -77,8 +77,15 @@ export const useMessageScroll = () => {
       if (behavior === 'instant') capture()
     }
     const find = () => content.querySelector<HTMLElement>(`[data-message-anchor="${CSS.escape(id)}"]`)
-    const pointOut = (row: HTMLElement, delay: number) =>
-      row.animate([{ opacity: 1 }, { opacity: 0.4 }, { opacity: 1 }], { duration: 700, delay, easing: 'ease-in-out' })
+    // The row is marked for a while, and what is in it shows that its own way (a message's
+    // bubble darkens, see MessageBubble.css). Marked afresh, it shows it again from the start.
+    const pointOut = (row: HTMLElement, delay: number) => setTimeout(() => {
+      row.removeAttribute('data-pointed-out')
+      void row.offsetWidth
+      row.setAttribute('data-pointed-out', '')
+      void Promise.allSettled(row.getAnimations({ subtree: true }).map(({ finished }) => finished))
+        .then(() => row.removeAttribute('data-pointed-out'))
+    }, delay)
 
     const row = find()
     if (row) {
