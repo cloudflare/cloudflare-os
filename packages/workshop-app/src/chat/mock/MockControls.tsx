@@ -51,7 +51,9 @@ export const MockControls = ({ scenarios, scenario, player, onSelectScenario, on
         : <Button variant="ghost" icon={PlayIcon} aria-label="Play" title="Play" disabled={done} onClick={player.play} />}
       <Button variant="ghost" icon={SkipForwardIcon} aria-label="Step" title="Run the next step" disabled={done || !!waitingFor} onClick={player.step} />
       <Tooltip content={scenario.description}>
-        <span role="status" tabIndex={0} className="whitespace-nowrap">{status}</span>
+        {/* One width for whatever it says, so the panel, which is centred, and the buttons in it
+            stay where they are as the script moves on. */}
+        <span role="status" tabIndex={0} className="w-44 truncate tabular-nums">{status}</span>
       </Tooltip>
     </aside>
   )
