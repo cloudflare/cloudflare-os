@@ -4,32 +4,32 @@ import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { LogoIcon } from '@/components/LogoIcon'
-import { ConversationListItem, type ConversationListItemProps } from './ConversationListItem'
-import { useConversationUnderlay } from './useConversationUnderlay'
+import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
+import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
-export type SidebarConversation = Omit<ConversationListItemProps, 'selected' | 'onSelect'> & { id: string }
+export type SidebarWorkspace = Omit<WorkspaceListItemProps, 'selected' | 'onSelect'> & { id: string }
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
-  conversations: SidebarConversation[]
-  selectedConversationId?: string
-  onSelectConversation: (id: string) => void
-  /** Shown in place of the list when there is nothing to list, e.g. "No conversations yet." */
+  workspaces: SidebarWorkspace[]
+  selectedWorkspaceId?: string
+  onSelectWorkspace: (id: string) => void
+  /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
   notice?: string
   /** Logos of the connected apps, shown in the connect button. */
   connections?: ReactNode
 }
 
-/** The sidebar: global buttons on top, the conversations, then the user and connections. */
+/** The sidebar: global buttons on top, the workspaces, then the user and connections. */
 export const Sidebar = ({
   user,
-  conversations,
-  selectedConversationId,
-  onSelectConversation,
+  workspaces,
+  selectedWorkspaceId,
+  onSelectWorkspace,
   notice,
   connections,
 }: SidebarProps) => {
-  const { listRef, underlayRef, hoverUnderlayRef } = useConversationUnderlay()
+  const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-0.5">
@@ -39,7 +39,7 @@ export const Sidebar = ({
         <Button icon={CirclesFourIcon} aria-label="Library" />
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
       </header>
-      <nav aria-label="Conversations" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto">
+      <nav aria-label="Workspaces" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto">
         <div ref={listRef} className="relative isolate flex shrink-0 flex-col">
           <div
             ref={underlayRef}
@@ -51,13 +51,13 @@ export const Sidebar = ({
             aria-hidden="true"
             className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill"
           />
-          {conversations.map(({ id, ...conversation }) => (
-            <ConversationListItem
+          {workspaces.map(({ id, ...workspace }) => (
+            <WorkspaceListItem
               key={id}
               id={id}
-              {...conversation}
-              selected={id === selectedConversationId}
-              onSelect={() => onSelectConversation(id)}
+              {...workspace}
+              selected={id === selectedWorkspaceId}
+              onSelect={() => onSelectWorkspace(id)}
             />
           ))}
         </div>

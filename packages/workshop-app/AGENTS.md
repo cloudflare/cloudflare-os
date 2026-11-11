@@ -17,8 +17,8 @@ src/
   routes/       Route declarations; they connect the data folders below to the UI layers above
 
   rpc/          The backend connection and sign-in; `useApi()` beneath `RpcGate`
-  workspaces/   The user's workspace list
-  chat/         A conversation: `ChatSession` (plain class, no React), the mapping from server
+  workspaces/   The user's workspace list, and one workspace's chats (`WorkspacePane`)
+  chat/         One chat: `ChatSession` (plain class, no React), the mapping from server
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
 ```
 

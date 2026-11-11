@@ -7,13 +7,13 @@ export type ChatSnapshot =
   | { status: 'loading' }
   | {
       status: 'ready'
-      /** The chat's title; undefined when the workspace has no chat yet. */
+      /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
       /** The committed messages, as items. The array is unchanged while only streaming text moves. */
       items: ChatItem[]
       /** The assistant's reply so far, while it is still being written; empty otherwise. */
       streamingText: string
-      /** An assistant turn is running and has not started writing text. */
+      /** An assistant turn is running and has not started writing text. False until the metadata arrives. */
       thinking: boolean
       /** Why the last send failed, until the next send. */
       sendError: string | undefined
@@ -29,7 +29,7 @@ export type ChatSnapshot =
  * `subscribeToChat` takes the subscriber object itself, as a call through a stub does: the stub
  * for it is made and released by the RPC system.
  */
-export type ChatOverseer = Pick<Overseer, 'listChats' | 'getChatHistory' | 'sendChatMessage' | 'newChat'> & {
+export type ChatOverseer = Pick<Overseer, 'listChats' | 'getChatHistory' | 'sendChatMessage'> & {
   subscribeToChat(
     subscriber: Parameters<RpcStub<Overseer>['subscribeToChat']>[0],
     startAfter?: Date,
@@ -47,8 +47,8 @@ const HISTORY_PAGE_SIZE = 50
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * One workspace's conversation, live. A workspace is treated as holding one chat: the most
- * recently active one. Observable through `subscribe`/`getSnapshot` (for `useSyncExternalStore`).
+ * One chat in a workspace, live. Observable through `subscribe`/`getSnapshot` (for
+ * `useSyncExternalStore`).
  *
  * Nothing happens until `start()`, and `stop()` releases the workspace connection, so the pair is
  * safe to run twice in a row (React does that in development) and a session abandoned before
@@ -62,14 +62,15 @@ export class ChatSession {
   // Bumped by every start() and stop(), so work from an earlier run can tell it is stale.
   #run = 0
 
-  // Events that arrive while the initial load is still running are held until it knows which chat
-  // is shown: the subscription covers the whole workspace, so an early event may be for another one.
+  // Events that arrive while the initial load is still running are held until the history is in,
+  // so they are applied on top of it rather than replaced by it.
   #loaded = false
   #early: Array<() => void> = []
 
-  #chatId: number | undefined
   #title: string | undefined
   #agentActive = false
+  // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
+  #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
   #items: ChatItem[] = []
   #streaming = ''
@@ -82,9 +83,10 @@ export class ChatSession {
   // live must not go back to looking ready because the initial load finished.
   #failure: string | undefined
 
-  /** `open` connects to the workspace; the session disposes what it returns. */
+  /** `open` connects to the chat's workspace; the session disposes what it returns. */
   constructor(
     private readonly open: () => ChatOverseer,
+    private readonly chatId: number,
     private readonly options: ChatSessionOptions = {},
   ) {}
 
@@ -117,9 +119,8 @@ export class ChatSession {
   }
 
   /**
-   * Sends a message to the conversation, starting its chat if the workspace has none yet. The
-   * message and the reply come back through the subscription, not from here; a failure is reported
-   * in the snapshot's `sendError`.
+   * Sends a message to the chat. The message and the reply come back through the subscription, not
+   * from here; a failure is reported in the snapshot's `sendError`.
    */
   send = async (text: string, modelId: string) => {
     const overseer = this.#overseer
@@ -127,13 +128,7 @@ export class ChatSession {
     const run = this.#run
     this.#sendError = undefined
     try {
-      if (this.#chatId === undefined) {
-        const chatId = await overseer.newChat(text, modelId)
-        // Events for the new chat usually arrive first and have already adopted it.
-        if (run === this.#run) this.#chatId ??= chatId
-      } else {
-        await overseer.sendChatMessage(this.#chatId, text, modelId)
-      }
+      await overseer.sendChatMessage(this.chatId, text, modelId)
     } catch (error) {
       if (run !== this.#run) return
       this.#sendError = messageOf(error)
@@ -145,14 +140,13 @@ export class ChatSession {
   loadEarlier = async () => {
     const overseer = this.#overseer
     const before = this.#nextBeforeSequence
-    const chatId = this.#chatId
-    if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined || chatId === undefined) return
+    if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined) return
     const run = this.#run
     this.#loadingEarlier = true
     this.#historyError = undefined
     this.#publishReady()
     try {
-      const page = await overseer.getChatHistory(chatId, before, HISTORY_PAGE_SIZE)
+      const page = await overseer.getChatHistory(this.chatId, before, HISTORY_PAGE_SIZE)
       if (run !== this.#run) return
       // Live updates (e.g. an approval resolved during the read) take precedence over the page.
       for (const message of page.messages) {
@@ -180,9 +174,9 @@ export class ChatSession {
   #reset() {
     this.#loaded = false
     this.#early = []
-    this.#chatId = undefined
     this.#title = undefined
     this.#agentActive = false
+    this.#liveMetadata = false
     this.#messages = new Map()
     this.#items = []
     this.#streaming = ''
@@ -230,19 +224,20 @@ export class ChatSession {
         if (run === this.#run) this.#fail(messageOf(error))
       })
 
-      const chats = await overseer.listChats()
-      if (run !== this.#run) return
-      const latest = chats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())[0]
-      const history = latest ? await overseer.getChatHistory(latest.id, undefined, HISTORY_PAGE_SIZE) : undefined
+      // The messages are shown as soon as they arrive; the title and agent state follow from the
+      // list, as the workspace has no call for one chat's metadata.
+      overseer.listChats().then(
+        (chats) => this.#live(run, () => this.#applyListedChat(chats.find(({ id }) => id === this.chatId))),
+        (error) => {
+          if (run === this.#run) this.#fail(messageOf(error))
+        },
+      )
+      const history = await overseer.getChatHistory(this.chatId, undefined, HISTORY_PAGE_SIZE)
       if (run !== this.#run) return
 
-      const messages = history?.messages ?? []
-      this.#chatId = latest?.id
-      this.#title = latest?.title
-      this.#agentActive = latest?.activeAgent !== undefined
-      this.#messages = new Map(messages.map((message) => [message.sequence, message]))
-      this.#items = toChatItems(messages)
-      this.#nextBeforeSequence = history?.nextBeforeSequence
+      this.#messages = new Map(history.messages.map((message) => [message.sequence, message]))
+      this.#items = toChatItems(history.messages)
+      this.#nextBeforeSequence = history.nextBeforeSequence
       this.#loaded = true
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
@@ -251,12 +246,15 @@ export class ChatSession {
     }
   }
 
+  /** Applies an update from run `run`, holding it until the history is in. */
+  #live(run: number, apply: () => void) {
+    if (run !== this.#run) return
+    if (this.#loaded) apply()
+    else this.#early.push(apply)
+  }
+
   #eventsFor(run: number): ChatEvents {
-    const live = (apply: () => void) => {
-      if (run !== this.#run) return
-      if (this.#loaded) apply()
-      else this.#early.push(apply)
-    }
+    const live = (apply: () => void) => this.#live(run, apply)
     return {
       streamGeneration: (generation) => {
         if (run !== this.#run) return
@@ -276,14 +274,20 @@ export class ChatSession {
     }
   }
 
-  // The first chat to report in adopts the session when the workspace had none.
-  #accepts(chatId: number) {
-    this.#chatId ??= chatId
-    return chatId === this.#chatId
+  #applyListedChat(chat: AiChatMetadata | undefined) {
+    if (!chat) return this.#fail('This chat doesn’t exist, or was deleted.')
+    // The list may have been read before a live update that arrived first; live updates win, as
+    // they do over fetched history.
+    if (this.#liveMetadata) return
+    this.#title = chat.title
+    this.#agentActive = chat.activeAgent !== undefined
+    this.#publishReady()
   }
 
   #applyMetadata(chat: AiChatMetadata) {
-    if (!this.#accepts(chat.id)) return
+    // The subscription covers the whole workspace, so events for its other chats are dropped.
+    if (chat.id !== this.chatId) return
+    this.#liveMetadata = true
     const wasActive = this.#agentActive
     this.#title = chat.title
     this.#agentActive = chat.activeAgent !== undefined
@@ -295,7 +299,7 @@ export class ChatSession {
   }
 
   #applyMessage(message: AiChatMessage) {
-    if (!this.#accepts(message.chatId)) return
+    if (message.chatId !== this.chatId) return
     // Replayed and live delivery can overlap, so a sequence number is stored once.
     this.#messages.set(message.sequence, message)
     this.#rebuildItems()
@@ -306,7 +310,7 @@ export class ChatSession {
   }
 
   #applyStream(chatId: number, event: AiChatStreamEvent) {
-    if (chatId !== this.#chatId) return
+    if (chatId !== this.chatId) return
     if (event.type === 'textDelta') this.#streaming += event.delta
     else if (event.type === 'streamReset') this.#streaming = ''
     else return

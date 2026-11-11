@@ -20,7 +20,7 @@ const readSurface = (surface: HTMLElement) => {
 }
 
 /** Joins active and hover surfaces, preserving the direction from which the pointer approached. */
-export const useConversationUnderlay = () => {
+export const useWorkspaceUnderlay = () => {
   const listRef = useRef<HTMLDivElement>(null)
   const underlayRef = useRef<HTMLDivElement>(null)
   const hoverUnderlayRef = useRef<HTMLDivElement>(null)
@@ -67,7 +67,7 @@ export const useConversationUnderlay = () => {
     }
 
     const rowAt = (element: EventTarget | null) => {
-      const row = element instanceof Element ? element.closest<HTMLButtonElement>('[data-conversation-id]') : null
+      const row = element instanceof Element ? element.closest<HTMLButtonElement>('[data-workspace-id]') : null
       return row?.parentElement === list ? row : undefined
     }
 
@@ -190,7 +190,7 @@ export const useConversationUnderlay = () => {
     observer.observe(list)
 
     refreshRef.current = () => {
-      const nextRows = Array.from(list.querySelectorAll<HTMLButtonElement>(':scope > [data-conversation-id]'))
+      const nextRows = Array.from(list.querySelectorAll<HTMLButtonElement>(':scope > [data-workspace-id]'))
       for (const row of rows) {
         if (!nextRows.includes(row)) {
           observer.unobserve(row)

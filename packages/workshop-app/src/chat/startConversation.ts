@@ -5,19 +5,19 @@ export type NewConversationOverseer = Pick<Overseer, 'newChat' | 'getMetadata'> 
 
 /**
  * Starts a conversation: a new workspace holding one chat that begins with `text`, answered by
- * `modelId`. Resolves with the workspace's id once the chat exists. `open` creates the workspace;
- * its connection is released before returning.
+ * `modelId`. Resolves with the workspace's and the chat's ids once the chat exists. `open` creates
+ * the workspace; its connection is released before returning.
  */
 export const startConversation = async (
   open: () => NewConversationOverseer,
   text: string,
   modelId: string,
-): Promise<string> => {
+): Promise<{ workspaceId: string; chatId: number }> => {
   const overseer = open()
   try {
     // Both calls ride on the workspace that is still being created.
-    const [, metadata] = await Promise.all([overseer.newChat(text, modelId), overseer.getMetadata()])
-    return metadata.id
+    const [chatId, metadata] = await Promise.all([overseer.newChat(text, modelId), overseer.getMetadata()])
+    return { workspaceId: metadata.id, chatId }
   } finally {
     overseer[Symbol.dispose]()
   }

@@ -12,7 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as AppWorkspaceWorkspaceIdRouteImport } from './routes/_app/workspace.$workspaceId'
+import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
+import { Route as AppWorkspaceWorkspaceIdChatIdRouteImport } from './routes/_app/workspace.$workspaceId.$chatId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -28,40 +29,59 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppWorkspaceWorkspaceIdRoute = AppWorkspaceWorkspaceIdRouteImport.update({
-  id: '/workspace/$workspaceId',
-  path: '/workspace/$workspaceId',
-  getParentRoute: () => AppRoute,
-} as any)
+const AppWorkspaceWorkspaceIdIndexRoute =
+  AppWorkspaceWorkspaceIdIndexRouteImport.update({
+    id: '/workspace/$workspaceId/',
+    path: '/workspace/$workspaceId/',
+    getParentRoute: () => AppRoute,
+  } as any)
+const AppWorkspaceWorkspaceIdChatIdRoute =
+  AppWorkspaceWorkspaceIdChatIdRouteImport.update({
+    id: '/workspace/$workspaceId/$chatId',
+    path: '/workspace/$workspaceId/$chatId',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
-  '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
+  '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
   '/': typeof AppIndexRoute
-  '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
+  '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
   '/_app/': typeof AppIndexRoute
-  '/_app/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdRoute
+  '/_app/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/_app/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/gallery' | '/workspace/$workspaceId'
+  fullPaths:
+    | '/'
+    | '/gallery'
+    | '/workspace/$workspaceId/$chatId'
+    | '/workspace/$workspaceId/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/gallery' | '/' | '/workspace/$workspaceId'
+  to:
+    | '/gallery'
+    | '/'
+    | '/workspace/$workspaceId/$chatId'
+    | '/workspace/$workspaceId'
   id:
     | '__root__'
     | '/_app'
     | '/gallery'
     | '/_app/'
-    | '/_app/workspace/$workspaceId'
+    | '/_app/workspace/$workspaceId/$chatId'
+    | '/_app/workspace/$workspaceId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -92,11 +112,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/workspace/$workspaceId': {
-      id: '/_app/workspace/$workspaceId'
+    '/_app/workspace/$workspaceId/': {
+      id: '/_app/workspace/$workspaceId/'
       path: '/workspace/$workspaceId'
-      fullPath: '/workspace/$workspaceId'
-      preLoaderRoute: typeof AppWorkspaceWorkspaceIdRouteImport
+      fullPath: '/workspace/$workspaceId/'
+      preLoaderRoute: typeof AppWorkspaceWorkspaceIdIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/workspace/$workspaceId/$chatId': {
+      id: '/_app/workspace/$workspaceId/$chatId'
+      path: '/workspace/$workspaceId/$chatId'
+      fullPath: '/workspace/$workspaceId/$chatId'
+      preLoaderRoute: typeof AppWorkspaceWorkspaceIdChatIdRouteImport
       parentRoute: typeof AppRoute
     }
   }
@@ -104,12 +131,14 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
-  AppWorkspaceWorkspaceIdRoute: typeof AppWorkspaceWorkspaceIdRoute
+  AppWorkspaceWorkspaceIdChatIdRoute: typeof AppWorkspaceWorkspaceIdChatIdRoute
+  AppWorkspaceWorkspaceIdIndexRoute: typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
-  AppWorkspaceWorkspaceIdRoute: AppWorkspaceWorkspaceIdRoute,
+  AppWorkspaceWorkspaceIdChatIdRoute: AppWorkspaceWorkspaceIdChatIdRoute,
+  AppWorkspaceWorkspaceIdIndexRoute: AppWorkspaceWorkspaceIdIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

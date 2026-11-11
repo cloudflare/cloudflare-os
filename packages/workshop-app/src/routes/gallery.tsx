@@ -5,10 +5,11 @@ import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, Plus
 import { Composer } from '@/blocks/Composer'
 import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
+import { ChatListItem } from '@/blocks/ChatListItem'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
-import { ConversationListItem } from '@/blocks/ConversationListItem'
+import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
-import { Sidebar, type SidebarConversation } from '@/blocks/Sidebar'
+import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
@@ -38,7 +39,7 @@ const previewSkills: ComposerSkill[] = [
   { id: 'compact', name: 'Compact chat', description: 'Make room while keeping the important context.', source: 'Gadgets' },
 ]
 
-const previewConversations: SidebarConversation[] = [
+const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'greeting', workspaceLabel: 'CG', title: 'Casual Greeting', subtitle: '4 hours ago' },
   { id: 'assistant', workspaceLabel: 'AA', title: 'Assistant Availability Check', subtitle: 'Oct 28' },
   { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
@@ -135,7 +136,7 @@ const DropdownMenuPlayground = () => {
 }
 
 function Gallery() {
-  const [selectedConversation, setSelectedConversation] = useState('greeting')
+  const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
@@ -175,9 +176,9 @@ function Gallery() {
         <WorkspaceIcon label="DE" />
         <WorkspaceIcon label="FR" />
       </Section>
-      <Section title="ConversationListItem (selected + unread, plain, long text)">
+      <Section title="WorkspaceListItem (selected + unread, plain, long text)">
         <div className="flex w-80 flex-col">
-          <ConversationListItem
+          <WorkspaceListItem
             workspaceLabel="EN"
             title="Refactor conditional rendering logic"
             subtitle="I see what you’re aiming for…"
@@ -185,28 +186,35 @@ function Gallery() {
             selected
             onSelect={() => {}}
           />
-          <ConversationListItem
+          <WorkspaceListItem
             workspaceLabel="DE"
             title="Short title"
             subtitle="Yesterday"
             onSelect={() => {}}
           />
-          <ConversationListItem
+          <WorkspaceListItem
             workspaceLabel="FR"
             title="Create a new slideshow about the history of Paris"
             subtitle="Here’s your new slideshow with twelve slides…"
             onSelect={() => {}}
           />
-          <ConversationListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
+          <WorkspaceListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
+        </div>
+      </Section>
+      <Section title="ChatListItem (with activity, long title, title only)">
+        <div className="flex w-80 flex-col">
+          <ChatListItem title="Jira dashboard" subtitle="4 hours ago" onSelect={() => {}} />
+          <ChatListItem title="Create a new slideshow about the history of Paris" subtitle="Oct 27" onSelect={() => {}} />
+          <ChatListItem title="Title only, no subtitle" onSelect={() => {}} />
         </div>
       </Section>
       <Section title="Sidebar (approach a neighbour from the active row or a distant row)">
         <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
           <Sidebar
             user={{ name: 'Ada Lovelace' }}
-            conversations={previewConversations}
-            selectedConversationId={selectedConversation}
-            onSelectConversation={setSelectedConversation}
+            workspaces={previewWorkspaces}
+            selectedWorkspaceId={selectedWorkspace}
+            onSelectWorkspace={setSelectedWorkspace}
           />
         </div>
       </Section>

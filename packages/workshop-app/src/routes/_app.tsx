@@ -25,14 +25,14 @@ const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 ro
 
 const AppFrame = () => {
   const { user } = useApi()
-  const workspaces = useWorkspaces()
+  const workspacesState = useWorkspaces()
   const navigate = useNavigate()
   const { workspaceId } = useParams({ strict: false })
 
-  // One workspace is one conversation, so each is listed by its title and when it was last active.
-  const conversations =
-    workspaces.status === 'ready'
-      ? workspaces.workspaces.map(({ id, title, lastActive }) => ({
+  // Each workspace is listed by its title and when it was last active.
+  const workspaces =
+    workspacesState.status === 'ready'
+      ? workspacesState.workspaces.map(({ id, title, lastActive }) => ({
           id,
           title,
           workspaceLabel: workspaceLabel(title),
@@ -40,10 +40,10 @@ const AppFrame = () => {
         }))
       : []
   const notice =
-    workspaces.status === 'failed'
-      ? `Couldn’t load conversations: ${workspaces.message}`
-      : workspaces.status === 'ready' && conversations.length === 0
-        ? 'No conversations yet.'
+    workspacesState.status === 'failed'
+      ? `Couldn’t load workspaces: ${workspacesState.message}`
+      : workspacesState.status === 'ready' && workspaces.length === 0
+        ? 'No workspaces yet.'
         : undefined
 
   return (
@@ -51,9 +51,9 @@ const AppFrame = () => {
       sidebar={
         <Sidebar
           user={{ name: user.name }}
-          conversations={conversations}
-          selectedConversationId={workspaceId}
-          onSelectConversation={(id) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })}
+          workspaces={workspaces}
+          selectedWorkspaceId={workspaceId}
+          onSelectWorkspace={(id) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })}
           notice={notice}
           connections={placeholderLogos}
         />
