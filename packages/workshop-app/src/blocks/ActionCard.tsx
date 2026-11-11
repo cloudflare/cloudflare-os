@@ -1,5 +1,6 @@
 import { useId } from 'react'
-import { CheckCircleIcon, ProhibitIcon, ShieldCheckIcon, ShieldWarningIcon, WarningIcon } from '@phosphor-icons/react'
+import { Badge } from '@cloudflare/kumo'
+import { ShieldCheckIcon, ShieldWarningIcon, WarningIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
 import { Disclosure } from '@/components/Disclosure'
@@ -56,32 +57,44 @@ const RequestBody = ({ description, fields, uncapped }: Pick<Request, 'descripti
 
 /**
  * Something the agent wants to do outside the workspace. While it waits for a decision it is a
- * card with everything needed to decide; once decided it is a line that opens to the same detail.
+ * card with everything needed to decide. Once decided it stays a card that says how, with the
+ * request folded away, so the decision stands out in the conversation without filling it.
  */
 export const ActionCard = (props: ActionCardProps) => {
   const { title, description, resource, fields } = props
   const [pending, run] = usePending()
   const id = useId()
+  const heading = (
+    <div className="flex items-start gap-3">
+      <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
+        <ShieldCheckIcon aria-hidden="true" className="size-5" />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 id={`${id}-title`} className="font-medium text-kumo-default">{title}</h3>
+          {props.state !== 'pending' && (
+            <Badge variant={props.state === 'approved' ? 'success' : 'error'}>{props.resolution}</Badge>
+          )}
+        </div>
+        {resource ? <ResourceLink {...resource} /> : props.state === 'pending' && <span className="text-sm text-kumo-subtle">Needs your approval</span>}
+      </div>
+    </div>
+  )
 
   if (props.state !== 'pending') {
-    const StateIcon = props.state === 'denied' ? ProhibitIcon : CheckCircleIcon
     return (
-      <Disclosure
-        open={props.open}
-        onToggle={props.onToggle}
-        summary={
-          <>
-            <StateIcon aria-hidden="true" className="size-5 shrink-0" />
-            <span className="min-w-0 truncate">{title}</span>
-            <span className="shrink-0 text-sm text-kumo-inactive">{props.resolution}</span>
-          </>
-        }
-      >
-        <div className="ms-4 mt-1 mb-2 flex flex-col gap-3 border-s-2 border-kumo-line ps-4">
-          {resource && <ResourceLink {...resource} />}
-          <RequestBody description={description} fields={fields} />
-        </div>
-      </Disclosure>
+      <Card>
+        <section aria-labelledby={`${id}-title`} className="contents">
+          {heading}
+          {(description || fields.length > 0) && (
+            <Disclosure open={props.open} onToggle={props.onToggle} summary="Request" className="-mx-2 -my-1">
+              <div className="mx-2 mt-2 mb-1 flex flex-col gap-3">
+                <RequestBody description={description} fields={fields} />
+              </div>
+            </Disclosure>
+          )}
+        </section>
+      </Card>
     )
   }
 
@@ -92,15 +105,7 @@ export const ActionCard = (props: ActionCardProps) => {
   return (
     <Card>
       <section aria-labelledby={`${id}-title`} className="contents">
-        <div className="flex items-start gap-3">
-          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-            <ShieldCheckIcon aria-hidden="true" className="size-5" />
-          </span>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <h3 id={`${id}-title`} className="font-medium text-kumo-default">{title}</h3>
-            {resource ? <ResourceLink {...resource} /> : <span className="text-sm text-kumo-subtle">Needs your approval</span>}
-          </div>
-        </div>
+        {heading}
         {restricted && (
           <Note id={`${id}-restricted`} tone="warning">
             This workspace has read sensitive data. Read the full request before approving: you are responsible for making sure it contains none of that data.
