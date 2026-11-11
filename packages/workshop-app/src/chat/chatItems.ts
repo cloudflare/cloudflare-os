@@ -79,6 +79,8 @@ export type ActionItem = Row & {
   state: 'pending' | 'approved' | 'denied'
   /** How it was decided, e.g. "Auto-approved (Ada’s rule)". */
   resolution?: string
+  /** Approved by a standing rule rather than by someone's click. */
+  automatic: boolean
   /** Part of what the action will send is not in its description. */
   incomplete: boolean
   /** The standing approval the user could give instead of deciding each time. */
@@ -293,6 +295,7 @@ const actionItem = (id: number, log: ActionLogEntry & { type: 'action' }): Omit<
     fields: description.fields ?? [],
     state,
     resolution,
+    automatic: log.autoApproved === true,
     incomplete: state === 'pending' && description.descriptionIsComplete !== true,
     // Only where a rule would apply to this very action: its gatekeeper allows one for its kind.
     rule:
