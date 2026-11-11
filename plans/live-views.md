@@ -573,8 +573,10 @@ restricted data. This plan does not change gadget frames.
   again on every mount, for every viewer. A Gadget's `rpc` is not paced, as `GadgetUI` does not
   pace `connectToGadget`'s stub: one policy per kind of capability. The host disposes every stub
   it opened, and each limiter, when the session ends: a new handshake, Stop, unmounting, or a
-  reload. A stub that arrives after that is disposed at once. `UiBlockCard` gets the chat's id and
-  an `onOpenBinding` callback from `ChatInterface`, beside `onSendMessage`.
+  reload. A stub that arrives after that is disposed at once. `UiBlockCard` gets `chatEnv`, the
+  chat's id and the kernel session's `overseer` stub, from `ChatInterface`, beside
+  `onSendMessage`. A block with `env` and no `chatEnv` shows "This view reads env, which this chat
+  cannot give it." and runs nothing.
 - **A limiter's dispose ends it.** `createRateLimitedCapability`'s `dispose` becomes terminal: it
   rejects every queued call, refuses new ones, and a call already in flight neither drains the
   queue nor arms the resume timer when it finishes. `SandboxedGatekeeperApp`, the configurator and
@@ -834,11 +836,11 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   not in a view without `env`; data holding `<img src=x onerror=…>` written with `innerHTML`
   throws and runs nothing, and with `textContent` shows as text.
 - Frontend tests (`UiBlockCard.test.tsx`), new: the host refuses a name its tag does not list,
-  opens each name once, paces a connection's calls and not a Gadget's, and disposes every stub and
-  limiter on a new handshake, Stop and unmount; a stub that arrives after the session ends is
-  disposed; a frame whose `trustedTypes()` answers false, or throws, gets no `write` and no
-  binding and shows its error; a Gadget call that fails after a facet restart shows its error, and
-  Run opens the name again; a new overseer remounts a view with `env` and leaves one without it.
+  opens each name once, paces a connection's calls and not a Gadget's, and disposes both on Stop;
+  a stub that arrives after the session ends is disposed; a frame whose `trustedTypes()` answers
+  false, or throws, gets no `write` and no binding and shows its error; Run opens a name again in
+  its new session, as a view whose Gadget stub died with a facet restart needs; a new overseer
+  remounts a view with `env` and leaves one without it.
 - `ChatInterface` tests: an open block in a streaming answer is already a frame, and the closed
   block and then the stored message keep that frame element; a stored message whose text differs
   from the streamed text mounts its view fresh.

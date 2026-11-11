@@ -11,7 +11,7 @@ import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
-import { createRateLimitedCapability } from './rateLimitedCapability'
+import { CONNECTION_CALL_LIMITS, createRateLimitedCapability } from './rateLimitedCapability'
 import { useTheme } from './ThemeContext'
 import { useServerConfig } from './ServerConfigContext'
 import { forwardTrustedFrameError } from './errorReporting'
@@ -124,10 +124,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
     super()
     this.#theme = theme
     const { capability: ui, dispose } = createRateLimitedCapability(capability, {
-      maxConcurrency: 8,
-      maxCallsPerMinute: 600,
-      maxPendingCalls: 128,
-      onRateLimit: 'throttle',
+      ...CONNECTION_CALL_LIMITS,
       label: 'Gatekeeper app',
     })
     this.#ui = ui

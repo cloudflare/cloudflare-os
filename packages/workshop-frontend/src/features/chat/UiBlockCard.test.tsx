@@ -3,8 +3,9 @@
 
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { newMessagePortRpcSession, RpcTarget, type RpcStub } from 'capnweb'
+import { newMessagePortRpcSession, RpcStub, RpcTarget } from 'capnweb'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Overseer, ViewBinding } from '@gadgets/workshop-shared/api'
 import type { InlineHtmlBlock } from '@gadgets/workshop-shared/inline-html-blocks'
 import { createUiBlockDocumentStart, readUiBlockTheme, type UiBlockFrame, type UiBlockHost } from './uiBlockFrame'
 
@@ -45,7 +46,13 @@ class VisibleIntersectionObserver {
 // The block's document as the frame gets it, in order: each write, then 'close' once it ends.
 class FakeFrame extends RpcTarget implements UiBlockFrame {
   received: string[] = []
+  // What the bootstrap's Trusted Types probe found.
+  constructor(private enforced: boolean | 'throws' = true) { super() }
   setTheme() {}
+  trustedTypes() {
+    if (this.enforced === 'throws') throw new Error('no trustedTypes')
+    return this.enforced
+  }
   write(html: string) { this.received.push(html) }
   close() { this.received.push('close') }
 }
@@ -232,5 +239,132 @@ describe('UiBlockCard', () => {
       { kind: 'block', html: '<title>Plan</title>', title: 'Plan', error: 'This view has no content.' })))
     expect(container.textContent).toContain('This view has no content.')
     expect(container.querySelector('iframe')).toBeNull()
+  })
+
+  describe('with env', () => {
+    const ENV_BLOCK: InlineHtmlBlock = { ...BLOCK, env: ['TOTALS', 'EXPENSES', 'GITHUB'] }
+    const START = createUiBlockDocumentStart(readUiBlockTheme(), { env: true })
+
+    // A binding whose calls wait until the test lets them finish, and that knows when it is disposed.
+    class Held extends RpcTarget {
+      started = 0
+      disposed = false
+      readonly #waiting: (() => void)[] = []
+      call() {
+        this.started++
+        const { promise, resolve } = Promise.withResolvers<string>()
+        this.#waiting.push(() => resolve('done'))
+        return promise
+      }
+      [Symbol.dispose]() { this.disposed = true }
+    }
+
+    let gadget: Held
+    let session: Held
+    let opened: string[]
+    // What the next lookup of a name waits on, if the test holds it.
+    let lookup: Promise<void> | undefined
+    const overseer = () => ({
+      connectToChatBinding: async (_chatId: number, name: string): Promise<ViewBinding> => {
+        opened.push(name)
+        await lookup
+        if (name === 'TOTALS') return { type: 'data', json: '{"north":1200}' }
+        if (name === 'EXPENSES') return { type: 'gadget', rpc: new RpcStub(gadget) }
+        return { type: 'connection', session: new RpcStub(session) }
+      },
+    }) as unknown as RpcStub<Overseer> // A fake of the one method the card calls.
+    let chatOverseer: RpcStub<Overseer>
+
+    beforeEach(() => {
+      gadget = new Held()
+      session = new Held()
+      opened = []
+      lookup = undefined
+      chatOverseer = overseer()
+    })
+
+    const envCard = (block: CardBlock = ENV_BLOCK, chat = chatOverseer) => (
+      <UiBlockCard block={block} scrollRoot={scrollRoot} onHeightChange={onHeightChange}
+        onSendMessage={async () => {}} chatEnv={{ overseer: chat, chatId: 1 }} />
+    )
+    async function renderEnvCard(block: CardBlock = ENV_BLOCK) {
+      await act(async () => root.render(envCard(block)))
+      await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+      return container.querySelector('iframe')!
+    }
+
+    it('writes the block only once the frame enforces Trusted Types', async () => {
+      const frame = new FakeFrame()
+      await handshake(await renderEnvCard(), frame)
+      await vi.waitFor(() => expect(frame.received).toEqual([START, BLOCK.html, 'close']))
+    })
+
+    it('runs nothing, opens nothing, and says why, where Trusted Types is not enforced', async () => {
+      for (const enforced of [false, 'throws'] as const) {
+        const frame = new FakeFrame(enforced)
+        const host = await handshake(await renderEnvCard(), frame)
+        await vi.waitFor(() => expect(container.textContent).toContain("This browser can't run a view that reads env safely."))
+        await expect(host.binding('TOTALS')).rejects.toThrow('This view has closed.')
+        expect(frame.received).toEqual([])
+        expect(opened).toEqual([])
+        await act(async () => root.render(<></>))
+      }
+    })
+
+    it('opens only the names the tag lists, each once', async () => {
+      const host = await handshake(await renderEnvCard())
+      await expect(host.binding('OTHER')).rejects.toThrow("env.OTHER is not listed in this view's env attribute.")
+      expect(await host.binding('TOTALS')).toEqual({ north: 1200 })
+      expect(await host.binding('TOTALS')).toEqual({ north: 1200 })
+      expect(opened).toEqual(['TOTALS'])
+    })
+
+    it("paces a connection's calls and not a gadget's, and disposes both when the view stops", async () => {
+      const host = await handshake(await renderEnvCard())
+      const github = await host.binding('GITHUB') as unknown as RpcStub<Held> // The frame's view of it.
+      const expenses = await host.binding('EXPENSES') as unknown as { rpc: RpcStub<Held> }
+      const calls = Array.from({ length: 9 }, () => github.call().catch((error: Error) => error.message))
+      for (let i = 0; i < 9; i++) void expenses.rpc.call().catch(() => {})
+      await vi.waitFor(() => expect([session.started, gadget.started]).toEqual([8, 9]))
+
+      await act(async () => buttonNamed('Stop')!.click())
+      await vi.waitFor(() => expect([session.disposed, gadget.disposed]).toEqual([true, true]))
+      // The ninth call was still queued: the frame's session ended with it.
+      expect(typeof await calls[8]).toBe('string')
+      expect(session.started).toBe(8)
+    })
+
+    it('disposes a stub that arrives after the view stopped', async () => {
+      const held = Promise.withResolvers<void>()
+      lookup = held.promise
+      const host = await handshake(await renderEnvCard())
+      const binding = host.binding('EXPENSES')
+      await vi.waitFor(() => expect(opened).toEqual(['EXPENSES']))
+      await act(async () => buttonNamed('Stop')!.click())
+      held.resolve()
+      await expect(binding).rejects.toThrow()
+      await vi.waitFor(() => expect(gadget.disposed).toBe(true))
+    })
+
+    it('opens a name again in the new session that Run starts', async () => {
+      const host = await handshake(await renderEnvCard())
+      await host.binding('EXPENSES')
+      await act(async () => buttonNamed('Stop')!.click())
+      await act(async () => buttonNamed('Run')!.click())
+      await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+      const again = await handshake(container.querySelector('iframe')!)
+      await again.binding('EXPENSES')
+      expect(opened).toEqual(['EXPENSES', 'EXPENSES'])
+    })
+
+    it('mounts a view with env again for a new kernel session, and leaves one without env', async () => {
+      const iframe = await renderEnvCard()
+      await act(async () => root.render(envCard(ENV_BLOCK, overseer())))
+      expect(container.querySelector('iframe')).not.toBe(iframe)
+
+      const plain = await renderEnvCard(BLOCK)
+      await act(async () => root.render(envCard(BLOCK, overseer())))
+      expect(container.querySelector('iframe')).toBe(plain)
+    })
   })
 })

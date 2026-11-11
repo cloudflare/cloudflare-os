@@ -3,8 +3,19 @@
 // agent-written and nobody reviews it, so the frame gets the gadget UI sandbox and only what
 // UiBlockHost offers.
 
-import { RpcTarget } from 'capnweb'
+import { RpcTarget, type RpcStub } from 'capnweb'
+import type { ViewBinding } from '@gadgets/workshop-shared/api'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from '../../sandboxDocument'
+import { CONNECTION_CALL_LIMITS, createRateLimitedCapability } from '../../rateLimitedCapability'
+
+/** JSON data, as a view reads a saved name with `await env.NAME`. */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+/**
+ * A name of a view's `env`, as its frame gets it: saved data, a gadget as `{ rpc }`, or a
+ * connection's session. The stubs are `RpcStub<any>`, as the kernel's ViewBinding is.
+ */
+export type UiBlockBinding = JsonValue | { rpc: RpcStub<any> } | RpcStub<any>
 
 /** The Workshop's theme, as a block's frame applies it. */
 export type UiBlockTheme = {
@@ -27,12 +38,21 @@ export interface UiBlockHost {
 
   /** Reports an uncaught error in the block's code. */
   reportError(message: string): void
+
+  /** Opens `name` of the view's `env`, if the block's tag lists it. */
+  binding(name: string): Promise<UiBlockBinding>
 }
 
 /** What the Workshop may call on a block's frame. */
 export interface UiBlockFrame {
   /** Applies a new theme, e.g. after the viewer switches between light and dark. */
   setTheme(theme: UiBlockTheme): void
+
+  /**
+   * Whether the frame can't parse a string as HTML: it installed the Trusted Types policies, and
+   * a probe that sets `innerHTML` threw. Asked before the first `write`, so no block code exists yet.
+   */
+  trustedTypes(): boolean
 
   /**
    * Adds `html` to the end of the block's document, which the browser parses as it arrives. The
@@ -74,19 +94,32 @@ export function readUiBlockTheme(): UiBlockTheme {
   }
 }
 
+/** What a block with an `env` attribute may open. */
+export type UiBlockEnv = {
+  /** The names the block's tag lists, as the Workshop parsed them: all the view may open. */
+  names: readonly string[]
+  /** Opens a name for the view through the kernel. The host disposes what it returns. */
+  onOpenBinding: (name: string) => Promise<ViewBinding>
+}
+
 /** What a block's host does for its card. */
 export type UiBlockHostOptions = {
   onMessageRequest: (message: string) => void
   onResize: (height: number) => void
   onError: (message: string) => void
+  /** Present for a block with an `env` attribute. */
+  env?: UiBlockEnv
 }
 
 /**
  * The Workshop's end of a block's frame session. Block code runs in the bootstrap's realm and can
- * reach its port, so the host checks what each call passes.
+ * reach its port, so the host checks what each call passes, and holds every limit.
  */
 export class UiBlockHostImpl extends RpcTarget implements UiBlockHost {
   readonly #options: UiBlockHostOptions
+  readonly #bindings = new Map<string, Promise<UiBlockBinding>>()
+  readonly #resources: (() => void)[] = []
+  #closed = false
 
   constructor(options: UiBlockHostOptions) {
     super()
@@ -107,13 +140,71 @@ export class UiBlockHostImpl extends RpcTarget implements UiBlockHost {
   reportError(message: string): void {
     this.#options.onError(String(message))
   }
+
+  binding(name: string): Promise<UiBlockBinding> {
+    if (this.#closed) throw new Error('This view has closed.')
+    const env = this.#options.env
+    if (typeof name !== 'string' || env === undefined || !env.names.includes(name)) {
+      throw new Error(`env.${String(name)} is not listed in this view's env attribute.`)
+    }
+    let opened = this.#bindings.get(name)
+    if (opened === undefined) {
+      opened = this.#open(env, name)
+      this.#bindings.set(name, opened)
+    }
+    return opened
+  }
+
+  async #open(env: UiBlockEnv, name: string): Promise<UiBlockBinding> {
+    const binding = await env.onOpenBinding(name)
+    if (binding.type === 'data') {
+      const value: JsonValue = JSON.parse(binding.json)
+      return value
+    }
+    const stub = binding.type === 'gadget' ? binding.rpc : binding.session
+    if (this.#closed) {
+      stub[Symbol.dispose]()
+      throw new Error('This view has closed.')
+    }
+    this.#resources.push(() => stub[Symbol.dispose]())
+    // A gadget's stub is not paced, as GadgetUI does not pace its own; a connection's calls are.
+    if (binding.type === 'gadget') return { rpc: stub }
+    const limited = createRateLimitedCapability(stub, { ...CONNECTION_CALL_LIMITS, label: 'Chat view' })
+    this.#resources.push(limited.dispose)
+    return limited.capability
+  }
+
+  /** Ends the session: disposes every stub and limiter the view opened. */
+  [Symbol.dispose](): void {
+    this.#closed = true
+    for (const dispose of this.#resources.splice(0).toReversed()) dispose()
+  }
 }
 
 // Runs in the frame's shell, before any of the block's code, which arrives later through
-// Frame.write.
-const BOOTSTRAP_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`//# sourceURL=ui-block-bootstrap.js
+// Frame.write. A block with an `env` attribute gets the `env` part.
+const bootstrapUrl = (env: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`//# sourceURL=ui-block-bootstrap.js
 import { RpcTarget, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
+${env ? String.raw`
+// TRUSTED_TYPES_CSP allows only these two policies, and the bootstrap takes both names before the
+// block's code runs. The block's own document goes through the first. The default one lets code
+// clear an element with "" and refuses any other string. A probe then checks that the browser
+// enforces them: Frame.trustedTypes() reports it, and the host runs nothing until it says yes.
+let blockHtml;
+let enforced = false;
+try {
+  blockHtml = globalThis.trustedTypes.createPolicy("ui-block", { createHTML: html => html });
+  globalThis.trustedTypes.createPolicy("default", { createHTML: html => html === "" ? html : null });
+  try {
+    document.createElement("div").innerHTML = "<b></b>";
+  } catch {
+    enforced = true;
+  }
+} catch {}
+` : `const blockHtml = undefined;
+const enforced = false;
+`}
 const applyTheme = ({ scheme, tokens }) => {
   const root = document.documentElement.style;
   root.colorScheme = scheme;
@@ -136,6 +227,7 @@ const reportHeight = () =>
 let started = false;
 class Frame extends RpcTarget {
   setTheme(theme) { applyTheme(theme); }
+  trustedTypes() { return enforced; }
   write(html) {
     const first = !started;
     if (first) {
@@ -147,7 +239,7 @@ class Frame extends RpcTarget {
       window.addEventListener("unhandledrejection",
           event => reportError(event.reason?.message ?? event.reason));
     }
-    document.write(html);
+    document.write(blockHtml ? blockHtml.createHTML(html) : html);
     if (first) new ResizeObserver(reportHeight).observe(document.body);
   }
   close() { document.close(); }
@@ -164,14 +256,34 @@ const host = newMessagePortRpcSession(port1, new Frame());
 globalThis.agent = Object.freeze({
   send: async message => { await host.requestMessage(message); },
 });
-`)}`
+${env ? String.raw`
+// The same promise for each name, so env.NAME stays one object. Nothing for "then", so that
+// awaiting env does not ask for a binding. The host refuses a name the tag does not list.
+const bindings = new Map();
+globalThis.env = new Proxy({}, {
+  get(_target, name) {
+    if (typeof name !== "string" || name === "then") return undefined;
+    if (!bindings.has(name)) bindings.set(name, host.binding(name));
+    return bindings.get(name);
+  },
+});
+` : ''}`)}`
+const BOOTSTRAP_URL = bootstrapUrl(false)
+const ENV_BOOTSTRAP_URL = bootstrapUrl(true)
 
 const themeStyle = ({ scheme, tokens }: UiBlockTheme) =>
   `:root { color-scheme: ${scheme}; ${Object.entries(tokens).map(([name, value]) => `${name}: ${value};`).join(' ')} }`
 
+// Block code that parses a string as HTML or as an event handler (innerHTML,
+// setAttribute("onclick", ...) and the like) throws, so data a view with `env` reads cannot run as
+// code with its bindings (see plans/live-views.md).
+const TRUSTED_TYPES_CSP = `<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'; trusted-types ui-block default">`
+
 // The head of the frame's shell and of the block's document: the gadget UI sandbox head, the
-// theme, and the style that fits the block into the answer.
-const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD}
+// Trusted Types CSP for a block with `env`, the theme, and the style that fits the block into the
+// answer.
+const frameHead = (theme: UiBlockTheme, env: boolean) => `${SANDBOX_HEAD}${env ? `
+  ${TRUSTED_TYPES_CSP}` : ''}
   <style>
     ${themeStyle(theme)}
     html, body { margin: 0; height: auto; background: transparent; }
@@ -188,25 +300,26 @@ const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD}
 
 /**
  * The document a block's frame loads: its head and the bootstrap. The host writes the block's own
- * document over it once the bootstrap's handshake arrives (see `UiBlockFrame.write`).
+ * document over it once the bootstrap's handshake arrives (see `UiBlockFrame.write`). `env` is
+ * whether the block has an `env` attribute.
  */
-export function createUiBlockShell(theme: UiBlockTheme): string {
+export function createUiBlockShell(theme: UiBlockTheme, { env = false }: { env?: boolean } = {}): string {
   return `<!DOCTYPE html>
 <html>
 <head>
-  ${frameHead(theme)}
-  <script type="module" src="${BOOTSTRAP_URL}"></script>
+  ${frameHead(theme, env)}
+  <script type="module" src="${env ? ENV_BOOTSTRAP_URL : BOOTSTRAP_URL}"></script>
 </head>
 <body></body>
 </html>`
 }
 
 /** The start of a block's document, which the frame's first `write` takes: all but its body. */
-export function createUiBlockDocumentStart(theme: UiBlockTheme): string {
+export function createUiBlockDocumentStart(theme: UiBlockTheme, { env = false }: { env?: boolean } = {}): string {
   return `<!DOCTYPE html>
 <html>
 <head>
-  ${frameHead(theme)}
+  ${frameHead(theme, env)}
 </head>
 <body>
 `
