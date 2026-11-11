@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, ViewBinding } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -54,7 +54,7 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
+import { chatChangeStatuses, foldChatBindings, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -5828,7 +5828,8 @@ class OverseerImpl implements AgentHooks {
       // (A user caller's chat is a slash command's, whose own chat event already shows it.)
       if (caller.from === "agent") {
         this.#getOrCreateCapturedActions(caller.chatId).actions.push(actionId);
-      } else if (caller.from === "gadget" && caller.chatId !== undefined && this.ownerId) {
+      } else if ((caller.from === "gadget" || caller.from === "view") &&
+                 caller.chatId !== undefined && this.ownerId) {
         let owner = this.users.get(this.users.idFromString(this.ownerId));
         let userMeta = await owner.getChatContext(null);
         this.addChatMessages(caller.chatId, this.gadgetAuthorFor(userMeta.profile),
@@ -5901,7 +5902,8 @@ class OverseerImpl implements AgentHooks {
         });
         return actionId;
       });
-      this.#associateAction(caller, actionId);
+      // A view's reads stay in the action log; only its actions are posted to its chat.
+      if (caller.from !== "view") this.#associateAction(caller, actionId);
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
@@ -6499,6 +6501,8 @@ class OverseerImpl implements AgentHooks {
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
+    // A person decides each of a view's actions: the view's code runs for every viewer, on load.
+    if (caller.from === "view") description = {...description, autoApprovable: false};
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
@@ -8308,6 +8312,84 @@ class OverseerImpl implements AgentHooks {
       // The set of pending calls changed (or a turn started): recompute the alarm.
       this.#updateAlarm();
     }
+  }
+
+  // What `name` resolves to in the chat's binding scope, as a checkpoint folds it: the seed, the
+  // active checkpoint's bindings, then the names the messages after it bind. Reads only, unlike
+  // prepareChatBindings.
+  resolveChatBinding(chatId: number, name: string): ChatBindingEntry | undefined {
+    let checkpoint = this.getActiveChatCompaction(chatId);
+    let seed = Object.entries(this.getChatAgentContext(chatId).bindings ?? {});
+    let bindings = new Map<string, ChatBindingEntry>([
+      ...seed.map(([seedName, id]): [string, ChatBindingEntry] =>
+          [seedName, {type: "workpiece", id}]),
+      ...checkpoint?.chatBindings ?? [],
+    ]);
+    foldChatBindings(this.storage.chats.list({
+      prefix: chatKeyPrefix(chatId),
+      start: chatKey(chatId, checkpoint?.compactedTo ?? 0),
+    }), bindings);
+    return bindings.get(name);
+  }
+
+  // The chat binding `name` as an `<inline-html env="...">` view reaches it (see
+  // Overseer.connectToChatBinding): saved data, a gadget's facet at the chat's version, or a
+  // session on a connection the user made, with the view as caller. `joinAs` counts what it
+  // returns toward the holder's session.
+  async openViewBinding(chatId: number, name: string, joinAs?: SessionKind): Promise<ViewBinding> {
+    this.getChatMetaOrThrow(chatId);
+    let entry = this.resolveChatBinding(chatId, name);
+    if (entry === undefined) throw new Error(`"${name}" is not a binding in this chat.`);
+    if (entry.type === "data") {
+      return {type: "data", json: this.savedDataJson(chatId, name, new Map())};
+    }
+    let id = entry.type === "workpiece" ? entry.id : undefined;
+    if (id !== undefined && this.storage.gadgets.get(id)?.type === "gadget") {
+      // A gadget pane gets this from getUiBundle(); the worker loads only materialized changes.
+      this.checkChatExistsAndMaterializeChanges(chatId);
+      let rpc = await this.getGadgetFacet(id, chatId, joinAs);
+      return {type: "gadget", rpc: this.#viewStub(rpc, chatId)};
+    }
+    // Only a connection the user made. A view never reaches a model, whose spend isn't recorded, a
+    // spawner, which starts agent turns, or an auto-provided service, which may spend credits or
+    // register lasting callbacks.
+    if (id !== undefined && this.storage.gatekeepers.get(id)?.creationSpec?.type === "gatekeeper") {
+      let session: RpcStub<any> = await this.openGatekeeperSession(
+          id, await this.getGatekeeperFacet(id), {from: "view", chatId});
+      let leave = joinAs ? this.joinSession(joinAs) : undefined;
+      return {type: "connection", session: this.#viewStub(session, chatId, leave)};
+    }
+    throw new Error(`"${name}" can't be used in a view.`);
+  }
+
+  // A view's root stub: each call is refused once the chat is gone, and disposing it disposes
+  // `stub` and ends `leave`'s session count, so the holder can't keep one without the other.
+  #viewStub(stub: RpcStub<any>, chatId: number, leave?: () => void): RpcStub<any> {
+    let chatMeta = this.storage.chatMeta;
+    let proxy = new Proxy(stub, {
+      get(target, prop) {
+        if (prop === Symbol.dispose) {
+          return () => {
+            leave?.();
+            target[Symbol.dispose]();
+          };
+        }
+        // `target` as the receiver, as in getGadgetFacet, where the proxy as receiver throws.
+        let member = Reflect.get(target, prop, target);
+        if (typeof prop !== "string" || typeof member !== "function") return member;
+        // Checked in a continuation, so the refusal rejects the promise the caller already holds.
+        return (...args: unknown[]) => Promise.resolve().then(() => {
+          if (!chatMeta.get(chatId)) throw new Error("This view's chat has been deleted.");
+          return Reflect.apply(member, target, args);
+        });
+      },
+      getPrototypeOf() {
+        return RpcTarget.prototype;
+      },
+    });
+    // As in getGadgetFacet: workerd doesn't detect a proxy RpcTarget that it serializes.
+    // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
+    return new NativeRpcStub(proxy) as RpcStub<any>;
   }
 
   getChatAgentContext(chatId: number): AiChatAgentContext {
@@ -13005,6 +13087,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
+  async connectToChatBinding(chatId: number, name: string): Promise<ViewBinding> {
+    // Counted toward the caller's session for as long as it lives, as the stub
+    // GadgetClient.connectToGadget returns is.
+    return this.impl.openViewBinding(chatId, name, this.#mintedCapabilityKind());
+  }
+
   #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
@@ -13843,6 +13931,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async getChatMessage(_chatId: number, _sequence: number): Promise<AiChatMessage | undefined> { this.#deny(); }
+  async connectToChatBinding(_chatId: number, _name: string): Promise<ViewBinding> { this.#deny(); }
   async listSlashCommands(): Promise<SlashCommandChoice[]> { this.#deny(); }
   async subscribeToChat(
       _subscriber: RpcStub<AiChatSubscriber>, _startAfter?: Date): Promise<RpcStub<{}>> {
@@ -14399,6 +14488,14 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
   return record;
 }
 
+// A view's session reads and writes only while its chat exists: every call of the session, and of
+// the capabilities it returns, lands on its queue (see ApprovalQueueImpl).
+function requireLiveViewChat(impl: OverseerImpl, caller: GatekeeperCaller): void {
+  if (caller.from === "view" && !impl.storage.chatMeta.get(caller.chatId)) {
+    throw new Error("This view's chat has been deleted.");
+  }
+}
+
 // The callback startHook returns to each firing: a wrapper that re-resolves the stored callback
 // through requireLiveHook on every call, so it dies with the hook -- the per-firing revocation
 // the session contract on Gatekeeper.bindHook documents. The stored record.callback itself never
@@ -14458,6 +14555,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    requireLiveViewChat(this.impl, this.caller);
     return this.impl.authorizeObservation(
         this.gatekeeperId, description, this.caller, this.executionId, this.hookId);
   }
@@ -14468,6 +14566,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    requireLiveViewChat(this.impl, this.caller);
     return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
   }
 
@@ -14475,6 +14574,8 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    // A hook outlives the view, and bindHook would credit it to the workspace's first gadget.
+    if (this.caller.from === "view") throw new Error("A view can't bind hooks.");
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }

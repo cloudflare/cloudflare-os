@@ -70,6 +70,37 @@ describe("parseInlineHtmlBlocks", () => {
     ))).toEqual([{ kind: "block", html: "<p>a</inline-html></p>\n  </inline-html>\n<p>b</p>" }]);
   });
 
+  it("reads the names an env attribute lists, each once, and keeps other attributes prose", () => {
+    expect(parseInlineHtmlBlocks(lines('<inline-html env="FOOD, SALES,FOOD,">', "<p>a</p>", "</inline-html>")))
+      .toEqual([{ kind: "block", html: "<p>a</p>", env: ["FOOD", "SALES"] }]);
+    expect(parseInlineHtmlBlocks(lines('<inline-html env="">', "<p>a</p>", "</inline-html>")))
+      .toEqual([{ kind: "block", html: "<p>a</p>", env: [] }]);
+    for (let tag of ["<inline-html env='FOOD'>", '<inline-html env="FOOD" class="wide">', "<inline-html env=FOOD>"]) {
+      let text = lines(tag, "<p>a</p>", "</inline-html>");
+      expect(parseInlineHtmlBlocks(text), tag).toEqual([{ kind: "text", text, start: 0 }]);
+    }
+  });
+
+  it("refuses an env list with a bad name or then", () => {
+    let errors = ['"FOOD, 2X"', '"then"', '"__proto__"'].map(value =>
+      parseInlineHtmlBlocks(lines(`<inline-html env=${value}>`, "<p>a</p>", "</inline-html>"))
+          .flatMap(s => s.kind === "block" ? [s.error] : []));
+    expect(errors).toEqual([
+      ['This view\'s `env` lists a bad name. Invalid binding name "2X": binding names must be JavaScript ' +
+          "identifiers (letters, digits, and '_', not starting with a digit)."],
+      ["This view's `env` lists then, which a view can't read."],
+      ['This view\'s `env` lists a bad name. Invalid binding name "__proto__": this name collides with a ' +
+          "built-in object property."],
+    ]);
+  });
+
+  it("gives an open block its env names once its opening line ends, unless one is bad", () => {
+    expect(parseInlineHtmlBlocks('<inline-html env="FOOD">\n<p>a', { streaming: true }))
+      .toEqual([{ kind: "open", text: '<inline-html env="FOOD">\n<p>a', html: "<p>a", env: ["FOOD"] }]);
+    expect(parseInlineHtmlBlocks('<inline-html env="then">\n<p>a'))
+      .toEqual([{ kind: "open", text: '<inline-html env="then">\n<p>a', html: "<p>a" }]);
+  });
+
   it("leaves a block in a code fence as prose, and closes the fence only on a bare marker of the same kind, at least as long", () => {
     let text = lines("````html", ...VIEW, "```", ...EXAMPLE, "````");
     expect(parseInlineHtmlBlocks(text)).toEqual([{ kind: "text", text, start: 0 }]);

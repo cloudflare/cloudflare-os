@@ -3271,6 +3271,19 @@ export type AgentSpawnerConfig = {
 export const AGENT_SPAWNER_CONNECTION_ID = "agent-spawner";
 
 /**
+ * One name of a chat's scope, as an `<inline-html env="...">` view's code reaches it (see
+ * Overseer.connectToChatBinding). The stubs are `RpcStub<any>`, as GadgetClient.connectToGadget
+ * returns: their methods are the gadget's or the connection's own.
+ */
+export type ViewBinding =
+  /** JSON data the chat's `executeCode` saved on `env`, as its JSON text. */
+  | { type: "data"; json: string }
+  /** A gadget: the server that `env.NAME.rpc` reaches in the agent's `executeCode`. */
+  | { type: "gadget"; rpc: RpcStub<any> }
+  /** A connection the user made: a session on it, with the view as caller. */
+  | { type: "connection"; session: RpcStub<any> };
+
+/**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
  * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
  * commits in the workspace's shared object store, each gadget's head recorded in
@@ -3684,6 +3697,16 @@ export interface Overseer extends RpcTarget {
 
   /** Fetch a single message from a chat thread. */
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
+
+  /**
+   * Opens the name `name` of the chat's scope for an `<inline-html env="...">` view in the chat:
+   * saved data, a gadget, or a connection the user made, on which the view is the caller, so its
+   * reads stay out of the chat and each write waits for a person's decision in it. Throws for any
+   * other kind of binding, and once the chat is gone (see plans/live-views.md). Dispose the result
+   * when the view's frame unloads.
+   */
+  // @ts-ignore - TODO: Fix type instantiation issue
+  connectToChatBinding(chatId: number, name: string): Promise<ViewBinding>;
 
   /**
    * Subscribe to all new chat messages (across all threads), the agent's replies among them.

@@ -121,5 +121,11 @@ export default defineConfig({
     fsModuleCache: false,
     // Asserts the pool actually started, rather than trusting a green run to mean workerd.
     setupFiles: ['@gadgets/scripts/assert-workerd'],
+    // A call through a native RPC stub that rejects is also reported on its own, as an unhandled
+    // rejection of the pipelined result, beside the awaited call (vitest.integration.config.ts
+    // does the same for its expected rejections). view-bindings.test.ts asserts these refusals.
+    onUnhandledError(error) {
+      if (error.message === "This view's chat has been deleted.") return false
+    },
   },
 })

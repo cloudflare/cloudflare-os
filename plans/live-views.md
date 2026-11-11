@@ -812,9 +812,12 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   - `bindHook` through a view's session is refused and stores no hook and no action;
   - once the chat is deleted, `connectToChatBinding` is refused, and an open view's Gadget call,
     connection read and connection write are refused, the write before any record is stored;
-  - a collaborator's root stub counts toward their session until disposed;
-  - after the Gadget's code changes and its facet restarts, the view's next Gadget call rejects,
-    and a new `connectToChatBinding` works.
+  - a collaborator's Gadget and connection root stubs count toward their session until disposed;
+  - after the Gadget's facet restarts (as `proposedChangesChanged` restarts it), the view's next
+    Gadget call rejects, and a new `connectToChatBinding` works.
+  A call through a native RPC stub in the same isolate that rejects is also reported as an
+  unhandled rejection of its pipelined result, so `workshop-backend/vitest.config.ts` ignores the
+  one refusal these tests expect, as `vitest.integration.config.ts` does for its own.
 - Limiter tests (`rateLimitedCapability.test.ts`): after `dispose`, queued calls reject, new calls
   are refused, and a call in flight finishes without draining the queue or arming the timer.
 - Frontend tests (`UiBlockCard.test.tsx`): a message from the frame never calls the kernel

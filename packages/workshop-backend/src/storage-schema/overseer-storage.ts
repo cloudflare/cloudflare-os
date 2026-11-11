@@ -479,6 +479,14 @@ export type GatekeeperCaller = {
    * firings carried it.
    */
   gadgetId?: WorkpieceId;
+} | {
+  /**
+   * An `<inline-html env="...">` view in the chat, through Overseer.connectToChatBinding: its
+   * observations count for its chat, its actions never auto-approve and are posted to the chat,
+   * it binds no hooks, and its calls end with its chat (see plans/live-views.md).
+   */
+  from: "view";
+  chatId: number;
 };
 
 /**
@@ -1241,7 +1249,7 @@ export type ObserverContext =
  */
 export function observerContextOf(caller: GatekeeperCaller): ObserverContext | undefined {
   switch (caller.from) {
-    case "agent": return {type: "chat", chatId: caller.chatId};
+    case "agent": case "view": return {type: "chat", chatId: caller.chatId};
     case "user":
       return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "workspace"};
     case "gadget":
