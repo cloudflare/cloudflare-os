@@ -541,6 +541,10 @@ const WAIT_FOR_AGENT_RESULT_TYPES =
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
 
+// How long a restart owed to a rejection waits for further rejections before it fires. See
+// OverseerImpl.restartAfterRejection.
+const REJECTION_RESTART_IDLE_MS = 2_000;
+
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
 // the workpiece as the user knows it. An accept writes its objects before it moves anything, so
@@ -5403,6 +5407,47 @@ class OverseerImpl implements AgentHooks {
     }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
+  }
+
+  // A restart owed to a rejection, and the moment it is waiting for. See restartAfterRejection.
+  #rejectionRestartWaiting = false;
+  #rejectionRestartDeadline = 0;
+
+  /**
+   * A gatekeeper could not unwind an action we rejected (`Gatekeeper.rejectAction`'s `restart`):
+   * later queued changes were simulated on top of the one withdrawn, and the gadget has already
+   * read them. Restart the workspace, which is the only way to discard what it read.
+   *
+   * Unlike the restarts above this is not a scope widening, so it does not go through
+   * #restartIfSessionsAffected: nobody's verification scope changed, and that check would skip
+   * the ordinary case of an owner working alone -- the very session that has to be reset.
+   *
+   * Discarding a group of drafted changes rejects them in a run, and the contract allows the
+   * restart "possibly after rejecting other actions", so the abort waits out an idle window that
+   * each further rejection pushes back; without it the first rejection's abort would cut its own
+   * batch short. An early abort would lose nothing durable -- the actions it interrupts stay
+   * pending and come back when the client reconnects -- but it would make the user discard twice.
+   */
+  restartAfterRejection(): void {
+    this.#rejectionRestartDeadline = Date.now() + REJECTION_RESTART_IDLE_MS;
+    if (this.#rejectionRestartWaiting) return;
+    this.#rejectionRestartWaiting = true;
+    this.ctx.waitUntil((async () => {
+      for (let left = this.#rejectionRestartDeadline - Date.now(); left > 0;
+           left = this.#rejectionRestartDeadline - Date.now()) {
+        await scheduler.wait(left);
+      }
+      await this.scheduleAccessRestart(
+          "Gadget restarted because a drafted change was discarded.");
+    })().catch(error => {
+      // The abort did not happen, so the gadget is still reading state nothing backs. Release the
+      // latch so the next rejection can try again -- without this one failure would silence every
+      // later restart for the life of the instance, which is the one outcome worse than restarting.
+      this.#rejectionRestartWaiting = false;
+      this.logger.error("failed to restart workspace after a rejection", {
+        event: "workspace.rejection.restart.failed", error,
+      });
+    }));
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -12488,7 +12533,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
 
-    await gatekeeper.rejectAction(action.action);
+    // A gatekeeper that simulated this action may be unable to unwind it -- later queued changes
+    // were checked against it, and the gadget has read them on top of it. It says so with
+    // `restart`, and the restart is ours to perform.
+    let rejection = await gatekeeper.rejectAction(action.action);
 
     action.state = "rejected";
     action.appliedAt = new Date();
@@ -12503,6 +12551,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (action.caller.from === "agent") {
       this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
     }
+    // After the record is durable: the restart aborts this instance shortly afterwards, and the
+    // rejection must survive it.
+    if (rejection?.restart) this.impl.restartAfterRejection();
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
