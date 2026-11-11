@@ -81,11 +81,6 @@ const RENEW_RETRY_MS = 15 * MINUTE_MS;
  * disconnect failed to drop stay until then, when it answers no.
  */
 const TRACKING_RECHECK_MS = 24 * HOUR_MS;
-/**
- * How long a Workspace Events call waits on the account for a token, which nothing else bounds, so
- * that every renewal and every #subscribe ends, and with it the flight that enables join.
- */
-const TOKEN_TIMEOUT_MS = 30_000;
 
 type Registration = Omit<ChatHookProps, "key" | "delivery">;
 type Capabilities = HookCapabilities<ChatMessageHookTarget, ChatMessageRaw>;
@@ -267,8 +262,7 @@ export class ChatHookDriver extends DurableObject<Env> {
 
   #tokens(userObjectId: string): AccessTokenProvider {
     const account = this.#account(userObjectId);
-    return async opts => (await within(account.getAccessToken(opts), TOKEN_TIMEOUT_MS,
-      "Timed out waiting for the Google account's access token.")).token;
+    return async opts => (await account.getAccessToken(opts)).token;
   }
 
   #account(userObjectId: string) {
@@ -374,17 +368,6 @@ class WorkspaceEventsApi {
     }, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS });
     if (!response.ok) await chatApiFailure(operation, response);
     return response.json<T>();
-  }
-}
-
-/** `promise`, unless `ms` pass first. */
-async function within<T>(promise: PromiseLike<T>, ms: number, message: string): Promise<T> {
-  const expired = Promise.withResolvers<never>();
-  const timer = setTimeout(() => expired.reject(new Error(message)), ms);
-  try {
-    return await Promise.race([promise, expired.promise]);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

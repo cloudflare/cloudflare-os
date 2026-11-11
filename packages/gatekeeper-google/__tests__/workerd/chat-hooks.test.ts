@@ -68,11 +68,6 @@ function mockGoogle() {
     /** Make subscriptions.get find nothing, as once Google has dropped a subscription. */
     lost: false,
     /**
-     * When set, subscriptions.create is refused as unauthorized, and the token refresh that asks
-     * for answers only once released; `started` flags that the refresh began.
-     */
-    stallRefresh: undefined as {started: boolean; released: boolean} | undefined,
-    /**
      * The account's subscription to the space that Google holds but the driver never learned of,
      * as when a create's response is lost; Google refuses to create another while it exists.
      */
@@ -94,16 +89,8 @@ function mockGoogle() {
     const subject = new Headers(init.headers).get("Authorization")?.replace("Bearer token-", "");
     if (url.href === "https://www.googleapis.com/oauth2/v3/certs") return json(jwks);
     if (url.href === "https://oauth2.googleapis.com/revoke" && method === "POST") return new Response(null);
-    if (url.href === "https://oauth2.googleapis.com/token" && google.stallRefresh) {
-      const stall = google.stallRefresh;
-      stall.started = true;
-      // Polled, as an unanswered promise with nothing pending would fail its request at once.
-      await until(() => stall.released);
-      return json({error: "temporarily_unavailable"}, 503);
-    }
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return json({sub: subject});
     if (url.href === "https://workspaceevents.googleapis.com/v1/subscriptions" && method === "POST") {
-      if (google.stallRefresh) return json({error: {code: 401, status: "UNAUTHENTICATED"}}, 401);
       if (google.hangCreate) {
         google.hangCreate.started = true;
         const signal = init.signal!;
@@ -616,43 +603,6 @@ it("retries a failed subscription renewal before the subscription lapses", async
     vi.useRealTimers();
   }
   expect(google.renewals).toBe(2);
-});
-
-it("fails a renewal after 30 seconds without a token, with the enable that joined it, and the next enable subscribes", async () => {
-  const google = mockGoogle();
-  const ada = await connect("ada");
-  const thread = await connect("ada", {threadId: "T1"});
-  await ada.hooks.chatEnableHook();
-  // Google has dropped the expired subscription, so the renewal creates another, which the
-  // thread's enable joins. The create needs a refreshed token, which the account never mints.
-  google.lost = true;
-  const stall = {started: false, released: false};
-  google.stallRefresh = stall;
-
-  vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout", "Date"]});
-  vi.setSystemTime(Date.now() + 4 * 3_600_000);
-  try {
-    let renewed = false;
-    const renewal = runDurableObjectAlarm(driver()).finally(() => { renewed = true; });
-    await until(() => stall.started);
-    const joined = expect(Promise.resolve(thread.hooks.chatEnableHook())).rejects.toThrow(/access token/);
-    // The driver notes the account just before it joins.
-    await until(() => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
-      state.storage.kv.get(`tracked:${thread.props.userObjectId}`) !== undefined));
-    await advanceDriver(29_999);
-    expect(renewed).toBe(false);
-    await advanceDriver(1);
-    await renewal;
-    await joined;
-
-    google.lost = false;
-    google.stallRefresh = undefined;
-    await thread.hooks.chatEnableHook();
-  } finally {
-    stall.released = true;
-    vi.useRealTimers();
-  }
-  expect(google.creates).toBe(2);
 });
 
 it("fails an enable whose subscription create Google never answers after 10 seconds", async () => {

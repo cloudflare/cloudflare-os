@@ -2302,8 +2302,8 @@ function gmailHistoryId(value: unknown): string {
 }
 
 /**
- * Per attempt, how long a metadata read, which each Gmail hook delivery makes, waits for Gmail to
- * begin answering. The body isn't timed, as for Drive's downloads.
+ * Per attempt, how long a metadata read, which each Gmail hook delivery makes, may take, its small
+ * body included.
  */
 const METADATA_TIMEOUT_MS = 10_000;
 
@@ -2569,7 +2569,7 @@ export class GmailApi {
       url.searchParams.append("metadataHeaders", header);
     }
     const response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, {headersTimeoutMs: METADATA_TIMEOUT_MS});
+      url.toString(), {}, this.getAccessToken, {timeoutMs: METADATA_TIMEOUT_MS});
     if (!response.ok) await gmailApiFailure("messages.get", response);
     return await response.json() as GmailMessageFull;
   }

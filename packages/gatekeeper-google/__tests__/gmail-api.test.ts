@@ -1884,28 +1884,24 @@ describe("Gmail API request shapes", () => {
     expect(requests).toBe(3);
   });
 
-  it("waits for a metadata answer's body however long it takes once Gmail has begun it", async () => {
+  it("abandons a metadata read whose body Gmail hasn't finished after 10 seconds", async () => {
     vi.useFakeTimers();
     timeoutsOnFakeClock();
-    const metadata = {id: "m1", threadId: "t1", internalDate: "1"};
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
       const signal = init.signal!;
       return new Response(new ReadableStream({
-        async pull(controller) {
+        async pull() {
           // As fetch does, failing the body once the request's signal aborts.
-          await new Promise((resolve, reject) => {
-            setTimeout(resolve, 60_000);
-            signal.addEventListener("abort", () => reject(signal.reason));
-          });
-          controller.enqueue(new TextEncoder().encode(JSON.stringify(metadata)));
-          controller.close();
+          const { promise, reject } = Promise.withResolvers<never>();
+          signal.addEventListener("abort", () => reject(signal.reason));
+          await promise;
         },
       }));
     });
 
-    const read = api().getMessageMetadata("m1");
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(await read).toEqual(metadata);
+    const read = expect(api().getMessageMetadata("m1")).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(10_000);
+    await read;
   });
 
   it("waits out Gmail's rate limiting on a metadata read, which its timeout doesn't count", async () => {

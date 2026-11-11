@@ -55,11 +55,6 @@ export type FetchWithAuthRetryOptions = {
   /** Per-attempt abort timeout in milliseconds. Omitted means no timeout is imposed. */
   timeoutMs?: number;
   /**
-   * Per-attempt timeout in milliseconds on the wait for response headers only: once they arrive,
-   * the body may take as long as it takes.
-   */
-  headersTimeoutMs?: number;
-  /**
    * Asserts this request is safe to replay on 429 / 5xx / timeout. Must only be set for a request
    * that performs no writes. Non-GET methods default to unsafe; this is the opt-in for a POST that
    * is still just a read (Drive's batch `files.get` envelope).
@@ -126,14 +121,6 @@ export async function fetchWithAuthRetry(
     // caller-supplied signal.
     let signals: AbortSignal[] = [];
     if (opts.timeoutMs !== undefined) signals.push(AbortSignal.timeout(opts.timeoutMs));
-    let headersArrived = () => {};
-    if (opts.headersTimeoutMs !== undefined) {
-      let headersTimeout = new AbortController();
-      let timer = setTimeout(
-        () => headersTimeout.abort(new DOMException("The operation timed out.", "TimeoutError")), opts.headersTimeoutMs);
-      headersArrived = () => clearTimeout(timer);
-      signals.push(headersTimeout.signal);
-    }
     if (init.signal) signals.push(init.signal);
     let signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
 
@@ -156,8 +143,6 @@ export async function fetchWithAuthRetry(
         continue;
       }
       throw error;
-    } finally {
-      headersArrived();
     }
 
     if (response.status === 401 && !refreshed && replayable) {
