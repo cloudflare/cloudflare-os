@@ -17,6 +17,7 @@ import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -173,10 +174,12 @@ function Gallery() {
         </ConnectButton>
         <ConnectButton />
       </Section>
-      <Section title="WorkspaceIcon">
+      <Section title="WorkspaceIcon (and small, as in a button)">
         <WorkspaceIcon label="EN" />
         <WorkspaceIcon label="DE" />
         <WorkspaceIcon label="FR" />
+        <WorkspaceIcon label="EN" small />
+        <WorkspaceIcon label="MW" small />
       </Section>
       <Section title="WorkspaceListItem (selected + unread, plain, long text)">
         <div className="flex w-80 flex-col">
@@ -210,6 +213,7 @@ function Gallery() {
           <ChatListItem title="Title only, no subtitle" onSelect={() => {}} />
         </div>
       </Section>
+      <HeaderPreview />
       <Section title="Sidebar (approach a neighbour from the active row or a distant row)">
         <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
           <Sidebar

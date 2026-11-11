@@ -1,0 +1,45 @@
+/* The bubbles of a header pop: they grow in, fast at first and settling without overshoot, and
+   shrink away. Both are quick, so a header never trails behind the page it belongs to. One that
+   arrives holds back a moment, so that where it replaces another, that one is seen to go. */
+.header-bubble[data-bubble] {
+  /* From the side a header starts at, so a bubble grows out along its line. */
+  transform-origin: left center;
+}
+
+.header-bubble[data-bubble='arriving'] {
+  animation:
+    header-bubble-grow 240ms 80ms cubic-bezier(0.22, 1, 0.36, 1) backwards,
+    header-bubble-clear 120ms 80ms ease-out backwards;
+}
+
+/* The copy that is left behind for as long as this takes: see `HeaderBubble`. */
+.header-bubble[data-bubble='leaving'] {
+  pointer-events: none;
+  animation: header-bubble-leave 130ms ease-in forwards;
+}
+
+/* It leaves as it was, without replaying what brought its contents to how they are. */
+.header-bubble[data-bubble='leaving'] * {
+  transition: none !important;
+}
+
+@keyframes header-bubble-grow {
+  from { scale: 0.6; }
+}
+
+@keyframes header-bubble-clear {
+  from { opacity: 0; }
+}
+
+@keyframes header-bubble-leave {
+  to {
+    scale: 0.6;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header-bubble[data-bubble] {
+    animation: none;
+  }
+}

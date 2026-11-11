@@ -112,6 +112,15 @@ seen in a conversation without a backend. Scenario scripts deliver messages in t
 commits a step (see `chat/mock/scenario.ts`). `scripts/record-chat-fixture.ts` saves a real chat as
 a test fixture.
 
+## Page headers
+
+A page's header is made of bubbles (`HeaderBubble`), and belongs to its page: each pane mounts its
+own. A bubble pops in when it appears and out when it goes, on a copy left behind once React has
+removed it. A bubble that takes the place of one of the same `name` carries on from it instead.
+That is how the workspace's crumb (`WorkspaceCrumb`) stays between a workspace and its chats,
+growing its title out of the icon or drawing it back in, while going to another workspace swaps
+it. Render a pane's header in the commit that mounts the pane, or what it follows is gone by then.
+
 ## Theming
 
 This app restyles Kumo at the token level, in `src/theme.css` only. That is a deliberate departure
