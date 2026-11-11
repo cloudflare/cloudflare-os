@@ -20,6 +20,8 @@ export type MessageBubbleProps = {
   joins?: MessageJoins
   /** Start a reply to the message. */
   onReply?: () => void
+  /** What copying the message puts on the clipboard. */
+  copyText?: string
   /**
    * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
@@ -93,10 +95,10 @@ const ACTIONS =
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, joins, onReply, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, joins, onReply, copyText, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
-  const actions = <MessageActions onReply={onReply} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  const actions = <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // A click anywhere outside the details puts them away, the message they are about included.
   // The button that shows them is left to do its own switching.

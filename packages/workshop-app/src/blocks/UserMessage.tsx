@@ -47,9 +47,14 @@ const Part = ({ part }: { part: UserMessagePart }) => {
   }
 }
 
+// A part as it reads in plain text, for copying: what was mentioned, by its name.
+const written = (part: UserMessagePart) =>
+  part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`
+
 /**
  * What a person sent: their words with what they mentioned as chips, the files they attached, and
- * ahead of the words, set apart and quieter, the message they were replying to.
+ * ahead of the words, set apart and quieter, the message they were replying to. Copied, it is what
+ * they wrote, without the quote.
  */
 export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, joins, onReply, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
@@ -64,7 +69,7 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from
       </ul>
     )}
     {parts.length > 0 && (
-      <MessageBubble role="user" joins={joins} onReply={onReply} details={details}>
+      <MessageBubble role="user" joins={joins} onReply={onReply} copyText={parts.map(written).join('')} details={details}>
         {quote && (
           // Capped in width, so that a long quote over a short reply does not stretch the bubble
           // to its limit.
