@@ -10,7 +10,7 @@ import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
-import type { ActionItem, AssistantItem, ChatItem, NoticeItem, UserItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, NoticeItem, OutputItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
@@ -19,8 +19,8 @@ export type ChatItemHandlers = {
   onReply: (item: UserItem | AssistantItem) => void
   /** Go to the message a reply answers. */
   onShowQuoted: (reply: UserItem) => void
-  onOpenAttachment: (attachmentId: string) => void
-  onOpenOutput: (workpieceId: number) => void
+  onOpenAttachment: (attachment: ChatAttachment) => void
+  onOpenOutput: (output: OutputItem) => void
   onApprove: (actionId: number) => ActionResult
   onDeny: (actionId: number) => ActionResult
   onAlwaysApprove: (rule: NonNullable<ActionItem['rule']>) => ActionResult
@@ -70,7 +70,10 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           attachments={item.attachments}
           from={item.from}
           unread={item.unread}
-          onOpenAttachment={handlers.onOpenAttachment}
+          onOpenAttachment={(id) => {
+            const attachment = item.attachments.find((candidate) => candidate.id === id)
+            if (attachment) handlers.onOpenAttachment(attachment)
+          }}
           joins={joins}
           onReply={() => handlers.onReply(item)}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
@@ -100,7 +103,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           kind={item.type}
           draft={item.draft}
           format={item.format}
-          onOpen={() => handlers.onOpenOutput(item.workpieceId)}
+          onOpen={() => handlers.onOpenOutput(item)}
         />
       )
     case 'action': {

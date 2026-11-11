@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import './HeaderBubble.css'
 
 export type HeaderBubbleProps<State> = {
@@ -12,6 +13,8 @@ export type HeaderBubbleProps<State> = {
   state?: State
   /** As a function, it is given the `state` of the bubble this one carries on from, if any. */
   children: ReactNode | ((previous: State | undefined) => ReactNode)
+  /** For how the bubble sits in its header, e.g. that it may shrink. */
+  className?: string
 }
 
 // The named bubbles on screen, each with the state it is in.
@@ -22,6 +25,8 @@ const onScreen = new Map<string, { state: unknown }>()
  * the bubble is still in the document.
  */
 const popOut = (element: HTMLElement, name: string | undefined) => {
+  // One that cannot be seen has nothing to show leaving, as when what it is in faded out first.
+  if (element.checkVisibility?.({ opacityProperty: true }) === false) return
   const box = element.getBoundingClientRect()
   // By the middle of its left edge, which it scales from, so it is placed right even when it is
   // caught still popping in.
@@ -42,7 +47,7 @@ const popOut = (element: HTMLElement, name: string | undefined) => {
 }
 
 /** One of the rounded buttons a page's header is made of. It pops in when it appears and out when it goes. */
-export const HeaderBubble = <State,>({ name, state, children }: HeaderBubbleProps<State>) => {
+export const HeaderBubble = <State,>({ name, state, children, className }: HeaderBubbleProps<State>) => {
   const ref = useRef<HTMLSpanElement>(null)
   const [predecessor] = useState(() => (name === undefined ? undefined : onScreen.get(name)))
 
@@ -61,7 +66,7 @@ export const HeaderBubble = <State,>({ name, state, children }: HeaderBubbleProp
   }, [name])
 
   return (
-    <span ref={ref} data-bubble={predecessor ? undefined : 'arriving'} className="header-bubble relative inline-flex">
+    <span ref={ref} data-bubble={predecessor ? undefined : 'arriving'} className={cn('header-bubble relative inline-flex', className)}>
       {typeof children === 'function' ? children(predecessor?.state as State | undefined) : children}
     </span>
   )

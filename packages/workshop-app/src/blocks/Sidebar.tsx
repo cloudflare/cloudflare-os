@@ -18,6 +18,8 @@ export type SidebarProps = {
   notice?: string
   /** Logos of the connected apps, shown in the connect button. */
   connections?: ReactNode
+  /** The library, which opens beside the page, and whether it is showing. */
+  library?: { shown: boolean; onToggle: () => void }
 }
 
 /** The sidebar: global buttons on top, the workspaces, then the user and connections. */
@@ -28,6 +30,7 @@ export const Sidebar = ({
   onSelectWorkspace,
   notice,
   connections,
+  library,
 }: SidebarProps) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
 
@@ -36,7 +39,13 @@ export const Sidebar = ({
       <header className="flex items-center gap-2">
         <Button icon={<LogoIcon />} aria-label="Home" className="mr-auto [&>svg]:size-[1.5em]" />
         <Button icon={FolderIcon} aria-label="Workspaces" />
-        <Button icon={CirclesFourIcon} aria-label="Library" />
+        <Button
+          icon={CirclesFourIcon}
+          aria-label="Library"
+          aria-pressed={library?.shown}
+          onClick={library?.onToggle}
+          className="aria-pressed:bg-kumo-tint"
+        />
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
       </header>
       <nav aria-label="Workspaces" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto">

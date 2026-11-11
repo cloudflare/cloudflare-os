@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
+import { useAsideState } from '@/aside/AsideContext'
+import { AsidePane } from '@/aside/AsidePane'
+import type { OutputItem } from '@/chat/chatItems'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
 import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
 import { SCENARIOS } from '@/chat/mock/scenarios'
+import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 
@@ -54,6 +58,10 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
     }
   })
 
+  const aside = useAsideState()
+  const { openOutput } = aside.actions
+  const openChatOutput = useCallback((output: OutputItem) => openOutput(MOCK_WORKSPACE_ID, output), [openOutput])
+
   useEffect(() => {
     overseer.player.play()
     return () => overseer.player.pause()
@@ -62,21 +70,28 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   return (
     <ApiContext value={session}>
       <WorkspacesProvider>
-        <div className="relative flex h-full flex-col bg-kumo-base">
-          <ChatPane
-            workspaceId={MOCK_WORKSPACE_ID}
-            chatId={0}
-            onOpenWorkspace={onOpenScenarios}
-            onSetUpConnection={onSetUpConnection}
-            onAlwaysApprove={onAlwaysApprove}
-          />
-          <MockControls
-            scenarios={SCENARIOS}
-            scenario={scenario}
-            player={overseer.player}
-            onSelectScenario={onSelectScenario}
-            onRestart={onRestart}
-          />
+        {/* Laid out as the app lays out a page, without the sidebar, so what a chat opens shows beside it. */}
+        <div className="flex h-full p-2">
+          <SplitLayout aside={aside.shown && <AsidePane tabs={aside.tabs} actions={aside.actions} />} onOpenAside={aside.actions.show} onCloseAside={aside.actions.hide} edgeInset={8}>
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <ChatPane
+                workspaceId={MOCK_WORKSPACE_ID}
+                chatId={0}
+                onOpenWorkspace={onOpenScenarios}
+                onOpenAttachment={aside.actions.openFile}
+                onOpenOutput={openChatOutput}
+                onSetUpConnection={onSetUpConnection}
+                onAlwaysApprove={onAlwaysApprove}
+              />
+              <MockControls
+                scenarios={SCENARIOS}
+                scenario={scenario}
+                player={overseer.player}
+                onSelectScenario={onSelectScenario}
+                onRestart={onRestart}
+              />
+            </div>
+          </SplitLayout>
         </div>
       </WorkspacesProvider>
     </ApiContext>

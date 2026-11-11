@@ -10,6 +10,11 @@
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /* A scrollbar is its thumb alone. Left to the system, pointing at one, or near it, widens it
+       into a rail with a fill and an edge of its own, down the side of whatever is scrolled. With
+       no colour for the track there is no rail; the thumb still shows and hides as the system has
+       it. Inherited, so it holds for everything that scrolls. */
+    scrollbar-color: color-mix(in oklch, var(--color-kumo-contrast) 40%, transparent) transparent;
   }
 }
 
