@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
-import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { startConversation } from '@/chat/startConversation'
 import { describeModelProblem, useDefaultModel } from '@/chat/useDefaultModel'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -40,13 +40,12 @@ function Home() {
 
   return (
     <ChatLayout composer={<Composer onSend={send} />}>
-      {pending && (
-        <>
-          <MessageBubble role="user">{pending}</MessageBubble>
-          <ThinkingIndicator />
-        </>
-      )}
-      {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+      {/* Spaced like the conversation this becomes. */}
+      <div className="flex flex-col gap-2">
+        {pending && <MessageBubble role="user">{pending}</MessageBubble>}
+        <AssistantPresence working={Boolean(pending)}>Thinking…</AssistantPresence>
+        {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+      </div>
     </ChatLayout>
   )
 }

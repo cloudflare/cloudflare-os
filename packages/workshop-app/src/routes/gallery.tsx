@@ -10,12 +10,12 @@ import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
-import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
@@ -220,14 +220,14 @@ function Gallery() {
         </div>
       </Section>
       <MascotPreview />
-      <Section title="MessageBubble, ThinkingIndicator">
+      <AssistantPresencePreview />
+      <Section title="MessageBubble">
         <div className="flex w-full flex-col gap-2">
           <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
           <MessageBubble role="user">Make it dark</MessageBubble>
           <MessageBubble role="user">And add a chart of open tickets per week, with the team split out</MessageBubble>
           <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
           <MessageBubble role="error">Something went wrong</MessageBubble>
-          <ThinkingIndicator />
         </div>
       </Section>
       <MessageBlocksPreview />
