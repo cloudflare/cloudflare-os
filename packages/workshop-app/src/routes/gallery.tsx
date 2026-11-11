@@ -221,7 +221,7 @@ function Gallery() {
       </Section>
       <MascotPreview />
       <AssistantPresencePreview />
-      <Section title="MessageBubble">
+      <Section title="MessageBubble, MessageActions (a run of messages tucks together; point at a message, or tab to it, for its actions)">
         <div className="flex w-full flex-col gap-2">
           <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
           <MessageBubble role="user">Make it dark</MessageBubble>
