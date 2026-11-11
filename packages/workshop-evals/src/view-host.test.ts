@@ -1,5 +1,18 @@
+import { RpcStub, RpcTarget } from "capnweb";
 import { afterAll, describe, expect, it } from "vitest";
-import { closeViewBrowser, RenderedView } from "./view-host.js";
+import { closeViewBrowser, RenderedView, type ViewBinder } from "./view-host.js";
+
+class Log extends RpcTarget {
+  total() { return 1200; }
+}
+
+// Saved TOTALS and a Gadget, as a chat's kernel session opens them; `opened` records each name.
+const binder = (opened: string[]): ViewBinder => async name => {
+  opened.push(name);
+  if (name === "TOTALS") return { type: "data", json: '{"north":1200}', [Symbol.dispose]: () => {} } as never;
+  const rpc = new RpcStub(new Log());
+  return { type: "gadget", rpc, [Symbol.dispose]: () => rpc[Symbol.dispose]() } as never;
+};
 
 afterAll(() => closeViewBrowser());
 
@@ -241,5 +254,48 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       const { series } = await view.waitForSeries(["Jan", "Feb"], () => true);
       expect(series.marks.map(({ label, axis }) => [label, axis]), JSON.stringify(gap)).toEqual([[0, "y"], [1, "y"]]);
     }
+  });
+
+  it("gives a view the saved data and Gadgets its tag lists, and nothing else", async () => {
+    const opened: string[] = [];
+    await using view = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        const { north } = await env.TOTALS;
+        const total = await env.LOG.rpc.total();
+        const other = await env.OTHER.catch(error => error.message);
+        document.getElementById("out").textContent = north + " " + total + " " + other;
+      </script>`, binder(opened), ["TOTALS", "LOG"]);
+    expect(await view.text()).toContain("1200 1200 env.OTHER");
+    expect(opened.toSorted()).toEqual(["LOG", "TOTALS"]);
+  });
+
+  it("parses no string as HTML in a view with env, and gives a view without it no env", async () => {
+    await using guarded = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        const out = document.getElementById("out");
+        try { out.innerHTML = "<b>x</b>"; out.textContent = "parsed"; } catch { out.textContent = "refused"; }
+        for (const name of ["ui-block", "default"]) {
+          try { trustedTypes.createPolicy(name, { createHTML: html => html }); out.textContent += " made " + name; }
+          catch { out.textContent += " kept " + name; }
+        }
+      </script>`, binder([]), []);
+    expect(await guarded.text()).toContain("refused kept ui-block kept default");
+    await using plain = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">document.getElementById("out").textContent = typeof env;</script>`);
+    expect(await plain.text()).toContain("undefined");
+  });
+
+  it("counts a click that only reads a binding as no send, and goes on to the control beside it", async () => {
+    await using view = await RenderedView.open(`
+      <p><span id="food">Food</span> <button id="ask">Ask</button></p>
+      <script type="module">
+        document.getElementById("food").onclick = () => env.LOG.rpc.total();
+        document.getElementById("ask").onclick = () => agent.send("Tell me about Food");
+      </script>`, binder([]), ["LOG"]);
+    await view.click("Food", []);
+    expect(view.messages).toEqual(["Tell me about Food"]);
   });
 });

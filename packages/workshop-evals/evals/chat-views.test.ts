@@ -1,4 +1,4 @@
-import { newMessagePortRpcSession, RpcTarget } from "capnweb";
+import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
 import type { AiChatMessage, GadgetClient, WorkpieceSummary } from "@gadgets/workshop-shared/api";
 import { afterAll, describe, it, vi } from "vitest";
 import { EvalVerifier, type VerifierSession } from "../src/verifier.js";
@@ -87,6 +87,12 @@ function connectingTo(connect: () => ExpenseLog): VerifierSession {
       return { client: await newMessagePortRpcSession<Workshop>(port1).gadget(), chatId: 1 };
     },
     connectionDrops: 0,
+    // A view's saved TOTALS, and the Expense Log's server as a view's Gadget.
+    connectToChatBinding: async name => {
+      if (name === "TOTALS") return { type: "data", json: JSON.stringify(TOTALS), [Symbol.dispose]: () => {} };
+      const rpc = new RpcStub(connect());
+      return { type: "gadget", rpc, [Symbol.dispose]: () => rpc[Symbol.dispose]() } as never;
+    },
   };
 }
 
@@ -96,7 +102,8 @@ function answer(...views: string[]): AiChatMessage[] {
   return [{
     chatId: 1, sequence: 5, timestamp: new Date(), type: "message",
     author: { type: "agent", id: "agent", name: "agent" },
-    message: ["Here it is.", ...views.map(view => `<inline-html>\n${view}\n</inline-html>`)].join("\n\n"),
+    message: ["Here it is.", ...views.map(view => view.startsWith("<inline-html")
+      ? view : `<inline-html>\n${view}\n</inline-html>`)].join("\n\n"),
   }];
 }
 
@@ -523,6 +530,34 @@ describe.concurrent("chat-views verifiers", { timeout: 120_000 }, () => {
   describe("the spending view", () => {
     it("passes a view of each category's total, with its share beside it", async ({ expect }) => {
       expect(await failed(verifySpendingView, spending(TOTALS))).toEqual([]);
+    });
+
+    it("passes a view that reads the totals through env, saved or from the Gadget", async ({ expect }) => {
+      const rows = (source: string) => `<inline-html env="TOTALS, expenseLog">
+<ul id="list"></ul>
+<script type="module">
+  const totals = ${source};
+  const list = document.getElementById("list");
+  for (const [category, amount] of Object.entries(totals)) {
+    const item = list.appendChild(document.createElement("li"));
+    const button = item.appendChild(document.createElement("button"));
+    button.textContent = category;
+    button.onclick = () => agent.send("Tell me about my " + category + " spending");
+    item.append(" ");
+    item.appendChild(document.createElement("span")).textContent = "$" + amount.toFixed(2);
+    item.append(" ");
+    item.appendChild(document.createElement("span")).textContent = Math.round(amount / 701 * 100) + "%";
+  }
+</script>
+</inline-html>`;
+      expect(await failed(verifySpendingView, rows("await env.TOTALS"))).toEqual([]);
+      expect(await failed(verifySpendingView, rows("(await env.expenseLog.rpc.totals()).byCategory"))).toEqual([]);
+      // The same view, in the message whose own call saves what it reads, runs before the save.
+      const [message] = answer(rows("await env.TOTALS"));
+      const early: AiChatMessage[] = [{ ...message!, toolCalls: [{ toolCallId: "1", toolName: "executeCode",
+        input: { code: "" }, output: "", savedEnv: [{ name: "TOTALS" }] }] } as AiChatMessage];
+      expect(await failedThrough(new EvalVerifier(session, [LOG], early), verifySpendingView))
+        .toEqual(["view-comes-after-its-gadgets"]);
     });
 
     it("passes the totals of an Expense Log that stores its entries", async ({ expect }) => {

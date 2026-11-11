@@ -70,6 +70,32 @@ describe("parseInlineHtmlBlocks", () => {
     ))).toEqual([{ kind: "block", html: "<p>a</inline-html></p>\n  </inline-html>\n<p>b</p>" }]);
   });
 
+  it("reads the names an env attribute lists, each once, and keeps other attributes prose", () => {
+    expect(parseInlineHtmlBlocks(lines('<inline-html env="FOOD, SALES,FOOD,">', "<p>a</p>", "</inline-html>")))
+      .toEqual([{ kind: "block", html: "<p>a</p>", env: ["FOOD", "SALES"] }]);
+    expect(parseInlineHtmlBlocks(lines('<inline-html env="">', "<p>a</p>", "</inline-html>")))
+      .toEqual([{ kind: "block", html: "<p>a</p>", env: [] }]);
+    for (let tag of ["<inline-html env='FOOD'>", '<inline-html env="FOOD" class="wide">', "<inline-html env=FOOD>"]) {
+      let text = lines(tag, "<p>a</p>", "</inline-html>");
+      expect(parseInlineHtmlBlocks(text), tag).toEqual([{ kind: "text", text, start: 0 }]);
+    }
+  });
+
+  it("refuses an env list with a bad name or then, naming it", () => {
+    for (let [value, name] of [['"FOOD, 2X"', "2X"], ['"then"', "then"], ['"__proto__"', "__proto__"]]) {
+      let errors = parseInlineHtmlBlocks(lines(`<inline-html env=${value}>`, "<p>a</p>", "</inline-html>"))
+          .flatMap(s => s.kind === "block" ? [s.error] : []);
+      expect(errors, value).toEqual([expect.stringContaining(name!)]);
+    }
+  });
+
+  it("gives an open block its env names once its opening line ends, unless one is bad", () => {
+    expect(parseInlineHtmlBlocks('<inline-html env="FOOD">\n<p>a', { streaming: true }))
+      .toEqual([{ kind: "open", text: '<inline-html env="FOOD">\n<p>a', html: "<p>a", env: ["FOOD"] }]);
+    expect(parseInlineHtmlBlocks('<inline-html env="then">\n<p>a'))
+      .toEqual([{ kind: "open", text: '<inline-html env="then">\n<p>a', html: "<p>a" }]);
+  });
+
   it("leaves a block in a code fence as prose, and closes the fence only on a bare marker of the same kind, at least as long", () => {
     let text = lines("````html", ...VIEW, "```", ...EXAMPLE, "````");
     expect(parseInlineHtmlBlocks(text)).toEqual([{ kind: "text", text, start: 0 }]);

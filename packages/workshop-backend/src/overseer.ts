@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, ViewBinding } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -13,7 +13,8 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
+  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, chatSavedDataKey,
+  connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
@@ -46,7 +47,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type EnvSave, type SavedEnvScope, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -54,7 +55,7 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
+import { chatChangeStatuses, foldChatBindings, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -136,9 +137,140 @@ async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
+// What a save may bring a chat's by-value env to (see #decideEnvSaves and plans/live-views.md,
+// "Caps"), in UTF-16 code units: each saved data name with its JSON text, and each agent callback's
+// name with its arguments. It bounds only what a save controls: callback arguments arrive
+// unbounded, so executeCodeMode's env build (#fitEnv) enforces the platform's limit itself. At up
+// to two bytes a unit, 400,000 units keep a chat that saves within it clear of that limit, and
+// each chatSavedData record well inside Durable Object storage's 2 MB value limit.
+const MAX_SAVED_DATA_LENGTH = 400_000;
+
+// The most a run's env may carry, in bytes as workerd serializes it, which refuses an env over
+// 1 MiB ("Dynamic Worker env size ... exceeds the maximum allowed size of 1048576 bytes"), less
+// 64 KiB for what envValueLength's estimate leaves out.
+const MAX_ENV_BYTES = 1_048_576 - 65_536;
+
+// What a stub, or any other value that is not plain data, counts in an env: a stub serializes as a
+// small reference. A binding of the chat that is a stub counts as much.
+const OPAQUE_VALUE_LENGTH = 64;
+
+// A string's length in code units, and in bytes as V8 serializes it: one byte a unit when every
+// unit fits in Latin-1, two otherwise.
+const codeUnits = (text: string) => text.length;
+const serializedBytes = (text: string) => {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 0xff) return 2 * text.length;
+  }
+  return text.length;
+};
+
+// About how much `value` takes in an env, as JSON would write it, with each string measured by
+// `measure`. Descends only plain objects and arrays, and reads no member of anything else, since a
+// callback's arguments may hold stubs, whose every member is a call.
+function envValueLength(value: unknown, measure = codeUnits, open = new Set<object>()): number {
+  if (typeof value === "string") return measure(value) + 2;
+  if (typeof value === "function") return OPAQUE_VALUE_LENGTH;
+  if (typeof value !== "object" || value === null) return 8;
+  let prototype: unknown = Object.getPrototypeOf(value);
+  let array = Array.isArray(value);
+  if ((!array && prototype !== Object.prototype && prototype !== null) || open.has(value)) {
+    return OPAQUE_VALUE_LENGTH;
+  }
+  open.add(value);
+  let length = 2;
+  for (let [key, item] of Object.entries(value)) {
+    length += (array ? 0 : measure(key) + 3) + envValueLength(item, measure, open) + 1;
+  }
+  open.delete(value);
+  return length;
+}
+
+// Whether `name` can name a binding (see validateBindingName).
+function isBindingName(name: string): boolean {
+  try {
+    validateBindingName(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// How the run's output names `name`: as `env.NAME`, with a long name clipped, since a name a run
+// reports can be of any length and the output is stored with the step.
+function shownName(name: string): string {
+  return name.length <= 64
+    ? `env.${name}`
+    : `env.${name.slice(0, 32)}… (a name of ${name.length} characters)`;
+}
+
+// How many names a run's output says it refused, one line each, before it only counts the rest.
+const MAX_REFUSAL_NOTES = 20;
+
 let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
+import savedNames from "saved-env.js";
+
+// Why \`value\` is not JSON data, by path, or undefined if it is.
+function jsonProblem(value, path, open) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? undefined : path + " is " + value;
+  if (typeof value === "function") return path + " is a function";
+  if (typeof value !== "object") return path + " is " + (value === undefined ? "undefined" : "a " + typeof value);
+  if (open.has(value)) return path + " contains itself";
+  const array = Array.isArray(value);
+  const proto = Object.getPrototypeOf(value);
+  if (!array && proto !== Object.prototype && proto !== null) {
+    const kind = typeof value.constructor?.name === "string" && value.constructor.name !== ""
+      ? "a " + value.constructor.name : "not a plain object";
+    return path + " is " + kind;
+  }
+  open.add(value);
+  try {
+    const entries = array ? Array.from(value, (item, index) => ["[" + index + "]", item])
+      : Object.keys(value).map(key => [/^[A-Za-z_$][\\w$]*$/.test(key) ? "." + key : "[" + JSON.stringify(key) + "]", value[key]]);
+    for (const [step, item] of entries) {
+      const problem = jsonProblem(item, path + step, open);
+      if (problem !== undefined) return problem;
+    }
+    return undefined;
+  } finally {
+    open.delete(value);
+  }
+}
+
+// What the run did to env: each name it added or replaced, as JSON, as another name for a
+// binding (the very object that name held when the run started), or why it is neither; each saved
+// data name whose JSON changed in place; and each saved data name it deleted. The overseer
+// checks and decides each one.
+function envChanges(env, before, savedJson) {
+  const changes = [];
+  for (const name of Object.keys(env)) {
+    const value = env[name];
+    const same = before.has(name) && before.get(name) === value;
+    if (same && !savedJson.has(name)) continue;
+    if (!same && ((typeof value === "object" && value !== null) || typeof value === "function")) {
+      const alias = [...before].find(([other, original]) => other !== name && original === value && !savedJson.has(other))?.[0];
+      if (alias !== undefined) {
+        changes.push({ name, alias });
+        continue;
+      }
+    }
+    const problem = jsonProblem(value, "env." + name, new Set());
+    if (problem !== undefined) {
+      changes.push({ name, problem });
+      continue;
+    }
+    const json = JSON.stringify(value);
+    if (same && json === savedJson.get(name)) continue;
+    // An oversized value is reported by its length, so the result stays small.
+    changes.push(json.length > ${MAX_SAVED_DATA_LENGTH} ? { name, length: json.length } : { name, json });
+  }
+  for (const name of savedJson.keys()) {
+    if (!Object.hasOwn(env, name)) changes.push({ name, deleted: true });
+  }
+  return changes;
+}
 
 export default class extends WorkerEntrypoint {
   verify() {}
@@ -163,8 +295,14 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
+    // The env carries saved data as its JSON text, the smallest form to send. Parsed here, before
+    // the agent's code runs, which could change JSON.
+    let savedJson = new Map(savedNames.map(name => [name, env[name]]));
+    for (let [name, json] of savedJson) env[name] = JSON.parse(json);
+    let before = new Map(Object.entries(env));
     let result = await agent(self, env, this.ctx);
     if (result !== undefined) console.log("Return value:", result);
+    return envChanges(env, before, savedJson);
   }
 }
 `;
@@ -234,9 +372,19 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
   globalOutbound: null,
 };
 
+/**
+ * What a run did to one name of `env`, as the harness reports it (see envChanges there): its
+ * JSON, or only the length of JSON too long to save; another name it now shares an object with;
+ * why it is neither; or that it was deleted. The agent's code shares the harness's isolate, so
+ * #decideEnvSaves checks every field.
+ */
+type EnvChange = {
+  name: string, json?: string, length?: number, alias?: string, problem?: string, deleted?: true,
+};
+
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
-  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<EnvChange[]>;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -3026,13 +3174,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Build the agent's executeCode env from the chat's binding map: each name resolves to a
-  // gadget's `{rpc, exports}` pair, a gatekeeper session stub, or an agent callback's stored
-  // arguments.
+  // gadget's `{rpc, exports}` pair, a gatekeeper session stub, an agent callback's stored
+  // arguments, or data the chat saved on env (`pendingSavedData` holds this step's, not yet
+  // stored).
   // Entries whose targets no longer exist are silently skipped, mirroring the deleted-gadget
   // behavior elsewhere. `executionId` is the calling executeCodeMode run, minted into worktree
   // loopbacks so they are usable only from within that execution.
   getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>,
-                 executionId: string): object {
+                 executionId: string,
+                 pendingSavedData: ReadonlyMap<string, string> = new Map()): object {
     let caller: GatekeeperCaller = {from: "agent", chatId};
     // This must be a *plain* object: it becomes the loaded worker's `env`, and the loader's
     // serializer rejects anything else (including a null-prototype object) with DataCloneError.
@@ -3087,11 +3237,24 @@ class OverseerImpl implements AgentHooks {
           env[name] = stored.args;
           break;
         }
+        case "data":
+          // JSON text, which the harness parses: the smallest form to send (see
+          // MAX_SAVED_DATA_LENGTH).
+          env[name] = this.savedDataJson(chatId, name, pendingSavedData);
+          break;
         default:
           entry satisfies never;
       }
     }
     return env;
+  }
+
+  // The JSON of the chat's data name `name`: this step's, if it saved one, else the stored one.
+  savedDataJson(chatId: number, name: string, pending: ReadonlyMap<string, string>): string {
+    let json = pending.get(name) ??
+        this.storage.chatSavedData.get(chatSavedDataKey(chatId, name))?.json;
+    if (json === undefined) throw new Error("missing chatSavedData value");
+    return json;
   }
 
   // Which chat ID is each gadget's facet currently running from? Keyed by gadget ID; a gadget
@@ -3272,6 +3435,7 @@ class OverseerImpl implements AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        savedData?: {name: string, json: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
@@ -3407,6 +3571,9 @@ class OverseerImpl implements AgentHooks {
           }
         }
 
+        for (let {name, json} of step.savedData ?? []) {
+          this.storage.chatSavedData.put({chatId, name, json});
+        }
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
         return this.materializeChatChanges(chatId, undefined, {
           author,
@@ -5719,7 +5886,8 @@ class OverseerImpl implements AgentHooks {
       // (A user caller's chat is a slash command's, whose own chat event already shows it.)
       if (caller.from === "agent") {
         this.#getOrCreateCapturedActions(caller.chatId).actions.push(actionId);
-      } else if (caller.from === "gadget" && caller.chatId !== undefined && this.ownerId) {
+      } else if ((caller.from === "gadget" || caller.from === "view") &&
+                 caller.chatId !== undefined && this.ownerId) {
         let owner = this.users.get(this.users.idFromString(this.ownerId));
         let userMeta = await owner.getChatContext(null);
         this.addChatMessages(caller.chatId, this.gadgetAuthorFor(userMeta.profile),
@@ -5758,6 +5926,8 @@ class OverseerImpl implements AgentHooks {
     await this.observerLedger.authorizeObservation(
         gatekeeperId, description, caller, executionId, subresources => {
       if (hookId !== undefined) requireLiveHook(this, hookId);
+      // A view's chat can go while the checks above await.
+      requireLiveViewChat(this, caller);
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveAccess() : undefined;
 
@@ -5792,7 +5962,8 @@ class OverseerImpl implements AgentHooks {
         });
         return actionId;
       });
-      this.#associateAction(caller, actionId);
+      // A view's reads stay in the action log; only its actions are posted to its chat.
+      if (caller.from !== "view") this.#associateAction(caller, actionId);
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
@@ -6390,6 +6561,8 @@ class OverseerImpl implements AgentHooks {
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
+    // A person decides each of a view's actions: the view's code runs for every viewer, on load.
+    if (caller.from === "view") description = {...description, autoApprovable: false};
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
@@ -8208,6 +8381,97 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // What `name` resolves to in the chat's binding scope, as a checkpoint folds it: the seed, the
+  // active checkpoint's bindings, then the names the messages after it bind. Reads only, unlike
+  // prepareChatBindings.
+  resolveChatBinding(chatId: number, name: string): ChatBindingEntry | undefined {
+    let checkpoint = this.getActiveChatCompaction(chatId);
+    let seed = Object.entries(this.getChatAgentContext(chatId).bindings ?? {});
+    let bindings = new Map<string, ChatBindingEntry>([
+      ...seed.map(([seedName, id]): [string, ChatBindingEntry] =>
+          [seedName, {type: "workpiece", id}]),
+      ...checkpoint?.chatBindings ?? [],
+    ]);
+    foldChatBindings(this.storage.chats.list({
+      prefix: chatKeyPrefix(chatId),
+      start: chatKey(chatId, checkpoint?.compactedTo ?? 0),
+    }), bindings);
+    return bindings.get(name);
+  }
+
+  // The chat binding `name` as an `<inline-html env="...">` view reaches it (see
+  // Overseer.connectToChatBinding): saved data, a gadget's facet at the chat's version, or a
+  // session on a connection the user made, with the view as caller. `joinAs` counts what it
+  // returns toward the holder's session.
+  async openViewBinding(chatId: number, name: string, joinAs?: SessionKind): Promise<ViewBinding> {
+    this.getChatMetaOrThrow(chatId);
+    let entry = this.resolveChatBinding(chatId, name);
+    if (entry === undefined) throw new Error(`"${name}" is not a binding in this chat.`);
+    if (entry.type === "data") {
+      return {type: "data", json: this.savedDataJson(chatId, name, new Map())};
+    }
+    let id = entry.type === "workpiece" ? entry.id : undefined;
+    if (id !== undefined && this.storage.gadgets.get(id)?.type === "gadget") {
+      // A gadget pane gets this from getUiBundle(); the worker loads only materialized changes.
+      this.checkChatExistsAndMaterializeChanges(chatId);
+      let rpc = await this.getGadgetFacet(id, chatId, joinAs);
+      return {type: "gadget", rpc: this.#viewStub(rpc, chatId)};
+    }
+    // Only a connection the user made. A view never reaches a model, whose spend isn't recorded, a
+    // spawner, which starts agent turns, or an auto-provided service, which may spend credits or
+    // register lasting callbacks.
+    if (id !== undefined && this.storage.gatekeepers.get(id)?.creationSpec?.type === "gatekeeper") {
+      let session: RpcStub<any> = await this.openGatekeeperSession(
+          id, await this.getGatekeeperFacet(id), {from: "view", chatId});
+      let leave = joinAs ? this.joinSession(joinAs) : undefined;
+      return {type: "connection", session: this.#viewStub(session, chatId, leave)};
+    }
+    throw new Error(`"${name}" can't be used in a view.`);
+  }
+
+  // A view's root stub: each call through it, at any depth of property, is refused once the chat
+  // is gone, and disposing it disposes `stub` and ends `leave`'s session count, so the holder can't
+  // keep one without the other.
+  #viewStub(stub: RpcStub<any>, chatId: number, leave?: () => void): RpcStub<any> {
+    let chatMeta = this.storage.chatMeta;
+    // Each wrapper's own target, so a call passes its parent's stub, not the wrapper, as `this`.
+    let targets = new WeakMap<object, object>();
+    let wrap = (target: any, root: boolean): any => {
+      let proxy = new Proxy(target, {
+        get(member, prop) {
+          if (root && prop === Symbol.dispose) {
+            return () => {
+              leave?.();
+              member[Symbol.dispose]();
+            };
+          }
+          // `member` as the receiver, as in getGadgetFacet, where the proxy as receiver throws.
+          let value = Reflect.get(member, prop, member);
+          // A property of a stub is a stub of that path, which a call or a further property
+          // pipelines through: it gets the same wrapper, so its call is checked too.
+          if (typeof prop !== "string" || prop === "then" || typeof value !== "function") return value;
+          return wrap(value, false);
+        },
+        // Checked in a continuation, so the refusal rejects the promise the caller already holds.
+        apply(member, self, args) {
+          return Promise.resolve().then(() => {
+            if (!chatMeta.get(chatId)) throw new Error("This view's chat has been deleted.");
+            let receiver = typeof self === "object" || typeof self === "function" ? self : undefined;
+            return Reflect.apply(member, receiver ? targets.get(receiver) ?? receiver : undefined,
+                args);
+          });
+        },
+        getPrototypeOf() {
+          return RpcTarget.prototype;
+        },
+      });
+      targets.set(proxy, target);
+      return proxy;
+    };
+    // As in getGadgetFacet: workerd doesn't detect a proxy RpcTarget that it serializes.
+    return new NativeRpcStub(wrap(stub, true)) as RpcStub<any>;
+  }
+
   getChatAgentContext(chatId: number): AiChatAgentContext {
     return this.storage.chatContext.get(chatId) || {chatId};
   }
@@ -8384,6 +8648,8 @@ class OverseerImpl implements AgentHooks {
                call.toolName === "createExternalResource") &&
               call.input.bindingName !== undefined) {
             taken.add(call.input.bindingName);
+          } else if (call.toolName === "executeCode") {
+            for (let {name} of call.savedEnv ?? []) taken.add(name);
           }
         }
       } else if (msg.type === "connectionRequest") {
@@ -8629,6 +8895,9 @@ class OverseerImpl implements AgentHooks {
             if (call.output && !nameByTarget.has(call.output.gatekeeperId)) {
               nameByTarget.set(call.output.gatekeeperId, call.input.bindingName);
             }
+          } else if (call.toolName === "executeCode") {
+            // A name saved on env takes no target's name: another name for a binding is a copy.
+            for (let {name} of call.savedEnv ?? []) taken.add(name);
           }
         }
       } else if (msg.type === "connectionRequest") {
@@ -9565,9 +9834,10 @@ class OverseerImpl implements AgentHooks {
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
+                        savedEnv: SavedEnvScope,
                         onOutputText?: (delta: string) => void,
                         worktreeTurn?: WorktreeTurnAccess)
-      : Promise<string> {
+      : Promise<{log: string, saves: EnvSave[]}> {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
@@ -9592,6 +9862,13 @@ class OverseerImpl implements AgentHooks {
         overseerId: this.ctx.id.toString(),
       };
 
+      // The agent's env holds the chat's named bindings (see getEnvForAgent), less any the run
+      // can't carry (see #fitEnv).
+      let fitted = this.#fitEnv(chatId, bindings, savedEnv.pending);
+      let env = this.getEnvForAgent(chatId, fitted.bindings, executionId, savedEnv.pending);
+      let savedNames = Object.entries(fitted.bindings)
+          .filter(([, entry]) => entry.type === "data")
+          .map(([name]) => name);
       let workerDef: WorkerLoaderWorkerCode = {
         compatibilityDate: "2026-02-01",
         compatibilityFlags: [
@@ -9606,9 +9883,9 @@ class OverseerImpl implements AgentHooks {
         modules: {
           "harness.js": CODE_MODE_HARNESS,
           "agent.js": code,
+          "saved-env.js": `export default ${JSON.stringify(savedNames)};`,
         },
-        // The agent's env holds the chat's named bindings (see getEnvForAgent).
-        env: this.getEnvForAgent(chatId, bindings, executionId),
+        env,
         tails: [this.ctx.exports.CodeModeTailLoopback({props: tailProps})],
         globalOutbound: null,
       };
@@ -9628,10 +9905,11 @@ class OverseerImpl implements AgentHooks {
       }});
 
       let error: string | undefined;
+      let changes: EnvChange[] = [];
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
+        changes = await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -9658,11 +9936,16 @@ class OverseerImpl implements AgentHooks {
 
       if (error !== undefined) {
         log += `\n\nUncaught exception: ${error}`;
-      } else if (log === "") {
-        log = "(function succeeded with no output)";
       }
+      // The model reads what the run left out of env, what it saved, and why it refused any name.
+      let decided = this.#decideEnvSaves(chatId, bindings, savedEnv, changes);
+      let saves = decided.saves;
+      let notes = [...fitted.notes, ...decided.notes];
+      if (notes.length > 0) onOutputText?.(`\n${notes.join("\n")}`);
+      log = [log, ...notes].filter(part => part !== "").join("\n");
+      if (log === "") log = "(function succeeded with no output)";
 
-      return log;
+      return {log, saves};
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
       if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
@@ -9672,6 +9955,178 @@ class OverseerImpl implements AgentHooks {
       this.#codeModeResolvers.delete(executionId);
       this.#forgedRestoreTargets.delete(chatId);
     }
+  }
+
+  // The chat's bindings that fit in one run's env (see MAX_ENV_BYTES), and a note for each name
+  // left out to make them fit: saved data first, largest first, then agent callback arguments,
+  // largest first. A name left out is still saved, and a save that shrinks it lands as any other
+  // does (see #decideEnvSaves), so the chat can always come back under the limit.
+  #fitEnv(chatId: number, bindings: Record<string, ChatBindingEntry>,
+          pending: ReadonlyMap<string, string>)
+      : {bindings: Record<string, ChatBindingEntry>, notes: string[]} {
+    let total = 0;
+    let byValue: {name: string, size: number, data: boolean}[] = [];
+    for (let [name, entry] of Object.entries(bindings)) {
+      let size = this.#envEntrySize(chatId, name, entry, pending, serializedBytes);
+      total += size;
+      if (entry.type !== "workpiece") byValue.push({name, size, data: entry.type === "data"});
+    }
+    let leftOut = new Set<string>();
+    let notes: string[] = [];
+    for (let {name, size, data} of byValue.toSorted(
+        (a, b) => Number(b.data) - Number(a.data) || b.size - a.size)) {
+      if (total <= MAX_ENV_BYTES) break;
+      total -= size;
+      leftOut.add(name);
+      notes.push(`${shownName(name)} was left out of this run: with it, the run's env would be ` +
+          `past the platform's limit of 1 MiB.` + (data
+              ? ` It is still saved; set it to null, or save it smaller, to bring it back.`
+              : ""));
+    }
+    return {
+      bindings: Object.fromEntries(Object.entries(bindings).filter(([name]) => !leftOut.has(name))),
+      notes,
+    };
+  }
+
+  // What the binding `name` adds to a run's env, with each string measured by `measure`: its name,
+  // and its saved JSON, its callback's arguments, or a stub. #fitEnv measures it in serialized
+  // bytes and #decideEnvSaves in code units, which are at least half as many, so a chat that saves
+  // within MAX_SAVED_DATA_LENGTH stays within MAX_ENV_BYTES.
+  #envEntrySize(chatId: number, name: string, entry: ChatBindingEntry,
+                pending: ReadonlyMap<string, string>, measure: (text: string) => number): number {
+    return measure(name) + (
+        entry.type === "data" ? measure(this.savedDataJson(chatId, name, pending)) :
+        entry.type === "value" ?
+            envValueLength(this.#callbackArgs(chatId, entry.messageSequence), measure) :
+        OPAQUE_VALUE_LENGTH);
+  }
+
+  // An agent callback's stored arguments, or undefined if they are gone.
+  #callbackArgs(chatId: number, messageSequence: number): unknown[] | undefined {
+    return this.storage.agentCallbackArgs.get(chatKey(chatId, messageSequence))?.args;
+  }
+
+  // Decides each name a run changed on env (see plans/live-views.md, "Saving env"). A data name
+  // may be saved again; any other name in the turn's scope is refused. The harness ran beside the
+  // agent's code, so nothing it reports is trusted beyond its shape: each JSON text is measured
+  // and parsed here.
+  #decideEnvSaves(chatId: number, bindings: Record<string, ChatBindingEntry>,
+                  scope: SavedEnvScope, changes: EnvChange[])
+      : {notes: string[], saves: EnvSave[]} {
+    // What the run's env carries now, as #fitEnv counts it: every binding's name, and a data
+    // name's JSON, a callback's arguments, or a stub. Every save is charged against it, its name
+    // included, before it lands.
+    let lengths = new Map<string, number>();
+    let total = 0;
+    for (let [name, entry] of Object.entries(bindings)) {
+      let size = this.#envEntrySize(chatId, name, entry, scope.pending, codeUnits);
+      if (entry.type === "data") lengths.set(name, size);
+      total += size;
+    }
+    let notes: string[] = [];
+    let saves: EnvSave[] = [];
+    let aliased = new Set<string>();
+    // The harness reports names and reasons the agent's code chose, of any length, and the output
+    // is stored with the step, so it shows a long name clipped, each reason clipped, and only the
+    // first refusals.
+    let refused = 0;
+    let cap = MAX_SAVED_DATA_LENGTH.toLocaleString("en-US");
+    let overCap = `it would take what this chat's code carries in env, its names and saved data ` +
+        `and any agent callback arguments, past ${cap} code units; save less, or set a name you ` +
+        `no longer need to null`;
+    for (let change of Array.isArray(changes) ? changes : []) {
+      let name = change?.name;
+      if (typeof name !== "string") continue;
+      let shown = shownName(name);
+      let refuse = (why: string) => {
+        if (++refused <= MAX_REFUSAL_NOTES) {
+          notes.push(`${shown} was not saved: ${why.length > 300 ? `${why.slice(0, 300)}…` : why}.`);
+        }
+      };
+      try {
+        validateBindingName(name);
+      } catch (err) {
+        refuse(err instanceof Error ? err.message : `${err}`);
+        continue;
+      }
+      let isData = lengths.has(name);
+      if (change.deleted === true) {
+        if (isData) {
+          notes.push(`${shown} is still saved: a saved name can't be removed; save it again to ` +
+              `replace it.`);
+        }
+        continue;
+      }
+      // `bindings` is a plain object, so only its own names count: a reported name can't reach
+      // Object.prototype's.
+      let ownEntry = (key: string) => Object.hasOwn(bindings, key) ? bindings[key] : undefined;
+      let entry = ownEntry(name);
+      if (name === GIT_BINDING_NAME || scope.claimed.has(name) || aliased.has(name) ||
+          (entry !== undefined && entry.type !== "data")) {
+        refuse(`${shown} is one of this chat's bindings; save it under another name`);
+        continue;
+      }
+      if (typeof change.alias === "string") {
+        let alias = change.alias;
+        let target = isBindingName(alias) ? ownEntry(alias) : undefined;
+        let shownAlias = shownName(alias);
+        // Another name carries a stub into every run, under a name of its own.
+        let size = name.length + OPAQUE_VALUE_LENGTH;
+        if (isData) {
+          refuse(`${shown} holds saved data, and stays data; save ${shownAlias} under a new name`);
+        } else if (target?.type === "value") {
+          // A second name would carry the same arguments into every run again, and no view
+          // reaches them.
+          refuse(`${shownAlias} holds agent callback arguments; read them as ${shownAlias}, or ` +
+              `save what you need from them as data`);
+        } else if (target === undefined || target.type === "data") {
+          refuse(`${shown} is neither JSON data nor another name for one of this chat's bindings`);
+        } else if (total + size > MAX_SAVED_DATA_LENGTH) {
+          refuse(overCap);
+        } else {
+          total += size;
+          saves.push({name, alias, entry: target});
+          aliased.add(name);
+          notes.push(`Saved ${shown} (another name for ${shownAlias}) for views and later code.`);
+        }
+        continue;
+      }
+      if (typeof change.problem === "string") {
+        refuse(`${change.problem}, so ${shown} is neither JSON data nor another name for one of ` +
+            `this chat's bindings`);
+        continue;
+      }
+      if (typeof change.length === "number") {
+        refuse(`${shown} is ${change.length} code units as JSON, and a chat's saved data holds ` +
+            `at most ${cap}`);
+        continue;
+      }
+      let json = change.json;
+      if (typeof json !== "string") continue;
+      try {
+        JSON.parse(json);
+      } catch {
+        refuse("its JSON does not parse");
+        continue;
+      }
+      let size = name.length + json.length;
+      let before = lengths.get(name) ?? 0;
+      let next = total - before + size;
+      // A save that shrinks a name always lands, so a chat over the cap can come back under it.
+      if (next > MAX_SAVED_DATA_LENGTH && size > before) {
+        refuse(overCap);
+        continue;
+      }
+      total = next;
+      lengths.set(name, size);
+      saves.push({name, json});
+      notes.push(`Saved ${shown} (data) for views and later code.`);
+    }
+    if (refused > MAX_REFUSAL_NOTES) {
+      notes.push(`${refused - MAX_REFUSAL_NOTES} more names were not saved.`);
+    }
+    return {notes, saves};
   }
 
   consumeCapturedActions(chatId: number)
@@ -12799,6 +13254,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
+  async connectToChatBinding(chatId: number, name: string): Promise<ViewBinding> {
+    // Counted toward the caller's session for as long as it lives, as the stub
+    // GadgetClient.connectToGadget returns is.
+    return this.impl.openViewBinding(chatId, name, this.#mintedCapabilityKind());
+  }
+
   #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
@@ -13040,6 +13501,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
         {prefix: chatKeyPrefix(chatId)}))) {
       this.impl.storage.pendingAgentCalls.deleteRecord(entry);
+    }
+
+    for (let entry of Array.from(this.impl.storage.chatSavedData.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatSavedData.deleteRecord(entry);
     }
 
     // Clean up the chat's model-facing snapshots.
@@ -13635,6 +14101,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async getChatMessage(_chatId: number, _sequence: number): Promise<AiChatMessage | undefined> { this.#deny(); }
+  async connectToChatBinding(_chatId: number, _name: string): Promise<ViewBinding> { this.#deny(); }
   async listSlashCommands(): Promise<SlashCommandChoice[]> { this.#deny(); }
   async subscribeToChat(
       _subscriber: RpcStub<AiChatSubscriber>, _startAfter?: Date): Promise<RpcStub<{}>> {
@@ -14193,6 +14660,14 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
   return record;
 }
 
+// A view's session reads and writes only while its chat exists: every call of the session, and of
+// the capabilities it returns, lands on its queue (see ApprovalQueueImpl).
+function requireLiveViewChat(impl: OverseerImpl, caller: GatekeeperCaller): void {
+  if (caller.from === "view" && !impl.storage.chatMeta.get(caller.chatId)) {
+    throw new Error("This view's chat has been deleted.");
+  }
+}
+
 // The callback startHook returns to each firing: a wrapper that re-resolves the stored callback
 // through requireLiveHook on every call, so it dies with the hook -- the per-firing revocation
 // the session contract on Gatekeeper.bindHook documents. The stored record.callback itself never
@@ -14258,6 +14733,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    requireLiveViewChat(this.impl, this.caller);
     return this.impl.authorizeObservation(
         this.gatekeeperId, description, this.caller, this.executionId, this.hookId);
   }
@@ -14268,6 +14744,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    requireLiveViewChat(this.impl, this.caller);
     return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
   }
 
@@ -14275,6 +14752,8 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    // A hook outlives the view, and bindHook would credit it to the workspace's first gadget.
+    if (this.caller.from === "view") throw new Error("A view can't bind hooks.");
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }

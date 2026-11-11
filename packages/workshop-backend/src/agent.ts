@@ -1,4 +1,4 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, type SavedEnvName, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -40,7 +40,7 @@ import type {
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
   estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
+  foldProposedChanges, foldSavedEnv, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import {
@@ -95,6 +95,24 @@ export interface AgentStepChange {
    */
   pin?: {gadgetId: WorkpieceId, baseCommit: string};
 }
+
+/**
+ * What an executeCode run needs from its turn to save names on `env` (see plans/live-views.md,
+ * "Saving env"): the JSON this step saved and has not stored yet, and the names the turn's pending
+ * connection requests claim.
+ */
+export interface SavedEnvScope {
+  pending: ReadonlyMap<string, string>;
+  claimed: ReadonlySet<string>;
+}
+
+/**
+ * A name an executeCode run saved on `env`: JSON data, or another name for the chat binding
+ * `alias`, whose entry it shares.
+ */
+export type EnvSave =
+  | {name: string, json: string}
+  | {name: string, alias: string, entry: ChatBindingEntry};
 
 /**
  * The agent turn's worktree state, as the programmatic Worktree binding needs it. The binding is
@@ -255,6 +273,10 @@ async function describeBinding(
       case "value":
         return `${envName} is the arguments array of a call delivered to this agent (one ` +
             `element per parameter of the call). Any RPC stubs among them may be called directly.`;
+      case "data":
+        return `${envName} is JSON data this chat's executeCode saved with \`${envName} = ` +
+            `value\`. Saving it again replaces it, and a view whose tag lists it reads it with ` +
+            `\`await ${envName}\`.`;
       default:
         return entry satisfies never;
     }
@@ -342,7 +364,8 @@ export interface AgentHooks {
    * single "changes" message carrying the step's gadget creations (with the blueprint release
    * each was created from, if any), binding additions, and worktree head advancements (stamping
    * pending gadget and binding records, making created worktrees permanent, and advancing
-   * worktree heads), and retire the rows. The step's effects
+   * worktree heads), write the JSON of the data names the step saved on `env`, and retire the
+   * rows. The step's effects
    * are thus durable iff its transcript record is; a crash mid-step loses both, and the resumed
    * model re-runs the step against unmodified content. Returns whether a "changes" message was
    * written (change-ID numbering counts messages).
@@ -367,6 +390,7 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        savedData?: {name: string, json: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -546,13 +570,15 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. Returns the run's log and
+   * the names it saved on `env`, which join the chat's bindings once runAgent records them.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
+                   savedEnv: SavedEnvScope,
                    onOutputText?: (delta: string) => void,
-                   worktreeTurn?: WorktreeTurnAccess): Promise<string>;
+                   worktreeTurn?: WorktreeTurnAccess): Promise<{log: string, saves: EnvSave[]}>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
@@ -728,13 +754,49 @@ Spending on food rose 18% in October, mostly eating out.
 \`\`\`
 
 * Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
-* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
-* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`, and \`env\` when the tag has the attribute below.
+* A view has no network. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
 * The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
 * \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
 * For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
 * The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
 * A view keeps no state. Something that must remember things between visits belongs in a Gadget.
+
+## Views of data from code
+
+When a view's data comes from code, such as a Gadget, a connection or values you work out, read or work out the data in code you run with the \`executeCode\` tool, and save it on \`env\`. Once the call returns, list the name in the view's \`env\` attribute and read it there, so the data never passes through your answer: never retype values into the view's code. The view runs as soon as its block closes, before any tool call in the same answer, so save first and write the view after. Call the tool; never paste its code into your answer.
+
+\`\`\`
+export default async function(self, env) {
+  env.FOOD = { limit: 120, weeks: [[1, 96], [2, 132], [3, 88], [4, 141]] };
+}
+\`\`\`
+
+Then, in your answer:
+
+\`\`\`
+Spending on food rose 18% in October, mostly eating out.
+
+<inline-html env="FOOD">
+<title>Food spending by week</title>
+<h3>Food spending by week</h3>
+<div id="weeks"></div>
+<script type="module">
+  const { limit, weeks } = await env.FOOD;
+  const list = document.getElementById("weeks");
+  for (const [week, total] of weeks) {
+    const bar = list.appendChild(document.createElement("button"));
+    bar.textContent = \`Week \${week}: \${total} of \${limit}\`;
+    bar.onclick = () => agent.send(\`Show me week \${week} in detail.\`);
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* \`env.NAME = value\` in \`executeCode\` saves \`NAME\` for this chat once the code returns: JSON data, or another name for one of the chat's bindings, as in \`env.SALES = env.salesLog\`. The tool's output names what it saved, and says why it refused anything else. Saving a data name again, or changing it in place, replaces it; a name is never removed. A chat's saved data, with any agent callback arguments it holds, comes to at most 400,000 characters of JSON, and no saved name may be one of its bindings.
+* \`<inline-html env="A,B">\` gives the view's code an \`env\` with just those names: \`await env.A\` for data you saved, \`env.A.rpc.method()\` for a Gadget and \`env.A.method()\` for a connection, whether saved under a name or listed by its own. A view reaches no models, agent spawners, auto-provided services such as web search, worktrees, \`GIT\` or a Gadget's \`exports\`: read those with \`executeCode\` and save the results as data. A connection call uses that connection's own account, whoever views the chat, and each write waits as an action in the chat until someone approves it.
+* In a view with \`env\`, show data with \`textContent\`: \`innerHTML\` (except \`= ""\` to clear), \`insertAdjacentHTML\` and the other ways to parse a string as HTML throw. Make SVG elements with \`document.createElementNS("http://www.w3.org/2000/svg", name)\` and \`setAttribute\`.
+* Code that runs on load must only read, and no code may poll or call in a loop.
 
 # Writing Gadgets
 
@@ -1337,6 +1399,8 @@ Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's ser
 
 When the user asks you to just do a task that can be done with these bindings, you should use executeCode to perform the task, instead of adding code to a gadget to do it.
 
+The code can also save data on \`env\` for a view in your answer and for later code, as in \`env.SALES = rows\` (see "Live views").
+
 ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
@@ -1349,6 +1413,8 @@ The 'env' object contains this chat's named bindings:
 * Each binding listed in the system prompt. A Gadget's binding has an \`rpc\` property, an RPC stub pointing at the Gadget's server-side Durable Object (read the Gadget's server code to learn what RPC methods it exposes), and an \`exports\` property that exports the Gadget as a file (use \`describeBinding\` to learn its API).
 * Each resource a user grants in a message, shown as \`[Resource Title](env.SOME_NAME)\`.
 * Each worktree you create with \`createWorktree\`, under the name you chose.
+
+The code can also save JSON data on \`env\` for later code, as in \`env.SALES = rows\`; each run's output says what it saved.
 
 ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
@@ -2563,6 +2629,7 @@ async function runAgentPass(
                   break;
                 }
                 case "executeCode":
+                  foldSavedEnv(chatBindings, toolCall.savedEnv ?? []);
                   toolOutput = {text: toolCall.output!};
                   break;
                 case "giveUp":
@@ -3061,6 +3128,11 @@ async function runAgentPass(
   // drops it (the commit objects it named stay -- dangling and harmless).
   let pendingWorktreeCommits:
       {worktreeId: WorkpieceId, commit: string, previousHead: string}[] = [];
+
+  // The JSON of each data name this step saved on `env`, drained into the barrier's `savedData`:
+  // a save is durable iff the executeCode call that made it is. Later calls in the step read it
+  // through executeCodeMode (see SavedEnvScope).
+  let pendingSavedData = new Map<string, string>();
 
   // The Worktree binding's view of this turn (see the interface doc): closures over the same
   // session state the file tools use, so binding operations and tool operations see one
@@ -3680,7 +3752,8 @@ async function runAgentPass(
             throw new Error(`There is no binding named "${source}" in your env.`);
           }
           if (sourceEntry.type !== "workpiece") {
-            throw new Error(`env.${source} holds agent callback arguments; it cannot be bound ` +
+            throw new Error(`env.${source} holds ${sourceEntry.type === "data"
+                ? "data saved from code" : "agent callback arguments"}; it cannot be bound ` +
                 `into a gadget.`);
           }
           let bindingName = name ?? source;
@@ -3920,15 +3993,29 @@ async function runAgentPass(
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
-          let output = await hooks.executeCodeMode(
+          let {log, saves} = await hooks.executeCodeMode(
               chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+              {pending: pendingSavedData, claimed: claimedNames},
               delta => emitStreamEvent({
                 type: "toolOutputDelta",
                 toolCallId,
                 delta,
               }),
               worktreeTurnAccess);
-          return toolResult(`${output}`, {output: `${output}`} as Partial<AiToolCall>);
+          // The names join the chat's bindings now, as createGadget's does, and the record that
+          // stamps them lands with their JSON at the barrier.
+          for (let save of saves) {
+            if ("json" in save) {
+              chatBindings.set(save.name, {type: "data"});
+              pendingSavedData.set(save.name, save.json);
+            } else {
+              chatBindings.set(save.name, save.entry);
+            }
+          }
+          let savedEnv: SavedEnvName[] = saves.map(save =>
+              "alias" in save ? {name: save.name, alias: save.alias} : {name: save.name});
+          return toolResult(log, {output: log, ...savedEnv.length > 0 && {savedEnv}} as
+              Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -4270,9 +4357,11 @@ async function runAgentPass(
           pendingWorktreeCommits = [];
           let blueprintMerges = pendingBlueprintMerges;
           pendingBlueprintMerges = [];
+          let savedData = [...pendingSavedData].map(([name, json]) => ({name, json}));
+          pendingSavedData = new Map();
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
-               worktreeCommits, blueprintMerges},
+               worktreeCommits, blueprintMerges, savedData},
               message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
             ++nextChangeId;
           }

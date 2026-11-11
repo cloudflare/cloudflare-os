@@ -1,6 +1,6 @@
 import {
   COMPACTION_TRIGGER_RATIO, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage,
-  type AiModelConfig, type ChatGadgetPinRecord,
+  type AiModelConfig, type ChatGadgetPinRecord, type SavedEnvName,
 } from "@gadgets/workshop-shared/api";
 import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
@@ -320,20 +320,27 @@ export function findCompactionBoundary(
 }
 
 /**
- * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
- * layer. `previous` already contains it, apart from the always-available resources the chat gained
- * since.
+ * Adds the names an executeCode call saved on `env` (see plans/live-views.md, "Saving env"): a
+ * data name, unless the map has the name; another name, as a copy of its target's entry. The
+ * call's checks already refused any other name in scope, so a name the map has here is the data
+ * name itself, saved again, which keeps its place.
  */
-export function buildCompactionState(
-    messages: AiChatMessage[], compactedTo: number,
-    initialBindings: [string, ChatBindingEntry][],
-    previous: CompactionCheckpoint | undefined)
-    : Omit<CompactionCheckpoint, "chatId" | "compactedTo" | "summary"> {
-  let compacted = messages.filter(message => message.sequence < compactedTo);
-  let chatBindings = new Map([...initialBindings, ...previous?.chatBindings ?? []]);
-  let nextChangeId = previous?.nextChangeId ?? 0;
+export function foldSavedEnv(chatBindings: Map<string, ChatBindingEntry>, saved: SavedEnvName[]) {
+  for (let {name, alias} of saved) {
+    if (chatBindings.has(name)) continue;
+    let entry: ChatBindingEntry | undefined =
+        alias === undefined ? {type: "data"} : chatBindings.get(alias);
+    if (entry !== undefined) chatBindings.set(name, entry);
+  }
+}
 
-  for (let message of compacted) {
+/**
+ * Adds the names `messages` bind to `chatBindings`, in log order: the fold a compaction
+ * checkpoint stores, and the one a view's lookup of a name runs (OverseerImpl.resolveChatBinding).
+ */
+export function foldChatBindings(
+    messages: Iterable<AiChatMessage>, chatBindings: Map<string, ChatBindingEntry>): void {
+  for (let message of messages) {
     if (message.type === "message") {
       for (let capsule of message.capsules ?? []) {
         if (capsule.bindingName !== undefined && !chatBindings.has(capsule.bindingName)) {
@@ -350,6 +357,8 @@ export function buildCompactionState(
         } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.gatekeeperId});
+        } else if (call.toolName === "executeCode") {
+          foldSavedEnv(chatBindings, call.savedEnv ?? []);
         }
       }
     } else if (message.type === "agentCallback") {
@@ -374,13 +383,27 @@ export function buildCompactionState(
           chatBindings.set(bindingName, {type: "workpiece", id: worktreeId});
         }
       }
-      ++nextChangeId;
     }
   }
+}
 
+/**
+ * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
+ * layer. `previous` already contains it, apart from the always-available resources the chat gained
+ * since.
+ */
+export function buildCompactionState(
+    messages: AiChatMessage[], compactedTo: number,
+    initialBindings: [string, ChatBindingEntry][],
+    previous: CompactionCheckpoint | undefined)
+    : Omit<CompactionCheckpoint, "chatId" | "compactedTo" | "summary"> {
+  let compacted = messages.filter(message => message.sequence < compactedTo);
+  let chatBindings = new Map([...initialBindings, ...previous?.chatBindings ?? []]);
+  foldChatBindings(compacted, chatBindings);
   return {
     chatBindings: [...chatBindings],
-    nextChangeId,
+    nextChangeId: (previous?.nextChangeId ?? 0) +
+        compacted.filter(message => message.type === "changes").length,
     ...foldCompactedCode(messages, compactedTo, previous),
   };
 }

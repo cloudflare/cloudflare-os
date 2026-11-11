@@ -6268,7 +6268,8 @@ function ChatInterface({
                                   {msg.author.type === "agent" ? (
                                     <AgentAnswer
                                       message={msg.message}
-                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef,
+                                        chatEnv: selectedChatId === null ? undefined : { overseer, chatId: selectedChatId } }}
                                       streaming={entry.streaming === true}
                                     />
                                   ) : (

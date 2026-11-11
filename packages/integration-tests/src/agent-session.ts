@@ -2,7 +2,7 @@ import type { RpcPromise, RpcStub } from "capnweb";
 import type {
   ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
   AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
-  Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
+  Overseer, PublicApi, ViewBinding, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
@@ -117,6 +117,11 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   /** Open the management app of the user's account with `vendorId`, as its Workshop page does. */
   openGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame>;
   openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
+  /**
+   * Open the chat binding `name` as an `<inline-html env="...">` view in the chat does (see
+   * Overseer.connectToChatBinding). Dispose the result when the view is done with it.
+   */
+  connectToChatBinding(name: string): Promise<Awaited<RpcPromise<ViewBinding>>>;
   acceptChanges(): Promise<void>;
   /** Rewind the chat's proposed changes from the given "changes" message on (see Overseer). */
   revertChanges(revertFrom: number): Promise<void>;
@@ -728,6 +733,13 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const chatId = this.#chatId;
     if (chatId === undefined) throw new Error("The session has no chat branch");
     return { client: await this.#workspace.getGadget(id), chatId };
+  }
+
+  async connectToChatBinding(name: string): Promise<Awaited<RpcPromise<ViewBinding>>> {
+    await this.#ready();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat");
+    return await this.#workspace.connectToChatBinding(chatId, name);
   }
 
   async acceptChanges(): Promise<void> {

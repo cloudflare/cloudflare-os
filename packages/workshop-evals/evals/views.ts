@@ -8,8 +8,11 @@ import type { RenderedView, SeriesMark } from "../src/view-host.js";
 // prose (agent.ts, "Workspaces" and "Live views in your answers"), and whether its views keep the
 // rules there.
 
-/** A closed view the agent wrote this turn, and the sequence of the message it is in. */
-export type TurnView = { sequence: number; html: string };
+/**
+ * A closed view the agent wrote this turn, and the sequence of the message it is in. `env` is the
+ * names its tag lists, the only ones it reaches; absent, the view has no `env`.
+ */
+export type TurnView = { sequence: number; html: string; env?: readonly string[] };
 
 function agentMessages(messages: readonly AiChatMessage[]) {
   return messages.flatMap(message =>
@@ -26,7 +29,9 @@ function turnViews(verifier: EvalVerifier): { views: TurnView[]; open: string[] 
   const open: string[] = [];
   for (const message of agentMessages(verifier.messages)) {
     for (const segment of parseInlineHtmlBlocks(message.message)) {
-      if (segment.kind === "block") views.push({ sequence: message.sequence, html: segment.html });
+      if (segment.kind === "block") {
+        views.push({ sequence: message.sequence, html: segment.html, ...segment.env !== undefined && { env: segment.env } });
+      }
       else if (segment.kind === "open") open.push(segment.text.slice(0, 200));
     }
   }
@@ -112,7 +117,7 @@ export async function checkView(
   const views = found.some(other => same(other, view)) ? found : [view];
   let bodyRan = false;
   for (const [index, each] of views.entries()) {
-    await using rendered = await verifier.openView(each.html);
+    await using rendered = await verifier.openView(each.html, each.env);
     if (!bodyRan && same(each, view)) {
       bodyRan = true;
       await body(rendered);
@@ -139,6 +144,20 @@ function classicScripts(html: string): string[] {
 // "view-runs" also counts any error it causes.
 async function checkViewRules(
     verifier: EvalVerifier, view: TurnView, rendered: RenderedView, suffix: string): Promise<void> {
+  if (view.env !== undefined) {
+    // A view runs as soon as its block closes, before its own message's tool calls, so nothing
+    // it lists may be created or saved from its own message on.
+    const env = view.env;
+    await verifier.check(`view-comes-after-its-gadgets${suffix}`, async () => {
+      const late = agentMessages(verifier.messages).filter(message => message.sequence >= view.sequence)
+        .flatMap(message => (message.toolCalls ?? []).flatMap(call => call.error !== undefined ? []
+          : call.toolName === "createGadget" || call.toolName === "createWorktree" ||
+            call.toolName === "createExternalResource" ? [call.input.bindingName]
+          : call.toolName === "executeCode" ? (call.savedEnv ?? []).map(saved => saved.name) : [])
+          .filter(name => env.includes(name)).map(name => ({ sequence: message.sequence, name })));
+      return { pass: late.length === 0, evidence: asEvidence({ viewSequence: view.sequence, env, late }) };
+    });
+  }
   await verifier.check(`view-code-is-in-module-scripts${suffix}`, async () => {
     const classic = classicScripts(view.html);
     return { pass: classic.length === 0, evidence: asEvidence(classic) };

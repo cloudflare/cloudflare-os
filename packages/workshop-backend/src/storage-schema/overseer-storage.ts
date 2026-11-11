@@ -479,6 +479,14 @@ export type GatekeeperCaller = {
    * firings carried it.
    */
   gadgetId?: WorkpieceId;
+} | {
+  /**
+   * An `<inline-html env="...">` view in the chat, through Overseer.connectToChatBinding: its
+   * observations count for its chat, its actions never auto-approve and are posted to the chat,
+   * it binds no hooks, and its calls end with its chat (see plans/live-views.md).
+   */
+  from: "view";
+  chatId: number;
 };
 
 /**
@@ -750,12 +758,14 @@ export type AiChatAgentContext = {
 
 /**
  * One entry of the chat's binding map: what a name in the agent's executeCode `env` resolves to.
- * Either a workpiece (a gadget or gatekeeper -- the overseer distinguishes at env-build time) or
- * the value arguments of an agent callback.
+ * A workpiece (a gadget or gatekeeper -- the overseer distinguishes at env-build time), the value
+ * arguments of an agent callback, or JSON data the chat's executeCode saved on `env` (its text is
+ * in `chatSavedData`; see plans/live-views.md, "Saving env").
  */
 export type ChatBindingEntry =
   | { type: "workpiece"; id: WorkpieceId }
-  | { type: "value"; messageSequence: number };
+  | { type: "value"; messageSequence: number }
+  | { type: "data" };
 
 /**
  * Stores replay state for one compacted chat prefix. A chat keeps every checkpoint it has
@@ -1060,6 +1070,17 @@ export function chatChangeClientKey(chatId: number, userId: string, clientId: st
 }
 
 /**
+ * The JSON text the chat's executeCode last saved under a data name (a `{type: "data"}` chat
+ * binding). One record per name: saving the name again replaces it.
+ */
+export type ChatSavedDataRecord = {chatId: number, name: string, json: string};
+
+/** Primary key of a ChatSavedDataRecord. Under chatKeyPrefix(chatId), as other chat records are. */
+export function chatSavedDataKey(chatId: number, name: string): string {
+  return chatKeyPrefix(chatId) + name;
+}
+
+/**
  * The straggler bridge's record of a chat's most recent content-preserving generation close (a
  * merge's epoch reset; see Overseer.submitCodeChange and ChatCodeBase.prior). Destructive bumps
  * delete it -- their closed stream is not bridgeable.
@@ -1235,7 +1256,7 @@ export type ObserverContext =
  */
 export function observerContextOf(caller: GatekeeperCaller): ObserverContext | undefined {
   switch (caller.from) {
-    case "agent": return {type: "chat", chatId: caller.chatId};
+    case "agent": case "view": return {type: "chat", chatId: caller.chatId};
     case "user":
       return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "workspace"};
     case "gadget":
@@ -1748,6 +1769,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // Keyed by chatId.sequence matching the agentCallback chat message.
       agentCallbackArgs: collection<{chatId: number, sequence: number, args: unknown[]}>()({
         primaryKey: (entry) => chatKey(entry.chatId, entry.sequence),
+      }),
+
+      // The JSON of each data name the chat's executeCode saved on `env`, written by the step's
+      // barrier and kept apart from the chat messages, as callback arguments are. Keyed by
+      // chatSavedDataKey.
+      chatSavedData: collection<ChatSavedDataRecord>()({
+        primaryKey: (entry) => chatSavedDataKey(entry.chatId, entry.name),
       }),
 
       // Calls delivered to a callable agent that have not yet been appended to its chat log.

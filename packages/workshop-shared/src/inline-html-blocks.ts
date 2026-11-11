@@ -3,6 +3,7 @@
 // Workshop lays out a message with it, and the evals find the views an answer shows with it.
 
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { validateBindingName } from "./api";
 
 /** One closed `<inline-html>` block of an agent answer. */
 export type InlineHtmlBlock = {
@@ -14,7 +15,14 @@ export type InlineHtmlBlock = {
   /** The text of the block's `<title>` element, if it has one. */
   title?: string;
 
-  /** Why the block must not run: it has nothing but a title. */
+  /**
+   * The names the opening tag's `env` attribute lists, as in `<inline-html env="A, B">`: the only
+   * names the view's code may read from `env`. Absent without the attribute; then the view has no
+   * `env`.
+   */
+  env?: string[];
+
+  /** Why the block must not run: it has nothing but a title, or its `env` lists a bad name. */
   error?: string;
 };
 
@@ -28,14 +36,33 @@ export type InlineHtmlSegment =
    * closed the block. `text` runs from the tag to the end of the answer. `html` is the block's
    * HTML so far, which is always the start of its `html` once it closes.
    */
-  | { kind: "open"; text: string; html: string; title?: string };
+  | { kind: "open"; text: string; html: string; title?: string; env?: string[] };
 
 const CLOSE_TAG = "</inline-html>";
 
 // A tag counts only alone on its line, with no indent, outside a code block, so prose and
-// examples that mention it stay prose.
-const OPEN = /^<inline-html>[ \t]*$/;
+// examples that mention it stay prose. The opening tag may carry one attribute, `env` in double
+// quotes.
+const OPEN = /^<inline-html(?:[ \t]+env="([^"]*)")?>[ \t]*$/;
 const CLOSE = /^<\/inline-html>[ \t]*$/;
+
+// The names an `env` attribute lists, each once, or why one of them can't be read in a view.
+function envNames(value: string): {env: string[]; error?: string} {
+  let env = [...new Set(value.split(",").map(name => name.trim()).filter(name => name !== ""))];
+  for (let name of env) {
+    // A view awaits `env.NAME`, and an `env.then` would make `env` itself look like a promise.
+    if (name === "then") {
+      return {env, error: "This view's `env` lists then, which a view can't read."};
+    }
+    try {
+      validateBindingName(name);
+    } catch (err) {
+      let why = err instanceof Error ? err.message : `${err}`;
+      return {env, error: `This view's \`env\` lists a bad name. ${why}`};
+    }
+  }
+  return {env};
+}
 
 // The top-level code blocks of `text` from `from` to `to`, as offsets into `text`, as the chat
 // renders that prose: the Workshop draws each part of an answer's prose as its own Markdown
@@ -67,10 +94,15 @@ function splitTitle(html: string): {title: string | undefined; rest: string} {
   };
 }
 
-function closedBlock(html: string): InlineHtmlBlock {
+function closedBlock(html: string, attribute: string | undefined): InlineHtmlBlock {
   let block: InlineHtmlBlock = {kind: "block", html};
   let {title, rest} = splitTitle(html);
   if (title !== undefined) block.title = title;
+  if (attribute !== undefined) {
+    let {env, error} = envNames(attribute);
+    block.env = env;
+    if (error !== undefined) block.error = error;
+  }
   if (rest.trim() === "") block.error = "This view has no content.";
   return block;
 }
@@ -123,6 +155,7 @@ export function parseInlineHtmlBlocks(
       line = nextLineAt(lineEnd);
       continue;
     }
+    let attribute = OPEN.exec(text.slice(line, lineEnd))?.[1];
 
     if (prose < line) segments.push({kind: "text", text: text.slice(prose, line), start: prose});
     let body = nextLineAt(lineEnd);
@@ -134,11 +167,17 @@ export function parseInlineHtmlBlocks(
       let rest = text.slice(line);
       let {title} = splitTitle(rest);
       let html = openHtml(text.slice(body));
-      segments.push(title === undefined ? {kind: "open", text: rest, html} : {kind: "open", text: rest, html, title});
+      // A bad list shows as the closed block's error; until then the view gets no env.
+      let names = attribute === undefined ? undefined : envNames(attribute);
+      segments.push({
+        kind: "open", text: rest, html,
+        ...title !== undefined && {title},
+        ...names !== undefined && names.error === undefined && {env: names.env},
+      });
       return segments;
     }
 
-    segments.push(closedBlock(text.slice(body, close).trim()));
+    segments.push(closedBlock(text.slice(body, close).trim(), attribute));
     prose = lineEndAt(close);
     line = nextLineAt(prose);
     code = undefined;
