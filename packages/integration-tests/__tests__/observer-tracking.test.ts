@@ -136,16 +136,21 @@ async function addCollaborator(ws: Workspace, grant: CollaboratorGrant = "worksp
 
 /**
  * The collaborator opens the workspace, and gets `gadgetId` when given -- where a collaborator
- * granted individual gadgets is verified -- choosing their account at every prompt.
+ * granted individual gadgets is verified -- choosing their account at every prompt. With `stay`,
+ * the workspace session stays open (a read checks only collaborators holding one) until `session`
+ * is disposed.
  */
-async function collaboratorOpens(bob: Collaborator, workspaceId: string, gadgetId?: WorkpieceId)
-    : Promise<{ recorder: ObserverConfigRecorder; error?: Error }> {
+async function collaboratorOpens(bob: Collaborator, workspaceId: string, gadgetId?: WorkpieceId,
+                                 stay?: true)
+    : Promise<{ recorder: ObserverConfigRecorder; error?: Error; session?: Disposable }> {
   const recorder = new ObserverConfigRecorder().alwaysChoose(bob.account.id, MAX_OBSERVER_PROMPTS);
   const callback = stubFor(recorder);
   try {
-    using opened = await bob.api.openWorkspace(workspaceId, undefined, callback);
+    const opened = await bob.api.openWorkspace(workspaceId, undefined, callback);
+    using stack = new DisposableStack();
+    stack.use(opened);
     if (gadgetId !== undefined) (await opened.getGadget(gadgetId, callback))[Symbol.dispose]();
-    return { recorder };
+    return { recorder, session: stay ? stack.move() : undefined };
   } catch (error) {
     return { recorder, error: error as Error };
   } finally {
@@ -168,7 +173,8 @@ it.concurrent("a binding reporting subresources from creation checks reads and a
   await connectAndRead(ws, legacyUrl, []);
   using bob = await addCollaborator(ws);
 
-  const first = await collaboratorOpens(bob, ws.gadgetId);
+  const first = await collaboratorOpens(bob, ws.gadgetId, undefined, true);
+  using _bobOnline = first.session;
   expect(first.error).toBeUndefined();
   // The reporting connection is asked about under the same connection ID used by its binding.
   expect(first.recorder.calls[0]!.map(need => need.gatekeeperId)).toContain(reportingId);
@@ -198,6 +204,41 @@ it.concurrent("a binding reporting subresources from creation checks reads and a
   // A collaborator who can read everything recorded is admitted.
   using carol = await addCollaborator(ws);
   expect((await collaboratorOpens(carol, ws.gadgetId)).error).toBeUndefined();
+});
+
+it.concurrent("a collaborator retaining only a direct gatekeeper session is still checked by reads",
+    async () => {
+  using publicApi = connect(harness.url);
+  using ws = await newWorkspace(publicApi);
+  const url = freshThingUrl("retained-session");
+  await reportSubresources(url);
+  using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
+  if (!reporting) throw new Error(`Failed to connect ${url}`);
+  const reportingId = await reporting.getId();
+  using ownerSession = await reporting.openSession() as RpcStub<TestSession>;
+  using bob = await addCollaborator(ws);
+
+  // Bob opens a session on the connection, then disposes the workspace and the connection
+  // capability, keeping only the session.
+  const opened = await collaboratorOpens(bob, ws.gadgetId, undefined, true);
+  expect(opened.error).toBeUndefined();
+  const bobWorkspace = await bob.api.openWorkspace(ws.gadgetId);
+  const bobConnection = await bobWorkspace.getGatekeeperById(reportingId);
+  using retained = await bobConnection.openSession() as RpcStub<TestSession>;
+  await expect(retained.readValue(false, false, undefined, ["doc-1"])).resolves.toBe(42);
+  bobConnection[Symbol.dispose]();
+  bobWorkspace[Symbol.dispose]();
+  opened.session![Symbol.dispose]();
+
+  // While he holds it, a read he can't access is refused.
+  await setSubresourceAccess(bob.label, url, "secret", false);
+  await expect(ownerSession.readValue(false, false, undefined, ["secret"]))
+      .rejects.toThrow(READ_REFUSED);
+
+  // Once he lets it go, he is offline, and the same read goes through.
+  retained[Symbol.dispose]();
+  await waitFor("Bob's retained session to end", () =>
+    ownerSession.readValue(false, false, undefined, ["secret"]).then(() => true, () => null));
 });
 
 it.concurrent("the same local subresource ID is checked independently in different resources",

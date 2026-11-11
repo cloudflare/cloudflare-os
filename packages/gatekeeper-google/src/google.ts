@@ -4031,8 +4031,8 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   }
 
   // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
-  // the Workshop checks every collaborator who can see the read against. Use for every read; pass
-  // an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
+  // the Workshop checks collaborators against. Use for every read; pass an empty `datasets` for
+  // reads that reveal none (e.g. echoing the scoped project id).
   async #authorizeDatasets(
     datasets: { projectId: string; datasetId: string }[],
     description: ObservationDescription,

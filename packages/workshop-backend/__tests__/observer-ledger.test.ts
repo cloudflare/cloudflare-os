@@ -1,11 +1,11 @@
 // Kernel-owned observer requirements (observer-ledger.ts), decided per observation. A read that
 // reports ObservationDescription.subresources is checked against every collaborator who can see
-// its context, through the connection's own verifyObserverAccess() handed each observer's
-// verifier -- failing closed on every malformed or failed answer -- and is then recorded as a
-// requirement. A read omitting them is checked by nothing here: the gatekeeper's addObserver()
-// and excludeObservers cover it, as they always have. Admission is additive: every in-scope
-// connection's addObserver(), plus its verifyObserverAccess() for the requirements recorded
-// through it that the collaborator's role reaches.
+// its context and holds a live session, through the connection's own verifyObserverAccess()
+// handed each observer's verifier -- failing closed on every malformed or failed answer -- and is
+// then recorded as a requirement. A read omitting them is checked by nothing here: the
+// gatekeeper's addObserver() and excludeObservers cover it, as they always have. Admission is
+// additive: every in-scope connection's addObserver(), plus its verifyObserverAccess() for the
+// requirements recorded through it that the collaborator's role reaches.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding, like
 // observer-verification-failure.test.ts); gatekeeper facets, User DOs, verifiers, and the sharing
@@ -75,6 +75,8 @@ type World = {
   // test that needs the restart itself aborts the DO and opens it again.
   restarts: string[];
   clientUser(profileId: string): any;
+  // Collaborators holding no live session (everyone else holds one).
+  offline: Set<string>;
 };
 
 // `answer` gives the denied IDs from `ids`.
@@ -139,6 +141,7 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
       verifiers: new Map(),
       checks: [],
       restarts: [],
+      offline: new Set(),
       clientUser: (profileId: string) => ({
         getVerifier: async () => {
           let verifier = world.verifiers.get(profileId);
@@ -150,6 +153,11 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
       }),
     };
     world.impl.scheduleAccessRestart = async (reason: string) => { world.restarts.push(reason); };
+    // Every collaborator the test names, by role or observer record, is online unless marked not.
+    world.impl.liveCollaborators = () => [...new Set([
+      ...world.roles.keys(),
+      ...Array.from(world.impl.storage.observers.list(), (record: { profileId: string }) => record.profileId),
+    ])].filter(profileId => !world.offline.has(profileId));
     fakeFacets(world.impl);
     world.impl.getSharingManager = async () => ({
       getEffectiveAccess: (id: string) => {
@@ -515,7 +523,9 @@ describe("hook observations", () => {
       if (operation === "restart") {
         // Binding it while a session holding that gadget is live widens the gadget's scope, so
         // the workspace restarts and holds the connection back until the reset lands.
-        using _session = { [Symbol.dispose]: impl.joinSession("use", GADGET + 1) };
+        using _session = {
+          [Symbol.dispose]: impl.joinSession({ kind: "use", profileId: "carol" }, GADGET + 1),
+        };
         impl.bindWorkpiece(GADGET + 1, "C", CONN);
         expect(world.restarts).toHaveLength(1);
         expect(impl.gatekeeperUsable(CONN)).toBe(false);
@@ -692,7 +702,7 @@ describe("observations reporting subresources", () => {
     expect(callsTo(calls, "addObserver")).toEqual([]);
   }));
 
-  it("check configured observers who are offline, but not ones who lost access", () =>
+  it("check configured observers with sessions, but not ones who lost access", () =>
       withWorld(async world => {
     let { impl } = world;
     seedConnection(impl);
@@ -711,6 +721,34 @@ describe("observations reporting subresources", () => {
     // A remembered ID is not a remembered grant: the next read checks it again.
     await impl.authorizeObservation(CONN, withSubresources(["x"]), { from: "user" });
     expect(world.checks).toHaveLength(2);
+  }));
+
+  it("records a read past an offline observer's lapsed account, then checks it at their open",
+      () => withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    world.roles.set("carol", "build");
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+    world.offline.add("carol");
+    world.verifiers.set("carol", new Error("This account's credentials have expired."));
+
+    await impl.authorizeObservation(CONN, withSubresources(["x"]), { from: "user" });
+    expect(world.checks).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
+
+    // Back online, the same lapsed account is refused against what was read meanwhile...
+    world.offline.delete("carol");
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace"))
+        .rejects.toThrow(/could not confirm/);
+    // ...and once repaired, admission checks that read's requirement.
+    world.verifiers.delete("carol");
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
+    expect(world.checks).toContainEqual({ profileId: "carol", ids: ["x"] });
+    // While she holds a session, her denial refuses the read.
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+    await expect(impl.authorizeObservation(CONN, withSubresources(["y"]), { from: "user" }))
+        .rejects.toThrow(/could not be confirmed/);
   }));
 
   it("refuse a read denied only by an observer past the first access-check call", () =>
@@ -1524,7 +1562,7 @@ describe("pending creation", () => {
       };
       impl.getGatekeeperFacet = async () => facet();
 
-      let leave = impl.joinSession("build");
+      let leave = impl.joinSession({ kind: "build", profileId: "carol" });
       try {
         ({ gatekeeperId } = await impl.createExternalResource(1, {
           vendorId: "vendor", resourceUrlPattern: "https://example.com/*", title: "New",
@@ -1834,8 +1872,7 @@ describe("direct context authorization", () => {
     // Frank holds a gadget whose agent spawner can drive A.
     world.roles.set("frank", { role: "use", gadgetIds: [GADGET + 2] });
     let everyone = ["bob", "carol", "dave", "erin", "frank"];
-    // Every one of them has chosen an account for the shared connection, and none is connected:
-    // being offline does not take anyone out of the audience.
+    // Every one of them has chosen an account for the shared connection and holds a session.
     for (let profileId of everyone) {
       impl.storage.observers.put(
           { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
