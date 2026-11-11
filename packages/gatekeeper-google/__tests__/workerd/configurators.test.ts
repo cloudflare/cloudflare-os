@@ -9,7 +9,7 @@ import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationLocationConfiguratorUI, DriveConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
@@ -140,6 +140,26 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
       expect(calls[0].searchParams.get("orderBy")).toBe("folder,name");
       expect(calls[0].searchParams.get("pageToken")).toBe("page-2");
+    });
+
+    it("lists only folders for a creation's location, and which ones take new files", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "open", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: true } },
+            { id: "viewer", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: false } },
+          ],
+        },
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+
+      await expect(creating.listFolders("folder:root", "", null)).resolves.toEqual({
+        nodes: [
+          { id: "folder:open", title: "Plans", kind: "folder", listable: true, addable: true },
+          { id: "folder:viewer", title: "Archive", kind: "folder", listable: true },
+        ],
+      });
+      expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing

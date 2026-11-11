@@ -57,7 +57,7 @@ import {
   requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveFileBytes, DriveFileReadOptions, DriveListOptions, DrivePdfText,
+  DriveEntry, DriveFileBytes, DriveFileReadOptions, DriveListOptions, DrivePdfText, DriveScope,
   DriveSessionSearchQuery, GoogleDriveFolderSession, GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
@@ -95,6 +95,7 @@ import {
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
   DriveConfiguratorUI,
+  CreationLocationConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -103,6 +104,7 @@ import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui
 import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
+import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
@@ -444,6 +446,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       case "doc": cls = this.ctx.exports.GoogleDocGatekeeperImpl({props}); break;
       case "sheets": cls = this.ctx.exports.GoogleSheetsGatekeeperImpl({props}); break;
       case "slides": cls = this.ctx.exports.GoogleSlidesGatekeeperImpl({props}); break;
+      case "driveFolder": cls = this.ctx.exports.GoogleDriveGatekeeperImpl({props}); break;
     }
     let resource = RESOURCE_BY_KIND[kind];
     return { class: cls, resource, action: creationAction(resource, props.creation.title) };
@@ -1081,14 +1084,22 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
   }
 
+  /**
+   * What a configurator reaches the account through. A grant is read on every call, since a private
+   * one arrives through a pop-up while the dialog is open.
+   */
+  #configuratorAccess() {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    return {
+      getToken: async (opts?: AccessTokenRequest) => await account.getAccessToken(opts),
+      holds: async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant),
+    };
+  }
+
   async startResourceConfigurator(
       resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    let account = this.ctx.exports.UserAccount.get(id);
-    let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
-    // A grant is read on every call, since a private one arrives through a pop-up while the dialog is
-    // open.
-    let holds = async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant);
+    let { getToken, holds } = this.#configuratorAccess();
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -1145,6 +1156,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
 
     throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
+  }
+
+  /** Every creatable type is configured by where it is created. */
+  async startCreationConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    creatableKind(resourceUrlPattern);
+    let { getToken, holds } = this.#configuratorAccess();
+    return {
+      iframeHtml: CREATION_LOCATION_CONFIGURATOR_HTML,
+      ui: new RpcStub(new CreationLocationConfiguratorUI(getToken, holds)),
+    };
   }
 
   async revoke(): Promise<void> {
@@ -2183,15 +2204,16 @@ export class GoogleDocGatekeeperImpl
     return this.#actions.run(() => this.#rejectAction(actionId));
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
-    return this.#actions.run(() => this.#applyCreation(creator));
+    return this.#actions.run(() => this.#applyCreation(creator, configuration));
   }
 
-  async #applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async #applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     let { userObjectId, fileId, resourceUrl, getAccessToken: tokens } = await createFileOnce(
-        this.ctx, creator, "doc", (title, getToken) => new GoogleDocsApi(getToken).createDocument(title));
+        this.ctx, creator, "doc", configuration,
+        (title, getToken) => new GoogleDocsApi(getToken).createDocument(title));
     // Edits queued against the blank document name its tab, which the created one may not share.
     let [tab] = (await new GoogleDocsApi(tokens).getDocument(fileId)).tabs;
     this.ctx.storage.kv.put(CREATED_DOC_TAB_KEY, tab.tabId);
@@ -3355,18 +3377,18 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 // Google Drive Gatekeeper
 // =======================================================================================
 
-export type GoogleDriveGatekeeperImplProps = {
-  userObjectId: string;
-  scope: DriveBindingScope;
-};
+/** What a Drive binding names: its owner's account and scope, or a folder not created yet. */
+export type GoogleDriveGatekeeperImplProps =
+  { userObjectId: string; scope: DriveBindingScope } | SimulatedFileProps;
 
 @validateRpc()
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
     implements Gatekeeper<GoogleDriveSession> {
+  #creating = new Mutex();
   #tokens = new AccessTokenCache(opts => {
     let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+      this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId));
     return account.getAccessToken(opts);
   });
 
@@ -3374,7 +3396,23 @@ export class GoogleDriveGatekeeperImpl
     return this.#tokens.get(opts);
   }
 
+  /** The account and scope this binding reaches, which a folder not yet created has not. */
+  get #bound(): { userObjectId: string; scope: DriveBindingScope } {
+    return boundProps(this.ctx.props, "driveFolder");
+  }
+
   async describe(): Promise<ResourceDescription> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) {
+      let { title } = props.creation;
+      return {
+        url: nativeFileUrl("driveFolder"),
+        title,
+        snippet: `Google Drive folder: ${title} (empty; not created yet)`,
+        suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
+        tsType: "GoogleDriveFolderSession",
+      };
+    }
     let scope = this.#scope;
     if (scope.kind === "account") {
       return {
@@ -3418,6 +3456,8 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) return new UncreatedDriveFolderSessionImpl(props.creation.title, approvalQueue.dup());
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
@@ -3433,6 +3473,15 @@ export class GoogleDriveGatekeeperImpl
       this.#scope,
       approvalQueue.dup(),
     );
+  }
+
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    return this.#creating.run(async () => {
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "driveFolder", configuration);
+      let props: GoogleDriveGatekeeperImplProps = { userObjectId, scope: { kind: "folder", folderId: fileId } };
+      return { class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props }), resourceUrl };
+    });
   }
 
   /** Read-only — no side-effecting actions. */
@@ -3461,7 +3510,7 @@ export class GoogleDriveGatekeeperImpl
   }
 
   get #scope(): DriveBindingScope {
-    return requireDriveBindingScope(this.ctx.props.scope);
+    return requireDriveBindingScope(this.#bound.scope);
   }
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
@@ -3469,6 +3518,8 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async removeObserver(id: string): Promise<void> {
+    // A folder not created yet tracks no observer.
+    if (isSimulated(this.ctx.props)) return;
     this.#observerTracker().removeObserver(id);
   }
 
@@ -3836,6 +3887,79 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let id = await core.openNativeFile(fileId, mimeType, description);
       return build(id, queue, core.nativeRead(id, mimeType));
     });
+  }
+}
+
+const UNCREATED_FOLDER =
+  "This Google Drive folder is not created yet, so it holds nothing. Once its creation is " +
+  "approved, open it from a new session.";
+
+/**
+ * A Drive folder GatekeeperVendor.createResource() was asked for, before its creation is approved:
+ * empty, and named as it will be. Nothing it answers comes from Google, but its reads are audited
+ * as every pending creation's are, with no subresources.
+ */
+@validateRpc()
+class UncreatedDriveFolderSessionImpl extends RpcTarget
+    implements GoogleDriveReadSession, GoogleDriveFolderSession {
+  #title: string;
+  #queue: RpcStub<ApprovalQueue>;
+
+  constructor(title: string, queue: RpcStub<ApprovalQueue>) {
+    super();
+    this.#title = title;
+    this.#queue = queue;
+  }
+
+  #audit(title: string, description: string): Promise<void> {
+    return this.#queue.authorizeObservation({ title, description, subresources: [] });
+  }
+
+  async getScope(): Promise<DriveScope> {
+    await this.#audit("Read Google Drive scope", `Read the name of Drive folder "${this.#title}", not created yet.`);
+    return { kind: "folder", folderId: UNCREATED_FILE_ID, rootFolderId: UNCREATED_FILE_ID, name: this.#title };
+  }
+
+  async list(_options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
+    await this.#audit("Read Google Drive metadata", `Listed Drive folder "${this.#title}", not created yet: empty.`);
+    return new RpcCursor<DriveEntry>({ next: async () => null });
+  }
+
+  async search(_query: DriveSessionSearchQuery): Promise<Cursor<DriveEntry>> {
+    await this.#audit("Read Google Drive metadata", `Searched Drive folder "${this.#title}", not created yet: empty.`);
+    return new RpcCursor<DriveEntry>({ next: async () => null });
+  }
+
+  async getEntry(_fileId: string): Promise<DriveEntry> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openFolder(_folderId: string): Promise<GoogleDriveFolderSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleDoc(_fileId: string): Promise<GoogleDocReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleSheet(_fileId: string): Promise<GoogleSpreadsheetReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleSlides(_fileId: string): Promise<GooglePresentationReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async readPdf(_fileId: string): Promise<DrivePdfText> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async readFile(_fileId: string, _options?: DriveFileReadOptions): Promise<DriveFileBytes> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  [Symbol.dispose](): void {
+    this.#queue[Symbol.dispose]();
   }
 }
 

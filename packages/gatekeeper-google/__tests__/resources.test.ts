@@ -386,18 +386,21 @@ describe("resourcesCoveredByScopes", () => {
 });
 
 describe("creatable resources", () => {
-  it("creates exactly Docs, Sheets and Slides", () => {
+  it("creates exactly Docs, Sheets, Slides and Drive folders", () => {
     expect(creatableKind(GOOGLE_DOC_RESOURCE.urlPattern)).toBe("doc");
     expect(creatableKind(GOOGLE_SHEETS_RESOURCE.urlPattern)).toBe("sheets");
     expect(creatableKind(GOOGLE_SLIDES_RESOURCE.urlPattern)).toBe("slides");
-    expect(SUPPORTED_RESOURCES.filter(resource => resource.creatable))
-      .toEqual([GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE]);
+    expect(creatableKind(GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern)).toBe("driveFolder");
+    expect(SUPPORTED_RESOURCES.filter(resource => resource.creatable)).toEqual([
+      GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+    ]);
     for (let pattern of [GMAIL_RESOURCE.urlPattern, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, "nonsense"]) {
       expect(() => creatableKind(pattern)).toThrow(
         "Google can create only these resource types: " +
         "Google Doc (https://docs.google.com/document/d/:docId/*), " +
         "Google Spreadsheet (https://docs.google.com/spreadsheets/d/:spreadsheetId/*), " +
-        "Google Slides Presentation (https://docs.google.com/presentation/d/:presentationId/*).");
+        "Google Slides Presentation (https://docs.google.com/presentation/d/:presentationId/*), " +
+        "Google Drive Folder (https://drive.google.com/drive/folders/:folderId).");
     }
   });
 
@@ -407,6 +410,7 @@ describe("creatable resources", () => {
     ["doc", { kind: "doc", documentId: "abc" }],
     ["sheets", { kind: "sheets", spreadsheetId: "abc" }],
     ["slides", { kind: "slides", presentationId: "abc" }],
+    ["driveFolder", { kind: "driveFolder", folderId: "abc" }],
   ] as const)("round-trips a created %s's URL", (kind, target) => {
     expect(parseResourceUrl(nativeFileUrl(kind, "abc"))).toEqual(target);
     expect(() => parseResourceUrl(nativeFileUrl(kind))).toThrow();

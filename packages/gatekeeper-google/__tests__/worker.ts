@@ -7,18 +7,19 @@ import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type { Cursor, DriveEntry, DriveScope, GoogleDriveFolderSession } from "../src/drive-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
 import GoogleWorker, {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 } from "../src/google";
 
 export {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 };
 export default GoogleWorker;
@@ -28,6 +29,14 @@ export class UserAccount extends DurableObject<Env> {
   /** Names the account in its token, so a provider fake can tell which account a request was made as. */
   async getAccessToken(): Promise<GoogleAccessToken> {
     return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
+  }
+
+  async getGrantedResourceUrlPatterns(): Promise<string[]> {
+    return this.ctx.storage.kv.get<string[]>("granted") ?? [];
+  }
+
+  setGranted(patterns: string[]): void {
+    this.ctx.storage.kv.put("granted", patterns);
   }
 }
 
@@ -148,16 +157,22 @@ export class TestHooks extends DurableObject<Env> {
     }
   }
 
+  /** Give `userName`'s account the grants `patterns`, as consenting to them would. */
+  async grant(userName: string, patterns: string[]): Promise<void> {
+    let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName(userName));
+    await (account as unknown as DurableObjectStub<UserAccount>).setGranted(patterns);
+  }
+
   /**
-   * Approve the creation into `userName`'s account. The returned class is only kept: the overseer
-   * restarts the facet on it afterwards, which adoptCreated() does.
+   * Approve the creation into `userName`'s account, configured as `configuration`. The returned
+   * class is only kept: the overseer restarts the facet on it afterwards, which adoptCreated() does.
    */
-  async applyCreation(facetName: string, userName = "test-user")
+  async applyCreation(facetName: string, userName = "test-user", configuration: string | null = null)
       : Promise<{ resourceUrl: string } | { error: string }> {
     let userObjectId = this.ctx.exports.UserAccount.idFromName(userName).toString();
     try {
       let created = await (this.#gatekeeper(facetName) as unknown as Gatekeeper<any>)
-        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }), null);
+        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }), configuration);
       this.#created.set(facetName, created.class);
       return { resourceUrl: created.resourceUrl };
     } catch (error) {
@@ -191,6 +206,16 @@ export class TestHooks extends DurableObject<Env> {
     } finally {
       this.#lastObservations = queue.observations;
     }
+  }
+
+  /** A Drive folder binding's scope and the first batch its listing returns. */
+  async readDriveFolder(facetName: string)
+      : Promise<{ scope: DriveScope; entries: DriveEntry[] | null } | { error: string }> {
+    return this.#withReadSession<GoogleDriveFolderSession, { scope: DriveScope; entries: DriveEntry[] | null }>(
+      facetName, async session => {
+        using cursor = await session.list() as Cursor<DriveEntry> & Disposable;
+        return { scope: await session.getScope(), entries: await cursor.next() };
+      });
   }
 
   async readSpreadsheet(facetName: string): Promise<SpreadsheetInfo | { error: string }> {

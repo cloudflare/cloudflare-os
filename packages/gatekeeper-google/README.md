@@ -86,6 +86,7 @@ Across all resource types, the gatekeeper can request:
 - `drive.readonly` for account-wide, folder, and exact-file Drive bindings: the Drive picker, discovery, file metadata, folder descendant proofs, native-file scope checks, downloading a PDF to read its text with `readPdf()`, and downloading any other file's bytes with `readFile()`. Google classifies this as a restricted scope too, so every Drive resource here needs restricted-scope verification.
 - `drive.readonly` and `drive.file` for the Office import grant (`https://docs.google.com/import`), which converts an Office file into a Google Docs, Sheets or Slides copy (see [Office files](#office-files)). Only the connect dialog's **Convert** button asks for it, by incremental consent, the first time an account converts a file; using a copy made before reads only metadata and asks for nothing. Once held, it is part of the account's recorded grants, so a reconnect asks for it again. `drive.readonly` lets the gatekeeper see a source file this OAuth client did not create, which `drive.file` alone cannot, and `drive.file` lets it create the copy. The grant is private to the gatekeeper: it is not a resource, so it is never offered on connect, listed, bound, or shown among an account's granted resources, and admins cannot turn it off separately from Docs, Sheets and Slides. Once held, `drive.readonly` lets the account's token read any Drive file, so bindings stay limited by the gatekeeper's code rather than by the token. A verified OAuth app must add both scopes to its consent screen, and `drive.readonly` is a restricted scope.
 - `drive.readonly` for the shared-drives grant (`https://drive.google.com/drive/shared-drives`), which lets the Drive picker list the shared drives the account belongs to, since Drive's `drives.list` accepts no narrower scope. Only the picker's **Allow access** button asks for it, by incremental consent, the first time an account opens Shared drives; once held, a reconnect asks for it again. It is private to the gatekeeper as the Office import grant is, and an account holding that grant is still asked once, since a private grant counts only once it has been asked for, not because its scopes happen to be held.
+- `drive.file` for the created-files grant (`https://drive.google.com/drive/created-files`), which lets the gatekeeper put what a creation makes where its approver chose: move a new Doc, spreadsheet or presentation out of My Drive into a folder, or make a new Drive folder. `drive.file` reaches only files this OAuth client created. Only the creation dialog's **Allow access** button asks for it, by incremental consent, the first time an approver picks a folder (or approves a new folder); a file kept in My Drive needs no Drive call and asks for nothing. It is private to the gatekeeper as the Office import grant is.
 - `spreadsheets` to read metadata, bounded cell ranges and their formatting from directly selected spreadsheets, edit their values, sheets, rows, columns and formatting with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
@@ -287,19 +288,28 @@ stores baseline and Preview secrets separately, so provision the same signing va
 
 ## Creating files
 
-Google Docs, Sheets and Slides are creatable resource types: an agent can ask for a new one with
-`createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
-works at once, before anything exists at Google. Until the creation is approved the gatekeeper
-simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as
+Google Docs, Sheets and Slides, and Google Drive folders, are creatable resource types: an agent can
+ask for a new one with `createExternalResource`, giving a one-line title (trimmed, at most 256
+characters), and its binding works at once, before anything exists at Google. Until the creation is
+approved the gatekeeper simulates an empty file: a Doc reads as one empty tab and queues edits as
+usual, a spreadsheet as
 one empty `Sheet1` of 1000 × 26 cells, which takes no change until it exists, and a presentation as the one Google creates, a 16:9 deck
 with a title slide, which queues changes as usual. Of the default theme's layouts it offers only
 five (title slide, section header, title and body, title only, and blank); the others become
-available once the presentation exists. Nothing reaches Google and no account is involved.
+available once the presentation exists. A folder lists nothing and opens nothing. Nothing reaches
+Google and no account is involved.
 
 A creation is never auto-approved. The approver picks which of their connected Google accounts to
-create the file in; it lands in that account's My Drive, and the binding switches to the real file.
-Doc edits queued against the simulation then apply to the created document like any other edit,
-and Slides changes apply to the created presentation unchanged.
+create the file in, and where in that account's Drive (My Drive by default, or any folder or shared
+drive the account can add files to), and the binding switches to the real file. A folder is made in
+place. The Docs, Sheets and Slides APIs cannot name a folder, and Drive's own `files.create` would
+lose the default `Sheet1` and fixed Slides IDs the simulations rely on, so those files are made in
+My Drive and then moved. The folder is checked before anything is made; a retried approval binds
+the file the first one made and moves it to the retry's choice, reading where it is rather than
+trusting what was recorded. Only the account the file was made in can move it, so another
+approver's retry is refused unless it chooses where the file already is (their own My Drive is
+never that). Doc edits queued against the simulation then apply to the created
+document like any other edit, and Slides changes apply to the created presentation unchanged.
 
 That works for Slides because Google gives every new presentation the same object IDs (master
 `simple-light-2`, title slide `p`, and layouts `p2` to `p12`, seen both on a personal account
@@ -313,12 +323,15 @@ compares them with the committed recording instead. Should Google's new presenta
 queued change naming a slide, element or layout the created presentation lacks fails when
 approved, writing nothing.
 
-Google's create calls take no idempotency key. A retried approval after a lost reply binds the file
-already created (the gatekeeper records it), but a file can still be orphaned in the approver's
-Drive: a create request that times out or fails with a 5xx after Google acted, a crash between
-Google's reply and that record being written, or a creation rejected after an approval whose
-success was lost. Every created file's ID is logged (`google.creation.file.created`), so an orphan
-can be found.
+A folder is created under an ID Drive generated for it (`files.generateIds`), recorded before the
+create is sent, so a create whose reply is lost is sent again, by the request and by a retried
+approval, and Drive, which answers 409 for an ID already used, makes the folder once. The Docs,
+Sheets and Slides create calls take no such ID or idempotency key. A retried approval after a lost
+reply binds the file already created (the gatekeeper records it), but one of those files can still
+be orphaned in the approver's Drive: by a create request that times out or fails with a 5xx after
+Google acted, or a crash between Google's reply and that record being written. A creation rejected
+after an approval whose success was lost orphans a folder too. Every created file's ID is logged
+(`google.creation.file.created`), so an orphan can be found.
 
 ## Office files
 
