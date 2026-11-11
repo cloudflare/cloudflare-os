@@ -49,7 +49,8 @@ describe('scenarios', () => {
     const { ready, seen } = await watch(played, ({ rows }) => of(rows(), 'notice').map(({ notice }) => notice))
 
     expect(seen).not.toContain('unknown')
-    expect(ready()).toMatchObject({ activity: undefined, work: [], agentActive: false, queuedSteers: [], actionError: undefined })
+    expect(ready()).toMatchObject({ activity: undefined, work: [], agentActive: false, actionError: undefined })
+    expect(of(ready().items, 'user').filter(({ unread }) => unread)).toEqual([])
   })
 
   it('plain: the reply is thought about, then written, and joins the conversation only when done', async () => {
@@ -161,12 +162,16 @@ describe('scenarios', () => {
     expect(of(rows(), 'error').map(({ recovery }) => recovery)).toEqual([undefined, undefined, 'continue'])
   })
 
-  it('steer-slash: a steer waits unread, then joins the answer; the context is compacted', async () => {
-    const { rows, seen } = await watch(scenario('steer-slash'), ({ ready }) => [...ready().queuedSteers.map(({ text }) => text), ...(ready().activity === 'Compacting the conversation…' ? ['compacting'] : [])])
+  it('steer-slash: a steer waits unread and is the same row once read; another model and the compaction are marked', async () => {
+    const { rows, seen } = await watch(scenario('steer-slash'), (chat) => [
+      ...of(chat.rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.').map(({ key, unread }) => `${key} ${unread ? 'unread' : 'read'}`),
+      ...(chat.ready().activity === 'Compacting the conversation…' ? ['compacting'] : []),
+    ])
 
-    expect(seen).toEqual(new Set(['Keep it under 100 words.', 'compacting']))
-    expect(rows().map((row) => (row.kind === 'notice' ? row.notice : row.kind))).toEqual([
-      'user', 'assistant', 'user', 'model', 'assistant', 'user', 'divider', 'assistant', 'user',
+    const [steer] = of(rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.')
+    expect(seen).toEqual(new Set([`${steer.key} unread`, `${steer.key} read`, 'compacting']))
+    expect(rows().map((row) => (row.kind === 'divider' ? row.marks : row.kind))).toEqual([
+      'user', 'assistant', 'user', 'model', 'assistant', 'user', 'assistant', 'user', 'compaction',
     ])
     expect(of(rows(), 'user')[0].parts[0]).toEqual({ type: 'command', name: 'release-notes' })
   })

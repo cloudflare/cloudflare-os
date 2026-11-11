@@ -1,6 +1,15 @@
 import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
-import { EMPTY_FEED, toChatFeed, type ChatFeed, type ChatItem, type OutputFormat, type ToolEntry, type WorkEntry } from './chatItems'
+import {
+  EMPTY_FEED,
+  toChatFeed,
+  type ChatFeed,
+  type ChatItem,
+  type OutputFormat,
+  type PendingSteer,
+  type ToolEntry,
+  type WorkEntry,
+} from './chatItems'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
@@ -11,8 +20,9 @@ export type ChatSnapshot =
       /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
       /**
-       * The committed messages as rows, without the open turn's artefacts (`pinned`). The array is
-       * unchanged while only streaming text moves.
+       * The conversation as rows, without the open turn's artefacts (`pinned`): the committed
+       * messages, then the messages sent to the running agent that it has not read yet. The
+       * array is unchanged while only streaming text moves.
        */
       items: ChatItem[]
       /**
@@ -34,8 +44,6 @@ export type ChatSnapshot =
        * below everything else in the turn.
        */
       pinned: ChatFeed['pinned']
-      /** Messages sent while the agent works that it has not read yet, oldest first. */
-      queuedSteers: QueuedSteer[]
       /** Why the last send failed, until the next send. */
       sendError: string | undefined
       /** Why the last thing asked of a row (approve, deny, retry, a hook's switch) failed, until the next. */
@@ -74,8 +82,14 @@ export type ChatOverseer = Pick<Overseer, Calls> & {
   ): ReturnType<Overseer['subscribeToActions']>
 } & Disposable
 
-/** A message waiting for the running agent to read it. */
-export type QueuedSteer = { text: string; from?: string }
+const sameSteer = (a: PendingSteer, b: PendingSteer) => a.text === b.text && a.from === b.from
+
+/** How many of `waiting`, oldest first, are no longer in `queue`, which is read from its front. */
+const readFrom = (waiting: PendingSteer[], queue: PendingSteer[]) => {
+  let read = 0
+  while (!waiting.slice(read).every((steer, index) => index < queue.length && sameSteer(steer, queue[index]))) read++
+  return read
+}
 
 export type ChatSessionOptions = {
   /** The signed-in user's id, so their own actions read as theirs. */
@@ -144,7 +158,9 @@ export class ChatSession {
   #messages = new Map<number, AiChatMessage>()
   #feed: ChatFeed = EMPTY_FEED
   #compactedTo: number | undefined
-  #queuedSteers: QueuedSteer[] = []
+  // The messages sent to the running agent that are not among `#messages` yet: first those it has
+  // read whose message has not arrived, then those still waiting to be read.
+  #steers: PendingSteer[] = []
   // The step being written. All of it is provisional: its durable message replaces it.
   #streaming = ''
   #reasoning = ''
@@ -292,6 +308,7 @@ export class ChatSession {
     const context = {
       viewerId: this.options.viewerId,
       agentActive: this.#agentActive,
+      steers: this.#steers,
       compactedTo: this.#compactedTo,
       outputFormats: this.#outputFormats,
     }
@@ -345,7 +362,7 @@ export class ChatSession {
     this.#messages = new Map()
     this.#feed = EMPTY_FEED
     this.#compactedTo = undefined
-    this.#queuedSteers = []
+    this.#steers = []
     this.#discardProvisional()
     this.#compacting = false
     this.#outputFormats = new Map()
@@ -379,7 +396,6 @@ export class ChatSession {
       work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
       pinned: this.#feed.pinned,
-      queuedSteers: this.#queuedSteers,
       sendError: this.#sendError,
       actionError: this.#actionError,
       hasEarlier: this.#nextBeforeSequence !== undefined,
@@ -485,10 +501,18 @@ export class ChatSession {
     this.#agentActive = chat.activeAgent !== undefined
     this.#compactedTo = chat.compactedTo
     const { viewerId } = this.options
-    this.#queuedSteers = (chat.queuedSteers ?? []).map(({ text, author }) => ({
+    const queue = (chat.queuedSteers ?? []).map(({ text, author }): PendingSteer => ({
       text,
       from: author.id === viewerId ? undefined : author.name,
+      unread: true,
     }))
+    // A steer leaves the queue when the agent reads it, and its message follows separately. It is
+    // kept in between, as read, so the row it is shown as does not go and come back. With the
+    // agent stopped nothing will follow: the steers were dropped, or will prompt a turn afresh.
+    const read = this.#steers.filter(({ unread }) => !unread)
+    const waiting = this.#steers.filter(({ unread }) => unread)
+    const justRead = waiting.slice(0, readFrom(waiting, queue)).map((steer) => ({ ...steer, unread: false }))
+    this.#steers = this.#agentActive ? [...read, ...justRead, ...queue] : queue
     // Whether an error can be retried, and where the context was cut, come from the metadata.
     this.#rebuildFeed()
   }
@@ -497,6 +521,11 @@ export class ChatSession {
     if (message.chatId !== this.chatId) return
     // Replayed and live delivery can overlap, so a sequence number is stored once.
     this.#messages.set(message.sequence, message)
+    // A steer's message has arrived: it is no longer pending, whichever of the two came first.
+    if (message.type === 'message' && message.author.type !== 'agent') {
+      const arrived = this.#steers.findIndex(({ text }) => text === message.message)
+      if (arrived !== -1) this.#steers = this.#steers.toSpliced(arrived, 1)
+    }
     this.#rebuildFeed()
     // A finished step replaces what streamed of it; updates to an agent's approval/tool cards do not.
     if (message.type === 'message' && message.author.type === 'agent' &&

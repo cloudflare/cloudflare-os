@@ -38,7 +38,6 @@ export type ChatItemViewProps = {
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
-  model: 'swap',
   gadget: 'plug',
   callback: 'code',
   unknown: 'info',
@@ -56,7 +55,16 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
 
   switch (item.kind) {
     case 'user':
-      return <UserMessage parts={item.parts} attachments={item.attachments} from={item.from} onOpenAttachment={handlers.onOpenAttachment} joins={joins} />
+      return (
+        <UserMessage
+          parts={item.parts}
+          attachments={item.attachments}
+          from={item.from}
+          unread={item.unread}
+          onOpenAttachment={handlers.onOpenAttachment}
+          joins={joins}
+        />
+      )
     case 'assistant':
       return <AssistantMessage text={item.text} joins={joins} />
     case 'output':
