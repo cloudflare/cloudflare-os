@@ -392,6 +392,11 @@ function min(scores: { bonk: number; opus: number }): number {
   return Math.min(scores.bonk, scores.opus);
 }
 
+/** The head `pull` had at `at`: the last one pushed at or before it, or `undefined` when none was. */
+function headAt(pull: CalibrationPull, at: number): string | undefined {
+  return pull.pushes.filter((push) => push.at <= at).toSorted((a, b) => a.at - b.at).at(-1)?.head;
+}
+
 /**
  * Why `pull` is a miss at a threshold, given its would-merge point; empty when it is not.
  *
@@ -406,7 +411,7 @@ function missReasons(pull: CalibrationPull, point: CalibrationRecord, threshold:
   const reasons: string[] = [];
   const reviewersPassed = (at: number) => {
     if (at > point.at) return true;
-    const head = pull.pushes.filter((push) => push.at <= at).toSorted((a, b) => a.at - b.at).at(-1)?.head;
+    const head = headAt(pull, at);
     const onHead = pull.records.filter((record) => head === undefined || record.head === head);
     return onHead.length === 0 ||
       onHead.some((record) => record.unreadable || (record.scores !== null && min(record.scores) >= threshold));
@@ -424,8 +429,9 @@ function missReasons(pull: CalibrationPull, point: CalibrationRecord, threshold:
 
 /**
  * Builds the calibration rows. For each threshold T from 10 to 1, a pull request's would-merge
- * point is its earliest record that no policy rule rules out, whose band's evidence held and whose
- * lower eligible score is at least T; its row is that record's area, band and reviewers. A miss
+ * point is its earliest record that no policy rule rules out, whose head was still the pull
+ * request's head when it completed, whose band's evidence held and whose lower eligible score is at
+ * least T; its row is that record's area, band and reviewers. A miss
  * counts as soon as it is seen; a pull request with none counts as clean only 14 days after merge.
  *
  * @param input The merged pull requests; each band's required evidence, keyed `<area> <band>`; and
@@ -439,9 +445,11 @@ export function calibrate(pulls: CalibrationPull[], { evidence, now }: {
   for (const pull of pulls.toSorted((a, b) => a.mergedAt - b.mergedAt)) {
     const records = pull.records.toSorted((a, b) => a.at - b.at);
     for (const threshold of THRESHOLDS) {
-      // A record from after the merge decided nothing the gate could have acted on.
+      // A record from after the merge, or one that finished after a newer head was pushed, decided
+      // nothing the gate could have acted on: the queue only takes the head the decision named.
       const point = records.find((record) =>
-        record.at < pull.mergedAt && !record.ruledOut && !record.unreadable && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
+        record.at < pull.mergedAt && headAt(pull, record.at) === record.head &&
+        !record.ruledOut && !record.unreadable && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
         (evidence.get(`${record.area} ${record.band}`) ?? ["unknown band"]).every((name) => record.holding.has(name)));
       if (!point?.reviewers) continue;
       const key = `${point.area} ${point.band} ${point.reviewers} ${threshold}`;

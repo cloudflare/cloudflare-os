@@ -196,6 +196,17 @@ describe("calibrate", () => {
     assert.equal(row(rows, 10), undefined);
   });
 
+  // Bonk on #1093, round 3: a run for head 1 that finished after head 2 was pushed.
+  it("takes no point from a record that completed after a newer head was pushed", () => {
+    const pull = calPull(906, 20, {
+      records: [calRecord(23, 10, 10), calRecord(22, 5, 5, { head: "h2" })],
+      pushes: [{ head: "h1", at: NOW_CAL - 26 * DAY }, { head: "h2", at: NOW_CAL - 24 * DAY }],
+    });
+    const rows = calibrate([pull], { evidence: EVIDENCE, now: NOW_CAL });
+    assert.equal(row(rows, 10), undefined);
+    assert.deepEqual(row(rows, 5)?.clean, [906]);
+  });
+
   it("counts a catch before the point when the reviewers had already passed the head, or no record shows they had not", () => {
     const comment = { at: NOW_CAL - 24 * DAY, login: "deregtd", kind: "comment" as const };
     const pushes = [{ head: "h1", at: NOW_CAL - 26 * DAY }, { head: "h2", at: NOW_CAL - 23.5 * DAY }];
