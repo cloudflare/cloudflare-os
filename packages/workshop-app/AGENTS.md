@@ -92,6 +92,10 @@ as the bubble or card in it grows in (`Arrival.css`; the message list marks the 
 the live output that leaves closes (`LiveRows`). Give a new block that can arrive the `arrives`
 class, and put what can come and go in the live output in a `LiveRows.Row`.
 
+The view follows the end of the conversation only for a reader who is at it; one reading further
+up is left where they are, with a button to the latest. Sending a message is the exception: it
+takes whoever sent it to the end, and follows from there.
+
 Consecutive messages from one sender are drawn as a run (closer together, with smaller corners
 where they meet). `MessageBubble` does that itself between sibling bubbles; the message list wraps
 each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`). A message that

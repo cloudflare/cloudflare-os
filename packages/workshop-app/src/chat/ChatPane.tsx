@@ -117,6 +117,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
   }, [items, disclosure, handlers, restricted])
 
   const sendMessage = (text: string) => {
+    // Whoever says something is taken to where it will appear, and to what answers it, wherever
+    // in the conversation they were reading. Only what others say waits for a reader who is not
+    // at the end.
+    list.current?.scrollToLatest()
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
     if (model.status !== 'ready') return setProblem(describeModelProblem(model))
     setProblem(undefined)

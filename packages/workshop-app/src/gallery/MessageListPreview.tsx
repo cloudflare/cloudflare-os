@@ -84,7 +84,14 @@ export const MessageListPreview = () => {
         <span className="self-center text-sm text-kumo-subtle">{ids.length} / 600 messages loaded</span>
       </div>
       <div className="flex h-[32rem] w-full flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
-        <ChatLayout header={<Button>Virtualized conversation</Button>} composer={<Composer onSend={() => setIds((current) => [...current, current.at(-1)! + 1])} />}>
+        <ChatLayout header={<Button>Virtualized conversation</Button>} composer={(
+          <Composer
+            onSend={() => {
+              list.current?.scrollToLatest()
+              setIds((current) => [...current, current.at(-1)! + 1])
+            }}
+          />
+        )}>
           <MessageList ref={list} key={conversation} messages={messages} streaming={streaming} history={{ hasMore: first > 0, loading, onLoadEarlier: loadEarlier }}>
             {text && <MessageBubble role="assistant">{text}</MessageBubble>}
             <LiveRows>
