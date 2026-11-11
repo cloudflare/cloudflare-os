@@ -70,40 +70,52 @@ describe('scenarios', () => {
     expect(of(rows(), 'tools')[0]).toMatchObject({ failed: true, summary: 'Read 3 files, edited 2, wrote 1, and 2 more' })
   })
 
-  it('approval: each decision shows on its card, and a standing rule approves the next of its kind', async () => {
+  it('approval: a decision goes back to its place, a rule approves the next of its kind, and what does not block waits under the answer', async () => {
     const chat = await open(scenario('approval'))
     const { session, overseer, ready, rows } = chat
-    const pending = () => of(rows(), 'action').find(({ state }) => state === 'pending')!
-    const untilWaiting = async () => {
+    const pending = () => of(ready().pinned, 'action')
+    const untilWaiting = () => {
       while (!overseer.player.getSnapshot().waitingFor && overseer.player.getSnapshot().position < overseer.player.getSnapshot().total) overseer.player.step()
     }
 
-    await untilWaiting()
-    expect(ready().pinned).toMatchObject([{ kind: 'action', title: 'Create issue in PLAT', state: 'pending' }])
-    await session.approveAction(pending().actionId)
+    untilWaiting()
+    expect(pending()).toMatchObject([{ title: 'Create issue in PLAT', state: 'pending' }])
+    await session.approveAction(pending()[0].actionId)
     expect(rows().at(-1)).toMatchObject({ kind: 'action', title: 'Create issue in PLAT', state: 'approved' })
 
-    await untilWaiting()
-    await session.rejectAction(pending().actionId)
+    untilWaiting()
+    const { rule } = pending()[0]
+    await overseer.setAutoApprovedActionKind(rule!.gatekeeperId, rule!.actionKind)
 
-    await untilWaiting()
-    expect(pending().rule).toBeDefined()
-    await overseer.setAutoApprovedActionKind(pending().rule!.gatekeeperId, pending().rule!.actionKind)
-
-    await untilWaiting()
-    // Nothing is waiting any more, so each request is back where it was made.
-    expect(ready().pinned).toEqual([])
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'action', 'assistant', 'action', 'assistant', 'tools', 'assistant'])
-    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual(['Approved by Ada Lovelace', 'Denied by Ada Lovelace'])
-    // The two a rule approved were never anyone's decision: they are steps of the work.
+    // The post does not suspend the turn: the agent wrote on, and the card is still below it all.
+    const whilePending: string[] = []
+    while (overseer.player.getSnapshot().position < overseer.player.getSnapshot().total) {
+      overseer.player.step()
+      if (pending().length && ready().streamingText) whilePending.push(pending()[0].title)
+    }
+    expect(new Set(whilePending)).toEqual(new Set(['Post to #platform']))
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'action', 'assistant', 'tools', 'assistant', 'tools', 'assistant', 'action'])
+    // The two labels were never anyone's decision: they are steps of the work.
     expect(of(rows(), 'tools')[1]).toMatchObject({
       summary: 'Ran code, took 2 actions',
       entries: [{ type: 'call' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }],
     })
+
+    await session.rejectAction(pending()[0].actionId)
+    expect(ready().pinned).toEqual([])
+    expect(rows().map(({ kind }) => kind).slice(-3)).toEqual(['tools', 'action', 'assistant'])
+    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual(['Approved by Ada Lovelace', 'Denied by Ada Lovelace'])
   })
 
-  it('observation-hook: what was read is listed with the tools, and the hook under the answer can be switched', async () => {
-    const { session, ready, rows } = await watch(scenario('observation-hook'), () => [])
+  it('observation-hook: what was read is listed with the tools, and the hook stays under the answer while it is written', async () => {
+    const { session, ready, rows, seen } = await watch(scenario('observation-hook'), (chat) => {
+      const { pinned, streamingText, openTools } = chat.ready()
+      if (pinned.length === 0) return []
+      return [...(streamingText ? ['writing'] : []), ...(openTools?.running ? ['running a tool'] : [])]
+    })
+    // With the hook already under the answer, the agent both wrote text and ran a tool.
+    expect(seen).toEqual(new Set(['writing', 'running a tool']))
+    expect(rows().slice(-4).map(({ kind }) => kind)).toEqual(['assistant', 'tools', 'assistant', 'hook'])
 
     expect(of(rows(), 'tools')[0].entries.map(({ type }) => type)).toEqual(['call', 'observation', 'observation'])
     expect(rows().at(-1)).toMatchObject({ kind: 'hook', enabled: true })

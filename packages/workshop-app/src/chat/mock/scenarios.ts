@@ -116,14 +116,16 @@ const toolRun: Scenario = {
 
 const LABEL_KIND = { tag: 'jira.label', label: 'Label an issue' }
 const createTicket = call('executeCode', { code: 'await env.JIRA.createIssue({ project: "PLAT", summary: "Chart shows 4 weeks" })\n' }, { output: 'Queued for approval.\n' })
+const postToSlack = call('executeCode', { code: 'await env.SLACK.post("#platform", "Filed PLAT-212: the tickets chart shows 4 weeks instead of 12.")\n' }, { output: 'Queued for approval.\n' })
 const labelTicket = call('executeCode', { code: 'await env.JIRA.addLabel("PLAT-212", "dashboard")\n' }, { output: 'Queued for approval.\n' })
 
 const approval: Scenario = {
   id: 'approval',
   title: 'File a ticket',
   description:
-    'Approve the ticket and the agent continues. Deny the Slack post. Choose “Always approve” on the first label ' +
-    'and the second is approved by your rule.',
+    'Approve the ticket and the agent continues. Choose “Always approve” on the label and the next one is approved by ' +
+    'your rule. The Slack post does not hold the agent up: its card waits under the answer while the agent keeps ' +
+    'writing. Deny it when you like.',
   history: history([user('File a ticket for the chart bug and tell the team.')]),
   script: [
     ...turn(
@@ -146,24 +148,7 @@ const approval: Scenario = {
       },
     ),
     ...when('onApprove', turn(
-      say(agent({ text: 'Filed as **PLAT-212**. I’d also post it to #platform.' })),
-      {
-        message: action({
-          title: 'Post to #platform',
-          description: 'Sends one message to the channel.',
-          awaitDecision: true,
-          incomplete: true,
-          resource: { title: 'Slack · #platform', url: 'https://example.slack.com/archives/C0PLATFORM' },
-          fields: [
-            { label: 'Text', kind: 'text', value: 'Filed PLAT-212: the tickets chart shows 4 weeks instead of 12.' },
-            { label: 'Options', kind: 'json', value: '{\n  "unfurl_links": false\n}' },
-          ],
-        }),
-        delay: 300,
-      },
-    )),
-    ...when(['onDeny', 'onApprove'], turn(
-      say(agent({ text: 'Understood. Last thing: I’ll label the ticket so it shows on the board.' })),
+      say(agent({ text: 'Filed as **PLAT-212**. I’ll label it so it shows on the board.' })),
       streamTool(labelTicket),
       { message: agent({ toolCalls: [labelTicket] }), delay: 300 },
       {
@@ -185,7 +170,33 @@ const approval: Scenario = {
         }),
         delay: 600,
       },
-      say(agent({ text: 'Done. PLAT-212 is filed and labelled.' })),
+      say(agent({ text: 'Labelled. I’ll also tell #platform.' })),
+      streamTool(postToSlack),
+      { message: agent({ toolCalls: [postToSlack] }), delay: 300 },
+      // Not `awaitDecision`: the gatekeeper simulates the post, so the agent carries on while it waits.
+      {
+        message: action({
+          title: 'Post to #platform',
+          description: 'Sends one message to the channel.',
+          incomplete: true,
+          resource: { title: 'Slack · #platform', url: 'https://example.slack.com/archives/C0PLATFORM' },
+          fields: [
+            { label: 'Text', kind: 'text', value: 'Filed PLAT-212: the tickets chart shows 4 weeks instead of 12.' },
+            { label: 'Options', kind: 'json', value: '{\n  "unfurl_links": false\n}' },
+          ],
+        }),
+        delay: 200,
+      },
+      say(agent({
+        reasoning: 'The post is queued. Summarise what was done while it waits, so the answer is complete either way.',
+        text:
+          'The post is waiting for you below. In the meantime, here is where things stand:\n\n' +
+          '1. **PLAT-212** is filed in the Platform project as a bug, with the expected twelve-week window in its description.\n' +
+          '2. It carries the `dashboard` and `bug` labels, so it shows up on the board’s dashboard swimlane and in the weekly bug triage.\n' +
+          '3. Nobody is assigned yet. The board assigns from triage on Mondays, which is usually soon enough for a chart fix.\n\n' +
+          'If you approve the post, the channel gets one short message linking the ticket. If you deny it, nothing is sent and ' +
+          'the ticket still stands on its own. Either way there is nothing more for me to do here unless you want the fix itself.',
+      })),
     )),
   ],
 }
@@ -199,12 +210,13 @@ const restrictedApproval: Scenario = {
 }
 
 const watch = call('executeCode', { code: 'const board = await env.JIRA.board("PLAT")\nreturn board.issues.filter((issue) => issue.isNew)\n' }, { output: '3 new issues\n' })
+const checkHook = call('executeCode', { code: 'return (await env.JIRA.board("PLAT")).issues.filter(OnNewIssue.matches).length\n' }, { output: '3\n' })
 const hook = call('setBindingHook', { bindingName: 'JIRA', entrypoint: 'OnNewIssue' })
 
 const observationHook: Scenario = {
   id: 'observation-hook',
   title: 'Watch the board',
-  description: 'What the agent read is listed with its tools. The hook it sets up stays under the answer; toggle it.',
+  description: 'What the agent read is listed with its tools. The hook it sets up stays under the answer while the agent keeps working and writing; toggle it.',
   history: history([user('Watch the Platform board and summarise new tickets for me.')]),
   script: turn(
     streamTool(watch),
@@ -232,10 +244,24 @@ const observationHook: Scenario = {
       message: bindHook({ title: 'New issue in PLAT', description: 'Runs `OnNewIssue` when a ticket is created on the board.' }),
       delay: 200,
     },
+    // The hook exists from here on. Everything below is written after it, and it stays beneath it all.
+    say(agent({ text: 'The hook is in place. Let me check that it would have caught this week’s tickets.' })),
+    streamTool(checkHook),
+    { message: agent({ toolCalls: [checkHook] }), delay: 300 },
     say(agent({
+      reasoning: 'All three match the filter. Explain what the hook does and list this week’s tickets.',
       text:
-        'From now on each new ticket gets a one-line summary here. This week’s:\n\n' +
-        '- **PLAT-212** Chart shows 4 weeks\n- **PLAT-213** Login loop on Safari\n- **PLAT-214** Export times out',
+        'It would have. From now on each new ticket gets a one-line summary here, as soon as it is created.\n\n' +
+        '**This week’s tickets**\n\n' +
+        '- **PLAT-212** Chart shows 4 weeks. The tickets chart covers four weeks where twelve are expected.\n' +
+        '- **PLAT-213** Login loop on Safari. Signing in redirects back to the sign-in page when third-party cookies are blocked.\n' +
+        '- **PLAT-214** Export times out. CSV exports of boards with more than a few thousand issues never finish.\n\n' +
+        '**How the hook behaves**\n\n' +
+        'Jira calls it once per new issue on the Platform board. Edits, comments and moves between columns do not trigger it, ' +
+        'so you will not get a summary every time someone drags a card. If several tickets arrive at once you get one summary ' +
+        'for each, in the order they were created.\n\n' +
+        'You can switch the hook off below whenever the board gets noisy, and back on again later; nothing is lost in between ' +
+        'except the summaries for tickets created while it was off.',
     })),
   ),
 }
