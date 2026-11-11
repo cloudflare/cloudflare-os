@@ -1,9 +1,10 @@
+import { CalendarBlankIcon, CpuIcon, UserIcon } from '@phosphor-icons/react'
 import type { ToolStepEntry } from './ToolStep'
 import { WorkLog } from './WorkLog'
 
 export type MessageInfoProps = {
-  /** Who sent the message: a person's name, "You", or the model that wrote it. */
-  sender: string
+  /** The model or other sender. Omitted for the viewer's own messages. */
+  sender?: string
   /** When it joined the conversation. Absent for a message that has not yet. */
   sentAt?: Date
   /**
@@ -21,22 +22,41 @@ export type MessageInfoProps = {
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 /**
- * What there is to know about a message, to go under it: who sent it and when, on one line, then
- * the steps that led to it.
+ * Metadata for a message, followed by its trace when there is one.
  */
-export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => (
-  <div className="flex flex-col gap-2">
-    <p className="text-sm text-kumo-subtle">
-      {sender}
-      <span aria-hidden="true"> · </span>
-      {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
-    </p>
-    {trace && trace.steps.length > 0 && (
-      // Each step has room around it to be pointed at. Taking it back here lines their icons up
-      // with the line above.
-      <section aria-label="What led to this message" className="-mx-2 text-start">
-        <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
-      </section>
-    )}
-  </div>
-)
+export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => {
+  const SenderIcon = trace ? CpuIcon : UserIcon
+
+  return (
+    <div className="flex flex-col gap-3">
+      <dl className="flex flex-col gap-2 text-sm/5 text-kumo-subtle">
+        {sender && (
+          <div className="flex items-center gap-2">
+            <dt className="shrink-0">
+              <SenderIcon aria-hidden="true" className="size-4" />
+              <span className="sr-only">From</span>
+            </dt>
+            <dd className="min-w-0">{sender}</dd>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <dt className="shrink-0">
+            <CalendarBlankIcon aria-hidden="true" className="size-4" />
+            <span className="sr-only">Sent</span>
+          </dt>
+          <dd className="min-w-0">
+            {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
+          </dd>
+        </div>
+      </dl>
+      {trace && trace.steps.length > 0 && (
+        <section aria-label="What led to this message" className="border-t border-kumo-line pt-2 text-start">
+          {/* Compensate for each step's hit-area padding so its icon aligns with the metadata. */}
+          <div className="-mx-2">
+            <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}

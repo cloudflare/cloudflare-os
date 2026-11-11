@@ -46,8 +46,16 @@ the mascot shows at the end of the conversation with what it is doing ("Running 
 status opens to the steps taken since the last message, with the one under way shown open,
 including the reply as it is drafted. A reply becomes a message only once it is written. Its
 steps then go with it (`AssistantItem.trace`), out of the conversation but there for whoever asks:
-a message's details (`MessageInfo`) unfold under it from the actions beside it, and say who sent
-it, when, and the steps that led to it. The mascot's room is always kept, so its coming and going moves nothing.
+a message's details (`MessageInfo`) unfold in a separate outlined panel. Panels with a trace
+match the message width; metadata-only panels fit their contents. The model/other sender and
+time have their own icon rows, with a divider before the trace when present. The viewer's own
+messages only show the time. Everything in the panel is one text size (`text-sm/5`) and its row
+icons are all `size-4`, centred on their line. The panel grows and shrinks with the arrival
+animation's timing; measured collapsible heights keep the scroll position from jumping during
+closure. It joins the message's bubble run with the same 2px spacing and meeting corners. Its
+close button sits beside it and shows the way a message's actions do: while the panel or the
+button's own place is pointed at, or it is reached by keyboard. A press elsewhere closes it too.
+The mascot's room is always kept, so its coming and going moves nothing.
 
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
 waiting on the user for (a pending approval or connection request) is shown at the end of the turn,

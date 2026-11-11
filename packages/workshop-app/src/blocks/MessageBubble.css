@@ -21,8 +21,44 @@
   from { margin-top: 0; }
 }
 
+/* The details use the same growth, fade and focus as arriving bubbles. Transitions let an
+   interrupted open reverse smoothly. Kumo supplies a measured height, so closing never briefly
+   collapses the content for measurement and clamps the conversation's scroll position. */
+.message-details {
+  height: var(--collapsible-panel-height);
+  overflow: clip;
+  transition: height var(--arrival-duration) var(--arrival-easing);
+}
+
+.message-details-surface {
+  scale: 1;
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    scale var(--arrival-duration) var(--arrival-easing),
+    border-radius 300ms ease-out,
+    opacity 200ms 40ms ease-out,
+    filter 200ms 40ms ease-out;
+}
+
+.message-details:is([data-starting-style], [data-ending-style]) {
+  height: 0;
+}
+
+.message-details:is([data-starting-style], [data-ending-style]) > div > .message-details-surface {
+  scale: 0.5;
+  border-radius: 21px;
+  opacity: 0;
+  filter: blur(3px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-arriving] [data-role] {
     animation: none;
+  }
+
+  .message-details,
+  .message-details-surface {
+    transition: none;
   }
 }

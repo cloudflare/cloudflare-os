@@ -66,7 +66,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           unread={item.unread}
           onOpenAttachment={handlers.onOpenAttachment}
           joins={joins}
-          details={{ open: isOpen, onToggle: toggle, content: <MessageInfo sender={item.from ?? 'You'} sentAt={item.sentAt} /> }}
+          details={{ open: isOpen, onToggle: toggle, fitContent: true, content: <MessageInfo sender={item.from} sentAt={item.sentAt} /> }}
         />
       )
     case 'assistant':
@@ -77,6 +77,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           details={{
             open: isOpen,
             onToggle: toggle,
+            fitContent: item.trace.length === 0,
             content: (
               <MessageInfo
                 sender={item.sender}

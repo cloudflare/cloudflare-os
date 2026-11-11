@@ -57,21 +57,21 @@ export type ToolStepEntry =
 export type ToolStepProps = { entry: ToolStepEntry; open: boolean; onToggle: () => void }
 
 const Detail = ({ entry }: { entry: ToolStepEntry }) => {
-  if (entry.type === 'thinking') return <div className="text-sm text-kumo-subtle"><Markdown>{entry.text}</Markdown></div>
+  if (entry.type === 'thinking') return <div className="text-sm/5 text-kumo-subtle"><Markdown>{entry.text}</Markdown></div>
   if (entry.type === 'writing') return <div className="text-base/5 text-kumo-default"><Markdown>{entry.text}</Markdown></div>
   if (entry.type === 'observation') {
     const { resource } = entry
     return (
       <>
         {resource && <ResourceLink {...resource} />}
-        {entry.description && <div className="text-sm text-kumo-default"><Markdown>{entry.description}</Markdown></div>}
+        {entry.description && <div className="text-sm/5 text-kumo-default"><Markdown>{entry.description}</Markdown></div>}
         <ActionFields fields={entry.fields} />
       </>
     )
   }
   return (
     <>
-      {entry.reasoning && <div className="text-sm text-kumo-subtle"><Markdown>{entry.reasoning}</Markdown></div>}
+      {entry.reasoning && <div className="text-sm/5 text-kumo-subtle"><Markdown>{entry.reasoning}</Markdown></div>}
       {entry.error && <CodeBlock label="Error" tone="danger">{entry.error}</CodeBlock>}
       {entry.sections.map(({ label, text }) => <CodeBlock key={label} label={label}>{text}</CodeBlock>)}
     </>
@@ -112,18 +112,18 @@ export const ToolStep = ({ entry, open, onToggle }: ToolStepProps) => {
   const { icon: StepIcon, label } = summaryOf(entry)
   const line = (
     <>
-      <StepIcon aria-hidden="true" className="size-5 shrink-0" />
+      <StepIcon aria-hidden="true" className="size-4 shrink-0" />
       <span className={cn('min-w-0 truncate', isUnderWay(entry) && 'animate-pulse motion-reduce:animate-none')}>{label}</span>
       {entry.type === 'call' && entry.error && <Badge variant="error">Error</Badge>}
     </>
   )
 
   if (!hasDetail(entry)) {
-    return <div className="flex items-center gap-2 px-2 py-1 text-base/5 text-kumo-subtle">{line}</div>
+    return <div className="flex items-center gap-2 px-2 py-1 text-sm/5 text-kumo-subtle">{line}</div>
   }
   return (
-    <Disclosure open={open} onToggle={onToggle} summary={line}>
-      <div className="ms-4 mt-1 mb-2 flex flex-col gap-3 border-s-2 border-kumo-line ps-4">
+    <Disclosure open={open} onToggle={onToggle} summary={line} className="text-sm/5">
+      <div className="ms-4 mt-1 mb-2 flex flex-col gap-3 border-s-2 border-kumo-line ps-3.5">
         <Detail entry={entry} />
       </div>
     </Disclosure>
