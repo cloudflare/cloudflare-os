@@ -96,17 +96,9 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         />
       )
     case 'action': {
-      const request = { title: item.title, description: item.description, resource: item.resource, fields: item.fields }
+      const request = { title: item.title, description: item.description, resource: item.resource, fields: item.fields, open: isOpen, onToggle: toggle }
       if (item.state !== 'pending') {
-        return (
-          <ActionCard
-            {...request}
-            state={item.state}
-            resolution={item.resolution ?? ''}
-            open={isOpen}
-            onToggle={toggle}
-          />
-        )
+        return <ActionCard {...request} state={item.state} resolution={item.resolution ?? ''} />
       }
       const { rule } = item
       return (
