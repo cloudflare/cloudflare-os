@@ -56,6 +56,62 @@ export const useMessageScroll = () => {
     void scrollToBottom({ animation })
   }, [scrollToBottom, animation])
 
+  /** Brings a row into view, in the middle of what can be seen if it fits, and points it out. */
+  const scrollToRow = useCallback((id: string, page: number) => {
+    const scroll = scrollRef.current
+    const content = contentRef.current
+    if (!scroll || !content) return
+    // Following the end of the conversation would pull the view straight back.
+    stopScroll()
+    const show = (element: HTMLElement, behavior: ScrollBehavior) => {
+      const style = getComputedStyle(scroll)
+      const view = scroll.getBoundingClientRect()
+      const target = element.getBoundingClientRect()
+      // The header floats over the top of the scroller and the composer over its bottom.
+      const top = view.top + (Number.parseFloat(style.getPropertyValue('--header-height')) || 0)
+      const bottom = view.bottom - (Number.parseFloat(style.getPropertyValue('--composer-half')) || 0)
+      const above = Math.max(12, (bottom - top - target.height) / 2)
+      scroll.scrollBy({ top: target.top - top - above, behavior })
+      // A jump is where the reader now is. Its scroll event comes a frame later, and a page that
+      // mounts before then would be reconciled against where they were, taking them back there.
+      if (behavior === 'instant') capture()
+    }
+    const find = () => content.querySelector<HTMLElement>(`[data-message-anchor="${CSS.escape(id)}"]`)
+    const pointOut = (row: HTMLElement, delay: number) =>
+      row.animate([{ opacity: 1 }, { opacity: 0.4 }, { opacity: 1 }], { duration: 700, delay, easing: 'ease-in-out' })
+
+    const row = find()
+    if (row) {
+      show(row, animation)
+      pointOut(row, animation === 'smooth' ? 250 : 0)
+      return
+    }
+    // Far off screen its page is only a spacer, with nothing in it to scroll past. So the
+    // conversation fades out, is put where the row is, and fades back in there: going to the page
+    // brings its rows back, a frame or two later, and then the row itself can be gone to.
+    const spacer = content.querySelector<HTMLElement>(`[data-message-page="${page}"]`)
+    if (!spacer) return
+    const fades = animation === 'smooth'
+    const out = fades ? content.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 150, easing: 'ease-out', fill: 'forwards' }) : undefined
+    const jump = () => {
+      show(spacer, 'instant')
+      let frames = 30
+      const arrive = () => {
+        const mounted = find()
+        if (!mounted && frames-- > 0) return void requestAnimationFrame(arrive)
+        if (mounted) show(mounted, 'instant')
+        if (out) {
+          out.cancel()
+          content.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' })
+        }
+        if (mounted) pointOut(mounted, fades ? 200 : 0)
+      }
+      requestAnimationFrame(arrive)
+    }
+    if (out) void out.finished.then(jump, () => {})
+    else jump()
+  }, [scrollRef, contentRef, stopScroll, animation, capture])
+
   useLayoutEffect(() => {
     const scroll = scrollRef.current!
     const content = contentRef.current!
@@ -94,5 +150,5 @@ export const useMessageScroll = () => {
   // Preserve React-driven replacements before paint; observers cover subsequent layout changes.
   useLayoutEffect(reconcile)
 
-  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, reconcile }
+  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile }
 }

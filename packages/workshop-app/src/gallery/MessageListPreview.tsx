@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Composer } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
-import { MessageList } from '@/blocks/MessageList'
+import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -18,6 +18,7 @@ export const MessageListPreview = () => {
   const [card, setCard] = useState(false)
   const [text, setText] = useState('')
   const pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const list = useRef<MessageListHandle>(null)
   const first = ids[0]
   const loadEarlier = useCallback(() => {
     if (pending.current !== undefined || first === 0) return
@@ -79,11 +80,12 @@ export const MessageListPreview = () => {
         <Button onClick={restart}>Open another chat</Button>
         <Button onClick={() => setStreaming((current) => !current)}>{streaming ? 'Stop stream' : 'Start stream'}</Button>
         <Button onClick={() => setCard((current) => !current)}>{card ? 'Remove the card' : 'Add a card'}</Button>
+        <Button onClick={() => list.current?.scrollToMessage(first)}>Go to message {first}</Button>
         <span className="self-center text-sm text-kumo-subtle">{ids.length} / 600 messages loaded</span>
       </div>
       <div className="flex h-[32rem] w-full flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
         <ChatLayout header={<Button>Virtualized conversation</Button>} composer={<Composer onSend={() => setIds((current) => [...current, current.at(-1)! + 1])} />}>
-          <MessageList key={conversation} messages={messages} streaming={streaming} history={{ hasMore: first > 0, loading, onLoadEarlier: loadEarlier }}>
+          <MessageList ref={list} key={conversation} messages={messages} streaming={streaming} history={{ hasMore: first > 0, loading, onLoadEarlier: loadEarlier }}>
             {text && <MessageBubble role="assistant">{text}</MessageBubble>}
             <LiveRows>
               {card && (

@@ -27,9 +27,14 @@ export const MessageBlocksPreview = () => {
 
   return (
     <>
-      <Section title="UserMessage (plain, mentions, slash command, attachments, another sender, not read yet)">
+      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, another sender, not read yet)">
         <Column>
-          <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} />
+          <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} onReply={() => say('reply')} />
+          <UserMessage parts={[{ type: 'text', text: 'Make it twenty-four, and keep the weekly split.' }]} quote="The chart now covers 12 weeks" />
+          <UserMessage
+            parts={[{ type: 'text', text: 'Yes' }]}
+            quote="The chart now covers 12 weeks (148 tickets). One edit to src/worker.ts failed because the limit is named maxResults there; I left it alone since 50 per page is enough. Want me to raise it anyway?"
+          />
           <UserMessage
             parts={[
               { type: 'text', text: 'Turn ' },

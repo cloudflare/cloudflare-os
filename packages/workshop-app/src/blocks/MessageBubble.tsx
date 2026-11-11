@@ -18,6 +18,8 @@ export type MessageBubbleProps = {
    * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
    */
   joins?: MessageJoins
+  /** Start a reply to the message. */
+  onReply?: () => void
   /**
    * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
@@ -91,10 +93,10 @@ const ACTIONS =
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, joins, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, joins, onReply, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
-  const actions = <MessageActions details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  const actions = <MessageActions onReply={onReply} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // A click anywhere outside the details puts them away, the message they are about included.
   // The button that shows them is left to do its own switching.

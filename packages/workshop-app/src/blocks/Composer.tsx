@@ -1,26 +1,39 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
+import { ComposerReply } from './ComposerReply'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerAttachmentDrop } from './useComposerAttachmentDrop'
 import './Composer.css'
 
+export type ComposerHandle = {
+  /** Put the cursor in the message, e.g. once something outside has set up a reply. */
+  focus: () => void
+}
+
 export type ComposerProps = {
   /** Files are local draft attachments; uploading is the caller's responsibility. */
   onSend: (text: string, files: File[]) => void
+  /**
+   * The draft is a reply: a line of the message it answers, shown above the draft, the way to
+   * that message, and the way to make the draft an ordinary message again. Whoever sends the
+   * message knows what it replies to.
+   */
+  reply?: { quote: string; onShow?: () => void; onCancel: () => void }
   addActions?: Omit<ComposerAddActions, 'onUpload'>
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
+  ref?: Ref<ComposerHandle>
 }
 
 /** Lines the message grows to before it scrolls inside the field. */
 const MAX_ROWS = 6
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, addActions, addMenuInPlace }: ComposerProps) => {
+export const Composer = ({ onSend, reply, addActions, addMenuInPlace, ref }: ComposerProps) => {
   const [text, setText] = useState('')
   const [expanded, setExpanded] = useState(false)
   const { attachments, addFiles, removeAttachment, clearAttachments } = useComposerAttachments()
@@ -33,6 +46,7 @@ export const Composer = ({ onSend, addActions, addMenuInPlace }: ComposerProps) 
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const trimmed = text.trim()
   const canSend = !!trimmed || attachments.length > 0
+  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
 
   useLayoutEffect(() => {
     const editor = editorRef.current!
@@ -85,6 +99,14 @@ export const Composer = ({ onSend, addActions, addMenuInPlace }: ComposerProps) 
             if (files.length) addFiles(files)
           }}
         />
+        <ComposerReply
+          quote={reply?.quote}
+          onShow={reply?.onShow}
+          onCancel={() => {
+            reply?.onCancel()
+            inputRef.current?.focus()
+          }}
+        />
         <ComposerAttachmentTray
           attachments={attachments}
           onRemove={(id) => {
@@ -114,6 +136,7 @@ export const Composer = ({ onSend, addActions, addMenuInPlace }: ComposerProps) 
                 addFiles(event.clipboardData.files)
               }}
               onKeyDown={(event) => {
+                if (event.key === 'Escape' && reply) return reply.onCancel()
                 if (
                   event.key !== 'Enter' ||
                   event.shiftKey ||

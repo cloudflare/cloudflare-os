@@ -10,11 +10,15 @@ import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
-import type { ActionItem, ChatItem, NoticeItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatItem, NoticeItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
+  /** Start a reply to a message. */
+  onReply: (item: UserItem | AssistantItem) => void
+  /** Go to the message a reply answers. */
+  onShowQuoted: (reply: UserItem) => void
   onOpenAttachment: (attachmentId: string) => void
   onOpenOutput: (workpieceId: number) => void
   onApprove: (actionId: number) => ActionResult
@@ -61,11 +65,14 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       return (
         <UserMessage
           parts={item.parts}
+          quote={item.quote}
+          onShowQuoted={() => handlers.onShowQuoted(item)}
           attachments={item.attachments}
           from={item.from}
           unread={item.unread}
           onOpenAttachment={handlers.onOpenAttachment}
           joins={joins}
+          onReply={() => handlers.onReply(item)}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
         />
       )
@@ -74,6 +81,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         <AssistantMessage
           text={item.text}
           joins={joins}
+          onReply={() => handlers.onReply(item)}
           details={{
             open: isOpen,
             onToggle: toggle,

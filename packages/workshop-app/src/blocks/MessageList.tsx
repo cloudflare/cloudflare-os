@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
@@ -20,6 +20,12 @@ export type MessageListProps = {
     error?: string
     onLoadEarlier: () => void
   }
+  ref?: Ref<MessageListHandle>
+}
+
+export type MessageListHandle = {
+  /** Brings one of `messages` into view and points it out. Nothing happens for an id not among them. */
+  scrollToMessage: (id: MessageListItem['id']) => void
 }
 
 /** The clock of Arrival.css, which a row opens on so that what is below moves with what grows in. */
@@ -46,8 +52,14 @@ const markArriving = (row: Element) => {
 }
 
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
-export const MessageList = ({ messages, children, history, streaming }: MessageListProps) => {
-  const { scrollRef, contentRef, atBottom, scrollToBottom, reconcile } = useMessageScroll()
+export const MessageList = ({ messages, children, history, streaming, ref }: MessageListProps) => {
+  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile } = useMessageScroll()
+  useImperativeHandle(ref, () => ({
+    scrollToMessage: (id) => {
+      const sequence = messages.find((message) => message.id === id)?.sequence
+      if (sequence !== undefined) scrollToRow(String(id), Math.floor(sequence / VIRTUAL_PAGE_SIZE))
+    },
+  }), [messages, scrollToRow])
   const startRef = useRef<HTMLDivElement>(null)
   useScrollFadeFallback(scrollRef)
   // Sequence buckets stay stable when history is prepended or an existing message is updated.

@@ -144,6 +144,7 @@ function Gallery() {
   const previewSend = (text: string, files: File[]) => setMenuAction(
     `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`,
   )
+  const [replying, setReplying] = useState(true)
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
@@ -248,6 +249,20 @@ function Gallery() {
           </div>
         </div>
       </Section>
+      <Section title="Composer (replying: a line of the message being answered sits above the draft, with any attachments under it; the cross or Escape makes it an ordinary message again)">
+        <div className="flex w-full flex-col gap-3">
+          <Composer
+            onSend={(text, files) => {
+              previewSend(text, files)
+              setReplying(false)
+            }}
+            reply={replying
+              ? { quote: 'The chart now covers 12 weeks (148 tickets). One edit to src/worker.ts failed because the limit is named maxResults there; I left it alone since 50 per page is enough.', onCancel: () => setReplying(false) }
+              : undefined}
+          />
+          <div><Button disabled={replying} onClick={() => setReplying(true)}>Reply to a message</Button></div>
+        </div>
+      </Section>
       <Section title="Attachments (image, PDF, spreadsheet, code, and long filename)">
         <AttachmentPreview />
       </Section>
@@ -259,7 +274,7 @@ function Gallery() {
           <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
         </div>
       </Section>
-      <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave)">
+      <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave; go to the oldest loaded message from near it to scroll there, or from pages away to fade over to it)">
         <MessageListPreview />
       </Section>
       <Section title="Borders: line (input) and hairline (checkbox)">
