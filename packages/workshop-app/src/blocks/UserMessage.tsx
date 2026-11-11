@@ -1,10 +1,9 @@
-import type { ReactNode } from 'react'
 import { LinkSimpleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { MessageAttachment } from './MessageAttachment'
-import { MessageBubble, type MessageJoins } from './MessageBubble'
+import { MessageBubble, type MessageDetails, type MessageJoins } from './MessageBubble'
 
 /** A stretch of the message: plain text, or something the user mentioned. */
 export type UserMessagePart =
@@ -25,8 +24,8 @@ export type UserMessageProps = {
   onOpenAttachment?: (id: string) => void
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
   joins?: MessageJoins
-  /** What there is to know about the message (see `MessageInfo`), shown when its details are asked for. */
-  details?: ReactNode
+  /** What there is to know about the message (see `MessageInfo`), shown under it while open. */
+  details?: MessageDetails
 }
 
 const Part = ({ part }: { part: UserMessagePart }) => {

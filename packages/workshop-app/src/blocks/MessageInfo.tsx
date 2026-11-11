@@ -1,4 +1,3 @@
-import { useId } from 'react'
 import type { ToolStepEntry } from './ToolStep'
 import { WorkLog } from './WorkLog'
 
@@ -9,7 +8,7 @@ export type MessageInfoProps = {
   sentAt?: Date
   /**
    * How the message came about, for one the agent wrote: the steps it took and what it thought.
-   * Left out for a message a person sent.
+   * Left out for a message a person sent. Nothing is shown for a reply that took no steps.
    */
   trace?: {
     steps: ToolStepEntry[]
@@ -21,26 +20,21 @@ export type MessageInfoProps = {
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-/** What there is to know about a message: who sent it, when, and how it came about. */
-export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => {
-  const heading = useId()
-
-  return (
-    <div className="flex flex-col gap-3">
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-        <dt className="text-kumo-subtle">From</dt>
-        <dd className="min-w-0 break-words">{sender}</dd>
-        <dt className="text-kumo-subtle">Sent</dt>
-        <dd>{sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not yet: the assistant has not read it'}</dd>
-      </dl>
-      {trace && (
-        <section aria-labelledby={heading} className="flex flex-col gap-1 border-t border-kumo-line pt-3">
-          <h3 id={heading} className="text-kumo-subtle">How it came about</h3>
-          {trace.steps.length > 0
-            ? <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
-            : <p>It was written straight away: nothing was looked up, run or thought through first.</p>}
-        </section>
-      )}
-    </div>
-  )
-}
+/**
+ * What there is to know about a message, to go under it: who sent it and when, on one line, then
+ * the steps that led to it.
+ */
+export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => (
+  <div className="flex flex-col gap-2">
+    <p className="text-sm text-kumo-subtle">
+      {sender}
+      <span aria-hidden="true"> · </span>
+      {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
+    </p>
+    {trace && trace.steps.length > 0 && (
+      <section aria-label="What led to this message" className="text-start">
+        <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
+      </section>
+    )}
+  </div>
+)

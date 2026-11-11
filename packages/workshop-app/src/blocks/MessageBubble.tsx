@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import '@/components/Arrival.css'
 import { MessageActions } from './MessageActions'
 import './MessageBubble.css'
@@ -15,9 +16,14 @@ export type MessageBubbleProps = {
    * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
    */
   joins?: MessageJoins
-  /** What there is to know about the message (see `MessageInfo`), shown when its details are asked for. */
-  details?: ReactNode
+  /**
+   * What there is to know about the message (see `MessageInfo`), shown under it while `open`.
+   * Controlled, so it can outlive the message being unmounted (a virtual list does that).
+   */
+  details?: MessageDetails
 }
+
+export type MessageDetails = { open: boolean; onToggle: () => void; content: ReactNode }
 
 const BUBBLE = {
   user: 'rounded-[21px] bg-kumo-contrast text-kumo-inverse whitespace-pre-wrap',
@@ -61,39 +67,65 @@ const JOINED = {
 // along, so showing them moves nothing, and show while the bubble or the place they are in is
 // pointed at, or one of them has focus; the rest of the row does not bring them up. They touch
 // the bubble (the gap is their own padding), so the pointer crosses to them without leaving both.
-// They stay while one of them has something open, which is elsewhere on the page.
+// They stay while the message's details are showing, as the way to put those away again.
 const ACTIONS =
   'shrink-0 opacity-0 transition-opacity motion-reduce:transition-none ' +
-  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100 has-[[data-popup-open]]:opacity-100'
+  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100'
+
+const UNFOLD = { duration: 0.24, ease: [0.25, 0.1, 0.25, 1] } as const
+const FOLDED = { height: 0, opacity: 0 }
 
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
- * What can be done with a message shows beside it while it is pointed at (see `MessageActions`).
+ * What can be done with a message shows beside it while it is pointed at (see `MessageActions`);
+ * its details, when asked for, unfold under it.
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, joins, details }: MessageBubbleProps) => (
-  <div
-    data-role={role}
-    className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
-  >
-    <div
-      className={cn(
-        'peer/bubble arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
-        // It grows in downwards, as the conversation does, from its sender's side.
-        role === 'user' ? 'origin-top-right' : 'origin-top-left',
-        // A corner tightens gradually when a message joins this one in a run.
-        'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
-        BUBBLE[role],
-        RUN[role].bubble,
-        joins?.above && JOINED[role].above,
-        joins?.below && JOINED[role].below,
-      )}
-    >
-      {children}
-    </div>
-    {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
-    {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}><MessageActions details={details} /></div>}
-    {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}><MessageActions details={details} /></div>}
-  </div>
-)
+export const MessageBubble = ({ role, children, joins, details }: MessageBubbleProps) => {
+  const transition = useReducedMotion() ? { duration: 0 } : UNFOLD
+  const actions = <MessageActions details={details} />
+
+  return (
+    <>
+      <div
+        data-role={role}
+        className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+      >
+        <div
+          className={cn(
+            'peer/bubble arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
+            // It grows in downwards, as the conversation does, from its sender's side.
+            role === 'user' ? 'origin-top-right' : 'origin-top-left',
+            // A corner tightens gradually when a message joins this one in a run.
+            'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+            BUBBLE[role],
+            RUN[role].bubble,
+            joins?.above && JOINED[role].above,
+            joins?.below && JOINED[role].below,
+          )}
+        >
+          {children}
+        </div>
+        {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
+        {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}>{actions}</div>}
+        {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}>{actions}</div>}
+      </div>
+      {/* Under the message, in line with its words. It unfolds, so what is below moves with it;
+          a message that comes back on screen with its details open simply has them. */}
+      <AnimatePresence initial={false}>
+        {details?.open && (
+          <motion.div
+            initial={FOLDED}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={FOLDED}
+            transition={transition}
+            className={cn('overflow-y-clip px-5', role === 'user' && 'text-end')}
+          >
+            <div className="pt-1.5 pb-2">{details.content}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  )
+}

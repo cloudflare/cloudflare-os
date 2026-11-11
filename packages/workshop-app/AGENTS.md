@@ -46,8 +46,8 @@ the mascot shows at the end of the conversation with what it is doing ("Running 
 status opens to the steps taken since the last message, with the one under way shown open,
 including the reply as it is drafted. A reply becomes a message only once it is written. Its
 steps then go with it (`AssistantItem.trace`), out of the conversation but there for whoever asks:
-a message's details (`MessageInfo`, opened from the actions beside it) say who sent it, when, and
-how it came about. The mascot's room is always kept, so its coming and going moves nothing.
+a message's details (`MessageInfo`) unfold under it from the actions beside it, and say who sent
+it, when, and the steps that led to it. The mascot's room is always kept, so its coming and going moves nothing.
 
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
 waiting on the user for (a pending approval or connection request) is shown at the end of the turn,
