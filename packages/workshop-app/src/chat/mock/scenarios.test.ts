@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatSession } from '../ChatSession'
 import type { ChatItem } from '../chatItems'
 import { createMockApi, MOCK_WORKSPACE_ID } from './mockApi'
@@ -34,10 +34,17 @@ const watch = async <T,>(played: Scenario, look: (chat: Awaited<ReturnType<typeo
   return { ...chat, seen }
 }
 
+/** Moves a faked clock on, for what is ordered by when it happened. */
+const later = () => vi.setSystemTime(Date.now() + 1000)
+
 const of = <K extends ChatItem['kind']>(rows: ChatItem[], kind: K) =>
   rows.filter((row): row is Extract<ChatItem, { kind: K }> => row.kind === kind)
 
 describe('scenarios', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it.each(SCENARIOS.map((played) => [played.id, played] as const))('%s plays through with nothing left unrendered or still streaming', async (_id, played) => {
     const { ready, seen } = await watch(played, ({ rows }) => of(rows(), 'notice').map(({ notice }) => notice))
 
@@ -64,12 +71,16 @@ describe('scenarios', () => {
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant'])
   })
 
-  it('approval: a decision goes back to its place, a rule approves the next of its kind, and what does not block waits under the answer', async () => {
+  it('approval: a decision stays where it was made, a rule approves the next of its kind, and what does not block waits under the answer', async () => {
+    // Decisions are placed by when they were made, so the clock has to move between the steps.
+    vi.useFakeTimers({ toFake: ['Date'] })
     const chat = await open(scenario('approval'))
     const { session, overseer, ready, rows } = chat
     const pending = () => of(ready().pinned, 'action')
     const untilWaiting = () => {
+      later()
       while (!overseer.player.getSnapshot().waitingFor && overseer.player.getSnapshot().position < overseer.player.getSnapshot().total) overseer.player.step()
+      later()
     }
 
     untilWaiting()
@@ -90,9 +101,11 @@ describe('scenarios', () => {
     expect(new Set(whilePending)).toEqual(new Set(['Post to #platform']))
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'action', 'assistant', 'action', 'action', 'assistant', 'assistant', 'action'])
 
+    // Denied after the agent had written on, the card stays below what was written while it waited.
+    later()
     await session.rejectAction(pending()[0].actionId)
     expect(ready().pinned).toEqual([])
-    expect(rows().map(({ kind }) => kind).slice(-3)).toEqual(['assistant', 'action', 'assistant'])
+    expect(rows().map(({ kind }) => kind).slice(-3)).toEqual(['assistant', 'assistant', 'action'])
     // The two labels were decided by the rule as they were made.
     expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual([
       'Approved by Ada Lovelace',

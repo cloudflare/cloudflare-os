@@ -154,7 +154,8 @@ export type FeedContext = {
  * A chat's messages as rows. A turn is everything from one prompt to the next; what a turn
  * produced (outputs, hooks) or still asks the user (pending approvals and connection requests) is
  * moved to the end of the turn, so it sits under the answer however much the agent wrote
- * afterwards. Once the user has decided, the request goes back to where it happened.
+ * afterwards. Once the user has decided, the request is history and stays where it was decided:
+ * below what had been written by then, above what came after.
  *
  * What a person did to the chat's changes after the answer (saved edits, accepted, discarded) is
  * about what the answer produced, so it follows the artefacts. If the agent carried on afterwards
@@ -415,13 +416,27 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
   const items: ChatItem[] = []
   let pinned: ArtefactItem[] = []
+  // Approvals someone has decided, until the turn reaches the moment they were decided at.
+  let decided: { item: ActionItem; at: number }[] = []
   // What people did to the changes since the turn's last row; shown after `pinned` unless more follows.
   let acts: DividerItem[] = []
   // The steps since the last message. They are never rows: the next message leaves them behind.
   let work: ToolEntry[] = []
   let model: string | undefined
 
+  /**
+   * Puts the approvals decided before `time` into the conversation. Each lands after everything
+   * that was already there when it was decided, which is where it was on screen as it waited, and
+   * before whatever came next: it is never moved back up among the messages above it.
+   */
+  const settle = (time = Infinity) => {
+    // A message stamped at the very moment of a decision followed from it.
+    if (decided.every(({ at }) => at > time)) return
+    items.push(...decided.filter(({ at }) => at <= time).map(({ item }) => item))
+    decided = decided.filter(({ at }) => at > time)
+  }
   const closeTurn = () => {
+    settle()
     items.push(...pinned, ...acts)
     pinned = []
     acts = []
@@ -448,6 +463,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]
     const id = message.sequence
+    settle(message.timestamp.getTime())
 
     if (compactedTo !== undefined && id >= compactedTo && index > 0 && messages[index - 1].sequence < compactedTo) {
       items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, marks: 'compaction', label: 'Context compacted' })))
@@ -535,10 +551,12 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           })))
         } else {
           const item = emit<ActionItem>(`action:${id}`, [message], () => actionItem(id, log))
-          // It waits under the answer; once decided it is history, back where it happened. One a
-          // standing rule approved was decided as it was made.
+          // It waits under the answer; once decided it is history. One a standing rule approved
+          // was decided as it was made; one a person decided stays where it was decided (`settle`).
+          // A record from before decisions were timed counts as decided at once.
           if (item.state === 'pending') pinned.push(item)
-          else items.push(item)
+          else if (log.autoApproved) items.push(item)
+          else decided.push({ item, at: log.appliedAt?.getTime() ?? 0 })
         }
         break
       }
@@ -606,6 +624,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     }
   }
 
+  settle()
   const tail = [...pinned, ...acts]
   return {
     items: sameItems(previous?.items, items) ? previous!.items : items,
