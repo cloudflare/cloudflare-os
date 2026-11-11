@@ -202,11 +202,12 @@ export const useMessageScroll = () => {
     scroll.addEventListener('keydown', onKeyDown)
     const observer = new ResizeObserver((entries) => {
       reconcile()
-      // The library observes content growth. A taller composer/shorter viewport can move the
-      // bottom without resizing that content, so request the same follow behavior in that case.
-      if (state.isAtBottom && entries.some(({ target }) => target === scroll)) {
-        void scrollToBottom({ animation: 'instant', preserveScrollPosition: true, wait: true })
-      }
+      // The library observes content growth. A taller composer/shorter viewport moves the bottom
+      // as well, a little every frame while the composer opens to a quote, files or more lines.
+      // The end of the conversation is kept at it there and then, so that the two move as one:
+      // asked of the library, the move waits its turn behind the library's own eased catching-up
+      // with the padding that grew, and the conversation lags under the composer and then jumps.
+      if (state.isAtBottom && entries.some(({ target }) => target === scroll)) state.scrollTop = state.targetScrollTop
     })
     observer.observe(scroll)
     observer.observe(content)
@@ -215,7 +216,7 @@ export const useMessageScroll = () => {
       scroll.removeEventListener('scroll', capture)
       scroll.removeEventListener('keydown', onKeyDown)
     }
-  }, [scrollRef, contentRef, state, scrollToBottom, stopScroll, capture, reconcile])
+  }, [scrollRef, contentRef, state, stopScroll, capture, reconcile])
 
   // Preserve React-driven replacements before paint; observers cover subsequent layout changes.
   useLayoutEffect(reconcile)
