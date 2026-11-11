@@ -77,15 +77,49 @@ const checkCanCreate = ({ ui, setValues }: Context) => {
   });
 };
 
-/** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
-const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
-  notes.set(grant, await ensureResources([grant]).then(
-    (held): Note => {
-      if (held && grant === CREATED_FILES_GRANT) canCreate = true;
-      return { text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Allow access again." };
-    },
-    (error: unknown): Note => ({ text: error instanceof Error && error.message || "Access wasn't allowed.", tone: "error" })));
-  setValues({});
+const ACCESS_POLL_MS = 2_000;
+const ACCESS_WAIT_MS = 3 * 60_000;
+const sleep = (ms: number) => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+};
+
+/**
+ * Polls for CREATED_FILES_GRANT for up to ACCESS_WAIT_MS, setting `canCreate` once it is held:
+ * Workshop reports only that Google's consent pop-up opened, not what was answered in it.
+ */
+const awaitCreationAccess = async (ui: Context["ui"]) => {
+  for (const deadline = Date.now() + ACCESS_WAIT_MS; canCreate !== true && Date.now() < deadline;) {
+    await sleep(ACCESS_POLL_MS);
+    if (await ui.hasCreationAccess().catch(() => false)) canCreate = true;
+  }
+};
+
+/**
+ * Asks from the click, so the browser lets Workshop open Google's consent pop-up. CREATED_FILES_GRANT
+ * is then waited for, so Approve unlocks once it is given, without asking again.
+ */
+const allow = async ({ ensureResources, setValues, ui }: Context, grant: string) => {
+  const note = (text: string, tone?: "error") => {
+    notes.set(grant, { text, tone });
+    setValues({});
+  };
+  try {
+    const held = await ensureResources([grant]);
+    if (grant !== CREATED_FILES_GRANT) {
+      return note(held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Allow access again.");
+    }
+    if (held) canCreate = true;
+    else {
+      note("Allow access in Google's window.");
+      await awaitCreationAccess(ui);
+    }
+    if (canCreate) setValues({});
+    else note("Access wasn't allowed within 3 minutes. Select Allow access to try again.", "error");
+  } catch (error) {
+    note(error instanceof Error && error.message || "Access wasn't allowed.", "error");
+  }
 };
 
 const grantNotice = (context: Context, grant: string, why: string) =>

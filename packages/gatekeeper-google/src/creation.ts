@@ -11,7 +11,9 @@ import { AccessTokenCache, type AccessTokenProvider } from "./auth-retry";
 import { DriveApi, FOLDER_MIME_TYPE, isFileInvisible, type DriveFile } from "./drive-api";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { obsContext } from "./observability";
-import { CREATED_FILES_GRANT, nativeFileUrl, parseResourceUrl, type CreatableKind } from "./resources";
+import {
+  CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE, nativeFileUrl, parseResourceUrl, type CreatableKind,
+} from "./resources";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.creation", vendorId: "google" });
 
@@ -89,11 +91,20 @@ function creationFolderId(configuration: string | null): string {
 
 const folderName = (folderId: string) => folderId === MY_DRIVE ? "My Drive" : `the folder ${folderId}`;
 
-/** Refuses an account that has not granted {@link CREATED_FILES_GRANT}. */
-async function requireCreatedFilesGrant(account: { getGrantedResourceUrlPatterns(): Promise<string[]> }) {
-  if ((await account.getGrantedResourceUrlPatterns()).includes(CREATED_FILES_GRANT)) return;
-  throw new Error("This Google account hasn't let this app put what it creates in Drive folders. " +
-    "Approve it again and allow access when asked.");
+/** What an approver's account is told when it lacks a grant a creation needs. */
+const MISSING_GRANTS: Record<string, string> = {
+  [CREATED_FILES_GRANT]: "hasn't let this app put what it creates in Drive folders. " +
+    "Approve it again and allow access when asked.",
+  [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]: "hasn't granted Google Drive Folder access, so the new " +
+    "folder's connection could read only what this app puts in it. Grant it, then approve this again.",
+};
+
+/** Refuses an account that has not granted all of `grants`. */
+async function requireGrants(account: { getGrantedResourceUrlPatterns(): Promise<string[]> }, grants: string[]) {
+  if (grants.length === 0) return;
+  let granted = await account.getGrantedResourceUrlPatterns();
+  let missing = grants.find(grant => !granted.includes(grant));
+  if (missing !== undefined) throw new Error(`This Google account ${MISSING_GRANTS[missing]}`);
 }
 
 /**
@@ -161,8 +172,9 @@ const CREATED_FILE_KEY = "createdFile";
  * Sheets and Slides APIs take no such ID or idempotency key, so one of their files can still be
  * orphaned: by a create POST that times out or fails 5xx after Google acted (the retry creates
  * again), or a crash between the reply and the receipt write. A creation rejected after a lost
- * success orphans either, since the facet's storage, and so the receipt, is deleted. Each created
- * file is logged so an orphan can be found.
+ * success orphans either, since the facet's storage, and so the receipt, is deleted. A created
+ * file's ID is logged once its create's reply arrives; an orphan whose reply was lost has to be
+ * found in the approver's Drive.
  *
  * Callers serialize calls with a Mutex.
  */
@@ -198,7 +210,8 @@ export async function createFileOnce(
   let drive = new DriveApi(getAccessToken);
   // Checked before anything is made, so a choice that can be checked in advance orphans no file.
   let making = receipt === undefined;
-  if (moving || making && inPlace) await requireCreatedFilesGrant(account);
+  await requireGrants(account, making && inPlace ? [CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]
+    : moving ? [CREATED_FILES_GRANT] : []);
   let folder = moving || making && folderId !== MY_DRIVE ? await destinationFolder(drive, folderId) : undefined;
 
   let fileId = receipt?.fileId;

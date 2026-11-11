@@ -1,7 +1,7 @@
 // The approver of a creation picks the Drive folder it goes in. This drives that frame as the
 // sandbox runtime would, and reads what it mints back as the gatekeeper does.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_SHEETS_RESOURCE, parseResourceUrl,
 } from "../src/resources";
@@ -72,6 +72,27 @@ describe("the creation location picker", () => {
     expect(frame.ready()).toBe(true);
     expect(frame.notices()).toEqual([]);
     expect(frame.location()).toEqual({ kind: "driveFolder", folderId: "plans-1" });
+  });
+
+  it("unlocks once Google's pop-up grants access, without asking again", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => void vi.useRealTimers());
+    const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, false);
+    await frame.list("folder:root");
+    frame.choose("folder:plans-1");
+    frame.ensureResources.mockResolvedValueOnce(false);
+    frame.ui.hasCreationAccess.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const allowing = frame.notices()[0].props.action.onClick();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(frame.ready()).toBe(false);
+    expect(text(frame.notices()[0])).toBe("Allow access in Google's window.");
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await allowing;
+    expect(frame.ready()).toBe(true);
+    expect(frame.notices()).toEqual([]);
+    expect(frame.ensureResources).toHaveBeenCalledTimes(1);
   });
 
   it("needs the grant for a new folder even in My Drive, and asks nothing once it is held", async () => {

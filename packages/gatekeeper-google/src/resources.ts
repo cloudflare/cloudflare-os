@@ -387,9 +387,9 @@ export const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives
 
 /**
  * The grant that lets the gatekeeper put what a creation makes where its approver chose:
- * `drive.file`, which reaches only files this OAuth client created. A new Doc, Sheet or
- * Presentation is made in My Drive and then moved into the chosen folder; a new folder is made in
- * place, My Drive included.
+ * `drive.file`, which reaches only files this OAuth client created or the user opened or shared
+ * with it. A new Doc, Sheet or Presentation is made in My Drive and then moved into the chosen
+ * folder; a new folder is made in place, My Drive included.
  *
  * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the creation configurator, so
  * an approver who keeps a new Doc, Sheet or Presentation in My Drive is never asked for it.

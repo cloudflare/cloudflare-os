@@ -350,9 +350,10 @@ describe("creating where the approver chooses", () => {
 
 describe("creating a Google Drive folder", () => {
   const created = { resourceUrl: "https://drive.google.com/drive/folders/folder-new-1" };
+  const grants = [CREATED_FILES_GRANT, FOLDER_PATTERN];
 
   it("reads as an empty folder until created, then makes it where chosen", async () => {
-    await hooks().grant("test-user", [CREATED_FILES_GRANT]);
+    await hooks().grant("test-user", grants);
     expect(await hooks().createResource("create-folder", FOLDER_PATTERN, "Q3 plans"))
       .toMatchObject({ action: { title: "Create Google Drive Folder: Q3 plans" } });
     expect(await hooks().describe("create-folder")).toMatchObject({
@@ -386,7 +387,7 @@ describe("creating a Google Drive folder", () => {
     ["a refusal after a lost reply", ["lost", "refused"] as const, "403"],
   ])("makes a folder once when an approval's create gets %s", async (_name, answers, status) => {
     let facet = `create-folder-${answers.join("-")}`;
-    await hooks().grant("test-user", [CREATED_FILES_GRANT]);
+    await hooks().grant("test-user", grants);
     await hooks().createResource(facet, FOLDER_PATTERN, "Q3 plans");
     createAnswers = [...answers];
     expect(await hooks().applyCreation(facet, "test-user", folderUrl("folder-1")))
@@ -399,13 +400,15 @@ describe("creating a Google Drive folder", () => {
     expect(drive["folder-new-1"].parents).toEqual(["root-id"]);
   });
 
-  it("needs the created-files grant even in My Drive", async () => {
-    await hooks().grant("test-user", []);
-    await hooks().createResource("create-folder-ungranted", FOLDER_PATTERN, "Q3 plans");
-    expect(await hooks().applyCreation("create-folder-ungranted")).toEqual({
-      error: "This Google account hasn't let this app put what it creates in Drive folders. " +
-        "Approve it again and allow access when asked.",
-    });
+  it.each([
+    ["the created-files grant", [FOLDER_PATTERN], "hasn't let this app put what it creates in Drive folders. " +
+      "Approve it again and allow access when asked."],
+    ["the Drive folder grant", [CREATED_FILES_GRANT], "hasn't granted Google Drive Folder access, so the new " +
+      "folder's connection could read only what this app puts in it. Grant it, then approve this again."],
+  ])("needs %s even in My Drive", async (name, held, error) => {
+    await hooks().grant("test-user", held);
+    await hooks().createResource(name, FOLDER_PATTERN, "Q3 plans");
+    expect(await hooks().applyCreation(name)).toEqual({ error: `This Google account ${error}` });
     expect(requests).toEqual([]);
   });
 });
