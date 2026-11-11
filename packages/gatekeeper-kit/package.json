@@ -4,6 +4,9 @@
   "private": true,
   "description": "Building blocks for gatekeepers: connect-flow, credential, action, observation, and simulation primitives. Not a deployable Worker.",
   "type": "module",
+  "bin": {
+    "gatekeeper-openapi-schema": "./bin/openapi-schema.ts"
+  },
   "exports": {
     "./action-description": "./src/action-description.ts",
     "./action-files": "./src/action-files.ts",
@@ -49,6 +52,8 @@
     "jose": "^6.2.16"
   },
   "devDependencies": {
+    "@bytecodealliance/jco": "1.41.0",
+    "@cloudflare/forge": "https://pkg.pr.new/cloudflare/forge/@cloudflare/forge@56e6e8ab55269c9ca2a0c6a66f34575c3a08fb04",
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
