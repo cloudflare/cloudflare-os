@@ -1,5 +1,5 @@
 import { findResourceType, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
-import { SUPPORTED_RESOURCES, isPrivateGrant, resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from "./resources";
+import { SUPPORTED_RESOURCES, isPrivateGrant, recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from "./resources";
 
 const FLOW_KEY = "oauthFlow";
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;
@@ -61,7 +61,9 @@ export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
 export function mergeGrantedResources(
     kv: SynchronousKv, requestedResources: readonly string[]): void {
   let grantedResources = kv.get<string[]>("grantedResources") ?? [];
-  const toIds = (patterns: readonly string[]) => patterns.flatMap(pattern => {
+  const toIds = (patterns: readonly string[]) => recordedResourceUrlPatterns({
+    resourceUrlPatterns: patterns,
+  }).flatMap(pattern => {
     if (isPrivateGrant(pattern)) return [pattern];
     const resource = findResourceType(SUPPORTED_RESOURCES, undefined, pattern);
     return resource ? [getResourceTypeId(resource)] : [];

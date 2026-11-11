@@ -4,7 +4,8 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
-  BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES,
+  BIGQUERY_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES,
   recordedResourceUrlPatterns,
 } from "../src/resources";
 import { FakeKv } from "./fake-kv";
@@ -63,6 +64,24 @@ describe("stored OAuth flow", () => {
     kv.put("grantedResourceTypeIds", []);
     mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
     expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["bigquery"]);
+  });
+
+  it("preserves explicitly renamed Chat grants when first recording stable IDs", () => {
+    const kv = new FakeKv();
+    kv.put("grantedResources", [
+      "https://chat.google.com/room/:spaceId",
+      "https://chat.google.com/room/:spaceId/:threadId",
+    ]);
+    mergeGrantedResources(kv, [GOOGLE_DOC_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual([
+      "chat-space", "chat-thread", "document",
+    ]);
+    expect(recordedResourceUrlPatterns({
+      resourceTypeIds: kv.get<string[]>("grantedResourceTypeIds"),
+    })).toEqual([
+      GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
+      GOOGLE_DOC_RESOURCE.urlPattern,
+    ]);
   });
 
   // Regression: the shared-drive resource's urlPattern was retired, and a reconnect feeds the

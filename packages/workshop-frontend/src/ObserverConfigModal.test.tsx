@@ -262,6 +262,27 @@ describe('ObserverConfigModal account selection', () => {
     expect(verify?.disabled).toBe(true)
   })
 
+  it.each([
+    { scenario: 'overlapping patterns', urlPattern: DOC_RESOURCE.urlPattern },
+    { scenario: 'changed pattern', urlPattern: 'https://docs.example.test/new/:document' },
+  ])('uses the stored type ID for an observer grant with $scenario', async ({ urlPattern }) => {
+    const ensureAccountResources = vi.fn<AuthenticatedApi['ensureAccountResources']>()
+      .mockResolvedValue(FLOW)
+    mockConnectPopup()
+    const underScoped = account(1, 'dan@cloudflare.com', [GMAIL_RESOURCE_PATTERN])
+    const rendered = await render([underScoped], {
+      needs: [{ ...NEED, resourceTypeId: 'document' }],
+      api: fakeApi([underScoped], { ensureAccountResources }, [
+        { ...DOC_RESOURCE, id: 'other' },
+        { ...DOC_RESOURCE, id: 'document', urlPattern },
+      ]),
+    })
+    const grant = findButton(rendered, 'Grant the access needed to verify this resource')
+    expect(grant).toBeDefined()
+    await act(async () => grant!.click())
+    expect(ensureAccountResources).toHaveBeenCalledWith(1, ['document'])
+  })
+
   it('checks the resource grant when legacy account metadata omits it', async () => {
     const ensureAccountResources = vi.fn<
       (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>

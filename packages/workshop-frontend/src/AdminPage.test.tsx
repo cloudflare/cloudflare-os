@@ -2,7 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import type { AdminApi, AdminResourceVendor, AdminSettingsView } from '@gadgets/workshop-shared/api'
 
 const { getAdminApi, addToast } = vi.hoisted(() => ({
@@ -24,7 +24,12 @@ import AdminPage from './AdminPage'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-it('refreshes all affected resources when an admin clears an unmatched legacy restriction', async () => {
+beforeEach(() => vi.clearAllMocks())
+
+it.each([
+  { outcome: 'succeeds', refreshFails: false },
+  { outcome: 'fails', refreshFails: true },
+])('reports a saved resource toggle accurately when policy refresh $outcome', async ({ refreshFails }) => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   const retired = 'https://example.com/retired/*'
   const current = [
@@ -47,6 +52,7 @@ it('refreshes all affected resources when an admin clears an unmatched legacy re
   const getSettings = vi.fn<AdminApi['getSettings']>().mockResolvedValueOnce(settings).mockResolvedValue({ ...settings,
     resourceVendors: [{ ...vendor, resources: current.map(r => ({ ...r, enabled: true })) }],
   })
+  if (refreshFails) getSettings.mockRejectedValueOnce(new Error('Settings unavailable'))
   const setResourceEnabled = vi.fn<AdminApi['setResourceEnabled']>(async () => {})
   getAdminApi.mockResolvedValue({ getSettings, setResourceEnabled, getUpdateStatus: async () => null })
   const container = document.createElement('div')
@@ -59,11 +65,15 @@ it('refreshes all affected resources when an admin clears an unmatched legacy re
     expect(row('Repository').querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('false')
     await act(async () => { row('Unavailable resource type').click() })
     expect(setResourceEnabled).toHaveBeenCalledWith('example', retired, true)
-    expect(row('Unavailable resource type')).toBeUndefined()
+    expect(row('Unavailable resource type') !== undefined).toBe(refreshFails)
     for (const title of ['Repository', 'Issue']) {
-      expect(row(title).querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true')
+      expect(row(title).querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe(String(!refreshFails))
     }
-    expect(addToast).not.toHaveBeenCalled()
+    expect(addToast.mock.calls).toEqual(refreshFails ? [[{
+        title: 'Change saved, but resource settings could not be refreshed. Reload this page.',
+        variant: 'error',
+    }]] : [])
+    expect(getSettings).toHaveBeenCalledTimes(2)
   } finally {
     await act(async () => { root.unmount() })
     container.remove()

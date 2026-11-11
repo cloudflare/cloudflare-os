@@ -237,7 +237,12 @@ export default function AdminPage() {
     )
     try {
       await admin.api.setResourceEnabled(vendorId, urlPattern, enabled)
-      await reloadResources()
+      await reloadResources().catch(() => {
+        toasts.add({
+          title: 'Change saved, but resource settings could not be refreshed. Reload this page.',
+          variant: 'error',
+        })
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })
