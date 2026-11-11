@@ -375,6 +375,15 @@ export type SupportedResource = {
   creationConfigurator?: boolean;
 
   /**
+   * With `creationConfigurator`: what a configuration of this type is, as a noun phrase for the
+   * agent, e.g. "the URL of the Google Drive folder to create it in". It lets the agent suggest one
+   * with createExternalResource's `configuration`, which the approver's configurator opens on; a
+   * type without it takes no suggestion. The configuration is the vendor-defined URL the
+   * configurator returns, so it may carry several settings.
+   */
+  creationConfigurationDescription?: string;
+
+  /**
    * The urlPattern of the type whose connect card this type appears on, instead of a card of its
    * own. A card's types share one configurator, which may return a URL of any of them, so
    * startResourceConfigurator must return that configurator for each of them.
@@ -507,7 +516,9 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * The concrete resource URL the configurator should pre-fill to (e.g. supplied by an AI agent's
    * connection request), together with this resource's urlPattern, or null for a fresh/manual
    * configuration. The iframe runtime uses this to seed the form's initial values so it opens
-   * pre-filled and editable.
+   * pre-filled and editable. For a creation configurator, `resourceUrl` is the configuration the
+   * agent suggested (createExternalResource's `configuration`), not a URL of
+   * `resourceUrlPattern`, the type being created.
    */
   getInitialResource(): Promise<{ resourceUrl: string; resourceUrlPattern: string } | null>;
 
@@ -860,7 +871,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   /**
    * Get the UI in which the approver of a creation of the creatable type `resourceUrlPattern`
    * configures it in this account, e.g. where to create it. The frame starts on the vendor's
-   * default, and its collectResourceUrl() returns the vendor-defined value passed to
+   * default, or on the configuration the agent suggested (see ResourceConfiguratorHost.
+   * getInitialResource()), and its collectResourceUrl() returns the vendor-defined value passed to
    * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
    * Present when the type sets SupportedResource.creationConfigurator.
    */

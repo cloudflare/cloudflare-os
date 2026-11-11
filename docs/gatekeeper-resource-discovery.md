@@ -31,6 +31,15 @@ Account consent, grant management, and observer verification still include creat
 account UI, approval, simulation, and `applyCreation()` behavior are unchanged. Creating something
 still needs approval and a chosen account; advertising creation creates or connects nothing.
 
+A type whose configurator takes a suggestion also sets `creationConfigurationDescription`, saying
+what its configuration is (Google: "the URL of the Google Drive folder to create it in"), and
+`listConnectableResources` prints it beside the type. The agent can then suggest one with
+`createExternalResource`'s `configuration`: the same vendor-defined URL the configurator returns,
+which can carry several settings. It is kept on the connection's `GatekeeperCreationSpec`, and the
+approver's configurator opens on it as the connect configurator does on a requested resource URL
+(its `initialValuesFromResourceUrl`). It grants nothing: the approver keeps or changes it, and the
+gatekeeper checks whatever they choose.
+
 Workshop filters resource types through deployment policy and checks the advertised creation type
 and policy before minting its simulated gatekeeper. Existing-resource pickers and connection
 request resolution exclude types marked `connectable: false`.

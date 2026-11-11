@@ -22,6 +22,7 @@ const EXISTING: SupportedResource = {
 const CREATION: SupportedResource = {
   urlPattern: "example://environment/*", title: "Environment", description: "Create an environment",
   connectable: false, creatable: true, creationConfigurator: true,
+  creationConfigurationDescription: "an environment's URL",
 };
 let counter = 0;
 
@@ -86,6 +87,24 @@ describe("independent creation and connection discovery", () => {
     expect(await inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build")))
       .toMatchObject({ typeUrlPattern: CREATION.urlPattern, action: { title: "Create environment" } });
     expect(createResource).toHaveBeenCalledOnce();
+  });
+
+  // Only a type that says what its configuration is takes a suggested one, so nothing else is let
+  // pretend to.
+  it.each([
+    { name: "for a type whose approver chooses nothing", resource: { ...CREATION, creationConfigurator: false },
+      configuration: "example://environment/eu", error: "takes no configuration" },
+    { name: "for a type that does not describe one",
+      resource: { ...CREATION, creationConfigurationDescription: undefined },
+      configuration: "example://environment/eu", error: "takes no configuration" },
+    { name: "that is not a URL", resource: CREATION, configuration: "eu-west",
+      error: `must be ${CREATION.creationConfigurationDescription}` },
+  ])("refuses a configuration $name before minting anything", async ({ resource, configuration, error }) => {
+    const { inUser, createResource } = fixture([resource]);
+    await expect(inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build",
+      configuration)))
+      .rejects.toThrow(error);
+    expect(createResource).not.toHaveBeenCalled();
   });
 
   it("does not infer creation support from an existing resource type", async () => {
@@ -170,6 +189,16 @@ describe("agent resource discovery", () => {
       const [existing, creation] = text.split("New resources (createExternalResource):");
       expect(existing).toContain(EXISTING.urlPattern);
       expect(creation).toContain(EXISTING.urlPattern);
+    });
+  });
+
+  // The listing tells the agent which types take a suggested configuration, and what it is.
+  it("lists a creatable type with its configuration's description", async () => {
+    await withDiscovery([CREATION, { ...EXISTING, creatable: true }], async impl => {
+      const creation = (await impl.listConnectableResources("example")).split("New resources")[1];
+      expect(creation).toContain(
+        `${CREATION.urlPattern} (configuration: ${CREATION.creationConfigurationDescription})`);
+      expect(creation).not.toContain(`${EXISTING.urlPattern} (configuration:`);
     });
   });
 

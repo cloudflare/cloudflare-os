@@ -5318,6 +5318,13 @@ export type AiToolCall = {
     /** Title of the new resource, e.g. a document's title. */
     title: string;
 
+    /**
+     * A configuration to suggest, for a type that describes one (see
+     * `SupportedResource.creationConfigurationDescription`): the approver's configurator opens on
+     * it, and they may choose otherwise. Refused for any other type.
+     */
+    configuration?: string;
+
     /** Name under which the resource appears in the chat's env (see validateBindingName()). */
     bindingName: string;
   };
@@ -5998,6 +6005,8 @@ export type GatekeeperCreationSpec = {
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
   typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
+  /** The configuration createExternalResource suggested (see its `configuration`). */
+  configuration?: string;
 } | {
   type: "aiModel";
   modelId: string;         // the user's configured model ID

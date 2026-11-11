@@ -4034,6 +4034,12 @@ async function runAgentPass(
         title: Type.String({
           description: "Title of the new resource, e.g. the document's title.",
         }),
+        configuration: Type.Optional(Type.String({
+          description: "For a New resource listed with a configuration, one to suggest, as the " +
+              "listing describes it (e.g. a folder's URL, for where to create it). Name only what " +
+              "exists already: a resource whose creation is pending has no URL. The approver " +
+              "sees it pre-selected and may choose otherwise.",
+        })),
         bindingName: Type.String({
           description:
               "Name under which the new resource appears in your env. Must be a JavaScript " +
