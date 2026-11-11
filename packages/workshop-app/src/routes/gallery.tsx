@@ -20,6 +20,7 @@ import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
+import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
 export const Route = createFileRoute('/gallery')({
@@ -230,6 +231,7 @@ function Gallery() {
       <MessageBlocksPreview />
       <ToolBlocksPreview />
       <CardBlocksPreview />
+      <SystemBlocksPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
