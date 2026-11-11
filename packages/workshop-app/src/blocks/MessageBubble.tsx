@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useEffectEvent, useRef, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import '@/components/Arrival.css'
@@ -86,6 +86,22 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
   const transition = useReducedMotion() ? { duration: 0 } : UNFOLD
   const actions = <MessageActions details={details} />
 
+  // The message's own parts: the bubble, the actions beside it, and the details under it. A press
+  // anywhere else puts the details away, the blank stretch of the message's own row included.
+  const bubble = useRef<HTMLDivElement>(null)
+  const beside = useRef<HTMLDivElement>(null)
+  const under = useRef<HTMLDivElement>(null)
+  const open = details?.open ?? false
+  const pressElsewhere = useEffectEvent(({ target }: PointerEvent) => {
+    if (target instanceof Node && [bubble, beside, under].some((part) => part.current?.contains(target))) return
+    details?.onToggle()
+  })
+  useEffect(() => {
+    if (!open) return
+    document.addEventListener('pointerdown', pressElsewhere)
+    return () => document.removeEventListener('pointerdown', pressElsewhere)
+  }, [open])
+
   return (
     <>
       <div
@@ -93,6 +109,7 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
         className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
       >
         <div
+          ref={bubble}
           className={cn(
             'peer/bubble arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
             // It grows in downwards, as the conversation does, from its sender's side.
@@ -108,14 +125,15 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
           {children}
         </div>
         {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
-        {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}>{actions}</div>}
-        {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}>{actions}</div>}
+        {role === 'user' && <div ref={beside} className={cn(ACTIONS, 'order-first pe-2')}>{actions}</div>}
+        {role === 'assistant' && <div ref={beside} className={cn(ACTIONS, 'ps-2')}>{actions}</div>}
       </div>
       {/* Under the message, in line with its words. It unfolds, so what is below moves with it;
           a message that comes back on screen with its details open simply has them. */}
       <AnimatePresence initial={false}>
         {details?.open && (
           <motion.div
+            ref={under}
             initial={FOLDED}
             animate={{ height: 'auto', opacity: 1 }}
             exit={FOLDED}
