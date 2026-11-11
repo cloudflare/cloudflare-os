@@ -35,13 +35,14 @@ import { basename } from "node:path/posix";
 import {
   AREAS,
   BANDS,
-  addedClassDeletions,
   addedDependencies,
   changedInstallSettings,
   isCatalogVersionBump,
   isSkillPath,
+  isWorkerConfig,
   asObject,
   classifyChangeset,
+  durableObjectRisks,
   needsContents,
   parseEscapeSnapshot,
   parseJson,
@@ -511,7 +512,7 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
   const depsProven = holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"]);
   const touchesWorkerConfig = inputs.files.some((file) =>
-    [file.filename, file.previous_filename].some((path) => path !== undefined && needsContents(path) === "worker-config"));
+    [file.filename, file.previous_filename].some((path) => path !== undefined && isWorkerConfig(path)));
   const needsMigrationProof = touchesWorkerConfig && !holding(inputs.producers["proof-migrations"]);
   if (needsMigrationProof) common.push("changes a Worker config, and the migration proof does not hold");
   // No proof judges text that people or agents read; such a change can only be AI-scored.
@@ -872,7 +873,7 @@ function contentsKind(file: ChangedFile): ContentsKind | undefined {
 }
 
 async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest, files: ChangedFile[]): Promise<ContentFacts> {
-  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] };
+  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] };
   const needed = files.filter((file) => contentsKind(file) !== undefined);
   const skills = files.filter((file) => [file.filename, file.previous_filename].some((path) => path !== undefined && isSkillPath(path)));
   if (needed.length === 0 && skills.length === 0) return facts;
@@ -919,10 +920,16 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
         break;
       }
       case "worker-config": {
-        // Removing a Worker's config removes the Worker, and its Durable Objects with it.
-        const deleted = unreadable || after === undefined ? undefined : addedClassDeletions(before, after);
-        if (deleted === undefined) facts.deletedClasses.push(`${file.filename}: ${removed ? "removed" : "unreadable"}`);
-        else facts.deletedClasses.push(...deleted.map((name) => `${file.filename}: ${name}`));
+        // The release deploys `packages/<dir>/wrangler.jsonc`, by directory (`readDeployablePackages`
+        // in scripts/release/manifest-lib.ts). A config removed or renamed, even to another
+        // directory, takes its Worker out of the release, and its Durable Objects with it.
+        const renamedFrom = file.status === "renamed" && file.previous_filename !== undefined && needsContents(file.previous_filename) === "worker-config"
+          ? file.previous_filename
+          : undefined;
+        const risks = removed || renamedFrom !== undefined
+          ? ["removed"]
+          : unreadable || after === undefined ? ["unreadable"] : durableObjectRisks(before, after);
+        facts.durableObjectRisks.push(...risks.map((risk) => `${renamedFrom ?? file.filename}: ${risk}`));
         break;
       }
       case undefined:

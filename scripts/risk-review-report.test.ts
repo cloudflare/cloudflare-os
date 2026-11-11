@@ -49,7 +49,7 @@ function summaryFor(number: number): string {
   const inputs: PullInputs = {
     pull: { number, node_id: "PR_1", state: "open", user: { login: "kentonv", type: "User" }, head: { sha: HEAD, ref: "kenton/topic" }, base: { sha: BASE, ref: "main" }, changed_files: 1, commits: 1 },
     files: [{ filename: "docs/automerge.md", status: "modified", additions: 1, deletions: 1, changes: 2 }],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] },
     reviews: [],
     comments: [],
     lastPush: "2026-11-02T10:00:00Z",
@@ -77,7 +77,7 @@ function summaryWithScores(number: number, bonk: number, opus: number, filename 
   const inputs: PullInputs = {
     pull: { number, node_id: "PR_1", state: "open", user: { login: "kentonv", type: "User" }, head: { sha: HEAD, ref: "kenton/topic" }, base: { sha: BASE, ref: "main" }, changed_files: 1, commits: 1 },
     files: [{ filename, status: "modified", additions: 1, deletions: 1, changes: 2 }],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] },
     reviews: [],
     comments: [],
     lastPush: "2026-11-02T10:00:00Z",

@@ -7,6 +7,7 @@
 // resolved from the workspace could come from the pull request's lockfile.
 
 import { matchesGlob } from "node:path/posix";
+import { isDeepStrictEqual } from "node:util";
 
 /** A risk band, lowest first. */
 export type Band = "low" | "medium" | "high";
@@ -148,6 +149,13 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[]
   { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
   { reason: "supply-chain policy", globs: ["**/.npmrc", "**/.pnpmfile.cjs", "**/.pnpmfile.mjs"] },
   { reason: "release pipeline", globs: ["scripts/release/**"] },
+  {
+    // Wrangler looks for `wrangler.json` before `wrangler.jsonc`, in the Worker's directory and
+    // every one above it, and `wrangler deploy` follows `.wrangler/deploy/config.json`. Either
+    // would deploy a config that the generated `wrangler.jsonc` does not show.
+    reason: "a Wrangler config other than the generated wrangler.jsonc",
+    globs: ["**/wrangler.json", "**/wrangler.toml", "**/.wrangler/**"],
+  },
 ];
 
 /**
@@ -162,8 +170,19 @@ const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
  */
 const ESCAPE_IGNORED = { globs: ["**/pnpm-lock.yaml", "docs/**", "plans/**", "**/*.md"], except: ["**/.agents/**"] };
 
-/** Worker configs, which carry the Durable Object migrations. */
+/** Worker configs: the `cloudflare.config.ts` source and the `wrangler.jsonc` generated from it. */
 const WORKER_CONFIGS = ["**/cloudflare.config.ts", "**/wrangler.jsonc"];
+
+/** Whether `filename` is a Worker config, either the source or the generated file. */
+export function isWorkerConfig(filename: string): boolean {
+  return matchesAny(filename, WORKER_CONFIGS);
+}
+
+/**
+ * The Worker config that deploys: Wrangler and the release manifest (`scripts/release/
+ * manifest-lib.ts`) read `wrangler.jsonc`, and `cloudflare.config.ts` takes effect only through it.
+ */
+const DEPLOYED_CONFIG = "**/wrangler.jsonc";
 
 /** `pnpm-workspace.yaml` is on the policy list except when only catalog versions change. */
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
@@ -293,8 +312,12 @@ export interface ContentFacts {
   workspaceCatalogOnly: boolean;
   /** `path: name` for each dependency a `package.json` gained, or `path: unreadable`. */
   newDependencies: string[];
-  /** `path: class` for each Durable Object class a Worker config newly deletes, or `path: unreadable`. */
-  deletedClasses: string[];
+  /**
+   * `path: reason` for each way a `wrangler.jsonc` change may drop Durable Object data: a class an
+   * appended migration deletes, another operation that is not adding classes, rewritten
+   * migrations, a file `removed`, or one that is `unreadable`.
+   */
+  durableObjectRisks: string[];
   /** Paths under `.agents/skills/` that are a symlink at base or head, or whose type is unreadable. */
   skillSymlinks: string[];
 }
@@ -386,8 +409,8 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
   if (files.some((file) => pathsOf(file).includes(WORKSPACE_FILE)) && !facts.workspaceCatalogOnly) {
     neverAuto.push(`supply-chain policy (${WORKSPACE_FILE} beyond catalog versions)`);
   }
-  if (facts.deletedClasses.length > 0) {
-    neverAuto.push(`deletes Durable Object classes (${facts.deletedClasses.join(", ")})`);
+  if (facts.durableObjectRisks.length > 0) {
+    neverAuto.push(`may drop Durable Object data (${facts.durableObjectRisks.join(", ")})`);
   }
 
   const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
@@ -553,64 +576,115 @@ function dependencyMap(text: string): Map<string, string> | undefined {
   return map;
 }
 
-/** After a `deleted_classes` key: its closing quote, if any, the colon and the list's `[`. */
-const LIST_OPEN = /["']?\s*:\s*\[/y;
-/** What may stand between a deletion list's items: spaces, commas and comments. */
-const LIST_FILLER = /(?:\s|,|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y;
-/** One item of a deletion list: a plain string literal. */
-const LIST_ITEM = /(["'])([^"'\\\n]+)\1/y;
-
 /**
- * The class names in a Worker config's Durable Object deletion lists (`deleted_classes`), the
- * migrations that drop a class's data. Each list is read item by item, so a `]` in a comment or a
- * string does not end it. `undefined` when any mention of the key is not followed by a list of
- * plain string literals (a spread, an identifier, a template, a comment that never closes), or may
- * itself sit in a comment, since its classes cannot be read.
+ * Reads a `wrangler.jsonc` in the one form the generator writes: `//` comment lines, then strict
+ * JSON. Anything else a JSONC reader would accept is not read here (a comment anywhere else, a
+ * trailing comma, a line break other than `\n`), so this never reads a file differently from the
+ * reader that deploys it.
+ *
+ * @returns The value, and every string in the JSON, decoded; `undefined` for any other text.
  */
-function deletedClassNames(text: string): string[] | undefined {
-  const classes: string[] = [];
-  for (const mention of text.matchAll(/deleted_?[cC]lasses/g)) {
-    // A mention after `//` on its line, or after a `/*` that has not closed, may be commented out.
-    // Counting it would let the base "already delete" a class the head then deletes for real.
-    // Comment markers inside a string read the same way, which only sends more configs to a person.
-    const line = text.slice(text.lastIndexOf("\n", mention.index) + 1, mention.index);
-    const opened = text.lastIndexOf("/*", mention.index);
-    if (line.includes("//") || (opened !== -1 && text.lastIndexOf("*/", mention.index) < opened + 2)) return undefined;
-    LIST_OPEN.lastIndex = mention.index + mention[0].length;
-    if (!LIST_OPEN.test(text)) return undefined;
-    let at = LIST_OPEN.lastIndex;
-    for (;;) {
-      LIST_FILLER.lastIndex = at;
-      LIST_FILLER.test(text);
-      at = LIST_FILLER.lastIndex;
-      if (text[at] === "]") break;
-      LIST_ITEM.lastIndex = at;
-      const name = LIST_ITEM.exec(text)?.[2];
-      if (name === undefined) return undefined;
-      classes.push(name);
-      at = LIST_ITEM.lastIndex;
-    }
-  }
-  return classes;
+function readGeneratedConfig(text: string): { value: Json; strings: Json[] } | undefined {
+  // A comment line ends at any line break, and `\r`, U+2028 and U+2029 are line breaks too.
+  if (/[\r\u2028\u2029]/.test(text)) return undefined;
+  const lines = text.split("\n");
+  const json = lines.slice(lines.findIndex((line) => !line.startsWith("//"))).join("\n");
+  const value = parseJson(json);
+  if (value === undefined) return undefined;
+  // In valid JSON a quote only ever opens or closes a string, so this finds each one.
+  return { value, strings: (json.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((string) => parseJson(string) ?? null) };
+}
+
+/** A migration's keys that only add Durable Object classes. Any other operation needs a person. */
+const ADDS_CLASSES = ["tag", "new_classes", "new_sqlite_classes"];
+
+/** One Durable Object migration, as `wrangler.jsonc` holds it. */
+type Migration = { [key: string]: Json };
+
+/** What a `wrangler.jsonc` says about its Worker's Durable Objects. */
+interface WorkerConfig {
+  /** The Worker's `name`, as written. */
+  name: Json | undefined;
+  /** The migration lists by place: `null` for the top level, else an environment's name. */
+  migrations: Map<string | null, Migration[]>;
 }
 
 /**
- * The Durable Object classes a Worker config's head deletes beyond those its base already deleted,
- * however the lists are laid out.
+ * Reads a `wrangler.jsonc`'s Worker name and Durable Object migration lists.
  *
- * @returns The new names, or `undefined` when either side's deletion lists cannot be read.
+ * `undefined` when the file is not in the generated form or a migrations list is not a list of
+ * objects. Also when the file holds a `__proto__` key, which some readers turn into inherited
+ * properties, or when `migrations` or `deleted_classes` occurs as a string anywhere this did not
+ * read it as that key (a repeated key that a later one shadows, the word as a value or under
+ * another setting): what this reads must be what any reader reads.
  */
-export function addedClassDeletions(base: string | undefined, head: string): string[] | undefined {
-  const before = deletedClassNames(base ?? "");
-  const after = deletedClassNames(head);
-  if (!before || !after) return undefined;
-  const added: string[] = [];
-  for (const name of after) {
-    const index = before.indexOf(name);
-    if (index >= 0) before.splice(index, 1);
-    else added.push(name);
+function readWorkerConfig(text: string): WorkerConfig | undefined {
+  const config = readGeneratedConfig(text);
+  const root = asObject(config?.value);
+  const environments = root?.env === undefined ? {} : asObject(root.env);
+  if (!config || !root || !environments) return undefined;
+  const places: [string | null, Json][] = [[null, root], ...Object.entries(environments)];
+  const migrations = new Map<string | null, Migration[]>();
+  let deletions = 0;
+  for (const [place, value] of places) {
+    const holder = asObject(value);
+    if (!holder) return undefined;
+    if (holder.migrations === undefined) continue;
+    if (!Array.isArray(holder.migrations)) return undefined;
+    const list: Migration[] = [];
+    for (const entry of holder.migrations) {
+      const migration = asObject(entry);
+      if (!migration) return undefined;
+      if (migration.deleted_classes !== undefined) deletions++;
+      list.push(migration);
+    }
+    migrations.set(place, list);
   }
-  return added;
+  const occurs = (word: string) => config.strings.filter((string) => string === word).length;
+  return occurs("__proto__") === 0 && occurs("migrations") === migrations.size && occurs("deleted_classes") === deletions
+    ? { name: root.name, migrations }
+    : undefined;
+}
+
+/**
+ * Why a `wrangler.jsonc` change needs a person for its Durable Object data. Empty when it keeps
+ * the Worker's name and migrations, or only appends migrations that add classes.
+ *
+ * Migrations are append-only: Wrangler applies the ones after the deployed tag, by position, so a
+ * list that is reordered, retagged, edited or cut can run an old deletion again. Nothing here
+ * compares class names between base and head, so no look-alike in the base can stand for a
+ * deletion it "already made". Each reason is one of:
+ * - `unreadable`: either side is not a file this reads exactly;
+ * - `renames the Worker`: under a new name, a plain `wrangler deploy` creates a new Worker
+ *   without the old one's Durable Objects;
+ * - `rewrites migrations`: somewhere the head's list does not start with the base's;
+ * - `deletes <class>`: for each class an appended migration deletes;
+ * - `<operation> in <tag>`: any other operation in an appended migration that is not adding
+ *   classes (`renamed_classes`, `transferred_classes`, one this does not know).
+ */
+export function durableObjectRisks(base: string | undefined, head: string): string[] {
+  const before = base === undefined ? undefined : readWorkerConfig(base);
+  const after = readWorkerConfig(head);
+  if ((base !== undefined && !before) || !after) return ["unreadable"];
+  const risks = before && !isDeepStrictEqual(before.name, after.name) ? ["renames the Worker"] : [];
+  for (const [place, was] of before?.migrations ?? []) {
+    const now = after.migrations.get(place) ?? [];
+    // Compared as values: text forms lose differences (`1e400` and `null` both print as `null`).
+    if (was.some((migration, index) => !isDeepStrictEqual(migration, now[index]))) return [...risks, "rewrites migrations"];
+  }
+  for (const [place, now] of after.migrations) {
+    for (const migration of now.slice(before?.migrations.get(place)?.length ?? 0)) {
+      for (const [operation, value] of Object.entries(migration)) {
+        if (ADDS_CLASSES.includes(operation)) continue;
+        if (operation === "deleted_classes" && Array.isArray(value) && value.every((name) => typeof name === "string")) {
+          risks.push(...value.map((name) => `deletes ${String(name)}`));
+        } else {
+          risks.push(`${operation} in ${typeof migration.tag === "string" ? migration.tag : "an untagged migration"}`);
+        }
+      }
+    }
+  }
+  return risks;
 }
 
 /** A file whose contents, not only its diff, the classifier reads. */
@@ -620,7 +694,7 @@ export type ContentsKind = "workspace" | "manifest" | "worker-config";
 export function needsContents(filename: string): ContentsKind | undefined {
   if (filename === WORKSPACE_FILE) return "workspace";
   if (matchesPath(filename, "**/package.json")) return "manifest";
-  return matchesAny(filename, WORKER_CONFIGS) ? "worker-config" : undefined;
+  return matchesPath(filename, DEPLOYED_CONFIG) ? "worker-config" : undefined;
 }
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;

@@ -417,7 +417,7 @@ function inputs(overrides: Partial<PullInputs> = {}): PullInputs {
   return {
     pull: pullRequest(),
     files: [file("docs/automerge.md")],
-    facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] },
+    facts: { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] },
     reviews: [],
     comments: [],
     lastPush: PUSHED,
@@ -571,11 +571,14 @@ describe("decide", () => {
     const alone = decide(inputs({ producers: { "proof-migrations": migrations(true) } }), policy, NOW);
     assert.equal(alone.would.decision, "person");
     assert.notEqual(alone.would.area, "proven");
-    const config = [file("packages/gatekeeper-x/wrangler.jsonc")];
-    assert.match(decide(inputs({ files: config, producers: PERFECT }), policy, NOW).would.reasons.join("\n"), /migration proof/);
-    assert.match(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(false) } }), policy, NOW).would.reasons.join("\n"), /migration proof/);
-    assert.deepEqual(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(true) } }), policy, NOW).would,
-      { decision: "auto", area: "scored", reasons: [] });
+    // The source and the generated file are both Worker configs.
+    for (const path of ["packages/gatekeeper-x/wrangler.jsonc", "packages/gatekeeper-x/cloudflare.config.ts"]) {
+      const config = [file(path)];
+      assert.match(decide(inputs({ files: config, producers: PERFECT }), policy, NOW).would.reasons.join("\n"), /migration proof/, path);
+      assert.match(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(false) } }), policy, NOW).would.reasons.join("\n"), /migration proof/, path);
+      assert.deepEqual(decide(inputs({ files: config, producers: { ...PERFECT, "proof-migrations": migrations(true) } }), policy, NOW).would,
+        { decision: "auto", area: "scored", reasons: [] }, path);
+    }
   });
 
   describe("a Dependabot GitHub Actions bump", () => {
@@ -995,6 +998,14 @@ describe("runRiskReview producer binding", () => {
   });
 });
 
+/** A Worker's generated `wrangler.jsonc`: two migrations, then these. */
+function wranglerJsonc(appended: Json[] = []): string {
+  return `// Generated from cloudflare.config.ts -- do not edit.\n${JSON.stringify({
+    name: "gatekeeper-x",
+    migrations: [{ tag: "v1", new_sqlite_classes: ["Notes"] }, { tag: "v2", deleted_classes: ["Old"] }, ...appended],
+  }, null, 2)}\n`;
+}
+
 /** Decides the test pull request with these changed files and file contents. */
 async function decideFiles(files: ChangedFile[], contents: Record<string, string>): Promise<PullDecision> {
   const { calls, evaluate } = harness({ files: { 7: files }, contents });
@@ -1087,16 +1098,29 @@ describe("runRiskReview content rules", () => {
     assert.match(lastRecord(calls).pulls[0]?.never_auto.join("\n") ?? "", /symlink/);
   });
 
-  it("sends a Worker config that newly deletes a Durable Object class to a person", async () => {
-    const config = "packages/gatekeeper-x/cloudflare.config.ts";
-    const before = "migrations: [\n  { tag: 'v1', new_sqlite_classes: ['Notes'] },\n  { tag: 'v2', deleted_classes: [\n    'Old',\n  ] },\n]";
+  it("sends a wrangler.jsonc that may drop Durable Object data, or goes away, to a person", async () => {
+    const config = "packages/gatekeeper-x/wrangler.jsonc";
+    const before = wranglerJsonc();
     const files = [file(config)];
-    const added = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: before.replace("    'Old',\n", "    'Old',\n    'Notes',\n") });
-    assert.match(added.never_auto.join("\n"), /Durable Object classes \(packages\/gatekeeper-x\/cloudflare\.config\.ts: Notes\)/);
-    const unchanged = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: `// v2 dropped Old.\n${before}` });
-    assert.deepEqual(unchanged.never_auto, []);
+    const deletes = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: wranglerJsonc([{ tag: "v3", deleted_classes: ["Notes"] }]) });
+    assert.match(deletes.never_auto.join("\n"), /may drop Durable Object data \(packages\/gatekeeper-x\/wrangler\.jsonc: deletes Notes\)/);
+    const rewritten = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: before.replace('"Old"', '"Old",\n        "Notes"') });
+    assert.match(rewritten.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: rewrites migrations/);
+    const adds = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: `// v2 dropped Old.\n${wranglerJsonc([{ tag: "v3", new_sqlite_classes: ["Inbox"] }])}` });
+    assert.deepEqual(adds.never_auto, []);
     const unread = await decideFiles(files, { [`${BASE}:${config}`]: before });
-    assert.match(unread.never_auto.join("\n"), /unreadable/);
+    assert.match(unread.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: unreadable/);
+    // The release deploys packages/<dir>/wrangler.jsonc by directory, so a config renamed to another
+    // name or moved to another directory takes its Worker out of the release, like removing it.
+    for (const moved of ["packages/gatekeeper-x/wrangler.old.jsonc", "packages/gatekeeper-x/legacy/wrangler.jsonc", "packages/gatekeeper-y/wrangler.jsonc"]) {
+      const gone = await decideFiles([file(moved, { status: "renamed", previous_filename: config })], { [`${BASE}:${config}`]: before, [`${HEAD}:${moved}`]: before });
+      assert.match(gone.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: removed/, moved);
+    }
+    const removed = await decideFiles([file(config, { status: "removed" })], { [`${BASE}:${config}`]: before });
+    assert.match(removed.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: removed/);
+    // The cloudflare.config.ts source deploys only through the generated file, so it is not read.
+    const source = await decideFiles([file("packages/gatekeeper-x/cloudflare.config.ts")], {});
+    assert.deepEqual(source.never_auto, []);
   });
 
   it("rates a package.json that gains a dependency high, and one it cannot read too", async () => {

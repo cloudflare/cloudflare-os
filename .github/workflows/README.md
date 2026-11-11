@@ -49,6 +49,24 @@ it. No proof admits a change to text that people or agents read (any Markdown fi
 (`REVIEW.md`, any `AGENTS.md`, the rest of `.agents/`), always needs a person. The escape raise
 ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
 
+A change that may drop Durable Object data always needs a person. The gate reads it from the
+parsed `wrangler.jsonc`, the file Wrangler and the release manifest deploy from, and treats its
+migrations as append-only: Wrangler applies those after the deployed tag, by position, so a list
+that is reordered, retagged, edited or cut can run an old deletion again. A person is needed when:
+
+- the head's migrations do not start with the base's;
+- an appended migration does anything but add classes (`deleted_classes`, `renamed_classes`,
+  `transferred_classes`, an operation the gate does not know);
+- the Worker's `name` changes;
+- a `wrangler.jsonc` is removed or renamed, even to another directory;
+- the file is not in the form the generator writes (`//` lines, then strict JSON);
+- the change touches any other Wrangler config (`wrangler.json`, `wrangler.toml`, `.wrangler/`),
+  which Wrangler would prefer or follow.
+
+The gate does not read `cloudflare.config.ts`: it takes effect only through the generated file
+(`pnpm configs:check`, part of `Lint`, fails while the two differ). A change to either file still
+needs `proof-migrations`.
+
 `automerge-bands.json` sets the mode. It ships in `shadow` with every band closed: the check
 mirrors today's rule (`reviewDecision` is `APPROVED`), is not required, and records the decision it
 would have made as JSON at the top of its output, including both reviewers' scores whenever their

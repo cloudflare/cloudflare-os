@@ -3,12 +3,12 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
-  addedClassDeletions,
   addedDependencies,
   changedInstallSettings,
   classifyChangeset,
   isCatalogVersionBump,
   parseEscapeSnapshot,
+  durableObjectRisks,
   parseMaintainers,
   pathFloor,
   type ChangedFile,
@@ -19,7 +19,7 @@ import {
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
-const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] };
+const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] };
 const NO_ESCAPES: EscapeSnapshot = { windowDays: 90, files: [] };
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
@@ -221,11 +221,18 @@ describe("classifyChangeset NEVER_AUTO", () => {
     assert.notDeepEqual(classify([file("pnpm-workspace.yaml")], { facts: { ...NO_FACTS, workspaceCatalogOnly: false } }).neverAuto, []);
   });
 
-  it("sends a Durable Object class deletion to a person", () => {
-    const result = classify([file("packages/gatekeeper-x/cloudflare.config.ts")], {
-      facts: { ...NO_FACTS, deletedClasses: ["packages/gatekeeper-x/cloudflare.config.ts: Notes"] },
+  it("sends a change that may drop Durable Object data to a person", () => {
+    const result = classify([file("packages/gatekeeper-x/wrangler.jsonc")], {
+      facts: { ...NO_FACTS, durableObjectRisks: ["packages/gatekeeper-x/wrangler.jsonc: deletes Notes"] },
     });
-    assert.match(result.neverAuto.join("\n"), /Durable Object/);
+    assert.match(result.neverAuto.join("\n"), /may drop Durable Object data \(packages\/gatekeeper-x\/wrangler\.jsonc: deletes Notes\)/);
+  });
+
+  // Wrangler prefers these to the generated wrangler.jsonc, or follows them from `wrangler deploy`.
+  it("sends any other Wrangler config to a person", () => {
+    for (const path of ["wrangler.json", "packages/gatekeeper-x/wrangler.json", "packages/gatekeeper-x/wrangler.toml", "packages/gatekeeper-x/.wrangler/deploy/config.json"]) {
+      assert.match(classify([file(path, { status: "added" })]).neverAuto.join("\n"), /a Wrangler config other than the generated wrangler\.jsonc/, path);
+    }
   });
 });
 
@@ -277,43 +284,113 @@ describe("isCatalogVersionBump", () => {
   });
 });
 
-describe("addedClassDeletions", () => {
-  const base = "migrations: [\n  { tag: 'v1', new_sqlite_classes: ['Notes', 'Drafts'] },\n  { tag: 'v2', deleted_classes: [\n    'Old',\n  ] },\n],";
+/** A `wrangler.jsonc` as the generator writes it: a header comment, then the config. */
+function jsonc(migrations: Json[], rest: { [key: string]: Json } = {}): string {
+  return `// Generated from cloudflare.config.ts -- do not edit.\n${JSON.stringify({ name: "notes", ...rest, migrations }, null, 2)}\n`;
+}
 
-  it("finds a class added to a deletion list, on its own line or in a new migration", () => {
-    assert.deepEqual(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old',\n    'Drafts',\n")), ["Drafts"]);
-    assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', deleted_classes: ['Notes'] },\n],")), ["Notes"]);
-    assert.deepEqual(addedClassDeletions(undefined, "{ \"deleted_classes\": [\"Notes\"] }"), ["Notes"]);
+describe("durableObjectRisks", () => {
+  const v1 = { tag: "v1", new_sqlite_classes: ["Notes", "Drafts"] };
+  const v2 = { tag: "v2", deleted_classes: ["Old"] };
+  const v3 = { tag: "v3", deleted_classes: ["Notes"] };
+  const base = jsonc([v1, v2]);
+  /** The risks of appending `migration` to the base's two. */
+  const appended = (migration: Json) => durableObjectRisks(base, jsonc([v1, v2, migration]));
+
+  it("names each class an appended migration deletes", () => {
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, v3])), ["deletes Notes"]);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, { tag: "v3", deleted_classes: ["Notes", "Drafts"] }])), ["deletes Notes", "deletes Drafts"]);
+    // A new file appends every migration it has.
+    assert.deepEqual(durableObjectRisks(undefined, base), ["deletes Old"]);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2], { env: { staging: { migrations: [v3] } } })), ["deletes Notes"]);
+    // A top-level migration tagged like an environment's is not that environment's.
+    const tagged = { tag: "staging v3", deleted_classes: ["Notes"] };
+    assert.deepEqual(durableObjectRisks(jsonc([tagged]), jsonc([tagged], { env: { staging: { migrations: [v3] } } })), ["deletes Notes"]);
   });
 
-  // Clanky on #1093, round 6: a `]` in a comment ended the list early, and `Drafts` went unseen.
-  it("reads a deletion list past a `]` in a comment or a string", () => {
-    const line = base.replace("    'Old',\n", "    'Old', // see [1]\n    'Drafts',\n");
-    const block = base.replace("    'Old',\n", "    'Old', /* was notes[] */\n    'Drafts',\n");
-    assert.deepEqual(addedClassDeletions(base, line), ["Drafts"]);
-    assert.deepEqual(addedClassDeletions(base, block), ["Drafts"]);
-    assert.deepEqual(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old',\n    'Dra]fts',\n")), ["Dra]fts"]);
-    assert.equal(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old', /* never closed\n    'Drafts',\n")), undefined);
+  it("finds none when it only appends migrations that add classes, or changes other settings or header comments", () => {
+    assert.deepEqual(durableObjectRisks(base, base), []);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, { tag: "v3", new_sqlite_classes: ["Inbox"] }, { tag: "v4", new_classes: ["Outbox"] }])), []);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2], { vars: { MODE: "x" } })), []);
+    assert.deepEqual(durableObjectRisks(base, `// v2 dropped Old [1].\n${base}`), []);
+    // The same migration with its keys in another order is the same migration.
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, { deleted_classes: ["Old"], tag: "v2" }])), []);
   });
 
-  // Bonk on #1093, round 7: a commented-out migration counted as a deletion the base already made,
-  // so uncommenting it added none.
-  it("cannot read a config whose deletion list may be commented out", () => {
-    const head = base.replace("],", "  { tag: 'v3', deleted_classes: ['Notes'] },\n],");
-    assert.equal(addedClassDeletions(head.replace("  { tag: 'v3'", "  // { tag: 'v3'"), head), undefined);
-    assert.equal(addedClassDeletions(head.replace("  { tag: 'v3', deleted_classes: ['Notes'] },", "  /* { tag: 'v3', deleted_classes: ['Notes'] }, */"), head), undefined);
-    // A block comment that closed before the list leaves it readable.
-    assert.deepEqual(addedClassDeletions(base, `/* Durable Object migrations. */\n${head}`), ["Notes"]);
+  // Under a new name a plain `wrangler deploy` creates a new Worker, without the old one's objects.
+  it("needs a person when the Worker's name changes", () => {
+    assert.deepEqual(durableObjectRisks(base, base.replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker"]);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, v3]).replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker", "deletes Notes"]);
   });
 
-  it("finds none when only other migrations or comments change", () => {
-    assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', new_sqlite_classes: ['Inbox'] },\n],")), []);
-    assert.deepEqual(addedClassDeletions(base, `// Old was dropped in v2.\n${base}`), []);
+  // Wrangler applies the migrations after the deployed tag, by position, so a changed history can
+  // run an old deletion again: [new A, delete A, new A] reordered to [new A, new A, delete A].
+  it("needs a person when the head does not keep the base's migrations as they are", () => {
+    const a1 = { tag: "a1", new_sqlite_classes: ["A"] };
+    const a2 = { tag: "a2", deleted_classes: ["A"] };
+    const a3 = { tag: "a3", new_sqlite_classes: ["A"] };
+    const rewritten: Record<string, [string, string]> = {
+      "reordered": [jsonc([a1, a2, a3]), jsonc([a1, a3, a2])],
+      "the last one retagged": [base, jsonc([v1, { ...v2, tag: "v2b" }])],
+      "a class added to an old deletion": [base, jsonc([v1, { tag: "v2", deleted_classes: ["Old", "Drafts"] }])],
+      "a deletion moved to a later migration": [base, jsonc([v1, { tag: "v2" }, { tag: "v3", deleted_classes: ["Old"] }])],
+      "cut short": [base, jsonc([v1])],
+      "an environment's list removed": [jsonc([v1], { env: { staging: { migrations: [v2] } } }), jsonc([v1])],
+      "moved into an environment": [base, jsonc([], { env: { staging: { migrations: [v1, v2] } } })],
+      // Both print as `null`, so comparing the migrations as text would miss the change.
+      "a value changed to a number too large to hold": ['{"migrations":[{"tag":"v1","deleted_classes":null}]}', '{"migrations":[{"tag":"v1","deleted_classes":1e400}]}'],
+    };
+    for (const [name, [before, after]] of Object.entries(rewritten)) {
+      assert.deepEqual(durableObjectRisks(before, after), ["rewrites migrations"], name);
+    }
   });
 
-  it("cannot read a deletion list that is not a list of string literals", () => {
-    for (const list of ["DROPPED", "[...dropped]", "[CLASS_NAME]", "['Old', ...dropped]", "[`${prefix}Notes`]"]) {
-      assert.equal(addedClassDeletions(base, base.replace("[\n    'Old',\n  ]", list)), undefined, list);
+  it("names any other operation in an appended migration that is not adding classes", () => {
+    assert.deepEqual(appended({ tag: "v3", transferred_classes: [{ from: "A", from_script: "x", to: "B" }] }), ["transferred_classes in v3"]);
+    assert.deepEqual(appended({ tag: "v3", renamed_classes: [{ from: "Notes", to: "Pages" }] }), ["renamed_classes in v3"]);
+    assert.deepEqual(appended({ tag: "v3", deletedClasses: ["Notes"] }), ["deletedClasses in v3"]);
+    assert.deepEqual(appended({ tag: "v3", deleted_classes: "Notes" }), ["deleted_classes in v3"]);
+    assert.deepEqual(appended({ tag: "v3", deleted_classes: [7] }), ["deleted_classes in v3"]);
+    assert.deepEqual(appended({ new_sqlite_classes: ["Inbox"], constructor: [] }), ["constructor in an untagged migration"]);
+  });
+
+  // Review rounds on #1093 kept finding look-alikes that a text search took for a deletion the base
+  // had already made, which hid the real one in the head: in a comment, then in a string.
+  it("lets no look-alike in the base stand for a deletion", () => {
+    const head = jsonc([v1, v2, v3]);
+    const lookAlikes = {
+      "a string": jsonc([v1, v2], { vars: { EXAMPLE: "deleted_classes: ['Notes']" } }),
+      "a string that holds the migration": jsonc([v1, v2], { vars: { EXAMPLE: '{ "tag": "v3", "deleted_classes": ["Notes"] }' } }),
+      "a header comment": `// { "tag": "v3", "deleted_classes": ["Notes"] },\n${base}`,
+    };
+    for (const [name, decoy] of Object.entries(lookAlikes)) {
+      assert.deepEqual(durableObjectRisks(base, decoy), [], name);
+      assert.deepEqual(durableObjectRisks(decoy, head), ["deletes Notes"], name);
+    }
+  });
+
+  it("cannot read a config that is not in the generated form, or whose migrations another reader may see differently", () => {
+    const inBody = (comment: string) => base.replace('  "migrations"', `${comment}\n  "migrations"`);
+    const unreadable = {
+      "not JSON": "migrations: [{ tag: 'v3', deleted_classes: ['Notes'] }]",
+      "a trailing comma": base.replace('"Old"\n', '"Old",\n'),
+      "a comment in the body": inBody('  // { "tag": "v3", "deleted_classes": ["Notes"] },'),
+      "a block comment": inBody('  /* { "tag": "v3", "deleted_classes": ["Notes"] }, */'),
+      // A JSONC reader ends this comment at the carriage return and reads the migration after it.
+      "a comment line that ends at a carriage return": '//generated\r{"migrations":[{"tag":"v3","deleted_classes":["Notes"]}]}\n',
+      // Some readers assign `__proto__` and so give the migration an inherited deletion list; the
+      // escaped key made the two counts agree.
+      "a __proto__ key": '{"migrations":[{"tag":"v3","__proto__":{"deleted_classes":["Notes"]}},{"tag":"v4","deleted\\u005fclasses":[]}]}',
+      "migrations that are not a list": jsonc([], { env: { staging: { migrations: "v3" } } }),
+      "a migration that is not an object": jsonc([v1, "v2"]),
+      "the key under another setting": jsonc([v1, v2], { vars: { deleted_classes: ["Notes"] } }),
+      "the key as a value": jsonc([v1, v2], { vars: { KEY: "deleted_classes" } }),
+      "an escaped key under another setting": base.replace('  "migrations"', '  "vars": { "deleted\\u005fclasses": ["Notes"] },\n  "migrations"'),
+      "a migrations key that a later one shadows": base.replace('  "migrations"', '  "migrations": [{ "tag": "v3", "deleted_classes": ["Notes"] }],\n  "migrations"'),
+    };
+    for (const [name, config] of Object.entries(unreadable)) {
+      assert.deepEqual(durableObjectRisks(base, config), ["unreadable"], name);
+      assert.deepEqual(durableObjectRisks(config, base), ["unreadable"], name);
     }
   });
 });
