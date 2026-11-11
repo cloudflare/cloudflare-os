@@ -5,7 +5,7 @@ export type CreationLocationConfiguratorValues = {
   folder?: string | null;
   /**
    * The folder the agent that asked for the creation suggested, so the picker can say so, or null
-   * when what it suggested names none this account can reach.
+   * when what it suggested names none this account can add files to.
    */
   suggested?: string | null;
 };
@@ -20,8 +20,8 @@ export interface CreationLocationConfiguratorRpc {
   /** The folder `id` names, with its path, or null if this account cannot see it or it is not a folder. */
   getFolder(id: string): Promise<DriveNode | null>;
   /**
-   * The id of the folder, or My Drive, that a Drive link names, as a browser shows it, or null if
-   * it names none this account can see.
+   * The id of the folder, or My Drive, that a Drive link names, as a browser shows it or as
+   * `resourceUrl()` mints it, or null if it names none this account can add files to.
    */
   folderForUrl(url: string): Promise<string | null>;
   /** Whether the account holds the grant that putting a creation in a folder needs; asked again after a consent pop-up. */
