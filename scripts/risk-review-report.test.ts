@@ -323,8 +323,55 @@ describe("readCalibrationRecord", () => {
 });
 
 describe("buildCalibration", () => {
+  const R = `/repos/${REPOSITORY}`;
+  /** What every calibration run reads first: the maintainers, the bands and the default branch. */
+  const POLICY: Record<string, Json> = {
+    [`${R}/contents/.github/maintainers`]: { content: Buffer.from("deregtd\nkentonv\n").toString("base64") },
+    [`${R}/contents/.github/automerge-bands.json`]: { content: Buffer.from(readFileSync(new URL("../.github/automerge-bands.json", import.meta.url))).toString("base64") },
+    [R]: { default_branch: "main" },
+  };
+  const getFrom = (responses: Record<string, Json>): GitHubGet => async (path) => {
+    const response = responses[path];
+    if (response === undefined) throw new Error(`unexpected request ${path}`);
+    return response;
+  };
+
+  // Bonk on #1093, round 7: H1 scored 10/10 and a maintainer commented on it; the author then
+  // force-pushed H2, back to H1, and on to H3. H1's first visit must stay, or its record stops
+  // being a would-merge point and the catch on it goes uncounted.
+  it("keeps a head's first visit when a force push returns to it", async () => {
+    const [H1, H2, H3] = ["1", "2", "3"].map((digit) => digit.repeat(40));
+    const start = Date.parse("2026-11-10T12:00:00Z");
+    const iso = (offsetHours: number) => new Date(start + offsetHours * 3_600_000).toISOString();
+    const forced = (at: number, before: string, after: string) => ({ createdAt: iso(at), beforeCommit: { oid: before }, afterCommit: { oid: after } });
+    const runs = (offsetHours: number, score: number) => ({
+      check_runs: [{ app: { slug: "risk-review" }, status: "completed", completed_at: iso(offsetHours), output: { summary: summaryWithScores(1050, score, score) } }],
+    });
+    const responses: Record<string, Json> = {
+      ...POLICY,
+      [`${R}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`]: [{ ...merged(1050, iso(30)) }],
+      [`${R}/pulls/1050/commits?per_page=100&page=1`]: [{ sha: H3, commit: { committer: { date: iso(-0.5) } } }],
+      [`${R}/issues/1050/comments?per_page=100&page=1`]: [{ user: { login: "deregtd", type: "User" }, created_at: iso(-8) }],
+      [`${R}/pulls/1050/comments?per_page=100&page=1`]: [],
+      [`${R}/pulls/1050/reviews?per_page=100&page=1`]: [{ user: { login: "kentonv", type: "User" }, state: "APPROVED", submitted_at: iso(2) }],
+      [`${R}/compare/main...${H1}`]: { total_commits: 1, commits: [{ sha: H1 }] },
+      [`${R}/compare/main...${H2}`]: { total_commits: 1, commits: [{ sha: H2 }] },
+      [`${R}/commits/${H1}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(-10) }] },
+      [`${R}/commits/${H2}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(-6) }] },
+      [`${R}/commits/${H3}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(0) }] },
+      [`${R}/commits/${H1}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: runs(-9, 10),
+      [`${R}/commits/${H2}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: runs(-5.5, 5),
+      [`${R}/commits/${H3}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: runs(1, 5),
+    };
+    const graphql: GitHubGraphql = async () => ({
+      repository: { pullRequest: { timelineItems: { pageInfo: { hasNextPage: false }, nodes: [forced(-6, H1, H2), forced(-4, H2, H1), forced(0, H1, H3)] } } },
+    });
+    const now = new Date(start + 20 * 86_400_000);
+    const rows = await buildCalibration(getFrom(responses), graphql, { repository: REPOSITORY, app: "risk-review", since: new Date(start - 86_400_000), until: now, now });
+    assert.deepEqual(rows.find((entry) => entry.threshold === 10)?.misses, [{ number: 1050, why: ["@deregtd commented, then a commit followed"] }]);
+  });
+
   it("reads the heads a force push replaced, from #1021's recorded history, and counts catches made on them", async () => {
-    const R = `/repos/${REPOSITORY}`;
     // Recorded: #1021's force push, which GraphQL reports with the head it replaced and the one it left.
     const recorded = JSON.parse(readFileSync(new URL("./risk-review-fixtures/force-push-1021.json", import.meta.url), "utf8")).data;
     const [push] = recorded.repository.pullRequest.timelineItems.nodes;
@@ -343,9 +390,7 @@ describe("buildCalibration", () => {
       output: { summary: summaryWithScores(1021, score, score) },
     });
     const responses: Record<string, Json> = {
-      [`${R}/contents/.github/maintainers`]: { content: Buffer.from("deregtd\nkentonv\n").toString("base64") },
-      [`${R}/contents/.github/automerge-bands.json`]: { content: Buffer.from(readFileSync(new URL("../.github/automerge-bands.json", import.meta.url))).toString("base64") },
-      [R]: { default_branch: "main" },
+      ...POLICY,
       [`${R}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`]: [{ ...merged(1021, iso(30)) }],
       // After the rebase, only the new head is on the branch.
       [`${R}/pulls/1021/commits?per_page=100&page=1`]: [{ sha: NEW, commit: { committer: { date: iso(-0.5) } } }],
@@ -364,18 +409,13 @@ describe("buildCalibration", () => {
         check_runs: [runOn(-3, 9), { ...runOn(-2.5, 10), app: { slug: "someone-else" } }, { ...runOn(-2.8, 10), conclusion: "cancelled", output: { summary: "A later run decides this commit." } }],
       },
     };
-    const get: GitHubGet = async (path) => {
-      const response = responses[path];
-      if (response === undefined) throw new Error(`unexpected request ${path}`);
-      return response;
-    };
     const graphql: GitHubGraphql = async (query, variables) => {
       assert.match(query, /HeadRefForcePushedEvent/);
       assert.equal(variables.number, 1021);
       return recorded;
     };
     const now = new Date(pushed + 20 * 86_400_000);
-    const rows = await buildCalibration(get, graphql, { repository: REPOSITORY, app: "risk-review", since: new Date(pushed - 86_400_000), until: now, now });
+    const rows = await buildCalibration(getFrom(responses), graphql, { repository: REPOSITORY, app: "risk-review", since: new Date(pushed - 86_400_000), until: now, now });
     const nine = rows.find((entry) => entry.threshold === 9);
     assert.deepEqual(nine?.misses, [{ number: 1021, why: ["@deregtd commented, then a commit followed"] }]);
     // At 10 the middle head is the point, and the same catch came after it.

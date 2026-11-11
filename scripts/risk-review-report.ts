@@ -366,9 +366,10 @@ export interface CalibrationPull {
   records: CalibrationRecord[];
   events: MaintainerEvent[];
   /**
-   * When each head was pushed, as best GitHub shows it: the latest of its committer date, a force
-   * push that left it, and its first check suite. An error either way can move a catch onto the
-   * wrong head; a head with any unreadable record, or none, counts as one the reviewers passed.
+   * Each time a commit became the head, as best GitHub shows it: first at the later of its
+   * committer date and its first check suite (or, with no suite, the first force push to it), and
+   * again at each later force push back to it. An error either way can move a catch onto the wrong
+   * head; a head with any unreadable record, or none, counts as one the reviewers passed.
    */
   pushes: { head: string; at: number }[];
   followUps: { number: number; revert: boolean }[];
@@ -573,13 +574,18 @@ export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, {
     // A replaced head GitHub no longer names has no visible record; a catch made on it then counts
     // as one on a head the reviewers passed.
     const pushedAt = new Map<string, number>();
+    // When a force push made each commit the head; one pushed back to has several.
+    const arrivals = new Map<string, number[]>();
     for (const value of commits) {
       const commit = asObject(value);
       const date = asObject(asObject(commit?.commit)?.committer)?.date;
       if (typeof commit?.sha === "string" && typeof date === "string") pushedAt.set(commit.sha, Date.parse(date));
     }
     for (const { before, after, at } of forced) {
-      if (after !== null) pushedAt.set(after, Math.max(pushedAt.get(after) ?? 0, at));
+      if (after !== null) {
+        arrivals.set(after, [...(arrivals.get(after) ?? []), at]);
+        if (!pushedAt.has(after)) pushedAt.set(after, 0);
+      }
       if (before === null) continue;
       // The replaced history: every commit the replaced head had over the default branch was a head
       // once (pushed some time before; its first check suite, read below, says when). Records on
@@ -614,7 +620,9 @@ export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, {
         const at = asObject(value)?.created_at;
         return typeof at === "string" ? [Date.parse(at)] : [];
       });
-      if (created.length > 0) pushedAt.set(sha, Math.max(pushedAt.get(sha) ?? 0, Math.min(...created)));
+      // With no suite to read, the first force push to the head stands in for it.
+      const seen = created.length > 0 ? created : arrivals.get(sha) ?? [];
+      if (seen.length > 0) pushedAt.set(sha, Math.max(pushedAt.get(sha) ?? 0, Math.min(...seen)));
       for (const value of runs) {
         const run = asObject(value);
         const completed = run?.completed_at;
@@ -656,7 +664,9 @@ export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, {
       mergedAt: Date.parse(pull.merged_at ?? ""),
       records,
       events,
-      pushes: [...pushedAt].map(([head, at]) => ({ head, at })),
+      // A force push back to a head, after its first visit, is another visit; the first one stays.
+      pushes: [...pushedAt].flatMap(([head, at]) =>
+        [{ head, at }, ...(arrivals.get(head) ?? []).filter((again) => again > at).map((again) => ({ head, at: again }))]),
       followUps: followUps(pull, merged, repository),
     });
   }
