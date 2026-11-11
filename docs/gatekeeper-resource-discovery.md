@@ -27,9 +27,10 @@ Account consent, grant management, and observer verification still include creat
 
 ## Creation
 
-`creationConfigurator`, when needed, belongs on the resource type alongside `creatable`. Its
-account UI, approval, simulation, and `applyCreation()` behavior are unchanged. Creating something
-still needs approval and a chosen account; advertising creation creates or connects nothing.
+`creationConfigurator`, when needed, belongs on the resource type alongside `creatable`.
+Discovery leaves its account UI, approval, simulation, and `applyCreation()` behavior as they
+were, apart from opening on a suggested configuration (below). Creating something still needs
+approval and a chosen account; advertising creation creates or connects nothing.
 
 A type whose configurator takes a suggestion also sets `creationConfigurationDescription`, saying
 what its configuration is (Google: "the URL of the Google Drive folder to create it in"), and
