@@ -3,9 +3,7 @@ import { Button } from '@/components/Button'
 
 // Smaller and quieter than a button elsewhere: these sit beside a line of text and should not
 // outweigh it. One that is pointed at only comes to full strength; it gets no fill.
-const QUIET =
-  'size-7 text-sm text-kumo-subtle transition-colors hover:text-kumo-default focus-visible:text-kumo-default ' +
-  'not-data-disabled:hover:bg-transparent motion-reduce:transition-none'
+const QUIET = 'size-7 text-sm text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default not-data-disabled:hover:bg-transparent'
 
 /**
  * What can be done with a message: reply to it, copy it, see more about it.
