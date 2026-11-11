@@ -389,12 +389,20 @@ restricted data. This plan does not change gadget frames.
   with tool calls run in sequence, so a buffered save's call is always recorded with its stamp,
   even in a step the user stopped.
 - **Caps.** One cap on what a save controls, 400,000 UTF-16 code units for what an `executeCode`
-  run's `env` carries by value: each data name with its JSON text, measured as `json.length` as
-  `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`, and each agent callback's name
-  with its arguments, measured as JSON would write them, a stub counting 64 (`envValueLength`,
-  which reads no member of a stub). A save that grows a name past the cap is refused; one that
-  shrinks a name always lands, so a chat over the cap through its callbacks can come back under
-  it. Callback arguments arrive unbounded (`deliverAgentCallback`), so the env build enforces the
+  run's `env` carries: every binding's name, each data name's JSON text, measured as
+  `json.length` as `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`, each agent
+  callback's arguments, measured as JSON would write them, and a stub, which counts 64, for each
+  other binding (`envValueLength`, which reads no member of a stub). Admission and `#fitEnv`
+  count with the same function (`#envEntrySize`), in code units and in bytes. Every save is
+  charged before it lands, its name included: another name for a binding costs its name and a
+  stub. `validateBindingName` sets no length, so without that a run could save names whose bytes
+  alone pass the platform's limit, which no later run could start with and nothing could remove
+  (a review on 2026-11-11 found this). A save that grows past the cap is refused; one that
+  shrinks a data name always lands, so a chat over the cap through its callbacks can come back
+  under it. The run's output shows a name over 64 characters by its start and length, clips each
+  reason to 300 characters, and lists at most 20 refused names, so a name the code reports can't
+  put an unbounded string into the step's record. Callback arguments arrive unbounded
+  (`deliverAgentCallback`), so the env build enforces the
   platform's limit itself: `#fitEnv` measures the `env` a run would carry in bytes as V8
   serializes it (one byte a code unit for Latin-1 text, two otherwise), and past 1 MiB less 64
   KiB it leaves out saved data names, largest first, then callback arguments, largest first, and

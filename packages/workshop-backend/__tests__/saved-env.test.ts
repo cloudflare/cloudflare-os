@@ -94,7 +94,8 @@ const output = (call: AiToolCall | undefined) => call?.toolName === "executeCode
 // The names a run's output reports it saved, and those it reports it refused, in order, and the
 // line it gives one name.
 const savedNames = (log: string) => [...log.matchAll(/^Saved env\.(\w+) /gm)].map(match => match[1]);
-const refusedNames = (log: string) => [...log.matchAll(/^env\.(\w+) was not saved:/gm)].map(match => match[1]);
+// A long name is shown by its start, which is what this reads for it.
+const refusedNames = (log: string) => [...log.matchAll(/^env\.(\w+)\S* .*?was not saved:/gm)].map(match => match[1]);
 const lineFor = (log: string, name: string) => log.split("\n").find(line => line.startsWith(`env.${name} `)) ?? "";
 
 describe("executeCode saving env", () => {
@@ -185,6 +186,27 @@ describe("executeCode saving env", () => {
     expect(refusedNames(log)).toEqual(["COPY"]);
   }));
 
+  it("charges another name's name to the chat's total, and still saves the run's other names",
+      () => withChat(async ({ run }) => {
+    // The chat's data, with EXPENSES's name and stub, leaves less room than SALES's name and stub.
+    let { log, saves } = await run(`env.SALES = env.EXPENSES; env.SMALL = 1;`, {
+      bindings: { EXPENSES, BIG: { type: "data" } } as Bindings,
+      pending: { BIG: JSON.stringify("x".repeat(399_900)) },
+    });
+    expect(saves).toEqual([{ name: "SMALL", json: "1" }]);
+    expect(refusedNames(log)).toEqual(["SALES"]);
+  }));
+
+  it("keeps its output bounded when the code reports very long names", () => withChat(async ({ run }) => {
+    let { log, saves } = await run(`
+      env["A".repeat(600000)] = 1;
+      env["1".repeat(600000)] = 1;
+      for (let i = 0; i < 500; i++) env[i + "x".repeat(1000)] = env.EXPENSES;`);
+    expect(saves).toEqual([]);
+    expect(log.length).toBeLessThan(10_000);
+    expect(refusedNames(log)).toContainEqual(expect.stringMatching(/^A+$/));
+  }));
+
   it("refuses another name a tampered harness reports for a name that is not the chat's own",
       () => withChat(async ({ run }) => {
     for (let alias of ["toString", "__proto__", "constructor"]) {
@@ -250,6 +272,19 @@ describe("saved env in a turn", () => {
   it("lets a later call in the step read the first's save", () => withChat(async ({ turn }) => {
     let calls = await turn([step(code(`env.A = [1];`), code(`console.log(JSON.stringify(env.A));`))]);
     expect(output(calls[1])).toBe("[1]");
+  }));
+
+  it("refuses names a chat's runs could not carry, so a later run still starts", () => withChat(async ({ turn }) => {
+    let calls = await turn([
+      step(code(`env["A".repeat(600000)] = env.EXPENSES;`)),
+      step(code(`env["B".repeat(600000)] = env.EXPENSES;`)),
+      step(code(`console.log("third");`)),
+    ]);
+    expect(calls.map(call => call.toolName === "executeCode" ? call.savedEnv : "not executeCode"))
+        .toEqual([undefined, undefined, undefined]);
+    expect(refusedNames(output(calls[0]) ?? "")).toEqual([expect.stringMatching(/^A+$/)]);
+    expect(refusedNames(output(calls[1]) ?? "")).toEqual([expect.stringMatching(/^B+$/)]);
+    expect(output(calls[2])).toBe("third");
   }));
 
   it("refuses the second of a save and a createGadget of one name, in either order", () => withChat(async ({ turn }) => {

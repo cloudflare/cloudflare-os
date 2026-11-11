@@ -194,6 +194,17 @@ function isBindingName(name: string): boolean {
   }
 }
 
+// How the run's output names `name`: as `env.NAME`, with a long name clipped, since a name a run
+// reports can be of any length and the output is stored with the step.
+function shownName(name: string): string {
+  return name.length <= 64
+    ? `env.${name}`
+    : `env.${name.slice(0, 32)}… (a name of ${name.length} characters)`;
+}
+
+// How many names a run's output says it refused, one line each, before it only counts the rest.
+const MAX_REFUSAL_NOTES = 20;
+
 let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
@@ -9952,11 +9963,7 @@ class OverseerImpl implements AgentHooks {
     let total = 0;
     let byValue: {name: string, size: number, data: boolean}[] = [];
     for (let [name, entry] of Object.entries(bindings)) {
-      let size = serializedBytes(name) + (
-          entry.type === "data" ? serializedBytes(this.savedDataJson(chatId, name, pending)) :
-          entry.type === "value" ?
-              envValueLength(this.#callbackArgs(chatId, entry.messageSequence), serializedBytes) :
-          OPAQUE_VALUE_LENGTH);
+      let size = this.#envEntrySize(chatId, name, entry, pending, serializedBytes);
       total += size;
       if (entry.type !== "workpiece") byValue.push({name, size, data: entry.type === "data"});
     }
@@ -9967,15 +9974,28 @@ class OverseerImpl implements AgentHooks {
       if (total <= MAX_ENV_BYTES) break;
       total -= size;
       leftOut.add(name);
-      notes.push(`env.${name} was left out of this run: with it, the run's env would be past the ` +
-          `platform's limit of 1 MiB.` + (data
-              ? ` It is still saved; set env.${name} = null, or save it smaller, to bring it back.`
+      notes.push(`${shownName(name)} was left out of this run: with it, the run's env would be ` +
+          `past the platform's limit of 1 MiB.` + (data
+              ? ` It is still saved; set it to null, or save it smaller, to bring it back.`
               : ""));
     }
     return {
       bindings: Object.fromEntries(Object.entries(bindings).filter(([name]) => !leftOut.has(name))),
       notes,
     };
+  }
+
+  // What the binding `name` adds to a run's env, with each string measured by `measure`: its name,
+  // and its saved JSON, its callback's arguments, or a stub. #fitEnv measures it in serialized
+  // bytes and #decideEnvSaves in code units, which are at least half as many, so a chat that saves
+  // within MAX_SAVED_DATA_LENGTH stays within MAX_ENV_BYTES.
+  #envEntrySize(chatId: number, name: string, entry: ChatBindingEntry,
+                pending: ReadonlyMap<string, string>, measure: (text: string) => number): number {
+    return measure(name) + (
+        entry.type === "data" ? measure(this.savedDataJson(chatId, name, pending)) :
+        entry.type === "value" ?
+            envValueLength(this.#callbackArgs(chatId, entry.messageSequence), measure) :
+        OPAQUE_VALUE_LENGTH);
   }
 
   // An agent callback's stored arguments, or undefined if they are gone.
@@ -9990,26 +10010,36 @@ class OverseerImpl implements AgentHooks {
   #decideEnvSaves(chatId: number, bindings: Record<string, ChatBindingEntry>,
                   scope: SavedEnvScope, changes: EnvChange[])
       : {notes: string[], saves: EnvSave[]} {
-    // What each name carries by value: a data name its JSON, a callback its arguments, each with
-    // its name. Only data names change here.
+    // What the run's env carries now, as #fitEnv counts it: every binding's name, and a data
+    // name's JSON, a callback's arguments, or a stub. Every save is charged against it, its name
+    // included, before it lands.
     let lengths = new Map<string, number>();
     let total = 0;
     for (let [name, entry] of Object.entries(bindings)) {
-      if (entry.type === "data") {
-        let length = name.length + this.savedDataJson(chatId, name, scope.pending).length;
-        lengths.set(name, length);
-        total += length;
-      } else if (entry.type === "value") {
-        total += name.length + envValueLength(this.#callbackArgs(chatId, entry.messageSequence));
-      }
+      let size = this.#envEntrySize(chatId, name, entry, scope.pending, codeUnits);
+      if (entry.type === "data") lengths.set(name, size);
+      total += size;
     }
     let notes: string[] = [];
     let saves: EnvSave[] = [];
     let aliased = new Set<string>();
+    // The harness reports names and reasons the agent's code chose, of any length, and the output
+    // is stored with the step, so it shows a long name clipped, each reason clipped, and only the
+    // first refusals.
+    let refused = 0;
+    let cap = MAX_SAVED_DATA_LENGTH.toLocaleString("en-US");
+    let overCap = `it would take what this chat's code carries in env, its names and saved data ` +
+        `and any agent callback arguments, past ${cap} code units; save less, or set a name you ` +
+        `no longer need to null`;
     for (let change of Array.isArray(changes) ? changes : []) {
       let name = change?.name;
       if (typeof name !== "string") continue;
-      let refuse = (why: string) => notes.push(`env.${name} was not saved: ${why}.`);
+      let shown = shownName(name);
+      let refuse = (why: string) => {
+        if (++refused <= MAX_REFUSAL_NOTES) {
+          notes.push(`${shown} was not saved: ${why.length > 300 ? `${why.slice(0, 300)}…` : why}.`);
+        }
+      };
       try {
         validateBindingName(name);
       } catch (err) {
@@ -10019,8 +10049,8 @@ class OverseerImpl implements AgentHooks {
       let isData = lengths.has(name);
       if (change.deleted === true) {
         if (isData) {
-          notes.push(`env.${name} is still saved: a saved name can't be removed; save it ` +
-              `again to replace it.`);
+          notes.push(`${shown} is still saved: a saved name can't be removed; save it again to ` +
+              `replace it.`);
         }
         continue;
       }
@@ -10030,39 +10060,42 @@ class OverseerImpl implements AgentHooks {
       let entry = ownEntry(name);
       if (name === GIT_BINDING_NAME || scope.claimed.has(name) || aliased.has(name) ||
           (entry !== undefined && entry.type !== "data")) {
-        refuse(`env.${name} is one of this chat's bindings; save it under another name`);
+        refuse(`${shown} is one of this chat's bindings; save it under another name`);
         continue;
       }
       if (typeof change.alias === "string") {
         let alias = change.alias;
         let target = isBindingName(alias) ? ownEntry(alias) : undefined;
+        let shownAlias = shownName(alias);
+        // Another name carries a stub into every run, under a name of its own.
+        let size = name.length + OPAQUE_VALUE_LENGTH;
         if (isData) {
-          refuse(`env.${name} holds saved data, and stays data; save env.${alias} under ` +
-              `a new name`);
+          refuse(`${shown} holds saved data, and stays data; save ${shownAlias} under a new name`);
         } else if (target?.type === "value") {
           // A second name would carry the same arguments into every run again, and no view
           // reaches them.
-          refuse(`env.${alias} holds agent callback arguments; read them as env.${alias}, or ` +
+          refuse(`${shownAlias} holds agent callback arguments; read them as ${shownAlias}, or ` +
               `save what you need from them as data`);
         } else if (target === undefined || target.type === "data") {
-          refuse(`env.${name} is neither JSON data nor another name for one of this chat's ` +
-              `bindings`);
+          refuse(`${shown} is neither JSON data nor another name for one of this chat's bindings`);
+        } else if (total + size > MAX_SAVED_DATA_LENGTH) {
+          refuse(overCap);
         } else {
+          total += size;
           saves.push({name, alias, entry: target});
           aliased.add(name);
-          notes.push(`Saved env.${name} (another name for env.${alias}) for views and ` +
-              `later code.`);
+          notes.push(`Saved ${shown} (another name for ${shownAlias}) for views and later code.`);
         }
         continue;
       }
       if (typeof change.problem === "string") {
-        refuse(`${change.problem}, so env.${name} is neither JSON data nor another name for ` +
-            `one of this chat's bindings`);
+        refuse(`${change.problem}, so ${shown} is neither JSON data nor another name for one of ` +
+            `this chat's bindings`);
         continue;
       }
       if (typeof change.length === "number") {
-        refuse(`env.${name} is ${change.length} code units as JSON, and a chat's saved data holds ` +
-            `at most ${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")}`);
+        refuse(`${shown} is ${change.length} code units as JSON, and a chat's saved data holds ` +
+            `at most ${cap}`);
         continue;
       }
       let json = change.json;
@@ -10078,15 +10111,16 @@ class OverseerImpl implements AgentHooks {
       let next = total - before + size;
       // A save that shrinks a name always lands, so a chat over the cap can come back under it.
       if (next > MAX_SAVED_DATA_LENGTH && size > before) {
-        refuse(`it would take what this chat's code carries in env, its saved data and any agent ` +
-            `callback arguments, past ${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")} code ` +
-            `units; save less, or set a name you no longer need to null`);
+        refuse(overCap);
         continue;
       }
       total = next;
       lengths.set(name, size);
       saves.push({name, json});
-      notes.push(`Saved env.${name} (data) for views and later code.`);
+      notes.push(`Saved ${shown} (data) for views and later code.`);
+    }
+    if (refused > MAX_REFUSAL_NOTES) {
+      notes.push(`${refused - MAX_REFUSAL_NOTES} more names were not saved.`);
     }
     return {notes, saves};
   }
