@@ -45,6 +45,7 @@ const created = (gadgetId: number) => changes({ author: AGENT, createdGadgets: [
 
 const request = (state: 'pending' | 'accepted' | 'denied') =>
   connectionRequest({ vendorName: 'ClickHouse', reason: 'Read error rates.', resourceTitle: 'ClickHouse cluster', state })
+const LABEL = { tag: 'jira.label', label: 'Label an issue' }
 const noFallback = (result: ChatFeed) => only(result, 'notice').filter(({ notice }) => notice === 'unknown')
 
 describe('toChatFeed', () => {
@@ -250,26 +251,39 @@ describe('toChatFeed', () => {
       expect(only(feed(agent({ toolCalls: [worktree] })), 'output')).toMatchObject([{ type: 'worktree', workpieceId: 9, draft: false }])
     })
 
-    it('tells how an action was decided', () => {
-      const kind = { tag: 'jira.label', label: 'Label an issue' }
-      const result = feed(
-        action({ title: 'Create issue' }),
-        action({ title: 'Comment', state: 'approved' }),
+    it('keeps an approval under the answer while it waits, and puts it back where it happened once decided', () => {
+      const waiting = feed(user('file it'), agent({ text: 'Filing' }), action({ title: 'Create issue' }), agent({ text: 'Meanwhile' }))
+      expect(kinds(waiting)).toEqual(['user', 'assistant', 'assistant', 'action'])
+      expect(waiting.pinned).toMatchObject([{ kind: 'action', state: 'pending', resolution: undefined }])
+
+      const decided = feed(
+        user('file it'),
+        agent({ text: 'Filing' }),
+        action({ title: 'Create issue', state: 'approved' }),
         action({ title: 'Post', state: 'denied' }),
-        action({ title: 'Label', kind, autoApprovedBy: VIEWER }),
+        agent({ text: 'Done' }),
       )
-      expect(only(result, 'action').map(({ state, resolution }) => [state, resolution])).toEqual([
-        ['pending', undefined],
+      expect(kinds(decided)).toEqual(['user', 'assistant', 'action', 'action', 'assistant'])
+      expect(decided.pinned).toEqual([])
+      expect(only(decided, 'action').map(({ state, resolution }) => [state, resolution])).toEqual([
         ['approved', 'Approved by Ada Lovelace'],
         ['denied', 'Denied by Ada Lovelace'],
-        ['approved', 'Auto-approved (Ada Lovelace’s rule)'],
       ])
     })
 
+    it('lists an action a standing rule approved with the work that made it, since nobody was asked', () => {
+      const result = feed(agent({ toolCalls: [run()] }), action({ title: 'Label', kind: LABEL, autoApprovedBy: VIEWER }), agent({ toolCalls: [run()] }))
+      expect(kinds(result)).toEqual(['tools'])
+      expect(result.openTools).toMatchObject({
+        summary: 'Ran code 2 times, took 1 action',
+        entries: [{ type: 'call' }, { type: 'action', label: 'Label', resolution: 'Auto-approved (Ada Lovelace’s rule)' }, { type: 'call' }],
+      })
+    })
+
     it('offers a standing approval only for a pending action whose gatekeeper allows one', () => {
-      const kind = { tag: 'jira.label', label: 'Label an issue' }
-      const result = feed(action({ title: 'Label', kind }), action({ title: 'Create issue' }), action({ title: 'Label', kind, state: 'approved' }))
-      expect(only(result, 'action').map(({ rule }) => rule)).toEqual([{ gatekeeperId: 7, actionKind: kind }, undefined, undefined])
+      const result = feed(action({ title: 'Label', kind: LABEL }), action({ title: 'Create issue' }), action({ title: 'Relabel', kind: LABEL, state: 'approved' }))
+      const rules = Object.fromEntries(only(result, 'action').map(({ title, rule }) => [title, rule]))
+      expect(rules).toEqual({ Label: { gatekeeperId: 7, actionKind: LABEL }, 'Create issue': undefined, Relabel: undefined })
     })
 
     it('warns when a pending action’s description leaves out part of what it sends', () => {
@@ -282,11 +296,20 @@ describe('toChatFeed', () => {
       expect(only(result, 'hook')).toMatchObject([{ title: 'New issue', enabled: false, hookId: expect.any(Number) }, { title: 'Old', hookId: undefined }])
     })
 
-    it('shows a connection request in each of its states', () => {
-      const result = feed(request('pending'), request('accepted'), request('denied'))
+    it('keeps a connection request under the answer until it is answered, then where it was asked', () => {
+      const result = feed(
+        user('chart the errors'),
+        request('accepted'),
+        agent({ text: 'Connected. Deploys would need Grafana.' }),
+        request('pending'),
+        agent({ text: 'Meanwhile, the chart.' }),
+        request('denied'),
+      )
+      expect(kinds(result)).toEqual(['user', 'connection', 'assistant', 'assistant', 'connection', 'connection'])
       expect(only(result, 'connection').map(({ state, scope }) => [state, scope])).toEqual([
-        ['pending', 'ClickHouse cluster'], ['connected', 'ClickHouse cluster'], ['denied', 'ClickHouse cluster'],
+        ['connected', 'ClickHouse cluster'], ['denied', 'ClickHouse cluster'], ['pending', 'ClickHouse cluster'],
       ])
+      expect(result.pinned).toMatchObject([{ kind: 'connection', state: 'pending' }])
     })
   })
 
@@ -354,14 +377,14 @@ describe('toChatFeed', () => {
     })
 
     it('rebuilds only the row whose message was delivered again', () => {
-      const pending = action({ title: 'Create issue' })
-      const messages = history([user('hi'), pending, agent({ text: 'waiting' })])
+      const hook = bindHook({ title: 'New issue' })
+      const messages = history([user('hi'), hook, agent({ text: 'watching' })])
       const before = toChatFeed(messages, viewer)
-      const approved = { ...messages[1], actionLog: { ...pending.actionLog!, state: 'approved' } } as AiChatMessage
-      const after = toChatFeed([messages[0], approved, messages[2]], viewer, before)
+      const switchedOff = { ...messages[1], actionLog: { ...hook.actionLog!, enabled: false } } as AiChatMessage
+      const after = toChatFeed([messages[0], switchedOff, messages[2]], viewer, before)
 
       expect(after.items).toBe(before.items)
-      expect(after.pinned).toMatchObject([{ kind: 'action', state: 'approved' }])
+      expect(after.pinned).toMatchObject([{ kind: 'hook', enabled: false }])
       expect(after.pinned[0]).not.toBe(before.pinned[0])
     })
   })

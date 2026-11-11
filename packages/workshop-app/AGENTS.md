@@ -40,10 +40,12 @@ there so its states can be reviewed in isolation.
 its block. The mapping is pure and returns the same objects for messages that did not change, so
 only changed rows render.
 
-A turn is everything from one prompt to the next. What a turn produced or asks the user for (an
-output, a hook, an approval, a connection request) is shown at the end of the turn, never where it
-happened, so it cannot be left behind by what the agent wrote afterwards. The last turn's are kept
-apart (`pinned`) and rendered below whatever is still streaming. Keep that rule when adding a kind.
+A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
+waiting on the user for (a pending approval or connection request) is shown at the end of the turn,
+never where it happened, so it cannot be left behind by what the agent wrote afterwards. The last
+turn's are kept apart (`pinned`) and rendered below whatever is still streaming. Once the user has
+answered a request it is history and goes back to where it happened; an action a standing rule
+approved never asked anyone, and is a step of the tool run. Keep that rule when adding a kind.
 
 What is open in a row lives in `DisclosureStore`, not in the block: the list unmounts rows far off
 screen.

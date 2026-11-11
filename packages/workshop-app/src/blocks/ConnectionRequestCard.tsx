@@ -17,7 +17,10 @@ export type ConnectionRequestCardProps = {
   | { state: 'connected' | 'denied' }
 )
 
-/** The agent asking for access to something the user has not connected. */
+/**
+ * The agent asking for access to something the user has not connected. It stays a card once
+ * answered, saying how, so the answer stands out in the conversation.
+ */
 export const ConnectionRequestCard = ({ vendorName, logoUrl, scope, reason, ...props }: ConnectionRequestCardProps) => {
   const [pending, run] = usePending()
   const [logoFailed, setLogoFailed] = useState(false)

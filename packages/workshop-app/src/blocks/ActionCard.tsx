@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { CheckCircleIcon, LightningIcon, ProhibitIcon, ShieldCheckIcon, ShieldWarningIcon, WarningIcon } from '@phosphor-icons/react'
+import { CheckCircleIcon, ProhibitIcon, ShieldCheckIcon, ShieldWarningIcon, WarningIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
 import { Disclosure } from '@/components/Disclosure'
@@ -30,9 +30,8 @@ export type ActionCardProps = Request & (
     }
   | {
       state: 'approved' | 'denied'
-      /** How it was decided, e.g. "Auto-approved (Ada’s rule)". */
+      /** Who decided it, e.g. "Approved by Ada". */
       resolution: string
-      automatic?: boolean
       open: boolean
       onToggle: () => void
     }
@@ -65,7 +64,7 @@ export const ActionCard = (props: ActionCardProps) => {
   const id = useId()
 
   if (props.state !== 'pending') {
-    const StateIcon = props.state === 'denied' ? ProhibitIcon : props.automatic ? LightningIcon : CheckCircleIcon
+    const StateIcon = props.state === 'denied' ? ProhibitIcon : CheckCircleIcon
     return (
       <Disclosure
         open={props.open}

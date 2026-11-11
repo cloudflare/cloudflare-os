@@ -97,7 +97,6 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
             {...request}
             state={item.state}
             resolution={item.resolution ?? ''}
-            automatic={item.automatic}
             open={isOpen}
             onToggle={toggle}
           />

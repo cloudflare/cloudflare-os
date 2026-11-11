@@ -1,6 +1,6 @@
 import {
   CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon, MagnifyingGlassIcon,
-  PencilSimpleIcon, PlusIcon, StopIcon, BookOpenIcon, type Icon,
+  LightningIcon, PencilSimpleIcon, PlusIcon, StopIcon, BookOpenIcon, type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge } from '@cloudflare/kumo'
@@ -23,7 +23,7 @@ const ICONS = {
   stop: StopIcon,
 } satisfies Record<string, Icon>
 
-/** One step of the agent's work: a tool it called, or a resource that call read. */
+/** One step of the agent's work: a tool it called, a resource that call read, or an action a rule approved. */
 export type ToolStepEntry =
   | {
       type: 'call'
@@ -46,11 +46,21 @@ export type ToolStepEntry =
       description: string
       fields: ActionField[]
     }
+  | {
+      type: 'action'
+      key: string
+      label: string
+      /** The rule that approved it, e.g. "Auto-approved (Ada’s rule)". */
+      resolution: string
+      resource?: ResourceLinkProps
+      description: string
+      fields: ActionField[]
+    }
 
 export type ToolStepProps = { entry: ToolStepEntry; open: boolean; onToggle: () => void }
 
 const Detail = ({ entry }: { entry: ToolStepEntry }) => {
-  if (entry.type === 'observation') {
+  if (entry.type !== 'call') {
     const { resource } = entry
     return (
       <>
@@ -71,13 +81,14 @@ const Detail = ({ entry }: { entry: ToolStepEntry }) => {
 
 /** A step as one quiet line, which opens to show what it did when there is more to show. */
 export const ToolStep = ({ entry, open, onToggle }: ToolStepProps) => {
-  const StepIcon = entry.type === 'call' ? ICONS[entry.icon] ?? CodeIcon : BookOpenIcon
+  const StepIcon = entry.type === 'call' ? ICONS[entry.icon] ?? CodeIcon : entry.type === 'action' ? LightningIcon : BookOpenIcon
   const call = entry.type === 'call' ? entry : undefined
   const line = (
     <>
       <StepIcon aria-hidden="true" className="size-5 shrink-0" />
       <span className={cn('min-w-0 truncate', call?.running && 'animate-pulse motion-reduce:animate-none')}>{entry.label}</span>
       {call?.error && <Badge variant="error">Error</Badge>}
+      {entry.type === 'action' && <span className="shrink-0 text-sm text-kumo-inactive">{entry.resolution}</span>}
     </>
   )
   const hasDetail = !call || !!call.error || !!call.reasoning || call.sections.length > 0
