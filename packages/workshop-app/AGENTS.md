@@ -20,6 +20,7 @@ src/
   workspaces/   The user's workspace list, and one workspace's chats (`WorkspacePane`)
   chat/         One chat: `ChatSession` (plain class, no React), the mapping from server
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
+  chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
 ```
 
 UI imports point down only: components, then blocks, then layouts, then routes. The data folders
@@ -32,6 +33,26 @@ tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs th
 
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.
+
+## The chat feed
+
+`chat/chatItems.ts` maps a chat's messages to rows, and `chat/ChatItemView.tsx` gives each row kind
+its block. The mapping is pure and returns the same objects for messages that did not change, so
+only changed rows render.
+
+A turn is everything from one prompt to the next. What a turn produced or asks the user for (an
+output, a hook, an approval, a connection request) is shown at the end of the turn, never where it
+happened, so it cannot be left behind by what the agent wrote afterwards. The last turn's are kept
+apart (`pinned`) and rendered below whatever is still streaming. Keep that rule when adding a kind.
+
+What is open in a row lives in `DisclosureStore`, not in the block: the list unmounts rows far off
+screen.
+
+To add or change a kind: map it in `chatItems.ts` with a test for its rule, give it a block with a
+gallery entry for every state, and add it to a scenario in `chat/mock/scenarios.ts` so it can be
+seen in a conversation without a backend. Scenario scripts deliver messages in the order the server
+commits a step (see `chat/mock/scenario.ts`). `scripts/record-chat-fixture.ts` saves a real chat as
+a test fixture.
 
 ## Theming
 
