@@ -19,7 +19,7 @@ export type UserMessageProps = {
   attachments?: UserMessageAttachment[]
   /** Who sent it, when it was not the person looking. */
   from?: string
-  /** Sent while the agent was working, which has not read it yet. */
+  /** Sent while the agent was working, which has not read it yet. It is dimmed until then. */
   unread?: boolean
   onOpenAttachment?: (id: string) => void
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
@@ -41,7 +41,7 @@ const Part = ({ part }: { part: UserMessagePart }) => {
 
 /** What a person sent: their words with what they mentioned as chips, and the files they attached. */
 export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment, joins }: UserMessageProps) => (
-  <div className={cn('flex flex-col gap-1', unread && 'opacity-60')}>
+  <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {attachments.length > 0 && (
       <ul aria-label="Attachments" className="flex flex-wrap justify-end gap-2">
@@ -57,6 +57,7 @@ export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttac
         {parts.map((part, index) => <Part key={index} part={part} />)}
       </MessageBubble>
     )}
-    {unread && <span className="px-2 text-end text-xs text-kumo-subtle">Not read yet</span>}
+    {/* Said only to those who cannot see the dimming. */}
+    {unread && <span className="sr-only">Not read yet</span>}
   </div>
 )

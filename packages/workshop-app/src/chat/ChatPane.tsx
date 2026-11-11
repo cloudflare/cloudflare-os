@@ -4,7 +4,6 @@ import { Composer } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
-import { UserMessage } from '@/blocks/UserMessage'
 import { WorkLog } from '@/blocks/WorkLog'
 import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -116,11 +115,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
             {chat.pinned.map((item) => (
               <LiveRows.Row key={item.key}>
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
-              </LiveRows.Row>
-            ))}
-            {chat.queuedSteers.map(({ text, from }, index) => (
-              <LiveRows.Row key={`steer:${index}`}>
-                <UserMessage parts={[{ type: 'text', text }]} from={from} unread />
               </LiveRows.Row>
             ))}
             {chat.sendError && <LiveRows.Row key="send-error"><MessageBubble role="error">{chat.sendError}</MessageBubble></LiveRows.Row>}

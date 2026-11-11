@@ -58,6 +58,8 @@ export type UserItem = Row & {
   attachments: ChatAttachment[]
   /** Who sent it, when that is not the person looking: a collaborator, or a gadget that prompted the agent. */
   from?: string
+  /** Sent while the agent was working, which has not read it yet. */
+  unread?: boolean
 }
 export type AssistantItem = Row & { kind: 'assistant'; text: string }
 export type OutputItem = Row & {
@@ -105,15 +107,16 @@ export type ConnectionItem = Row & {
 }
 export type NoticeItem = Row & {
   kind: 'notice'
-  notice: 'model' | 'gadget' | 'callback' | 'unknown'
+  notice: 'gadget' | 'callback' | 'unknown'
   text: string
   detail?: string
 }
 /**
- * A point in the conversation rather than something said: where the context was cut, or
- * something a person did to the chat's changes (saved edits, accepted them, discarded them).
+ * A point in the conversation rather than something said: the context was compacted, another
+ * model took over, or a person did something to the chat's changes (saved edits, accepted them,
+ * discarded them).
  */
-export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert'; label: string }
+export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'model' | 'changes' | 'merge' | 'revert'; label: string }
 export type ErrorItem = Row & {
   kind: 'error'
   text: string
@@ -139,11 +142,19 @@ export const continuesRun = (before: ChatItem | undefined, item: ChatItem): bool
   before?.kind === item.kind &&
   (item.kind === 'assistant' || (item.kind === 'user' && !item.from && item.attachments.length === 0 && item.parts.length > 0))
 
+/**
+ * A message sent to the running agent that is not among the chat's messages: it waits to be read
+ * (`unread`), or it has just been read and its message is on its way.
+ */
+export type PendingSteer = { text: string; from?: string; unread: boolean }
+
 /** What the mapping cannot read from the messages themselves. */
 export type FeedContext = {
   /** The signed-in user, whose own actions read "You …". */
   viewerId?: string
   agentActive?: boolean
+  /** The messages sent to the running agent that are not in `messages` yet, oldest first. */
+  steers?: readonly PendingSteer[]
   /** The first sequence the agent still reads in full (`AiChatMetadata.compactedTo`). */
   compactedTo?: number
   /** Formats seen while their `createGadget` call streamed, by tool call id. */
@@ -435,12 +446,23 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     items.push(...decided.filter(({ at }) => at <= time).map(({ item }) => item))
     decided = decided.filter(({ at }) => at > time)
   }
-  const closeTurn = () => {
+  // A message that steers a turn is the same row before and after the agent reads it, so that
+  // being read changes how it looks and nothing else. Its key can therefore not come from its
+  // sequence, which it only has once read: it is the turn it steers and its place among that
+  // turn's steers.
+  let turn = 'start'
+  let steers = 0
+  const steerKey = () => `steer:${turn}:${steers++}`
+
+  /** Ends the turn before the message, numbered `opener`, that starts the next. */
+  const closeTurn = (opener: number) => {
     settle()
     items.push(...pinned, ...acts)
     pinned = []
     acts = []
     work = []
+    turn = String(opener)
+    steers = 0
   }
   /** The turn goes on, so what people did before this point stays where it happened. */
   const carryOn = () => {
@@ -449,6 +471,16 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   }
   const act = (message: AiChatMessage, marks: DividerItem['marks'], label: string) => {
     acts.push(emit<DividerItem>(`act:${message.sequence}`, [message, label], () => ({ kind: 'divider', id: message.sequence, marks, label })))
+  }
+  // The context is cut some way back from where `/compact` was typed, to leave the agent a working
+  // tail. Saying so there would put the answer to the command above the command, so a compaction
+  // that was asked for is announced under its request: the first `/compact` from the cut on, since
+  // a later request can only make a later cut.
+  const compactRequest = compactedTo === undefined ? undefined : messages.find((message) =>
+    message.sequence >= compactedTo && message.type === 'slashCommand' &&
+    message.request.id.builtin === true && message.request.id.commandId === 'compact')?.sequence
+  const compacted = (id: number) => {
+    items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, marks: 'compaction', label: 'Context compacted' })))
   }
   const notice = (message: AiChatMessage, kind: NoticeItem['notice'], text: string, detail?: string) => {
     items.push(emit<NoticeItem>(`notice:${message.sequence}`, [message, text], () => ({
@@ -465,8 +497,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     const id = message.sequence
     settle(message.timestamp.getTime())
 
-    if (compactedTo !== undefined && id >= compactedTo && index > 0 && messages[index - 1].sequence < compactedTo) {
-      items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, marks: 'compaction', label: 'Context compacted' })))
+    // A compaction that ran on its own has nothing to be announced at but the cut, once the
+    // messages before it are loaded.
+    if (compactedTo !== undefined && compactRequest === undefined && id >= compactedTo && index > 0 && messages[index - 1].sequence < compactedTo) {
+      compacted(id)
     }
 
     switch (message.type) {
@@ -476,12 +510,13 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         break
 
       case 'slashCommand': {
-        closeTurn()
+        closeTurn(id)
         const next = messages[index + 1]
         const generated = next?.type === 'message' && next.generatedBySlashCommandSequence === id ? next : undefined
         if (generated) index++
         const item = emit<UserItem>(`user:${id}`, [message, generated, viewerId], () => commandItem(message, generated, viewerId))
         if (item.parts.length) items.push(item)
+        if (id === compactRequest) compacted(id)
         break
       }
 
@@ -489,9 +524,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         if (message.author.type !== 'agent') {
           // A steer joins the answer it was sent into; any other prompt starts the next turn.
           if (message.steered) carryOn()
-          else closeTurn()
+          else closeTurn(id)
           if (message.message || message.attachments?.length) {
-            items.push(emit<UserItem>(`user:${id}`, [message, viewerId], () => userItem(message, viewerId)))
+            const key = message.steered ? steerKey() : `user:${id}`
+            items.push(emit<UserItem>(key, [message, viewerId], () => userItem(message, viewerId)))
           }
           break
         }
@@ -504,7 +540,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
         if (model !== undefined && model !== message.author.id) {
           const { name } = message.author
-          items.push(emit<NoticeItem>(`model:${id}`, [name], () => ({ kind: 'notice', id, notice: 'model', text: `Switched to ${name}` })))
+          items.push(emit<DividerItem>(`model:${id}`, [name], () => ({ kind: 'divider', id, marks: 'model', label: `Switched to ${name}` })))
         }
         model = message.author.id
 
@@ -603,7 +639,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'agentCallback': {
         // A call delivered to the agent prompts it, as a message would.
-        closeTurn()
+        closeTurn(id)
         const { methodName, bindingName, argsSummary } = message
         notice(message, 'callback', `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`, argsSummary || undefined)
         break
@@ -625,6 +661,19 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   }
 
   settle()
+  // Last in the conversation, where their messages will be once the agent has read them.
+  const after = messages.at(-1)?.sequence ?? 0
+  for (const { text, from, unread } of context.steers ?? []) {
+    items.push(emit<UserItem>(steerKey(), [text, from, unread], () => ({
+      kind: 'user',
+      id: after,
+      text,
+      parts: [{ type: 'text', text }],
+      attachments: [],
+      from,
+      unread: unread || undefined,
+    })))
+  }
   const tail = [...pinned, ...acts]
   return {
     items: sameItems(previous?.items, items) ? previous!.items : items,

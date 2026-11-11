@@ -57,6 +57,15 @@ was decided as it was made, and is shown there the same way. What a person then 
 changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
 when adding a kind.
 
+A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
+is the same row before and after, so being read only brings it to full strength. Its key is its
+place among its turn's steers rather than its sequence, which it has only once read, and
+`ChatSession` keeps it between leaving the queue and arriving as a message.
+
+Points in the conversation that nobody said are lines across it (`FeedDivider`): another model
+taking over, what people did to the changes, and a compaction. A compaction asked for with
+`/compact` is announced under the command; one that ran on its own, at the cut.
+
 Nothing in the conversation jumps. A row that arrives while the chat is open opens to its height
 as the bubble or card in it grows in (`Arrival.css`; the message list marks the row), and a row of
 the live output that leaves closes (`LiveRows`). Give a new block that can arrive the `arrives`

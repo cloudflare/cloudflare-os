@@ -397,15 +397,24 @@ describe('toChatFeed', () => {
       expect(result.items).toMatchObject([
         { kind: 'assistant' },
         { kind: 'assistant' },
-        { kind: 'notice', notice: 'model', text: 'Switched to Mock Model Fast' },
+        { kind: 'divider', marks: 'model', label: 'Switched to Mock Model Fast' },
         { kind: 'assistant', text: 'three' },
       ])
     })
 
-    it('marks where the context was cut once the messages before it are loaded', () => {
+    it('marks where the context was cut by a compaction that ran on its own, once the messages before it are loaded', () => {
       const messages = history([user('old'), agent({ text: 'old answer' }), user('recent'), agent({ text: 'recent answer' })])
       expect(kinds(toChatFeed(messages, { compactedTo: 2 }))).toEqual(['user', 'assistant', 'divider', 'user', 'assistant'])
       expect(kinds(toChatFeed(messages.slice(2), { compactedTo: 2 }))).toEqual(['user', 'assistant'])
+    })
+
+    it('answers /compact under the command, not back where the context was cut', () => {
+      const messages = history([user('old'), agent({ text: 'old answer' }), user('recent'), agent({ text: 'recent answer' }), compactCommand()])
+      const asked = toChatFeed(messages, { compactedTo: 2 })
+      expect(kinds(asked)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'divider'])
+      expect(asked.items.at(-1)).toMatchObject({ marks: 'compaction', label: 'Context compacted' })
+      // Until the compaction has happened there is nothing to say.
+      expect(kinds(toChatFeed(messages))).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
     })
 
     it('notes a gadget use once per run, and shows a call delivered to the agent', () => {

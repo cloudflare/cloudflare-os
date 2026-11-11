@@ -148,6 +148,19 @@ const working = async (history: AiChatMessage[] = []) => {
 const withCalls = (sequence: number, toolCalls: AiToolCall[], reasoning?: string): AiChatMessage =>
   ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'message', message: '', toolCalls, reasoning })
 
+/** The user's messages in the conversation, with whether the agent has read each. */
+const steers = (session: ChatSession) =>
+  ready(session).items.flatMap((item) => (item.kind === 'user' ? [{ text: item.text, from: item.from, unread: item.unread, key: item.key }] : []))
+
+/** A chat with one prompt, and a way to say which messages are waiting for its running agent. */
+const steering = async () => {
+  const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'go')) })
+  const session = await started(fake, 0, { viewerId: 'u' })
+  const queue = (...queuedSteers: NonNullable<AiChatMetadata['queuedSteers']>) =>
+    fake.server().metadata({ ...chat(0, 'Chat', 2, agentAuthor), queuedSteers: queuedSteers.length ? queuedSteers : undefined })
+  return { fake, session, queue }
+}
+
 /** An action's record, pending unless `change` says otherwise. */
 const log = (change: Partial<ActionLogEntry & { type: 'action' }> = {}): ActionLogEntry => ({
   id: 7,
@@ -669,18 +682,51 @@ describe('ChatSession', () => {
       expect(ready(session).pinned).toEqual([])
     })
 
-    it('lists the messages waiting for the running agent, naming only other senders', async () => {
-      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
-      const session = await started(fake, 0, { viewerId: 'u' })
+    describe('messages sent to the running agent', () => {
+      const grace = { type: 'user', id: 'g', name: 'Grace' } as const
 
-      fake.server().metadata({
-        ...chat(0, 'Chat', 2, agentAuthor),
-        queuedSteers: [{ text: 'Shorter', author: userAuthor }, { text: 'And in French', author: { type: 'user', id: 'g', name: 'Grace' } }],
+      it('end the conversation unread, naming only other senders', async () => {
+        const { session, queue } = await steering()
+
+        queue({ text: 'Shorter', author: userAuthor }, { text: 'And in French', author: grace })
+
+        expect(steers(session).slice(1)).toMatchObject([
+          { text: 'Shorter', from: undefined, unread: true },
+          { text: 'And in French', from: 'Grace', unread: true },
+        ])
       })
-      expect(ready(session).queuedSteers).toEqual([{ text: 'Shorter', from: undefined }, { text: 'And in French', from: 'Grace' }])
 
-      fake.server().metadata(chat(0, 'Chat', 3, agentAuthor))
-      expect(ready(session).queuedSteers).toEqual([])
+      it('stay the same row once read: first as read, then as the message that arrives', async () => {
+        const { fake, session, queue } = await steering()
+        queue({ text: 'Shorter', author: userAuthor }, { text: 'And in French', author: grace })
+        const [, shorter, french] = steers(session)
+
+        // The agent read the first: it has left the queue, and its message has not arrived yet.
+        queue({ text: 'And in French', author: grace })
+        expect(steers(session).slice(1)).toEqual([{ ...shorter, unread: undefined }, french])
+
+        fake.server().message({ ...userMessage(1, 'Shorter'), steered: true } as AiChatMessage)
+        expect(steers(session).slice(1)).toEqual([{ ...shorter, unread: undefined }, french])
+        expect(ready(session).items[1]).toMatchObject({ id: 1, key: shorter.key })
+      })
+
+      it('are not shown twice when the message arrives before the queue says it was read', async () => {
+        const { fake, session, queue } = await steering()
+        queue({ text: 'Shorter', author: userAuthor })
+
+        fake.server().message({ ...userMessage(1, 'Shorter'), steered: true } as AiChatMessage)
+
+        expect(steers(session).map(({ text, unread }) => [text, unread])).toEqual([['go', undefined], ['Shorter', undefined]])
+      })
+
+      it('are gone when the agent stops without reading them', async () => {
+        const { fake, session, queue } = await steering()
+        queue({ text: 'Shorter', author: userAuthor })
+
+        fake.server().metadata(chat(0, 'Chat', 3))
+
+        expect(steers(session).map(({ text }) => text)).toEqual(['go'])
+      })
     })
 
     it('offers to retry the last error only once the agent has stopped', async () => {
