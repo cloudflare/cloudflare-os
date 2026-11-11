@@ -2,6 +2,8 @@ import { ArrowBendUpLeftIcon, CopyIcon, InfoIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 
 export type MessageActionsProps = {
+  /** Start a reply to the message. */
+  onReply?: () => void
   /** The message's details can be shown under it: whether they are, and the way to switch. */
   details?: { open: boolean; onToggle: () => void; controls?: string }
 }
@@ -12,12 +14,12 @@ export const MESSAGE_ACTION_STYLE = 'size-7 text-sm text-kumo-subtle hover:text-
 /**
  * What can be done with a message: reply to it, copy it, see more about it.
  *
- * TODO: replying and copying do nothing yet. Each will take its callback from whoever shows the
- * message, as the details do.
+ * TODO: copying does nothing yet. It will take its callback from whoever shows the message, as
+ * the others do.
  */
-export const MessageActions = ({ details }: MessageActionsProps) => (
+export const MessageActions = ({ onReply, details }: MessageActionsProps) => (
   <div className="flex items-center">
-    <Button variant="ghost" icon={ArrowBendUpLeftIcon} aria-label="Reply" title="Reply" className={MESSAGE_ACTION_STYLE} />
+    <Button variant="ghost" icon={ArrowBendUpLeftIcon} aria-label="Reply" title="Reply" className={MESSAGE_ACTION_STYLE} onClick={onReply} />
     <Button variant="ghost" icon={CopyIcon} aria-label="Copy" title="Copy" className={MESSAGE_ACTION_STYLE} />
     <Button
       variant="ghost"

@@ -74,6 +74,15 @@ is the same row before and after, so being read only brings it to full strength.
 place among its turn's steers rather than its sequence, which it has only once read, and
 `ChatSession` keeps it between leaving the queue and arriving as a message.
 
+A message can be replied to. The protocol has no replies, so a reply carries a line of what it
+answers at the front of its own text, as a Markdown blockquote (`chat/replyQuote.ts`): the agent
+reads it as anyone would, and a client that knows nothing of replies shows a quote. The composer
+shows that line above the draft while it is a reply, over any attachments, and the feed sets it
+apart from what was written when it draws the message. Either line goes to the message it quotes
+when clicked (`MessageList`'s `scrollToMessage`): by scrolling when the message's row is mounted,
+and by fading the conversation over to it when its page is only a spacer. A sent reply finds its
+message by the line, since that is all it carries.
+
 Points in the conversation that nobody said are lines across it (`FeedDivider`): another model
 taking over, what people did to the changes, and a compaction. A compaction asked for with
 `/compact` is announced under the command; one that ran on its own, at the cut.

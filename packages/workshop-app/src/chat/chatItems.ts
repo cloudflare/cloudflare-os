@@ -1,5 +1,6 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
 
 type Message<T extends AiChatMessage['type']> = Extract<AiChatMessage, { type: T }>
@@ -59,7 +60,11 @@ type Row = {
 
 export type UserItem = Row & {
   kind: 'user'
+  /** The message as it was sent: with the quote it opens with, when it is a reply. */
   text: string
+  /** The message it replies to, as the line that was quoted. */
+  quote?: string
+  /** What was written, without the quote. */
   parts: MessagePart[]
   attachments: ChatAttachment[]
   /** Who sent it, when that is not the person looking: a collaborator, or a gadget that prompted the agent. */
@@ -271,28 +276,34 @@ const formatMentions = (formats: Message<'message'>['formats'], shiftFrom = Infi
 const senderOf = ({ type, id, name }: AiChatAuthorInfo, viewerId: string | undefined) =>
   type === 'user' && id === viewerId ? undefined : name
 
-const userItem = (message: Message<'message'>, viewerId: string | undefined): Omit<UserItem, 'key'> => ({
-  kind: 'user',
-  id: message.sequence,
-  text: message.message,
-  parts: withMentions(message.message, [
-    ...(message.capsules ?? []).map(({ position, length, description }): Mention => ({
-      position,
-      length,
-      part: { type: 'capsule', title: description.title, url: webUrl(description.url) },
+const userItem = (message: Message<'message'>, viewerId: string | undefined): Omit<UserItem, 'key'> => {
+  // A reply opens with what it answers (see replyQuote.ts). What the message mentions is placed
+  // by where it is in the whole text, so it moves back by as much as is taken off the front.
+  const { quote, body, offset } = splitQuote(message.message)
+  return {
+    kind: 'user',
+    id: message.sequence,
+    text: message.message,
+    quote,
+    parts: withMentions(body, [
+      ...(message.capsules ?? []).map(({ position, length, description }): Mention => ({
+        position,
+        length,
+        part: { type: 'capsule', title: description.title, url: webUrl(description.url) },
+      })),
+      ...formatMentions(message.formats),
+    ].map((mention) => ({ ...mention, position: mention.position - offset }))),
+    attachments: (message.attachments ?? []).map(({ id, name, mimeType, size, content }) => ({
+      id,
+      name: name || 'Attached file',
+      mimeType,
+      size,
+      content,
     })),
-    ...formatMentions(message.formats),
-  ]),
-  attachments: (message.attachments ?? []).map(({ id, name, mimeType, size, content }) => ({
-    id,
-    name: name || 'Attached file',
-    mimeType,
-    size,
-    content,
-  })),
-  from: senderOf(message.author, viewerId),
-  sentAt: message.timestamp,
-})
+    from: senderOf(message.author, viewerId),
+    sentAt: message.timestamp,
+  }
+}
 
 /**
  * A slash command as the user typed it: their words with the command back where it was. What it
@@ -703,15 +714,19 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   // Last in the conversation, where their messages will be once the agent has read them.
   const after = messages.at(-1)?.sequence ?? 0
   for (const { text, from, unread } of context.steers ?? []) {
-    items.push(emit<UserItem>(steerKey(), [text, from, unread], () => ({
-      kind: 'user',
-      id: after,
-      text,
-      parts: [{ type: 'text', text }],
-      attachments: [],
-      from,
-      unread: unread || undefined,
-    })))
+    items.push(emit<UserItem>(steerKey(), [text, from, unread], () => {
+      const { quote, body } = splitQuote(text)
+      return {
+        kind: 'user',
+        id: after,
+        text,
+        quote,
+        parts: [{ type: 'text', text: body }],
+        attachments: [],
+        from,
+        unread: unread || undefined,
+      }
+    }))
   }
   const tail = [...pinned, ...acts]
   return {

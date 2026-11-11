@@ -16,6 +16,10 @@ export type UserMessageAttachment = { id: string; name: string; mimeType: string
 
 export type UserMessageProps = {
   parts: UserMessagePart[]
+  /** The message this one replies to, as a line of it. */
+  quote?: string
+  /** Go to the message replied to. The quote is a button for it. */
+  onShowQuoted?: () => void
   attachments?: UserMessageAttachment[]
   /** Who sent it, when it was not the person looking. */
   from?: string
@@ -24,6 +28,8 @@ export type UserMessageProps = {
   onOpenAttachment?: (id: string) => void
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
   joins?: MessageJoins
+  /** Start a reply to the message. */
+  onReply?: () => void
   /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
 }
@@ -41,8 +47,11 @@ const Part = ({ part }: { part: UserMessagePart }) => {
   }
 }
 
-/** What a person sent: their words with what they mentioned as chips, and the files they attached. */
-export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment, joins, details }: UserMessageProps) => (
+/**
+ * What a person sent: their words with what they mentioned as chips, the files they attached, and
+ * ahead of the words, set apart and quieter, the message they were replying to.
+ */
+export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, joins, onReply, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {attachments.length > 0 && (
@@ -55,7 +64,23 @@ export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttac
       </ul>
     )}
     {parts.length > 0 && (
-      <MessageBubble role="user" joins={joins} details={details}>
+      <MessageBubble role="user" joins={joins} onReply={onReply} details={details}>
+        {quote && (
+          // Capped in width, so that a long quote over a short reply does not stretch the bubble
+          // to its limit.
+          <button
+            type="button"
+            title={onShowQuoted && 'Show the message'}
+            disabled={!onShowQuoted}
+            onClick={onShowQuoted}
+            className="mb-1.5 block max-w-[45ch] border-s-2 border-current/40 ps-2 text-start text-sm/5 whitespace-normal opacity-70 enabled:cursor-pointer enabled:hover:opacity-100"
+          >
+            <span className="line-clamp-2">
+              <span className="sr-only">In reply to: </span>
+              {quote}
+            </span>
+          </button>
+        )}
         {parts.map((part, index) => <Part key={index} part={part} />)}
       </MessageBubble>
     )}
