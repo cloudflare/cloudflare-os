@@ -414,7 +414,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     },
     accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
     disabledResources,
-    ...(p.disabledResourceTypeIds ? {disabledResourceTypeIds: restrictions(p.disabledResourceTypeIds)} : {}),
+    disabledResourceTypeIds: restrictions(p.disabledResourceTypeIds),
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
