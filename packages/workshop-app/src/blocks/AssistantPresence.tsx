@@ -32,7 +32,7 @@ export const AssistantPresence = ({ working, status, details }: AssistantPresenc
       <div className={cn('min-w-0 flex-1 transition-opacity duration-200 motion-reduce:transition-none', !working && 'opacity-0')}>
         {details
           ? (
-            <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label}>
+            <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label} hideCaret>
               {/* Back out under the mascot, so that the icons of the steps (8px in from a
                   step's edge, 16px wide) run down from its middle: its 16px less theirs, less
                   the 36px the mascot and the gap after it take before this column starts. */}
