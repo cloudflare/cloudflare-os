@@ -39,10 +39,16 @@ export type ToolEntry =
   | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[] }
 
 /**
- * One thing in the making of a reply: a step taken, or what the step now being written is doing.
- * `thinking` and `writing` carry what has been thought or drafted so far.
+ * One thing in the making of a reply: a step taken, what was thought before something was said
+ * (`running` while it is still being thought), or the reply as far as it has been drafted.
  */
-export type WorkEntry = ToolEntry | { type: 'thinking'; key: string; text: string } | { type: 'writing'; key: string; text: string }
+export type WorkEntry =
+  | ToolEntry
+  | { type: 'thinking'; key: string; text: string; running?: boolean }
+  | { type: 'writing'; key: string; text: string }
+
+/** One thing that led to a message that was written: a step taken, or what was thought. */
+export type TraceEntry = Exclude<WorkEntry, { type: 'writing' }>
 
 type Row = {
   /** The sequence of the message the row comes from; the first, when it spans several. */
@@ -60,8 +66,21 @@ export type UserItem = Row & {
   from?: string
   /** Sent while the agent was working, which has not read it yet. */
   unread?: boolean
+  /** When it joined the conversation. Absent while the agent has not read it. */
+  sentAt?: Date
 }
-export type AssistantItem = Row & { kind: 'assistant'; text: string }
+export type AssistantItem = Row & {
+  kind: 'assistant'
+  text: string
+  /** The model that wrote it. */
+  sender: string
+  sentAt: Date
+  /**
+   * How it came about: the steps taken since the message before it, then what was thought just
+   * before it was said. Not part of the conversation; there for whoever asks about the message.
+   */
+  trace: TraceEntry[]
+}
 export type OutputItem = Row & {
   kind: 'output'
   workpieceId: number
@@ -272,6 +291,7 @@ const userItem = (message: Message<'message'>, viewerId: string | undefined): Om
     content,
   })),
   from: senderOf(message.author, viewerId),
+  sentAt: message.timestamp,
 })
 
 /**
@@ -303,6 +323,7 @@ const commandItem = (
     ]),
     attachments: [],
     from: senderOf(command.author, viewerId),
+    sentAt: command.timestamp,
   }
 }
 
@@ -339,6 +360,7 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
 
 type CallEntry = Extract<ToolEntry, { type: 'call' }>
 type ObservationEntry = Extract<ToolEntry, { type: 'observation' }>
+type ThinkingEntry = Extract<WorkEntry, { type: 'thinking' }>
 
 const callEntry = (call: AiToolCall, reasoning: string | undefined): Omit<CallEntry, 'key'> => ({
   type: 'call',
@@ -420,7 +442,12 @@ const changesText = (message: Message<'changes'>, actor: string) => {
  */
 export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {}, previous?: ChatFeed): ChatFeed => {
   const emit = emitterFor<ChatItem>([...(previous?.items ?? []), ...(previous?.pinned ?? [])])
-  const emitStep = emitterFor<ToolEntry>(previous?.work ?? [])
+  // Steps are reused wherever they were: still to be attached to a message, or behind one. A row
+  // is rebuilt when a step behind it is, so steps have to keep their identity for rows to.
+  const emitStep = emitterFor<WorkEntry>([
+    ...(previous?.work ?? []),
+    ...(previous?.items ?? []).flatMap((item) => (item.kind === 'assistant' ? item.trace : [])),
+  ])
   const creationState = creationStates(messages)
   const { viewerId, compactedTo } = context
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
@@ -544,18 +571,30 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         }
         model = message.author.id
 
+        const thought = message.reasoning?.trim() ? message.reasoning : undefined
         if (text) {
-          items.push(emit<AssistantItem>(`assistant:${id}`, [message], () => ({ kind: 'assistant', id, text })))
+          // What led to the message goes with it, for whoever asks, and the next lot starts over.
+          const trace: TraceEntry[] = thought
+            ? [...work, emitStep<ThinkingEntry>(`thinking:${id}`, [thought], () => ({ type: 'thinking', text: thought }))]
+            : work
+          items.push(emit<AssistantItem>(`assistant:${id}`, [message, ...trace], () => ({
+            kind: 'assistant',
+            id,
+            text,
+            sender: message.author.name,
+            sentAt: message.timestamp,
+            trace,
+          })))
           work = []
         }
         // The thinking behind a step that said nothing is kept with the first thing it did.
-        let reasoning = !text && message.reasoning?.trim() ? message.reasoning : undefined
+        let reasoning = text ? undefined : thought
 
         for (const call of calls) {
           const created = creationOf(call, (gadget) => creationState(gadget, id))
           if (!created) {
-            const thought = reasoning
-            work.push(emitStep<CallEntry>(call.toolCallId, [call, thought], () => callEntry(call, thought)))
+            const before = reasoning
+            work.push(emitStep<CallEntry>(call.toolCallId, [call, before], () => callEntry(call, before)))
             reasoning = undefined
             continue
           }

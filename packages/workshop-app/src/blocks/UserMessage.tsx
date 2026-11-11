@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { LinkSimpleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
@@ -24,6 +25,8 @@ export type UserMessageProps = {
   onOpenAttachment?: (id: string) => void
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
   joins?: MessageJoins
+  /** What there is to know about the message (see `MessageInfo`), shown when its details are asked for. */
+  details?: ReactNode
 }
 
 const Part = ({ part }: { part: UserMessagePart }) => {
@@ -40,7 +43,7 @@ const Part = ({ part }: { part: UserMessagePart }) => {
 }
 
 /** What a person sent: their words with what they mentioned as chips, and the files they attached. */
-export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment, joins }: UserMessageProps) => (
+export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment, joins, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {attachments.length > 0 && (
@@ -53,7 +56,7 @@ export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttac
       </ul>
     )}
     {parts.length > 0 && (
-      <MessageBubble role="user" joins={joins}>
+      <MessageBubble role="user" joins={joins} details={details}>
         {parts.map((part, index) => <Part key={index} part={part} />)}
       </MessageBubble>
     )}

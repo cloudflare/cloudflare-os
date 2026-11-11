@@ -31,7 +31,11 @@ export const AssistantPresence = ({ working, status, details }: AssistantPresenc
       <Mascot emotion="thinking" shown={working} className="w-9 shrink-0" />
       <div className={cn('mt-0.5 min-w-0 flex-1 transition-opacity duration-200 motion-reduce:transition-none', !working && 'opacity-0')}>
         {details
-          ? <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label}>{details.content}</Disclosure>
+          ? (
+            <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label}>
+              <div className="ms-4">{details.content}</div>
+            </Disclosure>
+          )
           : <div className="px-2 py-1 text-base/5">{label}</div>}
       </div>
     </div>

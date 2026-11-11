@@ -57,19 +57,23 @@ describe('scenarios', () => {
     const { ready, seen } = await watch(scenario('plain'), (chat) => [`${chat.ready().activity}: ${chat.making().join()}; ${chat.ready().items.length} rows`])
 
     expect([...seen]).toEqual(expect.arrayContaining(['Thinking…: thinking; 1 rows', 'Writing…: thinking,writing; 1 rows']))
-    expect(ready().items).toEqual([
-      expect.objectContaining({ kind: 'user' }),
-      { kind: 'assistant', id: expect.any(Number), key: expect.any(String), text: expect.any(String) },
-      expect.objectContaining({ kind: 'user' }),
-      expect.objectContaining({ kind: 'assistant' }),
+    // What it thought is kept behind the reply, for whoever asks about it.
+    expect(ready().items).toMatchObject([
+      { kind: 'user' },
+      { kind: 'assistant', sender: 'Mock Model', trace: [{ type: 'thinking' }] },
+      { kind: 'user' },
+      { kind: 'assistant' },
     ])
   })
 
-  it('tool-run: what each call is doing is said while it runs, and none of it stays in the conversation', async () => {
+  it('tool-run: what each call is doing is said while it runs, and stays behind the reply rather than in the conversation', async () => {
     const { rows, seen } = await watch(scenario('tool-run'), ({ ready }) => [ready().activity])
 
     expect([...seen]).toEqual(expect.arrayContaining(['Reading src/worker.ts…', 'Writing src/trend.ts…', 'Running code…', 'Writing…', undefined]))
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant'])
+    const [, answer] = of(rows(), 'assistant')
+    expect(answer.trace.length).toBeGreaterThan(4)
+    expect(answer.trace.some((step) => step.type === 'call' && step.error)).toBe(true)
   })
 
   it('approval: a decision stays where it was made, a rule approves the next of its kind, and what does not block waits under the answer', async () => {

@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
+import { MessageInfo } from '@/blocks/MessageInfo'
+import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
-import { useReport } from './previewState'
+import { Card } from '@/components/Card'
+import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full flex-col gap-2">{children}</div>
@@ -10,9 +13,18 @@ const picture = new TextEncoder().encode(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#888"/><circle cx="4" cy="4" r="2.5" fill="#fff"/></svg>',
 )
 
-/** What people and the agent say, in every state. */
+const SENT = new Date(2026, 10, 2, 9, 41)
+
+const TRACE: ToolStepEntry[] = [
+  { type: 'call', key: 'info-read', icon: 'file', label: 'Read src/chart.tsx', reasoning: 'The window is probably a constant.', sections: [] },
+  { type: 'call', key: 'info-edit', icon: 'edit', label: 'Edited src/chart.tsx', sections: [{ label: 'Replaced', text: 'const WEEKS = 4' }, { label: 'With', text: 'const WEEKS = 12' }] },
+  { type: 'thinking', key: 'info-thought', text: 'The worker already returns twelve weeks, so nothing else has to change.' },
+]
+
+/** What people and the agent say, in every state, and what there is to know about a message. */
 export const MessageBlocksPreview = () => {
   const { report, say } = useReport()
+  const { open, toggle } = useOpen()
 
   return (
     <>
@@ -43,11 +55,22 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="AssistantMessage (plain, with Markdown)">
+      <Section title="AssistantMessage (plain, with Markdown; point at either and open its details: the first has none to show)">
         <Column>
           <AssistantMessage text="I’ll build a personal Jira dashboard." />
-          <AssistantMessage text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'} />
+          <AssistantMessage
+            text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
+            details={<MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} />}
+          />
         </Column>
+      </Section>
+      <Section title="MessageInfo (a reply with what led to it, a reply written straight away, a person’s message, a message not read yet)">
+        <div className="grid w-full grid-cols-2 gap-4">
+          <Card><MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} /></Card>
+          <Card><MessageInfo sender="Mock Model Fast" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /></Card>
+          <Card><MessageInfo sender="Grace Hopper" sentAt={SENT} /></Card>
+          <Card><MessageInfo sender="You" /></Card>
+        </div>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
     </>

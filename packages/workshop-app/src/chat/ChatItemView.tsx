@@ -5,6 +5,7 @@ import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
+import { MessageInfo } from '@/blocks/MessageInfo'
 import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
@@ -49,7 +50,9 @@ const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
  * text that arrives.
  */
 export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow }: ChatItemViewProps) {
-  const isOpen = useOpenKeys(disclosure, [item.key]).has(item.key)
+  // A reply's row also remembers which steps behind it are open, for when its details are shown.
+  const open = useOpenKeys(disclosure, item.kind === 'assistant' ? [item.key, ...item.trace.map(({ key }) => key)] : [item.key])
+  const isOpen = open.has(item.key)
   const toggle = () => disclosure.toggle(item.key)
   const joins = { above: joinsAbove, below: joinsBelow }
 
@@ -63,10 +66,23 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           unread={item.unread}
           onOpenAttachment={handlers.onOpenAttachment}
           joins={joins}
+          details={<MessageInfo sender={item.from ?? 'You'} sentAt={item.sentAt} />}
         />
       )
     case 'assistant':
-      return <AssistantMessage text={item.text} joins={joins} />
+      return (
+        <AssistantMessage
+          text={item.text}
+          joins={joins}
+          details={
+            <MessageInfo
+              sender={item.sender}
+              sentAt={item.sentAt}
+              trace={{ steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle }}
+            />
+          }
+        />
+      )
     case 'output':
       return (
         <OutputCard

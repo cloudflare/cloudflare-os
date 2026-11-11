@@ -49,8 +49,8 @@ export type ToolStepEntry =
       description: string
       fields: ActionField[]
     }
-  /** What has been thought so far. */
-  | { type: 'thinking'; key: string; text: string }
+  /** What was thought before something was said, or has been so far while it is `running`. */
+  | { type: 'thinking'; key: string; text: string; running?: boolean }
   /** The reply as far as it has been drafted. */
   | { type: 'writing'; key: string; text: string }
 
@@ -81,7 +81,7 @@ const Detail = ({ entry }: { entry: ToolStepEntry }) => {
 const summaryOf = (entry: ToolStepEntry): { icon: Icon; label: string } => {
   switch (entry.type) {
     case 'thinking':
-      return { icon: BrainIcon, label: 'Thinking…' }
+      return { icon: BrainIcon, label: entry.running ? 'Thinking…' : 'Thought' }
     case 'writing':
       return { icon: ChatTextIcon, label: 'Writing…' }
     case 'observation':
@@ -104,7 +104,8 @@ const hasDetail = (entry: ToolStepEntry) => {
 }
 
 /** Whether a step is what is happening right now, rather than something done. */
-export const isUnderWay = (entry: ToolStepEntry) => (entry.type === 'call' ? !!entry.running : entry.type !== 'observation')
+export const isUnderWay = (entry: ToolStepEntry) =>
+  entry.type === 'writing' || ((entry.type === 'call' || entry.type === 'thinking') && !!entry.running)
 
 /** A step as one quiet line, which opens to show what it did when there is more to show. */
 export const ToolStep = ({ entry, open, onToggle }: ToolStepProps) => {

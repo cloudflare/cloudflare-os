@@ -15,6 +15,8 @@ export type MessageBubbleProps = {
    * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
    */
   joins?: MessageJoins
+  /** What there is to know about the message (see `MessageInfo`), shown when its details are asked for. */
+  details?: ReactNode
 }
 
 const BUBBLE = {
@@ -59,9 +61,10 @@ const JOINED = {
 // along, so showing them moves nothing, and show while the bubble or the place they are in is
 // pointed at, or one of them has focus; the rest of the row does not bring them up. They touch
 // the bubble (the gap is their own padding), so the pointer crosses to them without leaving both.
+// They stay while one of them has something open, which is elsewhere on the page.
 const ACTIONS =
   'shrink-0 opacity-0 transition-opacity motion-reduce:transition-none ' +
-  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100'
+  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100 has-[[data-popup-open]]:opacity-100'
 
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
@@ -69,7 +72,7 @@ const ACTIONS =
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => (
+export const MessageBubble = ({ role, children, joins, details }: MessageBubbleProps) => (
   <div
     data-role={role}
     className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
@@ -90,7 +93,7 @@ export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => 
       {children}
     </div>
     {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
-    {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}><MessageActions /></div>}
-    {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}><MessageActions /></div>}
+    {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}><MessageActions details={details} /></div>}
+    {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}><MessageActions details={details} /></div>}
   </div>
 )
