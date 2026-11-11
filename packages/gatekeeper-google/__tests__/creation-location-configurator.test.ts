@@ -153,7 +153,7 @@ describe("the creation location picker", () => {
 
   // Falling back to My Drive would have the approver approve it believing it is the agent's place.
   it.each([
-    ["names no folder this account can reach", async () => null],
+    ["names no folder this account can add files to", async () => null],
     ["cannot be looked up", async () => { throw new Error("Drive is down"); }],
   ])("selects nothing, and says so, when a suggestion %s", async (_name, lookUp) => {
     const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true);

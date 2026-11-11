@@ -178,6 +178,7 @@ describe("Google resource configurators", () => {
         "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
         "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
         "/files/notes": { id: "notes", name: "Notes", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false },
+        "/files/archive": { ...folder("archive", "Archive", ["0AMyRoot"]), capabilities: { canListChildren: true, canAddChildren: false } },
       });
       const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
       const pasted = async (id: string) =>
@@ -199,11 +200,14 @@ describe("Google resource configurators", () => {
       await expect(creating.getFolder("folder:notes")).resolves.toBeNull();
       await expect(creating.getFolder("folder:gone")).resolves.toBeNull();
 
-      // A suggested place to create something is a link, as a browser shows it.
+      // A suggested place to create something is a link, as a browser shows it or the picker mints
+      // it, to a folder this account can add files to.
       for (let [url, id] of [
         ["https://drive.google.com/drive/u/1/folders/plans", "folder:plans"],
         ["https://drive.google.com/drive/folders/0AMyRoot", "folder:root"],
+        ["https://drive.google.com/drive/folders/root", "folder:root"],
         ["https://drive.google.com/drive/my-drive", "folder:root"],
+        ["https://drive.google.com/drive/folders/archive", null],
         ["https://drive.google.com/drive/folders/notes", null],
         ["https://drive.google.com/drive/folders/%E0%A4%A", null],
         ["https://docs.google.com/document/d/notes/edit", null],

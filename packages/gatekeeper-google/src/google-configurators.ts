@@ -779,7 +779,11 @@ export class CreationLocationConfiguratorUI extends RpcTarget implements Creatio
     let target = linkedDriveTarget(url);
     if (target?.kind === "driveAccount") return MY_DRIVE_TAB;
     if (target?.kind !== "driveFolder") return null;
-    return (await this.getFolder(`folder:${target.folderId}`))?.id ?? null;
+    // Drive's `root` alias, which resourceUrl() mints for My Drive, and getFolder() knows only by
+    // its real ID.
+    if (target.folderId === "root") return MY_DRIVE_TAB;
+    let folder = await this.getFolder(`folder:${target.folderId}`);
+    return folder?.addable ? folder.id : null;
   }
 
   async hasCreationAccess(): Promise<boolean> {

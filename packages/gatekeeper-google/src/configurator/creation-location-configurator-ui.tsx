@@ -126,8 +126,8 @@ const grantNotice = (context: Context, grant: string, why: string) =>
 export default {
   initial: { folder: MY_DRIVE },
   // Pre-selects the folder, or My Drive, where the agent that asked for the creation suggested. A
-  // suggestion that names none this account can reach selects nothing, so the approver must choose
-  // rather than approve My Drive believing it is the agent's place.
+  // suggestion that names none this account can add files to selects nothing, so the approver must
+  // choose rather than approve My Drive believing it is the agent's place.
   initialValuesFromResourceUrl: async ({ resourceUrl, ui }) => {
     const folder = await ui.folderForUrl(resourceUrl).catch(() => null);
     return { folder, suggested: folder };
@@ -171,7 +171,7 @@ export default {
       </Field>
       {folder === suggested && folder !== MY_DRIVE && <Notice tone={folder === null ? "error" : undefined}>
         {folder === null
-          ? "The agent suggested a place this Google account can't find. Choose where to create it."
+          ? "The agent suggested a place this Google account can't find or add files to. Choose where to create it."
           : "The agent suggested this folder. Whoever it is shared with will see what is created in it."}
       </Notice>}
       {listingGrant && grantNotice(context, listingGrant, "Google will ask to let this app \"View and download all " +
