@@ -24,7 +24,7 @@ export type UserMessageProps = {
   onOpenAttachment?: (id: string) => void
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
   joins?: MessageJoins
-  /** What there is to know about the message (see `MessageInfo`), shown under it while open. */
+  /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
 }
 

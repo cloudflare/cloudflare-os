@@ -5,7 +5,7 @@ import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
-import { MessageInfo } from '@/blocks/MessageInfo'
+import { messageInfo } from '@/blocks/messageInfo'
 import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
@@ -66,7 +66,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           unread={item.unread}
           onOpenAttachment={handlers.onOpenAttachment}
           joins={joins}
-          details={{ open: isOpen, onToggle: toggle, fitContent: true, content: <MessageInfo sender={item.from} sentAt={item.sentAt} /> }}
+          details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
         />
       )
     case 'assistant':
@@ -77,14 +77,11 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           details={{
             open: isOpen,
             onToggle: toggle,
-            fitContent: item.trace.length === 0,
-            content: (
-              <MessageInfo
-                sender={item.sender}
-                sentAt={item.sentAt}
-                trace={{ steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle }}
-              />
-            ),
+            ...messageInfo({
+              sender: item.sender,
+              sentAt: item.sentAt,
+              trace: { steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle },
+            }),
           }}
         />
       )

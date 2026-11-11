@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
-import { MessageInfo } from '@/blocks/MessageInfo'
+import { messageInfo } from '@/blocks/messageInfo'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
-import { Card } from '@/components/Card'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 
@@ -55,32 +54,31 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="Message details (separate outlined panel, expandable trace, and a short user message; Details closes or reopens the panel)">
+      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, arriving as one line that opens to the rest: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
         <Column>
           <AssistantMessage
             text="I’ll build a personal Jira dashboard."
-            details={{ ...of('no-trace'), fitContent: true, content: <MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /> }}
+            details={{ ...of('no-trace'), ...messageInfo({ sender: 'Mock Model Fast', sentAt: SENT, trace: { steps: [], openSteps: open, onToggleStep: toggle } }) }}
           />
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
-            details={{
-              ...of('details'),
-              content: <MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} />,
-            }}
+            details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, trace: { steps: TRACE, openSteps: open, onToggleStep: toggle } }) }}
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}
-            details={{ ...of('mine'), fitContent: true, content: <MessageInfo sentAt={SENT} /> }}
+            details={{ ...of('mine'), ...messageInfo({ sentAt: SENT }) }}
+          />
+          <UserMessage
+            parts={[{ type: 'text', text: 'I can take the export bug' }]}
+            from="Grace Hopper"
+            details={{ ...of('theirs'), ...messageInfo({ sender: 'Grace Hopper', sentAt: SENT }) }}
+          />
+          <UserMessage
+            parts={[{ type: 'text', text: 'Keep it under 100 words.' }]}
+            unread
+            details={{ ...of('unread'), ...messageInfo({}) }}
           />
         </Column>
-      </Section>
-      <Section title="MessageInfo (a reply with what led to it, a reply that took no steps, a person’s message, a message not read yet)">
-        <div className="grid w-full grid-cols-2 gap-4">
-          <Card><MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} /></Card>
-          <Card><MessageInfo sender="Mock Model Fast" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /></Card>
-          <Card><MessageInfo sender="Grace Hopper" sentAt={SENT} /></Card>
-          <Card><MessageInfo /></Card>
-        </div>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
     </>
