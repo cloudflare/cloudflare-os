@@ -113,7 +113,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     { x: 18.4, y: 24.1, pull: 5.1, speed: 17, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
   ]
   // How much it billows: fully while idle or thinking, not at all otherwise. Thinking, it does so
-  // faster and further, so the clock it runs on has a pace of its own.
+  // faster, though no further, so the clock it runs on has a pace of its own.
   let billow = 0
   let billowTime = 0
   let billowVigour = 1
@@ -378,15 +378,17 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     lobes.forEach((lobe, index) => {
       const pace = billowTime * (1 + index * 0.17)
       const phase = index * 2.4
-      lobe.wanderX = Math.sin(pace * 0.62 + phase) * 1.5 + Math.sin(pace * 0.37 + phase * 1.7) * 1.1
-      lobe.wanderY = Math.cos(pace * 0.55 + phase * 1.3) * 1.5 + Math.sin(pace * 0.31 + phase * 2.1) * 1.1
-      lobe.swell = billow * Math.sin(pace * 0.48 + phase * 0.9) * 0.05
+      // Never far: a blob that strays opens a notch between it and the next, and the cloud
+      // stops reading as one shape.
+      lobe.wanderX = Math.sin(pace * 0.62 + phase) * 0.75 + Math.sin(pace * 0.37 + phase * 1.7) * 0.45
+      lobe.wanderY = Math.cos(pace * 0.55 + phase * 1.3) * 0.75 + Math.sin(pace * 0.31 + phase * 2.1) * 0.45
+      lobe.swell = billow * Math.sin(pace * 0.48 + phase * 0.9) * 0.03
     })
     const commonX = lobes.reduce((sum, lobe) => sum + lobe.wanderX, 0) / lobes.length
     const commonY = lobes.reduce((sum, lobe) => sum + lobe.wanderY, 0) / lobes.length
     for (const lobe of lobes) {
-      lobe.wanderX = (lobe.wanderX - commonX) * billow * billowVigour
-      lobe.wanderY = (lobe.wanderY - commonY) * billow * billowVigour
+      lobe.wanderX = (lobe.wanderX - commonX) * billow
+      lobe.wanderY = (lobe.wanderY - commonY) * billow
     }
     sadness += ((mood === 'sad' ? 1 : 0) - sadness) * ease
     poke *= Math.exp(-dt * 3)
