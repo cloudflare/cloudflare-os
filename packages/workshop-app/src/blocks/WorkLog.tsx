@@ -18,7 +18,7 @@ export const WorkLog = ({ steps, openSteps, onToggleStep }: WorkLogProps) => {
   const now = last && isUnderWay(last) ? last.key : undefined
 
   return (
-    <div className="flex flex-col border-s-2 border-kumo-line ps-2">
+    <div className="flex flex-col">
       {steps.map((step) => (
         <ToolStep key={step.key} entry={step} open={step.key === now || openSteps.has(step.key)} onToggle={() => onToggleStep(step.key)} />
       ))}

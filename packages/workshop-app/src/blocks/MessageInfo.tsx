@@ -32,7 +32,9 @@ export const MessageInfo = ({ sender, sentAt, trace }: MessageInfoProps) => (
       {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
     </p>
     {trace && trace.steps.length > 0 && (
-      <section aria-label="What led to this message" className="text-start">
+      // Each step has room around it to be pointed at. Taking it back here lines their icons up
+      // with the line above.
+      <section aria-label="What led to this message" className="-mx-2 text-start">
         <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
       </section>
     )}
