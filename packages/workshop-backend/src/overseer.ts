@@ -528,7 +528,7 @@ const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 
 // The platform retries a failed alarm six times. Other durable work must remain scheduled after
-// that budget is exhausted; model-lookup retries have their own per-execution budget below.
+// that budget is exhausted; agent resumes have their own per-execution budget below.
 const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
 
@@ -1501,7 +1501,7 @@ class OverseerImpl implements AgentHooks {
       return;
     }
     if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
-      this.logger.warn("agent resume budget exhausted", {
+      this.logger.error("agent resume budget exhausted", {
         event: "agent.resume.exhausted", chatId: record.chatId,
       });
       this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
@@ -3413,7 +3413,7 @@ class OverseerImpl implements AgentHooks {
           }
         }
 
-        // A persisted step is progress: the resume budget counts only resets since the last one.
+        // A persisted step is progress: the resume budget counts only resumes since the last one.
         let execution = this.storage.activeAgents.get(chatId);
         if (execution?.resumeAttempts) {
           delete execution.resumeAttempts;

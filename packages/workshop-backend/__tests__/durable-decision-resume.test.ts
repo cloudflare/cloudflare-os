@@ -580,21 +580,26 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it("keeps the resume budget until the resumed turn persists a step", async () => {
-    const s = await scenario(), gate = Promise.withResolvers<void>();
-    let requests = () => 0;
-    requests = inference(gate.promise, () => requests() === 1);
-    await s.visit(async impl => {
-      vi.spyOn(impl, "executeCodeMode").mockResolvedValue("Done.");
+  it("starts the resume budget afresh once the resumed turn persists a step", async () => {
+    const s = await scenario();
+    let staged = true;
+    const requests = inference(undefined, () => staged);
+    await expect(s.visit(async impl => {
+      // The first step persists; the second never finishes.
+      vi.spyOn(impl, "executeCodeMode").mockResolvedValueOnce("Done.").mockReturnValue(new Promise(() => {}));
       impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
-      await vi.waitFor(() => expect(requests()).toBe(1));
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(4);
-      gate.resolve();
       await vi.waitFor(() => expect(requests()).toBe(2));
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBeUndefined();
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during the second step");
+    })).rejects.toThrow(/Injected reset/);
+    staged = false;
+    await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].map(m => m.type)).not.toContain("error");
     });
+    expect(requests()).toBe(3);
   });
 
   it("fails a turn that is reset four times before it persists a step", async () => {
