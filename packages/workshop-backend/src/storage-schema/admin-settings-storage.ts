@@ -185,6 +185,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   banner: { text: "", color: DEFAULT_BANNER_COLOR },
   accentColor: "",
   disabledResources: {},
+  disabledResourceTypeIds: {},
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   restrictedWebFetchHosts: [],
