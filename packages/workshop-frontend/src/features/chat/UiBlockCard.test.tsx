@@ -46,6 +46,7 @@ class VisibleIntersectionObserver {
 // The block's document as the frame gets it, in order: each write, then 'close' once it ends.
 class FakeFrame extends RpcTarget implements UiBlockFrame {
   received: string[] = []
+  disposed = false
   // What the bootstrap's Trusted Types probe found.
   constructor(private enforced: boolean | 'throws' = true) { super() }
   setTheme() {}
@@ -55,6 +56,7 @@ class FakeFrame extends RpcTarget implements UiBlockFrame {
   }
   write(html: string) { this.received.push(html) }
   close() { this.received.push('close') }
+  [Symbol.dispose]() { this.disposed = true }
 }
 
 type CardBlock = UiBlockCardProps['block']
@@ -299,12 +301,13 @@ describe('UiBlockCard', () => {
       await vi.waitFor(() => expect(frame.received).toEqual([START, BLOCK.html, 'close']))
     })
 
-    it('runs nothing, opens nothing, and says why, where Trusted Types is not enforced', async () => {
+    it('runs nothing, opens nothing, ends the session, and says why, where Trusted Types is not enforced', async () => {
       for (const enforced of [false, 'throws'] as const) {
         const frame = new FakeFrame(enforced)
         const host = await handshake(await renderEnvCard(), frame)
         await vi.waitFor(() => expect(container.textContent).toContain("This browser can't run a view that reads env safely."))
-        await expect(host.binding('TOTALS')).rejects.toThrow('This view has closed.')
+        await vi.waitFor(() => expect(frame.disposed).toBe(true))
+        await expect(host.binding('TOTALS')).rejects.toBeInstanceOf(Error)
         expect(frame.received).toEqual([])
         expect(opened).toEqual([])
         await act(async () => root.render(<></>))
@@ -342,7 +345,8 @@ describe('UiBlockCard', () => {
       await vi.waitFor(() => expect(opened).toEqual(['EXPENSES']))
       await act(async () => buttonNamed('Stop')!.click())
       held.resolve()
-      await expect(binding).rejects.toThrow()
+      // The frame's session ended first, so its own error reaches the frame.
+      await expect(binding).rejects.toBeInstanceOf(Error)
       await vi.waitFor(() => expect(gadget.disposed).toBe(true))
     })
 

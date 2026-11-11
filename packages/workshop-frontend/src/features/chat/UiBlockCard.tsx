@@ -160,7 +160,8 @@ export const UiBlockCard = ({
         if (loadRef.current !== load) return
         if (enforced) start()
         else {
-          host[Symbol.dispose]()
+          // The view never runs, so its session ends here: nothing it could ask for is served.
+          teardown()
           setCodeError("This browser can't run a view that reads env safely.")
         }
       })

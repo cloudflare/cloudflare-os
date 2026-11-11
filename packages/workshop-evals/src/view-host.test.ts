@@ -276,11 +276,26 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       <script type="module">
         const out = document.getElementById("out");
         try { out.innerHTML = "<b>x</b>"; out.textContent = "parsed"; } catch { out.textContent = "refused"; }
+        for (const name of ["ui-block", "default"]) {
+          try { trustedTypes.createPolicy(name, { createHTML: html => html }); out.textContent += " made " + name; }
+          catch { out.textContent += " kept " + name; }
+        }
       </script>`, binder([]), []);
-    expect(await guarded.text()).toContain("refused");
+    expect(await guarded.text()).toContain("refused kept ui-block kept default");
     await using plain = await RenderedView.open(`
       <p id="out"></p>
       <script type="module">document.getElementById("out").textContent = typeof env;</script>`);
     expect(await plain.text()).toContain("undefined");
+  });
+
+  it("counts a click that only reads a binding as no send, and goes on to the control beside it", async () => {
+    await using view = await RenderedView.open(`
+      <p><span id="food">Food</span> <button id="ask">Ask</button></p>
+      <script type="module">
+        document.getElementById("food").onclick = () => env.LOG.rpc.total();
+        document.getElementById("ask").onclick = () => agent.send("Tell me about Food");
+      </script>`, binder([]), ["LOG"]);
+    await view.click("Food", []);
+    expect(view.messages).toEqual(["Tell me about Food"]);
   });
 });

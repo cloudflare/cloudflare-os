@@ -46,7 +46,9 @@ const CLICK_SEND_MS = 2_000;
 // helpers. The view can reach all of it, so the host trusts nothing it returns.
 const frameScript = (env: boolean) => String.raw`(() => {
   if (location.href !== "about:srcdoc") return;
-${env ? String.raw`  // The Workshop's default Trusted Types policy (uiBlockFrame.ts), which a view with env gets.
+${env ? String.raw`  // The Workshop's two Trusted Types policies (uiBlockFrame.ts), which a view with env gets: the
+  // bootstrap takes both names, so view code can make neither.
+  globalThis.trustedTypes?.createPolicy("ui-block", { createHTML: html => html });
   globalThis.trustedTypes?.createPolicy("default", { createHTML: html => html === "" ? html : null });
 ` : ""}
   const bridge = (...args) => window.__evalViewBridge(...args);
@@ -73,12 +75,16 @@ ${env ? String.raw`  // The Workshop's default Trusted Types policy (uiBlockFram
   }
   const listens = el => listening.has(el) || INTERACTIVE.some(type => el.hasAttribute("on" + type));
 
-  const track = promise => {
-    state.started++;
+  // Work the view started that the host is still doing. Only agent.send counts as a send.
+  const pend = promise => {
     state.pending++;
     const done = () => { state.pending--; };
     promise.then(done, done);
     return promise;
+  };
+  const track = promise => {
+    state.started++;
+    return pend(promise);
   };
   globalThis.agent = Object.freeze({ send: message => track(bridge("send", message)) });
 
@@ -95,11 +101,11 @@ ${env ? String.raw`
   });
   const methods = (name, member) => new Proxy({}, {
     get: (_, method) => typeof method !== "string" || method === "then" ? undefined
-      : (...args) => pipelined(track(bridge("call", name, member, method, args))),
+      : (...args) => pipelined(pend(bridge("call", name, member, method, args))),
   });
   const binding = name => {
     let value;
-    const opened = () => value ??= track(bridge("open", name)).then(({ type, json }) =>
+    const opened = () => value ??= pend(bridge("open", name)).then(({ type, json }) =>
       type === "data" ? JSON.parse(json) : type === "gadget" ? { rpc: methods(name, "rpc") } : methods(name, null));
     return new Proxy({}, {
       get(_, key) {
