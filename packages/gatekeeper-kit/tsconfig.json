@@ -11,6 +11,6 @@
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  "include": ["src", "__tests__"],
+  "include": ["src", "__tests__", "bin", "forge"],
   "exclude": ["dist", "node_modules"]
 }
