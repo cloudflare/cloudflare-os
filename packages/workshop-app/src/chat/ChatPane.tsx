@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react'
 import { Composer } from '@/blocks/Composer'
+import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { UserMessage } from '@/blocks/UserMessage'
 import { Button } from '@/components/Button'
-import { Markdown } from '@/components/Markdown'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { DisclosureStore } from './DisclosureStore'
+import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
 
@@ -19,6 +19,8 @@ export type ChatPaneProps = {
   initialTitle?: string
 }
 
+const LIVE_REASONING = 'live:reasoning'
+
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) => {
   const { chat, send, loadEarlier } = useChatSession(workspaceId, chatId)
@@ -28,6 +30,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
   // What a row asked for that this app cannot do yet.
   const [notice, setNotice] = useState<string>()
   const [disclosure] = useState(() => new DisclosureStore())
+  const liveReasoningOpen = useOpenKeys(disclosure, [LIVE_REASONING]).has(LIVE_REASONING)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
 
@@ -74,15 +77,21 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
       {chat.status === 'ready' && (
         <MessageList
           messages={messages}
-          streaming={chat.thinking || Boolean(chat.streamingText)}
+          streaming={chat.agentActive || Boolean(chat.streamingText)}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: loadEarlier }}
         >
           {chat.openTools && row(chat.openTools)}
-          {chat.streamingText && (
-            <MessageBubble role="assistant">
-              <Markdown>{chat.streamingText}</Markdown>
-            </MessageBubble>
+          {(chat.streamingText || chat.streamingReasoning) && (
+            <AssistantMessage
+              live
+              text={chat.streamingText}
+              reasoning={chat.streamingReasoning
+                ? { text: chat.streamingReasoning, open: liveReasoningOpen, onToggle: () => disclosure.toggle(LIVE_REASONING) }
+                : undefined}
+            />
           )}
+          {chat.streamingTools && row(chat.streamingTools)}
+          {chat.compacting && <ThinkingIndicator>Compacting the conversation…</ThinkingIndicator>}
           {chat.thinking && <ThinkingIndicator />}
           {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
           {chat.pinned.map(row)}

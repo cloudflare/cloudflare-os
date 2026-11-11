@@ -5,6 +5,8 @@ import type {
   AiChatHistoryPage,
   AiChatMessage,
   AiChatMetadata,
+  AiChatStreamEvent,
+  AiToolCall,
   Overseer,
 } from '@gadgets/workshop-shared/api'
 import { ChatSession, type ChatOverseer, type ChatSnapshot } from './ChatSession'
@@ -430,6 +432,220 @@ describe('ChatSession', () => {
       fake.server().message(userMessage(0, 'too late'))
 
       expect(session.getSnapshot()).toBe(before)
+    })
+  })
+
+  describe('a step as it streams', () => {
+    const file = { workpieceId: 1, filename: 'worker.ts' }
+    const working = async (history: AiChatMessage[] = []) => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]), { 0: page(...history) })
+      const session = await started(fake)
+      return { session, stream: (...events: AiChatStreamEvent[]) => events.forEach((event) => fake.server().stream(0, event)), server: fake.server() }
+    }
+    const withCalls = (sequence: number, toolCalls: AiToolCall[], reasoning?: string): AiChatMessage =>
+      ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'message', message: '', toolCalls, reasoning })
+    const read: AiToolCall = { toolCallId: 'read', toolName: 'readFile', input: { filename: 'chart.tsx' } }
+
+    it('shows reasoning as it is written, which is no longer just thinking', async () => {
+      const { session, stream } = await working()
+      expect(ready(session)).toMatchObject({ thinking: true, streamingReasoning: '' })
+
+      stream({ type: 'reasoningDelta', delta: 'The window is ' }, { type: 'reasoningDelta', delta: 'a constant.' })
+
+      expect(ready(session)).toMatchObject({ thinking: false, streamingReasoning: 'The window is a constant.', streamingText: '' })
+    })
+
+    it('lists a call while it is written: what it is, its file, its content so far, and when its input is complete', async () => {
+      const { session, stream } = await working()
+
+      stream({ type: 'toolCallStarted', toolCallId: 'w', toolName: 'writeFile' })
+      expect(ready(session)).toMatchObject({ thinking: false, openTools: { running: true, entries: [{ label: 'Writing file…', running: true }] } })
+
+      stream({ type: 'toolCallTarget', toolCallId: 'w', file })
+      stream({ type: 'editPreviewStart', toolCallId: 'w', file }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'export ' }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'default {}' })
+      expect(ready(session).openTools).toMatchObject({
+        summary: 'Writing worker.ts…',
+        entries: [{ key: 'w', label: 'Writing worker.ts…', sections: [{ label: 'Content', text: 'export default {}' }] }],
+      })
+
+      stream({ type: 'toolCallFinished', toolCallId: 'w' })
+      expect(ready(session).openTools?.entries).toMatchObject([{ running: false }])
+    })
+
+    it('streams the code a call runs, then its output', async () => {
+      const { session, stream } = await working()
+
+      stream(
+        { type: 'toolCallStarted', toolCallId: 'x', toolName: 'executeCode' },
+        { type: 'toolCodeDelta', toolCallId: 'x', delta: 'run(' },
+        { type: 'toolCodeDelta', toolCallId: 'x', delta: ')' },
+        { type: 'toolOutputDelta', toolCallId: 'x', delta: '42' },
+      )
+
+      expect(ready(session).openTools?.entries).toMatchObject([{
+        label: 'Running code…',
+        running: true,
+        sections: [{ label: 'Code', text: 'run()' }, { label: 'Output', text: '42' }],
+      }])
+    })
+
+    it('adds live calls to the run of calls the turn already ends with, under the same key', async () => {
+      const { session, stream } = await working([userMessage(0, 'go'), withCalls(1, [read])])
+      const before = ready(session)
+      expect(before.openTools).toMatchObject({ summary: 'Read chart.tsx', entries: [{ key: 'read' }] })
+
+      stream({ type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' }, { type: 'toolCallTarget', toolCallId: 'e', file })
+
+      const after = ready(session)
+      expect(after.openTools).toMatchObject({ key: before.openTools!.key, running: true, summary: 'Editing worker.ts…', entries: [{ key: 'read' }, { key: 'e', running: true }] })
+      expect(after.streamingTools).toBeUndefined()
+      expect(after.items).toBe(before.items)
+    })
+
+    it('starts a new run for calls that follow text the agent is writing', async () => {
+      const { session, stream } = await working([userMessage(0, 'go'), withCalls(1, [read])])
+
+      stream({ type: 'textDelta', delta: 'Now the worker.' }, { type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' })
+
+      expect(ready(session)).toMatchObject({
+        openTools: { entries: [{ key: 'read' }] },
+        streamingText: 'Now the worker.',
+        streamingTools: { entries: [{ key: 'e' }] },
+      })
+      expect(ready(session).openTools?.running).toBeUndefined()
+    })
+
+    it('keeps the thinking that led straight to a call with that call', async () => {
+      const { session, stream } = await working()
+
+      stream({ type: 'reasoningDelta', delta: 'Check the worker.' }, { type: 'toolCallStarted', toolCallId: 'r', toolName: 'readFile' })
+
+      expect(ready(session)).toMatchObject({ streamingReasoning: '', openTools: { entries: [{ reasoning: 'Check the worker.' }] } })
+    })
+
+    it('replaces everything that streamed of a step with its durable message', async () => {
+      const { session, stream, server } = await working([userMessage(0, 'go')])
+      stream({ type: 'reasoningDelta', delta: 'Check it.' }, { type: 'toolCallStarted', toolCallId: 'read', toolName: 'readFile' }, { type: 'toolCallFinished', toolCallId: 'read' })
+      const live = ready(session).openTools!
+
+      server.message(withCalls(1, [read], 'Check it.'))
+
+      const snapshot = ready(session)
+      expect(snapshot).toMatchObject({ streamingReasoning: '', streamingTools: undefined, openTools: { key: live.key, summary: 'Read chart.tsx' } })
+      expect(snapshot.openTools?.running).toBeUndefined()
+      expect(snapshot.openTools?.entries).toMatchObject([{ label: 'Read chart.tsx', reasoning: 'Check it.' }])
+    })
+
+    it('says the conversation is being compacted until that ends', async () => {
+      const { session, stream } = await working()
+
+      stream({ type: 'compacting' })
+      expect(ready(session)).toMatchObject({ compacting: true, thinking: false })
+
+      stream({ type: 'compacted' })
+      expect(ready(session)).toMatchObject({ compacting: false, thinking: true })
+    })
+
+    it('discards all of a step that will be tried again: its text, reasoning and calls', async () => {
+      const { session, stream } = await working([userMessage(0, 'go'), withCalls(1, [read])])
+      stream(
+        { type: 'reasoningDelta', delta: 'Hmm.' },
+        { type: 'textDelta', delta: 'Partial' },
+        { type: 'toolCallStarted', toolCallId: 'x', toolName: 'executeCode' },
+        { type: 'toolCodeDelta', toolCallId: 'x', delta: 'run()' },
+      )
+      expect(ready(session).streamingTools).toBeDefined()
+
+      stream({ type: 'streamReset' })
+
+      expect(ready(session)).toMatchObject({ streamingReasoning: '', streamingText: '', streamingTools: undefined, thinking: true })
+      expect(ready(session).openTools).toMatchObject({ summary: 'Read chart.tsx', entries: [{ key: 'read' }] })
+    })
+
+    it('drops what was streaming when the agent stops, and when the server restarts', async () => {
+      const { session, stream, server } = await working()
+      const streamStep = () => stream({ type: 'reasoningDelta', delta: 'Hmm.' }, { type: 'toolCallStarted', toolCallId: 'x', toolName: 'executeCode' }, { type: 'compacting' })
+
+      server.streamGeneration(1)
+      streamStep()
+      server.streamGeneration(2)
+      expect(ready(session)).toMatchObject({ openTools: undefined, streamingReasoning: '', compacting: false })
+
+      streamStep()
+      server.metadata(chat(0, 'Chat', 2))
+      expect(ready(session)).toMatchObject({ openTools: undefined, streamingReasoning: '', compacting: false, thinking: false })
+    })
+
+    it('remembers what a streamed creation was making, for the card it becomes', async () => {
+      const { session, stream, server } = await working([userMessage(0, 'write it up')])
+      stream(
+        { type: 'toolCallStarted', toolCallId: 'make', toolName: 'createGadget' },
+        { type: 'toolCallOutputFormat', toolCallId: 'make', output: { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' } },
+      )
+      expect(ready(session).openTools?.entries).toMatchObject([{ label: 'Creating Document…' }])
+
+      server.message(withCalls(1, [{ toolCallId: 'make', toolName: 'createGadget', input: { title: 'Review', bindingName: 'REVIEW' }, output: { gadgetId: 4 } }]))
+
+      expect(ready(session)).toMatchObject({
+        openTools: undefined,
+        pinned: [{ kind: 'output', title: 'Review', workpieceId: 4, draft: true, format: { noun: 'Document', icon: 'fileText' } }],
+      })
+    })
+  })
+
+  describe('the open turn', () => {
+    it('keeps what the turn produced apart from its rows, and moves it into them when the next turn starts', async () => {
+      const hook: AiChatMessage = {
+        chatId: 0,
+        sequence: 1,
+        timestamp: new Date(0),
+        author: agentAuthor,
+        type: 'action',
+        actionId: 3,
+        actionLog: { id: 3, type: 'bindHook', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 1, enabled: true },
+      }
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'watch it'), hook, agentMessage(2, 'Watching.')) })
+      const session = await started(fake)
+      expect(ready(session).items.map(({ kind }) => kind)).toEqual(['user', 'assistant'])
+      expect(ready(session).pinned).toMatchObject([{ kind: 'hook', title: 'New issue' }])
+
+      fake.server().message(userMessage(3, 'thanks'))
+
+      expect(ready(session).items.map(({ kind }) => kind)).toEqual(['user', 'assistant', 'hook', 'user'])
+      expect(ready(session).pinned).toEqual([])
+    })
+
+    it('lists the messages waiting for the running agent, naming only other senders', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake, 0, { viewerId: 'u' })
+
+      fake.server().metadata({
+        ...chat(0, 'Chat', 2, agentAuthor),
+        queuedSteers: [{ text: 'Shorter', author: userAuthor }, { text: 'And in French', author: { type: 'user', id: 'g', name: 'Grace' } }],
+      })
+      expect(ready(session).queuedSteers).toEqual([{ text: 'Shorter', from: undefined }, { text: 'And in French', from: 'Grace' }])
+
+      fake.server().metadata(chat(0, 'Chat', 3, agentAuthor))
+      expect(ready(session).queuedSteers).toEqual([])
+    })
+
+    it('offers to retry the last error only once the agent has stopped', async () => {
+      const failed: AiChatMessage = { chatId: 0, sequence: 1, timestamp: new Date(0), author: agentAuthor, type: 'error', message: 'Overloaded' }
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]), { 0: page(userMessage(0, 'go'), failed) })
+      const session = await started(fake)
+      expect(ready(session).items.at(-1)).toMatchObject({ kind: 'error', recovery: undefined })
+
+      fake.server().metadata(chat(0, 'Chat', 2))
+      expect(ready(session).items.at(-1)).toMatchObject({ kind: 'error', recovery: 'retry' })
+    })
+
+    it('marks where the context was cut when the chat says so', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'old'), agentMessage(1, 'old answer'), userMessage(2, 'new')) })
+      const session = await started(fake)
+
+      fake.server().metadata({ ...chat(0, 'Chat', 2), compactedTo: 2 })
+
+      expect(ready(session).items.map(({ kind }) => kind)).toEqual(['user', 'assistant', 'divider', 'user'])
     })
   })
 

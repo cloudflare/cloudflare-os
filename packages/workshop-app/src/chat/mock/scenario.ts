@@ -267,20 +267,33 @@ export const streamReasoning = (text: string): ScriptStep[] =>
   chunks(text).map((delta) => ({ stream: { type: 'reasoningDelta', delta }, delay: CHUNK_DELAY }))
 
 /**
- * Streams one tool call the way the server does: it starts, names its file, its code is written,
- * and its output arrives. `executeCode` never reports finishing; its durable message ends it.
+ * Streams one tool call the way the server does before the call's durable message: it starts and
+ * names its file; code to run streams as the call's code and a file's new content as a preview of
+ * the edit; then its input is complete. `executeCode` never reports that: it runs, its output
+ * streams, and its durable message ends it.
  */
-export const streamTool = (
-  { toolCallId, toolName }: Pick<AiToolCall, 'toolCallId' | 'toolName'>,
-  { filename, code, output, format }: { filename?: string; code?: string; output?: string; format?: BlueprintOutput } = {},
-): ScriptStep[] => [
-  { stream: { type: 'toolCallStarted', toolCallId, toolName }, delay: 200 },
-  ...(filename ? [{ stream: { type: 'toolCallTarget', toolCallId, file: { workpieceId: 1, filename } }, delay: 120 } as const] : []),
-  ...(format ? [{ stream: { type: 'toolCallOutputFormat', toolCallId, output: format }, delay: 120 } as const] : []),
-  ...chunks(code ?? '', 4).map((delta) => ({ stream: { type: 'toolCodeDelta', toolCallId, delta }, delay: CHUNK_DELAY }) as const),
-  ...(toolName === 'executeCode' ? [] : [{ stream: { type: 'toolCallFinished', toolCallId }, delay: 200 } as const]),
-  ...chunks(output ?? '', 4).map((delta) => ({ stream: { type: 'toolOutputDelta', toolCallId, delta }, delay: 90 }) as const),
-]
+export const streamTool = (call: AiToolCall, format?: BlueprintOutput): ScriptStep[] => {
+  const { toolCallId, toolName } = call
+  const stream = (event: AiChatStreamEvent, delay = CHUNK_DELAY): ScriptStep => ({ stream: event, delay })
+  const file = 'filename' in call.input ? { workpieceId: 1, filename: call.input.filename } : undefined
+  const edit =
+    toolName === 'editFile' ? { content: call.input.replacement, textToReplace: call.input.textToReplace }
+    : toolName === 'writeFile' ? { content: call.input.content }
+    : undefined
+  return [
+    stream({ type: 'toolCallStarted', toolCallId, toolName }, 200),
+    ...(file ? [stream({ type: 'toolCallTarget', toolCallId, file }, 120)] : []),
+    ...(format ? [stream({ type: 'toolCallOutputFormat', toolCallId, output: format }, 120)] : []),
+    ...(file && edit ? [stream({ type: 'editPreviewStart', toolCallId, file, textToReplace: edit.textToReplace }, 120)] : []),
+    ...chunks(edit?.content ?? '', 4).map((delta) => stream({ type: 'editPreviewDelta', toolCallId, delta })),
+    ...(toolName === 'executeCode'
+      ? [
+          ...chunks(call.input.code, 4).map((delta) => stream({ type: 'toolCodeDelta', toolCallId, delta })),
+          ...chunks(call.output ?? '', 4).map((delta) => stream({ type: 'toolOutputDelta', toolCallId, delta }, 90)),
+        ]
+      : [stream({ type: 'toolCallFinished', toolCallId }, 200)]),
+  ]
+}
 
 /** Streams an agent message, then commits it. */
 export const say = (message: Authored<'message'>, delay = 300): ScriptStep[] => [

@@ -88,11 +88,11 @@ const toolRun: Scenario = {
   history: history([user('Show twelve weeks of tickets on the chart instead of four.')]),
   script: turn(
     say(agent({ text: 'I’ll read the chart code first.' })),
-    reads.flatMap((toolCall) => streamTool(toolCall, { filename: toolCall.input.filename })),
+    reads.flatMap((toolCall) => streamTool(toolCall)),
     { message: agent({ toolCalls: reads }), delay: 300 },
     streamReasoning('The window is a constant in chart.tsx. The worker also caps results, so check that as well.'),
-    streamTool(edit, { filename: 'src/chart.tsx' }),
-    streamTool(write, { filename: 'src/trend.ts', code: write.input.content }),
+    streamTool(edit),
+    streamTool(write),
     {
       message: agent({
         reasoning: 'The window is a constant in chart.tsx. The worker also caps results, so check that as well.',
@@ -100,9 +100,9 @@ const toolRun: Scenario = {
       }),
       delay: 300,
     },
-    streamTool(run, { code: runCode, output: runOutput }),
+    streamTool(run),
     { message: agent({ toolCalls: [run] }), delay: 400 },
-    streamTool(failedEdit, { filename: 'src/worker.ts' }),
+    streamTool(failedEdit),
     { message: agent({ toolCalls: [failedEdit] }), delay: 300 },
     streamTool(search),
     { message: agent({ toolCalls: [search] }), delay: 300 },
@@ -128,7 +128,7 @@ const approval: Scenario = {
   script: [
     ...turn(
       say(agent({ text: 'I’ll file it in the Platform project.' })),
-      streamTool(createTicket, { code: createTicket.input.code }),
+      streamTool(createTicket),
       {
         message: action({
           title: 'Create issue in PLAT',
@@ -164,7 +164,7 @@ const approval: Scenario = {
     )),
     ...when(['onDeny', 'onApprove'], turn(
       say(agent({ text: 'Understood. Last thing: I’ll label the ticket so it shows on the board.' })),
-      streamTool(labelTicket, { code: labelTicket.input.code }),
+      streamTool(labelTicket),
       {
         message: action({
           title: 'Add label “dashboard” to PLAT-212',
@@ -199,7 +199,7 @@ const observationHook: Scenario = {
   description: 'What the agent read is listed with its tools. The hook it sets up stays under the answer; toggle it.',
   history: history([user('Watch the Platform board and summarise new tickets for me.')]),
   script: turn(
-    streamTool(watch, { code: watch.input.code, output: watch.output }),
+    streamTool(watch),
     {
       message: observation({
         title: 'Platform board',
@@ -259,7 +259,7 @@ const connection: Scenario = {
       { message: agent({ toolCalls: [listResources, requestClickHouse] }), delay: 200 },
     ),
     ...when('onAcceptConnection', turn(
-      streamTool(query, { code: query.input.code, output: query.output }),
+      streamTool(query),
       { message: agent({ toolCalls: [query] }), delay: 300 },
       say(agent({ text: 'Error rates peaked on Tuesday at 2.1%. To put deploys on the same chart I’d need Grafana too.' })),
       {
@@ -292,10 +292,10 @@ const output: Scenario = {
   script: [
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),
-      streamTool(createDoc, { format: DOCUMENT }),
+      streamTool(createDoc, DOCUMENT),
       { message: changes({ author: AGENT, createdGadgets: [{ gadgetId: 41, title: 'Q3 platform review', bindingName: 'REVIEW' }] }), delay: 200 },
       { message: agent({ toolCalls: [createDoc] }), delay: 200 },
-      streamTool(writeDoc, { filename: 'content.md', code: writeDoc.input.content }),
+      streamTool(writeDoc),
       { message: agent({ toolCalls: [writeDoc] }), delay: 300 },
       say(agent({
         text:
