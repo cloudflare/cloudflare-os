@@ -10,11 +10,13 @@ import {
   MAX_DECISION_CHARS,
   POLICY_FILES,
   decide,
+  firstOtherBase,
   mergeGroupPulls,
   parseBands,
   renderOutput,
   runRiskReview,
   type ActionsContext,
+  type BaseHistory,
   type ActionsCore,
   type Comment,
   type DecisionRecord,
@@ -174,7 +176,12 @@ interface HarnessOptions {
    * Base histories by pull request number, as GraphQL returns them; `null` makes one unreadable.
    * Unlisted ones were opened on 2026-11-01 into their current base and never changed.
    */
-  baseHistories?: Record<number, { createdAt: string; nodes: { createdAt: string; previousRefName: string; currentRefName: string }[] } | null>;
+  baseHistories?: Record<number, {
+    createdAt: string;
+    nodes: { createdAt: string; previousRefName: string; currentRefName: string }[];
+    /** More than one page of events. */
+    more?: true;
+  } | null>;
   /** The pull request's timeline events. */
   timeline?: { event: string; created_at: string }[];
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
@@ -318,7 +325,7 @@ function harness(options: HarnessOptions = {}) {
             pullRequest: {
               createdAt: history?.createdAt ?? "2026-11-01T09:00:00Z",
               baseRefName: other?.base.ref ?? "main",
-              timelineItems: { pageInfo: { hasNextPage: false }, nodes: history?.nodes ?? [] },
+              timelineItems: { pageInfo: { hasNextPage: history?.more === true }, nodes: history?.nodes ?? [] },
             },
           },
         };
@@ -865,6 +872,26 @@ function bonkScore(calls: Calls): number | null | InputSummary | undefined {
   return bonk && "merge_confidence" in bonk ? bonk.merge_confidence : bonk;
 }
 
+/** A base history for #8, opened at 09:00 and now into `baseRefName`. */
+function history8(baseRefName: string, changes: BaseHistory["changes"]): BaseHistory {
+  return { number: 8, createdAt: Date.parse("2026-11-02T09:00:00Z"), baseRefName, changes };
+}
+
+describe("firstOtherBase", () => {
+
+  it("finds when a pull request first had another base", () => {
+    assert.equal(firstOtherBase(history8("main", []), "main"), undefined);
+    assert.deepEqual(firstOtherBase(history8("evil", []), "main"), { at: Date.parse("2026-11-02T09:00:00Z"), base: "evil" });
+    const away = history8("main", [
+      { at: Date.parse("2026-11-02T12:00:00Z"), from: "evil", to: "main" },
+      { at: Date.parse("2026-11-02T11:00:00Z"), from: "main", to: "evil" },
+    ]);
+    assert.deepEqual(firstOtherBase(away, "main"), { at: Date.parse("2026-11-02T11:00:00Z"), base: "evil" });
+    assert.deepEqual(firstOtherBase(history8("main", [{ at: Date.parse("2026-11-02T10:00:00Z"), from: "evil", to: "main" }]), "main"),
+      { at: Date.parse("2026-11-02T09:00:00Z"), base: "evil" });
+  });
+});
+
 describe("runRiskReview producer binding", () => {
   const open = { policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) } };
 
@@ -915,10 +942,13 @@ describe("runRiskReview producer binding", () => {
     const before = harness({ ...open, runs: early, otherPulls: [sibling], baseHistories });
     await before.evaluate("workflow_run", producerCompleted());
     assert.equal(bonkScore(before.calls), 8);
-    // A sibling whose base history cannot be read fences every run.
-    const unread = harness({ ...open, runs: early, otherPulls: [sibling], baseHistories: { 8: null } });
-    await unread.evaluate("workflow_run", producerCompleted());
-    assert.equal(lastRecord(unread.calls).pulls[0]?.would.decision, "person");
+    // A sibling whose base history cannot be read, or runs past one page, fences every run.
+    const paged: NonNullable<HarnessOptions["baseHistories"]>[number] = { ...baseHistories[8], more: true };
+    for (const history of [null, paged]) {
+      const unread = harness({ ...open, runs: early, otherPulls: [sibling], baseHistories: { 8: history } });
+      await unread.evaluate("workflow_run", producerCompleted());
+      assert.equal(lastRecord(unread.calls).pulls[0]?.would.decision, "person", JSON.stringify(history));
+    }
   });
 
   it("ignores runs from before the pull request's base last changed, even re-run since", async () => {
