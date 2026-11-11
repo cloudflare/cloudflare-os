@@ -13,6 +13,30 @@
   }
 }
 
+/* What a page opens on is faded in rather than cut to, as a conversation is once it has loaded.
+   The note that something is loading is held back first: most loads are over before it is due,
+   and it would only flash by. */
+@keyframes appears {
+  from {
+    opacity: 0;
+  }
+}
+.appears {
+  animation: appears 200ms ease-out;
+}
+.appears-late {
+  animation: appears 200ms 300ms ease-out backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .appears {
+    animation: none;
+  }
+  /* Still held back, then simply there. */
+  .appears-late {
+    animation-duration: 0s;
+  }
+}
+
 /* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while
    the conversation rests at that end (nothing is under the header at the first message; the newest
    message sits clear of the composer), eased in over the first pixels scrolled away from it. The

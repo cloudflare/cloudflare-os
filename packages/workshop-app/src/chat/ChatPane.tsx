@@ -181,7 +181,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <MessageList messages={[]}>
           {chat.status === 'failed'
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
-            : <span role="status" className="text-sm text-kumo-subtle">Loading conversation…</span>}
+            : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
           {problem && <MessageBubble role="error">{problem}</MessageBubble>}
         </MessageList>
       )}

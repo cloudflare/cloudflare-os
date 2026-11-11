@@ -129,7 +129,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
           role="log"
           aria-relevant="additions"
           aria-busy={streaming || loading}
-          className="mx-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]"
+          className="appears mx-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]"
         >
           <div ref={startRef} className="shrink-0">
             {hasMore && (
