@@ -564,12 +564,18 @@ const LIST_ITEM = /(["'])([^"'\\\n]+)\1/y;
  * The class names in a Worker config's Durable Object deletion lists (`deleted_classes`), the
  * migrations that drop a class's data. Each list is read item by item, so a `]` in a comment or a
  * string does not end it. `undefined` when any mention of the key is not followed by a list of
- * plain string literals (a spread, an identifier, a template, a comment that never closes), since
- * its classes cannot be read.
+ * plain string literals (a spread, an identifier, a template, a comment that never closes), or may
+ * itself sit in a comment, since its classes cannot be read.
  */
 function deletedClassNames(text: string): string[] | undefined {
   const classes: string[] = [];
   for (const mention of text.matchAll(/deleted_?[cC]lasses/g)) {
+    // A mention after `//` on its line, or after a `/*` that has not closed, may be commented out.
+    // Counting it would let the base "already delete" a class the head then deletes for real.
+    // Comment markers inside a string read the same way, which only sends more configs to a person.
+    const line = text.slice(text.lastIndexOf("\n", mention.index) + 1, mention.index);
+    const opened = text.lastIndexOf("/*", mention.index);
+    if (line.includes("//") || (opened !== -1 && text.lastIndexOf("*/", mention.index) < opened + 2)) return undefined;
     LIST_OPEN.lastIndex = mention.index + mention[0].length;
     if (!LIST_OPEN.test(text)) return undefined;
     let at = LIST_OPEN.lastIndex;

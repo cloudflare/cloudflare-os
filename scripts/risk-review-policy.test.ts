@@ -296,6 +296,16 @@ describe("addedClassDeletions", () => {
     assert.equal(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old', /* never closed\n    'Drafts',\n")), undefined);
   });
 
+  // Bonk on #1093, round 7: a commented-out migration counted as a deletion the base already made,
+  // so uncommenting it added none.
+  it("cannot read a config whose deletion list may be commented out", () => {
+    const head = base.replace("],", "  { tag: 'v3', deleted_classes: ['Notes'] },\n],");
+    assert.equal(addedClassDeletions(head.replace("  { tag: 'v3'", "  // { tag: 'v3'"), head), undefined);
+    assert.equal(addedClassDeletions(head.replace("  { tag: 'v3', deleted_classes: ['Notes'] },", "  /* { tag: 'v3', deleted_classes: ['Notes'] }, */"), head), undefined);
+    // A block comment that closed before the list leaves it readable.
+    assert.deepEqual(addedClassDeletions(base, `/* Durable Object migrations. */\n${head}`), ["Notes"]);
+  });
+
   it("finds none when only other migrations or comments change", () => {
     assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', new_sqlite_classes: ['Inbox'] },\n],")), []);
     assert.deepEqual(addedClassDeletions(base, `// Old was dropped in v2.\n${base}`), []);
