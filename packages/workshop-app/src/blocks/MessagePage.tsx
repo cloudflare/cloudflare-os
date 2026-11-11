@@ -2,7 +2,13 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, typ
 
 const PAGE_OVERSCAN_PX = 1000
 
-export type MessageListItem = { id: number; content: ReactNode }
+export type MessageListItem = {
+  /** Unique in the list and stable, so a row keeps its state while the list changes around it. */
+  id: string | number
+  /** Where the row sits in the conversation. Never decreases down the list; rows may share one. */
+  sequence: number
+  content: ReactNode
+}
 export type MessageListPage = { id: number; items: MessageListItem[] }
 
 /** A measured page remains a spacer outside the viewport's buffer. Interactive state belongs to

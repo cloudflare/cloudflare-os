@@ -4,7 +4,7 @@ import { Markdown } from '@/components/Markdown'
 import type { ChatItem } from './chatItems'
 
 /**
- * One committed message. Memoized: items keep their identity while a reply streams in, so the
+ * One row of the conversation. Memoized: items keep their identity while a reply streams in, so the
  * conversation above it is not rendered again for every piece of text that arrives.
  */
 export const ChatItemView = memo(function ChatItemView({ item }: { item: ChatItem }) {
@@ -19,7 +19,8 @@ export const ChatItemView = memo(function ChatItemView({ item }: { item: ChatIte
       )
     case 'error':
       return <MessageBubble role="error">{item.text}</MessageBubble>
-    case 'unsupported':
-      return <MessageBubble role="assistant">Missing implementation</MessageBubble>
+    default:
+      // Each remaining kind gets its block in the commits that follow.
+      return <p className="px-2 text-sm text-kumo-subtle">{item.kind}</p>
   }
 })

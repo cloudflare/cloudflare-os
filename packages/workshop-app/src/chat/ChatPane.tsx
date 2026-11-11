@@ -25,7 +25,15 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
   const [problem, setProblem] = useState<string>()
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
-  const messages = useMemo(() => items?.map((item) => ({ id: item.id, content: <ChatItemView item={item} /> })) ?? [], [items])
+  const messages = useMemo(() => {
+    // An artefact is shown at the end of its turn, after rows from later messages, so a row's
+    // place in the conversation is the furthest sequence reached so far.
+    let sequence = 0
+    return items?.map((item) => {
+      sequence = Math.max(sequence, item.id)
+      return { id: item.key, sequence, content: <ChatItemView item={item} /> }
+    }) ?? []
+  }, [items])
 
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
@@ -42,12 +50,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
           streaming={chat.thinking || Boolean(chat.streamingText)}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: loadEarlier }}
         >
+          {chat.openTools && <ChatItemView item={chat.openTools} />}
           {chat.streamingText && (
             <MessageBubble role="assistant">
               <Markdown>{chat.streamingText}</Markdown>
             </MessageBubble>
           )}
           {chat.thinking && <ThinkingIndicator />}
+          {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
+          {chat.pinned.map((item) => <ChatItemView key={item.key} item={item} />)}
+          {chat.queuedSteers.map(({ text }, index) => <MessageBubble key={index} role="user">{text}</MessageBubble>)}
           {chat.sendError && <MessageBubble role="error">{chat.sendError}</MessageBubble>}
           {problem && <MessageBubble role="error">{problem}</MessageBubble>}
         </MessageList>

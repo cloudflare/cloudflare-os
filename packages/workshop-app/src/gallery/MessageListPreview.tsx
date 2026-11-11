@@ -34,6 +34,7 @@ export const MessageListPreview = () => {
 
   const messages = useMemo(() => ids.map((id) => ({
     id,
+    sequence: id,
     content: (
       <MessageBubble role={id % 2 ? 'assistant' : 'user'}>
         <p>Message {id}: {'A variable-height conversation. '.repeat(1 + id % 5)}</p>
