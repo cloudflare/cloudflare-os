@@ -17,12 +17,19 @@ type Request = {
   fields: ActionField[]
 }
 
-export type ActionCardProps = Request & (
+export type ActionCardProps = Request & {
+  /** Whether the request is showing: what the action does and sends. It starts out folded away. */
+  open: boolean
+  onToggle: () => void
+} & (
   | {
       state: 'pending'
       /** Part of what the action will send is not in its description. */
       incomplete?: boolean
-      /** The workspace has read sensitive data: the request is shown in full, to be read before approving. */
+      /**
+       * The workspace has read sensitive data: the request is shown in full, to be read before
+       * approving, and cannot be folded away.
+       */
       restricted?: boolean
       onApprove: () => ActionResult
       onDeny: () => ActionResult
@@ -33,8 +40,6 @@ export type ActionCardProps = Request & (
       state: 'approved' | 'denied'
       /** Who decided it, e.g. "Approved by Ada". */
       resolution: string
-      open: boolean
-      onToggle: () => void
     }
 )
 
@@ -57,13 +62,22 @@ const RequestBody = ({ description, fields, uncapped }: Pick<Request, 'descripti
 
 /**
  * Something the agent wants to do outside the workspace. While it waits for a decision it is a
- * card with everything needed to decide. Once decided it stays a card that says how, with the
- * request folded away, so the decision stands out in the conversation without filling it.
+ * card that says what and asks; once decided it stays a card that says how it was decided. Either
+ * way the request itself is folded away for whoever wants to read it, so the card stands out in
+ * the conversation without filling it. Only a restricted workspace shows it in full.
  */
 export const ActionCard = (props: ActionCardProps) => {
-  const { title, description, resource, fields } = props
+  const { title, description, resource, fields, open, onToggle } = props
   const [pending, run] = usePending()
   const id = useId()
+  const hasRequest = description !== '' || fields.length > 0
+  const request = hasRequest && (
+    <Disclosure open={open} onToggle={onToggle} summary="Request" className="-mx-2 -my-1">
+      <div id={`${id}-request`} className="mx-2 mt-2 mb-1 flex flex-col gap-3">
+        <RequestBody description={description} fields={fields} />
+      </div>
+    </Disclosure>
+  )
   const heading = (
     <div className="flex items-start gap-3">
       <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
@@ -86,21 +100,20 @@ export const ActionCard = (props: ActionCardProps) => {
       <Card>
         <section aria-labelledby={`${id}-title`} className="contents">
           {heading}
-          {(description || fields.length > 0) && (
-            <Disclosure open={props.open} onToggle={props.onToggle} summary="Request" className="-mx-2 -my-1">
-              <div className="mx-2 mt-2 mb-1 flex flex-col gap-3">
-                <RequestBody description={description} fields={fields} />
-              </div>
-            </Disclosure>
-          )}
+          {request}
         </section>
       </Card>
     )
   }
 
   const { restricted, incomplete, onApprove, onDeny, onAlwaysApprove } = props
-  // The notices and the request are what the buttons act on, so they describe them.
-  const describedBy = [restricted && `${id}-restricted`, `${id}-request`, incomplete && `${id}-incomplete`].filter(Boolean).join(' ')
+  // The notices and the request are what the buttons act on, so they describe them: the request
+  // while it is there to be read.
+  const describedBy = [
+    restricted && `${id}-restricted`,
+    hasRequest && (restricted || open) && `${id}-request`,
+    incomplete && `${id}-incomplete`,
+  ].filter(Boolean).join(' ') || undefined
 
   return (
     <Card>
@@ -111,9 +124,13 @@ export const ActionCard = (props: ActionCardProps) => {
             This workspace has read sensitive data. Read the full request before approving: you are responsible for making sure it contains none of that data.
           </Note>
         )}
-        <div id={`${id}-request`} className="flex flex-col gap-3">
-          <RequestBody description={description} fields={fields} uncapped={restricted} />
-        </div>
+        {restricted
+          ? (
+            <div id={`${id}-request`} className="flex flex-col gap-3">
+              <RequestBody description={description} fields={fields} uncapped />
+            </div>
+          )
+          : request}
         {incomplete && (
           <Note id={`${id}-incomplete`} tone="caution">
             This description is incomplete: part of what this action will send isn’t shown.

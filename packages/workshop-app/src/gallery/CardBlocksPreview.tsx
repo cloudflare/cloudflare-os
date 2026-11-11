@@ -32,9 +32,9 @@ export const CardBlocksPreview = () => {
           <OutputCard title="Fix export timeout" kind="worktree" onOpen={() => say('open the worktree')} />
         </Column>
       </Section>
-      <Section title="ActionCard (pending, with a standing approval, restricted and incomplete, approved, denied)">
+      <Section title="ActionCard (the request opens from every card but the restricted one, which shows it in full: pending, with a standing approval, incomplete, restricted and incomplete, approved, denied)">
         <Column>
-          <ActionCard {...request} state="pending" onApprove={after('approved')} onDeny={after('denied')} />
+          <ActionCard {...request} state="pending" onApprove={after('approved')} onDeny={after('denied')} {...of('pending')} />
           <ActionCard
             title="Add label “dashboard” to PLAT-212"
             description=""
@@ -43,8 +43,10 @@ export const CardBlocksPreview = () => {
             onApprove={after('approved')}
             onDeny={after('denied')}
             onAlwaysApprove={after('always approve')}
+            {...of('standing')}
           />
-          <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always approve')} />
+          <ActionCard {...request} state="pending" incomplete onApprove={after('approved')} onDeny={after('denied')} {...of('incomplete')} />
+          <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always approve')} {...of('restricted')} />
           <ActionCard {...request} state="approved" resolution="Approved by Ada Lovelace" {...of('approved')} />
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
         </Column>
