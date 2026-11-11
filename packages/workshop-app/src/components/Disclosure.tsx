@@ -22,7 +22,7 @@ export const Disclosure = ({ summary, children, open, onToggle, className }: Dis
   <Collapsible.Root open={open} onOpenChange={onToggle} className={cn('flex min-w-0 flex-col text-base/5', className)}>
     <Collapsible.Trigger className="group flex max-w-full items-center gap-2 self-start rounded-full px-2 py-1 text-left text-kumo-subtle hover:text-kumo-default">
       {summary}
-      <CaretRightIcon aria-hidden="true" weight="bold" className="size-4 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
+      <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
     </Collapsible.Trigger>
     <Collapsible.Panel className="disclosure-panel">{children}</Collapsible.Panel>
   </Collapsible.Root>
