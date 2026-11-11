@@ -291,7 +291,7 @@ test("native Git syncs a replica's files with snapshots and submissions", async 
 
     // Step 1 of each command: check out the snapshot, unless the files already have its tree.
     const snapshot = async () => {
-      const result = await (await call("/snapshot")).json() as {tree: string; head: string; command: number};
+      const result = await (await call("/snapshot")).json() as {tree: string; head: string};
       const actual = actualTree();
       served = undefined;
       if (actual !== result.tree) {
@@ -302,11 +302,11 @@ test("native Git syncs a replica's files with snapshots and submissions", async 
       return result;
     };
     // Step 3: submit the files' tree, with what the snapshot's lacks.
-    const submit = async (from: {tree: string; command: number}) => {
+    const submit = async (from: {tree: string}) => {
       const tree = actualTree();
       const pack = execFileSync("sh", ["-c", 'git rev-list --objects "$1" "^$2" | git pack-objects -q --stdout', "sh", tree, from.tree],
         {cwd: clone});
-      const result = await (await call(`/submit?command=${from.command}&tree=${tree}`, pack)).json() as {tree: string};
+      const result = await (await call(`/submit?base=${from.tree}&tree=${tree}`, pack)).json() as {tree: string};
       return {tree, result: result.tree};
     };
 

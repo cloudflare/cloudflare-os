@@ -28,8 +28,8 @@ import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
   Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
-  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
+  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
@@ -479,21 +479,21 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Runs a command in the worktree mountWorktree() kept, as a container would, in whichever
-   * execution is running now: snapshots it, fetches the snapshot's tree, and submits the tree
-   * the command left, which holds only `path`.
+   * Runs a command in the worktree mountWorktree() kept, as a container would, for the execution
+   * whose session `queue` belongs to: snapshots it, fetches the snapshot's tree, and submits the
+   * tree the command left, which holds only `path`.
    */
-  async runCommand(path: string, text: string): Promise<string> {
+  async runCommand(queue: RpcStub<ObservationAuthorizer>, path: string, text: string): Promise<string> {
     using replicator = this.ctx.storage.kv.get<RpcStub<WorktreeReplicator>>("mounted-worktree");
     if (!replicator) throw new Error("No worktree is mounted");
-    const snapshot = await replicator.snapshot();
+    const snapshot = await replicator.snapshot(queue);
     await fetchPack(replicator, snapshot.tree);
     const blob = {type: 3, payload: new TextEncoder().encode(text)};
     const blobId = await gitObjectId("blob", blob.payload);
     const tree = {type: 2, payload: concat([new TextEncoder().encode(`100644 ${path}\0`), hexBytes(blobId)])};
     const treeId = await gitObjectId("tree", tree.payload);
     const pack = await packBytes([blob, tree]);
-    const result = await snapshot.command.submit(treeId, new Blob([pack]).stream());
+    const result = await replicator.submit(queue, snapshot.tree, treeId, new Blob([pack]).stream());
     return result.tree === treeId ? `submitted ${path}` : `merged into ${result.tree}`;
   }
 
@@ -838,7 +838,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
   }
 
   async runCommand(path: string, text: string): Promise<string> {
-    return this.state.runCommand(path, text);
+    return this.state.runCommand(this.approvalQueue, path, text);
   }
 
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {

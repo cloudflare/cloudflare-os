@@ -1245,7 +1245,9 @@ the agent's call that passed the stub is running (the stub itself stops working 
 execution ends), and stores the persistent `WorktreeReplicator` it returns. It clones the
 worktree with native Git from a guest-local URL it invents, answering Git's requests with
 `serveGitUploadPack(request, replicator)` (`gatekeeper-kit/git-upload-pack`), and syncs around
-each command with `replicator.snapshot()` and the snapshot's `command.submit()`. The API is
+each command with `replicator.snapshot(queue)` and `replicator.submit(queue, base, tree, pack)`,
+passing the ApprovalQueue of the session through which the agent's code asked for the command.
+The API is
 `workshop-shared/src/worktree-replica.ts`, and the Git command sequence is in
 [`docs/worktree-replicas.md`](../../docs/worktree-replicas.md#a-command-from-the-containers-side).
 

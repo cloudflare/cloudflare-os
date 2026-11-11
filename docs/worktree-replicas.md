@@ -9,8 +9,9 @@ The workspace is always the source of truth. A replica syncs with it only at the
 command, and the unit of sync is a Git tree. Trees are content-addressed, so a replica's files
 match the workspace's exactly when the tree IDs match.
 
-The kernel knows the worktree, its Git history and the chat's edits, and hands out a handle for
-each command that is bound to the agent's running `executeCode` call. It knows nothing about
+The kernel knows the worktree, its Git history and the chat's edits, and ties each sync to the
+agent's running `executeCode` call through the ApprovalQueue of the gatekeeper session that call
+opened. It knows nothing about
 containers, guest paths, mount names, processes or command approvals. The container gatekeeper
 owns those, for example as `mountWorktree(worktree, mountName)` and `exec(command, options)`, with
 the mount at `/workspace/<mountName>` in the guest.
@@ -60,17 +61,14 @@ interface WorktreeState {
   tree: GitOid;  // the worktree's current files, uncommitted edits included
   head: GitOid;  // the worktree's Git head (its latest explicit commit)
 }
-interface WorktreeSnapshot extends WorktreeState {
-  command: WorktreeCommand;  // this command's handle (a stub, once received)
-}
-interface WorktreeCommand extends RpcTarget {
-  submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
-}
 interface ReplicableWorktree extends RpcTarget {  // the Worktree stub
   getReplicator(): Promise<WorktreeReplicator>;  // only during the execution that passed the stub
 }
 interface WorktreeReplicator extends RpcTarget {  // persistent
-  snapshot(): Promise<WorktreeSnapshot>;  // only during an agent's code execution
+  // Only during the queue's execution, in the worktree's chat.
+  snapshot(queue: RpcStub<ObservationAuthorizer>): Promise<WorktreeState>;  // an ApprovalQueue
+  submit(queue: RpcStub<ObservationAuthorizer>, base: GitOid, tree: GitOid,
+         pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
   gitHead(): Promise<GitOid>;             // at any time
   gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer>;  // at any time
 }
@@ -88,7 +86,10 @@ The replica keeps a private index for syncing, separate from the real one, so th
 can stay at the worktree's head. Below, `git-sync` stands for `GIT_INDEX_FILE=.git/replica-index
 git`. This is the sequence `__tests__/native/worktree-git.test.ts` runs against the kernel.
 
-1. **Snapshot.** Call `replicator.snapshot()`, which returns `{tree, head, command}`.
+`queue` below is the ApprovalQueue that `startSession()` received for the session through which
+the agent's code asked for the command.
+
+1. **Snapshot.** Call `replicator.snapshot(queue)`, which returns `{tree, head}`.
    - If `head` changed, fetch it: `git fetch origin`.
    - Compute the tree of the files as they actually are: `git-sync add -A`, then
      `actual=$(git-sync write-tree)`. Don't rely on the tree you last synced: a command cut off
@@ -113,12 +114,14 @@ git`. This is the sequence `__tests__/native/worktree-git.test.ts` runs against 
      git rev-list --objects <new> ^<tree> | git pack-objects --stdout
      ```
 
-     and call `command.submit(new, pack)`.
+     and call `replicator.submit(queue, tree, new, pack)`, with the snapshot's `tree` as the base.
    - The result is the worktree's new state. If its tree differs from `new`, the workspace merged
      in concurrent edits: check the result out as in step 1.
 
 Two commands in one `executeCode` call (format, then lint) need nothing extra: the second
-snapshot's tree equals the first submission's result, so step 1 transfers nothing.
+snapshot's tree equals the first submission's result, so step 1 transfers nothing. A replica that
+submits again without a snapshot in between names the tree its files are at as the base: the
+previous submission's result if it checked that out, or else the tree it submitted.
 
 **One command at a time per checkout**, from `snapshot()` through the checkout after `submit()`.
 Otherwise one command's snapshot checkout can overwrite files another command is still writing,
@@ -129,14 +132,16 @@ command runs, its execution is gone and its edits can no longer be submitted. St
 everything it started, rather than let it keep writing files. The next command's step 1 restores
 the files.
 
-Dispose of `command` when done with it, as with any stub.
-
 ## What the kernel does
 
 ### `snapshot()`
 
-- **Requires a running execution.** It fails unless an agent's `executeCode` call is running in
-  the worktree's chat.
+- **Requires the queue's execution to be running** in the worktree's chat, as `submit()` does.
+  The queue comes from a gatekeeper session the agent's `executeCode` call opened, and names that
+  call; an ApprovalQueue from any other session (a user's, a hook's) has no execution. Taking the
+  queue, rather than serving whichever execution is running, keeps a gatekeeper called from one
+  chat from syncing into another chat's execution, and a command whose execution crashed from
+  landing in the one that replaced it.
 - **Writes a tree** of the worktree's current files: the chat pin's base commit (the accepted
   commit, or the last re-root) plus the chat's pending edits plus the running step's buffered
   edits, which is what the Worktree binding's `readFile()` sees. Only changed directories get new
@@ -146,42 +151,50 @@ Dispose of `command` when done with it, as with any stub.
   built on.
 - **Remembers the tree in memory** for the execution. Only trees handed out this way can be
   fetched by ID, since the Git cache holds other worktrees' objects too.
-- **Returns a handle** bound to the execution, with the snapshot's tree as the base of its
-  submission.
+
+The kernel can't yet unwrap a stub of its own ApprovalQueue that comes back to it, so it
+identifies the queue by asking it to claim a fresh random token, which only a real queue of the
+same workspace can record. A gatekeeper's imitation of a queue claims nothing, and is refused.
 
 ### `submit()`
 
-The handle lives in memory. It stops working when its execution ends, and a workspace restart
-breaks it outright. That fences out an abandoned command: without it, a command left running
-across a restart could submit against the resumed execution, whose first snapshot usually has the
-same tree ID, because the restart rolled the edits back. Each call, retries included, checks that
-the execution is still running.
+`submit()` checks the queue as `snapshot()` does, on every call. The queue's stub breaks when its
+session's connection drops or the workspace restarts, and its execution ends with the step. That
+fences out an abandoned command: without it, a command left running across a restart could
+submit against the resumed execution, whose first snapshot usually has the same tree ID, because
+the restart rolled the edits back. A lost reply can't be retried with the same queue for the same
+reason, so submissions need no deduplication.
 
-A handle accepts one submission. Calling `submit()` again with the same tree (after a lost reply)
-returns the first result without merging twice; an identical retry of a merge would otherwise
-nest its conflict markers. A different tree is refused. A submission that failed installed
-nothing, so it may be retried.
+**The base.** A submission names `base`, the tree its replica's files had before the command.
+That must be a tree the execution already merged: one `snapshot()` or `submit()` returned for the
+worktree during it, or one submitted to it. The execution remembers these in memory, so trees from
+an earlier execution, whose step may have been lost, are refused. Then everything between `base`
+and the submitted tree is new to the worktree, and `base` is exactly the merge base. A replica
+that names an older merged tree than its files had would merge the later changes in again: a
+clean merge absorbs them, but a conflicted one nests its markers. A submission that failed
+installed nothing.
 
 A worktree's submissions run one at a time. Each one:
 
 1. **Ingests the pack** into the Git cache. Files of any size are accepted: one over 1 MiB is
    streamed into storage in chunks rather than held whole. A delta must be against an object of
    the same pack (no thin packs).
-2. **Checks the submitted tree.** It diffs the snapshot's tree against the submitted one,
+2. **Checks the submitted tree.** It diffs the base tree against the submitted one,
    descending only into subtrees whose IDs differ. Every object at a changed path must have come
-   in the pack, or be reachable from the snapshot's tree (for example a file the command moved).
+   in the pack, or be reachable from the base tree (for example a file the command moved).
    The Git cache holds other worktrees' objects too, so a tree naming one, or a delta against
    one, is refused: it would hand the submitter that object's content. Each submitted tree must be canonical, as Git would write
    it, which rejects invalid names such as `..`. A `.git` entry is refused, and so is a changed
    symlink or submodule, as the file tools refuse them.
-3. **Merges.** If the worktree hasn't changed since the snapshot, the result is the submitted
+3. **Merges.** If the worktree's files are still the base tree, the result is the submitted
    tree. Otherwise it is a three-way merge on just the paths both sides changed, with the
-   snapshot's tree as the base, the worktree's current files as one side and the submitted files
+   base tree as the merge base, the worktree's current files as one side and the submitted files
    as the other. Concurrent edits can only come from the same execution: user edits are refused
    while an agent turn runs, and tool calls run one at a time. So they are the agent's code
    writing through the Worktree binding while the command ran, or two commands running in
    parallel.
-   - Conflicting hunks get diff3-style conflict markers. A file deleted on one side and changed
+   - Conflicting hunks get diff3-style conflict markers, labeled `workspace`, `base` and
+     `command`. A file deleted on one side and changed
      on the other keeps the change, even if the change was only to its mode.
    - A binary file changed on both sides keeps the command's bytes, unless the command deleted
      it, even if the command changed only its mode.
@@ -221,8 +234,8 @@ A chat pin has two commits (`ChatGadgetPinState`):
   review; keeping it means the user reviews everything the chat changed, the command's edits
   included, as a diff against the accepted commit.
 
-The re-root absorbs the step's earlier edits to the worktree, since the snapshot already
-included them. Edits later in the step build on the new base. Several submissions in one step
+The re-root absorbs the step's earlier edits to the worktree, since the base already included
+them, or the merge did. Edits later in the step build on the new base. Several submissions in one step
 chain their hidden commits, and only the last is declared. The step's "changes" message declares
 the re-root as a pin, which replay applies before the message's change, and the barrier bumps the
 chat's code-base generation so that clients rebuild from the log. The re-root also forgets which
@@ -253,8 +266,8 @@ gatekeeper calls `getReplicator()` when the stub is passed in, and stores the
 `WorktreeReplicator` it returns.
 
 The replicator is a persistent stub, which keeps working until the worktree is deleted (as it is
-with its chat). `gitHead()` and `gitPull()` work at any time, and `snapshot()`
-serves whichever execution is running in the chat at the time. So passing a Worktree stub hands
+with its chat). `gitHead()` and `gitPull()` work at any time, and `snapshot()` and `submit()`
+serve the execution of the queue they are given, while it runs in the chat. So passing a Worktree stub hands
 lasting access to that one worktree: a gatekeeper can mount in one turn and run commands in
 later turns, across workspace restarts. Deleting the worktree or its chat ends access (a fetch
 already streaming finishes). The replicator is scoped to its worktree by the kernel, so it
@@ -363,7 +376,7 @@ index stay at the head.
 ## Limitations
 
 - **No background commands.** A command must run within one `executeCode` call, from
-  `snapshot()` to `submit()`.
+  `snapshot()` to `submit()`, with the queue of a session that call opened.
 - **After a command changes files,** the rest of the step can't use the file tools or run
   `executeCode` again; the agent continues in its next step.
 - **Symlinks and submodules** can't be changed by a command, and `.git` entries can't be

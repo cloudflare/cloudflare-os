@@ -1,25 +1,26 @@
 // The kernel side of worktree replicas (workshop-shared/worktree-replica.ts): snapshots of a
-// worktree's current files as Git trees, and the command handles that submit a replica's tree
-// back. A submission becomes part of the running execution's step as a re-root of the worktree's
+// worktree's current files as Git trees, and submissions of a replica's tree back. A submission becomes part of the running execution's step as a re-root of the worktree's
 // chat pin (WorktreeTurnAccess.reRoot), at a hidden commit of the submitted tree, three-way
-// merged with whatever the execution changed in the worktree since the snapshot. So it is saved
-// with the step's transcript, or lost with it.
+// merged with whatever the execution changed in the worktree since the submission's base. So it is
+// saved with the step's transcript, or lost with it.
 //
 // One WorktreeReplicas serves one code execution (see OverseerImpl.executeCodeMode), and keeps
-// everything in memory: the trees the execution handed out (the only trees gitPull serves by
-// ID), the paths its submissions merged with conflicts (named in the executeCode result), and
+// everything in memory: the trees the execution handed out or was submitted, which are the
+// worktree's state at some point in it (the only trees gitPull serves by ID, and the only bases a
+// submission may name), the paths its submissions merged with conflicts (named in the executeCode result), and
 // each worktree's queue of submissions. A snapshot tree is stored like any other Git object and
 // nothing else records it; one no submission builds on is garbage for a future collection.
 //
 // A gatekeeper reaches these through a WorktreeReplicatorImpl, which outlives executions: it is
-// restored from a persistent stub, and serves whichever execution is running in the chat.
+// restored from a persistent stub, and serves the execution of the ApprovalQueue it is passed,
+// while that execution runs in the worktree's chat.
 
-import { RpcTarget } from "cloudflare:workers";
+import { RpcTarget, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
-import type { GitOid, GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitOid, GitPullTransfer, ObservationAuthorizer } from "@gadgets/workshop-shared/gatekeeper";
 import type {
-  WorktreeCommand, WorktreeGitPullHints, WorktreeReplicator, WorktreeSnapshot, WorktreeState,
+  WorktreeGitPullHints, WorktreeReplicator, WorktreeState,
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
@@ -50,7 +51,10 @@ export class WorktreeReplicas {
   constructor(private host: WorktreeSessionHost, private turn: WorktreeTurnAccess,
               private isLive: () => boolean, private author: AiChatAuthorInfo) {}
 
-  /** The trees handed out for the worktree, which gitPull serves by ID. */
+  /**
+   * The trees handed out for the worktree or submitted to it, which gitPull serves by ID and
+   * submissions may name as their base: each was the worktree's state, or merged into it.
+   */
   fetchableTrees(worktreeId: WorkpieceId): ReadonlySet<GitOid> {
     return this.#trees.get(worktreeId) ?? new Set();
   }
@@ -63,15 +67,14 @@ export class WorktreeReplicas {
   }
 
   /** `WorktreeReplicator.snapshot()`. */
-  async snapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot> {
+  async snapshot(worktreeId: WorkpieceId): Promise<WorktreeState> {
     this.requireLive();
     let { tree } = await this.#currentTree(worktreeId);
     this.requireLive();
-    return { ...this.#state(worktreeId, tree),
-             command: new WorktreeCommandImpl(this, worktreeId, tree) };
+    return this.#state(worktreeId, tree);
   }
 
-  /** `WorktreeCommand.submit()` for a snapshot of `from`, run after the worktree's earlier ones. */
+  /** `WorktreeReplicator.submit()`, run after the worktree's earlier submissions. */
   submit(worktreeId: WorkpieceId, from: GitOid, tree: GitOid, pack: ReadableStream<Uint8Array>)
       : Promise<WorktreeState> {
     let result = (this.#queues.get(worktreeId) ?? Promise.resolve()).catch(() => {})
@@ -84,6 +87,13 @@ export class WorktreeReplicas {
                 pack: ReadableStream<Uint8Array>): Promise<WorktreeState> {
     validateGitOid(tree);
     this.requireLive();
+    // Checked once the earlier submissions are in, so that a submission may build on the tree
+    // of one still in flight.
+    if (!this.fetchableTrees(worktreeId).has(from)) {
+      await pack.cancel();
+      throw new Error("A submission's base must be a tree that snapshot() or submit() returned " +
+          "for the worktree during this code execution, or one submitted to it.");
+    }
     let packed = new Set(await this.host.gitCache.consumePackFromGatekeeper(null, pack, true));
     this.requireLive();
     let submitted = await this.#diff(from, tree, packed);
@@ -106,6 +116,7 @@ export class WorktreeReplicas {
         continue;
       }
       if (commit !== undefined) this.turn.reRoot(worktreeId, commit);
+      this.#trees.get(worktreeId)!.add(tree);
       if (result.conflicts.length > 0) {
         let paths = this.conflicts.get(worktreeId) ?? new Set();
         for (let path of result.conflicts) paths.add(path);
@@ -174,7 +185,7 @@ export class WorktreeReplicas {
       texts.push({ path, mode: mode! });
     }
     let merged = threeWayMerge(sides[0], sides[1], sides[2],
-                               { base: "snapshot", ours: "workspace", theirs: "command" });
+                               { base: "base", ours: "workspace", theirs: "command" });
     for (let { path, mode } of texts) {
       let text = merged.files.get(path);
       let blob = text === undefined ? undefined
@@ -226,7 +237,7 @@ export class WorktreeReplicas {
     let require = async (oid: GitOid) => {
       if (packed?.has(oid) || (await (reachable ??= this.#treeObjects(a))).has(oid)) return;
       throw new Error(
-          `The submitted tree refers to ${oid}, which is neither in its pack nor in the snapshot.`);
+          `The submitted tree refers to ${oid}, which is neither in its pack nor in its base.`);
     };
     let entries = async (oid: GitOid | undefined, referencedBy: GitOid | undefined,
                          checked: boolean) => {
@@ -271,7 +282,7 @@ export class WorktreeReplicas {
         if (submitted && change.to !== undefined) {
           await require(change.to.oid);
           // A stored blob's type is checked without reading it (blobSize throws for another
-          // type); the rest, from the snapshot, are pulled together below.
+          // type); the rest, from the base, are pulled together below.
           if (cache.blobSize(change.to.oid) === undefined) missing.add(change.to.oid);
         }
         changes.set(path, change);
@@ -321,7 +332,9 @@ function fileEntry({ mode, oid }: DiffEntry): FileEntry {
  * deleted. Structurally satisfied by OverseerImpl.
  */
 export interface WorktreeReplicatorHost {
-  worktreeSnapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot>;
+  /** The replica state of `queue`'s execution, if it is running in the worktree's chat. */
+  worktreeReplicas(worktreeId: WorkpieceId, queue: RpcStub<ObservationAuthorizer>)
+      : Promise<WorktreeReplicas>;
   worktreeGitHead(worktreeId: WorkpieceId): GitOid;
   worktreeGitPull(worktreeId: WorkpieceId, oids: GitOid[],
                   hints: WorktreeGitPullHints): Promise<GitPullTransfer>;
@@ -337,8 +350,20 @@ export class WorktreeReplicatorImpl extends RpcTarget implements WorktreeReplica
     super();
   }
 
-  async snapshot(): Promise<WorktreeSnapshot> {
-    return this.host.worktreeSnapshot(this.worktreeId);
+  async snapshot(queue: RpcStub<ObservationAuthorizer>): Promise<WorktreeState> {
+    return (await this.host.worktreeReplicas(this.worktreeId, queue)).snapshot(this.worktreeId);
+  }
+
+  async submit(queue: RpcStub<ObservationAuthorizer>, base: GitOid, tree: GitOid,
+               pack: ReadableStream<Uint8Array>): Promise<WorktreeState> {
+    let replicas;
+    try {
+      replicas = await this.host.worktreeReplicas(this.worktreeId, queue);
+    } catch (error) {
+      await pack.cancel();
+      throw error;
+    }
+    return replicas.submit(this.worktreeId, base, tree, pack);
   }
 
   async gitHead(): Promise<GitOid> {
@@ -347,38 +372,5 @@ export class WorktreeReplicatorImpl extends RpcTarget implements WorktreeReplica
 
   async gitPull(oids: GitOid[], hints: WorktreeGitPullHints): Promise<GitPullTransfer> {
     return this.host.worktreeGitPull(this.worktreeId, oids, hints);
-  }
-}
-
-/** `WorktreeCommand`: one snapshot's handle; see the interface doc. */
-@validateRpc()
-class WorktreeCommandImpl extends RpcTarget implements WorktreeCommand {
-  #submission?: { tree: GitOid, result: Promise<WorktreeState> };
-
-  constructor(private replicas: WorktreeReplicas, private worktreeId: WorkpieceId,
-              private from: GitOid) {
-    super();
-  }
-
-  async submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState> {
-    this.replicas.requireLive();
-    let submission = this.#submission;
-    if (submission !== undefined) {
-      await pack.cancel();
-      if (submission.tree !== tree) {
-        throw new Error("This command's result was already submitted. Take a new snapshot " +
-            "for another command.");
-      }
-      return await submission.result;
-    }
-    submission = { tree, result: this.replicas.submit(this.worktreeId, this.from, tree, pack) };
-    this.#submission = submission;
-    try {
-      return await submission.result;
-    } catch (error) {
-      // A failed submission installed nothing, so the handle may be used again.
-      if (this.#submission === submission) this.#submission = undefined;
-      throw error;
-    }
   }
 }

@@ -15,21 +15,21 @@
 //    execution that passed it, but the replicator is persistent, so the mount can outlast the
 //    agent turn and Durable Object restarts. It clones the worktree with `gitPull()`, which native
 //    Git reaches through gatekeeper-kit's `serveGitUploadPack()`.
-// 2. Before running a command, it calls `snapshot()`. The workspace writes a Git tree of the
-//    worktree's current files, including uncommitted edits, and returns its ID along with a
-//    handle for this command. If the replica's files already have that tree, they are in sync.
+// 2. Before running a command, it calls `snapshot()` with the ApprovalQueue of the gatekeeper
+//    session the agent's code called it through, which ties the command to that code execution.
+//    The workspace writes a Git tree of the worktree's current files, including uncommitted
+//    edits, and returns its ID. If the replica's files already have that tree, they are in sync.
 //    Otherwise the gatekeeper fetches the tree with `gitPull()` and updates its files to it.
-// 3. After the command, it writes a tree of its files and submits it through the handle. The tree
-//    becomes the worktree's content in the chat, three-way merged with any edits made in the
-//    workspace meanwhile. If the resulting tree differs from the submitted one, the gatekeeper
-//    updates its files to it.
+// 3. After the command, it writes a tree of its files and submits it with `submit()`, along with
+//    the same queue and the tree it started from. The tree becomes the worktree's content in the
+//    chat, three-way merged with any edits made in the workspace meanwhile. If the resulting tree
+//    differs from the submitted one, the gatekeeper updates its files to it.
 //
-// `snapshot()` works only while an agent's code execution (an `executeCode` call) is running in
-// the worktree's chat, and the handle only until that execution ends. The submitted edits become
-// part of that execution's step: they are saved together with the step's transcript, and are lost
-// with it if the step never completes (for example because the workspace restarted mid-command),
-// so that an agent never resumes on top of a half-finished command. Background commands are not
-// supported.
+// `snapshot()` and `submit()` work only while the queue's execution (an `executeCode` call) is
+// running in the worktree's chat. The submitted edits become part of that execution's step: they
+// are saved together with the step's transcript, and are lost with it if the step never
+// completes (for example because the workspace restarted mid-command), so that an agent never
+// resumes on top of a half-finished command. Background commands are not supported.
 //
 // Snapshot trees are hidden: neither the user nor the agent sees them. Since Git objects are
 // content-addressed, two states match exactly when their tree IDs do.
@@ -37,8 +37,8 @@
 // See docs/worktree-replicas.md for more detail, including what a container implementation must
 // do to keep its replica correct.
 
-import type { RpcTarget } from "cloudflare:workers";
-import type { GitOid, GitPullHints, GitPullTransfer } from "./gatekeeper";
+import type { RpcStub, RpcTarget } from "cloudflare:workers";
+import type { GitOid, ObservationAuthorizer, GitPullHints, GitPullTransfer } from "./gatekeeper";
 
 /** The worktree's state: its current files, and its Git head. */
 export interface WorktreeState {
@@ -58,50 +58,6 @@ export interface WorktreeState {
    * workspace would.
    */
   head: GitOid;
-}
-
-/** The worktree's state before a command, from `WorktreeReplicator.snapshot()`. */
-export interface WorktreeSnapshot extends WorktreeState {
-  /** The handle through which this command's result is submitted (a stub, once received). */
-  command: WorktreeCommand;
-}
-
-/**
- * One command's handle, from `WorktreeReplicator.snapshot()`. It lives in memory, bound to the
- * agent's code execution that was running when the snapshot was taken: it stops working when that
- * execution ends, and a workspace restart breaks it. If that happens while a command runs, stop
- * the command and everything it started, since its edits can no longer be submitted; the next
- * snapshot's checkout restores the files.
- *
- * Run one command at a time per checkout, from `snapshot()` through updating the files after
- * `submit()`: a snapshot's checkout would otherwise overwrite files another command is still
- * writing. Commands that run in parallel need separate checkouts.
- */
-export interface WorktreeCommand extends RpcTarget {
-  /**
-   * Send the replica's files back to the workspace after the command, as the Git tree `tree`.
-   * `tree` becomes the worktree's content in the chat, as a change made by the running execution,
-   * and the user reviews it like the agent's other edits. If the worktree also changed since the
-   * snapshot (e.g. the agent's code wrote files while the command ran), the two are three-way
-   * merged with the snapshot's tree as the base. Conflicting hunks get diff3-style conflict
-   * markers, a file deleted on one side and changed on the other keeps the change, and a binary
-   * file changed on both sides keeps the command's version; the agent is told which files
-   * conflicted. Returns the resulting state. Its tree equals `tree` unless there were such
-   * concurrent edits, in which case update the replica's files to it.
-   *
-   * `pack` is a Git packfile holding every object reachable from `tree` that isn't reachable
-   * from the snapshot's tree, and must not rely on objects outside itself (no thin packs); see
-   * docs/worktree-replicas.md for the Git command. Files of any size are accepted.
-   *
-   * File modes are kept. The call fails if a changed entry is a symlink or a submodule, if
-   * `tree` contains a `.git` entry, or if merging would make a path both a file and a directory;
-   * in that case, take a new snapshot and run the command again.
-   *
-   * A handle accepts one submission. Calling again with the same `tree` (e.g. after a lost reply)
-   * returns the first result without applying anything twice; a different `tree` is refused. A
-   * submission that failed applied nothing, and may be retried.
-   */
-  submit(tree: GitOid, pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
 }
 
 /**
@@ -127,18 +83,57 @@ export interface ReplicableWorktree extends RpcTarget {
  */
 export interface WorktreeReplicator extends RpcTarget {
   /**
-   * Write a Git tree of the worktree's current files and return it, with a handle for submitting
-   * the command's result (see `WorktreeSnapshot`). Call this before each command, and update the
-   * replica's files to the snapshot unless they already have its tree. If `head` changed, fetch
-   * it too.
+   * Write a Git tree of the worktree's current files and return it. Call this before each
+   * command, and update the replica's files to it unless they already have its tree. If `head`
+   * changed, fetch it too.
    *
-   * Fails unless an agent's code execution is running in the worktree's chat.
+   * `queue` is the ApprovalQueue that `Gatekeeper.startSession()` received for the session
+   * through which the agent's code asked for the command. The call fails unless that session came
+   * from the code execution now running in the worktree's chat. (It is typed by the queue's base
+   * interface because workers-types can't map ApprovalQueue's generic `bindHook()` through a
+   * stub: a stub of the full queue wouldn't be assignable to it.)
    */
-  snapshot(): Promise<WorktreeSnapshot>;
+  snapshot(queue: RpcStub<ObservationAuthorizer>): Promise<WorktreeState>;
+
+  /**
+   * Send the replica's files back to the workspace after a command, as the Git tree `tree`.
+   * `tree` becomes the worktree's content in the chat, as a change made by the queue's
+   * execution, and the user reviews it like the agent's other edits. `queue` is as for
+   * `snapshot()`, and should be the same one.
+   *
+   * `base` is the tree the replica's files had before the command: a tree that `snapshot()` or
+   * `submit()` returned during the queue's execution, or one this execution submitted (for a
+   * replica that submits again before updating its files to a merged result). Other trees are
+   * refused. If the worktree also changed since `base` (e.g. the agent's code wrote files while
+   * the command ran), the two are three-way merged with `base` as the merge base, so name the
+   * tree the files were actually at: an older one would merge its later changes in again.
+   * Conflicting hunks get diff3-style conflict markers, a file deleted on one side and changed on
+   * the other keeps the change, and a binary file changed on both sides keeps the command's
+   * version; the agent is told which files conflicted. Returns the resulting state. Its tree
+   * equals `tree` unless there were such concurrent edits, in which case update the replica's
+   * files to it.
+   *
+   * `pack` is a Git packfile holding every object reachable from `tree` that isn't reachable
+   * from `base`, and must not rely on objects outside itself (no thin packs); see
+   * docs/worktree-replicas.md for the Git command. Files of any size are accepted.
+   *
+   * File modes are kept. The call fails if a changed entry is a symlink or a submodule, if
+   * `tree` contains a `.git` entry, or if merging would make a path both a file and a directory;
+   * in that case, take a new snapshot and run the command again. A submission that failed
+   * applied nothing. Submissions to a worktree apply in the order they were made.
+   *
+   * Run one command at a time per checkout, from `snapshot()` through updating the files after
+   * `submit()`: a snapshot's checkout would otherwise overwrite files another command is still
+   * writing. Commands that run in parallel need separate checkouts. If the execution ends while
+   * a command runs, stop the command and everything it started, since its edits can no longer be
+   * submitted; the next snapshot's checkout restores the files.
+   */
+  submit(queue: RpcStub<ObservationAuthorizer>, base: GitOid, tree: GitOid,
+         pack: ReadableStream<Uint8Array>): Promise<WorktreeState>;
 
   /**
    * The worktree's Git head (its latest explicit commit), which a clone checks out. Like
-   * `gitPull()`, this works at any time.
+   * `gitPull()`, this works at any time, with no queue.
    */
   gitHead(): Promise<GitOid>;
 
@@ -162,8 +157,8 @@ export interface WorktreeReplicator extends RpcTarget {
    * later fetches of older history be served whole by the connected repository. The transfer's
    * `shallowInfo()` reports the boundary the client got, as Git's `shallow-info` does.
    *
-   * The trees returned by `snapshot()` and `WorktreeCommand.submit()` can be fetched by ID during
-   * the execution that received them; no other tree can. Fetch such trees on their own, from a
+   * The trees returned by `snapshot()` and `submit()` can be fetched by ID during the execution
+   * that received them; no other tree can. Fetch such trees on their own, from a
    * replica that holds some commit of the head's history (e.g. after the clone), passing that
    * commit in `haves`: the pack leaves out what its tree already has.
    *

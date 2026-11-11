@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {env} from "cloudflare:workers";
+import {env, RpcTarget} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import type {OverseerDurableObject} from "./test-worker";
 import {abortAllDurableObjects} from "cloudflare:test";
@@ -281,9 +281,11 @@ describe("mounted worktree Git fetches", () => {
 // Worktree binding as the loopback resolves it, and its replicator, as a gatekeeper the agent's
 // code passed the binding to would.
 
-type Command = Awaited<ReturnType<Replicator["snapshot"]>>["command"];
+type State = {tree: string; head: string};
+type Queue = object;
 type Replicator = {
-  snapshot(): Promise<{tree: string; head: string; command: {submit(tree: string, pack: ReadableStream<Uint8Array>): Promise<{tree: string; head: string}>}}>;
+  snapshot(queue: Queue): Promise<State>;
+  submit(queue: Queue, base: string, tree: string, pack: ReadableStream<Uint8Array>): Promise<State>;
   gitHead(): Promise<string>;
   gitPull(oids: string[], hints: WorktreeGitPullHints): Promise<GitPullTransfer & Disposable>;
 };
@@ -292,7 +294,7 @@ type Binding = {
   writeFile(path: string, text: string): Promise<void>;
   getReplicator(): Promise<Replicator>;
 };
-type Code = (repo: Binding, replicator: Replicator, executionId: string) => Promise<string | void>;
+type Code = (repo: Binding, replicator: Replicator, queue: Queue, executionId: string) => Promise<string | void>;
 const BASE = {"a.txt": "one\ntwo\nthree\n", "b.txt": "bee\n", "dir/c.txt": "sea\n"};
 const enc = (value: string) => new TextEncoder().encode(value);
 
@@ -309,7 +311,12 @@ async function withCommands(test: (impl: Impl, id: number, base: string) => Prom
   });
 }
 
-// Runs each executeCode call's code as the script `code[name]`, given the worktree's binding.
+// The ApprovalQueue a gatekeeper session opened by `executionId`'s code receives.
+const queueFor = (impl: Impl, executionId: string, chatId = 1) => impl.openGatekeeperSession(
+  7, {startSession: (queue: unknown) => queue} as never, {from: "agent", chatId}, executionId) as Promise<Queue>;
+
+// Runs each executeCode call's code as the script `code[name]`, given the worktree's binding, its
+// replicator, and the queue of a gatekeeper session the code opened.
 function runCode(impl: Impl, id: number, code: Record<string, Code>) {
   const getEnv = impl.getEnvForAgent.bind(impl);
   let executionId!: string;
@@ -327,7 +334,7 @@ function runCode(impl: Impl, id: number, code: Record<string, Code>) {
         // boundary as it would on its way to a gatekeeper.
         const overseer = testEnv.TEST_OVERSEER.get(impl.ctx.id) as unknown as {startGatekeeperSession: Impl["startGatekeeperSession"]};
         const repo = await overseer.startGatekeeperSession({type: "worktree", id, executionId: execution}, {from: "agent", chatId: 1});
-        output = await code[worker.modules["agent.js"]](repo, await repo.getReplicator(), execution);
+        output = await code[worker.modules["agent.js"]](repo, await repo.getReplicator(), await queueFor(impl, execution), execution);
       } finally {
         await impl.deliverCodeModeTrace(execution, {logs: output ? [{message: [output]}] : []} as never);
       }
@@ -422,20 +429,20 @@ const pins = (impl: Impl) => impl.storage.chatMeta.get(1)!.codeBase?.pins ?? [];
 describe("worktree commands", () => {
   it("fail outside an execution", () => withCommands(async (impl, id) => {
     using worktree = await mounted(impl, id);
-    expect(await worktree.snapshot().then(() => "", (error: Error) => error.message))
+    expect(await worktree.snapshot(await queueFor(impl, "ended")).then(() => "", (error: Error) => error.message))
       .toMatch("only while the agent's code runs in its chat");
   }));
 
   it("submit a command's result into the step, which saves it with its transcript", () => withCommands(async (impl, id, base) => {
     let snapshot!: Awaited<ReturnType<Replicator["snapshot"]>>, result!: string, returned: unknown;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
+      command: async (repo, replicator, queue) => {
         await repo.writeFile("a.txt", "one\ntwo\nthree\nbuffered\n");
-        snapshot = await replicator.snapshot();
+        snapshot = await replicator.snapshot(queue);
         const command = await commandResult(impl, snapshot.tree,
           {"b.txt": "formatted\n", "new/d.txt": "dee\n", "dir/c.txt": {mode: "100755", text: "sea\n"}});
         result = command.tree;
-        returned = await snapshot.command.submit(command.tree, command.pack());
+        returned = await replicator.submit(queue, snapshot.tree, command.tree, command.pack());
         return `${await repo.readFile("a.txt")}|${await repo.readFile("b.txt")}`;
       },
     });
@@ -461,9 +468,9 @@ describe("worktree commands", () => {
     let tree!: string;
     let during: Awaited<ReturnType<typeof transfer>> = [];
     runCode(impl, id, {
-      command: async (repo, replicator) => {
+      command: async (repo, replicator, queue) => {
         await repo.writeFile("b.txt", "edited\n");
-        tree = (await replicator.snapshot()).tree;
+        tree = (await replicator.snapshot(queue)).tree;
         during = await transfer(replicator, tree, [base]);
       },
     });
@@ -479,15 +486,15 @@ describe("worktree commands", () => {
     let first!: string, refused!: string;
     runCode(impl, id, {
       // As a gatekeeper would, it stores the replicator, which it can only if it's persistent.
-      mount: async (_, replicator, execution) => { impl.ctx.storage.kv.put("kept", replicator); first = execution; },
-      command: async () => {
+      mount: async (_, replicator, _queue, execution) => { impl.ctx.storage.kv.put("kept", replicator); first = execution; },
+      command: async (_, _replicator, queue) => {
         const kept = impl.ctx.storage.kv.get<Replicator>("kept")!;
         // As a gatekeeper that stored the earlier execution's binding would: it no longer resolves.
         refused = await (async () => impl.startGatekeeperSession({type: "worktree", id, executionId: first},
           {from: "agent", chatId: 1}))().then(() => "", (error: Error) => error.message);
-        const snapshot = await kept.snapshot();
+        const snapshot = await kept.snapshot(queue);
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "submitted\n"});
-        await snapshot.command.submit(command.tree, command.pack());
+        await kept.submit(queue, snapshot.tree, command.tree, command.pack());
       },
     });
     await turn(impl, [[execute("mount")], [execute("command")]]);
@@ -497,34 +504,105 @@ describe("worktree commands", () => {
       .not.toEqual([]);
   }));
 
-  it("returns the first result on a retry, even after a conflicting merge, and refuses another", () => withCommands(async (impl, id) => {
-    let results: unknown[] = [];
+  it("merges a concurrent edit of the same lines with conflict markers", () => withCommands(async (impl, id) => {
+    let result!: State, text!: string;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         await repo.writeFile("a.txt", "one\nworkspace\nthree\n");
         const command = await commandResult(impl, snapshot.tree, {"a.txt": "one\ncommand\nthree\n"});
-        const first = await snapshot.command.submit(command.tree, command.pack());
-        const again = await snapshot.command.submit(command.tree, command.pack());
-        const other = await commandResult(impl, snapshot.tree, {"b.txt": "other\n"});
-        results = [first, again, await snapshot.command.submit(other.tree, other.pack())
-          .catch((error: Error) => error.message), await repo.readFile("a.txt")];
+        result = await replicator.submit(queue, snapshot.tree, command.tree, command.pack());
+        text = await repo.readFile("a.txt");
         return "ran";
       },
     });
     const [output] = await turn(impl, [[execute("command")]]);
-    expect(results[1]).toEqual(results[0]);
-    expect(results[2]).toMatch(/already submitted/);
-    expect(results[3]).toBe("one\n<<<<<<< workspace\nworkspace\n||||||| snapshot\ntwo\n=======\ncommand\n>>>>>>> command\nthree\n");
-    expect(await treeFiles(impl, (results[0] as {tree: string}).tree)).toMatchObject({"a.txt": results[3]});
+    expect(text).toBe("one\n<<<<<<< workspace\nworkspace\n||||||| base\ntwo\n=======\ncommand\n>>>>>>> command\nthree\n");
+    expect(await treeFiles(impl, result.tree)).toMatchObject({"a.txt": text});
     expect(output).toContain("merged with concurrent edits, with conflicts in: a.txt");
     expect(output).toContain("in REPO");
   }));
 
+  it("builds a submission on an earlier one's tree, even while that one is still merging", () => withCommands(async (impl, id) => {
+    let results!: State[], second!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
+        // The agent's code writes meanwhile, so the first result is a merge, not the tree
+        // submitted; the replica submits again from the files it has.
+        await repo.writeFile("dir/c.txt", "written\n");
+        const one = await commandResult(impl, snapshot.tree, {"b.txt": "bee\none\n"}, true);
+        const two = await commandResult(impl, one.tree, {"a.txt": "one\ntwo\nthree\ntwo\n"}, true);
+        second = two.tree;
+        results = await Promise.all([replicator.submit(queue, snapshot.tree, one.tree, one.pack()),
+          replicator.submit(queue, one.tree, two.tree, two.pack())]);
+        // Then from the merged result, as a replica that updated its files to it would.
+        const three = await commandResult(impl, results[1].tree, {"new.txt": "new\n"});
+        results.push(await replicator.submit(queue, results[1].tree, three.tree, three.pack()));
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(results[0].tree).not.toBe(second);
+    expect(await treeFiles(impl, results[2].tree)).toEqual({"a.txt": "one\ntwo\nthree\ntwo\n", "b.txt": "bee\none\n",
+      "dir/c.txt": "written\n", "new.txt": "new\n"});
+  }));
+
+  it("refuses a base the execution didn't hand out or receive", () => withCommands(async (impl, id, base) => {
+    let earlier!: string;
+    const refused: string[] = [];
+    runCode(impl, id, {
+      snapshot: async (repo, replicator, queue) => {
+        await repo.writeFile("b.txt", "earlier\n");
+        earlier = (await replicator.snapshot(queue)).tree;
+      },
+      submit: async (repo, replicator, queue) => {
+        await repo.writeFile("b.txt", "later\n");
+        const current = (await replicator.snapshot(queue)).tree;
+        expect(current).not.toBe(earlier);
+        // The accepted commit's tree, and a tree an earlier execution handed out.
+        for (const from of [await impl.gitCache.commitTree(base), earlier]) {
+          const command = await commandResult(impl, from, {"a.txt": "stale\n"});
+          refused.push(await replicator.submit(queue, from, command.tree, command.pack()).then(() => "", (error: Error) => error.message));
+        }
+      },
+    });
+    await turn(impl, [[execute("snapshot")], [execute("submit")]]);
+    expect(refused).toEqual([expect.stringMatching(/base must be a tree/), expect.stringMatching(/base must be a tree/)]);
+    expect(await turn(impl, [[read("a.txt")]])).toEqual([BASE["a.txt"]]);
+  }));
+
+  it("refuses queues not of the running execution, including an imitation", () => withCommands(async (impl, id) => {
+    const refused: string[] = [];
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        const {tree} = await replicator.snapshot(queue);
+        const imitation = new (class extends RpcTarget {
+          // As the real queue's claim would, if it could reach the overseer's map.
+          async claimExecution() {}
+        })();
+        for (const other of [
+          await queueFor(impl, crypto.randomUUID(), 2),
+          await impl.openGatekeeperSession(7, {startSession: (q: unknown) => q} as never, {from: "user"}) as Queue,
+          imitation,
+        ]) {
+          refused.push(await replicator.snapshot(other).then(() => "", (error: Error) => error.message));
+          const command = await commandResult(impl, tree, {"b.txt": "x\n"});
+          refused.push(await replicator.submit(other, tree, command.tree, command.pack()).then(() => "", (error: Error) => error.message));
+        }
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(refused).toHaveLength(6);
+    for (const message of refused) expect(message).toMatch("only while the agent's code runs in its chat");
+    expect(await turn(impl, [[read("b.txt")]])).toEqual([BASE["b.txt"]]);
+  }));
+
   it("keeps everyone's edits across parallel submissions and a write during one", () => withCommands(async (impl, id) => {
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const [first, second] = [await replicator.snapshot(), await replicator.snapshot()];
+      command: async (repo, replicator, queue) => {
+        const [first, second] = [await replicator.snapshot(queue), await replicator.snapshot(queue)];
         expect(second.tree).toBe(first.tree);
         const one = await commandResult(impl, first.tree, {"b.txt": "bee\none\n"}, true);
         const two = await commandResult(impl, first.tree, {"a.txt": "one\ntwo\nthree\ntwo\n"}, true);
@@ -537,7 +615,7 @@ describe("worktree commands", () => {
           if (!wrote) { wrote = true; await repo.writeFile("dir/c.txt", "written\n"); }
           return tree;
         };
-        await Promise.all([first.command.submit(one.tree, one.pack()), second.command.submit(two.tree, two.pack())]);
+        await Promise.all([replicator.submit(queue, first.tree, one.tree, one.pack()), replicator.submit(queue, second.tree, two.tree, two.pack())]);
         return "ran";
       },
     });
@@ -549,15 +627,15 @@ describe("worktree commands", () => {
   it("merges modes on their own, and keeps a file replaced by a directory with a parallel edit", () => withCommands(async (impl, id) => {
     let result!: string;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshots = [await replicator.snapshot(), await replicator.snapshot(), await replicator.snapshot()];
+      command: async (repo, replicator, queue) => {
+        const snapshots = [await replicator.snapshot(queue), await replicator.snapshot(queue), await replicator.snapshot(queue)];
         const from = snapshots[0].tree;
         const results = [
           await commandResult(impl, from, {"dir/c.txt": {mode: "100755", text: "sea\n"}}, true),
           await commandResult(impl, from, {"b.txt": null, "b.txt/inner": "in\n"}, true),
           await commandResult(impl, from, {"dir/c.txt": "sea\nedited\n"}, true),
         ];
-        for (const [i, {tree, pack}] of results.entries()) result = (await snapshots[i].command.submit(tree, pack())).tree;
+        for (const [i, {tree, pack}] of results.entries()) result = (await replicator.submit(queue, snapshots[i].tree, tree, pack())).tree;
         return "ran";
       },
     });
@@ -575,15 +653,15 @@ describe("worktree commands", () => {
   ] as const)("checks a %s again when a submission re-roots the worktree during it", (_, write) => withCommands(async (impl, id) => {
     let refusal!: string;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         const {tree, pack} = await commandResult(impl, snapshot.tree, {"b.txt": null, "b.txt/inner": "in\n"}, true);
         // The command's result arrives once the write has checked its path against the old base.
         const check = impl.gitCache.assertWorktreePathWritable.bind(impl.gitCache);
         let submitted = false;
         impl.gitCache.assertWorktreePathWritable = async (...args) => {
           await check(...args);
-          if (!submitted) { submitted = true; await snapshot.command.submit(tree, pack()); }
+          if (!submitted) { submitted = true; await replicator.submit(queue, snapshot.tree, tree, pack()); }
         };
         refusal = await write(repo).then(() => "", (error: Error) => error.message);
         return "ran";
@@ -597,8 +675,8 @@ describe("worktree commands", () => {
   it("keeps a mode-only change against a deletion, as a conflict", () => withCommands(async (impl, id) => {
     let result!: string;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshots = await Promise.all([1, 2, 3, 4].map(() => replicator.snapshot()));
+      command: async (repo, replicator, queue) => {
+        const snapshots = await Promise.all([1, 2, 3, 4].map(() => replicator.snapshot(queue)));
         const from = snapshots[0].tree;
         // b.txt: the command deletes what the workspace made executable; dir/c.txt the reverse.
         const results = [
@@ -607,7 +685,7 @@ describe("worktree commands", () => {
           await commandResult(impl, from, {"dir/c.txt": null}, true),
           await commandResult(impl, from, {"dir/c.txt": {mode: "100755", text: "sea\n"}}, true),
         ];
-        for (const [i, {tree, pack}] of results.entries()) result = (await snapshots[i].command.submit(tree, pack())).tree;
+        for (const [i, {tree, pack}] of results.entries()) result = (await replicator.submit(queue, snapshots[i].tree, tree, pack())).tree;
         return "ran";
       },
     });
@@ -630,10 +708,10 @@ describe("worktree commands", () => {
     const refused: unknown[] = [];
     let moved!: string;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         const secret = (await impl.gitCache.writeBlob(enc("secret\n"))).oid;
-        const submit = (tree: string, objects: PackableObject[]) => snapshot.command.submit(tree,
+        const submit = (tree: string, objects: PackableObject[]) => replicator.submit(queue, snapshot.tree, tree,
           buildPackStream(objects.length, (async function* () { yield* objects; })())).catch((error: Error) => error.message);
         const object = (oid: string) => impl.gitCache.readLocalObject(oid)!;
         // Another worktree's tree, by its ID alone.
@@ -646,7 +724,7 @@ describe("worktree commands", () => {
         const body = concatBytes([enc("PACK"), new Uint8Array([0, 0, 0, 2, 0, 0, 0, 1, (7 << 4) | 4]),
           Uint8Array.from(secret.match(/../g)!, byte => parseInt(byte, 16)), delta]);
         const thin = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
-        refused.push(await snapshot.command.submit(other, byteStream(thin)).catch((error: Error) => error.message));
+        refused.push(await replicator.submit(queue, snapshot.tree, other, byteStream(thin)).catch((error: Error) => error.message));
         // A file moved within the snapshot needs nothing but the new trees.
         const b = parseGitTree(object(snapshot.tree).payload).find(entry => entry.name === "b.txt")!;
         const tree = await impl.gitCache.writeChangedTreeOf(snapshot.tree,
@@ -656,8 +734,8 @@ describe("worktree commands", () => {
       },
     });
     expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
-    expect(refused).toEqual([expect.stringMatching(/neither in its pack nor in the snapshot/),
-      expect.stringMatching(/neither in its pack nor in the snapshot/), expect.stringMatching(/delta base .* is unavailable/)]);
+    expect(refused).toEqual([expect.stringMatching(/neither in its pack nor in its base/),
+      expect.stringMatching(/neither in its pack nor in its base/), expect.stringMatching(/delta base .* is unavailable/)]);
     expect(await treeFiles(impl, moved)).toEqual({"a.txt": BASE["a.txt"], "dir/c.txt": "sea\n", "moved.txt": "bee\n"});
   }));
 
@@ -665,11 +743,16 @@ describe("worktree commands", () => {
     let submitting!: Promise<unknown>;
     let finish!: () => void;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "late\n"});
         const reader = command.pack().getReader();
-        submitting = snapshot.command.submit(command.tree, new ReadableStream({
+        // The code returns once the submission, past its check of the queue, reads the pack.
+        const consume = impl.gitCache.consumePackFromGatekeeper.bind(impl.gitCache);
+        let reading!: () => void;
+        const read = new Promise<void>(resolve => reading = resolve);
+        impl.gitCache.consumePackFromGatekeeper = (...args) => { reading(); return consume(...args); };
+        submitting = replicator.submit(queue, snapshot.tree, command.tree, new ReadableStream({
           async start(controller) {
             await new Promise<void>(resolve => finish = resolve);
             for (let next = await reader.read(); !next.done; next = await reader.read()) controller.enqueue(next.value);
@@ -677,6 +760,7 @@ describe("worktree commands", () => {
           },
         }));
         submitting.catch(() => {});
+        await read;
         return "ran";
       },
     });
@@ -688,28 +772,29 @@ describe("worktree commands", () => {
     expect(impl.getWorktreeRecord(id).pinBase).toBe(base);
   }));
 
-  it("refuses a handle from an earlier execution", () => withCommands(async (impl, id) => {
-    let earlier!: Command;
+  it("refuses an earlier execution's queue", () => withCommands(async (impl, id) => {
+    let earlier!: Queue;
     let refused: unknown;
     runCode(impl, id, {
-      snapshot: async (repo, replicator) => { earlier = (await replicator.snapshot()).command; },
-      submit: async (repo, replicator) => {
-        const command = await commandResult(impl, (await replicator.snapshot()).tree, {"b.txt": "x\n"});
-        refused = await earlier.submit(command.tree, command.pack()).catch((error: Error) => error.message);
+      snapshot: async (repo, replicator, queue) => { earlier = queue; },
+      submit: async (repo, replicator, queue) => {
+        const {tree} = await replicator.snapshot(queue);
+        const command = await commandResult(impl, tree, {"b.txt": "x\n"});
+        refused = await replicator.submit(earlier, tree, command.tree, command.pack()).catch((error: Error) => error.message);
       },
     });
     await turn(impl, [[execute("snapshot")], [execute("submit")]]);
-    expect(refused).toMatch(/has ended/);
+    expect(refused).toMatch("only while the agent's code runs in its chat");
     expect(pins(impl)).toEqual([]);
   }));
 
   it("is saved with its step when the turn is cancelled while the command runs", () => withCommands(async (impl, id) => {
     const abort = new AbortController();
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "cancelled\n"});
-        await snapshot.command.submit(command.tree, command.pack());
+        await replicator.submit(queue, snapshot.tree, command.tree, command.pack());
         abort.abort();
         return "ran";
       },
@@ -720,18 +805,18 @@ describe("worktree commands", () => {
     expect(await turn(impl, [[read("b.txt")]])).toEqual(["cancelled\n"]);
   }));
 
-  // (The command's handle is lost with the restart too: it was an in-memory stub into the
-  // object that restarted.)
+  // (The queue is lost with the restart too: it was an in-memory stub into the object that
+  // restarted.)
   it("is lost if the workspace restarts before the step's barrier", async () => {
     const name = crypto.randomUUID();
     await withCommands(async (impl, id) => {
       let submitted!: () => void;
       const reached = new Promise<void>(resolve => submitted = resolve);
       runCode(impl, id, {
-        command: async (repo, replicator) => {
-          const snapshot = await replicator.snapshot();
+        command: async (repo, replicator, queue) => {
+          const snapshot = await replicator.snapshot(queue);
           const result = await commandResult(impl, snapshot.tree, {"b.txt": "crashed\n"});
-          await snapshot.command.submit(result.tree, result.pack());
+          await replicator.submit(queue, snapshot.tree, result.tree, result.pack());
           submitted();
           await new Promise(() => {});
         },
@@ -751,11 +836,11 @@ describe("worktree commands", () => {
   it("refuses a file replaced by a directory against a concurrent edit of the file", () => withCommands(async (impl, id) => {
     let refused: unknown;
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         await repo.writeFile("b.txt", "edited\n");
         const command = await commandResult(impl, snapshot.tree, {"b.txt": null, "b.txt/inner": "x\n"});
-        refused = await snapshot.command.submit(command.tree, command.pack()).catch((error: Error) => error.message);
+        refused = await replicator.submit(queue, snapshot.tree, command.tree, command.pack()).catch((error: Error) => error.message);
       },
     });
     await turn(impl, [[execute("command")]]);
@@ -766,28 +851,28 @@ describe("worktree commands", () => {
   it("refuses symlinks, .git entries and missing objects", () => withCommands(async (impl, id) => {
     const refused: unknown[] = [];
     runCode(impl, id, {
-      command: async (repo, replicator) => {
-        const snapshot = await replicator.snapshot();
+      command: async (repo, replicator, queue) => {
+        const snapshot = await replicator.snapshot(queue);
         for (const command of [await commandResult(impl, snapshot.tree, {"link": {mode: "120000", text: "a.txt"}}),
           packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, ".git/config", "x\n")),
           packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, "sub/.GIT", "x\n"))]) {
-          refused.push(await snapshot.command.submit(command.tree, command.pack()).catch((error: Error) => error.message));
+          refused.push(await replicator.submit(queue, snapshot.tree, command.tree, command.pack()).catch((error: Error) => error.message));
         }
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "lost\n"});
-        refused.push(await snapshot.command.submit(command.tree, buildPackStream(0, (async function* () {})()))
+        refused.push(await replicator.submit(queue, snapshot.tree, command.tree, buildPackStream(0, (async function* () {})()))
           .catch((error: Error) => error.message));
         // A tree no Git would write, with an entry name that hides a path.
         const blob = {type: "blob" as const, payload: enc("x\n")};
         const blobId = await gitObjectOid("blob", blob.payload);
         const tree = {type: "tree" as const, payload: concatBytes([enc("100644 sub/.git/config\0"),
           Uint8Array.from(blobId.match(/../g)!, byte => parseInt(byte, 16))])};
-        refused.push(await snapshot.command.submit(await gitObjectOid("tree", tree.payload),
+        refused.push(await replicator.submit(queue, snapshot.tree, await gitObjectOid("tree", tree.payload),
           buildPackStream(2, (async function* () { yield blob; yield tree; })())).catch((error: Error) => error.message));
       },
     });
     await turn(impl, [[execute("command")]]);
     expect(refused).toEqual([expect.stringMatching(/symlinks and submodules/), expect.stringMatching(/\.git entry/),
-      expect.stringMatching(/\.git entry/), expect.stringMatching(/neither in its pack nor in the snapshot/),
+      expect.stringMatching(/\.git entry/), expect.stringMatching(/neither in its pack nor in its base/),
       expect.stringMatching(/is malformed/)]);
     expect(pins(impl)).toEqual([]);
   }));

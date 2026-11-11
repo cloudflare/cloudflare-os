@@ -48,7 +48,7 @@ import {
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
-import type { WorktreeGitPullHints, WorktreeReplicator, WorktreeSnapshot } from "@gadgets/workshop-shared/worktree-replica";
+import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
 import { worktreeGitPull } from "./worktree-git";
 import { WorktreeReplicas, WorktreeReplicatorImpl } from "./worktree-replica";
 import { GadgetExportsImpl } from "./exports-session";
@@ -6914,14 +6914,47 @@ class OverseerImpl implements AgentHooks {
         {type: "worktreeReplicator", worktreeId} satisfies OverseerRestoreParams);
   }
 
-  // WorktreeReplicator.snapshot(), for the execution running in the worktree's chat.
-  worktreeSnapshot(worktreeId: WorkpieceId): Promise<WorktreeSnapshot> {
+  // WorktreeReplicatorHost: snapshot() and submit() act for `queue`'s execution, which must be
+  // the one running in the worktree's chat. Taking the queue, rather than whichever execution is
+  // running, keeps a command from landing in another chat's execution, or in one that replaced
+  // its own after a crash.
+  async worktreeReplicas(worktreeId: WorkpieceId, queue: NativeRpcStub<ObservationAuthorizer>)
+      : Promise<WorktreeReplicas> {
+    let executionId = await this.#approvalQueueExecution(queue);
     let chatId = this.getWorktreeRecord(worktreeId).chatId;
     let replicas = this.#activeExecutions.get(chatId)?.replicas;
-    if (replicas === undefined) {
-      throw new Error("A worktree can be snapshotted only while the agent's code runs in its chat.");
+    if (executionId === undefined || !this.isLiveExecution(chatId, executionId) ||
+        replicas === undefined) {
+      throw new Error("A worktree's replica syncs only while the agent's code runs in its chat, " +
+          "with the ApprovalQueue of a gatekeeper session that code opened.");
     }
-    return replicas.snapshot(worktreeId);
+    return replicas;
+  }
+
+  // TODO: Workers RPC can't yet give back the object behind a stub of one of this isolate's own
+  // RpcTargets. Until it can, an ApprovalQueue passed back in is identified by asking it to claim
+  // a fresh token: only a real ApprovalQueueImpl of this overseer can record a claim here, so a
+  // gatekeeper's imitation of one can't name an execution.
+  #queueClaims = new Map<string, {executionId?: string}>();
+
+  async #approvalQueueExecution(queue: NativeRpcStub<ObservationAuthorizer>): Promise<string | undefined> {
+    let token = crypto.randomUUID();
+    this.#queueClaims.set(token, {});
+    try {
+      await (queue as unknown as ApprovalQueueImpl).claimExecution(token);
+      return this.#queueClaims.get(token)?.executionId;
+    } catch {
+      return undefined;
+    } finally {
+      this.#queueClaims.delete(token);
+    }
+  }
+
+  // ApprovalQueueImpl.claimExecution(): records the queue's execution against a token that
+  // #approvalQueueExecution is waiting on.
+  claimApprovalQueue(token: string, executionId: string | undefined): void {
+    let claim = this.#queueClaims.get(token);
+    if (claim !== undefined) claim.executionId = executionId;
   }
 
   // As for the Worktree binding, a replica's HEAD includes a commit() buffered earlier in the
@@ -14448,6 +14481,13 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         description: HookDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
+  }
+
+  // Not part of ApprovalQueue: how the overseer tells which execution a queue passed back to it
+  // belongs to (see OverseerImpl.#approvalQueueExecution). A gatekeeper calling it itself only
+  // names its own queue's execution, to a token nobody is waiting on.
+  async claimExecution(token: string): Promise<void> {
+    this.impl.claimApprovalQueue(token, this.executionId);
   }
 }
 
