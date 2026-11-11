@@ -84,7 +84,8 @@ async function renderConnections(overseer: ReturnType<typeof workspace>['oversee
   const gadget = { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => [] }
   await render(
     <Connections overseer={overseer as never} gadget={gadget as never}
-      authenticatedApi={{ listGatekeeperVendors: async () => [] } as never} />,
+      authenticatedApi={{ listGatekeeperVendors: async () => [] } as never}
+      accountSignIn={{ accounts: [], onSignIn: () => {}, onCancel: () => {} }} />,
   )
   await expect.element(hookSwitch()).toBeVisible()
 }

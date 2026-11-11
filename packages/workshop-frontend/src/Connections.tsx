@@ -23,6 +23,8 @@ import {
 import { reportIssue } from './errorReporting'
 import { classifyRpcError, rpcFailureDescription } from './rpcErrors'
 import { isImeComposing } from './keyboardEvent'
+import { SignInNotice } from './features/connection-sign-in/SignInNotice'
+import type { AccountSignIn } from './features/connection-sign-in/useAccountSignIn'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
@@ -32,16 +34,19 @@ interface ConnectionsProps {
   // preview immediately, and becomes permanent only when the user accepts the chat's changes.
   chatId?: number
   authenticatedApi: RpcStub<AuthenticatedApi>
+  // The user's signed-out accounts across the workspace; this tab shows those its gadget uses.
+  accountSignIn: AccountSignIn
   onConnectionsChange?: () => void
   isVisible?: boolean
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
+  onBoundTargetsChange?: (targets: WorkpieceId[]) => void
 }
 
 /**
  * Auto-approval rules live in Activity because they apply across the workspace, while this view is
  * scoped to one gadget.
  */
-export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
+export default function Connections({ overseer, gadget, chatId, authenticatedApi, accountSignIn, onConnectionsChange, isVisible, onHasGatekeepersChange, onBoundTargetsChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
   const [gadgetInfo, setGadgetInfo] = useState<{ id: WorkpieceId; title: string } | null>(null)
@@ -77,6 +82,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       // toggle/delete controls would operate on another gadget's hooks.
       setHooks(hookList.filter((hook) => hook.gadgetId === id))
       onHasGatekeepersChange?.(bindingList.length > 0)
+      onBoundTargetsChange?.(bindingList.map((binding) => binding.target))
     } catch (err) {
       // Loud on purpose: this panel has no retry path, so a quieted transient failure would
       // silently render "no connected resources".
@@ -230,6 +236,16 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     }
   }
 
+  const boundTargets = new Set(bindings.map((binding) => binding.target))
+  const signedOutAccounts = accountSignIn.accounts
+    .map((account) => ({
+      ...account,
+      connections: account.connections.filter((connection) => boundTargets.has(connection.target)),
+    }))
+    .filter((account) => account.connections.length > 0)
+  const signedOutVendorByTarget = new Map(signedOutAccounts.flatMap((account) =>
+    account.connections.map((connection) => [connection.target, account.vendorName] as const)))
+
   return (
     <div className="h-full overflow-auto bg-kumo-base">
       <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col px-4 py-5 sm:px-6">
@@ -252,6 +268,17 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
             </WorkshopButton>
           </div>
 
+          {signedOutAccounts.length > 0 && (
+            <div className="mb-3">
+              <SignInNotice
+                accounts={signedOutAccounts}
+                surface="inline"
+                onSignIn={accountSignIn.onSignIn}
+                onCancel={accountSignIn.onCancel}
+              />
+            </div>
+          )}
+
           {loading ? (
             <div className="rounded-xl border border-kumo-line bg-kumo-base px-4 py-6 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
               Loading connections...
@@ -271,6 +298,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                 // Still provisional to the open chat (see GadgetBindingInfo.chatId). Blueprint
                 // annotations are excluded, since a blueprint only ever exports permanent edges.
                 const isPending = gk.chatId !== undefined
+                const signedOutVendor = signedOutVendorByTarget.get(gk.target)
 
                 return (
                   <div
@@ -335,9 +363,10 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                           vendorId={gk.vendorId}
                           fallbackText={gk.resourceTitle || gk.name}
                           {...(gk.vendorId ? vendorBranding.get(gk.vendorId) : undefined)}
+                          className={`h-8 w-8 rounded-lg ${signedOutVendor ? 'opacity-45 grayscale' : ''}`}
                         />
                         <div className="min-w-0 flex-1">
-                          <p className="flex items-center gap-2 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+                          <p className={`flex items-center gap-2 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] ${signedOutVendor ? 'text-kumo-subtle' : 'text-kumo-default'}`}>
                             <span className="min-w-0 truncate">{gk.resourceTitle}</span>
                             {isPending && (
                               <Tooltip content="Added in this chat; kept when you accept the chat's changes" asChild>
@@ -348,7 +377,9 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                             )}
                           </p>
                           <p className="mt-0.5 truncate text-[11px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-                            Referenced in code as: <span className="font-mono text-kumo-subtle">{gk.name}</span>
+                            {signedOutVendor
+                              ? `Unavailable until you sign in to ${signedOutVendor}`
+                              : <>Referenced in code as: <span className="font-mono text-kumo-subtle">{gk.name}</span></>}
                           </p>
                         </div>
                         <div className="ml-auto flex shrink-0 items-center gap-1">

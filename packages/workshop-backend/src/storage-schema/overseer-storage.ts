@@ -56,6 +56,13 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * The connected account this connection was created with: `accountId` names a
+   * ConnectedAccountRecord in the User DO `userId`. Absent on connections that use no account, and
+   * on those created before this was recorded. Kept out of `creationSpec`, which blueprints copy.
+   */
+  account?: {userId: string, accountId: number};
+
+  /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
    * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
    * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.

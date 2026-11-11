@@ -130,7 +130,7 @@ async function spawnerBinding(impl: any, {env, ...config} = SPAWNER_CONFIG)
   let bindings = Object.fromEntries(
       Object.entries(env).map(([name, target]) => [name, { target }]));
   let client = await impl.addGatekeeper(
-      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, bindings);
+      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, { bindings });
   return client.openSession();
 }
 

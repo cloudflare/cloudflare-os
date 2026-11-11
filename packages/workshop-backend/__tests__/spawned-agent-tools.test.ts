@@ -70,7 +70,7 @@ async function spawnChat(impl: any, {env, ...config}: AgentSpawnerConfig): Promi
   let bindings = Object.fromEntries(
       Object.entries(env).map(([name, target]) => [name, { target }]));
   let client = await impl.addGatekeeper(
-      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, bindings);
+      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, { bindings });
   let binding: AgentSpawnerBinding = await client.openSession();
   await binding.spawn("Task", "Do the task.");
   let [meta] = [...impl.storage.chatMeta.list()];

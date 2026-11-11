@@ -122,6 +122,8 @@ import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
 import { formatAttachmentSize } from "./features/chat/attachmentFormatting";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
+import { SignInNotice } from "./features/connection-sign-in/SignInNotice";
+import type { AccountSignIn } from "./features/connection-sign-in/useAccountSignIn";
 import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 import {
   findUnresolvedConflicts, listConflictedFiles, type UnresolvedConflict,
@@ -2573,6 +2575,8 @@ interface ChatInterfaceProps {
     chatId: number | null,
     options?: { replace?: boolean },
   ) => void;
+  // The user's signed-out accounts this workspace uses, asked for above the composer.
+  accountSignIn?: AccountSignIn;
   // The selected chat's code-branch snapshot (see ChatCodeChanges): its code base and the
   // current epoch's recorded changes, delivered together so the code view always layers a
   // consistent pair.
@@ -2784,6 +2788,7 @@ function ChatInterface({
   restricted,
   selectedChatId,
   onNavigateToChat,
+  accountSignIn,
   onChatChangesChange,
   onLiveRowsChange,
   onLiveEditPreviewsChange,
@@ -3082,6 +3087,21 @@ function ChatInterface({
   const keepAtBottom = useCallback(() => {
     if (isScrolledToBottomRef.current) scrollMessagesToBottom();
   }, [scrollMessagesToBottom]);
+
+  const [signInNoticeHeight, setSignInNoticeHeight] = useState(0);
+  const signInNoticeRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const observer = new ResizeObserver(() => {
+      setSignInNoticeHeight(node.offsetHeight);
+      // The matching space grows after this render; a list at the bottom has to stay there.
+      requestAnimationFrame(keepAtBottom);
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      setSignInNoticeHeight(0);
+    };
+  }, [keepAtBottom]);
 
   // Force a re-render when cache is updated
   const forceUpdate = () => setUpdateCounter((prev) => prev + 1);
@@ -6756,11 +6776,24 @@ function ChatInterface({
                     })}
                   </ReadTimeline>
                 )}
+                {/* Room for the floating sign-in notice, so it never covers the last message. */}
+                <div aria-hidden="true" style={{ height: signInNoticeHeight }} />
               </div>
 
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}>
-                <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                <div className={`relative ${useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}`}>
+                  {/* Floats over the end of the transcript, so it takes no room from the composer. */}
+                  {accountSignIn && accountSignIn.accounts.length > 0 && (
+                    <div ref={signInNoticeRef} className="absolute inset-x-0 bottom-full z-10 px-2 pb-2 sm:px-4">
+                      <SignInNotice
+                        accounts={accountSignIn.accounts}
+                        surface="floating"
+                        onSignIn={accountSignIn.onSignIn}
+                        onCancel={accountSignIn.onCancel}
+                      />
+                    </div>
+                  )}
                   {/* Remount all transient composer state when the conversation changes. */}
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}
@@ -6793,6 +6826,7 @@ function ChatInterface({
                         )
                       : undefined}
                     blockedReason={sendBlockedReason}
+                    consoleLogsRaisedBy={signInNoticeHeight}
                     draftUpdateBanner={(() => {
                       if (!currentChatMetadata ||
                           !(chatHasProposedChanges(currentChatMetadata) ||

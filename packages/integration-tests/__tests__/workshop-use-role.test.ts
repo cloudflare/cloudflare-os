@@ -109,6 +109,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   removeAutoApprovedActionKind: ws => ws.removeAutoApprovedActionKind(1, "set-value"),
   listAutoApprovedActionKinds: ws => ws.listAutoApprovedActionKinds(),
   listPreApprovableActions: ws => ws.listPreApprovableActions(),
+  listAccountConnections: ws => ws.listAccountConnections(),
   acceptConnectionRequest: ws => ws.acceptConnectionRequest("request", { gatekeeperId: 1 }),
   denyConnectionRequest: ws => ws.denyConnectionRequest("request"),
   markChatRead: ws => ws.markChatRead(1),

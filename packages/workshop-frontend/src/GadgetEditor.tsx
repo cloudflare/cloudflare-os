@@ -41,6 +41,7 @@ import type { ChatContentReader } from './features/code/otClient'
 import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
+import { useAccountSignIn } from './features/connection-sign-in/useAccountSignIn'
 import Activity, { type ActivityView } from './Activity'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
@@ -329,11 +330,14 @@ function PaneTab({
   active,
   label,
   count,
+  attention,
   onClick,
 }: {
   active: boolean
   label: string
   count?: number
+  /** Draws a small warning dot, announced as this text. */
+  attention?: string
   onClick: () => void
 }) {
   return (
@@ -346,6 +350,9 @@ function PaneTab({
     >
       {label}
       <CountBadge count={count ?? 0} />
+      {attention && (
+        <span role="img" aria-label={attention} className="size-1.5 shrink-0 rounded-full bg-kumo-warning" />
+      )}
     </button>
   )
 }
@@ -537,6 +544,8 @@ export default function GadgetEditor() {
   // restricted overseer denies the ones that matter and returns inert results for the two
   // telemetry subscriptions this component opens, so no client-side gating is needed here.
   const isUseOnly = metadata?.role === 'use'
+  // A "use" session cannot list the workspace's connections, and shows neither surface that asks.
+  const accountSignIn = useAccountSignIn(isUseOnly ? undefined : overseer?.stub, authenticatedApi)
 
   // ── layout ───────────────────────────────────────────────────────────────────
   const [chatWidth, setChatWidth] = useState(getInitialChatWidth)
@@ -680,6 +689,10 @@ export default function GadgetEditor() {
   const [chatCount, setChatCount] = useState<number | null>(null)
   const [hasChatZero, setHasChatZero] = useState(false)
   const [_hasBindings, setHasBindings] = useState(false)
+  // What the selected gadget's connections point at, as its Connections tab last loaded them.
+  const [boundTargets, setBoundTargets] = useState<WorkpieceId[]>([])
+  const connectionsNeedSignIn = accountSignIn.accounts.some((account) =>
+    account.connections.some((connection) => boundTargets.includes(connection.target)))
   const [isAgentActive, setIsAgentActive] = useState(false)
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   const [anyChatProposedWorkpieces, setAnyChatProposedWorkpieces] =
@@ -1987,6 +2000,7 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   selectedChatId={effectiveSelectedChatId}
                   onNavigateToChat={navigateToChat}
+                  accountSignIn={accountSignIn}
                   onChatChangesChange={setChatChanges}
                   onLiveRowsChange={setLiveRows}
                   onLiveEditPreviewsChange={setLiveEditPreviews}
@@ -2094,6 +2108,8 @@ export default function GadgetEditor() {
                       key={tab.value}
                       active={activeTab === tab.value}
                       label={tab.label}
+                      attention={tab.value === 'connections' && connectionsNeedSignIn
+                        ? 'An account needs you to sign in' : undefined}
                       onClick={() => handleTabSelect(tab.value)}
                     />
                   ))}
@@ -2246,9 +2262,11 @@ export default function GadgetEditor() {
                   gadget={selectedGadgetStub}
                   chatId={effectiveSelectedChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
+                  accountSignIn={accountSignIn}
                   onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
                   isVisible={activeTab === 'connections'}
                   onHasGatekeepersChange={setHasBindings}
+                  onBoundTargetsChange={setBoundTargets}
                 />
               ) : (
                 <NoGadgetPlaceholder height="100%" />

@@ -86,6 +86,7 @@ export const ChatComposer = ({
   selectedModel,
   onModelChange,
   pendingConsoleLogCount = 0,
+  consoleLogsRaisedBy,
   consoleLogPreview = "",
   consoleLogSeverity = "info",
   onConsumeConsoleLogs = () => "",
@@ -126,6 +127,8 @@ export const ChatComposer = ({
   selectedModel: SelectedModel;
   onModelChange: (modelId: string | null) => void;
   pendingConsoleLogCount?: number;
+  /** Height of a notice floating above the composer, which the captured-logs chip sits over. */
+  consoleLogsRaisedBy?: number;
   consoleLogPreview?: string;
   consoleLogSeverity?: "error" | "warn" | "info";
   onConsumeConsoleLogs?: () => string;
@@ -722,6 +725,7 @@ export const ChatComposer = ({
       />
       <CapturedConsoleLogsPrompt
         count={pendingConsoleLogCount}
+        raisedBy={consoleLogsRaisedBy}
         preview={consoleLogPreview}
         severity={consoleLogSeverity}
         onAttach={handleAttachLogs}

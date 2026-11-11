@@ -3593,6 +3593,16 @@ export interface Overseer extends RpcTarget {
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
   /**
+   * List the workspace's connections that were created with one of the caller's own connected
+   * accounts, wherever they are bound: a gadget's env or a chat's. Joined against
+   * AuthenticatedApi.subscribeConnectedAccounts(), this says which connections stop working when
+   * an account's credentials expire, until reconnectAccount() restores them. A connection made
+   * with another collaborator's account is never listed, and neither is one created before
+   * connections recorded their account.
+   */
+  listAccountConnections(): Promise<AccountConnectionInfo[]>;
+
+  /**
    * Accept an agent's pending connection request (a "connectionRequest" chat message). The caller
    * is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the
    * resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the
@@ -5969,6 +5979,24 @@ export type GadgetBindingInfo = {
    * is deleted if those changes are reverted.
    */
   chatId?: number;
+};
+
+/**
+ * A connection that uses one of the caller's connected accounts. Returned by
+ * Overseer.listAccountConnections().
+ */
+export type AccountConnectionInfo = {
+  /** The connection's gatekeeper workpiece, as in GadgetBindingInfo.target. */
+  target: WorkpieceId;
+
+  /** Denormalized display title of the connected resource. */
+  resourceTitle: string;
+
+  /**
+   * The account the connection was created with: an id in the caller's own connected accounts, as
+   * delivered by ConnectedAccountsSubscriber.add().
+   */
+  accountId: number;
 };
 
 /**

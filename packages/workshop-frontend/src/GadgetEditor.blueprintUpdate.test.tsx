@@ -67,6 +67,8 @@ const mocks = vi.hoisted(() => {
     authenticatedApi: {
       whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }),
       listWorkspaces: async () => [],
+      subscribeConnectedAccounts: () =>
+        Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} }),
     },
   }
 })

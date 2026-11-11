@@ -29,6 +29,10 @@ vi.mock('./GatekeeperModal', () => ({
 
 import { clickHookSwitch, deferred, hookSwitch, makeTestRoot } from './action-test-harness'
 import Connections from './Connections'
+import type { AccountSignIn, SignInAccount } from './features/connection-sign-in/useAccountSignIn'
+
+const signIn = (accounts: SignInAccount[]) =>
+  ({ accounts, onSignIn: vi.fn<(id: number) => void>(), onCancel: () => {} })
 
 const view = makeTestRoot()
 
@@ -64,13 +68,16 @@ function workspace(enabled = false) {
 
 async function renderConnections(
   overseer: ReturnType<typeof workspace>['overseer'],
-  props: { gadget?: object; chatId?: number; onConnectionsChange?: () => void } = {},
+  props: {
+    gadget?: object; chatId?: number; onConnectionsChange?: () => void; accountSignIn?: AccountSignIn
+  } = {},
 ) {
   const gadget = props.gadget ?? { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => [] }
   const authenticatedApi = { listGatekeeperVendors: async () => [] }
   await view.render(
     <Connections overseer={overseer as never} gadget={gadget as never} chatId={props.chatId}
-      authenticatedApi={authenticatedApi as never} onConnectionsChange={props.onConnectionsChange} />,
+      authenticatedApi={authenticatedApi as never} onConnectionsChange={props.onConnectionsChange}
+      accountSignIn={props.accountSignIn ?? signIn([])} />,
   )
   await act(async () => {})
 }
@@ -192,4 +199,35 @@ it.each([
 
   await renderConnections(overseer, { gadget: reconnected, chatId: 1 })
   expect(reconnected.bindWithSuggestedName).not.toHaveBeenCalled()
+})
+
+it('asks to sign in to an account its gadget uses, naming only this gadget’s connections', async () => {
+  const gadget = {
+    getId: async () => 'triage',
+    getTitle: async () => 'Triage',
+    listBindings: async () => [
+      { name: 'PLAN', target: 1, resourceTitle: 'Launch plan', vendorId: 'google' },
+      { name: 'REPO', target: 2, resourceTitle: 'acme/widgets', vendorId: 'github' },
+    ],
+  }
+  const accountSignIn = signIn([
+    {
+      id: 4, vendorName: 'Google', identity: 'alex@acme.com', phase: 'signedOut',
+      connections: [{ target: 1, resourceTitle: 'Launch plan' }, { target: 9, resourceTitle: 'Other gadget’s sheet' }],
+    },
+    // Used elsewhere in the workspace only, so this tab does not ask for it.
+    { id: 5, vendorName: 'Notion', phase: 'signedOut', connections: [{ target: 8, resourceTitle: 'Roadmap' }] },
+  ])
+  await renderConnections(workspace().overseer, { gadget, accountSignIn })
+
+  const notice = document.querySelector('[aria-label="Accounts that need you to sign in"]')!
+  expect(notice.textContent).toContain('Google signed you out')
+  expect(notice.textContent).toContain('Sign in as alex@acme.com to use Launch plan again.')
+  expect(notice.textContent).not.toContain('Notion')
+  expect(document.body.textContent).toContain('Unavailable until you sign in to Google')
+  expect(document.body.textContent).toContain('REPO')
+
+  const button = [...notice.querySelectorAll('button')].find(b => b.textContent === 'Sign in to Google')!
+  await act(async () => { button.click() })
+  expect(accountSignIn.onSignIn).toHaveBeenCalledExactlyOnceWith(4)
 })

@@ -5,6 +5,8 @@ type CapturedConsoleLogsPromptProps = {
   count: number;
   preview: string;
   severity: "error" | "warn" | "info";
+  /** Height in pixels of anything else floating above the composer, which the chip sits over. */
+  raisedBy?: number;
   onAttach: () => void;
   onDiscard: () => void;
 };
@@ -13,6 +15,7 @@ export const CapturedConsoleLogsPrompt = ({
   count,
   preview,
   severity,
+  raisedBy = 0,
   onAttach,
   onDiscard,
 }: CapturedConsoleLogsPromptProps) => {
@@ -28,7 +31,10 @@ export const CapturedConsoleLogsPrompt = ({
   const logKind = severity === "error" ? "error" : severity === "warn" ? "warning" : "log";
 
   return (
-    <div className="pointer-events-none absolute inset-x-4 -top-10 z-10 flex justify-center">
+    <div
+      className="pointer-events-none absolute inset-x-4 -top-10 z-10 flex justify-center"
+      style={raisedBy > 0 ? { transform: `translateY(-${raisedBy}px)` } : undefined}
+    >
       <div className="themed-floating-shadow pointer-events-auto flex items-center gap-2 rounded-full border border-kumo-line bg-kumo-elevated px-3 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
         <Tooltip
           content={
