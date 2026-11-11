@@ -56,6 +56,8 @@ class FakeSession extends RpcTarget {
   [Symbol.dispose]() { this.disposed = true; }
 }
 
+const hookStub = () => new RpcStub(new (class extends RpcTarget { fire() {} })());
+
 let doCounter = 0;
 
 type Fixture = {
@@ -210,9 +212,8 @@ describe("connectToChatBinding", () => {
       () => withChat(async ({ impl, open, sessions }) => {
     await (await open("owner")).connectToChatBinding(CHAT_ID, "GITHUB");
     let queue = sessions[0]!.queue;
-    let stub = () => new RpcStub(new (class extends RpcTarget { fire() {} })());
     // Over RPC this is a rejection; called in process, the queue throws before anything is stored.
-    expect(() => queue.bindHook(stub() as never, stub() as never,
+    expect(() => queue.bindHook(hookStub() as never, hookStub() as never,
         { title: "On push", description: "Runs on push." })).toThrow("A view can't bind hooks.");
     expect([...impl.storage.boundHooks.list()]).toEqual([]);
     expect([...impl.storage.actions.list()]).toEqual([]);
@@ -233,6 +234,19 @@ describe("connectToChatBinding", () => {
         .toThrow("This view's chat has been deleted.");
     expect(() => queue.submitAction(1, { title: "Write", description: "Write.", implementsRevert: false,
         autoApprovable: false })).toThrow("This view's chat has been deleted.");
+    expect([...impl.storage.actions.list()]).toEqual([]);
+  }));
+
+  it("refuses a view's read whose chat is deleted while its authorization awaits", () => withChat(async ({ impl, open, sessions }) => {
+    await (await open("owner")).connectToChatBinding(CHAT_ID, "GITHUB");
+    let queue = sessions[0]!.queue;
+    // The first observation that narrows sharing awaits the sharing manager: the chat goes then.
+    impl.getSharingManager = async () => {
+      impl.storage.chatMeta.delete(CHAT_ID);
+      return { computeEffectiveAccess: () => new Map(), computeAffectedByOwnerInvitesOnly: () => [] };
+    };
+    await expect(queue.authorizeObservation({ title: "Read", description: "Read.", ownerInvitesOnly: true }))
+        .rejects.toThrow("This view's chat has been deleted.");
     expect([...impl.storage.actions.list()]).toEqual([]);
   }));
 

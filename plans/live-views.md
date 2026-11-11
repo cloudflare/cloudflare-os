@@ -86,8 +86,9 @@ Acceptance criteria:
   exactly as if the viewer had typed the message, and waits whenever the composer waits.
 - A block with no content shows an error and runs nothing.
 - `env.NAME = value` in `executeCode` saves `NAME` as a chat binding when the call's step is
-  stored: JSON data, or another name of one of the chat's bindings. A chat's saved data is at most
-  400,000 UTF-16 code units of JSON (see "Caps"). Later `executeCode` calls see the name in `env`,
+  stored: JSON data, or another name of one of the chat's bindings. What a chat's code carries in
+  `env` by value, its saved data and any agent callback arguments, is at most 400,000 UTF-16 code
+  units (see "Caps"). Later `executeCode` calls see the name in `env`,
   and `describeBinding` describes it. A data name can be saved again. No name is ever removed.
 - A block whose tag lists names, as in `<inline-html env="A,B">`, gets an `env` with just those
   names: `await env.A` for saved data, `env.A.rpc.method()` for a Gadget, and `env.A.method()` for
@@ -363,8 +364,9 @@ restricted data. This plan does not change gadget frames.
   refuses a name `validateBindingName` refuses; a name in scope that is not a data name: one the
   chat binds as anything but data, `GIT`, a name a pending connection request claims (runAgent
   passes the turn's `claimedNames`), or a name saved as another name earlier in the run; and a
-  save that would take the chat's data past the cap. The harness reports a value too long to save
-  by its length alone, so its result stays small. One refused name refuses no other. The output
+  save that would take what the chat's code carries by value past the cap, unless it shrinks its
+  name. The harness reports a value too long to save by its length alone, so its result stays
+  small. One refused name refuses no other. The output
   gets one line per name: `Saved env.TOTALS (data) for views and later code.`, `Saved env.SALES
   (another name for env.EXPENSES) for views and later code.`, or `env.X was not saved: …`.
 - **Tool time.** `runAgent` then sets each accepted name in `chatBindings`, as `createGadget` does,
@@ -377,16 +379,23 @@ restricted data. This plan does not change gadget frames.
 - **The barrier.** `commitAgentStep` takes the step's `savedData: {name, json}[]` and writes it in
   the step's transaction, with the record that stamps the names. It writes nothing for a chat that
   is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing.
-- **Caps.** One cap, 400,000 UTF-16 code units of JSON for a chat's saved data, measured as
-  `json.length`, as `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`. Its reason:
+- **Caps.** One cap, 400,000 UTF-16 code units for what an `executeCode` run's `env` carries by
+  value: each data name with its JSON text, measured as `json.length` as
+  `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`, and each agent callback's name
+  with its arguments, measured as JSON would write them, a stub counting 64 (`envValueLength`,
+  which reads no member of a stub). A save that grows a name past the cap is refused; one that
+  shrinks a name always lands, so a chat over the cap through its callbacks can come back under
+  it. Its reason:
   - Every `executeCode` run carries all of it into its Dynamic Worker, and workerd refuses an
     `env` over 1 MiB: "Dynamic Worker env size (1900053 bytes) exceeds the maximum allowed size of
     1048576 bytes", observed in this branch's workerd tests when a first build tried 2,000,000
     units. The platform docs do not list this limit; that production enforces
     the same one is [INFERENCE]. So the data goes into `env` as its JSON text, the smallest form
     (the harness parses it), and a string serializes at up to two bytes per code unit: 400,000
-    units are at most 800,000 bytes, which leaves room for the rest of the `env`, such as callback
-    arguments.
+    units are at most 800,000 bytes, which leaves room for the stubs of the chat's other bindings.
+    Callback arguments count because main already copies them into every run's `env`; a review on
+    2026-11-11 found that a save under a data-only cap could pass while a large callback made
+    every later run fail to start, including the one meant to shrink it.
   - The same bound keeps each `chatSavedData` record under 800 KB plus its other fields:
     typed-storage writes it with V8 serialization, which stores a string with any character above
     U+00FF at two bytes per code unit, well inside the 2 MB value limit `observer-ledger.ts` cites
@@ -466,7 +475,9 @@ restricted data. This plan does not change gadget frames.
 - **The view caller.** `GatekeeperCaller` gains `{from: "view", chatId}`. `observerContextOf` maps
   it to the chat. `ApprovalQueueImpl` refuses `bindHook` for it ("A view can't bind hooks.") before
   anything is stored, and refuses `authorizeObservation` and `submitAction` once its chat is gone,
-  as it refuses a dead hook's calls with `requireLiveHook`. Every write and every recorded read of
+  as it refuses a dead hook's calls with `requireLiveHook`, and checks again at the ledger's
+  synchronous commit, since the chat can go while an observation's checks await. Every write and
+  every recorded read of
   the session goes through that queue, including those of capabilities the session returns: a
   GitHub cursor keeps a duplicate of its session's queue so that it outlives the session.
   `#associateAction` posts a view's action to its chat as it posts a gadget's, and leaves
@@ -523,8 +534,9 @@ restricted data. This plan does not change gadget frames.
 - **Trusted Types fail closed.** For a block with `env`, the host calls `trustedTypes()` after the
   handshake and before its first `write`, so no block code exists yet. The bootstrap answers true
   only if it created both policies and a probe, `innerHTML = "<b></b>"` on an element of its own,
-  threw. Otherwise the host writes nothing, opens no binding, and shows "This browser can't run a
-  view that reads env safely." under the view. Which current browsers enforce Trusted Types is not
+  threw. Otherwise the host writes nothing, opens no binding, ends the frame's session, and shows
+  "This browser can't run a view that reads env safely." under the view. Which current browsers
+  enforce Trusted Types is not
   checked [INFERENCE]; the probe decides at run time either way.
 - **Writing the block.** After the handshake the host calls `write` with the start of the block
   document (its doctype, and a head with the frame's style in the theme of that moment), then with
@@ -798,8 +810,9 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
     says so; saving a data name again replaces its JSON and keeps its place in the map;
   - a name the chat binds, a pending connection request's name, `GIT`, another name saved again,
     a function, a `Date`, a cycle, a value over the cap and a save past it are refused, and the
-    rest saved; a run that throws saves nothing; a harness result whose JSON does not parse is
-    refused;
+    rest saved; a callback's arguments count toward the cap, and a save that shrinks lands though
+    the chat is over it; a run that throws saves nothing; a harness result whose JSON does not
+    parse is refused;
   - in one step, a second call sees the first's save; a save after a `createGadget` of the same
     name is refused, and a `createGadget` after a save of it is refused;
   - a scripted turn (pi's faux provider, as in `spawned-agent-tools.test.ts`) stores its JSON with
@@ -816,7 +829,8 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
     to the chat and never auto-approves, even under an auto-approval rule;
   - `bindHook` through a view's session is refused and stores no hook and no action;
   - once the chat is deleted, `connectToChatBinding` is refused, and an open view's Gadget call,
-    connection read and connection write are refused, the write before any record is stored;
+    connection read and connection write are refused, the write before any record is stored; a
+    read whose chat is deleted while its authorization awaits is refused and records nothing;
   - a collaborator's Gadget and connection root stubs count toward their session until disposed;
   - after the Gadget's facet restarts (as `proposedChangesChanged` restarts it), the view's next
     Gadget call rejects, and a new `connectToChatBinding` works.
@@ -841,15 +855,17 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
 - Frontend tests (`UiBlockCard.test.tsx`), new: the host refuses a name its tag does not list,
   opens each name once, paces a connection's calls and not a Gadget's, and disposes both on Stop;
   a stub that arrives after the session ends is disposed; a frame whose `trustedTypes()` answers
-  false, or throws, gets no `write` and no binding and shows its error; Run opens a name again in
+  false, or throws, gets no `write` and no binding, has its session ended, and shows its error;
+  Run opens a name again in
   its new session, as a view whose Gadget stub died with a facet restart needs; a new overseer
   remounts a view with `env` and leaves one without it.
 - `ChatInterface` tests: an open block in a streaming answer is already a frame, and the closed
   block and then the stored message keep that frame element; a stored message whose text differs
   from the streamed text mounts its view fresh.
 - Eval host tests (`workshop-evals/src/view-host.test.ts`): a view gets saved data and the Gadgets
-  its tag lists, and is refused any other name; `innerHTML` throws in a view with `env`; a view
-  without the attribute has no `env`.
+  its tag lists, and is refused any other name; `innerHTML` throws in a view with `env`, whose code
+  can make neither Trusted Types policy; a click that only reads a binding counts as no send; a
+  view without the attribute has no `env`.
 - Chat-views verifier tests (`workshop-evals/evals/chat-views.test.ts`): the spending view passes
   when it reads the totals through `env`, saved or from the Expense Log, and fails
   `view-comes-after-its-gadgets` when its own message's call saves what it reads.

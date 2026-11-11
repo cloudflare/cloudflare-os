@@ -136,13 +136,39 @@ async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
-// The most saved data a chat keeps on `env` (see #decideEnvSaves and plans/live-views.md, "Caps"),
-// in UTF-16 code units of JSON. Every executeCode run carries all of it into its Dynamic Worker,
-// as JSON text, and workerd refuses an env over 1 MiB ("Dynamic Worker env size ... exceeds the
-// maximum allowed size of 1048576 bytes"). A string is serialized at up to two bytes per unit, so
-// 400,000 units leave room for the rest of the env, such as callback arguments. The same bound
-// keeps each chatSavedData record well inside Durable Object storage's 2 MB value limit.
+// The most an executeCode run's env may carry by value (see #decideEnvSaves and
+// plans/live-views.md, "Caps"), in UTF-16 code units: each saved data name with its JSON text, and
+// each agent callback's name with its arguments. Every run carries all of it into its Dynamic
+// Worker, and workerd refuses an env over 1 MiB ("Dynamic Worker env size ... exceeds the maximum
+// allowed size of 1048576 bytes"). A string is serialized at up to two bytes per unit, so 400,000
+// units leave room for the stubs of the chat's other bindings. The same bound keeps each
+// chatSavedData record well inside Durable Object storage's 2 MB value limit.
 const MAX_SAVED_DATA_LENGTH = 400_000;
+
+// What a stub, or any other value that is not plain data, counts toward MAX_SAVED_DATA_LENGTH: a
+// stub serializes as a small reference.
+const OPAQUE_VALUE_LENGTH = 64;
+
+// About how many UTF-16 code units `value` takes in an env, as JSON would write it. Descends only
+// plain objects and arrays, and reads no member of anything else, since a callback's arguments may
+// hold stubs, whose every member is a call.
+function envValueLength(value: unknown, open = new Set<object>()): number {
+  if (typeof value === "string") return value.length + 2;
+  if (typeof value === "function") return OPAQUE_VALUE_LENGTH;
+  if (typeof value !== "object" || value === null) return 8;
+  let prototype: unknown = Object.getPrototypeOf(value);
+  let array = Array.isArray(value);
+  if ((!array && prototype !== Object.prototype && prototype !== null) || open.has(value)) {
+    return OPAQUE_VALUE_LENGTH;
+  }
+  open.add(value);
+  let length = 2;
+  for (let [key, item] of Object.entries(value)) {
+    length += (array ? 0 : key.length + 3) + envValueLength(item, open) + 1;
+  }
+  open.delete(value);
+  return length;
+}
 
 let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
@@ -5868,6 +5894,8 @@ class OverseerImpl implements AgentHooks {
     await this.observerLedger.authorizeObservation(
         gatekeeperId, description, caller, executionId, subresources => {
       if (hookId !== undefined) requireLiveHook(this, hookId);
+      // A view's chat can go while the checks above await.
+      requireLiveViewChat(this, caller);
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveAccess() : undefined;
 
@@ -9880,13 +9908,20 @@ class OverseerImpl implements AgentHooks {
   #decideEnvSaves(chatId: number, bindings: Record<string, ChatBindingEntry>,
                   scope: SavedEnvScope, changes: EnvChange[])
       : {notes: string[], saves: EnvSave[]} {
+    // What each name carries by value: a data name its JSON, a callback its arguments, each with
+    // its name. Only data names change here.
     let lengths = new Map<string, number>();
+    let total = 0;
     for (let [name, entry] of Object.entries(bindings)) {
       if (entry.type === "data") {
-        lengths.set(name, this.savedDataJson(chatId, name, scope.pending).length);
+        let length = name.length + this.savedDataJson(chatId, name, scope.pending).length;
+        lengths.set(name, length);
+        total += length;
+      } else if (entry.type === "value") {
+        let stored = this.storage.agentCallbackArgs.get(chatKey(chatId, entry.messageSequence));
+        total += name.length + envValueLength(stored?.args);
       }
     }
-    let total = [...lengths.values()].reduce((sum, length) => sum + length, 0);
     let notes: string[] = [];
     let saves: EnvSave[] = [];
     let aliased = new Set<string>();
@@ -9948,15 +9983,18 @@ class OverseerImpl implements AgentHooks {
         refuse("its JSON does not parse");
         continue;
       }
-      let next = total - (lengths.get(name) ?? 0) + json.length;
-      if (next > MAX_SAVED_DATA_LENGTH) {
-        refuse(`it would take this chat's saved data past ` +
-            `${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")} code units; save less, or set a ` +
-            `name you no longer need to null`);
+      let size = name.length + json.length;
+      let before = lengths.get(name) ?? 0;
+      let next = total - before + size;
+      // A save that shrinks a name always lands, so a chat over the cap can come back under it.
+      if (next > MAX_SAVED_DATA_LENGTH && size > before) {
+        refuse(`it would take what this chat's code carries in env, its saved data and any agent ` +
+            `callback arguments, past ${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")} code ` +
+            `units; save less, or set a name you no longer need to null`);
         continue;
       }
       total = next;
-      lengths.set(name, json.length);
+      lengths.set(name, size);
       saves.push({name, json});
       notes.push(`Saved env.${name} (data) for views and later code.`);
     }

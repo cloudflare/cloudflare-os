@@ -143,6 +143,26 @@ describe("executeCode saving env", () => {
     expect(saves.map(save => save.name)).toEqual(["A", "B"]);
   }));
 
+  it("counts an agent callback's arguments toward the total, and still lets a save shrink",
+      () => withChat(async ({ impl, run }) => {
+    impl.storage.agentCallbackArgs.put({ chatId: CHAT_ID, sequence: 9, args: ["x".repeat(300_000)] });
+    let near = {
+      bindings: { EXPENSES, ARGS: { type: "value", messageSequence: 9 }, A: { type: "data" } } as Bindings,
+      pending: { A: JSON.stringify("a".repeat(90_000)) },
+    };
+    let { log, saves } = await run(`env.B = "漢".repeat(20000);`, near);
+    expect(saves).toEqual([]);
+    expect(log).toBe("env.B was not saved: it would take what this chat's code carries in env, its " +
+        "saved data and any agent callback arguments, past 400,000 code units; save less, or set a name you " +
+        "no longer need to null.");
+
+    // Callback arguments alone over the cap: a save that grows is refused, one that shrinks lands.
+    impl.storage.agentCallbackArgs.put({ chatId: CHAT_ID, sequence: 9, args: ["x".repeat(410_000)] });
+    let over = { ...near, pending: { A: JSON.stringify("a".repeat(100)) } };
+    expect((await run(`env.A = "a".repeat(200);`, over)).saves).toEqual([]);
+    expect((await run(`env.A = "short";`, over)).saves).toEqual([{ name: "A", json: '"short"' }]);
+  }));
+
   it("saves data changed in place, keeps a deleted name, and leaves untouched data alone", () => withChat(async ({ run }) => {
     let { log, saves } = await run(`env.FOOD.weeks.push(2); delete env.OLD;`, {
       bindings: { EXPENSES, FOOD: { type: "data" }, OLD: { type: "data" }, SAME: { type: "data" } },
@@ -230,17 +250,18 @@ describe("saved env in a turn", () => {
   }));
 });
 
+const savingCall = (savedEnv: { name: string, alias?: string }[]) => ({
+  toolCallId: "c", toolName: "executeCode", input: { code: "" }, output: "", savedEnv,
+});
+const agentMessage = (sequence: number, toolCalls: object[]) => ({
+  chatId: CHAT_ID, sequence, timestamp: new Date(0), author: ALICE, type: "message", message: "", toolCalls,
+}) as AiChatMessage;
+
 describe("saved env in compaction", () => {
   it("folds saved names into a checkpoint: data, another name as its target's entry, data saved again", () => {
-    let call = (savedEnv: { name: string, alias?: string }[]) => ({
-      toolCallId: "c", toolName: "executeCode", input: { code: "" }, output: "", savedEnv,
-    });
-    let message = (sequence: number, toolCalls: object[]) => ({
-      chatId: CHAT_ID, sequence, timestamp: new Date(0), author: ALICE, type: "message", message: "", toolCalls,
-    }) as AiChatMessage;
     let state = buildCompactionState([
-      message(1, [call([{ name: "TOTALS" }, { name: "SALES", alias: "EXPENSES" }])]),
-      message(2, [call([{ name: "TOTALS" }])]),
+      agentMessage(1, [savingCall([{ name: "TOTALS" }, { name: "SALES", alias: "EXPENSES" }])]),
+      agentMessage(2, [savingCall([{ name: "TOTALS" }])]),
     ], 3, [["EXPENSES", EXPENSES]], undefined);
     expect(state.chatBindings).toEqual([
       ["EXPENSES", EXPENSES], ["TOTALS", { type: "data" }], ["SALES", EXPENSES],
