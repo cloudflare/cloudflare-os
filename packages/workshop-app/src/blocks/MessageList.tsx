@@ -32,9 +32,12 @@ const ARRIVAL = { duration: 420, easing: 'linear(0, 0.18 8%, 0.53 18%, 0.79 30%,
  * which a row mounted again later (the pages are virtual) must not repeat.
  */
 const markArriving = (row: Element) => {
+  // Measured before the row is marked: what is in it may start out placed differently as it
+  // animates in (a message draws up to the one it joins), and the row has to open to the height it
+  // will end at, or it would jump to it when the animation was over.
+  const { height } = row.getBoundingClientRect()
   row.setAttribute('data-arriving', '')
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const { height } = row.getBoundingClientRect()
     // A row of no height would still be given the list's `gap-2`, so it starts by taking that back.
     row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], ARRIVAL)
   }
