@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
+import { MessageActions } from './MessageActions'
 import './MessageBubble.css'
 
 /** Which neighbours a message forms a run with: the message before it, the one after, or both. */
@@ -54,13 +55,27 @@ const JOINED = {
   error: { above: 'rounded-tl-md', below: 'rounded-bl-md' },
 } as const
 
+// Beside the bubble, on the side the row has room, level with its middle. They are there all
+// along and only show while the message is pointed at or one of them has focus, so showing them
+// moves nothing.
+const ACTIONS = (
+  <div className="shrink-0 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
+    <MessageActions />
+  </div>
+)
+
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
+ * What can be done with a message shows beside it while it is pointed at (see `MessageActions`).
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
 export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => (
-  <div data-role={role} className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}>
+  <div
+    data-role={role}
+    className={cn('group/message flex items-center gap-1', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+  >
+    {role === 'user' && ACTIONS}
     <div
       className={cn(
         'arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
@@ -76,5 +91,6 @@ export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => 
     >
       {children}
     </div>
+    {role === 'assistant' && ACTIONS}
   </div>
 )
