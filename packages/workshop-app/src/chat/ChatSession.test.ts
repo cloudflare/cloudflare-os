@@ -63,14 +63,12 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     return Promise.resolve(lease)
   })
   const sendChatMessage = vi.fn<Overseer['sendChatMessage']>(async () => {})
-  const newChat = vi.fn<Overseer['newChat']>(async () => 0)
 
   const overseer: ChatOverseer = {
     listChats,
     getChatHistory,
     subscribeToChat,
     sendChatMessage,
-    newChat,
     [Symbol.dispose]: dispose,
   }
   return {
@@ -79,7 +77,6 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     getChatHistory,
     subscribeToChat,
     sendChatMessage,
-    newChat,
     dispose,
     leaseDispose,
     /** What the server calls with chat activity. */
@@ -96,10 +93,16 @@ const ready = (session: ChatSession) => {
   return snapshot
 }
 
-const started = async (fake: ReturnType<typeof fakeOverseer>, options?: ConstructorParameters<typeof ChatSession>[1]) => {
-  const session = new ChatSession(() => fake.overseer, options)
+const started = async (
+  fake: ReturnType<typeof fakeOverseer>,
+  chatId = 0,
+  options?: ConstructorParameters<typeof ChatSession>[2],
+) => {
+  const session = new ChatSession(() => fake.overseer, chatId, options)
   session.start()
   await settled(session)
+  // The chat list can land just after the history.
+  await flush()
   return session
 }
 
@@ -109,23 +112,50 @@ const flush = async () => {
 
 describe('ChatSession', () => {
   describe('loading', () => {
-    it('shows the most recently active chat: its title and messages', async () => {
+    it('shows the chat it was opened on: its title and messages', async () => {
       const fake = fakeOverseer(
-        Promise.resolve([chat(0, 'Old chat', 100), chat(1, 'Newest chat', 300), chat(2, 'Middle chat', 200)]),
+        Promise.resolve([chat(0, 'Old chat', 100), chat(1, 'Opened chat', 50), chat(2, 'Newest chat', 300)]),
         { 1: page(userMessage(0, 'hello', 1)) },
       )
-      const session = await started(fake)
+      const session = await started(fake, 1)
 
       expect(fake.getChatHistory).toHaveBeenCalledExactlyOnceWith(1, undefined, 50)
-      expect(ready(session)).toMatchObject({ title: 'Newest chat', items: [{ kind: 'user', text: 'hello' }] })
+      expect(ready(session)).toMatchObject({ title: 'Opened chat', items: [{ kind: 'user', text: 'hello' }] })
     })
 
-    it('is ready and empty for a workspace with no chats yet', async () => {
-      const fake = fakeOverseer(Promise.resolve([]))
-      const session = await started(fake)
+    it('reports a chat that is not in the workspace', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Other chat', 1)]))
+      const session = await started(fake, 3)
 
-      expect(fake.getChatHistory).not.toHaveBeenCalled()
-      expect(ready(session)).toMatchObject({ title: undefined, items: [], thinking: false, streamingText: '' })
+      expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'This chat doesn’t exist, or was deleted.' })
+    })
+
+    it('shows the messages before the chat list arrives, then the title and agent state', async () => {
+      const chats = deferred<AiChatMetadata[]>()
+      const fake = fakeOverseer(chats.promise, { 0: page(userMessage(0, 'hello')) })
+      const session = new ChatSession(() => fake.overseer, 0)
+      session.start()
+      await settled(session)
+
+      expect(ready(session)).toMatchObject({ title: undefined, thinking: false, items: [{ text: 'hello' }] })
+
+      chats.resolve([chat(0, 'Chat', 1, agentAuthor)])
+      await flush()
+      expect(ready(session)).toMatchObject({ title: 'Chat', thinking: true })
+    })
+
+    it('keeps a live metadata update over the listed metadata that arrives after it', async () => {
+      const chats = deferred<AiChatMetadata[]>()
+      const fake = fakeOverseer(chats.promise)
+      const session = new ChatSession(() => fake.overseer, 0)
+      session.start()
+      await settled(session)
+
+      fake.server().metadata(chat(0, 'Renamed', 2, agentAuthor))
+      chats.resolve([chat(0, 'Old title', 1)])
+      await flush()
+
+      expect(ready(session)).toMatchObject({ title: 'Renamed', thinking: true })
     })
 
     it('reports why loading failed', async () => {
@@ -136,7 +166,7 @@ describe('ChatSession', () => {
     })
 
     it('reports a subscription that cannot be made', async () => {
-      const fake = fakeOverseer(Promise.resolve([]))
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       fake.subscribeToChat.mockReturnValueOnce(Promise.reject(new Error('subscription refused')))
       const session = await started(fake)
 
@@ -161,8 +191,8 @@ describe('ChatSession', () => {
     })
 
     it('notifies subscribers when the snapshot changes, and not after they unsubscribe', async () => {
-      const fake = fakeOverseer(Promise.resolve([]))
-      const session = new ChatSession(() => fake.overseer)
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = new ChatSession(() => fake.overseer, 0)
       const listener = vi.fn<() => void>()
       const unsubscribe = session.subscribe(listener)
       session.start()
@@ -326,7 +356,7 @@ describe('ChatSession', () => {
     it('when the agent stops, drops text that never became a message and reports the turn end', async () => {
       const onTurnEnded = vi.fn<() => void>()
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
-      const session = await started(fake, { onTurnEnded })
+      const session = await started(fake, 0, { onTurnEnded })
 
       fake.server().stream(0, { type: 'textDelta', delta: 'cut off' })
       fake.server().metadata(chat(0, 'Chat', 2))
@@ -338,7 +368,7 @@ describe('ChatSession', () => {
     it('does not report a turn end for a title change', async () => {
       const onTurnEnded = vi.fn<() => void>()
       const fake = fakeOverseer(Promise.resolve([chat(0, 'New Chat', 1)]))
-      const session = await started(fake, { onTurnEnded })
+      const session = await started(fake, 0, { onTurnEnded })
 
       fake.server().metadata(chat(0, 'Jira dashboard', 2))
 
@@ -347,8 +377,8 @@ describe('ChatSession', () => {
     })
 
     it('ignores activity in the workspace’s other chats', async () => {
-      const fake = fakeOverseer(Promise.resolve([chat(0, 'Old', 100), chat(1, 'Shown', 200)]))
-      const session = await started(fake)
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Other', 200), chat(1, 'Shown', 100)]))
+      const session = await started(fake, 1)
 
       fake.server().message(agentMessage(5, 'elsewhere', 0))
       fake.server().stream(0, { type: 'textDelta', delta: 'elsewhere' })
@@ -357,32 +387,22 @@ describe('ChatSession', () => {
       expect(ready(session)).toMatchObject({ title: 'Shown', items: [], streamingText: '', thinking: false })
     })
 
-    it('holds what arrives while still loading until it knows which chat is shown', async () => {
-      const chats = deferred<AiChatMetadata[]>()
-      const fake = fakeOverseer(chats.promise, { 1: page(userMessage(0, 'history', 1)) })
-      const session = new ChatSession(() => fake.overseer)
+    it('holds what arrives while still loading, and applies it over the history', async () => {
+      const history = deferred<AiChatHistoryPage>()
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Other', 200), chat(1, 'Shown', 100)]))
+      fake.getChatHistory.mockReturnValueOnce(history.promise)
+      const session = new ChatSession(() => fake.overseer, 1)
       session.start()
 
       fake.server().message(agentMessage(7, 'for the other chat', 0))
       fake.server().message(agentMessage(1, 'for the shown chat', 1))
-      chats.resolve([chat(0, 'Old', 100), chat(1, 'Shown', 200)])
+      history.resolve(page(userMessage(0, 'history', 1)))
       await settled(session)
 
       expect(ready(session).items).toMatchObject([
         { kind: 'user', text: 'history' },
         { kind: 'assistant', text: 'for the shown chat' },
       ])
-    })
-
-    it('adopts the first chat to report in when the workspace had none', async () => {
-      const fake = fakeOverseer(Promise.resolve([]))
-      const session = await started(fake)
-
-      fake.server().metadata(chat(3, 'Created elsewhere', 1))
-      fake.server().message(userMessage(0, 'hi', 3))
-      fake.server().message(userMessage(0, 'not this one', 4))
-
-      expect(ready(session)).toMatchObject({ title: 'Created elsewhere', items: [{ text: 'hi' }] })
     })
 
     it('discards streaming when the server instance changes, but not on a plain reconnect', async () => {
@@ -415,32 +435,13 @@ describe('ChatSession', () => {
 
   describe('send', () => {
     it('sends into the chat that is shown', async () => {
-      const fake = fakeOverseer(Promise.resolve([chat(4, 'Chat', 1)]))
-      const session = await started(fake)
+      const fake = fakeOverseer(Promise.resolve([chat(2, 'Other', 1), chat(4, 'Chat', 1)]))
+      const session = await started(fake, 4)
 
       await session.send('hello', 'model-1')
 
       expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1')
-      expect(fake.newChat).not.toHaveBeenCalled()
       expect(ready(session).sendError).toBeUndefined()
-    })
-
-    it('starts a chat when the workspace has none, and adopts the events that arrive before it returns', async () => {
-      const created = deferred<number>()
-      const fake = fakeOverseer(Promise.resolve([]))
-      fake.newChat.mockReturnValueOnce(created.promise)
-      const session = await started(fake)
-
-      const sending = session.send('first message', 'model-1')
-      fake.server().message(userMessage(0, 'first message', 9))
-      created.resolve(9)
-      await sending
-
-      expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('first message', 'model-1')
-      expect(ready(session).items).toMatchObject([{ kind: 'user', text: 'first message' }])
-
-      await session.send('second', 'model-1')
-      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(9, 'second', 'model-1')
     })
 
     it('reports a failed send, and clears the report on the next send', async () => {
@@ -456,37 +457,39 @@ describe('ChatSession', () => {
     })
 
     it('does nothing before the conversation has loaded', async () => {
-      const chats = deferred<AiChatMetadata[]>()
-      const fake = fakeOverseer(chats.promise)
-      const session = new ChatSession(() => fake.overseer)
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      fake.getChatHistory.mockReturnValueOnce(deferred<AiChatHistoryPage>().promise)
+      const session = new ChatSession(() => fake.overseer, 0)
       session.start()
 
       await session.send('too early', 'model-1')
 
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
-      expect(fake.newChat).not.toHaveBeenCalled()
     })
   })
 
   describe('stop', () => {
     it('releases the workspace and the subscription, and drops a load that finishes afterwards', async () => {
       const chats = deferred<AiChatMetadata[]>()
-      const fake = fakeOverseer(chats.promise, { 0: page(userMessage(0, 'late')) })
-      const session = new ChatSession(() => fake.overseer)
+      const history = deferred<AiChatHistoryPage>()
+      const fake = fakeOverseer(chats.promise)
+      fake.getChatHistory.mockReturnValueOnce(history.promise)
+      const session = new ChatSession(() => fake.overseer, 0)
       session.start()
       session.stop()
       await flush()
       expect(fake.dispose).toHaveBeenCalledOnce()
       expect(fake.leaseDispose).toHaveBeenCalledOnce()
 
+      history.resolve(page(userMessage(0, 'late')))
       chats.resolve([chat(0, 'Late chat', 1)])
       await flush()
       expect(session.getSnapshot()).toEqual({ status: 'loading' })
     })
 
     it('does not dispose twice, and is harmless before start', async () => {
-      const fake = fakeOverseer(Promise.resolve([]))
-      const session = new ChatSession(() => fake.overseer)
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = new ChatSession(() => fake.overseer, 0)
       session.stop()
       expect(fake.dispose).not.toHaveBeenCalled()
 
@@ -500,7 +503,7 @@ describe('ChatSession', () => {
 
     it('opens nothing for a session that was never started', () => {
       const open = vi.fn<() => ChatOverseer>()
-      const session = new ChatSession(open)
+      const session = new ChatSession(open, 0)
       expect(open).not.toHaveBeenCalled()
       expect(session.getSnapshot()).toEqual({ status: 'loading' })
     })
@@ -511,28 +514,28 @@ describe('ChatSession', () => {
       const first = deferred<AiChatMetadata[]>()
       const second = deferred<AiChatMetadata[]>()
       const one = fakeOverseer(first.promise, { 0: page(userMessage(0, 'from the first run')) })
-      const two = fakeOverseer(second.promise, { 5: page(userMessage(0, 'from the second run', 5)) })
+      const two = fakeOverseer(second.promise, { 0: page(userMessage(0, 'from the second run')) })
       const overseers = [one.overseer, two.overseer]
-      const session = new ChatSession(() => overseers.shift()!)
+      const session = new ChatSession(() => overseers.shift()!, 0)
 
       session.start()
       session.stop()
       session.start()
-      second.resolve([chat(5, 'Second', 1)])
+      second.resolve([chat(0, 'Second', 1)])
       await settled(session)
       first.resolve([chat(0, 'First', 2)])
       await flush()
 
       expect(one.dispose).toHaveBeenCalledOnce()
       expect(two.dispose).not.toHaveBeenCalled()
-      expect(ready(session)).toMatchObject({ title: 'Second' })
+      expect(ready(session)).toMatchObject({ title: 'Second', items: [{ text: 'from the second run' }] })
     })
 
     it('does not let the first run’s subscriber feed the second run', async () => {
       const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const two = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const overseers = [one.overseer, two.overseer]
-      const session = new ChatSession(() => overseers.shift()!)
+      const session = new ChatSession(() => overseers.shift()!, 0)
 
       session.start()
       session.stop()

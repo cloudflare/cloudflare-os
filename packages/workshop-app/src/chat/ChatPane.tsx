@@ -6,22 +6,24 @@ import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { Button } from '@/components/Button'
 import { Markdown } from '@/components/Markdown'
 import { ChatLayout } from '@/layouts/ChatLayout'
-import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatItemView } from './ChatItemView'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
 
-/** One workspace's conversation, live: its chat's title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId }: { workspaceId: string }) => {
-  const { chat, send, loadEarlier } = useChatSession(workspaceId)
+export type ChatPaneProps = {
+  workspaceId: string
+  chatId: number
+  /** The title to show until the chat's own arrives, e.g. from the list it was opened from. */
+  initialTitle?: string
+}
+
+/** One chat, live: its title, the messages as they arrive, and the composer. */
+export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) => {
+  const { chat, send, loadEarlier } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
-  const workspaces = useWorkspaces()
-  const workspaceTitle =
-    workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
-  // The chat's own title once known; until then (or with no chat yet) the workspace's.
-  const title = (chat.status === 'ready' ? chat.title : undefined) ?? workspaceTitle
+  const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
   const messages = useMemo(() => items?.map((item) => ({ id: item.id, content: <ChatItemView item={item} /> })) ?? [], [items])
 

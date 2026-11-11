@@ -1,20 +1,20 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 
-export type ConversationListItemProps = {
+export type WorkspaceListItemProps = {
   /** Identifies the row to the sidebar's shared highlight. */
   id?: string
   workspaceLabel: string
   title: string
-  /** A line under the title: the latest message, or when the conversation was last active. */
+  /** A line under the title, e.g. when the workspace was last active. */
   subtitle?: string
   unread?: boolean
   selected?: boolean
   onSelect: () => void
 }
 
-/** One conversation in the sidebar: its workspace, title, subtitle and unread dot. */
-export const ConversationListItem = ({
+/** One workspace in the sidebar: its icon, title, subtitle and unread dot. */
+export const WorkspaceListItem = ({
   id,
   workspaceLabel,
   title,
@@ -22,10 +22,10 @@ export const ConversationListItem = ({
   unread,
   selected,
   onSelect,
-}: ConversationListItemProps) => (
+}: WorkspaceListItemProps) => (
   <button
     type="button"
-    data-conversation-id={id}
+    data-workspace-id={id}
     onClick={onSelect}
     aria-current={selected || undefined}
     className={cn(

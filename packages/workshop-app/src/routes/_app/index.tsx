@@ -29,9 +29,9 @@ function Home() {
     setProblem(undefined)
     setPending(text)
     try {
-      const workspaceId = await startConversation(() => api.newWorkspace(), text, model.id)
+      const { workspaceId, chatId } = await startConversation(() => api.newWorkspace(), text, model.id)
       refreshWorkspaces()
-      await navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })
+      await navigate({ to: '/workspace/$workspaceId/$chatId', params: { workspaceId, chatId } })
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error))
       setPending(undefined)

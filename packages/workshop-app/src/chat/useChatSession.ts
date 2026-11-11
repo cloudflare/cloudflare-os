@@ -4,11 +4,10 @@ import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatSession, type ChatSnapshot } from './ChatSession'
 
 /**
- * The live conversation of one workspace, and a way to send to it. The session is fixed to the
- * `workspaceId` it is created with, so give the calling component a `key` of the id to switch
- * workspaces.
+ * One chat, live, and a way to send to it. The session is fixed to the chat it is created with, so
+ * give the calling component a `key` of the ids to switch chats.
  */
-export const useChatSession = (workspaceId: string): {
+export const useChatSession = (workspaceId: string, chatId: number): {
   chat: ChatSnapshot
   send: ChatSession['send']
   loadEarlier: ChatSession['loadEarlier']
@@ -16,9 +15,9 @@ export const useChatSession = (workspaceId: string): {
   const { api } = useApi()
   const refreshWorkspaces = useRefreshWorkspaces()
   // Creating a session is free; it connects only when started, in the effect below. When a turn
-  // ends the workspace's title may have changed, so the sidebar reloads.
+  // ends the workspace's title and activity may have changed, so the sidebar reloads.
   const [session] = useState(
-    () => new ChatSession(() => api.openWorkspace(workspaceId), { onTurnEnded: refreshWorkspaces }),
+    () => new ChatSession(() => api.openWorkspace(workspaceId), chatId, { onTurnEnded: refreshWorkspaces }),
   )
 
   useEffect(() => {
