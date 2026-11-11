@@ -286,6 +286,16 @@ describe("addedClassDeletions", () => {
     assert.deepEqual(addedClassDeletions(undefined, "{ \"deleted_classes\": [\"Notes\"] }"), ["Notes"]);
   });
 
+  // Clanky on #1093, round 6: a `]` in a comment ended the list early, and `Drafts` went unseen.
+  it("reads a deletion list past a `]` in a comment or a string", () => {
+    const line = base.replace("    'Old',\n", "    'Old', // see [1]\n    'Drafts',\n");
+    const block = base.replace("    'Old',\n", "    'Old', /* was notes[] */\n    'Drafts',\n");
+    assert.deepEqual(addedClassDeletions(base, line), ["Drafts"]);
+    assert.deepEqual(addedClassDeletions(base, block), ["Drafts"]);
+    assert.deepEqual(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old',\n    'Dra]fts',\n")), ["Dra]fts"]);
+    assert.equal(addedClassDeletions(base, base.replace("    'Old',\n", "    'Old', /* never closed\n    'Drafts',\n")), undefined);
+  });
+
   it("finds none when only other migrations or comments change", () => {
     assert.deepEqual(addedClassDeletions(base, base.replace("],", "  { tag: 'v3', new_sqlite_classes: ['Inbox'] },\n],")), []);
     assert.deepEqual(addedClassDeletions(base, `// Old was dropped in v2.\n${base}`), []);

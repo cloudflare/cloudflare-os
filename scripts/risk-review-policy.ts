@@ -553,23 +553,36 @@ function dependencyMap(text: string): Map<string, string> | undefined {
   return map;
 }
 
+/** After a `deleted_classes` key: its closing quote, if any, the colon and the list's `[`. */
+const LIST_OPEN = /["']?\s*:\s*\[/y;
+/** What may stand between a deletion list's items: spaces, commas and comments. */
+const LIST_FILLER = /(?:\s|,|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y;
+/** One item of a deletion list: a plain string literal. */
+const LIST_ITEM = /(["'])([^"'\\\n]+)\1/y;
+
 /**
  * The class names in a Worker config's Durable Object deletion lists (`deleted_classes`), the
- * migrations that drop a class's data. `undefined` when any mention of the key is not followed by a
- * list of plain string literals (a spread, an identifier, a template), since its classes cannot be
- * read.
+ * migrations that drop a class's data. Each list is read item by item, so a `]` in a comment or a
+ * string does not end it. `undefined` when any mention of the key is not followed by a list of
+ * plain string literals (a spread, an identifier, a template, a comment that never closes), since
+ * its classes cannot be read.
  */
 function deletedClassNames(text: string): string[] | undefined {
-  const mentions = text.match(/deleted_?[cC]lasses/g)?.length ?? 0;
-  const lists = [...text.matchAll(/deleted_?[cC]lasses["']?\s*:\s*\[([^\]]*)\]/g)];
-  if (lists.length !== mentions) return undefined;
   const classes: string[] = [];
-  for (const [, body = ""] of lists) {
-    const items = body.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, "").split(",").map((item) => item.trim()).filter(Boolean);
-    for (const item of items) {
-      const name = /^(["'])([^"'\\]+)\1$/.exec(item)?.[2];
+  for (const mention of text.matchAll(/deleted_?[cC]lasses/g)) {
+    LIST_OPEN.lastIndex = mention.index + mention[0].length;
+    if (!LIST_OPEN.test(text)) return undefined;
+    let at = LIST_OPEN.lastIndex;
+    for (;;) {
+      LIST_FILLER.lastIndex = at;
+      LIST_FILLER.test(text);
+      at = LIST_FILLER.lastIndex;
+      if (text[at] === "]") break;
+      LIST_ITEM.lastIndex = at;
+      const name = LIST_ITEM.exec(text)?.[2];
       if (name === undefined) return undefined;
       classes.push(name);
+      at = LIST_ITEM.lastIndex;
     }
   }
   return classes;
