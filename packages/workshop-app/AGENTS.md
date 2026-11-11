@@ -42,22 +42,30 @@ only changed rows render.
 
 The conversation is what was said, so it reads like chatting with someone. How a reply came about
 (the tools the agent called, what it read, what it thought) is never a row. While the agent works,
-the mascot shows below the last message with what it is doing ("Running code…"); that status opens
-to the steps taken since the last message, with the one under way shown open, including the reply
-as it is drafted. A reply becomes a message only once it is written, and its steps are then gone.
+the mascot shows at the end of the conversation with what it is doing ("Running code…"); that
+status opens to the steps taken since the last message, with the one under way shown open,
+including the reply as it is drafted. A reply becomes a message only once it is written, and its
+steps are then gone. The mascot's room is always kept, so its coming and going moves nothing.
 
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
 waiting on the user for (a pending approval or connection request) is shown at the end of the turn,
 never where it happened, so it cannot be left behind by what the agent wrote afterwards. The last
-turn's are kept apart (`pinned`) and rendered below the mascot. Once the user has answered a
-request it is history and goes back to where it happened; an action a standing rule approved was
-decided as it was made, and is shown there the same way. What a person then did to the chat's
+turn's are kept apart (`pinned`) and rendered under the conversation. Once the user has answered a
+request it is history and stays where it was answered: below what had been written by then, above
+what came after, never moved back up among earlier messages. An action a standing rule approved
+was decided as it was made, and is shown there the same way. What a person then did to the chat's
 changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
 when adding a kind.
 
+Nothing in the conversation jumps. A row that arrives while the chat is open opens to its height
+as the bubble or card in it grows in (`Arrival.css`; the message list marks the row), and a row of
+the live output that leaves closes (`LiveRows`). Give a new block that can arrive the `arrives`
+class, and put what can come and go in the live output in a `LiveRows.Row`.
+
 Consecutive messages from one sender are drawn as a run (closer together, with smaller corners
 where they meet). `MessageBubble` does that itself between sibling bubbles; the message list wraps
-each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`).
+each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`). A message that
+arrives into a run settles into it as it grows in.
 
 What is open in a row lives in `DisclosureStore`, not in the block: the list unmounts rows far off
 screen.
