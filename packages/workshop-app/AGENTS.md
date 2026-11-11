@@ -80,8 +80,10 @@ reads it as anyone would, and a client that knows nothing of replies shows a quo
 shows that line above the draft while it is a reply, over any attachments, and the feed sets it
 apart from what was written when it draws the message. Either line goes to the message it quotes
 when clicked (`MessageList`'s `scrollToMessage`): by scrolling when the message's row is mounted,
-and by fading the conversation over to it when its page is only a spacer. A sent reply finds its
-message by the line, since that is all it carries.
+and by fading the conversation over to it when the way there runs over a page that is only a
+spacer. A sent reply finds its message by the line, since that is all it carries, fetching earlier
+history until it turns up (`ChatSession.findQuoted`). A reply that named its message would need
+neither, which is for the backend to support.
 
 Points in the conversation that nobody said are lines across it (`FeedDivider`): another model
 taking over, what people did to the changes, and a compaction. A compaction asked for with

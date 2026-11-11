@@ -1,8 +1,14 @@
-import type { AssistantItem, UserItem } from './chatItems'
+import type { AssistantItem, ChatItem, UserItem } from './chatItems'
 
 // A reply carries what it answers inside its own text, as a Markdown blockquote ahead of what was
 // written. There is no reply in the protocol: this way the agent reads the quote as anyone would,
 // and a client that knows nothing of replies shows it as the quote it is.
+//
+// TODO: this wants support from the backend: a message that names the sequence of the one it
+// replies to (on `sendChatMessage` and `AiChatMessage`). Without it a reply can only be matched to
+// its message by the quoted line, which is a guess when two messages read the same, breaks if
+// how a line is made here ever changes, and means paging back through history to find a message
+// that a sequence would let be fetched directly (see `ChatSession.findQuoted`).
 
 /** How much of a message is quoted. Enough to tell which one it was, not to repeat it. */
 const QUOTE_LENGTH = 240
@@ -31,6 +37,17 @@ export const quoteLine = (item: UserItem | AssistantItem): string =>
   quoteOf(item.kind === 'assistant'
     ? item.text
     : item.parts.map((part) => (part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`)).join(''))
+
+/**
+ * The message a reply answers, among the rows of the conversation: the nearest one before the
+ * reply that would be quoted as the line the reply carries, which is all it has to go by.
+ */
+export const quotedBy = (reply: UserItem, rows: readonly ChatItem[]): UserItem | AssistantItem | undefined => {
+  if (reply.quote === undefined) return undefined
+  const at = rows.findIndex(({ key }) => key === reply.key)
+  return rows.slice(0, at === -1 ? rows.length : at)
+    .findLast((row): row is UserItem | AssistantItem => (row.kind === 'user' || row.kind === 'assistant') && quoteLine(row) === reply.quote)
+}
 
 /** The text to send for a reply: the quote, then what was written. */
 export const withQuote = (quote: string, text: string) => `> ${quote}\n\n${text}`

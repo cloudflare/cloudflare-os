@@ -6,7 +6,7 @@ import { ChatSession, type ChatSnapshot } from './ChatSession'
 /** What can be asked of a chat. Each is stable for the life of the session. */
 export type ChatActions = Pick<
   ChatSession,
-  'send' | 'loadEarlier' | 'retry' | 'approveAction' | 'rejectAction' | 'denyConnection' | 'setHookEnabled'
+  'send' | 'loadEarlier' | 'findQuoted' | 'retry' | 'approveAction' | 'rejectAction' | 'denyConnection' | 'setHookEnabled'
 >
 
 /**

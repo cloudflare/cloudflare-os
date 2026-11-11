@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
@@ -51,10 +51,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
   const items = chat.status === 'ready' ? chat.items : undefined
   const restricted = workspaces.status === 'ready' &&
     workspaces.workspaces.some(({ id, containsRestrictedData }) => id === workspaceId && containsRestrictedData === true)
-  // The conversation as it stands, for what a row asks for that depends on the rows around it.
-  // Read when asked, so that the rows' handlers do not change with every message.
-  const conversation = useRef(items)
-  useEffect(() => { conversation.current = items })
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
@@ -63,16 +59,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
         setReply({ key: item.key, quote: quoteLine(item) })
         composer.current?.focus()
       },
-      // A reply only carries a line of what it answers (see replyQuote.ts), so the message is
-      // found by that line: the nearest one before the reply that would be quoted the same.
-      // Nothing happens when it is further back than has been loaded.
-      onShowQuoted: (replying) => {
-        const rows = conversation.current ?? []
-        const at = rows.indexOf(replying)
-        const quoted = rows.slice(0, at === -1 ? rows.length : at)
-          .findLast((row) => (row.kind === 'user' || row.kind === 'assistant') && quoteLine(row) === replying.quote)
-        if (quoted) list.current?.scrollToMessage(quoted.key)
-      },
+      // The message may have had to be fetched. The list has its row by the next frame.
+      onShowQuoted: (replying) => void actions.findQuoted(replying).then((key) => {
+        if (key) requestAnimationFrame(() => list.current?.scrollToMessage(key))
+      }),
       // TODO: the attachment preview.
       onOpenAttachment: unavailable('Previewing attachments'),
       // TODO: open the workpiece in the output pane, once there is one.
