@@ -39,6 +39,13 @@ export const GMAIL_RESOURCE: SupportedResource = {
 const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
 
 /**
+ * What the Drive types' creation configurator takes (see
+ * SupportedResource.creationConfigurationDescription): the folder `configurator/
+ * creation-location-configurator-ui.tsx` opens on and returns.
+ */
+const CREATION_FOLDER = "the URL of the Google Drive folder to create it in";
+
+/**
  * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
  * Workshop asks for the card's types together, though their scopes differ.
  */
@@ -50,6 +57,7 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   creationConfigurator: true,
+  creationConfigurationDescription: CREATION_FOLDER,
   groupedWith: "drive",
 };
 
@@ -67,6 +75,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   creationConfigurator: true,
+  creationConfigurationDescription: CREATION_FOLDER,
   groupedWith: "drive",
 };
 
@@ -82,6 +91,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   creationConfigurator: true,
+  creationConfigurationDescription: CREATION_FOLDER,
   groupedWith: "drive",
 };
 
@@ -198,6 +208,7 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   grantable: true,
   creatable: true,
   creationConfigurator: true,
+  creationConfigurationDescription: CREATION_FOLDER,
   groupedWith: "drive",
 };
 

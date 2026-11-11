@@ -302,7 +302,10 @@ Google and no account is involved.
 
 A creation is never auto-approved. The approver picks which of their connected Google accounts to
 create the file in, and where in that account's Drive (My Drive by default, or any folder or shared
-drive the account can add files to), and the binding switches to the real file. A folder is made in
+drive the account can add files to), and the binding switches to the real file. The picker opens
+on the folder the agent suggested, read from its Drive link, when it suggests one, and says the
+agent chose it until the approver chooses another. A suggestion that names no folder the account
+can reach selects nothing, and the picker says so, so the approver must choose. A folder is made in
 place, by an account that also holds the Drive folder grant, without which its binding could read
 only what this app puts in it. The Docs, Sheets and Slides APIs cannot name a folder, and Drive's
 own `files.create` would lose the default `Sheet1` and fixed Slides IDs the simulations rely on, so
