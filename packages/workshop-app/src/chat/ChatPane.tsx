@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
+import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
-import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
 import { UserMessage } from '@/blocks/UserMessage'
 import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -85,6 +85,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
     }) ?? []
   }, [items, disclosure, handlers, restricted])
 
+  const working = chat.status === 'ready' && (chat.agentActive || Boolean(chat.streamingText))
+
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
     if (model.status !== 'ready') return setProblem(describeModelProblem(model))
@@ -98,7 +100,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
       {chat.status === 'ready' && (
         <MessageList
           messages={messages}
-          streaming={chat.agentActive || Boolean(chat.streamingText)}
+          streaming={working}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
         >
           {chat.openTools && row(chat.openTools)}
@@ -112,8 +114,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
             />
           )}
           {chat.streamingTools && row(chat.streamingTools)}
-          {chat.compacting && <ThinkingIndicator>Compacting the conversation…</ThinkingIndicator>}
-          {chat.thinking && <ThinkingIndicator />}
+          <AssistantPresence working={working}>
+            {chat.compacting ? 'Compacting the conversation…' : chat.thinking ? 'Thinking…' : undefined}
+          </AssistantPresence>
           {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
           {chat.pinned.map(row)}
           {chat.queuedSteers.map(({ text, from }, index) => (
