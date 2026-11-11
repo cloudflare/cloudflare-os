@@ -38,6 +38,25 @@ function specifiers(source: string): { specifier: string | undefined; statement:
   return found;
 }
 
+/**
+ * Ways to load code that an import statement does not show: `require` and `createRequire` (from the
+ * allowed `node:module`), resolving a path with `import.meta.resolve`, and loading a native addon.
+ */
+const HIDDEN_LOADERS = /\bcreateRequire\b|\brequire\s*\(|\bimport\.meta\.resolve\b|\bprocess\.dlopen\b/;
+
+/** Why `source` breaks the judge-code rule, or `undefined` when it keeps it. */
+function importProblem(source: string, from: string): string | undefined {
+  const hidden = HIDDEN_LOADERS.exec(source);
+  if (hidden) return `loads code outside an import: ${hidden[0]}`;
+  for (const { specifier, statement } of specifiers(source)) {
+    if (specifier === undefined) return `non-literal dynamic import: ${statement}`;
+    if (specifier.startsWith("node:")) continue;
+    if (!specifier.startsWith(".")) return `package import: ${statement}`;
+    if (!isJudgePath(resolve(dirname(from), specifier))) return `import outside judge code: ${statement}`;
+  }
+  return undefined;
+}
+
 describe("judge code imports", () => {
   const files = judgeFiles();
 
@@ -47,12 +66,23 @@ describe("judge code imports", () => {
 
   for (const path of files) {
     it(`${relative(ROOT, path)} imports only node: builtins and judge modules`, () => {
-      for (const { specifier, statement } of specifiers(readFileSync(path, "utf8"))) {
-        assert.ok(specifier !== undefined, `non-literal dynamic import: ${statement}`);
-        if (specifier.startsWith("node:")) continue;
-        assert.ok(specifier.startsWith("."), `package import: ${statement}`);
-        assert.ok(isJudgePath(resolve(dirname(path), specifier)), `import outside judge code: ${statement}`);
-      }
+      assert.equal(importProblem(readFileSync(path, "utf8"), path), undefined);
     });
   }
+
+  it("rejects every way to load code an import statement does not show", () => {
+    const from = join(ROOT, "scripts", "risk-review.ts");
+    for (const source of [
+      'import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("zod");',
+      'const zod = require("zod");',
+      'const path = import.meta.resolve("zod");',
+      'process.dlopen(module, "./addon.node");',
+      'import { z } from "zod";',
+      'const name = "zod";\nawait import(name);',
+      'import { x } from "../packages/workshop-backend/src/user.ts";',
+    ]) {
+      assert.ok(importProblem(source, from), source);
+    }
+    assert.equal(importProblem('import { readFileSync } from "node:fs";\nimport { x } from "./risk-review-policy.ts";', from), undefined);
+  });
 });

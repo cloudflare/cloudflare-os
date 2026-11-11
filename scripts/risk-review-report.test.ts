@@ -6,6 +6,8 @@ import { BASE, HEAD, proofJson, verdictJson } from "./risk-review-fixtures/artif
 import {
   buildCalibration,
   buildReport,
+  followUps,
+  type GitHubGraphql,
   calibrate,
   readCalibrationRecord,
   type CalibrationPull,
@@ -296,41 +298,69 @@ describe("readCalibrationRecord", () => {
 });
 
 describe("buildCalibration", () => {
-  it("reads every record on every head, including one a force push replaced, and counts a catch a commit followed", async () => {
+  it("reads the head a force push replaced, from #1021's recorded event, and counts a catch made on it", async () => {
     const R = `/repos/${REPOSITORY}`;
-    const OLD = "c".repeat(40);
-    const runOn = (day: number, score: number) => ({
+    // Recorded: #1021's force push, which GraphQL reports with the head it replaced and the one it left.
+    const recorded = JSON.parse(readFileSync(new URL("./risk-review-fixtures/force-push-1021.json", import.meta.url), "utf8")).data;
+    const [push] = recorded.repository.pullRequest.timelineItems.nodes;
+    const OLD: string = push.beforeCommit.oid;
+    const NEW: string = push.afterCommit.oid;
+    const pushed = Date.parse(push.createdAt);
+    const iso = (offsetHours: number) => new Date(pushed + offsetHours * 3_600_000).toISOString();
+    const runOn = (offsetHours: number, score: number) => ({
       app: { slug: "risk-review" },
       status: "completed",
-      completed_at: new Date(NOW_CAL - day * DAY).toISOString(),
-      output: { summary: summaryWithScores(901, score, score) },
+      completed_at: iso(offsetHours),
+      output: { summary: summaryWithScores(1021, score, score) },
     });
     const responses: Record<string, Json> = {
       [`${R}/contents/.github/maintainers`]: { content: Buffer.from("deregtd\nkentonv\n").toString("base64") },
       [`${R}/contents/.github/automerge-bands.json`]: { content: Buffer.from(readFileSync(new URL("../.github/automerge-bands.json", import.meta.url))).toString("base64") },
       [R]: { default_branch: "main" },
-      [`${R}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`]: [{ ...merged(901, new Date(NOW_CAL - 20 * DAY).toISOString()) }],
-      [`${R}/pulls/901/commits?per_page=100&page=1`]: [{ sha: HEAD, commit: { committer: { date: new Date(NOW_CAL - 22 * DAY).toISOString() } } }],
-      [`${R}/issues/901/timeline?per_page=100&page=1`]: [
-        { event: "head_ref_force_pushed", commit_id: OLD, created_at: new Date(NOW_CAL - 26 * DAY).toISOString() },
-      ],
-      // Only the old head's record scored 9. deregtd commented on it; then HEAD was pushed.
-      [`${R}/issues/901/comments?per_page=100&page=1`]: [{ user: { login: "deregtd", type: "User" }, created_at: new Date(NOW_CAL - 24 * DAY).toISOString() }],
-      [`${R}/pulls/901/comments?per_page=100&page=1`]: [],
-      [`${R}/pulls/901/reviews?per_page=100&page=1`]: [{ user: { login: "kentonv", type: "User" }, state: "APPROVED", submitted_at: new Date(NOW_CAL - 21 * DAY).toISOString() }],
-      [`${R}/commits/${HEAD}/check-suites?per_page=100`]: { check_suites: [{ created_at: new Date(NOW_CAL - 22 * DAY).toISOString() }] },
-      [`${R}/commits/${OLD}/check-suites?per_page=100`]: { check_suites: [] },
-      [`${R}/commits/${HEAD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(21.5, 7)] },
-      [`${R}/commits/${OLD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(25, 9), { ...runOn(24.5, 10), app: { slug: "someone-else" } }, { ...runOn(24.8, 10), conclusion: "cancelled", output: { summary: "A later run decides this commit." } }] },
+      [`${R}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`]: [{ ...merged(1021, iso(30)) }],
+      // After the rebase, only the new head is on the branch.
+      [`${R}/pulls/1021/commits?per_page=100&page=1`]: [{ sha: NEW, commit: { committer: { date: iso(-0.5) } } }],
+      // The old head scored 9/9; deregtd commented on it; the force push replaced it with one scoring 7/7.
+      [`${R}/issues/1021/comments?per_page=100&page=1`]: [{ user: { login: "deregtd", type: "User" }, created_at: iso(-1) }],
+      [`${R}/pulls/1021/comments?per_page=100&page=1`]: [],
+      [`${R}/pulls/1021/reviews?per_page=100&page=1`]: [{ user: { login: "kentonv", type: "User" }, state: "APPROVED", submitted_at: iso(2) }],
+      [`${R}/commits/${NEW}/check-suites?per_page=100`]: { check_suites: [{ created_at: push.createdAt }] },
+      [`${R}/commits/${OLD}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(-5) }] },
+      [`${R}/commits/${NEW}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(1, 7)] },
+      [`${R}/commits/${OLD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: {
+        check_runs: [runOn(-3, 9), { ...runOn(-2.5, 10), app: { slug: "someone-else" } }, { ...runOn(-2.8, 10), conclusion: "cancelled", output: { summary: "A later run decides this commit." } }],
+      },
     };
     const get: GitHubGet = async (path) => {
       const response = responses[path];
       if (response === undefined) throw new Error(`unexpected request ${path}`);
       return response;
     };
-    const rows = await buildCalibration(get, { repository: REPOSITORY, app: "risk-review", since: new Date(NOW_CAL - 30 * DAY), until: new Date(NOW_CAL), now: new Date(NOW_CAL) });
+    const graphql: GitHubGraphql = async (query, variables) => {
+      assert.match(query, /HeadRefForcePushedEvent/);
+      assert.equal(variables.number, 1021);
+      return recorded;
+    };
+    const now = new Date(pushed + 20 * 86_400_000);
+    const rows = await buildCalibration(get, graphql, { repository: REPOSITORY, app: "risk-review", since: new Date(pushed - 86_400_000), until: now, now });
     const nine = rows.find((entry) => entry.threshold === 9);
-    assert.deepEqual(nine?.misses, [{ number: 901, why: ["@deregtd commented, then a commit followed"] }]);
+    assert.deepEqual(nine?.misses, [{ number: 1021, why: ["@deregtd commented, then a commit followed"] }]);
     assert.equal(rows.find((entry) => entry.threshold === 10), undefined);
+  });
+});
+
+describe("followUps", () => {
+  it("counts a fix that links the pull request, as #1001 links #894", () => {
+    // Recorded: #1001's title and body, which name #894 only by a URL with a fragment.
+    const fix = JSON.parse(readFileSync(new URL("./risk-review-fixtures/fix-1001.json", import.meta.url), "utf8"));
+    const culprit = merged(894, "2026-11-03T18:00:00Z");
+    const follow = merged(1001, fix.merged_at, fix.title, fix.body);
+    assert.deepEqual(followUps(culprit, [culprit, follow], REPOSITORY), [{ number: 1001, revert: false }]);
+    for (const body of ["See https://github.com/cloudflare/cloudflare-os/pull/894", "cloudflare/cloudflare-os#894", "#894"]) {
+      assert.equal(followUps(culprit, [merged(1002, fix.merged_at, "Fix", body)], REPOSITORY).length, 1, body);
+    }
+    for (const body of ["https://github.com/cloudflare/cloudflare-os/pull/8940", "https://github.com/someone/fork/pull/894", "#8941"]) {
+      assert.deepEqual(followUps(culprit, [merged(1002, fix.merged_at, "Fix", body)], REPOSITORY), [], body);
+    }
   });
 });

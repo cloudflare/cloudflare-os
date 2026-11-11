@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   addedClassDeletions,
   addedDependencies,
+  changedInstallSettings,
   classifyChangeset,
   isCatalogVersionBump,
   parseEscapeSnapshot,
@@ -14,6 +15,7 @@ import {
   type ContentFacts,
   type EscapeEntry,
   type EscapeSnapshot,
+  type Json,
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
@@ -298,6 +300,34 @@ describe("addedClassDeletions", () => {
 function manifest(spec: string): string {
   return JSON.stringify({ dependencies: { zod: spec } });
 }
+
+describe("changedInstallSettings", () => {
+  const base = JSON.stringify({ dependencies: { zod: "catalog:" }, scripts: { build: "vp run build", test: "vitest" } });
+
+  it("names each install setting a manifest adds or changes", () => {
+    const cases: [Record<string, Json>, string][] = [
+      [{ pnpm: { overrides: { zod: "npm:evil@1.0.0" } } }, "pnpm"],
+      [{ pnpm: { patchedDependencies: { zod: "patches/zod.patch" } } }, "pnpm"],
+      [{ overrides: { zod: "npm:evil@1.0.0" } }, "overrides"],
+      [{ resolutions: { zod: "npm:evil@1.0.0" } }, "resolutions"],
+      [{ scripts: { build: "vp run build", test: "vitest", preinstall: "node x.js" } }, "scripts.preinstall"],
+      [{ scripts: { build: "vp run build", test: "vitest", install: "node x.js" } }, "scripts.install"],
+      [{ scripts: { build: "vp run build", test: "vitest", postinstall: "node x.js" } }, "scripts.postinstall"],
+      [{ scripts: { build: "vp run build", test: "vitest", prepare: "node x.js" } }, "scripts.prepare"],
+    ];
+    for (const [change, name] of cases) {
+      const head = JSON.stringify({ ...JSON.parse(base), ...change });
+      assert.deepEqual(changedInstallSettings(base, head), [name], name);
+    }
+  });
+
+  it("ignores other scripts and unchanged settings, and fails closed on an unreadable manifest", () => {
+    const head = JSON.stringify({ dependencies: { zod: "catalog:" }, scripts: { build: "vp run build --watch", test: "vitest" } });
+    assert.deepEqual(changedInstallSettings(base, head), []);
+    assert.deepEqual(changedInstallSettings(base, base), []);
+    assert.equal(changedInstallSettings(base, "{"), undefined);
+  });
+});
 
 describe("addedDependencies", () => {
   it("lists dependencies the head declares and the base does not, ignoring workspace packages", () => {

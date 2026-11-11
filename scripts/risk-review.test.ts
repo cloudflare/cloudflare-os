@@ -101,6 +101,7 @@ function run(path: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     conclusion: "success",
     created_at: "2026-11-02T10:01:00Z",
     run_started_at: "2026-11-02T10:01:00Z",
+    pull_requests: [{ number: 7, base: { ref: "main" } }],
     ...overrides,
   };
 }
@@ -156,6 +157,16 @@ interface HarnessOptions {
   broken?: true;
   /** Makes GitHub refuse the enqueue, as it does while required checks are running. */
   enqueueRefused?: true;
+  /** The pull request already sits in the merge queue. */
+  queued?: true;
+  /** Git trees come back truncated. */
+  truncatedTrees?: true;
+  /** More check suites exist than the one page returned. */
+  manySuites?: true;
+  /** The runs listing reports more runs than it returned. */
+  moreRuns?: true;
+  /** Writing the step summary fails. */
+  summaryFails?: true;
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
   /** Git trees by SHA; a commit's SHA names its root tree. */
@@ -236,7 +247,7 @@ function harness(options: HarnessOptions = {}) {
         getTree: async ({ tree_sha }) => {
           const entries = options.trees?.[tree_sha];
           if (!entries) throw notFound();
-          return { data: { tree: entries, truncated: false } };
+          return { data: { tree: entries, truncated: options.truncatedTrees === true } };
         },
       },
       checks: {
@@ -260,13 +271,13 @@ function harness(options: HarnessOptions = {}) {
         listSuitesForRef: async () => {
           const created = "lastPush" in options ? options.lastPush : PUSHED;
           const suites = created === undefined ? [] : [{ created_at: created }, { created_at: "2026-11-02T10:30:00Z" }];
-          return { data: { total_count: suites.length, check_suites: suites } };
+          return { data: { total_count: suites.length + (options.manySuites ? 100 : 0), check_suites: suites } };
         },
       },
       actions: {
         listWorkflowRuns: async ({ workflow_id, head_sha, event }) => {
           const matching = runs.map(({ run: r }) => r).filter((r) => r.path.endsWith(`/${workflow_id}`) && r.head_sha === head_sha && r.event === event);
-          return { data: { total_count: matching.length, workflow_runs: matching } };
+          return { data: { total_count: matching.length + (options.moreRuns ? 1 : 0), workflow_runs: matching } };
         },
         listWorkflowRunArtifacts: async ({ run_id, name }) =>
           ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => a.name === name) } }),
@@ -284,14 +295,22 @@ function harness(options: HarnessOptions = {}) {
         return { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_1" } } };
       }
       if (query.includes("mergeQueue(")) return options.mergeQueue ?? null;
-      if (query.includes("mergeQueueEntry")) return { repository: { pullRequest: { mergeQueueEntry: null } } };
+      if (query.includes("mergeQueueEntry")) {
+        return { repository: { pullRequest: { mergeQueueEntry: options.queued ? { id: "MQE_0" } : null } } };
+      }
       const decision = options.reviewDecision?.[Number(variables.number)];
       return { repository: { pullRequest: { reviewDecision: decision === undefined ? "REVIEW_REQUIRED" : decision } } };
     },
   };
   const core: ActionsCore = {
     notice: () => {},
-    summary: { addRaw: () => core.summary, write: async () => ({}) },
+    summary: {
+      addRaw: () => core.summary,
+      write: async () => {
+        if (options.summaryFails) throw new Error("the step summary file is not writable");
+        return {};
+      },
+    },
   };
   const evaluate = (eventName: string, payload: Json) => {
     const context: ActionsContext = {
@@ -815,6 +834,21 @@ describe("runRiskReview producer binding", () => {
     assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "concluded failure" });
   });
 
+  it("rejects a verdict from a run of the same head for another pull request or base, and lets the real one count", async () => {
+    // A second pull request from the same head into a branch with a replaced workflow, run later.
+    const forged = verdicts().map((entry) => ({
+      ...entry,
+      run: { ...entry.run, id: entry.run.id + 1000, created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z", pull_requests: [{ number: 8, base: { ref: "release" } }] },
+    }));
+    const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), ...forged] });
+    await evaluate("workflow_run", producerCompleted());
+    const bonk = lastRecord(calls).pulls[0]?.inputs.bonk;
+    assert.equal(bonk && "status" in bonk ? bonk.status : undefined, "ok");
+    const onlyForged = harness({ ...open, runs: forged });
+    await onlyForged.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(onlyForged.calls).pulls[0]?.would.decision, "person");
+  });
+
   it("rejects a verdict from a fork, or one made for another head or base", async () => {
     for (const runs of [
       verdicts().map((entry) => entry.run.path === PRODUCERS.bonk.workflow
@@ -946,10 +980,35 @@ describe("runRiskReview content rules", () => {
     assert.equal(same.band, "medium");
     const unread = await decideFiles(files, { [`${BASE}:packages/ui/package.json`]: before });
     assert.match(unread.band_reasons.join("\n"), /unreadable/);
+    const override = await decideFiles(files, {
+      [`${BASE}:packages/ui/package.json`]: before,
+      [`${HEAD}:packages/ui/package.json`]: JSON.stringify({ dependencies: { zod: "catalog:" }, pnpm: { overrides: { zod: "npm:evil@1.0.0" } } }),
+    });
+    assert.equal(override.band, "high");
+    assert.match(override.band_reasons.join("\n"), /packages\/ui\/package\.json: changes pnpm/);
   });
 });
 
 describe("runRiskReview failure", () => {
+  it("keeps the published check when the step summary cannot be written", async () => {
+    const { calls, evaluate } = harness({ reviewDecision: { 7: "APPROVED" }, summaryFails: true });
+    await assert.rejects(evaluate("workflow_run", producerCompleted()), /not writable/);
+    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success"]);
+  });
+
+  it("fails closed on a truncated tree, more check suites than one page, and more producer runs than one page", async () => {
+    const skill = ".agents/skills/write-gatekeeper/SKILL.md";
+    const truncated = harness({ files: { 7: [file(skill)] }, trees: { ...skillTrees(BASE, "100644"), ...skillTrees(HEAD, "100644") }, truncatedTrees: true });
+    await truncated.evaluate("workflow_run", producerCompleted());
+    assert.match(lastRecord(truncated.calls).pulls[0]?.never_auto.join("\n") ?? "", /symlink/);
+    const suites = harness({ policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) }, runs: verdicts(), manySuites: true });
+    await suites.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(suites.calls).pulls[0]?.holds, ["the time of the last push is unknown"]);
+    const runs = harness({ runs: verdicts(), moreRuns: true });
+    await runs.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(runs.calls).pulls[0]?.inputs.bonk, { absent: "too many runs to tell which is newest" });
+  });
+
   it("fails its check run, rather than leaving it in progress, when the API fails", async () => {
     const { calls, evaluate } = harness({ broken: true });
     await assert.rejects(evaluate("workflow_run", producerCompleted()), /HTTP 502/);
@@ -960,8 +1019,9 @@ describe("runRiskReview failure", () => {
 type RungOneProof = "proof-actions" | "proof-deps" | "proof-equivalence" | "proof-tests";
 
 /** A run of the proof's workflow on the test head, with a holding proof made against `BASE`. */
-function proofRun(name: RungOneProof): ProducerRun {
-  return { run: run(PRODUCERS[name].workflow), artifacts: { [`automerge-${name}`]: proofJson(name, "proof", true) } };
+function proofRun(name: RungOneProof, pullNumber = 7): ProducerRun {
+  const pullRequests = [{ number: pullNumber, base: { ref: "main" } }];
+  return { run: run(PRODUCERS[name].workflow, { pull_requests: pullRequests }), artifacts: { [`automerge-${name}`]: proofJson(name, "proof", true) } };
 }
 
 /** The two files proof-deps reads at its merge base, as they stand at `sha`. */
@@ -1002,7 +1062,7 @@ describe("runRiskReview proof freshness", () => {
       pulls: queued,
       files: { 943: files },
       mergeQueue: fixture("merge_queue.json"),
-      runs: [proofRun(name)],
+      runs: [proofRun(name, 943)],
       contents: { ...policyAt(group.base_sha), ...contents },
     });
     await evaluate("workflow_run", relayed);
@@ -1077,6 +1137,26 @@ describe("runRiskReview proof freshness", () => {
 });
 
 describe("runRiskReview in enforce mode", () => {
+  it("never approves a draft, and dismisses an approval standing on one", async () => {
+    const bands = bandsJson("enforce", true, [{ area: "scored", band: "low" }]);
+    const draft = harness({ policy: { bands }, runs: verdicts(), pulls: [pullRequest({ draft: true })] });
+    await draft.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(draft.calls).pulls[0]?.would.decision, "auto");
+    assert.deepEqual(draft.calls.approvals, []);
+    assert.deepEqual(draft.calls.enqueued, []);
+    const standing: Review = { id: 556, user: { login: APP.login, type: "Bot" }, state: "APPROVED", commit_id: HEAD };
+    const dismissed = harness({ policy: { bands }, runs: verdicts(), pulls: [pullRequest({ draft: true })], reviews: { 7: [standing] } });
+    await dismissed.evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(dismissed.calls.dismissals, [556]);
+  });
+
+  it("does not enqueue a pull request already in the merge queue", async () => {
+    const { calls, evaluate } = harness({ policy: { bands: bandsJson("enforce", true, [{ area: "scored", band: "low" }]) }, runs: verdicts(), queued: true });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(calls.approvals, [HEAD]);
+    assert.deepEqual(calls.enqueued, []);
+  });
+
   it("keeps the published check when GitHub refuses the enqueue, and tries again when CI finishes", async () => {
     const bands = bandsJson("enforce", true, [{ area: "scored", band: "low" }]);
     const options: HarnessOptions = { policy: { bands }, runs: verdicts(), enqueueRefused: true };

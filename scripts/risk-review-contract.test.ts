@@ -10,6 +10,7 @@ import {
   pickArtifact,
   readArtifactFile,
   type Artifact,
+  type Producer,
   type ProducerName,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
@@ -80,7 +81,13 @@ describe("parseProducerArtifact", () => {
 // A real `pull_request` run of workshop-evals-pr.yml, evidence-eval's producer, recorded from the
 // Actions API on 2026-11-03.
 const recorded: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/evals-run.json", import.meta.url), "utf8"));
-const binding = { producer: PRODUCERS["evidence-eval"], headSha: recorded.head_sha, repository: "cloudflare/cloudflare-os" };
+const binding = {
+  producer: PRODUCERS["evidence-eval"],
+  headSha: recorded.head_sha,
+  repository: "cloudflare/cloudflare-os",
+  pullNumber: 976,
+  defaultBranch: "main",
+};
 
 describe("bindingError", () => {
   it("binds a real pull_request run of the expected workflow on the head", () => {
@@ -94,6 +101,20 @@ describe("bindingError", () => {
     assert.match(bindingError({ ...recorded, event: "pull_request_target" }, binding) ?? "", /pull_request_target/);
     assert.match(bindingError({ ...recorded, event: "push" }, binding) ?? "", /push/);
     assert.match(bindingError({ ...recorded, event: "workflow_run" }, binding) ?? "", /workflow_run/);
+  });
+
+  it("rejects a run GitHub ties to another pull request, or to this head into another branch", () => {
+    assert.match(bindingError(recorded, { ...binding, pullNumber: 977 }) ?? "", /another pull request or base than #977/);
+    // Recorded: a real pull_request run of preview.yml, which GitHub ties to #965 into main.
+    const preview: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/preview-run.json", import.meta.url), "utf8"));
+    const producer: Producer = { kind: "evidence", workflow: preview.path };
+    const onHead = { ...binding, producer, headSha: preview.head_sha };
+    assert.equal(bindingError(preview, { ...onHead, pullNumber: 965 }), undefined);
+    assert.match(bindingError(preview, { ...onHead, pullNumber: 966 }) ?? "", /another pull request or base than #966/);
+    // The same run, as GitHub would report it for #965 retargeted to a branch with a replaced workflow.
+    const elsewhere = { ...preview, pull_requests: preview.pull_requests.map((pull) => ({ ...pull, base: { ...pull.base, ref: "release" } })) };
+    assert.match(bindingError(elsewhere, { ...onHead, pullNumber: 965 }) ?? "", /another pull request or base/);
+    assert.match(bindingError({ ...recorded, pull_requests: [] }, binding) ?? "", /another pull request or base/);
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {

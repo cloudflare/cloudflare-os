@@ -107,7 +107,9 @@ export function followUps(pull: MergedPull, merged: MergedPull[], repository: st
   if (!pull.merged_at) return [];
   const start = Date.parse(pull.merged_at);
   const end = start + REVERT_WINDOW_DAYS * 86_400_000;
-  const mention = new RegExp(`(?:${repository.replace("/", "\\/")})?#${pull.number}(?!\\d)`);
+  // `#N`, `owner/repo#N`, or a link to the pull request, with or without a fragment or subpage.
+  const repo = repository.replace("/", "\\/");
+  const mention = new RegExp(`(?:(?:${repo})?#|https:\\/\\/github\\.com\\/${repo}\\/(?:pull|issues)\\/)${pull.number}(?!\\d)`);
   return merged.flatMap((other) => {
     const at = other.merged_at ? Date.parse(other.merged_at) : Number.NaN;
     const names = mention.test(other.title) || mention.test(other.body ?? "");
@@ -149,6 +151,65 @@ export function githubGet(token: string, fetchImpl: typeof fetch = fetch): GitHu
     if (body === undefined) throw new Error(`GET ${path}: not JSON`);
     return body;
   };
+}
+
+/** A GitHub GraphQL query, returning the parsed `data`. */
+export type GitHubGraphql = (query: string, variables: Record<string, string | number | null>) => Promise<Json>;
+
+/** Builds {@link GitHubGraphql} over `fetch` with a token. */
+export function githubGraphql(token: string, fetchImpl: typeof fetch = fetch): GitHubGraphql {
+  return async (query, variables) => {
+    const response = await fetchImpl("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!response.ok) throw new Error(`GraphQL: HTTP ${response.status}`);
+    const body = asObject(parseJson(await response.text()));
+    if (!body || body.errors !== undefined || body.data === undefined) throw new Error("GraphQL: no data");
+    return body.data;
+  };
+}
+
+/**
+ * Each force push of a pull request: the head it replaced, the head it left, and when. REST's
+ * `head_ref_force_pushed` event names only the head it left, and a rebase drops the replaced head
+ * from the commits listing, so only GraphQL shows the replaced head.
+ */
+async function forcePushes(graphql: GitHubGraphql, repository: string, number: number):
+  Promise<{ before: string | null; after: string | null; at: number }[]> {
+  const [owner, name] = repository.split("/");
+  const pushes: { before: string | null; after: string | null; at: number }[] = [];
+  for (let cursor: string | null = null; ;) {
+    const data = await graphql(
+      `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } afterCommit { oid } } }
+            }
+          }
+        }
+      }`,
+      { owner: owner ?? "", name: name ?? "", number, cursor },
+    );
+    const items = asObject(asObject(asObject(asObject(data)?.repository)?.pullRequest)?.timelineItems);
+    const nodes = items?.nodes;
+    const page = asObject(items?.pageInfo);
+    if (!Array.isArray(nodes) || !page) throw new Error(`#${number}'s force pushes are unreadable`);
+    for (const value of nodes) {
+      const node = asObject(value);
+      const before = asObject(node?.beforeCommit)?.oid;
+      const after = asObject(node?.afterCommit)?.oid;
+      const at = node?.createdAt;
+      if (typeof at !== "string") throw new Error(`#${number} has a force push without a time`);
+      pushes.push({ before: typeof before === "string" ? before : null, after: typeof after === "string" ? after : null, at: Date.parse(at) });
+    }
+    if (page.hasNextPage !== true) return pushes;
+    cursor = typeof page.endCursor === "string" ? page.endCursor : null;
+    if (cursor === null) throw new Error(`#${number}'s force pushes do not page`);
+  }
 }
 
 function asPull(value: Json): MergedPull | undefined {
@@ -468,7 +529,7 @@ async function readText(get: GitHubGet, repository: string, path: string): Promi
 }
 
 /** Gathers every record, maintainer event, push and follow-up of each pull request merged in the window. */
-export async function buildCalibration(get: GitHubGet, { repository, app, since, until, now }: {
+export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, { repository, app, since, until, now }: {
   repository: string;
   app: string;
   since: Date;
@@ -486,27 +547,26 @@ export async function buildCalibration(get: GitHubGet, { repository, app, since,
   const pulls: CalibrationPull[] = [];
   for (const pull of inWindow) {
     const base = `/repos/${repository}`;
-    const [commits, timeline, comments, reviewComments, reviews] = await Promise.all([
+    const [commits, forced, comments, reviewComments, reviews] = await Promise.all([
       listPages(get, `${base}/pulls/${pull.number}/commits`),
-      listPages(get, `${base}/issues/${pull.number}/timeline`),
+      forcePushes(graphql, repository, pull.number),
       listPages(get, `${base}/issues/${pull.number}/comments`),
       listPages(get, `${base}/pulls/${pull.number}/comments`),
       listPages(get, `${base}/pulls/${pull.number}/reviews`),
     ]);
-    // Every head seen: the commits now on the branch, and each head a force push left. A head a
-    // force push replaced and that no event names has no visible record; a catch before the first
-    // record then counts as a miss.
+    // Every head seen: the commits now on the branch, and each head a force push replaced or left.
+    // A replaced head GitHub no longer names has no visible record; a catch made on it then counts
+    // as one on a head the reviewers passed.
     const pushedAt = new Map<string, number>();
     for (const value of commits) {
       const commit = asObject(value);
       const date = asObject(asObject(commit?.commit)?.committer)?.date;
       if (typeof commit?.sha === "string" && typeof date === "string") pushedAt.set(commit.sha, Date.parse(date));
     }
-    for (const value of timeline) {
-      const event = asObject(value);
-      if (event?.event === "head_ref_force_pushed" && typeof event.commit_id === "string" && typeof event.created_at === "string") {
-        pushedAt.set(event.commit_id, Math.max(pushedAt.get(event.commit_id) ?? 0, Date.parse(event.created_at)));
-      }
+    for (const { before, after, at } of forced) {
+      // The replaced head was pushed some time before; its first check suite, read below, says when.
+      if (before !== null && !pushedAt.has(before)) pushedAt.set(before, 0);
+      if (after !== null) pushedAt.set(after, Math.max(pushedAt.get(after) ?? 0, at));
     }
     // The commits listing stops at 250, so a longer pull request's pushes are not all known; any
     // comment then counts as followed by a commit.
@@ -589,7 +649,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) throw new Error("--since and --until must be dates");
   const options = { repository: process.env.GITHUB_REPOSITORY ?? "cloudflare/cloudflare-os", app: values.app, since, until };
   const table = values.calibrate
-    ? renderCalibration(await buildCalibration(githubGet(token), { ...options, now: new Date() }))
+    ? renderCalibration(await buildCalibration(githubGet(token), githubGraphql(token), { ...options, now: new Date() }))
     : renderTable(await buildReport(githubGet(token), options));
   process.stdout.write(`${table}\n`);
 }

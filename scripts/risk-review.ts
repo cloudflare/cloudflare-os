@@ -37,6 +37,7 @@ import {
   BANDS,
   addedClassDeletions,
   addedDependencies,
+  changedInstallSettings,
   isCatalogVersionBump,
   isSkillPath,
   asObject,
@@ -902,8 +903,12 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
         break;
       case "manifest": {
         const names = unreadable ? undefined : addedDependencies(before, after);
-        if (names === undefined) facts.newDependencies.push(`${file.filename}: unreadable`);
-        else facts.newDependencies.push(...names.map((name) => `${file.filename}: ${name}`));
+        const settings = unreadable ? undefined : changedInstallSettings(before, after);
+        if (names === undefined || settings === undefined) facts.newDependencies.push(`${file.filename}: unreadable`);
+        else {
+          facts.newDependencies.push(...names.map((name) => `${file.filename}: ${name}`));
+          facts.newDependencies.push(...settings.map((setting) => `${file.filename}: changes ${setting}`));
+        }
         break;
       }
       case "worker-config": {
@@ -966,7 +971,7 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
   return typeof decision === "string" ? decision : null;
 }
 
-async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest):
+async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
   Promise<Partial<Record<ProducerName, ProducerInput>>> {
   const repository = `${repo.owner}/${repo.repo}`;
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
@@ -994,7 +999,7 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
   for (const [name, producer] of Object.entries(PRODUCERS)) {
     if (!isProducerName(name)) continue;
-    const expected = { producer, headSha: pull.head.sha, repository };
+    const expected = { producer, headSha: pull.head.sha, repository, pullNumber: pull.number, defaultBranch };
     const runs = await runsOf(producer.workflow);
     if (typeof runs === "string") {
       inputs[name] = { absent: runs };
@@ -1044,7 +1049,7 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     listAll((page) => github.rest.pulls.listReviewComments({ ...ref, ...page })),
     readLastPush(github, repo, pull.head.sha),
     readReviewDecision(github, repo, pull.number),
-    readProducers(github, repo, pull),
+    readProducers(github, repo, pull, context.payload.repository?.default_branch ?? "main"),
     pull.user?.login === DEPENDABOT ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
   ]);
   for (const [name, input] of Object.entries(producers)) {
@@ -1190,7 +1195,8 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
   const { repo } = context;
   const ref = { ...repo, pull_number: decision.number };
   const auto = decision.would.decision === "auto";
-  const approve = auto && policy.bands.appApprovalsCount;
+  // A draft is not ready to merge: approving it now would carry the App's approval past "ready for review".
+  const approve = auto && policy.bands.appApprovalsCount && !inputs.pull.draft;
   const standing = inputs.reviews.filter((review) => review.user?.login === app.login && review.state === "APPROVED");
   if (!approve) {
     for (const review of standing) {
@@ -1246,7 +1252,10 @@ export async function runRiskReview({ github, context, core, app, now = new Date
   });
   const complete = (conclusion: "success" | "failure" | "cancelled", output: { title: string; summary: string }) =>
     github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
-  let enforce: { policy: Policy; pulls: { inputs: PullInputs; decision: PullDecision }[] } | undefined;
+  let published: {
+    summary: string;
+    enforce?: { policy: Policy; pulls: { inputs: PullInputs; decision: PullDecision }[] };
+  } | undefined;
   try {
     const policy = await readPolicy(github, repo, target.policySha);
     const pulls = await Promise.all(target.pulls.map(async ({ pull, base }) => {
@@ -1280,17 +1289,20 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     }
     const output = renderOutput(record);
     await complete(record.conclusion, output);
-    await core.summary.addRaw(output.summary).write();
-    if (record.mode === "enforce" && !target.mergeGroup) enforce = { policy, pulls };
+    published = { summary: output.summary, ...(record.mode === "enforce" && !target.mergeGroup && { enforce: { policy, pulls } }) };
   } catch (error) {
     // A check run left in progress would hold the commit until some later event; fail it instead.
     const message = error instanceof Error ? error.message : String(error);
     await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${message}` });
     throw error;
   }
-  // After the check is published, so GitHub refusing the enqueue (required checks still running)
-  // fails this run but never the decision. CI's completion starts the run that tries again.
-  if (!enforce) return;
-  const { policy, pulls } = enforce;
-  for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
+  // Everything below runs after the check is published, so a failure here (GitHub refusing the
+  // enqueue while required checks run, or the step summary not writing) fails this run but never
+  // the decision. CI's completion starts the run that tries the enqueue again.
+  if (!published) return;
+  if (published.enforce) {
+    const { policy, pulls } = published.enforce;
+    for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
+  }
+  await core.summary.addRaw(published.summary).write();
 }

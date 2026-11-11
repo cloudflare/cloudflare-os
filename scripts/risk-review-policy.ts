@@ -498,6 +498,36 @@ export function parseJson(text: string): Json | undefined {
   }
 }
 
+/**
+ * Manifest settings that swap a package or run code at install without declaring a dependency:
+ * pnpm's settings (`overrides`, `patchedDependencies`, `packageExtensions` and the rest), npm's
+ * `overrides`, Yarn's `resolutions`, and the install lifecycle scripts.
+ */
+const INSTALL_FIELDS = ["pnpm", "overrides", "resolutions"];
+const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare"];
+
+/**
+ * The install settings a `package.json` changes between `base` and `head` (see `INSTALL_FIELDS`
+ * and `INSTALL_SCRIPTS`), named `pnpm`, `overrides`, `resolutions` or `scripts.<name>`.
+ *
+ * @returns The changed names, or `undefined` when either side is not a JSON object.
+ */
+export function changedInstallSettings(base: string | undefined, head: string | undefined): string[] | undefined {
+  const before = base === undefined ? {} : asObject(parseJson(base));
+  const after = head === undefined ? {} : asObject(parseJson(head));
+  if (!before || !after) return undefined;
+  const scriptsBefore = asObject(before.scripts) ?? {};
+  const scriptsAfter = asObject(after.scripts) ?? {};
+  return [
+    ...INSTALL_FIELDS.filter((field) => jsonDiffers(before[field], after[field])),
+    ...INSTALL_SCRIPTS.filter((name) => jsonDiffers(scriptsBefore[name], scriptsAfter[name])).map((name) => `scripts.${name}`),
+  ];
+}
+
+function jsonDiffers(a: Json | undefined, b: Json | undefined): boolean {
+  return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+}
+
 /** Every declared dependency's spec, keyed `<field> <name>`. */
 function dependencyMap(text: string): Map<string, string> | undefined {
   const manifest = asObject(parseJson(text));
