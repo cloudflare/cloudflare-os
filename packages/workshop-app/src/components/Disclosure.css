@@ -3,7 +3,8 @@
    conversation's scroll position before the visible closing animation even starts. */
 .disclosure-panel {
   height: var(--collapsible-panel-height);
-  overflow: clip;
+  /* Only the way it opens: what is in it may be set out wider than the line that opens it. */
+  overflow-y: clip;
   opacity: 1;
   transition:
     height 240ms cubic-bezier(0.25, 0.1, 0.25, 1),

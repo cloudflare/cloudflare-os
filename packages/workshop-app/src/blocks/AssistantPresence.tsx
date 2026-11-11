@@ -33,7 +33,10 @@ export const AssistantPresence = ({ working, status, details }: AssistantPresenc
         {details
           ? (
             <Disclosure open={working && details.open} onToggle={details.onToggle} summary={label}>
-              <div className="ms-4">{details.content}</div>
+              {/* Back out under the mascot, so that the icons of the steps (8px in from a
+                  step's edge, 16px wide) run down from its middle: 18px - 16px, less the 40px
+                  the mascot and the gap after it take before this column starts. */}
+              <div className="-ms-[38px]">{details.content}</div>
             </Disclosure>
           )
           : <div className="px-2 py-1 text-base/5">{label}</div>}
