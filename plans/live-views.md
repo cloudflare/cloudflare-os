@@ -664,13 +664,16 @@ restricted data. This plan does not change gadget frames.
 ### Evals
 
 - `RenderedView.open(html, binder, env)` in `workshop-evals/src/view-host.ts` runs a view with an
-  `env` that serves the names its tag lists and nothing else. Saved data comes back as its value,
-  a Gadget as `{rpc}` and a connection as its methods, each call recorded. The binder is the
-  session's `connectToChatBinding`, which `WorkshopAgentSession` gains in
-  `integration-tests/src/agent-session.ts`. A view with `env` gets the Workshop's Trusted Types
-  CSP there too. The benchmark's eval host did all of this (commits `ee3b9a2f3` and `411f51e4a`).
+  `env` that serves the names its tag lists and nothing else, as `EvalVerifier.openView(html, env)`
+  calls it. Saved data comes back as its value, a Gadget as `{rpc}` and a connection as its
+  methods; each result crosses into the frame as plain data, and every opened binding is disposed
+  with the view. The binder is the session's `connectToChatBinding`, which `WorkshopAgentSession`
+  gains in `integration-tests/src/agent-session.ts`. A view with `env` gets the Workshop's Trusted
+  Types CSP and default policy there too, and a view without it gets no `env`. The benchmark's
+  eval host did most of this (commits `ee3b9a2f3` and `411f51e4a`).
 - `turnViews` in `evals/views.ts` keeps each block's names, and `view-comes-after-its-gadgets`
-  fails a view that lists a name its own message, or a later one in the turn, creates or saves.
+  fails a view that lists a name its own message, or a later one in the turn, creates or saves
+  (the `savedEnv` stamp).
 
 ## Rejected alternatives
 
@@ -844,12 +847,15 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
 - `ChatInterface` tests: an open block in a streaming answer is already a frame, and the closed
   block and then the stored message keep that frame element; a stored message whose text differs
   from the streamed text mounts its view fresh.
-- Eval host tests (`workshop-evals/src/view-host.test.ts`): a view gets saved data and the
-  bindings its tag lists, and nothing else.
-- The chat-views eval (`workshop-evals/evals/chat-views.eval.ts`): the spending view of the
-  Expense Log reads its totals through `env`, saved or as the Gadget, and a view never lists a name
-  that a later step of the same turn saves or creates (`view-comes-after-its-gadgets`, from #930).
-  Run on gpt-6-luna, claude-haiku-5-5 and Kimi K3.
+- Eval host tests (`workshop-evals/src/view-host.test.ts`): a view gets saved data and the Gadgets
+  its tag lists, and is refused any other name; `innerHTML` throws in a view with `env`; a view
+  without the attribute has no `env`.
+- Chat-views verifier tests (`workshop-evals/evals/chat-views.test.ts`): the spending view passes
+  when it reads the totals through `env`, saved or from the Expense Log, and fails
+  `view-comes-after-its-gadgets` when its own message's call saves what it reads.
+- The chat-views eval (`workshop-evals/evals/chat-views.eval.ts`), unchanged in its prompts: the
+  spending view may now read its totals through `env`. Run on gpt-6-luna, claude-haiku-5-5 and
+  Kimi K3.
 - A browser run on the dev server with a real model: the agent draws a view from data it read with
   `executeCode`, the view follows a theme change, a click shows the message, and Send posts it as
   the viewer's message. The view's markup draws while its block streams, its module script runs

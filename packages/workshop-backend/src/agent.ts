@@ -750,13 +750,49 @@ Spending on food rose 18% in October, mostly eating out.
 \`\`\`
 
 * Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
-* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
-* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`, and \`env\` when the tag has the attribute below.
+* A view has no network. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
 * The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
 * \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
 * For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
 * The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
 * A view keeps no state. Something that must remember things between visits belongs in a Gadget.
+
+## Views of data from code
+
+When a view's data comes from code, such as a Gadget, a connection or values you work out, read or work out the data in code you run with the \`executeCode\` tool, and save it on \`env\`. Once the call returns, list the name in the view's \`env\` attribute and read it there, so the data never passes through your answer: never retype values into the view's code. The view runs as soon as its block closes, before any tool call in the same answer, so save first and write the view after. Call the tool; never paste its code into your answer.
+
+\`\`\`
+export default async function(self, env) {
+  env.FOOD = { limit: 120, weeks: [[1, 96], [2, 132], [3, 88], [4, 141]] };
+}
+\`\`\`
+
+Then, in your answer:
+
+\`\`\`
+Spending on food rose 18% in October, mostly eating out.
+
+<inline-html env="FOOD">
+<title>Food spending by week</title>
+<h3>Food spending by week</h3>
+<div id="weeks"></div>
+<script type="module">
+  const { limit, weeks } = await env.FOOD;
+  const list = document.getElementById("weeks");
+  for (const [week, total] of weeks) {
+    const bar = list.appendChild(document.createElement("button"));
+    bar.textContent = \`Week \${week}: \${total} of \${limit}\`;
+    bar.onclick = () => agent.send(\`Show me week \${week} in detail.\`);
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* \`env.NAME = value\` in \`executeCode\` saves \`NAME\` for this chat once the code returns: JSON data, or another name for one of the chat's bindings, as in \`env.SALES = env.salesLog\`. The tool's output names what it saved, and says why it refused anything else. Saving a data name again, or changing it in place, replaces it; a name is never removed. A chat's saved data holds at most 400,000 characters of JSON, and no saved name may be one of its bindings.
+* \`<inline-html env="A,B">\` gives the view's code an \`env\` with just those names: \`await env.A\` for data you saved, \`env.A.rpc.method()\` for a Gadget and \`env.A.method()\` for a connection, whether saved under a name or listed by its own. A view reaches no models, agent spawners, auto-provided services such as web search, worktrees, \`GIT\` or a Gadget's \`exports\`: read those with \`executeCode\` and save the results as data. A connection call uses that connection's own account, whoever views the chat, and each write waits as an action in the chat until someone approves it.
+* In a view with \`env\`, show data with \`textContent\`: \`innerHTML\` (except \`= ""\` to clear), \`insertAdjacentHTML\` and the other ways to parse a string as HTML throw. Make SVG elements with \`document.createElementNS("http://www.w3.org/2000/svg", name)\` and \`setAttribute\`.
+* Code that runs on load must only read, and no code may poll or call in a loop.
 
 # Writing Gadgets
 
@@ -1359,6 +1395,8 @@ Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's ser
 
 When the user asks you to just do a task that can be done with these bindings, you should use executeCode to perform the task, instead of adding code to a gadget to do it.
 
+The code can also save data on \`env\` for a view in your answer and for later code, as in \`env.SALES = rows\` (see "Live views").
+
 ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
@@ -1371,6 +1409,8 @@ The 'env' object contains this chat's named bindings:
 * Each binding listed in the system prompt. A Gadget's binding has an \`rpc\` property, an RPC stub pointing at the Gadget's server-side Durable Object (read the Gadget's server code to learn what RPC methods it exposes), and an \`exports\` property that exports the Gadget as a file (use \`describeBinding\` to learn its API).
 * Each resource a user grants in a message, shown as \`[Resource Title](env.SOME_NAME)\`.
 * Each worktree you create with \`createWorktree\`, under the name you chose.
+
+The code can also save JSON data on \`env\` for later code, as in \`env.SALES = rows\`; each run's output says what it saved.
 
 ${EXECUTE_CODE_SELF_PARAM}
 `.trim();

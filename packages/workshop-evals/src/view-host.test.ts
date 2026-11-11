@@ -1,5 +1,18 @@
+import { RpcStub, RpcTarget } from "capnweb";
 import { afterAll, describe, expect, it } from "vitest";
-import { closeViewBrowser, RenderedView } from "./view-host.js";
+import { closeViewBrowser, RenderedView, type ViewBinder } from "./view-host.js";
+
+class Log extends RpcTarget {
+  total() { return 1200; }
+}
+
+// Saved TOTALS and a Gadget, as a chat's kernel session opens them; `opened` records each name.
+const binder = (opened: string[]): ViewBinder => async name => {
+  opened.push(name);
+  if (name === "TOTALS") return { type: "data", json: '{"north":1200}', [Symbol.dispose]: () => {} } as never;
+  const rpc = new RpcStub(new Log());
+  return { type: "gadget", rpc, [Symbol.dispose]: () => rpc[Symbol.dispose]() } as never;
+};
 
 afterAll(() => closeViewBrowser());
 
@@ -241,5 +254,33 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       const { series } = await view.waitForSeries(["Jan", "Feb"], () => true);
       expect(series.marks.map(({ label, axis }) => [label, axis]), JSON.stringify(gap)).toEqual([[0, "y"], [1, "y"]]);
     }
+  });
+
+  it("gives a view the saved data and Gadgets its tag lists, and nothing else", async () => {
+    const opened: string[] = [];
+    await using view = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        const { north } = await env.TOTALS;
+        const total = await env.LOG.rpc.total();
+        const other = await env.OTHER.catch(error => error.message);
+        document.getElementById("out").textContent = north + " " + total + " " + other;
+      </script>`, binder(opened), ["TOTALS", "LOG"]);
+    expect(await view.text()).toContain("1200 1200 env.OTHER is not listed in this view's env attribute.");
+    expect(opened.toSorted()).toEqual(["LOG", "TOTALS"]);
+  });
+
+  it("parses no string as HTML in a view with env, and gives a view without it no env", async () => {
+    await using guarded = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        const out = document.getElementById("out");
+        try { out.innerHTML = "<b>x</b>"; out.textContent = "parsed"; } catch { out.textContent = "refused"; }
+      </script>`, binder([]), []);
+    expect(await guarded.text()).toContain("refused");
+    await using plain = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">document.getElementById("out").textContent = typeof env;</script>`);
+    expect(await plain.text()).toContain("undefined");
   });
 });

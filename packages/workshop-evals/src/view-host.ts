@@ -1,6 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright";
+import type { RpcPromise } from "capnweb";
 import { z } from "zod";
+import type { ViewBinding } from "@gadgets/workshop-shared/api";
 
 // Runs an `<inline-html>` view as the Workshop does, so an eval can see what it does: in an
 // opaque-origin srcdoc frame with `sandbox="allow-scripts"` (UiBlockCard.tsx) and, but for the
@@ -15,6 +17,13 @@ export type TextWait = { pass: boolean; text: string };
 export class ViewHostError extends Error {
   override name = "ViewHostError";
 }
+
+/** Opens a name of the chat's scope for a view, as the Workshop's frame host asks the kernel. */
+export type ViewBinder = (name: string) => Promise<Awaited<RpcPromise<ViewBinding>>>;
+
+const noBindings: ViewBinder = async name => {
+  throw new Error(`No binding named ${name}`);
+};
 
 // The chat column the frame sits in, and a phone's.
 const FRAME_WIDTH = 720;
@@ -32,11 +41,14 @@ const POLL_MS = 100;
 // How long a click gets to make the view call `agent.send`, as after an animation or a debounce.
 const CLICK_SEND_MS = 2_000;
 
-// Runs in the view's frame before any of its code: `agent` shaped as the Workshop's bootstrap
-// makes it (uiBlockFrame.ts), the records the checks read, and `__evalView`, the host's helpers.
-// The view can reach all of it, so the host trusts nothing it returns.
-const FRAME_SCRIPT = String.raw`(() => {
+// Runs in the view's frame before any of its code: `agent` and `env` shaped as the Workshop's
+// bootstrap makes them (uiBlockFrame.ts), the records the checks read, and `__evalView`, the host's
+// helpers. The view can reach all of it, so the host trusts nothing it returns.
+const frameScript = (env: boolean) => String.raw`(() => {
   if (location.href !== "about:srcdoc") return;
+${env ? String.raw`  // The Workshop's default Trusted Types policy (uiBlockFrame.ts), which a view with env gets.
+  globalThis.trustedTypes?.createPolicy("default", { createHTML: html => html === "" ? html : null });
+` : ""}
   const bridge = (...args) => window.__evalViewBridge(...args);
   const report = (kind, detail) => { bridge("record", kind, String(detail).slice(0, 500)).catch(() => {}); };
   const state = { pending: 0, started: 0 };
@@ -69,6 +81,46 @@ const FRAME_SCRIPT = String.raw`(() => {
     return promise;
   };
   globalThis.agent = Object.freeze({ send: message => track(bridge("send", message)) });
+
+${env ? String.raw`
+  // env, as the Workshop's bootstrap makes it: each name a promise the view awaits for saved data,
+  // or calls as env.NAME.rpc.method() or env.NAME.method() before it settles. The host opens names
+  // through the chat's kernel session, and refuses any the tag does not list.
+  const pipelined = result => new Proxy({}, {
+    get(_, key) {
+      if (key === "then" || key === "catch" || key === "finally") return result[key].bind(result);
+      if (typeof key !== "string") return undefined;
+      return (...args) => pipelined(result.then(value => value[key](...args)));
+    },
+  });
+  const methods = (name, member) => new Proxy({}, {
+    get: (_, method) => typeof method !== "string" || method === "then" ? undefined
+      : (...args) => pipelined(track(bridge("call", name, member, method, args))),
+  });
+  const binding = name => {
+    let value;
+    const opened = () => value ??= track(bridge("open", name)).then(({ type, json }) =>
+      type === "data" ? JSON.parse(json) : type === "gadget" ? { rpc: methods(name, "rpc") } : methods(name, null));
+    return new Proxy({}, {
+      get(_, key) {
+        if (key === "then" || key === "catch" || key === "finally") {
+          const promise = opened();
+          return promise[key].bind(promise);
+        }
+        if (typeof key !== "string") return undefined;
+        return key === "rpc" ? methods(name, "rpc") : methods(name, null)[key];
+      },
+    });
+  };
+  const bindings = new Map();
+  globalThis.env = new Proxy({}, {
+    get(_, name) {
+      if (typeof name !== "string" || name === "then") return undefined;
+      if (!bindings.has(name)) bindings.set(name, binding(name));
+      return bindings.get(name);
+    },
+  });
+` : ""}
 
   const norm = text => String(text ?? "").toLowerCase().replace(/\s+/g, " ").trim();
   const center = box => ({ x: box.left + box.width / 2, y: box.top + box.height / 2 });
@@ -564,17 +616,35 @@ const VIEW_STYLE = `<style>
 
 // The view's document, with the CSP of the Workshop's frame (sandboxDocument.ts's SANDBOX_HEAD), but
 // for one change: where that CSP allows no network, this one allows http(s) and ws(s), so that the
-// view's requests reach the routing that blocks and records them.
-function viewDocument(html: string): string {
+// view's requests reach the routing that blocks and records them. A view with `env` also gets the
+// Workshop's Trusted Types CSP (uiBlockFrame.ts).
+function viewDocument(html: string, env: boolean): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src http: https:; frame-src http: https:; script-src data: 'unsafe-inline' 'wasm-unsafe-eval' http: https:; style-src data: 'unsafe-inline' http: https:; img-src data: http: https:; media-src data: http: https:; object-src http: https:; base-uri 'none'; form-action 'none'; connect-src http: https: ws: wss:;">
+<meta http-equiv="Content-Security-Policy" content="default-src http: https:; frame-src http: https:; script-src data: 'unsafe-inline' 'wasm-unsafe-eval' http: https:; style-src data: 'unsafe-inline' http: https:; img-src data: http: https:; media-src data: http: https:; object-src http: https:; base-uri 'none'; form-action 'none'; connect-src http: https: ws: wss:;">${env ? `
+<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'; trusted-types ui-block default">` : ""}
 ${VIEW_STYLE}</head>
 <body>
 ${html}
 </body>
 </html>`;
+}
+
+// A stub keeps some members to itself (dup, onRpcBroken, constructor, ...): calling one would run
+// it here, in this process, rather than on the binding.
+async function invoke(stub: object, method: string, args: unknown[], owner: string): Promise<unknown> {
+  const local: object = Object.getPrototypeOf(stub);
+  const target: unknown = method in local ? undefined : Reflect.get(stub, method);
+  if (typeof target !== "function") throw new TypeError(`${method} is not a method of ${owner}`);
+  return await Reflect.apply(target, stub, args);
+}
+
+// Every awaited capnweb result owns what it imported.
+function disposeResult(value: unknown): void {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+  const dispose: unknown = Reflect.get(value, Symbol.dispose);
+  if (typeof dispose === "function") Reflect.apply(dispose, value, []);
 }
 
 // The chat's background shows through the view's transparent page.
@@ -614,25 +684,34 @@ export class RenderedView implements AsyncDisposable {
   unsettled: string | undefined;
 
   readonly #context: BrowserContext;
+  readonly #binder: ViewBinder;
+  // The names the block's `env` attribute lists, or undefined for a view with no `env`.
+  readonly #env: readonly string[] | undefined;
+  readonly #bindings = new Map<string, Promise<Awaited<RpcPromise<ViewBinding>>>>();
+  readonly #opened: Disposable[] = [];
   #page: Page | undefined;
   #frame: Frame | undefined;
   #crash: string | undefined;
   #stuck: string | undefined;
   #closed = false;
 
-  private constructor(context: BrowserContext) {
+  private constructor(context: BrowserContext, binder: ViewBinder, env: readonly string[] | undefined) {
     this.#context = context;
+    this.#binder = binder;
+    this.#env = env;
   }
 
   /**
    * Runs `html`, the HTML of an `<inline-html>` block, and waits until it settles: loaded, with no
-   * `agent.send` pending. A view that never settles still opens, with `unsettled` set.
+   * `agent.send` or call on its bindings pending. A view that never settles still opens, with
+   * `unsettled` set. `env` is the names the block's tag lists: the view reaches only those, through
+   * `binder`; without it, the view has no `env`.
    */
-  static async open(html: string): Promise<RenderedView> {
+  static async open(html: string, binder: ViewBinder = noBindings, env?: readonly string[]): Promise<RenderedView> {
     const launched = await launchBrowser();
     let view: RenderedView | undefined;
     try {
-      view = new RenderedView(await launched.newContext({ viewport: VIEWPORT }));
+      view = new RenderedView(await launched.newContext({ viewport: VIEWPORT }), binder, env);
       await view.#start();
     } catch (error) {
       await view?.[Symbol.asyncDispose]();
@@ -651,7 +730,7 @@ export class RenderedView implements AsyncDisposable {
   async #start(): Promise<void> {
     const context = this.#context;
     await context.exposeBinding("__evalViewBridge", (_source, ...args: unknown[]) => this.#bridge(args));
-    await context.addInitScript({ content: FRAME_SCRIPT });
+    await context.addInitScript({ content: frameScript(this.#env !== undefined) });
     await context.route("**/*", route => {
       this.requests.push(route.request().url());
       return route.abort();
@@ -671,7 +750,7 @@ export class RenderedView implements AsyncDisposable {
     const loaded = await within(page.evaluate(`new Promise(resolve => {
       const frame = document.querySelector("iframe");
       frame.addEventListener("load", resolve, { once: true });
-      frame.srcdoc = ${JSON.stringify(viewDocument(html))};
+      frame.srcdoc = ${JSON.stringify(viewDocument(html, this.#env !== undefined))};
     })`), SETTLE_MS);
     if (loaded === TIMED_OUT) {
       this.#stuck = "The view did not finish loading: its code may be holding the page";
@@ -812,6 +891,7 @@ export class RenderedView implements AsyncDisposable {
   async [Symbol.asyncDispose](): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const binding of this.#opened.splice(0).toReversed()) binding[Symbol.dispose]();
     await this.#context.close().catch(() => {});
   }
 
@@ -825,8 +905,61 @@ export class RenderedView implements AsyncDisposable {
       case "send":
         this.messages.push(args[0]);
         return undefined;
+      case "open": {
+        const binding = await this.#binding(args[0]);
+        return binding.type === "data" ? { type: "data", json: binding.json } : { type: binding.type };
+      }
+      case "call":
+        return this.#call(args);
       default:
         throw new TypeError("The view called the eval host incorrectly");
+    }
+  }
+
+  #binding(name: unknown): Promise<Awaited<RpcPromise<ViewBinding>>> {
+    if (typeof name !== "string" || this.#env === undefined || !this.#env.includes(name)) {
+      return Promise.reject(new Error(`env.${String(name)} is not listed in this view's env attribute.`));
+    }
+    let binding = this.#bindings.get(name);
+    if (binding === undefined) {
+      binding = this.#open(name);
+      this.#bindings.set(name, binding);
+    }
+    return binding;
+  }
+
+  async #open(name: string): Promise<Awaited<RpcPromise<ViewBinding>>> {
+    const binding = await this.#binder(name);
+    if (this.#closed) {
+      binding[Symbol.dispose]();
+      throw new Error("This view has closed.");
+    }
+    this.#opened.push(binding);
+    return binding;
+  }
+
+  // The Workshop's frame reaches a Gadget as `env.NAME.rpc.method(...)` and a connection as
+  // `env.NAME.method(...)`, and nothing else. A result crosses into the frame as plain data.
+  async #call([name, member, method, args]: unknown[]): Promise<unknown> {
+    if (typeof name !== "string" || (member !== "rpc" && member !== null) ||
+        typeof method !== "string" || !Array.isArray(args)) {
+      throw new TypeError("A view calls env.NAME.rpc.method() or env.NAME.method()");
+    }
+    const binding = await this.#binding(name);
+    const stub = binding.type === "gadget" ? member === "rpc" ? binding.rpc : undefined
+      : binding.type === "connection" && member === null ? binding.session : undefined;
+    if (stub === undefined) {
+      throw new TypeError(binding.type === "gadget" ? `env.${name} is a Gadget: call env.${name}.rpc.${method}()`
+        : binding.type === "connection" ? `env.${name} is a connection: call env.${name}.${method}()`
+        : `env.${name} is data: read it with await env.${name}`);
+    }
+    const result = await invoke(stub, method, args, `env.${name}`);
+    try {
+      return structuredClone(result);
+    } catch (error) {
+      throw new TypeError("The binding returned a value this eval cannot pass to a view", { cause: error });
+    } finally {
+      disposeResult(result);
     }
   }
 
