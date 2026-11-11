@@ -260,7 +260,31 @@ describe('toChatFeed', () => {
       expect(only(feed(agent({ toolCalls: [worktree] })), 'output')).toMatchObject([{ type: 'worktree', workpieceId: 9, draft: false }])
     })
 
-    it('keeps an approval under the answer while it waits, and puts it back where it happened once decided', () => {
+    it('leaves an approval where it was decided: below what was written while it waited, above what came after', () => {
+      const messages = history([
+        user('file it'),
+        agent({ text: 'Filing' }),
+        action({ title: 'Post', state: 'approved' }),
+        agent({ text: 'Written while it waited' }),
+        agent({ text: 'Written after' }),
+        agent({ toolCalls: [createGadget(1)] }),
+      ])
+      const decidedAt = (time: number) => {
+        const waited = messages[2] as Extract<AiChatMessage, { type: 'action' }>
+        const answered: AiChatMessage = { ...waited, actionLog: { ...waited.actionLog!, appliedAt: new Date(time) } }
+        return toChatFeed(messages.with(2, answered), viewer)
+      }
+
+      const between = decidedAt((messages[3].timestamp.getTime() + messages[4].timestamp.getTime()) / 2)
+      expect(kinds(between)).toEqual(['user', 'assistant', 'assistant', 'action', 'assistant', 'output'])
+
+      // Decided after everything said so far, it is the last thing said, above what the turn produced.
+      const last = decidedAt(messages[5].timestamp.getTime() + 1)
+      expect(kinds(last)).toEqual(['user', 'assistant', 'assistant', 'assistant', 'action', 'output'])
+      expect(last.pinned).toMatchObject([{ kind: 'output' }])
+    })
+
+    it('keeps an approval under the answer while it waits, and takes one decided before anything else was said as decided where it was asked', () => {
       const waiting = feed(user('file it'), agent({ text: 'Filing' }), action({ title: 'Create issue' }), agent({ text: 'Meanwhile' }))
       expect(kinds(waiting)).toEqual(['user', 'assistant', 'assistant', 'action'])
       expect(waiting.pinned).toMatchObject([{ kind: 'action', state: 'pending', resolution: undefined }])
