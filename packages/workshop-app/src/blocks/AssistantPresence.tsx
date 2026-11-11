@@ -9,8 +9,6 @@ export type AssistantPresenceProps = {
 }
 
 const TRANSITION = { duration: 0.24, ease: [0.25, 0.1, 0.25, 1] } as const
-/** The row closes as the last of the mascot shrinks away, not under it. */
-const CLOSE_AFTER = MASCOT_ARRIVAL_SECONDS - TRANSITION.duration
 // An empty row would still be given the feed's `gap-2`, so while hidden it takes that back.
 const ROW = {
   hidden: { height: 0, marginTop: '-0.5rem' },
@@ -26,14 +24,15 @@ export const AssistantPresence = ({ working, children }: AssistantPresenceProps)
   const transition = reducedMotion ? { duration: 0 } : TRANSITION
 
   return (
-    // Stays mounted, so the row can close after the mascot has left and what the assistant starts
-    // doing is announced as a change.
+    // Stays mounted, so what the assistant starts doing is announced as a change, and so the row
+    // can close once the mascot has gone. Closing it any sooner would carry the mascot up over the
+    // message above as it shrinks, when it should shrink where it stands.
     <motion.div
       role="status"
       initial={false}
       animate={working ? 'shown' : 'hidden'}
       variants={ROW}
-      transition={working || reducedMotion ? transition : { ...transition, delay: CLOSE_AFTER }}
+      transition={working || reducedMotion ? transition : { ...transition, delay: MASCOT_ARRIVAL_SECONDS }}
       className="flex items-center gap-2 px-2 text-base text-kumo-subtle"
     >
       <Mascot emotion="thinking" shown={working} className="w-9 shrink-0" />
