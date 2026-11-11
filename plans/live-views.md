@@ -86,8 +86,9 @@ Acceptance criteria:
   exactly as if the viewer had typed the message, and waits whenever the composer waits.
 - A block with no content shows an error and runs nothing.
 - `env.NAME = value` in `executeCode` saves `NAME` as a chat binding when the call's step is
-  stored: JSON data, or another name of one of the chat's bindings. A value is at most 1 MiB as
-  JSON, and a chat's saved data at most 4 MiB (see "Caps"). Later `executeCode` calls see the
+  stored: JSON data, or another name of one of the chat's bindings. A value is at most 500,000
+  UTF-16 code units as JSON, and a chat's saved data at most 2,000,000 (see "Caps"). Later
+  `executeCode` calls see the
   name in `env`, and `describeBinding` describes it. A data name can be saved again. No name is
   ever removed.
 - A block whose tag lists names, as in `<inline-html env="A,B">`, gets an `env` with just those
@@ -363,7 +364,8 @@ restricted data. This plan does not change gadget frames.
   measures each JSON text itself and checks that it parses. Then it decides each name in order. It
   refuses a name `validateBindingName` refuses, a name in scope that is not a data name (the
   turn's `isNameInScope`, which runAgent passes it: bound, claimed by a pending connection request,
-  or `GIT`), a value over 1 MiB, and a save that would take the chat's data past 4 MiB. One refused
+  or `GIT`), a value over 500,000 code units, and a save that would take the chat's data past
+  2,000,000. One refused
   name refuses no other. The output gets one line per name: `Saved env.TOTALS (data) for views and
   later code.`, `Saved env.SALES (another name for env.EXPENSES) for views and later code.`, or
   `env.X was not saved: …`.
@@ -371,24 +373,31 @@ restricted data. This plan does not change gadget frames.
   holds each data name's JSON in the step's `pendingSavedData`, beside `pendingWorktreeCommits`,
   and stamps the saved names on the tool call's record: `savedEnv: {name, alias?}[]`, where
   `alias` names the binding whose entry a name copies. A later call in the same step gets the
-  pending JSON through `getEnvForAgent`, which reads `pendingSavedData` before `chatSavedData`.
+  pending JSON through `getEnvForAgent`, which reads `pendingSavedData` before `chatSavedData`:
+  `runAgent` passes it through `executeCodeMode`'s signature, beside `bindings`.
 - **The barrier.** `commitAgentStep` takes the step's `savedData: {name, json}[]` and writes it in
   the step's transaction, with the record that stamps the names. It writes nothing for a chat that
   is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing.
 - **Caps.** Each has a reason:
-  - 1 MiB per value, as UTF-8 JSON. The value is one `chatSavedData` record. Durable Object
-    storage keeps a string at up to two bytes per code unit, so the record stays under 2 MiB:
-    inside the 2 MB value limit `observer-ledger.ts` cites, and the 8 MB the platform documents
-    today (<https://developers.cloudflare.com/durable-objects/platform/limits/>). It also reaches
-    each viewer in one Cap'n Web message.
-  - 4 MiB for a chat's saved data. Every `executeCode` run carries every data name in its `env`,
-    parsed, as `getEnvForAgent` already copies `value` payloads in. The Worker Loader serializes
-    `env` into the dynamic Worker
+  - 500,000 UTF-16 code units per value, measured as `json.length`, as
+    `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`. The value is one
+    `chatSavedData` record, and typed-storage writes it with V8 serialization, which stores a
+    string with any character above U+00FF at two bytes per code unit. So the record stays under
+    1 MB plus its other fields, well inside the 2 MB value limit `observer-ledger.ts` cites (and
+    the 8 MB the platform documents today,
+    <https://developers.cloudflare.com/durable-objects/platform/limits/>). The write runs inside
+    `commitAgentStep`'s transaction, where a storage error would kill the turn and lose its step,
+    so the kernel refuses an oversized value when the code returns. A value also reaches each
+    viewer in one Cap'n Web message.
+  - 2,000,000 code units for a chat's saved data: at most 4 MB as stored. Every `executeCode` run
+    pays for all of it twice. The Overseer parses every data name's JSON in `getEnvForAgent`, in
+    the Durable Object's 128 MB isolate, which every chat of the workspace shares. The Worker Loader
+    then serializes that `env` into the dynamic Worker
     (<https://developers.cloudflare.com/dynamic-workers/api-reference/>), whose serialized RPC
-    limit is 32 MiB (<https://developers.cloudflare.com/workers/runtime-apis/rpc/>), and the
-    isolate's 128 MB of memory holds the parsed copy beside the agent's own work
+    limit is 32 MiB (<https://developers.cloudflare.com/workers/runtime-apis/rpc/>), and whose own
+    128 MB isolate holds the parsed copy beside the agent's work
     (<https://developers.cloudflare.com/workers/platform/limits/>). That the RPC limit applies to
-    the loader's `env` is [INFERENCE]. 4 MiB of JSON leaves room for both.
+    the loader's `env` is [INFERENCE].
   - No cap on the number of names: the total bounds what a run pays, and a name costs only its
     entry. The env arm's 16 names and 256 KiB had no stated reason, and are dropped.
 - **Readers of the binding map.** Each place that folds or reads it gets the new kind:
@@ -783,7 +792,7 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   - a change in place (`env.FOOD.weeks.push(5)`) is saved; `delete env.FOOD` leaves it saved and
     says so; saving a data name again replaces its JSON and keeps its place in the map;
   - a name the chat binds, a pending connection request's name, `GIT`, another name saved again,
-    a function, a `Date`, a cycle, a value over 1 MiB and a save past 4 MiB are refused, and the
+    a function, a `Date`, a cycle, a value over 500,000 code units and a save past 2,000,000 are refused, and the
     rest saved; a run that throws saves nothing; a harness result whose JSON does not parse is
     refused;
   - in one step, a second call sees the first's save; a save after a `createGadget` of the same
@@ -875,7 +884,11 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   folds ignore `savedEnv` stamps, so saved names drop out of scope and can be taken. Its
   `observerContextOf` maps a `view` caller to nothing, so the ledger refuses such a call: it fails
   closed. Its `deleteChat` leaves `chatSavedData` records behind. Rolling forward, a name a
-  rollback build bound first keeps its binding, and replay skips the later save of it.
+  rollback build bound first keeps its binding, and replay skips the later save of it. In the
+  other order, a name saved first and then taken by an older build's `createGadget`: replay and
+  `buildCompactionState` set a created Gadget's name unconditionally, so every fold agrees that
+  the name is the Gadget, and the `chatSavedData` row stays, read by nothing, until the chat is
+  deleted.
 - **A running agent.** Send while the agent runs steers that turn, as a typed message does.
 - **An answer that is never stored.** A stopped or failed model request stores nothing, so its
   views go away with its text. A retried request runs its views again.
