@@ -392,6 +392,8 @@ function observerBindingNeed(record: GatekeeperRecord): ObserverBindingNeed {
     vendorId: observerVendorId(record)!,
     resourceTitle: observerBindingTitle(record),
     resourceUrl: record.resourceUrl,
+    resourceTypeId: record.creationSpec?.type === "gatekeeper"
+      ? record.creationSpec.resourceTypeId : undefined,
   };
 }
 

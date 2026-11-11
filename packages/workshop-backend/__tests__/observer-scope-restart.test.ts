@@ -112,6 +112,17 @@ const CONNECTION_SPEC = {
 };
 
 describe("restarting sessions when verification scope widens", () => {
+  it("forwards the stored type ID in observer requirements", () => withImpl(async impl => {
+    seedGatekeeper(impl, 1);
+    const record = impl.storage.gatekeepers.get(1);
+    impl.storage.gatekeepers.put({ ...record,
+      creationSpec: { ...record.creationSpec, resourceTypeId: "document" },
+    });
+    expect(impl.listObserverRequirements("workspace")).toMatchObject([
+      { gatekeeperId: 1, resourceTypeId: "document" },
+    ]);
+  }));
+
   it("adding a connection restarts a connected build collaborator",
       () => withImpl(async (impl, restarts) => {
     joinSession(impl);
