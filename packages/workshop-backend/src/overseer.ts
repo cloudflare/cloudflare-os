@@ -7958,7 +7958,7 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      let spendLimit = apiError && spendLimitFromError(apiError.message, apiStatus);
+      let spendLimit = apiError && spendLimitFromError(apiError.message);
       failure = spendLimit
         ? {message: "The AI spending limit was reached. Try again later.", code: "spend_limit", spendLimit}
         : {message: errorMessage};

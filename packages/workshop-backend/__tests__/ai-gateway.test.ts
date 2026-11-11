@@ -950,14 +950,17 @@ describe("spendLimitFromError", () => {
   const refusal = "Spend limit exceeded: rule '3c84c20a' (cost limit 0.1 per 86400s, sliding) " +
       "for anthropic anthropic/claude-opus-5.5";
 
-  it("reads the window from a gateway refusal, behind any provider SDK's prefix", () => {
-    expect(spendLimitFromError(`429 ${refusal}`, 429)).toEqual({ cost: 0.1, windowSeconds: 86400, sliding: true });
-    expect(spendLimitFromError(`OpenAI API error (429): ${refusal.replace("sliding", "fixed")}`, 429))
+  it("reads the limit from a gateway refusal, however a provider SDK wraps it", () => {
+    expect(spendLimitFromError(`429 ${refusal}`))
+        .toEqual({ cost: 0.1, windowSeconds: 86400, sliding: true });
+    expect(spendLimitFromError(`OpenAI API error (429): ${refusal.replace("sliding", "fixed")}`))
         .toEqual({ cost: 0.1, windowSeconds: 86400, sliding: false });
+    // Google's SDK reports the response body as JSON, with no leading status.
+    expect(spendLimitFromError(JSON.stringify({ error: { message: refusal, code: 429 } })))
+        .toEqual({ cost: 0.1, windowSeconds: 86400, sliding: true });
   });
 
   it("ignores other failures", () => {
-    expect(spendLimitFromError(`429 ${refusal}`, 500)).toBeUndefined();
-    expect(spendLimitFromError("429 Rate limit exceeded", 429)).toBeUndefined();
+    expect(spendLimitFromError("429 Rate limit exceeded")).toBeUndefined();
   });
 });

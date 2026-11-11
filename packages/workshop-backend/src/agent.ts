@@ -4471,7 +4471,7 @@ async function runAgentPass(
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
     // A spend limit's 429 is not transient.
-    if (isRetryableAssistantError(turnFailure) && !spendLimitFromError(message, error.statusCode)) {
+    if (isRetryableAssistantError(turnFailure) && !spendLimitFromError(message)) {
       return {type: "transientFailure", error};
     }
     throw error;

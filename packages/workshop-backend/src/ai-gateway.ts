@@ -482,9 +482,7 @@ export async function getAiGatewayLogCost(
 const SPEND_LIMIT_ERROR = /Spend limit exceeded: rule '[^']*' \(cost limit ([\d.]+) per (\d+)s, (\w+)\)/;
 
 /** The AI Gateway spend limit a failed model request hit, if that is why it failed. */
-export function spendLimitFromError(errorMessage: string, statusCode: number | undefined)
-    : SpendLimitHit | undefined {
-  if (statusCode !== 429) return undefined;
+export function spendLimitFromError(errorMessage: string): SpendLimitHit | undefined {
   let match = SPEND_LIMIT_ERROR.exec(errorMessage);
   if (!match) return undefined;
   return { cost: Number(match[1]), windowSeconds: Number(match[2]), sliding: match[3] === "sliding" };
