@@ -2,8 +2,8 @@
 // commit instead: a fresh copy written from git objects for the Opus runner, or the checkout itself
 // for Bonk, which reads the working tree.
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * File names an agent reads as instructions, matched at any depth and in any case. opencode 1.18.33
@@ -120,6 +120,10 @@ function assertRealParents(root: string, path: string): void {
  * `headSha`, before a reviewer that reads the working tree runs there. Every head instruction path,
  * symlinks among them, is removed; every regular base instruction file is written in its place, and
  * base symlinks are left out. Returns the head paths it removed or replaced.
+ *
+ * None of this shows in `git status`: the pinned opencode runner commits and pushes a dirty checkout
+ * after the review. Tracked head paths are marked skip-worktree, and base files the head does not
+ * track are listed in the repository's own exclude file.
  */
 export function replaceInstructionFiles(worktree: string, headSha: string, baseSha: string): string[] {
   const head = listTree(worktree, headSha).filter(entry => isInstructionPath(entry.path)).map(entry => entry.path);
@@ -136,6 +140,19 @@ export function replaceInstructionFiles(worktree: string, headSha: string, baseS
     mkdirSync(dirname(join(worktree, path)), { recursive: true });
     assertRealParents(worktree, path);
     writeFileSync(join(worktree, path), content, { mode: 0o644 });
+  }
+  if (head.length > 0) {
+    execFileSync("git", ["-C", worktree, "update-index", "--skip-worktree", "-z", "--stdin"], { input: `${head.join("\0")}\0` });
+  }
+  const tracked = new Set(head);
+  const untracked = base.map(entry => entry.path).filter(path => !tracked.has(path));
+  if (untracked.length > 0) {
+    const exclude = resolve(worktree, execFileSync("git", ["-C", worktree, "rev-parse", "--git-path", "info/exclude"],
+      { encoding: "utf8" }).trim());
+    mkdirSync(dirname(exclude), { recursive: true });
+    // Anchored, with gitignore's special characters escaped, so each line matches only its path.
+    appendFileSync(exclude, `\n${untracked.map(path => `/${path.replaceAll(/[\\*?[]/g, "\\$&").replace(/ +$/, spaces =>
+      spaces.replaceAll(" ", "\\ "))}`).join("\n")}\n`);
   }
   return head;
 }

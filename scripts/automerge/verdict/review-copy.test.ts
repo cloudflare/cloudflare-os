@@ -117,6 +117,39 @@ describe("replaceInstructionFiles", () => {
     }
   });
 
+  // The pinned opencode runner commits and pushes a dirty checkout after the review, and fails
+  // without a git author, so the overlay must not show up in `git status`.
+  it("leaves git status clean, also after a checkout of the head's branch", () => {
+    const repo = createTestRepo();
+    try {
+      const base = repo.commit({
+        "AGENTS.md": "base root guide",
+        "docs/CLAUDE.md": "base docs guide",
+        "packages/[x]/AGENTS.md": "base guide in a glob-like directory",
+        "src/a.ts": "1\n",
+      });
+      const head = repo.commit({
+        "AGENTS.md": "head root guide",
+        "packages/y/CONTEXT.md": { link: "/etc/passwd" },
+        "packages/z/CLAUDE.md": "head-only guide",
+        "src/a.ts": "2\n",
+      });
+      repo.git("branch", "feature", head);
+      repo.git("checkout", "-q", "--detach", head);
+      replaceInstructionFiles(repo.dir, head, base);
+      assert.equal(repo.git("status", "--porcelain", "--untracked-files=all"), "");
+      repo.git("checkout", "-q", "feature");
+      assert.equal(repo.git("status", "--porcelain", "--untracked-files=all"), "");
+      assert.equal(readFileSync(join(repo.dir, "AGENTS.md"), "utf8"), "base root guide");
+      assert.equal(readFileSync(join(repo.dir, "docs/CLAUDE.md"), "utf8"), "base docs guide");
+      assert.equal(readFileSync(join(repo.dir, "packages/[x]/AGENTS.md"), "utf8"), "base guide in a glob-like directory");
+      assert.equal(existsSync(join(repo.dir, "packages/z/CLAUDE.md")), false);
+      assert.equal(readFileSync(join(repo.dir, "src/a.ts"), "utf8"), "2\n");
+    } finally {
+      repo.remove();
+    }
+  });
+
   it("refuses to write a base file through a directory the head made a symlink", () => {
     const repo = createTestRepo();
     const outside = mkdtempSync(join(tmpdir(), "verdict-outside-"));
