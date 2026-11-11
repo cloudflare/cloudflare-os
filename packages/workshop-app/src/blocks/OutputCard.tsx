@@ -25,7 +25,7 @@ export const OutputCard = ({ title, kind, draft, format, onOpen }: OutputCardPro
   <button
     type="button"
     onClick={onOpen}
-    className={cn(CARD, 'group flex w-fit max-w-[min(100%,28rem)] items-center gap-3 p-2 pe-4 text-left text-base/5 hover:bg-kumo-tint')}
+    className={cn(CARD, 'group flex w-fit max-w-[min(100%,28rem)] min-w-[min(100%,20rem)] items-center gap-3 p-2 pe-4 text-left text-base/5 hover:bg-kumo-tint')}
   >
     <span className="grid size-14 shrink-0 place-items-center rounded-[13px] bg-kumo-fill text-kumo-subtle">
       {kind === 'worktree' ? <GitBranchIcon aria-hidden="true" className="size-6" /> : <FormatIcon name={format?.icon} className="size-6" />}
