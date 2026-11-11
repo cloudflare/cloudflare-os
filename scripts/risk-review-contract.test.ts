@@ -87,6 +87,8 @@ const binding = {
   repository: "cloudflare/cloudflare-os",
   pullNumber: 976,
   defaultBranch: "main",
+  headBranch: recorded.head_branch ?? "",
+  notBefore: 0,
 };
 
 describe("bindingError", () => {
@@ -108,13 +110,19 @@ describe("bindingError", () => {
     // Recorded: a real pull_request run of preview.yml, which GitHub ties to #965 into main.
     const preview: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/preview-run.json", import.meta.url), "utf8"));
     const producer: Producer = { kind: "evidence", workflow: preview.path };
-    const onHead = { ...binding, producer, headSha: preview.head_sha };
+    const onHead = { ...binding, producer, headSha: preview.head_sha, headBranch: preview.head_branch ?? "" };
     assert.equal(bindingError(preview, { ...onHead, pullNumber: 965 }), undefined);
     assert.match(bindingError(preview, { ...onHead, pullNumber: 966 }) ?? "", /another pull request or base than #966/);
     // The same run, as GitHub would report it for #965 retargeted to a branch with a replaced workflow.
     const elsewhere = { ...preview, pull_requests: preview.pull_requests.map((pull) => ({ ...pull, base: { ...pull.base, ref: "release" } })) };
     assert.match(bindingError(elsewhere, { ...onHead, pullNumber: 965 }) ?? "", /another pull request or base/);
     assert.match(bindingError({ ...recorded, pull_requests: [] }, binding) ?? "", /another pull request or base/);
+  });
+
+  it("rejects a run for another head branch, or created before the pull request's base last changed", () => {
+    assert.match(bindingError({ ...recorded, head_branch: "attacker/same-commit" }, binding) ?? "", /branch attacker\/same-commit/);
+    assert.match(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) }) ?? "", /base last changed/);
+    assert.equal(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) - 1 }), undefined);
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {

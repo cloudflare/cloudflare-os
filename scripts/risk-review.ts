@@ -230,7 +230,7 @@ export interface PullRequest {
   draft?: boolean;
   user: GitHubUser | null;
   assignees?: GitHubUser[] | null;
-  head: { sha: string };
+  head: { sha: string; ref: string };
   base: { sha: string; ref: string };
   /** Files changed, which can exceed what `pulls.listFiles` will list. */
   changed_files: number;
@@ -669,7 +669,7 @@ export interface GitHubClient {
   rest: {
     pulls: {
       get(args: PullRef): Promise<{ data: PullRequest }>;
-      list(args: RepoRef & Page & { state: "open"; head: string; base: string }): Promise<{ data: PullRequest[] }>;
+      list(args: RepoRef & Page & { state: "open" | "all"; head: string; base?: string }): Promise<{ data: PullRequest[] }>;
       listFiles(args: PullRef & Page): Promise<{ data: ChangedFile[] }>;
       listReviews(args: PullRef & Page): Promise<{ data: Review[] }>;
       listReviewComments(args: PullRef & Page): Promise<{ data: Comment[] }>;
@@ -679,6 +679,8 @@ export interface GitHubClient {
     };
     issues: {
       listComments(args: RepoRef & Page & { issue_number: number }): Promise<{ data: Comment[] }>;
+      listEventsForTimeline(args: RepoRef & Page & { issue_number: number }):
+        Promise<{ data: { event?: string; created_at?: string }[] }>;
     };
     repos: {
       getContent(args: RepoRef & { path: string; ref: string }): Promise<{ data: ContentEntry | ContentEntry[] }>;
@@ -893,10 +895,13 @@ async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest,
   for (const file of needed) {
     const added = file.status === "added";
     const removed = file.status === "removed";
-    const before = added ? undefined : await readFile(github, repo, file.previous_filename ?? file.filename, mergeBase);
+    // A file renamed into place starts from nothing: its old contents were not this kind of file, so
+    // settings it carried in (an install script in a JSON fixture) are new here.
+    const renamedIn = file.previous_filename !== undefined && needsContents(file.previous_filename) !== contentsKind(file);
+    const before = added || renamedIn ? undefined : await readFile(github, repo, file.previous_filename ?? file.filename, mergeBase);
     const after = removed ? undefined : await readFile(github, repo, file.filename, pull.head.sha);
     // A side that exists but cannot be read (too large, not a file) is unknown, so it counts against the change.
-    const unreadable = (!added && before === undefined) || (!removed && after === undefined);
+    const unreadable = (!added && !renamedIn && before === undefined) || (!removed && after === undefined);
     switch (contentsKind(file)) {
       case "workspace":
         facts.workspaceCatalogOnly = before !== undefined && after !== undefined && isCatalogVersionBump(before, after);
@@ -971,9 +976,33 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
   return typeof decision === "string" ? decision : null;
 }
 
+/**
+ * Why no producer run on this pull request's head can be trusted to be its own, or `undefined`.
+ * Another pull request from this branch into a base other than the default branch, open or closed,
+ * runs that base's copy of every producer workflow on the same head commit and branch.
+ */
+async function sharedHeadError(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
+  Promise<string | undefined> {
+  const others = await listAll((page) =>
+    github.rest.pulls.list({ ...repo, ...page, state: "all", head: `${repo.owner}:${pull.head.ref}` }));
+  const elsewhere = others.find((other) => other.number !== pull.number && other.base.ref !== defaultBranch);
+  return elsewhere && `#${elsewhere.number} from the same branch targets ${elsewhere.base.ref}`;
+}
+
+/** When the pull request's base last changed, or 0 when it never did. */
+async function lastBaseChange(github: GitHubClient, repo: RepoRef, number: number): Promise<number> {
+  const events = await listAll((page) => github.rest.issues.listEventsForTimeline({ ...repo, ...page, issue_number: number }));
+  return Math.max(0, ...events.flatMap(({ event, created_at }) =>
+    event === "base_ref_changed" && typeof created_at === "string" ? [Date.parse(created_at)] : []));
+}
+
 async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
   Promise<Partial<Record<ProducerName, ProducerInput>>> {
   const repository = `${repo.owner}/${repo.repo}`;
+  const [shared, notBefore] = await Promise.all([
+    sharedHeadError(github, repo, pull, defaultBranch),
+    lastBaseChange(github, repo, pull.number),
+  ]);
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
   const runsOf = async (workflow: string) => {
     const cached = runsByWorkflow.get(workflow);
@@ -999,7 +1028,19 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
   for (const [name, producer] of Object.entries(PRODUCERS)) {
     if (!isProducerName(name)) continue;
-    const expected = { producer, headSha: pull.head.sha, repository, pullNumber: pull.number, defaultBranch };
+    if (shared) {
+      inputs[name] = { absent: shared };
+      continue;
+    }
+    const expected = {
+      producer,
+      headSha: pull.head.sha,
+      repository,
+      pullNumber: pull.number,
+      defaultBranch,
+      headBranch: pull.head.ref,
+      notBefore,
+    };
     const runs = await runsOf(producer.workflow);
     if (typeof runs === "string") {
       inputs[name] = { absent: runs };

@@ -64,6 +64,8 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
       "scripts/contribution-policy.ts",
       "pnpm-workspace.yaml",
       "**/.npmrc",
+      "**/.pnpmfile.cjs",
+      "**/.pnpmfile.mjs",
       "packages/workshop-backend/**",
       "packages/typed-storage/**",
       "packages/workshop-shared/src/api.ts",
@@ -144,7 +146,7 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[]
     except: [SKILLS],
   },
   { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
-  { reason: "supply-chain policy", globs: ["**/.npmrc"] },
+  { reason: "supply-chain policy", globs: ["**/.npmrc", "**/.pnpmfile.cjs", "**/.pnpmfile.mjs"] },
   { reason: "release pipeline", globs: ["scripts/release/**"] },
 ];
 
@@ -499,12 +501,14 @@ export function parseJson(text: string): Json | undefined {
 }
 
 /**
- * Manifest settings that swap a package or run code at install without declaring a dependency:
- * pnpm's settings (`overrides`, `patchedDependencies`, `packageExtensions` and the rest), npm's
- * `overrides`, Yarn's `resolutions`, and the install lifecycle scripts.
+ * Manifest settings that can swap a package, the package manager or the runtime, or run code at
+ * install, without declaring a dependency: the package manager and runtime pins pnpm switches to
+ * (`packageManager`, `devEngines`, `engines`), the override and patch tables older pnpm, npm and
+ * Yarn read from the manifest (`pnpm`, `overrides`, `resolutions`), and the install lifecycle
+ * scripts, including pnpm's own `pnpm:devPreinstall`.
  */
-const INSTALL_FIELDS = ["pnpm", "overrides", "resolutions"];
-const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare"];
+const INSTALL_FIELDS = ["packageManager", "devEngines", "engines", "pnpm", "overrides", "resolutions"];
+const INSTALL_SCRIPTS = ["pnpm:devPreinstall", "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare"];
 
 /**
  * The install settings a `package.json` changes between `base` and `head` (see `INSTALL_FIELDS`

@@ -206,13 +206,18 @@ export interface WorkflowRun {
   event: string;
   path: string;
   head_sha: string;
+  /** The head branch, recorded when the run was created. */
+  head_branch: string | null;
   head_repository: { full_name: string } | null;
   status: string | null;
   conclusion: string | null;
   created_at: string;
   /** When the latest attempt started; the API describes only the latest attempt. */
   run_started_at?: string;
-  /** The pull requests the run was for: those whose head is the run's head, with their base. */
+  /**
+   * Open pull requests whose head matches the run's, as GitHub computes them when the run is read:
+   * not a record of which pull request triggered it.
+   */
   pull_requests: { number: number; base: { ref: string } }[];
 }
 
@@ -250,6 +255,13 @@ export interface BindingExpectation {
   /** The pull request being decided, whose base is the default branch. */
   pullNumber: number;
   defaultBranch: string;
+  /** The pull request's head branch. */
+  headBranch: string;
+  /**
+   * Runs created at or before this time do not count: the pull request's base changed then, and a
+   * run from before it ran the old base's copy of the workflow, even when re-run later.
+   */
+  notBefore: number;
 }
 
 /**
@@ -260,16 +272,18 @@ export interface BindingExpectation {
  * @returns Why the run is not the producer's, or `undefined` when it is.
  */
 export function identityError(run: WorkflowRun, expected: BindingExpectation): string | undefined {
-  const { producer, headSha, repository, pullNumber, defaultBranch } = expected;
+  const { producer, headSha, repository, pullNumber, defaultBranch, headBranch, notBefore } = expected;
   if (run.path !== producer.workflow) return `ran from ${run.path}, not ${producer.workflow}`;
   if (run.head_repository?.full_name !== repository) return "ran from another repository";
   if (run.event !== "pull_request") return `ran on ${run.event}`;
   if (run.head_sha !== headSha) return "ran on another head commit";
-  // Another pull request from the same head into another branch runs that branch's copy of the
-  // workflow on the same head SHA; only a run GitHub ties to this pull request into the default
-  // branch counts.
-  const ours = run.pull_requests.some(({ number, base }) => number === pullNumber && base.ref === defaultBranch);
-  return ours ? undefined : `ran for another pull request or base than #${pullNumber} into ${defaultBranch}`;
+  // A pull request from another branch at the same commit, into a branch whose workflow was
+  // replaced, runs on the same head SHA; the head branch is recorded with the run. A pull request
+  // from this branch into another base is ruled out before any run is read (see the gate).
+  if (run.head_branch !== headBranch) return `ran for the branch ${run.head_branch ?? "unknown"}, not ${headBranch}`;
+  if (Date.parse(run.created_at) <= notBefore) return "ran before the pull request's base last changed";
+  const listed = run.pull_requests.some(({ number, base }) => number === pullNumber && base.ref === defaultBranch);
+  return listed ? undefined : `ran for another pull request or base than #${pullNumber} into ${defaultBranch}`;
 }
 
 /**

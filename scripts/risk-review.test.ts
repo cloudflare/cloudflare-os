@@ -69,7 +69,7 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     draft: false,
     user: { login: "kentonv", type: "User" },
     assignees: [],
-    head: { sha: HEAD },
+    head: { sha: HEAD, ref: "kenton/topic" },
     base: { sha: BASE, ref: "main" },
     changed_files: 1,
     commits: 1,
@@ -96,6 +96,7 @@ function run(path: string, overrides: Partial<WorkflowRun> = {}): WorkflowRun {
     event: "pull_request",
     path,
     head_sha: HEAD,
+    head_branch: "kenton/topic",
     head_repository: { full_name: "cloudflare/cloudflare-os" },
     status: "completed",
     conclusion: "success",
@@ -167,6 +168,10 @@ interface HarnessOptions {
   moreRuns?: true;
   /** Writing the step summary fails. */
   summaryFails?: true;
+  /** Closed or other pull requests the `state: "all"` listing also returns. */
+  otherPulls?: PullRequest[];
+  /** The pull request's timeline events. */
+  timeline?: { event: string; created_at: string }[];
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
   contents?: Record<string, string>;
   /** Git trees by SHA; a commit's SHA names its root tree. */
@@ -211,7 +216,13 @@ function harness(options: HarnessOptions = {}) {
           if (!pull) throw notFound();
           return { data: pull };
         },
-        list: async ({ head }) => ({ data: [...pulls.values()].filter(() => head.endsWith(":kenton/topic") || head.endsWith(":chore/classify-changsets")) }),
+        list: async ({ head, state, ...args }) => {
+          if (state === "all") {
+            const all = [...pulls.values(), ...(options.otherPulls ?? [])];
+            return page(all.filter((pull) => `cloudflare:${pull.head.ref}` === head), args);
+          }
+          return { data: [...pulls.values()].filter(() => head.endsWith(":kenton/topic") || head.endsWith(":chore/classify-changsets")) };
+        },
         listFiles: async (args) => page(options.files?.[args.pull_number] ?? [file("docs/automerge.md")], args),
         listReviews: async (args) => {
           if (options.broken) throw new Error("HTTP 502");
@@ -230,6 +241,7 @@ function harness(options: HarnessOptions = {}) {
       },
       issues: {
         listComments: async (args) => page(options.comments?.[args.issue_number] ?? [], args),
+        listEventsForTimeline: async (args) => page(options.timeline ?? [], args),
       },
       repos: {
         getContent: async ({ path, ref }) => {
@@ -707,7 +719,7 @@ describe("runRiskReview in shadow mode", () => {
     // Recorded: the relay's run for deregtd's review of #845 (pull_request_review), and that review.
     const relay = fixture("workflow_run.json");
     const reviewEvent = JSON.parse(JSON.stringify(fixture("pull_request_review.json")));
-    const pull = pullRequest({ number: 845, user: { login: "ndisidore", type: "User" }, head: { sha: reviewEvent.pull_request.head.sha }, base: { sha: reviewEvent.pull_request.base.sha, ref: "main" } });
+    const pull = pullRequest({ number: 845, user: { login: "ndisidore", type: "User" }, head: { sha: reviewEvent.pull_request.head.sha, ref: reviewEvent.pull_request.head.ref }, base: { sha: reviewEvent.pull_request.base.sha, ref: "main" } });
     const { calls, evaluate } = harness({ pulls: [pull], reviews: { 845: [reviewEvent.review] }, lastPush: "2026-10-22T05:00:00Z" });
     await evaluate("workflow_run", relay);
     assert.deepEqual(calls.checks.map(({ sha }) => sha), [reviewEvent.pull_request.head.sha]);
@@ -770,7 +782,7 @@ describe("runRiskReview on a merge group", () => {
     repository: { default_branch: "main", full_name: "cloudflare/cloudflare-os" },
   };
   const queue = fixture("merge_queue.json");
-  const pulls = [939, 943].map((number) => pullRequest({ number, head: { sha: String(number).repeat(14).slice(0, 40) } }));
+  const pulls = [939, 943].map((number) => pullRequest({ number, head: { sha: String(number).repeat(14).slice(0, 40), ref: `topic-${number}` } }));
   const basePolicy = {
     [`${group.base_sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
     [`${group.base_sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),
@@ -816,6 +828,21 @@ describe("runRiskReview on a merge group", () => {
   });
 });
 
+// GitHub computes a run's `pull_requests` when the run is read: any open pull request whose head
+// matches. So a run that another pull request triggered still lists #7 into main.
+function forgedAt(overrides: Partial<WorkflowRun>): ProducerRun[] {
+  return verdicts({ bonk: { merge_confidence: 10 } }).map((entry) => ({
+    ...entry,
+    run: { ...entry.run, id: entry.run.id + 1000, created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z", ...overrides },
+  }));
+}
+
+/** Bonk's score in the last record, or its input when absent. */
+function bonkScore(calls: Calls): number | null | InputSummary | undefined {
+  const bonk = lastRecord(calls).pulls[0]?.inputs.bonk;
+  return bonk && "merge_confidence" in bonk ? bonk.merge_confidence : bonk;
+}
+
 describe("runRiskReview producer binding", () => {
   const open = { policy: { bands: bandsJson("shadow", true, [{ area: "scored", band: "low" }]) } };
 
@@ -834,19 +861,33 @@ describe("runRiskReview producer binding", () => {
     assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "concluded failure" });
   });
 
-  it("rejects a verdict from a run of the same head for another pull request or base, and lets the real one count", async () => {
-    // A second pull request from the same head into a branch with a replaced workflow, run later.
-    const forged = verdicts().map((entry) => ({
-      ...entry,
-      run: { ...entry.run, id: entry.run.id + 1000, created_at: "2026-11-02T11:00:00Z", run_started_at: "2026-11-02T11:00:00Z", pull_requests: [{ number: 8, base: { ref: "release" } }] },
-    }));
-    const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), ...forged] });
+  it("ignores a run of the same commit from another branch, whose pull request targets a replaced workflow", async () => {
+    const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), ...forgedAt({ head_branch: "attacker/same-commit" })] });
     await evaluate("workflow_run", producerCompleted());
-    const bonk = lastRecord(calls).pulls[0]?.inputs.bonk;
-    assert.equal(bonk && "status" in bonk ? bonk.status : undefined, "ok");
-    const onlyForged = harness({ ...open, runs: forged });
-    await onlyForged.evaluate("workflow_run", producerCompleted());
-    assert.equal(lastRecord(onlyForged.calls).pulls[0]?.would.decision, "person");
+    assert.equal(bonkScore(calls), 8);
+  });
+
+  it("trusts no producer run when another pull request from the same branch targets another base, even a closed one", async () => {
+    const elsewhere = pullRequest({ number: 8, state: "closed", base: { sha: BASE, ref: "release" } });
+    const { calls, evaluate } = harness({ ...open, runs: verdicts(), otherPulls: [elsewhere] });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "#8 from the same branch targets release" });
+    assert.equal(lastRecord(calls).pulls[0]?.would.decision, "person");
+    const sameBase = harness({ ...open, runs: verdicts(), otherPulls: [pullRequest({ number: 6, state: "closed" })] });
+    await sameBase.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(sameBase.calls).pulls[0]?.would.decision, "auto");
+  });
+
+  it("ignores runs from before the pull request's base last changed, even re-run since", async () => {
+    // Retargeted to a branch with a replaced workflow, run (and re-run) there, then retargeted back.
+    const before = forgedAt({ created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T12:00:00Z" });
+    const timeline = [{ event: "base_ref_changed", created_at: "2026-11-02T10:45:00Z" }];
+    const { calls, evaluate } = harness({ ...open, runs: [...verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T11:30:00Z", run_started_at: "2026-11-02T11:30:00Z" } })), ...before], timeline });
+    await evaluate("workflow_run", producerCompleted());
+    assert.equal(bonkScore(calls), 8);
+    const onlyBefore = harness({ ...open, runs: before, timeline });
+    await onlyBefore.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(onlyBefore.calls).pulls[0]?.would.decision, "person");
   });
 
   it("rejects a verdict from a fork, or one made for another head or base", async () => {
@@ -986,6 +1027,12 @@ describe("runRiskReview content rules", () => {
     });
     assert.equal(override.band, "high");
     assert.match(override.band_reasons.join("\n"), /packages\/ui\/package\.json: changes pnpm/);
+    // A JSON fixture renamed into a package.json brings its install script in as new.
+    const renamed = file("packages/new/package.json", { status: "renamed", previous_filename: "fixtures/x.json" });
+    const carried = JSON.stringify({ name: "x", scripts: { postinstall: "node steal.js" } });
+    const renamedIn = await decideFiles([renamed], { [`${BASE}:fixtures/x.json`]: carried, [`${HEAD}:packages/new/package.json`]: carried });
+    assert.equal(renamedIn.band, "high");
+    assert.match(renamedIn.band_reasons.join("\n"), /packages\/new\/package\.json: changes scripts\.postinstall/);
   });
 });
 
@@ -1051,7 +1098,7 @@ describe("runRiskReview proof freshness", () => {
   const ci = "name: CI\non: pull_request\npermissions:\n  contents: read\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n";
   const workspace = read("scripts/risk-review-fixtures/pnpm-workspace.yaml");
   const bot = { login: "dependabot[bot]", type: "Bot" };
-  const queued = [pullRequest({ number: 939, head: { sha: "9".repeat(40) } }), pullRequest({ number: 943, user: bot })];
+  const queued = [pullRequest({ number: 939, head: { sha: "9".repeat(40), ref: "topic-939" } }), pullRequest({ number: 943, user: bot })];
   const policyAt = (sha: string) => ({
     [`${sha}:${POLICY_FILES.maintainers}`]: MAINTAINERS,
     [`${sha}:${POLICY_FILES.bands}`]: read(POLICY_FILES.bands),

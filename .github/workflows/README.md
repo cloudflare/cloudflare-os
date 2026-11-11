@@ -31,9 +31,10 @@ and post nothing. The two verdicts are Bonk's (`bonk-pr.yml`, run "Bonk PR Revie
 Bonk's verdict artifact and `review-verdict.yml` land in #972, `automerge-proofs.yml` in #987, and
 `automerge-evidence.yml` in #988. Until then the gate finds no run of them and counts every input they
 would give as absent, so every pull request goes to a person. The gate accepts an artifact only from a successful `pull_request` run of the
-expected workflow file on the pull request's head, in this repository, that GitHub ties to this
-pull request into `main` (another pull request from the same head into another branch runs that
-branch's copy of the workflow), and the run whose latest
+expected workflow file on the pull request's head commit and branch, in this repository, created
+after the pull request's base last changed; and none counts when another pull request from the same
+branch, open or closed, targets another base, since its runs use that base's copy of the workflows.
+The run whose latest
 attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
 their smoke runs in workerd, without secrets, in Automerge evidence. A rung 1 proof also counts only
 for the commit the pull request would land on (its base, or the queue's commit under it in a merge
@@ -112,6 +113,9 @@ key from the app.
   2026-11-02 and 2026-11-06, so the escape raise puts edits to it in the high band until those
   fall out of the 90-day window (2027-02-04). High needs `evidence-consumer-build` too, so scoring
   those edits admits none of them before then.
+- The producer binding rests on what GitHub records about a run (its head commit and branch, and
+  when it was created) and on the pull request's history. It is not a signed record of which
+  workflow file ran; artifact attestations would be one.
 - A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
   until the next push, which sends the pull request to a person.
 - The report counts a fix as a miss only when it names the pull request or reverts it within 14

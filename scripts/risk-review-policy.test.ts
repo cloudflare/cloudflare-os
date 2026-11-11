@@ -208,6 +208,8 @@ describe("classifyChangeset NEVER_AUTO", () => {
       ".opencode/plugins/x.ts",
       "packages/workshop-backend/src/auth/config.ts",
       ".npmrc",
+      ".pnpmfile.cjs",
+      "packages/x/.pnpmfile.mjs",
       "scripts/release/build-release.ts",
     ]) {
       assert.notDeepEqual(classify([file(path)]).neverAuto, [], path);
@@ -314,6 +316,10 @@ describe("changedInstallSettings", () => {
       [{ scripts: { build: "vp run build", test: "vitest", install: "node x.js" } }, "scripts.install"],
       [{ scripts: { build: "vp run build", test: "vitest", postinstall: "node x.js" } }, "scripts.postinstall"],
       [{ scripts: { build: "vp run build", test: "vitest", prepare: "node x.js" } }, "scripts.prepare"],
+      [{ scripts: { build: "vp run build", test: "vitest", "pnpm:devPreinstall": "node x.js" } }, "scripts.pnpm:devPreinstall"],
+      [{ packageManager: "pnpm@9.0.0" }, "packageManager"],
+      [{ devEngines: { packageManager: { name: "pnpm", version: "9.0.0" } } }, "devEngines"],
+      [{ engines: { runtime: { name: "node", version: "20.0.0" } } }, "engines"],
     ];
     for (const [change, name] of cases) {
       const head = JSON.stringify({ ...JSON.parse(base), ...change });
