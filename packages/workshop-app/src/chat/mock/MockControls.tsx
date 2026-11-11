@@ -38,7 +38,7 @@ export const MockControls = ({ scenarios, scenario, player, onSelectScenario, on
   return (
     <aside
       aria-label="Mock scenario"
-      className="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-kumo-base p-1 pe-4 text-sm text-kumo-subtle ring-1 ring-kumo-line"
+      className="absolute top-3 right-3 z-20 flex items-center gap-2 rounded-full bg-kumo-base p-1 pe-4 text-sm text-kumo-subtle ring-1 ring-kumo-line"
     >
       <DropdownMenu label={scenario.id} aria-label="Choose scenario" triggerVariant="ghost">
         {scenarios.map(({ id }) => (
@@ -51,8 +51,8 @@ export const MockControls = ({ scenarios, scenario, player, onSelectScenario, on
         : <Button variant="ghost" icon={PlayIcon} aria-label="Play" title="Play" disabled={done} onClick={player.play} />}
       <Button variant="ghost" icon={SkipForwardIcon} aria-label="Step" title="Run the next step" disabled={done || !!waitingFor} onClick={player.step} />
       <Tooltip content={scenario.description}>
-        {/* One width for whatever it says, so the panel, which is centred, and the buttons in it
-            stay where they are as the script moves on. */}
+        {/* One width for whatever it says, so the buttons before it stay where they are as the
+            script moves on. */}
         <span role="status" tabIndex={0} className="w-44 truncate tabular-nums">{status}</span>
       </Tooltip>
     </aside>
