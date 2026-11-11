@@ -215,7 +215,7 @@ export default function AdminPage() {
     return () => { applyAccentColor(savedAccent) }
   }, [accentDraft, savedAccent])
 
-  // Re-fetch just the gatekeeper/resource state (used to revert an optimistic toggle on error).
+  // Re-fetch policy: one toggle can affect other resource rows or remove a legacy restriction.
   // Leaves the General-tab drafts untouched.
   const reloadResources = async () => {
     if (!admin) return
@@ -237,6 +237,7 @@ export default function AdminPage() {
     )
     try {
       await admin.api.setResourceEnabled(vendorId, urlPattern, enabled)
+      await reloadResources()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })

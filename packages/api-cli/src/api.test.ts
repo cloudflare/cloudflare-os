@@ -764,8 +764,8 @@ test("a JSON argument of the wrong type fails before connecting, naming the type
   const real = harness(t, { table: realTable });
   // revoke-share-link is Overseer's: on the root it would fail as an unknown command, before any check.
   await usageError(real.api("open-workspace", "g1", "revoke-share-link", "L1", "false", "--dry-run"), "<keepUsers> must be string[]; got false.");
-  await usageError(real.api("connect-account", "google", "--resource-url-patterns", "false", "--dry-run"),
-    "--resource-url-patterns must be string[]; got false.");
+  await usageError(real.api("connect-account", "google", "--resource-type-ids", "false", "--dry-run"),
+    "--resource-type-ids must be string[]; got false.");
   assert.equal(real.server.opened, 0);
 });
 

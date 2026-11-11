@@ -6,7 +6,7 @@ import {
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
-  resourceTypeUrlPattern,
+  requestedResourceUrlPatterns, resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -317,7 +317,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
                        options?: GatekeeperConnectOptions): Promise<{ url: string }> {
     let userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     let initiationNonce = generateNonce();
-    let requestedScopes = resourceUrlPatternsToScopes(options?.resourceUrlPatterns);
+    let requestedScopes = resourceUrlPatternsToScopes(
+        requestedResourceUrlPatterns(options, SUPPORTED_RESOURCES));
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, requestedScopes);
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
@@ -882,7 +883,8 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     await this.#account().commitReconnect(stageId);
   }
 
-  async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+  async ensureResources(resourceTypeIds: string[]): Promise<{ url?: string }> {
+    let resourceUrlPatterns = resourceTypeIds.map(id => resourceTypeUrlPattern(SUPPORTED_RESOURCES, id));
     let account = this.#account();
     let granted = new Set(await account.getGrantedResourceUrlPatterns());
     if (resourceUrlPatterns.every(pattern => granted.has(pattern))) return {};
