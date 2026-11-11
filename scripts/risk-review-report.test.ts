@@ -35,6 +35,15 @@ function merged(number: number, mergedAt: string, title = `Change ${number}`, bo
   return { number, title, body, merged_at: mergedAt, updated_at: mergedAt, head: { sha: HEAD }, base: { ref: base }, user: { login: "kentonv" } };
 }
 
+/** A `get` that answers from `responses` and fails on any request they do not hold. */
+function getFrom(responses: Record<string, Json>): GitHubGet {
+  return async (path) => {
+    const response = responses[path];
+    if (response === undefined) throw new Error(`unexpected request ${path}`);
+    return response;
+  };
+}
+
 /** A real check-run summary, rendered by the gate for one pull request with both verdicts. */
 function summaryFor(number: number): string {
   const inputs: PullInputs = {
@@ -329,11 +338,6 @@ describe("buildCalibration", () => {
     [`${R}/contents/.github/maintainers`]: { content: Buffer.from("deregtd\nkentonv\n").toString("base64") },
     [`${R}/contents/.github/automerge-bands.json`]: { content: Buffer.from(readFileSync(new URL("../.github/automerge-bands.json", import.meta.url))).toString("base64") },
     [R]: { default_branch: "main" },
-  };
-  const getFrom = (responses: Record<string, Json>): GitHubGet => async (path) => {
-    const response = responses[path];
-    if (response === undefined) throw new Error(`unexpected request ${path}`);
-    return response;
   };
 
   // Bonk on #1093, round 7: H1 scored 10/10 and a maintainer commented on it; the author then
