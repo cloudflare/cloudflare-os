@@ -1,9 +1,17 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 
+/** Which neighbours a message forms a run with: the message before it, the one after, or both. */
+export type MessageJoins = { above?: boolean; below?: boolean }
+
 export type MessageBubbleProps = {
   role: 'user' | 'assistant' | 'error'
   children: ReactNode
+  /**
+   * The neighbours from the same sender, for where bubbles are not siblings in the page and so
+   * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
+   */
+  joins?: MessageJoins
 }
 
 const BUBBLE = {
@@ -16,6 +24,7 @@ const BUBBLE = {
 // feed's `gap-2` is 8px, so -mt-1.5 leaves 2px) and the corners where two bubbles meet shrink, on the
 // side the bubbles are aligned to. Per role and in full, because CSS cannot match "same role" between
 // siblings generically and Tailwind only picks up class names it can read as literal strings.
+// `JOINED` is the same for a bubble that was told its neighbours instead of finding them.
 const RUN = {
   user: {
     row: '[[data-role=user]+&]:-mt-1.5',
@@ -40,13 +49,27 @@ const RUN = {
   },
 } as const
 
+const JOINED = {
+  user: { above: 'rounded-tr-md', below: 'rounded-br-md' },
+  assistant: { above: 'rounded-tl-md', below: 'rounded-bl-md' },
+  error: { above: 'rounded-tl-md', below: 'rounded-bl-md' },
+} as const
+
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
  * Neighbouring messages from the same sender tuck together (see `RUN`).
  */
-export const MessageBubble = ({ role, children }: MessageBubbleProps) => (
-  <div data-role={role} className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row)}>
-    <div className={cn('max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words', BUBBLE[role], RUN[role].bubble)}>
+export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => (
+  <div data-role={role} className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}>
+    <div
+      className={cn(
+        'max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
+        BUBBLE[role],
+        RUN[role].bubble,
+        joins?.above && JOINED[role].above,
+        joins?.below && JOINED[role].below,
+      )}
+    >
       {children}
     </div>
   </div>

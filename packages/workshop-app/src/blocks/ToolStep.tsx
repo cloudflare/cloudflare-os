@@ -1,6 +1,6 @@
 import {
-  CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon, MagnifyingGlassIcon,
-  LightningIcon, PencilSimpleIcon, PlusIcon, StopIcon, BookOpenIcon, type Icon,
+  BookOpenIcon, BrainIcon, ChatTextIcon, CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon,
+  MagnifyingGlassIcon, PencilSimpleIcon, PlusIcon, StopIcon, type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge } from '@cloudflare/kumo'
@@ -23,7 +23,10 @@ const ICONS = {
   stop: StopIcon,
 } satisfies Record<string, Icon>
 
-/** One step of the agent's work: a tool it called, a resource that call read, or an action a rule approved. */
+/**
+ * One step in the making of a reply: a tool the agent called, a resource that call read, or what
+ * it is doing right now, which is thinking or writing the reply.
+ */
 export type ToolStepEntry =
   | {
       type: 'call'
@@ -46,21 +49,17 @@ export type ToolStepEntry =
       description: string
       fields: ActionField[]
     }
-  | {
-      type: 'action'
-      key: string
-      label: string
-      /** The rule that approved it, e.g. "Auto-approved (Ada’s rule)". */
-      resolution: string
-      resource?: ResourceLinkProps
-      description: string
-      fields: ActionField[]
-    }
+  /** What has been thought so far. */
+  | { type: 'thinking'; key: string; text: string }
+  /** The reply as far as it has been drafted. */
+  | { type: 'writing'; key: string; text: string }
 
 export type ToolStepProps = { entry: ToolStepEntry; open: boolean; onToggle: () => void }
 
 const Detail = ({ entry }: { entry: ToolStepEntry }) => {
-  if (entry.type !== 'call') {
+  if (entry.type === 'thinking') return <div className="text-sm text-kumo-subtle"><Markdown>{entry.text}</Markdown></div>
+  if (entry.type === 'writing') return <div className="text-base/5 text-kumo-default"><Markdown>{entry.text}</Markdown></div>
+  if (entry.type === 'observation') {
     const { resource } = entry
     return (
       <>
@@ -79,22 +78,47 @@ const Detail = ({ entry }: { entry: ToolStepEntry }) => {
   )
 }
 
+const summaryOf = (entry: ToolStepEntry): { icon: Icon; label: string } => {
+  switch (entry.type) {
+    case 'thinking':
+      return { icon: BrainIcon, label: 'Thinking…' }
+    case 'writing':
+      return { icon: ChatTextIcon, label: 'Writing…' }
+    case 'observation':
+      return { icon: BookOpenIcon, label: entry.label }
+    case 'call':
+      return { icon: ICONS[entry.icon] ?? CodeIcon, label: entry.label }
+  }
+}
+
+const hasDetail = (entry: ToolStepEntry) => {
+  switch (entry.type) {
+    case 'thinking':
+    case 'writing':
+      return entry.text !== ''
+    case 'observation':
+      return true
+    case 'call':
+      return !!entry.error || !!entry.reasoning || entry.sections.length > 0
+  }
+}
+
+/** Whether a step is what is happening right now, rather than something done. */
+export const isUnderWay = (entry: ToolStepEntry) => (entry.type === 'call' ? !!entry.running : entry.type !== 'observation')
+
 /** A step as one quiet line, which opens to show what it did when there is more to show. */
 export const ToolStep = ({ entry, open, onToggle }: ToolStepProps) => {
-  const StepIcon = entry.type === 'call' ? ICONS[entry.icon] ?? CodeIcon : entry.type === 'action' ? LightningIcon : BookOpenIcon
-  const call = entry.type === 'call' ? entry : undefined
+  const { icon: StepIcon, label } = summaryOf(entry)
   const line = (
     <>
       <StepIcon aria-hidden="true" className="size-5 shrink-0" />
-      <span className={cn('min-w-0 truncate', call?.running && 'animate-pulse motion-reduce:animate-none')}>{entry.label}</span>
-      {call?.error && <Badge variant="error">Error</Badge>}
-      {entry.type === 'action' && <span className="shrink-0 text-sm text-kumo-inactive">{entry.resolution}</span>}
+      <span className={cn('min-w-0 truncate', isUnderWay(entry) && 'animate-pulse motion-reduce:animate-none')}>{label}</span>
+      {entry.type === 'call' && entry.error && <Badge variant="error">Error</Badge>}
     </>
   )
-  const hasDetail = !call || !!call.error || !!call.reasoning || call.sections.length > 0
 
-  if (!hasDetail) {
-    return <div role={call?.running ? 'status' : undefined} className="flex items-center gap-2 px-2 py-1 text-base/5 text-kumo-subtle">{line}</div>
+  if (!hasDetail(entry)) {
+    return <div className="flex items-center gap-2 px-2 py-1 text-base/5 text-kumo-subtle">{line}</div>
   }
   return (
     <Disclosure open={open} onToggle={onToggle} summary={line}>

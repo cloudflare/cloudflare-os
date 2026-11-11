@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react'
-import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
 import { UserMessage } from '@/blocks/UserMessage'
+import { WorkLog } from '@/blocks/WorkLog'
 import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import type { ChatItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, type ChatItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
@@ -28,7 +28,7 @@ export type ChatPaneProps = {
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
 }
 
-const LIVE_REASONING = 'live:reasoning'
+const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
@@ -40,7 +40,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
   // What a row asked for that this app cannot do yet.
   const [notice, setNotice] = useState<string>()
   const [disclosure] = useState(() => new DisclosureStore())
-  const liveReasoningOpen = useOpenKeys(disclosure, [LIVE_REASONING]).has(LIVE_REASONING)
+  const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
+  const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
   const restricted = workspaces.status === 'ready' &&
@@ -75,17 +76,25 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
-    return items?.map((item) => {
+    return items?.map((item, index) => {
       sequence = Math.max(sequence, item.id)
       return {
         id: item.key,
         sequence,
-        content: <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />,
+        content: (
+          <ChatItemView
+            item={item}
+            disclosure={disclosure}
+            handlers={handlers}
+            restricted={restricted}
+            // The list wraps every row, so messages in a run are told about each other.
+            joinsAbove={continuesRun(items[index - 1], item)}
+            joinsBelow={index + 1 < items.length && continuesRun(item, items[index + 1])}
+          />
+        ),
       }
     }) ?? []
   }, [items, disclosure, handlers, restricted])
-
-  const working = chat.status === 'ready' && (chat.agentActive || Boolean(chat.streamingText))
 
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
@@ -100,23 +109,22 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
       {chat.status === 'ready' && (
         <MessageList
           messages={messages}
-          streaming={working}
+          streaming={chat.activity !== undefined}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
         >
-          {chat.openTools && row(chat.openTools)}
-          {(chat.streamingText || chat.streamingReasoning) && (
-            <AssistantMessage
-              live
-              text={chat.streamingText}
-              reasoning={chat.streamingReasoning
-                ? { text: chat.streamingReasoning, open: liveReasoningOpen, onToggle: () => disclosure.toggle(LIVE_REASONING) }
-                : undefined}
-            />
-          )}
-          {chat.streamingTools && row(chat.streamingTools)}
-          <AssistantPresence working={working}>
-            {chat.compacting ? 'Compacting the conversation…' : chat.thinking ? 'Thinking…' : undefined}
-          </AssistantPresence>
+          {/* A reply joins the conversation once it is written. Until then it, and how it is coming
+              about, can be looked into here. */}
+          <AssistantPresence
+            working={chat.activity !== undefined}
+            status={chat.activity}
+            details={{
+              open: openWork.has(LIVE_WORK),
+              onToggle: () => disclosure.toggle(LIVE_WORK),
+              content: (
+                <WorkLog steps={work} openSteps={openWork} onToggleStep={disclosure.toggle} />
+              ),
+            }}
+          />
           {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
           {chat.pinned.map(row)}
           {chat.queuedSteers.map(({ text, from }, index) => (

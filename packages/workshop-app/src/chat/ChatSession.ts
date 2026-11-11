@@ -1,15 +1,6 @@
 import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
-import {
-  continueTools,
-  EMPTY_FEED,
-  toChatFeed,
-  type ChatFeed,
-  type ChatItem,
-  type OutputFormat,
-  type ToolEntry,
-  type ToolsItem,
-} from './chatItems'
+import { EMPTY_FEED, toChatFeed, type ChatFeed, type ChatItem, type OutputFormat, type ToolEntry, type WorkEntry } from './chatItems'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
@@ -20,25 +11,22 @@ export type ChatSnapshot =
       /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
       /**
-       * The committed messages as rows, without the open turn's tail (`openTools`, `pinned`). The
-       * array is unchanged while only streaming text moves.
+       * The committed messages as rows, without the open turn's artefacts (`pinned`). The array is
+       * unchanged while only streaming text moves.
        */
       items: ChatItem[]
       /**
-       * The run of tool calls the open turn ends with, continued by the calls now being written
-       * when the agent has said nothing since.
+       * What the assistant is doing right now, in a few words: "Thinking…", "Running code…".
+       * Undefined while it is not working, and until the chat's metadata arrives.
        */
-      openTools: ToolsItem | undefined
-      /** What the agent is thinking in the step being written, until that leads to a tool call. */
-      streamingReasoning: string
-      /** The assistant's reply so far, while it is still being written; empty otherwise. */
-      streamingText: string
-      /** The calls being written after `streamingText`, which start a run of their own. */
-      streamingTools: ToolsItem | undefined
-      /** Older context is being summarized before the turn can go on. */
-      compacting: boolean
-      /** An assistant turn is running and nothing of it shows yet. False until the metadata arrives. */
-      thinking: boolean
+      activity: string | undefined
+      /**
+       * The making of the reply being worked on: the steps taken since the last message, oldest
+       * first, then the step now being written (what it is thinking, the reply it is drafting,
+       * the calls it is making). A reply joins the conversation only once it is written, and the
+       * steps behind it are then gone. Empty while the assistant is not working.
+       */
+      work: WorkEntry[]
       /** An assistant turn is running. */
       agentActive: boolean
       /**
@@ -165,8 +153,9 @@ export class ChatSession {
   // Formats seen while a createGadget call streamed. The durable call does not carry its format,
   // so this is what lets the card it becomes say what was made.
   #outputFormats = new Map<string, OutputFormat>()
-  // The feed's trailing tools with the live calls joined on, rebuilt only when either changes.
-  #tail: { openTools: ToolsItem | undefined; streamingTools: ToolsItem | undefined } | undefined
+  // The steps since the last message with the step being written joined on, rebuilt only when
+  // either changes.
+  #work: WorkEntry[] | undefined
   #generation: number | undefined
   #sendError: string | undefined
   #actionError: string | undefined
@@ -307,14 +296,14 @@ export class ChatSession {
       outputFormats: this.#outputFormats,
     }
     this.#feed = toChatFeed(loaded, context, this.#feed)
-    this.#tail = undefined
+    this.#work = undefined
   }
 
   #discardProvisional() {
     this.#streaming = ''
     this.#reasoning = ''
     this.#calls = []
-    this.#tail = undefined
+    this.#work = undefined
   }
 
   #liveCall(toolCallId: string) {
@@ -326,20 +315,25 @@ export class ChatSession {
     return call
   }
 
-  /**
-   * Where the calls being written show. With nothing said since the last committed call they
-   * continue that run, as they will once committed; after streamed text they start their own.
-   */
-  #liveTail() {
-    if (this.#tail) return this.#tail
-    const { openTools } = this.#feed
-    if (this.#calls.length === 0) return (this.#tail = { openTools, streamingTools: undefined })
-    const afterText = this.#streaming !== ''
+  /** The steps since the last message, ending with the step being written. */
+  #liveWork() {
+    if (this.#work) return this.#work
+    const { work } = this.#feed
+    if (!this.#reasoning && !this.#streaming && this.#calls.length === 0) return (this.#work = work)
     // Thinking that led straight to a call is kept with that call, as the committed step keeps it.
-    const steps = this.#calls.map((call, index) => liveEntry(call, index === 0 && !afterText ? this.#reasoning || undefined : undefined))
-    return (this.#tail = afterText
-      ? { openTools, streamingTools: continueTools(undefined, steps) }
-      : { openTools: continueTools(openTools, steps), streamingTools: undefined })
+    const withCall = this.#streaming === '' && this.#calls.length > 0
+    const live: WorkEntry[] = []
+    if (this.#reasoning && !withCall) live.push({ type: 'thinking', key: 'live:thinking', text: this.#reasoning })
+    if (this.#streaming) live.push({ type: 'writing', key: 'live:writing', text: this.#streaming })
+    this.#calls.forEach((call, index) => live.push(liveEntry(call, index === 0 && withCall ? this.#reasoning || undefined : undefined)))
+    return (this.#work = [...work, ...live])
+  }
+
+  #activity() {
+    if (this.#compacting) return 'Compacting the conversation…'
+    const call = this.#calls.at(-1)
+    if (call) return liveToolLabel(call.toolName, call.target, call.noun)
+    return this.#streaming === '' ? 'Thinking…' : 'Writing…'
   }
 
   #reset() {
@@ -376,16 +370,13 @@ export class ChatSession {
 
   #publishReady() {
     if (this.#failure !== undefined) return this.#publish({ status: 'failed', message: this.#failure })
+    const working = this.#agentActive || this.#streaming !== ''
     this.#publish({
       status: 'ready',
       title: this.#title,
       items: this.#feed.items,
-      ...this.#liveTail(),
-      // Shown on its own until it leads to a call; then it is that call's.
-      streamingReasoning: this.#calls.length === 0 || this.#streaming !== '' ? this.#reasoning : '',
-      streamingText: this.#streaming,
-      compacting: this.#compacting,
-      thinking: this.#agentActive && !this.#streaming && !this.#reasoning && this.#calls.length === 0 && !this.#compacting,
+      activity: working ? this.#activity() : undefined,
+      work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
       pinned: this.#feed.pinned,
       queuedSteers: this.#queuedSteers,
@@ -530,8 +521,6 @@ export class ChatSession {
     if (chatId !== this.chatId) return
     switch (event.type) {
       case 'textDelta':
-        // Calls written before any text continue the committed run; from here they follow the text.
-        if (this.#streaming === '') this.#tail = undefined
         this.#streaming += event.delta
         break
       case 'reasoningDelta':
@@ -582,7 +571,7 @@ export class ChatSession {
       default:
         return
     }
-    if (event.type !== 'textDelta' && event.type !== 'compacting' && event.type !== 'compacted') this.#tail = undefined
+    this.#work = undefined
     this.#publishReady()
   }
 }

@@ -7,7 +7,6 @@ import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
 import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
-import { ToolGroup } from '@/blocks/ToolGroup'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import type { ActionItem, ChatItem, NoticeItem } from './chatItems'
@@ -33,6 +32,9 @@ export type ChatItemViewProps = {
   handlers: ChatItemHandlers
   /** The workspace has read restricted data, which changes how an approval is presented. */
   restricted?: boolean
+  /** The row carries on from the message before it, or is carried on by the one after (`continuesRun`). */
+  joinsAbove?: boolean
+  joinsBelow?: boolean
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
@@ -47,35 +49,16 @@ const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
  * while a reply streams in, so the conversation above it is not rendered again for every piece of
  * text that arrives.
  */
-export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted }: ChatItemViewProps) {
-  const open = useOpenKeys(disclosure, item.kind === 'tools' ? [item.key, ...item.entries.map(({ key }) => key)] : [item.key])
-  const isOpen = open.has(item.key)
+export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow }: ChatItemViewProps) {
+  const isOpen = useOpenKeys(disclosure, [item.key]).has(item.key)
   const toggle = () => disclosure.toggle(item.key)
+  const joins = { above: joinsAbove, below: joinsBelow }
 
   switch (item.kind) {
     case 'user':
-      return <UserMessage parts={item.parts} attachments={item.attachments} from={item.from} onOpenAttachment={handlers.onOpenAttachment} />
+      return <UserMessage parts={item.parts} attachments={item.attachments} from={item.from} onOpenAttachment={handlers.onOpenAttachment} joins={joins} />
     case 'assistant':
-      return (
-        <AssistantMessage
-          text={item.text}
-          reasoning={item.reasoning === undefined ? undefined : { text: item.reasoning, open: isOpen, onToggle: toggle }}
-        />
-      )
-    case 'tools':
-      return (
-        <ToolGroup
-          summary={item.summary}
-          targets={item.targets}
-          failed={item.failed}
-          running={item.running}
-          entries={item.entries}
-          open={isOpen}
-          onToggle={toggle}
-          openEntries={open}
-          onToggleEntry={disclosure.toggle}
-        />
-      )
+      return <AssistantMessage text={item.text} joins={joins} />
     case 'output':
       return (
         <OutputCard
