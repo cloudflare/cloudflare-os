@@ -1,4 +1,5 @@
 import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
+import { withQuote } from '../replyQuote'
 import {
   action,
   AGENT,
@@ -432,8 +433,12 @@ const longRound = (round: number): Array<MessageSource | MessageSource[]> => {
 const longHistory: Scenario = {
   id: 'long-history',
   title: 'A long conversation',
-  description: 'More than 300 mixed messages, to exercise paging and virtual pages. Send a message for a new answer.',
-  history: history(Array.from({ length: 60 }, (_, round) => longRound(round)).flat()),
+  description: 'More than 300 mixed messages, to exercise paging and virtual pages. It ends in a reply to a message from near the start: click its quote to go there. Send a message for a new answer.',
+  history: history([
+    ...Array.from({ length: 60 }, (_, round) => longRound(round)).flat(),
+    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?')),
+    agent({ text: 'Yes: `src/module-2.ts` has passed every check since.' }),
+  ]),
   script: when('onSend', turn(say(agent({ text: 'Noted. That makes sixty-one.' })))),
 }
 

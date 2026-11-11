@@ -8,8 +8,10 @@ import {
   type OutputFormat,
   type PendingSteer,
   type ToolEntry,
+  type UserItem,
   type WorkEntry,
 } from './chatItems'
+import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
@@ -127,6 +129,8 @@ const liveEntry = (call: LiveCall, reasoning: string | undefined): ToolEntry => 
 
 const LOADING: ChatSnapshot = { status: 'loading' }
 const HISTORY_PAGE_SIZE = 50
+/** How many earlier pages are fetched in search of the message a reply quotes. */
+const QUOTE_SEARCH_PAGES = 20
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -177,6 +181,8 @@ export class ChatSession {
   #actionError: string | undefined
   #nextBeforeSequence: number | undefined
   #loadingEarlier = false
+  // The fetch of an earlier page that is under way, for whoever needs to wait for it.
+  #earlier: Promise<void> | undefined
   #historyError: string | undefined
   // Set when the subscription fails, for the rest of the run: a conversation that is no longer
   // live must not go back to looking ready because the initial load finished.
@@ -272,11 +278,40 @@ export class ChatSession {
     if (run === this.#run) this.#publishReady()
   }
 
+  /**
+   * Finds the message a reply answers, and resolves to its row's key. A reply carries only a line
+   * of that message (see replyQuote.ts), and the message may be further back than has been
+   * loaded, so earlier history is fetched a page at a time until it turns up. The search gives up
+   * at the start of the conversation, when a page cannot be fetched, and after
+   * `QUOTE_SEARCH_PAGES`: a quote that far back is more likely not of a message here at all.
+   */
+  findQuoted = async (reply: UserItem): Promise<string | undefined> => {
+    const run = this.#run
+    for (let pages = 0; ; pages++) {
+      const quoted = quotedBy(reply, this.#feed.items)
+      if (quoted || run !== this.#run || pages === QUOTE_SEARCH_PAGES) return quoted?.key
+      const before = this.#nextBeforeSequence
+      // A page already on its way counts as this one.
+      await (this.#earlier ?? this.loadEarlier())
+      if (this.#nextBeforeSequence === before) return undefined
+    }
+  }
+
   /** Fetches one older page. Concurrent calls are ignored; failures are retryable. */
   loadEarlier = async () => {
     const overseer = this.#overseer
     const before = this.#nextBeforeSequence
     if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined) return
+    const fetching = this.#fetchEarlier(overseer, before)
+    this.#earlier = fetching
+    try {
+      await fetching
+    } finally {
+      if (this.#earlier === fetching) this.#earlier = undefined
+    }
+  }
+
+  async #fetchEarlier(overseer: ChatOverseer, before: number) {
     const run = this.#run
     this.#loadingEarlier = true
     this.#historyError = undefined
@@ -372,6 +407,7 @@ export class ChatSession {
     this.#actionError = undefined
     this.#nextBeforeSequence = undefined
     this.#loadingEarlier = false
+    this.#earlier = undefined
     this.#historyError = undefined
     this.#failure = undefined
   }

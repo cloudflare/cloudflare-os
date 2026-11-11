@@ -56,27 +56,42 @@ export const useMessageScroll = () => {
     void scrollToBottom({ animation })
   }, [scrollToBottom, animation])
 
-  /** Brings a row into view, in the middle of what can be seen if it fits, and points it out. */
+  // Ends a move to a row that is still under way.
+  const abandon = useRef<() => void>(undefined)
+
+  /**
+   * Brings a row into view, in the middle of what can be seen if it fits, and points it out.
+   *
+   * The way there is measured afresh every frame rather than set off once: the conversation
+   * changes under a move (reaching its start fetches earlier history, pages mount and are
+   * measured), and each such change is reconciled by setting the scroll position, which stops a
+   * scroll the browser was animating wherever it had got to.
+   */
   const scrollToRow = useCallback((id: string, page: number) => {
     const scroll = scrollRef.current
     const content = contentRef.current
     if (!scroll || !content) return
     // Following the end of the conversation would pull the view straight back.
     stopScroll()
-    const show = (element: HTMLElement, behavior: ScrollBehavior) => {
+    abandon.current?.()
+    const still = animation === 'instant'
+    const find = () => content.querySelector<HTMLElement>(`[data-message-anchor="${CSS.escape(id)}"]`)
+    /** How far the view has to move for an element to be in its place. */
+    const distanceTo = (element: HTMLElement) => {
       const style = getComputedStyle(scroll)
       const view = scroll.getBoundingClientRect()
       const target = element.getBoundingClientRect()
       // The header floats over the top of the scroller and the composer over its bottom.
       const top = view.top + (Number.parseFloat(style.getPropertyValue('--header-height')) || 0)
       const bottom = view.bottom - (Number.parseFloat(style.getPropertyValue('--composer-half')) || 0)
-      const above = Math.max(12, (bottom - top - target.height) / 2)
-      scroll.scrollBy({ top: target.top - top - above, behavior })
-      // A jump is where the reader now is. Its scroll event comes a frame later, and a page that
-      // mounts before then would be reconciled against where they were, taking them back there.
-      if (behavior === 'instant') capture()
+      return target.top - top - Math.max(12, (bottom - top - target.height) / 2)
     }
-    const find = () => content.querySelector<HTMLElement>(`[data-message-anchor="${CSS.escape(id)}"]`)
+    const moveBy = (distance: number) => {
+      state.scrollTop += distance
+      // Where the reader now is. The scroll event that would record it comes a frame later, and
+      // a page that mounts before then would be reconciled against where they were.
+      capture()
+    }
     // The row is marked for a while, and what is in it shows that its own way (a message's
     // bubble darkens, see MessageBubble.css). Marked afresh, it shows it again from the start.
     const pointOut = (row: HTMLElement, delay: number) => setTimeout(() => {
@@ -86,38 +101,86 @@ export const useMessageScroll = () => {
       void Promise.allSettled(row.getAnimations({ subtree: true }).map(({ finished }) => finished))
         .then(() => row.removeAttribute('data-pointed-out'))
     }, delay)
+    // Whether the way to somewhere runs over a page that is only a spacer while off screen.
+    const crossesSpacer = (distance: number) => {
+      const view = scroll.getBoundingClientRect()
+      const from = Math.min(view.top, view.top + distance)
+      const to = Math.max(view.bottom, view.bottom + distance)
+      return [...content.querySelectorAll('[data-message-page][aria-hidden="true"]')].some((spacer) => {
+        const { top, bottom } = spacer.getBoundingClientRect()
+        return bottom > from && top < to
+      })
+    }
 
     const row = find()
-    if (row) {
-      show(row, animation)
-      pointOut(row, animation === 'smooth' ? 250 : 0)
+    const total = row ? distanceTo(row) : 0
+    let frame = 0
+
+    if (row && (still || !crossesSpacer(total))) {
+      if (still) moveBy(total)
+      else {
+        // Scrolled there over what is on the page, easing in and out, for longer the further it
+        // is. The reader taking over ends it.
+        const duration = Math.min(600, 250 + Math.abs(total) / 8)
+        const started = performance.now()
+        const takeovers = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+        const end = () => {
+          cancelAnimationFrame(frame)
+          for (const type of takeovers) scroll.removeEventListener(type, end)
+          abandon.current = undefined
+        }
+        const step = (now: number) => {
+          if (!content.contains(row)) return end()
+          const progress = Math.min(1, (now - started) / duration)
+          const eased = progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2
+          moveBy(distanceTo(row) - total * (1 - eased))
+          if (progress < 1) frame = requestAnimationFrame(step)
+          else end()
+        }
+        for (const type of takeovers) scroll.addEventListener(type, end, { passive: true })
+        abandon.current = end
+        frame = requestAnimationFrame(step)
+      }
+      pointOut(row, still ? 0 : 250)
       return
     }
-    // Far off screen its page is only a spacer, with nothing in it to scroll past. So the
-    // conversation fades out, is put where the row is, and fades back in there: going to the page
-    // brings its rows back, a frame or two later, and then the row itself can be gone to.
+
+    // There is nothing on the way to scroll over: the row's page, or one before it, is only a
+    // spacer. So the conversation fades out, is put where the row is, and fades back in there.
+    // Going to a spacer brings its rows back a frame or two later, and mounting moves things,
+    // so the view is put right until the row has stayed in its place.
     const spacer = content.querySelector<HTMLElement>(`[data-message-page="${page}"]`)
-    if (!spacer) return
-    const fades = animation === 'smooth'
-    const out = fades ? content.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 150, easing: 'ease-out', fill: 'forwards' }) : undefined
-    const jump = () => {
-      show(spacer, 'instant')
-      let frames = 30
-      const arrive = () => {
-        const mounted = find()
-        if (!mounted && frames-- > 0) return void requestAnimationFrame(arrive)
-        if (mounted) show(mounted, 'instant')
-        if (out) {
-          out.cancel()
-          content.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' })
-        }
-        if (mounted) pointOut(mounted, fades ? 200 : 0)
-      }
-      requestAnimationFrame(arrive)
+    if (!row && !spacer) return
+    const out = still ? undefined : content.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 150, easing: 'ease-out', fill: 'forwards' })
+    let abandoned = false
+    abandon.current = () => {
+      abandoned = true
+      cancelAnimationFrame(frame)
+      out?.cancel()
+      abandon.current = undefined
     }
-    if (out) void out.finished.then(jump, () => {})
-    else jump()
-  }, [scrollRef, contentRef, stopScroll, animation, capture])
+    let frames = 40
+    let settled = 0
+    const arrive = () => {
+      if (abandoned) return
+      const mounted = find()
+      const target = mounted ?? spacer
+      const distance = target && content.contains(target) ? distanceTo(target) : 0
+      if (Math.abs(distance) >= 1) {
+        moveBy(distance)
+        settled = 0
+      } else if (mounted) settled++
+      if (settled < 2 && frames-- > 0) return void (frame = requestAnimationFrame(arrive))
+      abandon.current = undefined
+      if (out) {
+        out.cancel()
+        content.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' })
+      }
+      if (mounted) pointOut(mounted, out ? 200 : 0)
+    }
+    if (out) void out.finished.then(arrive, () => {})
+    else arrive()
+  }, [scrollRef, contentRef, state, stopScroll, animation, capture])
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current!

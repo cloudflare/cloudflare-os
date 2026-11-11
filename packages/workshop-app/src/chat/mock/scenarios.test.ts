@@ -196,4 +196,26 @@ describe('scenarios', () => {
     expect(ready().items[0]).toMatchObject({ kind: 'user', id: 0 })
     expect(scenario('long-history').history.length).toBeGreaterThan(300)
   })
+
+  it('long-history: the message a reply quotes is found by paging back to it', async () => {
+    const { session, ready } = await open(scenario('long-history'))
+    const reply = ready().items.findLast((item) => item.kind === 'user' && item.quote !== undefined)
+    if (reply?.kind !== 'user') throw new Error('expected the history to end in a reply')
+    expect(ready().items.some((item) => item.kind === 'user' && item.text.startsWith('Request 3:'))).toBe(false)
+
+    const key = await session.findQuoted(reply)
+
+    expect(ready().items.find((item) => item.key === key)).toMatchObject({ kind: 'user', text: 'Request 3: update src/module-2.ts and check it still runs.' })
+    // No further than it had to.
+    expect(ready().hasEarlier).toBe(true)
+  })
+
+  it('long-history: a quote of nothing that was said is given up on at the start of the conversation', async () => {
+    const { session, ready } = await open(scenario('long-history'))
+    const [reply] = ready().items.filter((item) => item.kind === 'user')
+    if (reply?.kind !== 'user') throw new Error('expected a message from the user')
+
+    expect(await session.findQuoted({ ...reply, quote: 'Nobody said this' })).toBeUndefined()
+    expect(ready().hasEarlier).toBe(false)
+  })
 })
