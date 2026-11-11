@@ -26,11 +26,43 @@
    laid over the bubble's own in the colour of its text, so a light bubble darkens and a dark one
    lightens, whatever the theme. */
 [data-pointed-out] .message-bubble-text {
-  animation: message-bubble-pointed-out 2200ms ease-out;
+  /* Keeps the layer below between the bubble's fill and what is written on it. */
+  isolation: isolate;
+}
+
+/* A layer of its own whose opacity is what changes: a colour made from the text's is not one
+   browsers fade between, and flipped from one keyframe to the next. It comes up quickly and
+   takes its time to go, easing at both ends of the going. */
+[data-pointed-out] .message-bubble-text::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  animation: message-bubble-pointed-out 2800ms linear;
 }
 
 @keyframes message-bubble-pointed-out {
-  5%, 73% { box-shadow: inset 0 0 0 100vmax color-mix(in oklab, currentColor 16%, transparent); }
+  0% {
+    opacity: 0;
+    animation-timing-function: ease-out;
+  }
+
+  9% {
+    opacity: 0.16;
+  }
+
+  62% {
+    opacity: 0.16;
+    animation-timing-function: ease-in-out;
+  }
+
+  100% {
+    opacity: 0;
+  }
 }
 
 /* A message's details come and go by the stage they are in (useDetailsStage.ts times the steps
