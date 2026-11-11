@@ -86,11 +86,9 @@ Acceptance criteria:
   exactly as if the viewer had typed the message, and waits whenever the composer waits.
 - A block with no content shows an error and runs nothing.
 - `env.NAME = value` in `executeCode` saves `NAME` as a chat binding when the call's step is
-  stored: JSON data, or another name of one of the chat's bindings. A value is at most 500,000
-  UTF-16 code units as JSON, and a chat's saved data at most 2,000,000 (see "Caps"). Later
-  `executeCode` calls see the
-  name in `env`, and `describeBinding` describes it. A data name can be saved again. No name is
-  ever removed.
+  stored: JSON data, or another name of one of the chat's bindings. A chat's saved data is at most
+  400,000 UTF-16 code units of JSON (see "Caps"). Later `executeCode` calls see the name in `env`,
+  and `describeBinding` describes it. A data name can be saved again. No name is ever removed.
 - A block whose tag lists names, as in `<inline-html env="A,B">`, gets an `env` with just those
   names: `await env.A` for saved data, `env.A.rpc.method()` for a Gadget, and `env.A.method()` for
   a connection. A view reaches no models, agent spawners, auto-provided services, worktrees, `GIT`
@@ -362,44 +360,46 @@ restricted data. This plan does not change gadget frames.
 - **The kernel checks what the harness hands back.** The agent's code runs in the harness's
   isolate and can replace its globals, so `executeCodeMode` trusts only the result's shape: it
   measures each JSON text itself and checks that it parses. Then it decides each name in order. It
-  refuses a name `validateBindingName` refuses, a name in scope that is not a data name (the
-  turn's `isNameInScope`, which runAgent passes it: bound, claimed by a pending connection request,
-  or `GIT`), a value over 500,000 code units, and a save that would take the chat's data past
-  2,000,000. One refused
-  name refuses no other. The output gets one line per name: `Saved env.TOTALS (data) for views and
-  later code.`, `Saved env.SALES (another name for env.EXPENSES) for views and later code.`, or
-  `env.X was not saved: …`.
+  refuses a name `validateBindingName` refuses; a name in scope that is not a data name: one the
+  chat binds as anything but data, `GIT`, a name a pending connection request claims (runAgent
+  passes the turn's `claimedNames`), or a name saved as another name earlier in the run; and a
+  save that would take the chat's data past the cap. The harness reports a value too long to save
+  by its length alone, so its result stays small. One refused name refuses no other. The output
+  gets one line per name: `Saved env.TOTALS (data) for views and later code.`, `Saved env.SALES
+  (another name for env.EXPENSES) for views and later code.`, or `env.X was not saved: …`.
 - **Tool time.** `runAgent` then sets each accepted name in `chatBindings`, as `createGadget` does,
   holds each data name's JSON in the step's `pendingSavedData`, beside `pendingWorktreeCommits`,
   and stamps the saved names on the tool call's record: `savedEnv: {name, alias?}[]`, where
   `alias` names the binding whose entry a name copies. A later call in the same step gets the
   pending JSON through `getEnvForAgent`, which reads `pendingSavedData` before `chatSavedData`:
-  `runAgent` passes it through `executeCodeMode`'s signature, beside `bindings`.
+  `runAgent` passes it, with its claimed names, as `executeCodeMode`'s `savedEnv` parameter,
+  beside `bindings`.
 - **The barrier.** `commitAgentStep` takes the step's `savedData: {name, json}[]` and writes it in
   the step's transaction, with the record that stamps the names. It writes nothing for a chat that
   is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing.
-- **Caps.** Each has a reason:
-  - 500,000 UTF-16 code units per value, measured as `json.length`, as
-    `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`. The value is one
-    `chatSavedData` record, and typed-storage writes it with V8 serialization, which stores a
-    string with any character above U+00FF at two bytes per code unit. So the record stays under
-    1 MB plus its other fields, well inside the 2 MB value limit `observer-ledger.ts` cites (and
-    the 8 MB the platform documents today,
+- **Caps.** One cap, 400,000 UTF-16 code units of JSON for a chat's saved data, measured as
+  `json.length`, as `MAX_SUBRESOURCES_TOTAL_LENGTH` measures in `observer-ledger.ts`. Its reason:
+  - Every `executeCode` run carries all of it into its Dynamic Worker, and workerd refuses an
+    `env` over 1 MiB: "Dynamic Worker env size (1900053 bytes) exceeds the maximum allowed size of
+    1048576 bytes", observed in this branch's workerd tests when a first build tried 2,000,000
+    units. The platform docs do not list this limit; that production enforces
+    the same one is [INFERENCE]. So the data goes into `env` as its JSON text, the smallest form
+    (the harness parses it), and a string serializes at up to two bytes per code unit: 400,000
+    units are at most 800,000 bytes, which leaves room for the rest of the `env`, such as callback
+    arguments.
+  - The same bound keeps each `chatSavedData` record under 800 KB plus its other fields:
+    typed-storage writes it with V8 serialization, which stores a string with any character above
+    U+00FF at two bytes per code unit, well inside the 2 MB value limit `observer-ledger.ts` cites
+    (and the 8 MB the platform documents today,
     <https://developers.cloudflare.com/durable-objects/platform/limits/>). The write runs inside
     `commitAgentStep`'s transaction, where a storage error would kill the turn and lose its step,
-    so the kernel refuses an oversized value when the code returns. A value also reaches each
-    viewer in one Cap'n Web message.
-  - 2,000,000 code units for a chat's saved data: at most 4 MB as stored. Every `executeCode` run
-    pays for all of it twice. The Overseer parses every data name's JSON in `getEnvForAgent`, in
-    the Durable Object's 128 MB isolate, which every chat of the workspace shares. The Worker Loader
-    then serializes that `env` into the dynamic Worker
-    (<https://developers.cloudflare.com/dynamic-workers/api-reference/>), whose serialized RPC
-    limit is 32 MiB (<https://developers.cloudflare.com/workers/runtime-apis/rpc/>), and whose own
-    128 MB isolate holds the parsed copy beside the agent's work
-    (<https://developers.cloudflare.com/workers/platform/limits/>). That the RPC limit applies to
-    the loader's `env` is [INFERENCE].
-  - No cap on the number of names: the total bounds what a run pays, and a name costs only its
-    entry. The env arm's 16 names and 256 KiB had no stated reason, and are dropped.
+    so the kernel refuses an oversized save when the code returns.
+  - Each run also reads every data name's JSON from storage in the Overseer, whose 128 MB isolate
+    every chat of the workspace shares, and the Dynamic Worker's own isolate parses it beside the
+    agent's work (<https://developers.cloudflare.com/workers/platform/limits/>).
+  - No separate per-value cap and no cap on the number of names: the total bounds what a run and
+    a record pay, and a name costs only its entry. The env arm's 16 names and 256 KiB had no
+    stated reason, and the plan's earlier 500,000 and 2,000,000 did not fit the env limit.
 - **Readers of the binding map.** Each place that folds or reads it gets the new kind:
   - `runAgent`'s replay of an `executeCode` call sets each stamped name: a data name as
     `{type: "data"}` unless the map has it; another name as a copy of its target's entry.
@@ -408,8 +408,8 @@ restricted data. This plan does not change gadget frames.
     `prepareChatBindings` gives no `nameByTarget` entry for another name of a binding, so a
     pasted resource still takes its target's first name.
   - `isNameInScope` sees data names through `chatBindings`, unchanged.
-  - `getEnvForAgent` gains `case "data"`: the pending or stored JSON, parsed. A missing record
-    throws, as a missing `value` record does.
+  - `getEnvForAgent` gains `case "data"`: the pending or stored JSON text, which the harness
+    parses. A missing record throws, as a missing `value` record does.
   - `describeBinding` gains a case: `env.NAME` is JSON data this chat's `executeCode` saved, which
     a later save replaces and a view reads with `await env.NAME`.
   - `resolveToolWorkpieceId`, `setGadgetBinding` and `forgeRestoreStubForBinding` already refuse a
@@ -792,16 +792,17 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   - a change in place (`env.FOOD.weeks.push(5)`) is saved; `delete env.FOOD` leaves it saved and
     says so; saving a data name again replaces its JSON and keeps its place in the map;
   - a name the chat binds, a pending connection request's name, `GIT`, another name saved again,
-    a function, a `Date`, a cycle, a value over 500,000 code units and a save past 2,000,000 are refused, and the
+    a function, a `Date`, a cycle, a value over the cap and a save past it are refused, and the
     rest saved; a run that throws saves nothing; a harness result whose JSON does not parse is
     refused;
   - in one step, a second call sees the first's save; a save after a `createGadget` of the same
     name is refused, and a `createGadget` after a save of it is refused;
   - a scripted turn (pi's faux provider, as in `spawned-agent-tools.test.ts`) stores its JSON with
-    its step; a turn whose chat is deleted mid-call stores none; replay and a compaction
-    checkpoint rebuild the same map as the turn; `chatScopeNames` and `prepareChatBindings` give a
-    later binding another name; `deleteChat` removes the chat's `chatSavedData`;
-  - a spawned agent's run saves for its own chat.
+    its step, stamps it on the record, and the next turn reads and describes it; the barrier writes
+    nothing for a deleted chat; a compaction checkpoint folds data names, another name as its
+    target's entry, and a data name saved again in place; `chatScopeNames` counts a saved name;
+    `deleteChat` removes the chat's `chatSavedData`. A spawned agent's chat runs the same code,
+    so it gets no test of its own.
 - Kernel tests (`workshop-backend/__tests__/view-bindings.test.ts`):
   - `connectToChatBinding` returns saved data, another name's Gadget, a Gadget and a connection
     session; refuses model, spawner, auto-provided and pre-`creationSpec` connections, worktrees,

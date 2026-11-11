@@ -1,6 +1,6 @@
 import {
   COMPACTION_TRIGGER_RATIO, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage,
-  type AiModelConfig, type ChatGadgetPinRecord,
+  type AiModelConfig, type ChatGadgetPinRecord, type SavedEnvName,
 } from "@gadgets/workshop-shared/api";
 import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
@@ -320,6 +320,21 @@ export function findCompactionBoundary(
 }
 
 /**
+ * Adds the names an executeCode call saved on `env` (see plans/live-views.md, "Saving env"): a
+ * data name, unless the map has the name; another name, as a copy of its target's entry. The
+ * call's checks already refused any other name in scope, so a name the map has here is the data
+ * name itself, saved again, which keeps its place.
+ */
+export function foldSavedEnv(chatBindings: Map<string, ChatBindingEntry>, saved: SavedEnvName[]) {
+  for (let {name, alias} of saved) {
+    if (chatBindings.has(name)) continue;
+    let entry: ChatBindingEntry | undefined =
+        alias === undefined ? {type: "data"} : chatBindings.get(alias);
+    if (entry !== undefined) chatBindings.set(name, entry);
+  }
+}
+
+/**
  * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
  * layer. `previous` already contains it, apart from the always-available resources the chat gained
  * since.
@@ -350,6 +365,8 @@ export function buildCompactionState(
         } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.gatekeeperId});
+        } else if (call.toolName === "executeCode") {
+          foldSavedEnv(chatBindings, call.savedEnv ?? []);
         }
       }
     } else if (message.type === "agentCallback") {

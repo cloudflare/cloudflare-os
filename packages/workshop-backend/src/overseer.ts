@@ -13,7 +13,8 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
+  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, chatSavedDataKey,
+  connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
@@ -45,7 +46,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type EnvSave, type SavedEnvScope, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
@@ -135,9 +136,79 @@ async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
+// The most saved data a chat keeps on `env` (see #decideEnvSaves and plans/live-views.md, "Caps"),
+// in UTF-16 code units of JSON. Every executeCode run carries all of it into its Dynamic Worker,
+// as JSON text, and workerd refuses an env over 1 MiB ("Dynamic Worker env size ... exceeds the
+// maximum allowed size of 1048576 bytes"). A string is serialized at up to two bytes per unit, so
+// 400,000 units leave room for the rest of the env, such as callback arguments. The same bound
+// keeps each chatSavedData record well inside Durable Object storage's 2 MB value limit.
+const MAX_SAVED_DATA_LENGTH = 400_000;
+
 let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
+import savedNames from "saved-env.js";
+
+// Why \`value\` is not JSON data, by path, or undefined if it is.
+function jsonProblem(value, path, open) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? undefined : path + " is " + value;
+  if (typeof value === "function") return path + " is a function";
+  if (typeof value !== "object") return path + " is " + (value === undefined ? "undefined" : "a " + typeof value);
+  if (open.has(value)) return path + " contains itself";
+  const array = Array.isArray(value);
+  const proto = Object.getPrototypeOf(value);
+  if (!array && proto !== Object.prototype && proto !== null) {
+    const kind = typeof value.constructor?.name === "string" && value.constructor.name !== ""
+      ? "a " + value.constructor.name : "not a plain object";
+    return path + " is " + kind;
+  }
+  open.add(value);
+  try {
+    const entries = array ? Array.from(value, (item, index) => ["[" + index + "]", item])
+      : Object.keys(value).map(key => [/^[A-Za-z_$][\\w$]*$/.test(key) ? "." + key : "[" + JSON.stringify(key) + "]", value[key]]);
+    for (const [step, item] of entries) {
+      const problem = jsonProblem(item, path + step, open);
+      if (problem !== undefined) return problem;
+    }
+    return undefined;
+  } finally {
+    open.delete(value);
+  }
+}
+
+// What the run did to env: each name it added or replaced, as JSON, as another name for a
+// binding (the very object that name held when the run started), or why it is neither; each saved
+// data name whose JSON changed in place; and each saved data name it deleted. The overseer
+// checks and decides each one.
+function envChanges(env, before, savedJson) {
+  const changes = [];
+  for (const name of Object.keys(env)) {
+    const value = env[name];
+    const same = before.has(name) && before.get(name) === value;
+    if (same && !savedJson.has(name)) continue;
+    if (!same && ((typeof value === "object" && value !== null) || typeof value === "function")) {
+      const alias = [...before].find(([other, original]) => other !== name && original === value && !savedJson.has(other))?.[0];
+      if (alias !== undefined) {
+        changes.push({ name, alias });
+        continue;
+      }
+    }
+    const problem = jsonProblem(value, "env." + name, new Set());
+    if (problem !== undefined) {
+      changes.push({ name, problem });
+      continue;
+    }
+    const json = JSON.stringify(value);
+    if (same && json === savedJson.get(name)) continue;
+    // An oversized value is reported by its length, so the result stays small.
+    changes.push(json.length > ${MAX_SAVED_DATA_LENGTH} ? { name, length: json.length } : { name, json });
+  }
+  for (const name of savedJson.keys()) {
+    if (!Object.hasOwn(env, name)) changes.push({ name, deleted: true });
+  }
+  return changes;
+}
 
 export default class extends WorkerEntrypoint {
   verify() {}
@@ -162,8 +233,14 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
+    // The env carries saved data as its JSON text, the smallest form to send. Parsed here, before
+    // the agent's code runs, which could change JSON.
+    let savedJson = new Map(savedNames.map(name => [name, env[name]]));
+    for (let [name, json] of savedJson) env[name] = JSON.parse(json);
+    let before = new Map(Object.entries(env));
     let result = await agent(self, env, this.ctx);
     if (result !== undefined) console.log("Return value:", result);
+    return envChanges(env, before, savedJson);
   }
 }
 `;
@@ -233,9 +310,19 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
   globalOutbound: null,
 };
 
+/**
+ * What a run did to one name of `env`, as the harness reports it (see envChanges there): its
+ * JSON, or only the length of JSON too long to save; another name it now shares an object with;
+ * why it is neither; or that it was deleted. The agent's code shares the harness's isolate, so
+ * #decideEnvSaves checks every field.
+ */
+type EnvChange = {
+  name: string, json?: string, length?: number, alias?: string, problem?: string, deleted?: true,
+};
+
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
-  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<EnvChange[]>;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -3029,13 +3116,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Build the agent's executeCode env from the chat's binding map: each name resolves to a
-  // gadget's `{rpc, exports}` pair, a gatekeeper session stub, or an agent callback's stored
-  // arguments.
+  // gadget's `{rpc, exports}` pair, a gatekeeper session stub, an agent callback's stored
+  // arguments, or data the chat saved on env (`pendingSavedData` holds this step's, not yet
+  // stored).
   // Entries whose targets no longer exist are silently skipped, mirroring the deleted-gadget
   // behavior elsewhere. `executionId` is the calling executeCodeMode run, minted into worktree
   // loopbacks so they are usable only from within that execution.
   getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>,
-                 executionId: string): object {
+                 executionId: string,
+                 pendingSavedData: ReadonlyMap<string, string> = new Map()): object {
     let caller: GatekeeperCaller = {from: "agent", chatId};
     // This must be a *plain* object: it becomes the loaded worker's `env`, and the loader's
     // serializer rejects anything else (including a null-prototype object) with DataCloneError.
@@ -3090,11 +3179,24 @@ class OverseerImpl implements AgentHooks {
           env[name] = stored.args;
           break;
         }
+        case "data":
+          // JSON text, which the harness parses: the smallest form to send (see
+          // MAX_SAVED_DATA_LENGTH).
+          env[name] = this.savedDataJson(chatId, name, pendingSavedData);
+          break;
         default:
           entry satisfies never;
       }
     }
     return env;
+  }
+
+  // The JSON of the chat's data name `name`: this step's, if it saved one, else the stored one.
+  savedDataJson(chatId: number, name: string, pending: ReadonlyMap<string, string>): string {
+    let json = pending.get(name) ??
+        this.storage.chatSavedData.get(chatSavedDataKey(chatId, name))?.json;
+    if (json === undefined) throw new Error("missing chatSavedData value");
+    return json;
   }
 
   // Which chat ID is each gadget's facet currently running from? Keyed by gadget ID; a gadget
@@ -3275,6 +3377,7 @@ class OverseerImpl implements AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        savedData?: {name: string, json: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
@@ -3410,6 +3513,9 @@ class OverseerImpl implements AgentHooks {
           }
         }
 
+        for (let {name, json} of step.savedData ?? []) {
+          this.storage.chatSavedData.put({chatId, name, json});
+        }
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
         return this.materializeChatChanges(chatId, undefined, {
           author,
@@ -8380,6 +8486,8 @@ class OverseerImpl implements AgentHooks {
                call.toolName === "createExternalResource") &&
               call.input.bindingName !== undefined) {
             taken.add(call.input.bindingName);
+          } else if (call.toolName === "executeCode") {
+            for (let {name} of call.savedEnv ?? []) taken.add(name);
           }
         }
       } else if (msg.type === "connectionRequest") {
@@ -8625,6 +8733,9 @@ class OverseerImpl implements AgentHooks {
             if (call.output && !nameByTarget.has(call.output.gatekeeperId)) {
               nameByTarget.set(call.output.gatekeeperId, call.input.bindingName);
             }
+          } else if (call.toolName === "executeCode") {
+            // A name saved on env takes no target's name: another name for a binding is a copy.
+            for (let {name} of call.savedEnv ?? []) taken.add(name);
           }
         }
       } else if (msg.type === "connectionRequest") {
@@ -9561,9 +9672,10 @@ class OverseerImpl implements AgentHooks {
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
+                        savedEnv: SavedEnvScope,
                         onOutputText?: (delta: string) => void,
                         worktreeTurn?: WorktreeTurnAccess)
-      : Promise<string> {
+      : Promise<{log: string, saves: EnvSave[]}> {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
@@ -9588,6 +9700,11 @@ class OverseerImpl implements AgentHooks {
         overseerId: this.ctx.id.toString(),
       };
 
+      // The agent's env holds the chat's named bindings (see getEnvForAgent).
+      let env = this.getEnvForAgent(chatId, bindings, executionId, savedEnv.pending);
+      let savedNames = Object.entries(bindings)
+          .filter(([name, entry]) => entry.type === "data" && Object.hasOwn(env, name))
+          .map(([name]) => name);
       let workerDef: WorkerLoaderWorkerCode = {
         compatibilityDate: "2026-02-01",
         compatibilityFlags: [
@@ -9602,9 +9719,9 @@ class OverseerImpl implements AgentHooks {
         modules: {
           "harness.js": CODE_MODE_HARNESS,
           "agent.js": code,
+          "saved-env.js": `export default ${JSON.stringify(savedNames)};`,
         },
-        // The agent's env holds the chat's named bindings (see getEnvForAgent).
-        env: this.getEnvForAgent(chatId, bindings, executionId),
+        env,
         tails: [this.ctx.exports.CodeModeTailLoopback({props: tailProps})],
         globalOutbound: null,
       };
@@ -9624,10 +9741,11 @@ class OverseerImpl implements AgentHooks {
       }});
 
       let error: string | undefined;
+      let changes: EnvChange[] = [];
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
+        changes = await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -9654,11 +9772,14 @@ class OverseerImpl implements AgentHooks {
 
       if (error !== undefined) {
         log += `\n\nUncaught exception: ${error}`;
-      } else if (log === "") {
-        log = "(function succeeded with no output)";
       }
+      // The model reads what the run saved on env, and why it refused any name.
+      let {notes, saves} = this.#decideEnvSaves(chatId, bindings, savedEnv, changes);
+      if (notes.length > 0) onOutputText?.(`\n${notes.join("\n")}`);
+      log = [log, ...notes].filter(part => part !== "").join("\n");
+      if (log === "") log = "(function succeeded with no output)";
 
-      return log;
+      return {log, saves};
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
       if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
@@ -9668,6 +9789,96 @@ class OverseerImpl implements AgentHooks {
       this.#codeModeResolvers.delete(executionId);
       this.#forgedRestoreTargets.delete(chatId);
     }
+  }
+
+  // Decides each name a run changed on env (see plans/live-views.md, "Saving env"). A data name
+  // may be saved again; any other name in the turn's scope is refused. The harness ran beside the
+  // agent's code, so nothing it reports is trusted beyond its shape: each JSON text is measured
+  // and parsed here.
+  #decideEnvSaves(chatId: number, bindings: Record<string, ChatBindingEntry>,
+                  scope: SavedEnvScope, changes: EnvChange[])
+      : {notes: string[], saves: EnvSave[]} {
+    let lengths = new Map<string, number>();
+    for (let [name, entry] of Object.entries(bindings)) {
+      if (entry.type === "data") {
+        lengths.set(name, this.savedDataJson(chatId, name, scope.pending).length);
+      }
+    }
+    let total = [...lengths.values()].reduce((sum, length) => sum + length, 0);
+    let notes: string[] = [];
+    let saves: EnvSave[] = [];
+    let aliased = new Set<string>();
+    for (let change of Array.isArray(changes) ? changes : []) {
+      let name = change?.name;
+      if (typeof name !== "string") continue;
+      let refuse = (why: string) => notes.push(`env.${name} was not saved: ${why}.`);
+      try {
+        validateBindingName(name);
+      } catch (err) {
+        refuse(err instanceof Error ? err.message : `${err}`);
+        continue;
+      }
+      let isData = lengths.has(name);
+      if (change.deleted === true) {
+        if (isData) {
+          notes.push(`env.${name} is still saved: a saved name can't be removed; save it ` +
+              `again to replace it.`);
+        }
+        continue;
+      }
+      let entry = bindings[name];
+      if (name === GIT_BINDING_NAME || scope.claimed.has(name) || aliased.has(name) ||
+          (entry !== undefined && entry.type !== "data")) {
+        refuse(`env.${name} is one of this chat's bindings; save it under another name`);
+        continue;
+      }
+      if (typeof change.alias === "string") {
+        let target = bindings[change.alias];
+        if (isData) {
+          refuse(`env.${name} holds saved data, and stays data; save env.${change.alias} under ` +
+              `a new name`);
+        } else if (target === undefined || target.type === "data") {
+          refuse(`env.${name} is neither JSON data nor another name for one of this chat's ` +
+              `bindings`);
+        } else {
+          saves.push({name, alias: change.alias});
+          aliased.add(name);
+          notes.push(`Saved env.${name} (another name for env.${change.alias}) for views and ` +
+              `later code.`);
+        }
+        continue;
+      }
+      if (typeof change.problem === "string") {
+        refuse(`${change.problem}, so env.${name} is neither JSON data nor another name for ` +
+            `one of this chat's bindings`);
+        continue;
+      }
+      if (typeof change.length === "number") {
+        refuse(`env.${name} is ${change.length} code units as JSON, and a chat's saved data holds ` +
+            `at most ${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")}`);
+        continue;
+      }
+      let json = change.json;
+      if (typeof json !== "string") continue;
+      try {
+        JSON.parse(json);
+      } catch {
+        refuse("its JSON does not parse");
+        continue;
+      }
+      let next = total - (lengths.get(name) ?? 0) + json.length;
+      if (next > MAX_SAVED_DATA_LENGTH) {
+        refuse(`it would take this chat's saved data past ` +
+            `${MAX_SAVED_DATA_LENGTH.toLocaleString("en-US")} code units; save less, or set a ` +
+            `name you no longer need to null`);
+        continue;
+      }
+      total = next;
+      lengths.set(name, json.length);
+      saves.push({name, json});
+      notes.push(`Saved env.${name} (data) for views and later code.`);
+    }
+    return {notes, saves};
   }
 
   consumeCapturedActions(chatId: number)
@@ -13035,6 +13246,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
         {prefix: chatKeyPrefix(chatId)}))) {
       this.impl.storage.pendingAgentCalls.deleteRecord(entry);
+    }
+
+    for (let entry of Array.from(this.impl.storage.chatSavedData.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatSavedData.deleteRecord(entry);
     }
 
     // Clean up the chat's model-facing snapshots.

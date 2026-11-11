@@ -5002,6 +5002,12 @@ export function isTextLikeAttachmentMimeType(mimeType: string): boolean {
 }
 
 /**
+ * A name an `executeCode` call saved on `env`. Without `alias`, the name holds JSON data the code
+ * worked out; with it, the name is another name for the chat binding `alias` names.
+ */
+export type SavedEnvName = {name: string, alias?: string};
+
+/**
  * Describes a tool call performed by an AI agent as part of a message.
  *
  * The agent addresses workpieces by their chat binding name (the `gadget`/`workpiece` parameters
@@ -5235,6 +5241,12 @@ export type AiToolCall = {
 
   /** Output, if the code actually ran. (Otherwise, `error` should be present.) */
   output?: string;
+
+  /**
+   * The names the code saved on `env`, in the order it saved them: each one joined the chat's
+   * bindings when the call ran (see plans/live-views.md, "Saving env").
+   */
+  savedEnv?: SavedEnvName[];
 } | {
   /**
    * **Obsolete.** Rejected all of the agent's outstanding callbacks with an error. No longer

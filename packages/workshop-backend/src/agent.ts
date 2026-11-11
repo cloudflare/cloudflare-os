@@ -1,4 +1,4 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, type SavedEnvName, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -40,7 +40,7 @@ import type {
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
   estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
+  foldProposedChanges, foldSavedEnv, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import {
@@ -95,6 +95,19 @@ export interface AgentStepChange {
    */
   pin?: {gadgetId: WorkpieceId, baseCommit: string};
 }
+
+/**
+ * What an executeCode run needs from its turn to save names on `env` (see plans/live-views.md,
+ * "Saving env"): the JSON this step saved and has not stored yet, and the names the turn's pending
+ * connection requests claim.
+ */
+export interface SavedEnvScope {
+  pending: ReadonlyMap<string, string>;
+  claimed: ReadonlySet<string>;
+}
+
+/** A name an executeCode run saved on `env`: JSON data, or another name for a chat binding. */
+export type EnvSave = {name: string, json: string} | {name: string, alias: string};
 
 /**
  * The agent turn's worktree state, as the programmatic Worktree binding needs it. The binding is
@@ -255,6 +268,10 @@ async function describeBinding(
       case "value":
         return `${envName} is the arguments array of a call delivered to this agent (one ` +
             `element per parameter of the call). Any RPC stubs among them may be called directly.`;
+      case "data":
+        return `${envName} is JSON data this chat's executeCode saved with \`${envName} = ` +
+            `value\`. Saving it again replaces it, and a view whose tag lists it reads it with ` +
+            `\`await ${envName}\`.`;
       default:
         return entry satisfies never;
     }
@@ -342,7 +359,8 @@ export interface AgentHooks {
    * single "changes" message carrying the step's gadget creations (with the blueprint release
    * each was created from, if any), binding additions, and worktree head advancements (stamping
    * pending gadget and binding records, making created worktrees permanent, and advancing
-   * worktree heads), and retire the rows. The step's effects
+   * worktree heads), write the JSON of the data names the step saved on `env`, and retire the
+   * rows. The step's effects
    * are thus durable iff its transcript record is; a crash mid-step loses both, and the resumed
    * model re-runs the step against unmodified content. Returns whether a "changes" message was
    * written (change-ID numbering counts messages).
@@ -367,6 +385,7 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        savedData?: {name: string, json: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -546,13 +565,15 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. Returns the run's log and
+   * the names it saved on `env`, which join the chat's bindings once runAgent records them.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
+                   savedEnv: SavedEnvScope,
                    onOutputText?: (delta: string) => void,
-                   worktreeTurn?: WorktreeTurnAccess): Promise<string>;
+                   worktreeTurn?: WorktreeTurnAccess): Promise<{log: string, saves: EnvSave[]}>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
@@ -2564,6 +2585,7 @@ async function runAgentPass(
                   break;
                 }
                 case "executeCode":
+                  foldSavedEnv(chatBindings, toolCall.savedEnv ?? []);
                   toolOutput = {text: toolCall.output!};
                   break;
                 case "giveUp":
@@ -3062,6 +3084,11 @@ async function runAgentPass(
   // drops it (the commit objects it named stay -- dangling and harmless).
   let pendingWorktreeCommits:
       {worktreeId: WorkpieceId, commit: string, previousHead: string}[] = [];
+
+  // The JSON of each data name this step saved on `env`, drained into the barrier's `savedData`:
+  // a save is durable iff the executeCode call that made it is. Later calls in the step read it
+  // through executeCodeMode (see SavedEnvScope).
+  let pendingSavedData = new Map<string, string>();
 
   // The Worktree binding's view of this turn (see the interface doc): closures over the same
   // session state the file tools use, so binding operations and tool operations see one
@@ -3681,7 +3708,8 @@ async function runAgentPass(
             throw new Error(`There is no binding named "${source}" in your env.`);
           }
           if (sourceEntry.type !== "workpiece") {
-            throw new Error(`env.${source} holds agent callback arguments; it cannot be bound ` +
+            throw new Error(`env.${source} holds ${sourceEntry.type === "data"
+                ? "data saved from code" : "agent callback arguments"}; it cannot be bound ` +
                 `into a gadget.`);
           }
           let bindingName = name ?? source;
@@ -3921,15 +3949,30 @@ async function runAgentPass(
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
-          let output = await hooks.executeCodeMode(
+          let {log, saves} = await hooks.executeCodeMode(
               chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+              {pending: pendingSavedData, claimed: claimedNames},
               delta => emitStreamEvent({
                 type: "toolOutputDelta",
                 toolCallId,
                 delta,
               }),
               worktreeTurnAccess);
-          return toolResult(`${output}`, {output: `${output}`} as Partial<AiToolCall>);
+          // The names join the chat's bindings now, as createGadget's does, and the record that
+          // stamps them lands with their JSON at the barrier.
+          for (let save of saves) {
+            if ("json" in save) {
+              chatBindings.set(save.name, {type: "data"});
+              pendingSavedData.set(save.name, save.json);
+            } else {
+              let target = chatBindings.get(save.alias);
+              if (target !== undefined) chatBindings.set(save.name, target);
+            }
+          }
+          let savedEnv: SavedEnvName[] = saves.map(save =>
+              "alias" in save ? {name: save.name, alias: save.alias} : {name: save.name});
+          return toolResult(log, {output: log, ...savedEnv.length > 0 && {savedEnv}} as
+              Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -4271,9 +4314,11 @@ async function runAgentPass(
           pendingWorktreeCommits = [];
           let blueprintMerges = pendingBlueprintMerges;
           pendingBlueprintMerges = [];
+          let savedData = [...pendingSavedData].map(([name, json]) => ({name, json}));
+          pendingSavedData = new Map();
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
-               worktreeCommits, blueprintMerges},
+               worktreeCommits, blueprintMerges, savedData},
               message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
             ++nextChangeId;
           }
