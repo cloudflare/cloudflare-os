@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-/** Mounts a Select portal host above Kumo's body-level dialog layers. */
+/** Mounts a portal host for a Select above Kumo's body-level dialog layers. */
 export function useDialogSelectPortalContainer(): HTMLElement | null {
   const [container, setContainer] = useState<HTMLElement | null>(null)
 
