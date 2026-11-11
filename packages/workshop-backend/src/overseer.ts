@@ -6908,7 +6908,7 @@ class OverseerImpl implements AgentHooks {
       executionId?: string): Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
-        ? new AgentSpawnerQueueImpl(this, id, caller)
+        ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId)
         : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
     return facet.startSession(queue);

@@ -958,6 +958,22 @@ describe("gatekeeper session lifetime", () => {
     expect(released).toEqual([true, false, true]);
   }));
 
+  it("ties an agent spawner's session to its execution, like any other", () => withCommands(async (impl, id) => {
+    impl.storage.gatekeepers.put({id: 8, class: impl.ctx.exports.ReplicaGitSource({}),
+      creationSpec: {type: "agentSpawner", config: {displayName: "Spawner", modelId: null}}});
+    let session!: Session, matched!: boolean;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue, execution) => {
+        session = asStub(await impl.openGatekeeperSession(
+          8, {startSession: (q: unknown) => q} as never, {from: "agent", chatId: 1}, execution) as Queue);
+        matched = await session.getExecutionId() === execution;
+      },
+    });
+    await turn(impl, [[execute("command")]]);
+    expect(matched).toBe(true);
+    expect(await failure(session.requireLive())).toMatch("code execution this session belongs to has ended");
+  }));
+
   it("ends a session with no execution when its connection is removed", () => withCommands(async impl => {
     connect(impl);
     const session = asStub(await impl.openGatekeeperSession(
