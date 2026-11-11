@@ -19,6 +19,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
+import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
 export const Route = createFileRoute('/gallery')({
   component: () => (
@@ -226,6 +227,7 @@ function Gallery() {
         </div>
       </Section>
       <MessageBlocksPreview />
+      <ToolBlocksPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
