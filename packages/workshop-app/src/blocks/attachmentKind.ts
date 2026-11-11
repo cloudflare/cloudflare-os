@@ -39,7 +39,7 @@ const MIME_KINDS: [prefix: string, kind: AttachmentKind][] = [
 ]
 
 /** MIME type wins; the extension covers files the browser reports as application/octet-stream. */
-export const attachmentKind = (file: File): AttachmentKind => {
+export const attachmentKind = (file: { name: string; type: string }): AttachmentKind => {
   const mime = file.type.toLowerCase()
   const byMime = MIME_KINDS.find(([prefix]) => mime.startsWith(prefix))
   if (byMime) return byMime[1]

@@ -1,26 +1,10 @@
 import { useState } from 'react'
-import {
-  FileAudioIcon, FileCodeIcon, FileDocIcon, FileIcon, FileImageIcon, FilePdfIcon,
-  FilePptIcon, FileTextIcon, FileVideoIcon, FileXlsIcon, FileZipIcon, XIcon, type Icon,
-} from '@phosphor-icons/react'
+import { XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Tooltip } from '@/components/Tooltip'
-import { attachmentKind, type AttachmentKind } from './attachmentKind'
+import { attachmentKind } from './attachmentKind'
+import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 import type { ComposerAttachment } from './useComposerAttachments'
-
-const KIND_ICONS: Record<AttachmentKind, Icon> = {
-  image: FileImageIcon,
-  pdf: FilePdfIcon,
-  audio: FileAudioIcon,
-  video: FileVideoIcon,
-  spreadsheet: FileXlsIcon,
-  document: FileDocIcon,
-  presentation: FilePptIcon,
-  archive: FileZipIcon,
-  code: FileCodeIcon,
-  text: FileTextIcon,
-  file: FileIcon,
-}
 
 export const ComposerAttachmentCard = ({ attachment, onRemove }: {
   attachment: ComposerAttachment
@@ -28,7 +12,7 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
 }) => {
   const [previewFailed, setPreviewFailed] = useState(false)
   const name = attachment.file.name || 'Attached file'
-  const KindIcon = KIND_ICONS[attachmentKind(attachment.file)]
+  const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(attachment.file)]
 
   return (
     <Tooltip content={name}>

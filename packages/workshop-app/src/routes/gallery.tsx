@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Switch, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
@@ -16,7 +16,9 @@ import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
+import { Section } from '@/gallery/Section'
 
 export const Route = createFileRoute('/gallery')({
   component: () => (
@@ -25,13 +27,6 @@ export const Route = createFileRoute('/gallery')({
     </div>
   ),
 })
-
-const Section = ({ title, children }: { title: string; children: ReactNode }) => (
-  <section className="flex flex-col gap-3">
-    <h2 className="text-sm font-medium text-kumo-subtle">{title}</h2>
-    <div className="flex flex-wrap items-center gap-2">{children}</div>
-  </section>
-)
 
 const previewSkills: ComposerSkill[] = [
   { id: 'review', name: 'Review writing', description: 'Polish a draft and make it clearer.', source: 'Writing tools' },
@@ -155,6 +150,8 @@ function Gallery() {
         <Button icon={CirclesFourIcon} aria-label="Apps" />
         <Button disabled>Disabled</Button>
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+        <Button variant="ghost">Ghost</Button>
+        <Button variant="primary">Primary</Button>
       </Section>
       <Section title="DropdownMenu (side, align, trigger and in-place toggles)">
         <DropdownMenuPlayground />
@@ -224,11 +221,11 @@ function Gallery() {
           <MessageBubble role="user">Make it dark</MessageBubble>
           <MessageBubble role="user">And add a chart of open tickets per week, with the team split out</MessageBubble>
           <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
-          <MessageBubble role="assistant">Missing implementation</MessageBubble>
           <MessageBubble role="error">Something went wrong</MessageBubble>
           <ThinkingIndicator />
         </div>
       </Section>
+      <MessageBlocksPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
