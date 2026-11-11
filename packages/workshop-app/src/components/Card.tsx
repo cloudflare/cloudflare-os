@@ -10,8 +10,9 @@ export const CARD = 'arrives origin-top-left rounded-[21px] bg-kumo-base ring-1 
 
 /**
  * An outlined surface for something that waits on the user: a decision, or a thing to open. As
- * wide as what is in it, the way a message is, up to a width that stays readable.
+ * wide as what is in it, the way a message is, between a width below which a card with little in
+ * it looks pinched and one up to which it stays readable.
  */
 export const Card = ({ children, className }: { children: ReactNode; className?: string }) => (
-  <div className={cn(CARD, 'flex w-fit max-w-[min(100%,36rem)] flex-col gap-3 p-4 text-base/5', className)}>{children}</div>
+  <div className={cn(CARD, 'flex w-fit max-w-[min(100%,36rem)] min-w-[min(100%,20rem)] flex-col gap-3 p-4 text-base/5', className)}>{children}</div>
 )
