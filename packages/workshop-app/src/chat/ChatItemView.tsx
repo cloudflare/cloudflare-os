@@ -36,9 +36,6 @@ export type ChatItemViewProps = {
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
-  changes: 'edit',
-  merge: 'accept',
-  revert: 'discard',
   model: 'swap',
   gadget: 'plug',
   callback: 'code',

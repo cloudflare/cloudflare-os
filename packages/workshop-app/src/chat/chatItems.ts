@@ -115,11 +115,15 @@ export type ConnectionItem = Row & {
 }
 export type NoticeItem = Row & {
   kind: 'notice'
-  notice: 'changes' | 'merge' | 'revert' | 'model' | 'gadget' | 'callback' | 'unknown'
+  notice: 'model' | 'gadget' | 'callback' | 'unknown'
   text: string
   detail?: string
 }
-export type DividerItem = Row & { kind: 'divider'; label: string }
+/**
+ * A point in the conversation rather than something said: where the context was cut, or
+ * something a person did to the chat's changes (saved edits, accepted them, discarded them).
+ */
+export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert'; label: string }
 export type ErrorItem = Row & {
   kind: 'error'
   text: string
@@ -154,6 +158,10 @@ export type FeedContext = {
  * moved to the end of the turn, so it sits under the answer however much the agent wrote
  * afterwards. Once the user has decided, the request goes back to where it happened.
  *
+ * What a person did to the chat's changes after the answer (saved edits, accepted, discarded) is
+ * about what the answer produced, so it follows the artefacts. If the agent carried on afterwards
+ * it stays where it happened.
+ *
  * The last turn is still open: more may be written in it, and whatever streams belongs between its
  * rows and its artefacts. So its trailing run of tool calls and its artefacts are kept apart.
  */
@@ -162,8 +170,8 @@ export type ChatFeed = {
   items: ChatItem[]
   /** The run of tool calls the open turn currently ends with, which live calls continue. */
   openTools?: ToolsItem
-  /** The open turn's artefacts. */
-  pinned: ArtefactItem[]
+  /** The open turn's artefacts, then what people did to its changes since its last row. */
+  pinned: Array<ArtefactItem | DividerItem>
 }
 
 export const EMPTY_FEED: ChatFeed = { items: [], pinned: [] }
@@ -456,6 +464,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
   const items: ChatItem[] = []
   let pinned: ArtefactItem[] = []
+  // What people did to the changes since the turn's last row; shown after `pinned` unless more follows.
+  let acts: DividerItem[] = []
   let work: WorkStep[] = []
   let model: string | undefined
 
@@ -465,8 +475,19 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   }
   const closeTurn = () => {
     closeWork()
-    items.push(...pinned)
+    items.push(...pinned, ...acts)
     pinned = []
+    acts = []
+  }
+  /** The turn goes on, so what people did before this point stays where it happened. */
+  const carryOn = () => {
+    if (acts.length === 0) return
+    closeWork()
+    items.push(...acts)
+    acts = []
+  }
+  const act = (message: AiChatMessage, marks: DividerItem['marks'], label: string) => {
+    acts.push(emit<DividerItem>(`act:${message.sequence}`, [message, label], () => ({ kind: 'divider', id: message.sequence, marks, label })))
   }
   const notice = (message: AiChatMessage, kind: NoticeItem['notice'], text: string, detail?: string) => {
     closeWork()
@@ -485,7 +506,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
     if (compactedTo !== undefined && id >= compactedTo && index > 0 && messages[index - 1].sequence < compactedTo) {
       closeWork()
-      items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, label: 'Context compacted' })))
+      items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, marks: 'compaction', label: 'Context compacted' })))
     }
 
     switch (message.type) {
@@ -507,8 +528,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       case 'message': {
         if (message.author.type !== 'agent') {
           // A steer joins the answer it was sent into; any other prompt starts the next turn.
-          if (message.steered) closeWork()
-          else closeTurn()
+          if (message.steered) {
+            carryOn()
+            closeWork()
+          } else closeTurn()
           if (message.message || message.attachments?.length) {
             items.push(emit<UserItem>(`user:${id}`, [message, viewerId], () => userItem(message, viewerId)))
           }
@@ -519,6 +542,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         const text = message.message.trim() ? message.message : undefined
         // A step that only thought leaves nothing to show.
         if (!text && calls.length === 0) break
+        carryOn()
 
         if (model !== undefined && model !== message.author.id) {
           closeWork()
@@ -554,6 +578,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
 
       case 'action': {
+        carryOn()
         const log = message.actionLog
         if (!log) notice(message, 'unknown', 'An action whose details are not available')
         else if (log.type === 'observation') work.push({ type: 'observation', message, log })
@@ -583,6 +608,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
 
       case 'connectionRequest': {
+        carryOn()
         const item = emit<ConnectionItem>(`connection:${id}`, [message], () => ({
           kind: 'connection',
           id,
@@ -604,19 +630,20 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       case 'changes':
         // The agent's own edits are part of its work; the migration's bookkeeping is nobody's action.
         if (message.author.type === 'user' && !message.conversionBoundary) {
-          notice(message, 'changes', changesText(message, actor(message.author)))
+          act(message, 'changes', changesText(message, actor(message.author)))
         }
         break
 
       case 'merge':
-        notice(message, 'merge', `${actor(message.author)} accepted changes`)
+        act(message, 'merge', `${actor(message.author)} accepted changes`)
         break
 
       case 'revert':
-        notice(message, 'revert', `${actor(message.author)} discarded changes`)
+        act(message, 'revert', `${actor(message.author)} discarded changes`)
         break
 
       case 'useGadget': {
+        carryOn()
         const last = items.at(-1)
         // Logged once per use; a run of them says no more than one.
         if (work.length || last?.kind !== 'notice' || last.notice !== 'gadget') notice(message, 'gadget', 'Used the gadget')
@@ -632,6 +659,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
 
       case 'error': {
+        carryOn()
         closeWork()
         const usageLimit = message.code === 'usage_limit'
         const recovery = index === messages.length - 1 && !context.agentActive ? (usageLimit ? 'continue' : 'retry') : undefined
@@ -641,14 +669,16 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       default:
         // A kind newer than this build.
+        carryOn()
         notice(message, 'unknown', 'A message this version can’t show')
     }
   }
 
   const openTools = work.length ? toolsItem(emit, work) : undefined
+  const tail = [...pinned, ...acts]
   return {
     items: sameItems(previous?.items, items) ? previous!.items : items,
     openTools,
-    pinned: sameItems(previous?.pinned, pinned) ? previous!.pinned : pinned,
+    pinned: sameItems(previous?.pinned, tail) ? previous!.pinned : tail,
   }
 }

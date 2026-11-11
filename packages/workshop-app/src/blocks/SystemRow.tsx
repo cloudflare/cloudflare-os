@@ -1,12 +1,7 @@
-import {
-  ArrowUUpLeftIcon, CheckIcon, CodeIcon, InfoIcon, PencilSimpleIcon, PlugIcon, SwapIcon, type Icon,
-} from '@phosphor-icons/react'
+import { CodeIcon, InfoIcon, PlugIcon, SwapIcon, type Icon } from '@phosphor-icons/react'
 import { CodeBlock } from '@/components/CodeBlock'
 
 const ICONS = {
-  edit: PencilSimpleIcon,
-  accept: CheckIcon,
-  discard: ArrowUUpLeftIcon,
   swap: SwapIcon,
   plug: PlugIcon,
   code: CodeIcon,
@@ -20,7 +15,7 @@ export type SystemRowProps = {
   detail?: string
 }
 
-/** Something that happened in the chat that nobody said: edits saved, a model switched, a call arrived. */
+/** Something that happened in the chat that nobody said: a model switched, the gadget was used, a call arrived. */
 export const SystemRow = ({ icon, children, detail }: SystemRowProps) => {
   const RowIcon = ICONS[icon]
   return (

@@ -4,7 +4,6 @@ import {
   continueTools,
   EMPTY_FEED,
   toChatFeed,
-  type ArtefactItem,
   type ChatFeed,
   type ChatItem,
   type OutputFormat,
@@ -42,8 +41,11 @@ export type ChatSnapshot =
       thinking: boolean
       /** An assistant turn is running. */
       agentActive: boolean
-      /** What the open turn produced or asks for, shown below everything else in it. */
-      pinned: ArtefactItem[]
+      /**
+       * What the open turn produced or asks for, then what people did to its changes since. Shown
+       * below everything else in the turn.
+       */
+      pinned: ChatFeed['pinned']
       /** Messages sent while the agent works that it has not read yet, oldest first. */
       queuedSteers: QueuedSteer[]
       /** Why the last send failed, until the next send. */

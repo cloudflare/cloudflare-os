@@ -127,8 +127,12 @@ describe('scenarios', () => {
     const { ready, rows, seen } = await watch(scenario('output'), (chat) => of(chat.rows(), 'output').map(({ draft }) => draft))
 
     expect(seen).toEqual(new Set([true, false]))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'assistant', 'notice', 'notice', 'output'])
-    expect(ready().pinned).toMatchObject([{ kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } }])
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'assistant', 'output', 'divider', 'divider'])
+    expect(ready().pinned).toMatchObject([
+      { kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } },
+      { label: 'You saved edits' },
+      { label: 'You accepted changes' },
+    ])
   })
 
   it('errors: only the last error can be retried, and running out of credits offers to continue', async () => {

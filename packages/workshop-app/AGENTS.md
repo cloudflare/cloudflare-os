@@ -45,7 +45,9 @@ waiting on the user for (a pending approval or connection request) is shown at t
 never where it happened, so it cannot be left behind by what the agent wrote afterwards. The last
 turn's are kept apart (`pinned`) and rendered below whatever is still streaming. Once the user has
 answered a request it is history and goes back to where it happened; an action a standing rule
-approved never asked anyone, and is a step of the tool run. Keep that rule when adding a kind.
+approved never asked anyone, and is a step of the tool run. What a person then did to the chat's
+changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
+when adding a kind.
 
 What is open in a row lives in `DisclosureStore`, not in the block: the list unmounts rows far off
 screen.
