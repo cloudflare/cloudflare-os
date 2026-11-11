@@ -340,7 +340,8 @@ export class ChatSession {
     // Thinking that led straight to a call is kept with that call, as the committed step keeps it.
     const withCall = this.#streaming === '' && this.#calls.length > 0
     const live: WorkEntry[] = []
-    if (this.#reasoning && !withCall) live.push({ type: 'thinking', key: 'live:thinking', text: this.#reasoning })
+    // It is still thinking only until it starts to write.
+    if (this.#reasoning && !withCall) live.push({ type: 'thinking', key: 'live:thinking', text: this.#reasoning, running: this.#streaming === '' })
     if (this.#streaming) live.push({ type: 'writing', key: 'live:writing', text: this.#streaming })
     this.#calls.forEach((call, index) => live.push(liveEntry(call, index === 0 && withCall ? this.#reasoning || undefined : undefined)))
     return (this.#work = [...work, ...live])

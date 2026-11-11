@@ -119,10 +119,24 @@ describe('toChatFeed', () => {
       expect(only(feed(compactCommand()), 'user')).toMatchObject([{ parts: [{ type: 'command', name: 'compact' }] }])
     })
 
-    it('shows what the agent said and not what it thought first', () => {
-      const result = feed(agent({ text: 'Done', reasoning: 'Thinking it through' }))
-      expect(result.items).toEqual([{ kind: 'assistant', id: 0, key: 'assistant:0', text: 'Done' }])
+    it('says who wrote a reply and when, and keeps what it thought first behind it rather than in the conversation', () => {
+      const messages = history([agent({ text: 'Done', reasoning: 'Thinking it through' })])
+      const result = toChatFeed(messages, viewer)
+      expect(result.items).toEqual([{
+        kind: 'assistant',
+        id: 0,
+        key: 'assistant:0',
+        text: 'Done',
+        sender: 'Mock Model',
+        sentAt: messages[0].timestamp,
+        trace: [{ type: 'thinking', key: 'thinking:0', text: 'Thinking it through' }],
+      }])
       expect(result.work).toEqual([])
+    })
+
+    it('says when a person’s message was sent', () => {
+      const messages = history([user('hi'), slashCommand({ name: 'review', args: 'the intro', commandPosition: 0 })])
+      expect(only(toChatFeed(messages, viewer), 'user').map(({ sentAt }) => sentAt)).toEqual([messages[0].timestamp, messages[1].timestamp])
     })
 
     it('draws consecutive messages from one sender as a run, unless the later one has its own heading', () => {
@@ -165,6 +179,29 @@ describe('toChatFeed', () => {
       expect(kinds(spoke)).toEqual(['user', 'assistant'])
       expect(spoke.work.map(({ label }) => label)).toEqual(['Edited a.ts'])
       expect(feed(...steps, agent({ text: 'Done' })).work).toEqual([])
+    })
+
+    it('goes with the message it led to: the steps since the message before, then what was thought last', () => {
+      const result = feed(
+        user('go'),
+        agent({ reasoning: 'Check the worker', toolCalls: [read('a.ts')] }),
+        observation({ title: 'PLAT-1' }),
+        agent({ text: 'Found it', reasoning: 'The window is a constant', toolCalls: [edit('a.ts')] }),
+        agent({ text: 'Done' }),
+      )
+      expect(only(result, 'assistant').map(({ text, trace }) => [text, trace.map((step) => (step.type === 'thinking' ? step.text : step.label))])).toEqual([
+        ['Found it', ['Read a.ts', 'Read PLAT-1', 'The window is a constant']],
+        ['Done', ['Edited a.ts']],
+      ])
+      // The thinking behind the silent step stays with what it did.
+      expect(only(result, 'assistant')[0].trace[0]).toMatchObject({ reasoning: 'Check the worker' })
+    })
+
+    it('keeps a reply the same row while what led to it is unchanged', () => {
+      const messages = history([user('go'), agent({ toolCalls: [read('a.ts')] }), agent({ text: 'Found it', reasoning: 'Hm' })])
+      const before = toChatFeed(messages, viewer)
+      const after = toChatFeed([...messages, ...history([agent({ text: 'More' })], 3)], viewer, before)
+      expect(after.items[1]).toBe(before.items[1])
     })
 
     it('starts over with the next prompt, but not with a message that steers the turn', () => {
