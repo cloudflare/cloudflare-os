@@ -17,6 +17,7 @@ import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
@@ -218,6 +219,7 @@ function Gallery() {
           />
         </div>
       </Section>
+      <MascotPreview />
       <Section title="MessageBubble, ThinkingIndicator">
         <div className="flex w-full flex-col gap-2">
           <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
