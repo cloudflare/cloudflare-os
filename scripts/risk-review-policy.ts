@@ -464,7 +464,9 @@ function namesSamePackage(spec: string): boolean {
  * The dependencies a `package.json` declares in `head` but not in `base`, and those whose spec
  * changed to one that can name another package. Each field is compared on its own, since pnpm
  * reads a name from one field, not the last one listed. A new `workspace:` dependency names a
- * package in this repository, not a new third-party one, so it is left out.
+ * package in this repository, not a new third-party one, so it is left out. A `workspace:`
+ * dependency whose spec changes to anything but `workspace:` swaps the local package for one from a
+ * registry, so it counts as added.
  *
  * @returns The names, or `undefined` when either side is not a JSON object.
  */
@@ -475,6 +477,7 @@ export function addedDependencies(base: string | undefined, head: string | undef
   const added = [...after].filter(([key, spec]) => {
     const was = before.get(key);
     if (was === undefined) return !spec.startsWith("workspace:");
+    if (was.startsWith("workspace:") && !spec.startsWith("workspace:")) return true;
     return spec !== was && !namesSamePackage(spec);
   });
   return [...new Set(added.map(([key]) => key.slice(key.indexOf(" ") + 1)))];

@@ -60,8 +60,10 @@ pull requests the gate would have merged, the misses among them (a maintainer co
 non-approving review followed by a commit, a change request, or a revert or a pull request naming it
 within 14 days), and the run of clean ones since the last miss. A band opens at threshold 10, and
 only once that run reaches 60; the threshold is then lowered a step at a time as the record
-supports it, and a change to either reviewer's configuration starts the run again. In `enforce` mode the check reports the gate's own rule, and for an open
-band the App approves (when `app_approvals_count` is true) and enqueues the pull request. A change to
+supports it, and a change to either reviewer's configuration starts the run again. In `enforce` mode
+the check reports the gate's own rule, and the App approves (when `app_approvals_count` is true) and
+enqueues a pull request only when its band is open, the gate decided it can merge without a person,
+and it is not a draft. A change to
 any of these files, or to anything else under `.github/`, always needs a person, with one exception:
 a Dependabot Actions bump that only modifies workflows the gate does not read (none of the producer
 workflows, `risk-review.yml` or `risk-review-trigger.yml`; `GATE_WORKFLOWS` in the script), and whose

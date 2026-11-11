@@ -352,6 +352,14 @@ describe("addedDependencies", () => {
     assert.equal(addedDependencies("{}", JSON.stringify({ dependencies: ["zod"] })), undefined);
   });
 
+  // Clanky on #1093, round 3: a local package swapped for a same-named registry one.
+  it("counts a workspace dependency moved to a registry range as added", () => {
+    const before = JSON.stringify({ dependencies: { "@gadgets/ui": "workspace:*" } });
+    const after = JSON.stringify({ dependencies: { "@gadgets/ui": "^1.0.0" } });
+    assert.deepEqual(addedDependencies(before, after), ["@gadgets/ui"]);
+    assert.deepEqual(addedDependencies(before, JSON.stringify({ dependencies: { "@gadgets/ui": "workspace:^" } })), []);
+  });
+
   it("counts a spec changed to anything that can name another package as added", () => {
     for (const spec of ["npm:evil-zod@4.7.0", "github:evil/zod", "https://evil.example/zod.tgz", "file:../zod", "link:../zod",
       "latest", "x-evil", "4beta", "*evil", "4.7.0.tgz", "git+ssh://git@github.com/evil/zod.git"]) {
