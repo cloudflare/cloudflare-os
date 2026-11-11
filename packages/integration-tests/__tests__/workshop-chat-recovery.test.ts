@@ -205,7 +205,8 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
 it.concurrent("stopping an agent whose code is still running ends the turn at once", async () => {
   // Code that would hold the turn for a minute, and call back into the chat if left running.
   const code = `export default async function(self, env) {
-    console.log("read", await env.TEST_AMBIENT.readValue());
+    console.log("started");
+    await env.TEST_AMBIENT.readValue();
     await scheduler.wait(1500);
     await self.late();
     await scheduler.wait(60_000);
@@ -239,7 +240,7 @@ it.concurrent("stopping an agent whose code is still running ends the turn at on
     .toEqual([expect.objectContaining({
       toolCallId: "slow",
       // What the code logged before it was stopped.
-      output: expect.stringMatching(/^read [^]*User requested to stop agent/),
+      output: expect.stringMatching(/^started\n[^]*User requested to stop agent/),
     })]);
 
   // Past the point where the abandoned code would have called back.
