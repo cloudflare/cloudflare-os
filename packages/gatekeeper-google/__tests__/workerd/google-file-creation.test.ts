@@ -400,6 +400,22 @@ describe("creating a Google Drive folder", () => {
     expect(drive["folder-new-1"].parents).toEqual(["root-id"]);
   });
 
+  it("refuses a retry whose folder was trashed after its create's reply was lost", async () => {
+    await hooks().grant("test-user", grants);
+    await hooks().createResource("create-folder-trashed", FOLDER_PATTERN, "Q3 plans");
+    createAnswers = ["lost", "lost", "lost"];
+    expect(await hooks().applyCreation("create-folder-trashed", "test-user", folderUrl("folder-1")))
+      .toMatchObject({ error: expect.stringContaining("503") });
+
+    // The retry's create is answered 409, so the folder made under the ID is read back.
+    drive["folder-new-1"].trashed = true;
+    expect(await hooks().applyCreation("create-folder-trashed", "test-user", folderUrl("folder-1"))).toEqual({
+      error: "The Google Drive folder created for this approval is gone or in the trash, or its Google " +
+        "account can no longer reach it. Reject the creation and ask for a new one.",
+    });
+    expect(generatedIds).toBe(1);
+  });
+
   it.each([
     ["the created-files grant", [FOLDER_PATTERN], "hasn't let this app put what it creates in Drive folders. " +
       "Approve it again and allow access when asked."],

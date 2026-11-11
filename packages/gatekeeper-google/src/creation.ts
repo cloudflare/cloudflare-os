@@ -8,7 +8,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { buildDescription, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
 import { AccessTokenCache, type AccessTokenProvider } from "./auth-retry";
-import { DriveApi, FOLDER_MIME_TYPE, isFileInvisible, type DriveFile } from "./drive-api";
+import { DriveApi, FOLDER_MIME_TYPE, isFileInvisible, isListableFolderFile, type DriveFile } from "./drive-api";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { obsContext } from "./observability";
 import {
@@ -124,16 +124,24 @@ async function destinationFolder(drive: DriveApi, folderId: string): Promise<Dri
   return folder;
 }
 
+/** The refusal for a file this approval created that is gone, trashed, or out of its account's reach. */
+const goneError = (kind: CreatableKind, cause?: unknown) => new Error(`The ${FILE_NOUNS[kind]} created ` +
+  "for this approval is gone or in the trash, or its Google account can no longer reach it. Reject the " +
+  "creation and ask for a new one.", { cause });
+
+/** File `fileId`, which this approval created, refusing it once its account can no longer see it. */
+function readCreated(drive: DriveApi, kind: CreatableKind, fileId: string): Promise<DriveFile> {
+  return drive.getFile(fileId).catch((error: unknown) => {
+    throw isFileInvisible(error) ? goneError(kind, error) : error;
+  });
+}
+
 /**
  * Moves file `fileId` into `folder` unless that is already its only parent. Reads the parents
  * rather than trusting the receipt: an earlier move may have taken effect with its reply lost.
  */
 async function moveInto(drive: DriveApi, kind: CreatableKind, fileId: string, folder: DriveFile): Promise<void> {
-  let { parents = [] } = await drive.getFile(fileId).catch((error: unknown) => {
-    if (!isFileInvisible(error)) throw error;
-    throw new Error(`The ${FILE_NOUNS[kind]} created for this approval is gone, or its Google ` +
-      "account can no longer reach it. Reject the creation and ask for a new one.", { cause: error });
-  });
+  let { parents = [] } = await readCreated(drive, kind, fileId);
   if (parents.length === 1 && parents[0] === folder.id) return;
   await drive.moveFile(fileId, folder.id, parents.filter(parent => parent !== folder.id)).catch((error: unknown) => {
     throw new Error(`The ${FILE_NOUNS[kind]} at ${nativeFileUrl(kind, fileId)} was created, but moving ` +
@@ -224,7 +232,9 @@ export async function createFileOnce(
     // Sent again while it is unknown whether the ID was used. The ID is kept even after Drive
     // refuses: the request replays a lost reply, so the refused attempt may not have been the first.
     if (making || placedIn === null) {
-      await drive.createFolder(props.creation.title, folderId, fileId);
+      // A 409 says an earlier attempt made the folder, which may be trashed or deleted since.
+      if (!await drive.createFolder(props.creation.title, folderId, fileId) &&
+          !isListableFolderFile(await readCreated(drive, kind, fileId))) throw goneError(kind);
       made = true;
     }
   } else if (fileId === undefined) {

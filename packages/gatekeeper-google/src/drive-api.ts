@@ -726,12 +726,12 @@ export class DriveApi {
   }
 
   /**
-   * Makes an empty folder named `name` in folder `parentId` under `id`, from generateFileId().
-   * Drive answers a create under an ID already used with 409 and makes nothing, so a lost response
-   * is replayed, a caller may send it again, and it resolves alike whether this request or an
-   * earlier one made the folder.
+   * Makes an empty folder named `name` in folder `parentId` under `id`, from generateFileId(), and
+   * returns whether this request made it. Drive answers a create under an ID already used with 409
+   * and makes nothing, so a lost response is replayed and a caller may send it again; false means
+   * an earlier request made the folder, which may since have been trashed or deleted.
    */
-  async createFolder(name: string, parentId: string, id: string): Promise<void> {
+  async createFolder(name: string, parentId: string, id: string): Promise<boolean> {
     let params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(`${DRIVE_API_BASE}/files?${params}`, {
       method: "POST",
@@ -740,6 +740,7 @@ export class DriveApi {
     }, this.getAccessToken, { idempotent: true });
     if (response.status !== 409 && !response.ok) throw await driveError(response);
     await response.body?.cancel();
+    return response.ok;
   }
 
   /**
