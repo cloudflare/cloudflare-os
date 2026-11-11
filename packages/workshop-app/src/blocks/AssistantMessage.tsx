@@ -1,12 +1,11 @@
-import type { ReactNode } from 'react'
 import { Markdown } from '@/components/Markdown'
-import { MessageBubble, type MessageJoins } from './MessageBubble'
+import { MessageBubble, type MessageDetails, type MessageJoins } from './MessageBubble'
 
 export type AssistantMessageProps = {
   text: string
   joins?: MessageJoins
-  /** What there is to know about the message (see `MessageInfo`), shown when its details are asked for. */
-  details?: ReactNode
+  /** What there is to know about the message (see `MessageInfo`), shown under it while open. */
+  details?: MessageDetails
 }
 
 /** What the agent said. */

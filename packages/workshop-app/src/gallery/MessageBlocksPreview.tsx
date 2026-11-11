@@ -24,7 +24,7 @@ const TRACE: ToolStepEntry[] = [
 /** What people and the agent say, in every state, and what there is to know about a message. */
 export const MessageBlocksPreview = () => {
   const { report, say } = useReport()
-  const { open, toggle } = useOpen()
+  const { open, toggle, of } = useOpen()
 
   return (
     <>
@@ -55,16 +55,23 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="AssistantMessage (plain, with Markdown; point at either and open its details: the first has none to show)">
+      <Section title="AssistantMessage (plain, with Markdown; point at one and ask for its details, which unfold under it: the first has none)">
         <Column>
           <AssistantMessage text="I’ll build a personal Jira dashboard." />
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
-            details={<MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} />}
+            details={{
+              ...of('details'),
+              content: <MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} />,
+            }}
+          />
+          <UserMessage
+            parts={[{ type: 'text', text: 'Make it dark' }]}
+            details={{ ...of('mine'), content: <MessageInfo sender="You" sentAt={SENT} /> }}
           />
         </Column>
       </Section>
-      <Section title="MessageInfo (a reply with what led to it, a reply written straight away, a person’s message, a message not read yet)">
+      <Section title="MessageInfo (a reply with what led to it, a reply that took no steps, a person’s message, a message not read yet)">
         <div className="grid w-full grid-cols-2 gap-4">
           <Card><MessageInfo sender="Mock Model" sentAt={SENT} trace={{ steps: TRACE, openSteps: open, onToggleStep: toggle }} /></Card>
           <Card><MessageInfo sender="Mock Model Fast" sentAt={SENT} trace={{ steps: [], openSteps: open, onToggleStep: toggle }} /></Card>
